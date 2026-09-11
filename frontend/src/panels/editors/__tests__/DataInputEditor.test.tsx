@@ -50,7 +50,6 @@ import {
 } from "../../../api/client"
 import DataInputEditor from "../DataInputEditor"
 import { resetIoCapabilitiesRequestForTests } from "../_ioFormats"
-import { DraftEditingContext } from "../../DraftEditingContext"
 
 const groups: IoCapabilityGroup[] = [
   {
@@ -286,18 +285,15 @@ function renderEditor(
   config: Record<string, unknown>,
   onUpdate = vi.fn(),
   onReplaceConfig = vi.fn(),
-  isRecoveryDraft = false,
 ) {
   return {
     ...render(
-      <DraftEditingContext.Provider value={isRecoveryDraft}>
-        <DataInputEditor
-          config={config}
-          onUpdate={onUpdate}
-          onReplaceConfig={onReplaceConfig}
-          accentColor="#123456"
-        />
-      </DraftEditingContext.Provider>,
+      <DataInputEditor
+        config={config}
+        onUpdate={onUpdate}
+        onReplaceConfig={onReplaceConfig}
+        accentColor="#123456"
+      />,
     ),
     onUpdate,
     onReplaceConfig,
@@ -411,23 +407,6 @@ describe("DataInputEditor", () => {
       null_values: ["NA"],
       schema: { policy_id: "Int64", premium: "Float64" },
     })
-  })
-
-  it("keeps schema detection and snapshot controls out of recovery drafts", async () => {
-    renderEditor({
-      inputType: "file",
-      format: "csv",
-      mode: "scan",
-      path: "quotes.csv",
-      arguments: {},
-      code: "",
-    }, vi.fn(), vi.fn(), true)
-
-    await screen.findByLabelText("Format")
-    expect(fetchSchema).not.toHaveBeenCalled()
-    expect(getInputCacheStatus).not.toHaveBeenCalled()
-    expect(screen.queryByLabelText("Detected schema")).not.toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: "Cache as Parquet" })).not.toBeInTheDocument()
   })
 
   it("tolerates a leftover cacheMode key and never migrates it", async () => {

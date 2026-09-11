@@ -63,6 +63,7 @@ export interface RecoveryNode {
   source_span: SourceSpan | null
   diagnostic_ids: string[]
   blocking_path: string[]
+  scoped_editable: boolean
 }
 
 export interface RecoveryEdge {
@@ -126,6 +127,13 @@ export interface PipelineDiagnostic {
   incident_id: string | null
 }
 
+export interface PipelineNodeCompleteness {
+  element_id: string
+  path: string
+  code: string
+  message: string
+}
+
 export interface PipelineDocumentCapabilities {
   can_mutate: boolean
   can_save: boolean
@@ -153,6 +161,8 @@ export interface PipelineEditorDocument extends RecoveryGraph {
   has_authored_content: boolean
   diagnostics: PipelineDiagnostic[]
   diagnostics_omitted: number
+  completeness: PipelineNodeCompleteness[]
+  completeness_omitted: number
   capabilities: PipelineDocumentCapabilities
 }
 
@@ -268,6 +278,7 @@ function parseRecoveryNode(value: unknown, field: string): RecoveryNode {
     "source_span",
     "diagnostic_ids",
     "blocking_path",
+    "scoped_editable",
   ])
   return {
     recovery_id: expectNonBlankString(PARSER, object.recovery_id, `${field}.recovery_id`),
@@ -296,6 +307,7 @@ function parseRecoveryNode(value: unknown, field: string): RecoveryNode {
     source_span: parseSpan(object.source_span, `${field}.source_span`),
     diagnostic_ids: stringArray(object.diagnostic_ids, `${field}.diagnostic_ids`),
     blocking_path: stringArray(object.blocking_path, `${field}.blocking_path`),
+    scoped_editable: expectBoolean(PARSER, object.scoped_editable, `${field}.scoped_editable`),
   }
 }
 
@@ -556,6 +568,17 @@ function parseDiagnostic(value: unknown, field: string): PipelineDiagnostic {
   }
 }
 
+export function parseNodeCompleteness(value: unknown, field: string): PipelineNodeCompleteness {
+  const object = expectPlainObject(PARSER, value, field)
+  exactKeys(object, field, ["element_id", "path", "code", "message"])
+  return {
+    element_id: expectNonBlankString(PARSER, object.element_id, `${field}.element_id`),
+    path: expectNonBlankString(PARSER, object.path, `${field}.path`),
+    code: expectNonBlankString(PARSER, object.code, `${field}.code`),
+    message: expectNonBlankString(PARSER, object.message, `${field}.message`),
+  }
+}
+
 export function parsePipelineEditorDocument(value: unknown): PipelineEditorDocument {
   const object = expectPlainObject(PARSER, value)
   exactKeys(object, "document", [
@@ -579,6 +602,8 @@ export function parsePipelineEditorDocument(value: unknown): PipelineEditorDocum
     "submodels",
     "diagnostics",
     "diagnostics_omitted",
+    "completeness",
+    "completeness_omitted",
     "capabilities",
   ])
   const graph = parseRecoveryGraph(
@@ -614,6 +639,19 @@ export function parsePipelineEditorDocument(value: unknown): PipelineEditorDocum
   if (!Number.isInteger(diagnosticsOmitted) || diagnosticsOmitted < 0) {
     throw new Error(
       `${PARSER}: expected document.diagnostics_omitted to be a non-negative integer`,
+    )
+  }
+  const completeness = expectArray(PARSER, object.completeness, "document.completeness").map(
+    (item, index) => parseNodeCompleteness(item, `document.completeness[${index}]`),
+  )
+  const completenessOmitted = expectNumber(
+    PARSER,
+    object.completeness_omitted,
+    "document.completeness_omitted",
+  )
+  if (!Number.isInteger(completenessOmitted) || completenessOmitted < 0) {
+    throw new Error(
+      `${PARSER}: expected document.completeness_omitted to be a non-negative integer`,
     )
   }
   const reservedApiInputFrameLabels = stringArray(
@@ -665,6 +703,8 @@ export function parsePipelineEditorDocument(value: unknown): PipelineEditorDocum
     ),
     diagnostics,
     diagnostics_omitted: diagnosticsOmitted,
+    completeness,
+    completeness_omitted: completenessOmitted,
     capabilities: {
       can_mutate: expectBoolean(PARSER, capabilities.can_mutate, "capabilities.can_mutate"),
       can_save: expectBoolean(PARSER, capabilities.can_save, "capabilities.can_save"),
@@ -730,6 +770,7 @@ function adaptRecoveryGraph(
               _loadAvailability: node.availability,
               _loadDiagnosticIds: [...node.diagnostic_ids],
               _loadBlockingPath: [...node.blocking_path],
+              _scopedEditable: node.scoped_editable,
               _authoredId: node.authored_id,
               _authoredDecorator: node.decorator_name,
               _authoredReceiver: receiver,

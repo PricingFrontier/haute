@@ -7,7 +7,12 @@ import {
   expectString,
   expectStringLiteral,
 } from "./guards"
-import { parsePipelineEditorDocument, type PipelineEditorDocument } from "./pipelineDocument"
+import {
+  parseNodeCompleteness,
+  parsePipelineEditorDocument,
+  type PipelineEditorDocument,
+  type PipelineNodeCompleteness,
+} from "./pipelineDocument"
 
 const PARSER = "parsePipelineRepairResponse"
 const PLAN_HASH = /^[0-9a-f]{64}$/
@@ -24,7 +29,7 @@ export interface ApplyRemoveUnavailableNodeRequest extends RemoveUnavailableNode
   planHash: string
 }
 
-export type RecoverUnavailableNodeAction = "update" | "reset"
+export type RecoverUnavailableNodeAction = "update" | "reset" | "recover"
 
 export interface RecoverUnavailableNodeRequest {
   sourceFile: string
@@ -74,6 +79,12 @@ export interface PipelineRepairChange {
   diff_truncated: boolean
 }
 
+export interface PipelineRepairFieldChange {
+  path: string
+  outcome: "retained" | "defaulted" | "needs_input" | "needs_review" | "removed" | "blocked"
+  reason: string
+}
+
 export interface RemoveUnavailableNodeDryRunResponse {
   repair_kind: "remove_unavailable_node"
   source_file: string
@@ -87,6 +98,9 @@ export interface RemoveUnavailableNodeDryRunResponse {
   retained_artifacts: string[]
   warnings: string[]
   predicted_load_status: "ready" | "degraded"
+  field_changes: PipelineRepairFieldChange[]
+  completeness: PipelineNodeCompleteness[]
+  previous_config: Record<string, unknown> | null
 }
 
 export interface RemoveUnavailableNodeApplyResponse {
@@ -94,15 +108,18 @@ export interface RemoveUnavailableNodeApplyResponse {
   plan_hash: string
   applied_artifacts: string[]
   document: PipelineEditorDocument
+  field_changes: PipelineRepairFieldChange[]
+  completeness: PipelineNodeCompleteness[]
+  previous_config: Record<string, unknown> | null
 }
 
 export interface RecoverUnavailableNodeDryRunResponse extends Omit<RemoveUnavailableNodeDryRunResponse, "repair_kind" | "delete_config"> {
-  repair_kind: "update_node" | "reset_node"
+  repair_kind: "update_node" | "reset_node" | "recover_node"
   delete_config: false
 }
 
 export interface RecoverUnavailableNodeApplyResponse extends Omit<RemoveUnavailableNodeApplyResponse, "repair_kind"> {
-  repair_kind: "update_node" | "reset_node"
+  repair_kind: "update_node" | "reset_node" | "recover_node"
 }
 
 type RepairKind = RemoveUnavailableNodeDryRunResponse["repair_kind"] | RecoverUnavailableNodeDryRunResponse["repair_kind"]
@@ -145,35 +162,68 @@ function parseChange(value: unknown, field: string): PipelineRepairChange {
   }
 }
 
+const FIELD_OUTCOMES = ["retained", "defaulted", "needs_input", "needs_review", "removed", "blocked"] as const
+
+function parseFieldChange(value: unknown, field: string): PipelineRepairFieldChange {
+  const object = expectPlainObject(PARSER, value, field)
+  expectExactKeys(PARSER, object, field, ["path", "outcome", "reason"])
+  return {
+    path: expectString(PARSER, object.path, `${field}.path`),
+    outcome: expectStringLiteral(PARSER, object.outcome, `${field}.outcome`, FIELD_OUTCOMES),
+    reason: expectNonBlankString(PARSER, object.reason, `${field}.reason`),
+  }
+}
+
+function parseRepairExtras(object: Record<string, unknown>): {
+  field_changes: PipelineRepairFieldChange[]
+  completeness: PipelineNodeCompleteness[]
+  previous_config: Record<string, unknown> | null
+} {
+  return {
+    field_changes: expectArray(PARSER, object.field_changes, "response.field_changes").map(
+      (item, index) => parseFieldChange(item, `response.field_changes[${index}]`),
+    ),
+    completeness: expectArray(PARSER, object.completeness, "response.completeness").map(
+      (item, index) => parseNodeCompleteness(item, `response.completeness[${index}]`),
+    ),
+    previous_config:
+      object.previous_config === null
+        ? null
+        : { ...expectPlainObject(PARSER, object.previous_config, "response.previous_config") },
+  }
+}
+
 export function parseRemoveUnavailableNodeDryRunResponse(value: unknown): RemoveUnavailableNodeDryRunResponse {
   return parseRepairDryRun(value, ["remove_unavailable_node"])
 }
 
 export function parseRemoveUnavailableNodeApplyResponse(value: unknown): RemoveUnavailableNodeApplyResponse {
   const object = expectPlainObject(PARSER, value, "response")
-  expectExactKeys(PARSER, object, "response", ["repair_kind", "plan_hash", "applied_artifacts", "document"])
+  expectExactKeys(PARSER, object, "response", ["repair_kind", "plan_hash", "applied_artifacts", "document", "field_changes", "completeness", "previous_config"])
   return {
     repair_kind: expectStringLiteral(PARSER, object.repair_kind, "response.repair_kind", ["remove_unavailable_node"]),
     plan_hash: planHash(object.plan_hash, "response.plan_hash"),
     applied_artifacts: uniqueStrings(object.applied_artifacts, "response.applied_artifacts", true),
     document: parsePipelineEditorDocument(object.document),
+    ...parseRepairExtras(object),
   }
 }
 
 export function parseRecoverUnavailableNodeDryRunResponse(value: unknown): RecoverUnavailableNodeDryRunResponse {
-  const response = parseRepairDryRun(value, ["update_node", "reset_node"])
+  const response = parseRepairDryRun(value, ["update_node", "reset_node", "recover_node"])
   if (response.delete_config !== false) throw new Error(`${PARSER}: response.delete_config must be false for recovery`)
   return { ...response, delete_config: false }
 }
 
 export function parseRecoverUnavailableNodeApplyResponse(value: unknown): RecoverUnavailableNodeApplyResponse {
   const object = expectPlainObject(PARSER, value, "response")
-  expectExactKeys(PARSER, object, "response", ["repair_kind", "plan_hash", "applied_artifacts", "document"])
+  expectExactKeys(PARSER, object, "response", ["repair_kind", "plan_hash", "applied_artifacts", "document", "field_changes", "completeness", "previous_config"])
   return {
-    repair_kind: expectStringLiteral(PARSER, object.repair_kind, "response.repair_kind", ["update_node", "reset_node"]),
+    repair_kind: expectStringLiteral(PARSER, object.repair_kind, "response.repair_kind", ["update_node", "reset_node", "recover_node"]),
     plan_hash: planHash(object.plan_hash, "response.plan_hash"),
     applied_artifacts: uniqueStrings(object.applied_artifacts, "response.applied_artifacts", true),
     document: parsePipelineEditorDocument(object.document),
+    ...parseRepairExtras(object),
   }
 }
 
@@ -182,7 +232,7 @@ function parseRepairDryRun<const K extends readonly RepairKind[]>(value: unknown
   expectExactKeys(PARSER, object, "response", [
     "repair_kind", "source_file", "source_revision", "target_source_file", "target_recovery_id",
     "target_authored_id", "delete_config", "plan_hash", "changes", "retained_artifacts", "warnings",
-    "predicted_load_status",
+    "predicted_load_status", "field_changes", "completeness", "previous_config",
   ])
   const changes = expectArray(PARSER, object.changes, "response.changes").map((item, index) => parseChange(item, `response.changes[${index}]`))
   if (changes.length === 0) throw new Error(`${PARSER}: response.changes must not be empty`)
@@ -199,5 +249,6 @@ function parseRepairDryRun<const K extends readonly RepairKind[]>(value: unknown
     retained_artifacts: uniqueStrings(object.retained_artifacts, "response.retained_artifacts", true),
     warnings: uniqueStrings(object.warnings, "response.warnings", false),
     predicted_load_status: expectStringLiteral(PARSER, object.predicted_load_status, "response.predicted_load_status", ["ready", "degraded"]),
+    ...parseRepairExtras(object),
   }
 }

@@ -204,4 +204,51 @@ describe("PipelineRepairDialog", () => {
         document: makePipelineEditorDocument(),
     }))
   })
+
+  it("recovers with a collapsed diff and records the session summary on apply", async () => {
+    const { recoverySummaryKey, useRecoverySummaryStore } = await import("../../stores/useRecoverySummaryStore")
+    useRecoverySummaryStore.getState().reset()
+    dryRunRecoverUnavailableNode.mockResolvedValueOnce(plan({
+      repair_kind: "recover_node",
+      target_recovery_id: "target@1",
+      changes: [{ path: "server-main.py", operation: "update" as const, description: "Regenerate 'broken' from its recovered settings.", diff: "-old / +new", diff_truncated: false }],
+      field_changes: [
+        { path: "/path", outcome: "retained", reason: "Valid under the current configuration contract." },
+        { path: "/cacheMode", outcome: "removed", reason: "Unknown or retired configuration field." },
+      ],
+      completeness: [{ element_id: "target@1", path: "path", code: "required", message: "Format 'parquet' requires a non-empty 'path'." }],
+      previous_config: { cacheMode: "snapshot" },
+    }))
+    applyRecoverUnavailableNode.mockResolvedValueOnce({
+      repair_kind: "recover_node",
+      plan_hash: hash("a"),
+      applied_artifacts: ["server-main.py"],
+      document: makePipelineEditorDocument(),
+      field_changes: [
+        { path: "/path", outcome: "retained", reason: "Valid under the current configuration contract." },
+        { path: "/cacheMode", outcome: "removed", reason: "Unknown or retired configuration field." },
+      ],
+      completeness: [{ element_id: "target@1", path: "path", code: "required", message: "Format 'parquet' requires a non-empty 'path'." }],
+      previous_config: { cacheMode: "snapshot" },
+    })
+    const onApplied = vi.fn()
+    render(<PipelineRepairDialog target={{ sourceFile: "target.py", recoveryId: "target@1", action: "recover" }} sourceFile="root.py" sourceRevision="root-rev" onClose={vi.fn()} onApplied={onApplied} />)
+
+    await screen.findByText("Regenerate 'broken' from its recovered settings.")
+    expect(dryRunRecoverUnavailableNode).toHaveBeenCalledWith(
+      { sourceFile: "root.py", sourceRevision: "root-rev", targetSourceFile: "target.py", targetRecoveryId: "target@1", action: "recover" },
+      expect.anything(),
+    )
+    const summaryToggle = screen.getByText("Show source diff")
+    expect(summaryToggle.closest("details")?.open).toBeFalsy()
+
+    fireEvent.click(screen.getByRole("button", { name: "Recover settings" }))
+    await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1))
+    const recorded = useRecoverySummaryStore.getState().summaries[recoverySummaryKey("server-main.py", "target@1")]
+    expect(recorded).toBeDefined()
+    expect(recorded.fieldChanges).toHaveLength(2)
+    expect(recorded.completeness[0].path).toBe("path")
+    expect(recorded.previousConfig).toEqual({ cacheMode: "snapshot" })
+    expect(recorded.changes[0].diff).toBe("-old / +new")
+  })
 })

@@ -184,6 +184,10 @@ import {
   type RemoveUnavailableNodeApplyResponse,
   type RemoveUnavailableNodeRequest,
 } from "../types/pipelineRepair"
+import {
+  parsePipelineEditorDocument,
+  type PipelineEditorDocument,
+} from "../types/pipelineDocument"
 
 import { validateApiResponse } from "./responseValidation"
 
@@ -744,6 +748,28 @@ export function applyRecoverUnavailableNode(
     action: args.action,
     plan_hash: args.planHash,
   }, options).then(parseRecoverUnavailableNodeApplyResponse)
+}
+
+export interface ScopedNodeSaveRequest {
+  sourceFile: string
+  sourceRevision: string
+  targetSourceFile: string
+  targetRecoveryId: string
+  config: Record<string, unknown>
+}
+
+/** Save one `scoped_editable` node in isolation while the document stays fenced. */
+export function saveNodeScoped(
+  args: ScopedNodeSaveRequest,
+  options?: MutationOptions,
+): Promise<PipelineEditorDocument> {
+  return post<unknown>("/api/pipeline/node/save", {
+    source_file: args.sourceFile,
+    source_revision: args.sourceRevision,
+    target_source_file: args.targetSourceFile,
+    target_recovery_id: args.targetRecoveryId,
+    config: args.config,
+  }, options).then(parsePipelineEditorDocument)
 }
 
 export interface PreviewNodeArgs {

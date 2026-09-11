@@ -623,62 +623,10 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/PreviewNodeResponse"},
         },
     },
-    "/api/pipeline/repair/contracts": {
-        "GET": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/RecoveryConfigContracts"},
-        },
-    },
-    "/api/pipeline/repair/drafts": {
-        "GET": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/RecoveryDraftList"},
-        },
+    "/api/pipeline/node/save": {
         "POST": {
-            "request_ref": "#/components/schemas/RecoveryDraftCreate",
-            "success_schema": {"$ref": "#/components/schemas/RecoveryDraft"},
-        },
-    },
-    "/api/pipeline/repair/drafts/{draft_id}": {
-        "GET": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/RecoveryDraft"},
-        },
-    },
-    "/api/pipeline/repair/drafts/{draft_id}/apply": {
-        "POST": {
-            "request_ref": "#/components/schemas/RecoveryDraftApply",
-            "success_schema": {"$ref": "#/components/schemas/RecoveryDraftApplyResponse"},
-        },
-    },
-    "/api/pipeline/repair/drafts/{draft_id}/discard": {
-        "POST": {
-            "request_ref": "#/components/schemas/RecoveryDraftRevision",
-            "success_schema": {"$ref": "#/components/schemas/RecoveryDraft"},
-        },
-    },
-    "/api/pipeline/repair/drafts/{draft_id}/edit": {
-        "POST": {
-            "request_ref": "#/components/schemas/RecoveryDraftPatch",
-            "success_schema": {"$ref": "#/components/schemas/RecoveryDraft"},
-        },
-    },
-    "/api/pipeline/repair/drafts/{draft_id}/preview": {
-        "POST": {
-            "request_ref": "#/components/schemas/RecoveryDraftRevision",
-            "success_schema": {"$ref": "#/components/schemas/RecoveryDraftPreview"},
-        },
-    },
-    "/api/pipeline/repair/drafts/{draft_id}/restore": {
-        "POST": {
-            "request_ref": "#/components/schemas/RecoveryDraftApply",
-            "success_schema": {"$ref": "#/components/schemas/RecoveryDraftApplyResponse"},
-        },
-    },
-    "/api/pipeline/repair/drafts/{draft_id}/restore-preview": {
-        "POST": {
-            "request_ref": "#/components/schemas/RecoveryDraftRevision",
-            "success_schema": {"$ref": "#/components/schemas/RecoveryDraftPreview"},
+            "request_ref": "#/components/schemas/PipelineNodeSaveRequest",
+            "success_schema": {"$ref": "#/components/schemas/PipelineEditorDocument"},
         },
     },
     "/api/pipeline/repair/recover/apply": {

@@ -821,7 +821,9 @@ class SavePipelineService:
                 if node.data.nodeType not in strict_types:
                     continue
                 try:
-                    validate_node_config(node.data.nodeType, node.data.config)
+                    validate_node_config(
+                        node.data.nodeType, node.data.config, require_complete=False
+                    )
                 except ValueError as exc:
                     raise HTTPException(
                         status_code=400,

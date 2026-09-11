@@ -1663,6 +1663,27 @@ describe("streaming_chunk_size in request bodies", () => {
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
 
+  it("sends the exact scoped node-save body and parses the authoritative document", async () => {
+    const { saveNodeScoped } = await import("../client")
+    mockFetch.mockReturnValueOnce(jsonResponse(makePipelineEditorDocument()))
+    const document = await saveNodeScoped({
+      sourceFile: "main.py",
+      sourceRevision: "rev-1",
+      targetSourceFile: "main.py",
+      targetRecoveryId: "node@10",
+      config: { path: "data/quotes.parquet" },
+    })
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/api/pipeline/node/save")
+    expect(JSON.parse(mockFetch.mock.calls.at(-1)?.[1].body)).toEqual({
+      source_file: "main.py",
+      source_revision: "rev-1",
+      target_source_file: "main.py",
+      target_recovery_id: "node@10",
+      config: { path: "data/quotes.parquet" },
+    })
+    expect(document.document_kind).toBe("haute.pipeline_editor_document")
+  })
+
   it("sends exact remove-repair request bodies and parses authoritative responses", async () => {
     const planHash = "a".repeat(64)
     const request = { sourceFile: "main.py", sourceRevision: "rev-1", targetSourceFile: "main.py", targetRecoveryId: "broken@10", deleteConfig: false }
@@ -1672,13 +1693,14 @@ describe("streaming_chunk_size in request bodies", () => {
       delete_config: false, plan_hash: planHash,
       changes: [{ path: "main.py", operation: "update", description: "Remove broken.", diff: "-broken", diff_truncated: false }],
       retained_artifacts: [], warnings: [], predicted_load_status: "ready",
+      field_changes: [], completeness: [], previous_config: null,
     }))
     await dryRunRemoveUnavailableNode(request)
     expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/api/pipeline/repair/remove/dry-run")
     expect(JSON.parse(mockFetch.mock.calls.at(-1)?.[1].body)).toEqual({
       source_file: "main.py", source_revision: "rev-1", target_source_file: "main.py", target_recovery_id: "broken@10", delete_config: false,
     })
-    mockFetch.mockReturnValueOnce(jsonResponse({ repair_kind: "remove_unavailable_node", plan_hash: planHash, applied_artifacts: ["main.py"], document: makePipelineEditorDocument() }))
+    mockFetch.mockReturnValueOnce(jsonResponse({ repair_kind: "remove_unavailable_node", plan_hash: planHash, applied_artifacts: ["main.py"], document: makePipelineEditorDocument(), field_changes: [], completeness: [], previous_config: null }))
     await applyRemoveUnavailableNode({ ...request, planHash })
     expect(JSON.parse(mockFetch.mock.calls.at(-1)?.[1].body)).toEqual({
       source_file: "main.py", source_revision: "rev-1", target_source_file: "main.py", target_recovery_id: "broken@10", delete_config: false, plan_hash: planHash,

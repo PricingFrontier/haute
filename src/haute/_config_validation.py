@@ -320,23 +320,28 @@ def warn_unrecognized_config_keys(
     return bad
 
 
-def validate_node_config(node_type: NodeType | str, config: dict[str, Any]) -> dict[str, Any]:
+def validate_node_config(
+    node_type: NodeType | str, config: dict[str, Any], *, require_complete: bool = True
+) -> dict[str, Any]:
     """Strictly validate configs whose runtime contract is discriminated.
 
     Data Input/Output provider branches control which keys and capabilities
     are legal. Banding's discriminant controls its rule schema. Invalid
     configured branches must not be silently persisted and ignored.
+    ``require_complete=False`` tolerates absent/empty required Data
+    Input/Output locators (declared-incomplete forms); structural rules and
+    every other node type stay strict.
     """
     nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
     reject_removed_config_keys(nt, config)
     if nt == NodeType.DATA_INPUT:
         from haute._polars_io_registry import validate_data_input_config
 
-        return validate_data_input_config(config)
+        return validate_data_input_config(config, require_complete=require_complete)
     if nt == NodeType.DATA_OUTPUT:
         from haute._polars_io_registry import validate_data_output_config
 
-        return validate_data_output_config(config)
+        return validate_data_output_config(config, require_complete=require_complete)
     if nt == NodeType.BANDING:
         from haute._rating import validate_banding_config
 

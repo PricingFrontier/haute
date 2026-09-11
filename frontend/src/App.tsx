@@ -79,6 +79,8 @@ import { validatePipelineConnection, type ConnectionValidationResult } from "./u
 import { shouldUseLiteGraphEffects } from "./utils/graphPerformance"
 import type { DrilledOccurrenceIdentity } from "./utils/submodelRuntimeTarget"
 import { isSubmodelInstanceConfig, nodeData } from "./types/node"
+import type { HauteNodeData } from "./types/node"
+import { useScopedNodeSave } from "./hooks/useScopedNodeSave"
 import { withNativeDeletePolicy } from "./utils/submodelDeletionPolicy"
 import { requestSubmodelCreation } from "./utils/submodelCreation"
 import { resolveEditorGraphIdentities } from "./utils/editorIdentities"
@@ -429,6 +431,8 @@ type NodePropertiesPanelProps = {
   onDeleteSubmodelInputPort?: ComponentProps<typeof NodePanel>["onDeleteSubmodelInputPort"]
   onSwapEdgeJoinInputs?: ComponentProps<typeof NodePanel>["onSwapEdgeJoinInputs"]
   editingReadOnly: boolean
+  documentEditingReadOnly: boolean
+  scopedSave?: ComponentProps<typeof NodePanel>["scopedSave"]
   onRefreshPreview: () => void
   selectedNode: Node | null
   activePanelNodeId: string | null
@@ -467,6 +471,8 @@ function NodePropertiesPanel({
   onDeleteSubmodelInputPort,
   onSwapEdgeJoinInputs,
   editingReadOnly,
+  documentEditingReadOnly,
+  scopedSave,
   onRefreshPreview,
   selectedNode,
   activePanelNodeId,
@@ -540,7 +546,8 @@ function NodePropertiesPanel({
           onDeleteSubmodelInputPort={onDeleteSubmodelInputPort}
           onSwapEdgeJoinInputs={onSwapEdgeJoinInputs}
           readOnly={editingReadOnly}
-          documentReadOnly={documentReadOnly}
+          documentReadOnly={documentEditingReadOnly}
+          scopedSave={scopedSave}
           onRefreshPreview={onRefreshPreview}
           dimmed={!selectedNode && !!activePanelNodeId}
           errorLine={
@@ -883,14 +890,24 @@ function FlowEditor() {
   const handleRepairApplied = useCallback((
     document: import("./types/pipelineDocument").PipelineEditorDocument,
   ) => {
+    const recoverTargetId =
+      pipelineRepairTarget?.action === "recover" ? pipelineRepairTarget.recoveryId : null
     adoptPipelineDocument(document)
     resetToAuthoritativeRoot(
       document.source_file,
       document.pipeline_name ?? "main",
     )
-    closePanel()
     setPipelineRepairTarget(null)
-  }, [adoptPipelineDocument, closePanel, resetToAuthoritativeRoot])
+    if (recoverTargetId) {
+      const restored = graphRef.current.nodes.find((item) => item.id === recoverTargetId)
+      if (restored) {
+        setSelectedNode(restored)
+        setLastSelectedId(recoverTargetId)
+        return
+      }
+    }
+    closePanel()
+  }, [adoptPipelineDocument, closePanel, pipelineRepairTarget, resetToAuthoritativeRoot])
 
   const activeView = viewStack[viewStack.length - 1]
   const activeSubmodelName = activeView?.type === "submodel" ? activeView.name : null
@@ -900,6 +917,38 @@ function FlowEditor() {
   const documentReadOnly = documentCapabilities?.can_mutate !== true || !documentGraphSynchronized
   const documentCanExecute = documentCapabilities?.can_execute === true && documentGraphSynchronized
   const editingReadOnly = documentReadOnly || Boolean(activeSubmodelReadOnly)
+  // One loadable node stays editable through the node-scoped save while the
+  // document-wide fences hold; the server's scoped_editable flag is the gate.
+  const selectedNodeData = selectedNode?.data as HauteNodeData | undefined
+  const scopedEditingActive =
+    documentCapabilities?.can_mutate !== true &&
+    documentGraphSynchronized &&
+    !activeSubmodelReadOnly &&
+    selectedNodeData?._scopedEditable === true &&
+    typeof selectedNodeData?._sourceFile === "string" &&
+    typeof selectedNodeData?._recoveryId === "string"
+
+  const selectedNodeRef = useRef<Node | null>(null)
+  useEffect(() => {
+    selectedNodeRef.current = selectedNode ?? null
+  }, [selectedNode])
+  const applyScopedSaveDocument = useCallback(
+    (document: import("./types/pipelineDocument").PipelineEditorDocument, savedNodeId: string) => {
+      const selectionUnchanged = selectedNodeRef.current?.id === savedNodeId
+      adoptPipelineDocument(document)
+      resetToAuthoritativeRoot(document.source_file, document.pipeline_name ?? "main")
+      if (selectionUnchanged) {
+        const restored = graphRef.current.nodes.find((item) => item.id === savedNodeId)
+        if (restored) {
+          setSelectedNode(restored)
+          setLastSelectedId(savedNodeId)
+        } else {
+          closePanel()
+        }
+      }
+    },
+    [adoptPipelineDocument, closePanel, resetToAuthoritativeRoot],
+  )
 
   const {
     commitBoundaryConnection,
@@ -964,12 +1013,23 @@ function FlowEditor() {
     graphRef,
     submodelsRef,
     readDocumentIdentity,
-    readOnly: editingReadOnly,
+    readOnly: editingReadOnly && !scopedEditingActive,
     reservedApiInputFrameLabels,
     resolveNodeIdentities,
     commitGraph: setNodesAndEdgesAndSubmodels,
     setSelectedNode,
     addToast,
+  })
+
+  const {
+    handlePanelUpdateNode,
+    handleScopedSave,
+  } = useScopedNodeSave({
+    scopedEditingActive,
+    selectedNodeId: selectedNode?.id ?? null,
+    graphRef,
+    onUpdateNode,
+    applyDocument: applyScopedSaveDocument,
   })
 
   const saveWithPendingCommits = useCallback(async (): Promise<boolean> => {
@@ -1560,12 +1620,14 @@ function FlowEditor() {
           panelGraph={panelGraph}
           submodels={submodelsSnapshot}
           panelNode={panelNode}
-          onUpdateNode={onUpdateNode}
+          onUpdateNode={handlePanelUpdateNode}
           onRenameNode={onRenameNode}
           onDeleteEdge={editingReadOnly ? undefined : handleDeleteEdge}
           onDeleteSubmodelInputPort={editingReadOnly ? undefined : deleteBoundaryInputPort}
           onSwapEdgeJoinInputs={editingReadOnly ? undefined : handleSwapEdgeJoinInputs}
-          editingReadOnly={editingReadOnly}
+          editingReadOnly={editingReadOnly && !scopedEditingActive}
+          documentEditingReadOnly={documentReadOnly && !scopedEditingActive}
+          scopedSave={scopedEditingActive ? handleScopedSave : undefined}
           onRefreshPreview={handlePanelPreviewRefresh}
           selectedNode={selectedNode}
           activePanelNodeId={activePanelNodeId}

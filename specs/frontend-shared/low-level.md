@@ -59,11 +59,9 @@
 | `frontend/src/components/form/ConfigCheckbox.tsx` | Labelled controlled checkbox using a caller id or React `useId`, disabled semantics, and shared accent/text tokens. |
 | `frontend/src/components/form/EditorLabel.tsx` | Consistent micro-label primitive; can be a correctly associated `<label>` or non-form span/div for display-only content. |
 | `frontend/src/components/form/index.ts` | Public barrel for the committed text field/area, checkbox, and editor-label primitives; editor callers import the shared contract rather than deep paths. |
-| `frontend/src/api/recoveryDrafts.ts` | Transport. |
-| `frontend/src/components/RecoveryDraftDialog.tsx` | Local draft editing/review/apply/history/restore. |
-| `frontend/src/generated/api-contracts.recovery.generated.ts` | Generated DTOs. |
-| `frontend/src/panels/DraftEditingContext.tsx` | Draft side-effect guard. |
-| `frontend/src/types/recoveryDraft.ts` | Strict runtime response parsing. |
+| `frontend/src/utils/scopedSaveGuards.ts` | Pure node-scoped-save guards: one-node-at-a-time edit fencing and the stale-response document-identity fence. |
+| `frontend/src/hooks/useScopedNodeSave.ts` | App-lifetime scoped-save coordination: per-document edited-node tracking, edit refusal while a save is in flight or another node is dirty, the response fence, and adoption hand-off. |
+| `frontend/src/stores/useRecoverySummaryStore.ts` | Transient per-session recovery summary (field outcomes, completeness, previous config, diffs) keyed by recovery id. |
 
 ## Key types and data structures
 
@@ -695,45 +693,57 @@ The public dry-run plan contains bounded display diffs and artifact metadata,
 not the bytes that apply will write. The server recomputes those bytes. A
 config-retention toggle creates a new request and invalidates the previous plan
 hash. API errors preserve structured repair detail for the confirmation UI.
-Separate recovery calls send `action: update | reset` and no deletion option to
-`/api/pipeline/repair/recover/dry-run` and `/apply`. The shared generic plan parser
-validates exact fields and action-specific discriminators; recovery plans require
-`delete_config: false`. Requests never carry client-authored replacement source/config.
+Separate recovery calls send `action: update | reset | recover` and no deletion
+option to `/api/pipeline/repair/recover/dry-run` and `/apply`. The shared generic
+plan parser validates exact fields and action-specific discriminators; recovery
+plans require `delete_config: false`. Recover responses additionally parse the
+field-outcome report, completeness entries and previous configuration. Requests
+never carry client-authored replacement source/config. `saveNodeScoped` posts one
+node's proposed configuration to `/api/pipeline/node/save` and parses the
+authoritative document.
 
-## Recovery draft transport and editing
+## Recovery surfaces
 
-`api/recoveryDrafts.ts` uses the separate recovery routes and strict generated
-runtime validators. `RecoveryDraftDialog` resumes durable proposals, supports
-explicit source-qualified groups, edits settings through `NodeConfigEditor`, and
-shows provenance, affected owners and a reviewed source diff before Apply.
-Submodels have structural controls for relinking a definition and routing ports;
-existing names are read-only. Advanced JSON is a settings-map editor, never a
-client-authored source patch. Draft edits invalidate the preview and acknowledgement.
+Recovery has no draft dialog, draft transport, draft validators, or persistent
+client recovery state. The single `PipelineRepairDialog` confirms all four
+actions (remove, update, reset, recover) with one Apply click over the strict
+dry-run plan; for recover the per-artifact source diffs are collapsed by
+default behind an expander. Applying a recover stores the response's field
+outcomes, completeness entries, previous configuration and bounded diffs in
+`useRecoverySummaryStore`, keyed by the owning source file plus the target's
+recovery id (ids repeat across documents) — transient session state, never
+persisted. The node panel shows a dismissible summary for
+the selected recovered node with retained/defaulted/needs-input/removed counts
+and on-demand expanders for the field details, the previous configuration and
+the source diff.
 
-`DraftEditingContext` prevents schema/data probing, input snapshot builds, output
-writes/previews, training and solving while normal editors are used for drafts.
-The editor receives an isolated `GraphProvider` containing the selected draft node
-and read-only input-frame placeholders from its recorded input names. These names
-and Edge Join base/join ordering remain available to ordinary editor controls;
-live canvas nodes, edges and settings are not admitted to this context. Training
-RAM/dispersion estimates and other data-dependent probes also remain disabled.
-Draft state is local to the dialog and its dedicated API; graph save and undo
-history are not used. Stale and terminal records are read-only. Applied records
-offer a separate exact-byte restore preview. Unsaved changes must be saved before
-switching history, replacing targets or creating a reset proposal.
-The document adapter retains server-provided source/recovery identities even for
-ready nodes, so runtime failures can open a draft. These remain transient metadata
+In a degraded document, a node whose server-derived `scoped_editable` flag is
+true mounts its normal editor: ready nodes instead of the static JSON
+inspector, and upstream-blocked nodes instead of the recovery inspector, with
+their execution blockers reported alongside the editor rather than replacing
+it. The panel offers a node-scoped save that posts the node's current
+configuration through `saveNodeScoped`, adopts the returned authoritative
+document, retains the target selection, and surfaces the document's remaining
+completeness entries for that node. Scoped edits save one node at a time, coordinated for the App's lifetime by
+`hooks/useScopedNodeSave.ts` so no guarantee dies with a panel unmount:
+starting to edit a second node is refused while the first holds unsaved
+scoped edits (the deadlocked two-dirty-node state is unreachable), every
+scoped edit on any node is refused while a save is in flight, the saving
+panel's editor freezes for the flight, and a late response is discarded
+whenever the on-screen document identity (source file and revision) moved
+after submission (`utils/scopedSaveGuards.ts`). Reloading the pipeline clears
+the edited-node tracking.
+Whole-graph mutation, save and undo fences
+stay exactly as the capability model dictates; the scoped save never widens
+them. Ready nodes that are not `scoped_editable` keep the static JSON
+inspector in read-only documents.
+
+The document adapter retains server-provided source/recovery identities and the
+`scoped_editable` flag even for ready nodes. These remain transient metadata
 and are stripped from normal graph saves.
-Apply and Restore reject a dirty canvas before requesting any source mutation,
-so adopting the resulting document cannot erase unrelated unsaved pipeline edits.
 Live undo/redo snapshots retain `_recoveryId` and `_sourceFile` for root and child
 nodes, so reverting an edit preserves recovery targeting. Canonical save payloads
 and dirty fingerprints continue to strip these server-owned identities.
-The repair/recovery dialog and its draft validators load only when a recovery
-action is opened. Its local Suspense boundary leaves the mounted canvas intact;
-recovery does not increase the initial JavaScript budget.
-The complete production bundle with recovery measures 1,341.4 KiB gzip. Its
-aggregate allowance is 1,352 KiB, retaining the existing policy of roughly
-10 KiB headroom for all features together. The 283 KiB startup allowance and
-independent vendor limits remain unchanged; recovery dialogs are also prohibited
-from appearing in startup modulepreloads.
+The repair dialog loads only when a recovery action is opened. Its local
+Suspense boundary leaves the mounted canvas intact; recovery does not increase
+the initial JavaScript budget.

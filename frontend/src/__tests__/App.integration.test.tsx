@@ -637,6 +637,9 @@ describe("App integration — degraded execution fence", () => {
       retained_artifacts: [],
       warnings: [],
       predicted_load_status: "ready",
+      field_changes: [],
+      completeness: [],
+      previous_config: null,
     })
     const repaired = makePipelineEditorDocument({
       source_file: "rating/main.py",
@@ -648,6 +651,9 @@ describe("App integration — degraded execution fence", () => {
       plan_hash: planHash,
       applied_artifacts: ["rating/main.py"],
       document: repaired,
+      field_changes: [],
+      completeness: [],
+      previous_config: null,
     })
 
     render(<App />)

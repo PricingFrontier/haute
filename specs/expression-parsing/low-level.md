@@ -232,7 +232,10 @@ no alias or migration shim; direct test callers use the same current contract.
 
 - **`ConfigError`** propagates from `src/haute/_config_builder.py` when a healthy parse cannot
   load/validate a referenced sidecar or a folder-backed node omits `config=`. These failures are
-  not converted to `_load_error` nodes or graph warnings.
+  not converted to `_load_error` nodes or graph warnings. Missing required Data Input/Output
+  locator values are a completeness concern, not a `ConfigError`: the builder validates those
+  configs with `require_complete=False`, so an empty or absent path/locator parses cleanly and
+  is reported as field-level completeness by the editor document loader instead.
 - **`ParseError`** (raised, not caught, by this component) for: an unclosed
   `pipeline.connect()`/`pipeline.submodel()`/`Pipeline(...)`/decorator-argument-list scan
   (`_scan_call_end` exhausts the source without balancing); a decorator/submodel/metadata call

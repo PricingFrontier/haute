@@ -25,7 +25,6 @@ documents = [
   "specs/pipeline-config/low-level.md",
   "specs/server-api/high-level.md",
   "specs/server-api/low-level.md",
-  "specs/server-api/generalised-node-recovery-plan.md",
   "specs/server-api/node-recovery-actions.md",
   "specs/frontend-shared/high-level.md",
   "specs/frontend-shared/low-level.md",

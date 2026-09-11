@@ -84,7 +84,6 @@ from haute.routes.modelling import router as modelling_router
 from haute.routes.optimiser import router as optimiser_router
 from haute.routes.output_assemble import router as output_assemble_router
 from haute.routes.pipeline import router as pipeline_router
-from haute.routes.recovery import router as recovery_router
 from haute.routes.submodel import router as submodel_router
 from haute.routes.utility import router as utility_router
 from haute.schemas import SessionStatusResponse
@@ -417,14 +416,6 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     _load_env(Path.cwd())
     configure_execution_telemetry()
     recover_json_runtime_storage()
-    from haute._pipeline_recovery_drafts import recover_pending_drafts
-    from haute.routes._helpers import save_lock
-
-    async with save_lock:
-        try:
-            await run_in_threadpool(recover_pending_drafts, Path.cwd().resolve())
-        except Exception as exc:  # evidence remains durable; startup must stay available.
-            logger.warning("recovery_journal_reconcile_failed", code=type(exc).__name__)
     stale_after_seconds = _artifact_stale_seconds()
 
     # Prime the pipeline-name → path index so the first HTTP request doesn't
@@ -578,7 +569,6 @@ async def bootstrap_session(response: Response) -> SessionStatusResponse:
 
 
 app.include_router(pipeline_router)
-app.include_router(recovery_router)
 app.include_router(assistant_router)
 app.include_router(output_assemble_router)
 app.include_router(databricks_router)

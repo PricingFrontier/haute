@@ -18,12 +18,13 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // contract validators, server-owned editor identities, and extracted graph/job
 // controllers. The merged bundle is 1,322.8 KiB; 1,333 KiB preserves the same
 // ~10 KiB aggregate headroom without weakening the separate vendor caps.
-// Generalised node recovery adds durable draft editing, source review, history,
-// restore, and strict response validation. Its dialog/validators are lazy; the
-// complete production bundle is 1,341.4 KiB. 1,352 KiB retains the same ~10 KiB
-// aggregate headroom. Startup and vendor caps stay unchanged, and the recovery
-// dialogs are explicitly prohibited from startup modulepreloads below.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1352
+// Direct node recovery replaced the draft apparatus: the recover action rides
+// the existing repair dialog, the transient summary/scoped-save panel is small,
+// and the draft dialog with its generated validators is deleted. The complete
+// production bundle is 1,338.4 KiB; 1,349 KiB retains the same ~10 KiB
+// aggregate headroom. Startup and vendor caps stay unchanged, and the repair
+// dialog is explicitly prohibited from startup modulepreloads below.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1349
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
@@ -102,7 +103,6 @@ export const LAZY_ONLY_MODULEPRELOAD_CHUNK_PREFIXES = [
   "ensureInputSnapshots",
   "ModellingPreview",
   "PipelineRepairDialog",
-  "RecoveryDraftDialog",
   "CodeMirrorEditor",
   "UtilityPanel",
   "vendor-codemirror",

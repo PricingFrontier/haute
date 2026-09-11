@@ -442,7 +442,9 @@ def _resolve_node_config(
 
     if node_type in {NodeType.DATA_INPUT, NodeType.DATA_OUTPUT}:
         try:
-            config = validate_node_config(node_type, config)
+            # Presence of required locators is completeness, reported by the
+            # editor document loader; structural violations still fail here.
+            config = validate_node_config(node_type, config, require_complete=False)
         except ValueError as exc:
             raise ConfigError(
                 str(exc),

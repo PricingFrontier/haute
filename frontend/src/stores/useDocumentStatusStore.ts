@@ -5,6 +5,7 @@ import type {
   PipelineDocumentCapabilities,
   PipelineEditorDocument,
   PipelineLoadStatus,
+  PipelineNodeCompleteness,
 } from "../types/pipelineDocument"
 
 interface DocumentStatusState {
@@ -12,6 +13,8 @@ interface DocumentStatusState {
   capabilities: PipelineDocumentCapabilities | null
   diagnostics: PipelineDiagnostic[]
   diagnosticsOmitted: number
+  completeness: PipelineNodeCompleteness[]
+  completenessOmitted: number
   sourceRevision: string | null
   executionGeneration: number
   sourceText: string
@@ -65,6 +68,8 @@ function initialState(): DocumentStatusState {
     capabilities: null,
     diagnostics: [],
     diagnosticsOmitted: 0,
+    completeness: [],
+    completenessOmitted: 0,
     sourceRevision: null,
     executionGeneration: 0,
     sourceText: "",
@@ -93,6 +98,8 @@ function documentState(
       source_span: diagnostic.source_span ? { ...diagnostic.source_span } : null,
     })),
     diagnosticsOmitted: document.diagnostics_omitted,
+    completeness: document.completeness.map((entry) => ({ ...entry })),
+    completenessOmitted: document.completeness_omitted,
     sourceRevision: document.source_revision,
     executionGeneration,
     sourceText: document.source_text,

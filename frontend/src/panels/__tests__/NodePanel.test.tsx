@@ -412,8 +412,39 @@ describe("NodePanel", () => {
     expect(screen.queryByRole("button", { name: "Reset node" })).not.toBeInTheDocument()
   })
 
-  it.each(["ready", "unavailable", "blocked"] as const)(
-    "recovers settings for a %s known polars node carrying sourceFile and recoveryId",
+  it("recovers settings for an unavailable known polars node as the primary action", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+      capabilities: { can_repair: true },
+    }))
+    const onRemoveUnavailableNode = vi.fn()
+    const { props } = renderPanel({
+      onRemoveUnavailableNode,
+      node: makeNode({
+        id: "child_polars_id",
+        data: {
+          label: "Child Polars Label",
+          description: "",
+          nodeType: "polars",
+          _loadAvailability: "unavailable",
+          _sourceFile: "modules/child.py",
+          _recoveryId: "authored@7",
+        },
+      }),
+    })
+
+    fireEvent.click(screen.getByRole("button", { name: "Recover settings" }))
+    expect(onRemoveUnavailableNode).toHaveBeenCalledTimes(1)
+    expect(onRemoveUnavailableNode).toHaveBeenCalledWith({
+      sourceFile: "modules/child.py",
+      recoveryId: "authored@7",
+      action: "recover",
+    })
+    expect(props.onUpdateNode).not.toHaveBeenCalled()
+  })
+
+  it.each(["ready", "blocked"] as const)(
+    "offers no recover action for a %s node",
     (availability) => {
       if (availability !== "ready") {
         useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
@@ -421,9 +452,8 @@ describe("NodePanel", () => {
           capabilities: { can_repair: true },
         }))
       }
-      const onRemoveUnavailableNode = vi.fn()
-      const { props } = renderPanel({
-        onRemoveUnavailableNode,
+      renderPanel({
+        onRemoveUnavailableNode: vi.fn(),
         node: makeNode({
           id: "child_polars_id",
           data: {
@@ -436,15 +466,7 @@ describe("NodePanel", () => {
           },
         }),
       })
-
-      fireEvent.click(screen.getByRole("button", { name: "Recover settings" }))
-      expect(onRemoveUnavailableNode).toHaveBeenCalledTimes(1)
-      expect(onRemoveUnavailableNode).toHaveBeenCalledWith({
-        sourceFile: "modules/child.py",
-        recoveryId: "authored@7",
-        action: "recover",
-      })
-      expect(props.onUpdateNode).not.toHaveBeenCalled()
+      expect(screen.queryByRole("button", { name: "Recover settings" })).not.toBeInTheDocument()
     },
   )
 
@@ -3059,5 +3081,120 @@ describe("NodePanel", () => {
         { name: "fallback_col", dtype: "Utf8" },
       ])
     })
+  })
+})
+
+describe("scoped editing in degraded documents", () => {
+  afterEach(cleanup)
+  beforeEach(() => {
+    useDocumentStatusStore.getState().reset()
+  })
+
+  const scopedNode = () => makeNode({
+    id: "scoped@1",
+    data: {
+      label: "Scoped",
+      description: "",
+      nodeType: "polars",
+      config: { code: "df = source" },
+      _loadAvailability: "blocked",
+      _loadBlockingPath: ["source_a", "Scoped"],
+      _scopedEditable: true,
+      _sourceFile: "main.py",
+      _recoveryId: "scoped@1",
+    },
+  })
+
+  it("mounts the normal editor with a scoped save for a blocked scoped_editable node", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+    }))
+    renderPanel({ scopedSave: vi.fn(async () => ({ ok: true as const })), node: scopedNode() })
+    expect(screen.queryByTestId("node-recovery-diagnostics")).not.toBeInTheDocument()
+    expect(screen.getByTestId("node-panel-editor")).toBeInTheDocument()
+    expect(screen.getByTestId("node-recovery-status")).toHaveTextContent(
+      "Blocked by an unavailable upstream node",
+    )
+    expect(screen.getByTestId("node-scoped-save")).toBeEnabled()
+  })
+
+  it("keeps the recovery inspector for a blocked node without scoped editing", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+    }))
+    const node = scopedNode()
+    ;(node.data as Record<string, unknown>)._scopedEditable = false
+    renderPanel({ node })
+    expect(screen.getByTestId("node-recovery-diagnostics")).toBeInTheDocument()
+  })
+
+  it("freezes the editor while a scoped save is in flight", async () => {
+    let release!: (value: { ok: boolean }) => void
+    const scopedSave = vi.fn(
+      () => new Promise<{ ok: boolean }>((resolve) => { release = resolve }),
+    )
+    renderPanel({ scopedSave, node: scopedNode() })
+    const editor = screen.getByTestId("node-panel-editor")
+    expect(editor).toHaveAttribute("aria-readonly", "false")
+    fireEvent.click(screen.getByTestId("node-scoped-save"))
+    expect(screen.getByTestId("node-scoped-save")).toBeDisabled()
+    expect(editor).toHaveAttribute("aria-readonly", "true")
+    await act(async () => {
+      release({ ok: true })
+    })
+    expect(screen.getByTestId("node-scoped-save")).toBeEnabled()
+    expect(editor).toHaveAttribute("aria-readonly", "false")
+  })
+
+  it("runs the scoped save and surfaces a failed save", async () => {
+    const scopedSave = vi.fn(async () => ({ ok: false as const, error: "stale revision" }))
+    renderPanel({ scopedSave, node: scopedNode() })
+    fireEvent.click(screen.getByTestId("node-scoped-save"))
+    expect(scopedSave).toHaveBeenCalledTimes(1)
+    expect(await screen.findByRole("alert")).toHaveTextContent("stale revision")
+  })
+
+  it("lists the document's completeness entries for the selected node", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+      completeness: [
+        { element_id: "scoped@1", path: "path", code: "required", message: "Format 'parquet' requires a non-empty 'path'." },
+        { element_id: "other@2", path: "path", code: "required", message: "Unrelated." },
+      ],
+    }))
+    renderPanel({ scopedSave: vi.fn(async () => ({ ok: true as const })), node: scopedNode() })
+    const status = screen.getByTestId("node-recovery-status")
+    expect(status).toHaveTextContent("Missing required values")
+    expect(status).toHaveTextContent("requires a non-empty 'path'")
+    expect(status).not.toHaveTextContent("Unrelated.")
+  })
+
+  it("shows and dismisses the transient recovery summary", async () => {
+    const { useRecoverySummaryStore } = await import("../../stores/useRecoverySummaryStore")
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument())
+    const documentSourceFile = useDocumentStatusStore.getState().sourceFile
+    useRecoverySummaryStore.getState().reset()
+    useRecoverySummaryStore.getState().recordSummary({
+      sourceFile: documentSourceFile,
+      recoveryId: "scoped@1",
+      fieldChanges: [
+        { path: "/path", outcome: "retained", reason: "Valid under the current contract." },
+        { path: "/cacheMode", outcome: "removed", reason: "Retired field." },
+      ],
+      completeness: [],
+      previousConfig: { cacheMode: "snapshot" },
+      changes: [{ path: "main.py", operation: "update", description: "Regenerate.", diff: "-a / +b", diff_truncated: false }],
+    })
+    const node = scopedNode()
+    ;(node.data as Record<string, unknown>)._loadAvailability = "ready"
+    delete (node.data as Record<string, unknown>)._loadBlockingPath
+    renderPanel({ node })
+    const status = screen.getByTestId("node-recovery-status")
+    expect(status).toHaveTextContent("Recovered: 1 retained, 0 defaulted, 0 need input, 1 removed.")
+    expect(status).toHaveTextContent("Previous configuration")
+    expect(status).toHaveTextContent("Source diff")
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss recovery summary" }))
+    expect(Object.keys(useRecoverySummaryStore.getState().summaries)).toHaveLength(0)
+    expect(screen.queryByText(/Recovered: 1 retained/)).not.toBeInTheDocument()
   })
 })

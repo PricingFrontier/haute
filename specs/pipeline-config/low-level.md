@@ -142,7 +142,13 @@ attaches code parsed from the function body (`_attach_code_from_body`); raises
 dispatches into `_build_node_config`'s per-`NodeType` branch to build the config purely from
 decorator kwargs + body. `_resolve_node_config` also pops a `contract=` kwarg before
 delegating (so per-type builders don't flag it as unrecognised), cross-checks it via
-`_validate_user_contract`, and re-attaches it to the config afterwards. The resulting raw node
+`_validate_user_contract`, and re-attaches it to the config afterwards. For Data Input/Output
+nodes it then validates the resolved config through the io-layer contract in
+completeness-tolerant mode (`require_complete=False`): structural and branch violations still
+raise `ConfigError`, while missing required locator values (the empty string treated as
+absence) no longer fail the parse. Field-level completeness is not a parse artefact; the
+editor document loader recomputes it from the same validators, and execution, preview, and
+deploy still validate strictly before running. The resulting raw node
 dicts feed `_build_edges` (explicit `connect()` tuples in one four-field
 `(source, target, source_port, target_port)` form,
 plus implicit parameter-name-matching edges; edges are never invented, so a file declaring no

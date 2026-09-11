@@ -85,7 +85,14 @@ an in-place or non-atomic fallback.
 ### Canonical Data Input
 
 1. `validate_data_input_config()` rejects inactive fields, invalid modes, unsafe raw URIs,
-   unknown arguments, and missing required provider fields.
+   unknown arguments, and missing required provider fields. Structural, branch, mode, and
+   argument rules are always strict. Presence of required locator values (file/lakehouse
+   `path`, Databricks `http_path`/`table`, database locator and `query`) is a separate
+   completeness concern: with `require_complete=False` the validator returns those gaps as
+   structured completeness entries (field path, code, safe message) instead of raising,
+   treating the empty string exactly like absence. `validate_data_output_config()` mirrors
+   this for destination locators. Execution, preview, deploy, caching, and RAM callers keep
+   the default `require_complete=True` and therefore keep strict presence behaviour.
 2. `source_cache_identity()` canonicalises the logical source. Database named connections
    retain only the environment reference; Databricks retains fixed host/token references and
    excludes `batch_size`; inline records contribute only a canonical content digest and row

@@ -68,6 +68,7 @@ from haute.schemas import (
     PipelineEditorDocument,
     PipelineElementAvailability,
     PipelineLoadStatus,
+    PipelineNodeCompleteness,
     PipelineRecoveryDiagnostic,
     RecoveryGraphSnapshot,
     RecoveryPipelineEdge,
@@ -1842,6 +1843,88 @@ def _capabilities(
     )
 
 
+_SCOPED_EDITABLE_TYPES = {
+    kind.value for kind in NodeType if kind not in {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
+}
+
+
+def _mark_scoped_editable(
+    nodes: list[RecoveryPipelineNode],
+    submodels: dict[str, RecoverySubmodelDefinition] | None,
+) -> None:
+    """Advisory per-node isolation-save eligibility; the endpoint re-derives it.
+
+    Eligible: a known ordinary type that loads (ready or blocked), with a
+    trustworthy source span, not a shared instance, and no config reference
+    shared with another node. Document-wide fences stay separate.
+    """
+    all_nodes: list[RecoveryPipelineNode] = []
+
+    def collect(
+        graph_nodes: list[RecoveryPipelineNode],
+        graph_submodels: dict[str, RecoverySubmodelDefinition] | None,
+    ) -> None:
+        all_nodes.extend(graph_nodes)
+        for definition in (graph_submodels or {}).values():
+            collect(definition.graph.nodes, definition.graph.submodels)
+
+    collect(nodes, submodels)
+    reference_counts = Counter(node.config_reference for node in all_nodes if node.config_reference)
+    for node in all_nodes:
+        node.scoped_editable = (
+            node.node_type in _SCOPED_EDITABLE_TYPES
+            and node.availability != "unavailable"
+            and node.source_file is not None
+            and node.source_span is not None
+            and not (node.config or {}).get("instanceOf")
+            and (node.config_reference is None or reference_counts[node.config_reference] == 1)
+        )
+
+
+def _node_completeness(
+    nodes: list[RecoveryPipelineNode],
+    submodels: dict[str, RecoverySubmodelDefinition] | None,
+) -> list[PipelineNodeCompleteness]:
+    """Field-level required-value gaps for loadable Data Input/Output nodes.
+
+    Completeness is recomputed from the io-layer validators' tolerant mode;
+    unavailable nodes are excluded because their problems belong to
+    ``diagnostics``. A ready node's config already passed the same structural
+    validation at parse, so the reporters cannot raise here.
+    """
+    from haute._polars_io_registry import data_input_completeness, data_output_completeness
+
+    entries: list[PipelineNodeCompleteness] = []
+
+    def visit(
+        graph_nodes: list[RecoveryPipelineNode],
+        graph_submodels: dict[str, RecoverySubmodelDefinition] | None,
+    ) -> None:
+        for node in graph_nodes:
+            if node.availability == "unavailable" or node.config is None:
+                continue
+            if node.node_type == NodeType.DATA_INPUT.value:
+                gaps = data_input_completeness(node.config)
+            elif node.node_type == NodeType.DATA_OUTPUT.value:
+                gaps = data_output_completeness(node.config)
+            else:
+                continue
+            entries.extend(
+                PipelineNodeCompleteness(
+                    element_id=node.recovery_id,
+                    path=gap.path,
+                    code=gap.code,
+                    message=gap.message,
+                )
+                for gap in gaps
+            )
+        for definition in (graph_submodels or {}).values():
+            visit(definition.graph.nodes, definition.graph.submodels)
+
+    visit(nodes, submodels)
+    return entries
+
+
 def empty_pipeline_editor_document() -> PipelineEditorDocument:
     """Return the editable new-project canvas when no authored file exists."""
     return PipelineEditorDocument(
@@ -2139,6 +2222,9 @@ def _load_readable_pipeline_editor_document(
         known_bytes=captures.known_bytes(),
     )
     kept_diagnostics = diagnostics[:_MAX_DIAGNOSTICS]
+    _mark_scoped_editable(nodes, submodels)
+    completeness = _node_completeness(nodes, submodels)
+    kept_completeness = completeness[:_MAX_DIAGNOSTICS]
     return PipelineEditorDocument(
         load_status=load_status,
         pipeline_name=pipeline_name or path.stem,
@@ -2158,6 +2244,8 @@ def _load_readable_pipeline_editor_document(
         submodels=submodels,
         diagnostics=kept_diagnostics,
         diagnostics_omitted=max(0, len(diagnostics) - len(kept_diagnostics)),
+        completeness=kept_completeness,
+        completeness_omitted=max(0, len(completeness) - len(kept_completeness)),
         capabilities=_capabilities(
             load_status,
             source_selection_trusted=source_selection_trusted,

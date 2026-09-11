@@ -289,7 +289,13 @@ chain, shared config, or server verification failure stays visible and leaves
 the recovery inspector open. Success adopts the returned editor document and
 closes the removed node's panel. Blocked and ready nodes never expose this
 action. Known unavailable submodels also offer `Update to current format`; known ordinary
-nodes offer `Reset node`. These actions follow the server-owned preview/apply contract in
+nodes offer `Recover settings` (primary) and `Reset node`. These actions follow the
+server-owned preview/apply contract in
 [node recovery actions](../server-api/node-recovery-actions.md). Blocked nodes expose no
-reset action. Reset confirmation explicitly describes replaced settings/code and required
-reconfiguration; updating a submodel preserves its contents and consumer code.
+reset or recover action. Reset confirmation explicitly describes replaced settings/code and
+required reconfiguration; recover confirmation collapses its source diffs by default and, on
+success, records a dismissible session summary of retained/defaulted/needs-input/removed
+fields with on-demand previous-configuration and diff views; updating a submodel preserves
+its contents and consumer code. In degraded documents, `scoped_editable` nodes keep their
+normal editors and save through the node-scoped save, which adopts the authoritative
+document while whole-graph fences stay in place.

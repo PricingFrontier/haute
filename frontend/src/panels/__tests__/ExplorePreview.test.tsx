@@ -354,7 +354,11 @@ describe("ExplorePreview", () => {
     expect(button).toHaveStyle({ background: "var(--warning-strong)" })
     expect(screen.getByText(/pricing\s*\|\s*cache stale/i)).toBeInTheDocument()
     fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
-    expect(await screen.findByText(/No cards enabled/i)).toBeInTheDocument()
+    // The overview pane is a lazy chunk; under full-suite load its import can
+    // exceed findBy's 1s default, so wait on the content, not the scheduler.
+    expect(
+      await screen.findByText(/No cards enabled/i, undefined, { timeout: 10_000 }),
+    ).toBeInTheDocument()
     fireEvent.click(button)
     await waitFor(() => expect(mockRunExplore).toHaveBeenCalledWith(expect.objectContaining({ refresh: true })))
   })

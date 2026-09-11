@@ -706,6 +706,23 @@ _TESTS_DIR = Path(__file__).resolve().parent
 _WS_REPO_ROOT = _TESTS_DIR.parent
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _project_root_baseline():
+    """Pin the sandbox project root before any test moves the working directory.
+
+    ``_get_project_root()`` lazily captures ``Path.cwd()`` on its first call.
+    Without an eager baseline, that first call happens inside
+    ``_restore_project_root`` — which sets up *after* ``_haute_write_sandbox``
+    has already chdir'd into the first strict test's tmp dir — so every later
+    test in the process inherits that tmp dir as the project root. That stays
+    invisible until the first test on a worker also writes a ``haute.toml``
+    into its tmp dir (e.g. the malformed-toml regression), which then poisons
+    unrelated executor and route tests.
+    """
+    set_project_root(_WS_REPO_ROOT)
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _haute_write_sandbox(
     request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
