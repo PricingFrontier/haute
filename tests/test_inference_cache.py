@@ -61,6 +61,11 @@ def test_stable_hit_single_load_and_defensive_copies(
 
     res1["tables"][0]["columns"][0]["name"] = "mutated"
 
+    # A fresh filesystem observation has equal values, not object identity.
+    original_revision = current_revision[0]
+    assert original_revision is not None
+    current_revision[0] = dataclasses.replace(original_revision)
+    assert current_revision[0] is not original_revision
     res2 = cache.get(path, record_limit=10, loader=loader)
     assert len(calls) == 1
     assert res2["tables"][0]["columns"][0]["name"] == "value"
@@ -414,10 +419,12 @@ def test_oversized_payload_not_cached(
     assert res2 == payload
 
 
+@pytest.mark.parametrize("pid_delta", [-1, 1])
 def test_fork_reset_seam(
     current_revision: list[_StrongFileRevision | None],
     tmp_path: Path,
     payload: dict[str, Any],
+    pid_delta: int,
 ) -> None:
     cache = InferenceCache()
     calls = 0
@@ -437,7 +444,7 @@ def test_fork_reset_seam(
     assert old_lock.acquire(timeout=5), "failed to acquire initial lock"
     executor = ThreadPoolExecutor(max_workers=1)
     try:
-        cache._process_id = -1
+        cache._process_id = module.os.getpid() + pid_delta
         fut = executor.submit(cache.get, path, record_limit=10, loader=loader)
         res2 = fut.result(timeout=5)
 

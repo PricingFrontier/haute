@@ -82,9 +82,10 @@ Every target explicitly declares a positive-integer `max_pending_per_shard` in
 [`targets.json`](targets.json). The planner counts executable (pending) mutants
 only and creates `max(1, ceil(pending / cap))` shards for each target. Current
 caps are 80 for every target except `json-shred`, which is capped at 20. The
-JSON/cache/runtime command currently collects 657 tests, including the complete
+JSON/cache/runtime command currently collects 687 tests, including the complete
 inference cache, strict structural filter, shared-prefix, and byte-range limit
-contracts. Its 90-second
+contracts. Native-filter witnesses check fast-path acceptance as well as schema
+equivalence at integer, array-shape, and nesting boundaries. Its 90-second
 per-mutant ceiling and at most 20 mutants bound the test portion of a worst-case
 shard to 30 minutes. The workflow allows 40 minutes so checkout, environment
 setup, and artifact upload retain explicit headroom. The plan-stage baseline

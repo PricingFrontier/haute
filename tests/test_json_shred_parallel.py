@@ -507,6 +507,14 @@ def test_parallel_inference_walks_the_shared_prefix_once(
     assert top_level_walks == 10_000
 
 
+def test_fused_lines_skip_blanks_without_discarding_later_evidence() -> None:
+    state = _inference._infer_jsonl_lines(
+        [b'{"id":1}\n', b" \t\r\n", b"null\n", b'{"late":"present"}\n']
+    )
+
+    assert _assemble_inference_schema(state) == _full_walk_schema([{"id": 1}, {"late": "present"}])
+
+
 def test_fused_range_skips_orjson_for_shared_prefix_shapes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -558,7 +566,13 @@ def test_non_positive_sample_size_keeps_unbounded_parallel_inference(
     state.walk({"id": 1})
     monkeypatch.setattr(_records, "_should_shred_in_parallel", lambda _path: True)
     monkeypatch.setattr(_records, "_jsonl_byte_ranges", lambda *_args: [(0, 1), (1, 2)])
-    monkeypatch.setattr(_inference, "_infer_jsonl_in_parallel", lambda *_args: state)
+    scans: list[Path] = []
+
+    def scan(path: Path, _ranges: list[tuple[int, int]]) -> _InferenceState:
+        scans.append(path)
+        return state
+
+    monkeypatch.setattr(_inference, "_infer_jsonl_in_parallel", scan)
 
     def reject_serial_dispatch(*_args: object, **_kwargs: object) -> Any:
         raise AssertionError("non-positive sample size unexpectedly bounded inference")
@@ -566,6 +580,11 @@ def test_non_positive_sample_size_keeps_unbounded_parallel_inference(
     monkeypatch.setattr(_records, "_iter_records_for_inference", reject_serial_dispatch)
 
     assert infer_v2_schema_from_data(src, sample_size=sample_size)["tables"]
+    assert infer_v2_schema_from_data(src, sample_size=sample_size)["tables"]
+    assert scans == [src]
+    # The scan entry point independently interprets non-positive bounds.
+    assert _inference._infer_v2_schema_uncached(src, sample_size=sample_size)["tables"]
+    assert scans == [src, src]
 
 
 def test_single_range_inference_stays_serial(
@@ -694,7 +713,8 @@ def test_parallel_inference_rejects_a_source_changed_during_the_scan(
     monkeypatch.setattr(_inference, "_infer_jsonl_in_parallel", mutate_source)
 
     with pytest.raises(ApiInputSchemaError) as excinfo:
-        infer_v2_schema_from_data(src)
+        # Exercise the scan's own identity check independently of cache proof.
+        _inference._infer_v2_schema_uncached(src, sample_size=None)
 
     assert "changed while its schema was inferred" in excinfo.value.message
     assert excinfo.value.context == {"path": str(src)}

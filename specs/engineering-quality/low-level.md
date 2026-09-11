@@ -372,6 +372,12 @@
   to the full inference walk, bounded prefix learning, fused-parser error parity,
   and exact byte-range record limits. These contracts accompany the optimized
   inference implementation in the focused mutation command.
+- Native-filter witnesses check that learned shapes actually use the fast path,
+  including signed integer endpoints, scalar and object arrays, and the depth
+  boundary; schema equality alone cannot detect a disabled optimization. Seeded
+  filters retain the same compilation budget. Cache witnesses compare equal
+  independently obtained revisions and exercise process changes in either
+  direction, while scan-level source-change checks run independently of the cache.
 - A retained skip, xfail, expected failure, focused test, flaky marker, or
   browser retry is debt even when it is justified. Exact-site fingerprints
   prevent silent growth: a new site fails the ratchet until it is explicitly

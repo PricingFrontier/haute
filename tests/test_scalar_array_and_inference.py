@@ -360,6 +360,7 @@ def test_native_filter_learns_the_default_10000_record_prefix_once(
                 }
             ],
         ),
+        ([{"value": 1}], [{"value": "2"}]),
     ],
     ids=[
         "scalar_array_nulls",
@@ -369,6 +370,7 @@ def test_native_filter_learns_the_default_10000_record_prefix_once(
         "bool_int_float_string",
         "null_object_scalar",
         "late_nested_table_field_and_duplicate_leaf",
+        "numeric-string-remains-strict",
     ],
 )
 def test_native_shape_filter_matches_full_walk_for_shape_edges(
@@ -378,6 +380,126 @@ def test_native_shape_filter_matches_full_walk_for_shape_edges(
 ) -> None:
     monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
     _assert_inferred_schema_matches_full_walk(seed * 100 + tail)
+
+
+def _nested_objects(depth: int) -> dict[str, Any]:
+    value: Any = 1
+    for _ in range(depth):
+        value = {"nested": value}
+    return value
+
+
+def _nested_object_arrays(depth: int, leaf: dict[str, Any]) -> dict[str, Any]:
+    value: dict[str, Any] = leaf
+    for _ in range(depth):
+        value = {"nested": [value]}
+    return value
+
+
+@pytest.mark.parametrize("json_mode", [False, True], ids=["python", "json"])
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        (_nested_objects(64), True),
+        (_nested_objects(65), False),
+        (_nested_object_arrays(32, {}), True),
+        (_nested_object_arrays(32, {"value": 1}), False),
+    ],
+    ids=[
+        "objects-depth-64",
+        "objects-depth-65",
+        "object-arrays-depth-64",
+        "object-arrays-depth-65",
+    ],
+)
+def test_native_filter_respects_shape_depth_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    json_mode: bool,
+    record: dict[str, Any],
+    expected: bool,
+) -> None:
+    monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
+    filter_ = InferenceFilter(json_mode=json_mode)
+    for _ in range(100):
+        filter_.observe(record)
+
+    assert filter_.matches(record) is expected
+    assert (filter_.snapshot() is not None) is expected
+    if json_mode:
+        assert filter_.matches_json(orjson.dumps(record)) is expected
+    else:
+        assert filter_.matches_json(orjson.dumps(record)) is False
+
+
+@pytest.mark.parametrize("json_mode", [False, True], ids=["python", "json"])
+@pytest.mark.parametrize(
+    ("observed_arrays", "accepted_arrays", "rejected_arrays"),
+    [
+        ([[1]], [[2]], [[], [None], ["1"]]),
+        ([[]], [[]], [[None], [1]]),
+        ([[None]], [[None]], [[1], []]),
+        ([[{"id": 1}]], [[{"id": 2}]], [[], [{"late": 1}]]),
+        ([[1], []], [[2], []], [[None]]),
+        ([[1], [None]], [[2], [None]], [["1"]]),
+    ],
+    ids=["scalar", "empty", "null-only", "objects", "scalar-and-empty", "scalar-and-null-only"],
+)
+def test_native_filter_reuses_learned_array_forms(
+    monkeypatch: pytest.MonkeyPatch,
+    json_mode: bool,
+    observed_arrays: list[list[Any]],
+    accepted_arrays: list[list[Any]],
+    rejected_arrays: list[list[Any]],
+) -> None:
+    monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
+    filter_ = InferenceFilter(json_mode=json_mode)
+    for index in range(100):
+        filter_.observe({"items": observed_arrays[index % len(observed_arrays)]})
+
+    for array in accepted_arrays:
+        record = {"items": array}
+        assert filter_.matches(record) is True
+        if json_mode:
+            assert filter_.matches_json(orjson.dumps(record)) is True
+    for array in rejected_arrays:
+        record = {"items": array}
+        assert filter_.matches(record) is False
+        if json_mode:
+            assert filter_.matches_json(orjson.dumps(record)) is False
+
+
+def test_seeded_native_filter_retains_eight_compilation_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
+    learned = InferenceFilter()
+    for _ in range(100):
+        learned.observe({"id": 1})
+    seed = learned.snapshot()
+    assert seed is not None
+
+    original_compile = InferenceFilter._compile
+    compilations = 0
+
+    def counting_compile(self: InferenceFilter, observed: Any) -> None:
+        nonlocal compilations
+        compilations += 1
+        original_compile(self, observed)
+
+    monkeypatch.setattr(InferenceFilter, "_compile", counting_compile)
+    filter_ = InferenceFilter(seed)
+    for index in range(700):
+        record = {f"new_{index}": 1}
+        if not filter_.matches(record):
+            filter_.observe(record)
+
+    assert compilations == 8
+    assert filter_.snapshot() is None
+    extra = {"after_budget": 1}
+    if not filter_.matches(extra):
+        filter_.observe(extra)
+    assert compilations == 8
+    assert filter_.snapshot() is None
 
 
 @pytest.mark.parametrize("bad_key", ["bad.key", "$value", "not-valid"])
@@ -406,7 +528,8 @@ def test_inference_filter_snapshot_round_trips_and_is_independent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
-    original = {"id": 1}
+    # Parsed Python integers retain the full unsigned range accepted by orjson.
+    original = {"id": 2**63}
     new_field = {"id": 1, "late": "new"}
     learned = InferenceFilter()
     for _ in range(100):
@@ -425,18 +548,18 @@ def test_inference_filter_snapshot_round_trips_and_is_independent(
 
 
 @pytest.mark.parametrize(
-    ("tail_lines", "expected_type"),
+    ("tail_lines", "expected_type", "expected_orjson_loads"),
     [
-        ([b'{"amount":-9223372036854775809}'], "float"),
-        ([b'{"amount":-9223372036854775808}'], "int"),
-        ([b'{"amount":9223372036854775807}'], "int"),
-        ([b'{"amount":9223372036854775808}'], "int"),
-        ([b'{"amount":18446744073709551615}'], "int"),
-        ([b'{"amount":18446744073709551616}'], "float"),
-        ([b'{"amount":1.25}'], "float"),
-        ([b'{"amount":1e20}'], "float"),
-        ([b'{"amount":"2"}'], "str"),
-        ([b'{"amount":true}'], "str"),
+        ([b'{"amount":-9223372036854775809}'], "float", 1),
+        ([b'{"amount":-9223372036854775808}'], "int", 0),
+        ([b'{"amount":9223372036854775807}'], "int", 0),
+        ([b'{"amount":9223372036854775808}'], "int", 1),
+        ([b'{"amount":18446744073709551615}'], "int", 1),
+        ([b'{"amount":18446744073709551616}'], "float", 1),
+        ([b'{"amount":1.25}'], "float", 1),
+        ([b'{"amount":1e20}'], "float", 1),
+        ([b'{"amount":"2"}'], "str", 1),
+        ([b'{"amount":true}'], "str", 1),
     ],
     ids=[
         "below-int64",
@@ -456,6 +579,7 @@ def test_fused_json_range_matches_orjson_for_integer_bounds_and_numbers(
     monkeypatch: pytest.MonkeyPatch,
     tail_lines: list[bytes],
     expected_type: str,
+    expected_orjson_loads: int,
 ) -> None:
     """Integer overflow must fall back to the original parser and evidence."""
     monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
@@ -468,7 +592,17 @@ def test_fused_json_range_matches_orjson_for_integer_bounds_and_numbers(
     source = tmp_path / "numeric-tail.jsonl"
     source.write_bytes(b"\n".join(tail_lines) + b"\n")
 
+    original_loads = _inference.orjson.loads
+    parsed = 0
+
+    def counting_loads(value: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal parsed
+        parsed += 1
+        return original_loads(value, *args, **kwargs)
+
+    monkeypatch.setattr(_inference.orjson, "loads", counting_loads)
     delta = _inference._infer_jsonl_range(source, 0, source.stat().st_size, seed=filter_.snapshot())
+    assert parsed == expected_orjson_loads
     prefix.merge(delta)
     expected_records = [*prefix_records, *(orjson.loads(raw) for raw in tail_lines)]
     expected = _full_walk_schema(expected_records)

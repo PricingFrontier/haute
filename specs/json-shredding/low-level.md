@@ -574,6 +574,10 @@ different source generation behind an optimistic estimate.
    on the ordinary walk to preserve array-mode semantics and errors.
    Shapes deeper than 64 levels use the ordinary walk without native filtering
    so native type construction cannot impose a new input nesting limit.
+   Depth starts at zero for the root object and increases at each object field
+   and object-array item. A supported shape exactly at depth 64 remains eligible
+   for native filtering. Learned scalar/object arrays accept their known forms;
+   empty and null-only arrays become eligible only after those forms were observed.
    Parallel JSONL inference learns the first 10,000 object records once before
    dispatch. It merges that prefix's exact evidence first and sends a picklable
    snapshot of the learned structure to each range. Each range makes its own
