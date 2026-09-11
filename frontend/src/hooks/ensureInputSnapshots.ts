@@ -88,7 +88,11 @@ async function ensureQuoteInputCache(
           }
         }
       } catch (error) {
-        if (!controller.signal.aborted) throw error
+        if (!controller.signal.aborted) {
+          // Progress display is presentational; only the build outcome may
+          // decide this preparation. Stop polling and keep the last message.
+          console.warn("Quote Input cache progress polling stopped:", error)
+        }
       }
     }
     try {

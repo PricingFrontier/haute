@@ -215,6 +215,29 @@ describe("ensureInputSnapshots", () => {
     expect(onProgress).toHaveBeenLastCalledWith(null)
   })
 
+  it("finishes the build when progress polling fails, without retrying progress", async () => {
+    vi.useFakeTimers()
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      vi.mocked(getJsonCacheStatusForSchema).mockResolvedValue(jsonStatus(false))
+      vi.mocked(getJsonCacheProgress).mockRejectedValue(new Error("Progress endpoint unavailable"))
+      let finish!: (value: JsonCacheBuildResponse) => void
+      vi.mocked(buildJsonCache).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+      const onProgress = vi.fn()
+      const pending = ensureInputSnapshots([quoteInput()], { onProgress })
+      await vi.advanceTimersByTimeAsync(800)
+      expect(getJsonCacheProgress).toHaveBeenCalledOnce()
+      await vi.advanceTimersByTimeAsync(1600)
+      expect(getJsonCacheProgress).toHaveBeenCalledOnce()
+      expect(warn).toHaveBeenCalledOnce()
+      finish(jsonBuild)
+      await pending
+      expect(onProgress).toHaveBeenLastCalledWith(null)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
   it.each([null, { unexpected: true }])(
     "propagates status failures for Quote Inputs with a declared invalid tables value: %j",
     async (tables) => {

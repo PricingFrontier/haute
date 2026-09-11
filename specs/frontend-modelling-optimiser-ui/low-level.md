@@ -115,9 +115,10 @@ Only a current, accepted save response may acknowledge this revision transition.
 5. `parseTrainStatusResponse` preserves explicit `null` values in categorical PDP grids;
    missing value fields, non-scalar values and null numeric grid values remain invalid.
    `PdpTab` displays the null level as `(missing)` without changing its prediction or
-   conflating the payload with a literal string. `getTrainStatus` wraps parser failures
+   conflating the payload with a literal string. `getTrainStatus`, `getOptimiserStatus`,
+   `getExploreStatus` and `getExplorePivotStatus` wrap parser failures
    in `ApiResponseValidationError`, retaining the original cause and field detail.
-   Training polling treats that error as terminal for result delivery, removes the active
+   Every job poller treats that error as terminal for result delivery, removes the active
    job and displays the error. Request failures and lazy-module loading failures retain
    normal retry behavior. A running-to-completed nullable-category response must publish
    the completed result, including its missing-level chart, and clear running progress.

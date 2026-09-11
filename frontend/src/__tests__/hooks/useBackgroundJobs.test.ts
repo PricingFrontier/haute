@@ -302,6 +302,73 @@ describe("useBackgroundJobs", () => {
   // Train job polling
   // ────────────────────────────────────────────────────────────────
 
+  describe("invalid status payloads end the affected job", () => {
+    const cases = [
+      {
+        kind: "optimiser",
+        arrange: (failure: Error) => {
+          const mockGetStatus = vi.mocked(getOptimiserStatus)
+          mockGetStatus.mockResolvedValueOnce(makeSolveProgress())
+          mockGetStatus.mockRejectedValue(failure)
+          useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Solve", {}, "config", "live", 0)
+          return {
+            pollCount: () => mockGetStatus.mock.calls.length,
+            progressMessage: () => useNodeResultsStore.getState().solveJobs.n1?.progress?.message,
+            jobRemoved: () => useNodeResultsStore.getState().solveJobs.n1 === undefined,
+            resultError: () => useNodeResultsStore.getState().solveResults.n1?.error,
+          }
+        },
+      },
+      {
+        kind: "Explore",
+        arrange: (failure: Error) => {
+          const mockGetStatus = vi.mocked(getExploreStatus)
+          mockGetStatus.mockResolvedValueOnce(makeExploreProgress())
+          mockGetStatus.mockRejectedValue(failure)
+          useNodeResultsStore.getState().startExploreJob("n1", "job-1", "Explore", "config", "live", 0)
+          return {
+            pollCount: () => mockGetStatus.mock.calls.length,
+            progressMessage: () => useNodeResultsStore.getState().exploreJobs.n1?.progress?.message,
+            jobRemoved: () => useNodeResultsStore.getState().exploreJobs.n1 === undefined,
+            resultError: () => useNodeResultsStore.getState().exploreResults.n1?.error,
+          }
+        },
+      },
+      {
+        kind: "pivot",
+        arrange: (failure: Error) => {
+          const mockGetStatus = vi.mocked(getExplorePivotStatus)
+          mockGetStatus.mockResolvedValueOnce(makePivotProgress())
+          mockGetStatus.mockRejectedValue(failure)
+          useNodeResultsStore.getState().startExplorePivotJob("n1", "job-1", "n1", "p1", "Explore", "Pivot", "calculation", "live", 0)
+          return {
+            pollCount: () => mockGetStatus.mock.calls.length,
+            progressMessage: () => useNodeResultsStore.getState().pivotJobs.n1?.progress?.message,
+            jobRemoved: () => useNodeResultsStore.getState().pivotJobs.n1 === undefined,
+            resultError: () => useNodeResultsStore.getState().pivotResults.n1?.error,
+          }
+        },
+      },
+    ]
+
+    it.each(cases)("replaces stuck $kind polling with a response error and stops retrying", async ({ kind, arrange }) => {
+      const cause = new Error(`parse${kind}StatusResponse: invalid payload`)
+      const failure = new ApiResponseValidationError(`Could not read ${kind} status: ${cause.message}`, cause)
+      let observe!: ReturnType<typeof arrange>
+      act(() => { observe = arrange(failure) })
+      renderHook(() => useBackgroundJobs())
+
+      await advance(500)
+      expect(observe.progressMessage()).toBeDefined()
+      expect(observe.jobRemoved()).toBe(false)
+      await advance(1_000)
+      expect(observe.jobRemoved()).toBe(true)
+      expect(observe.resultError()).toBe(failure.message)
+      await advance(10_000)
+      expect(observe.pollCount()).toBe(2)
+    })
+  })
+
   describe("train job polling", () => {
     it("completes diagnostic progress with a missing categorical PDP level", async () => {
       const mockGetStatus = vi.mocked(getTrainStatus)

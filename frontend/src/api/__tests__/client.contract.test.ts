@@ -581,7 +581,36 @@ describe("client runtime contracts", () => {
       }),
     )
 
-    await expect(getOptimiserStatus("job-1")).rejects.toThrow(/parseOptimiserStatusResponse/i)
+    await expect(getOptimiserStatus("job-1")).rejects.toMatchObject({
+      name: "ApiResponseValidationError",
+      message: expect.stringMatching(/could not read optimiser status.*parseOptimiserStatusResponse/i),
+      cause: expect.any(Error),
+    })
+    await expect(getOptimiserStatus("job-1")).rejects.toBeInstanceOf(ApiResponseValidationError)
+  })
+
+  it("getExploreStatus rejects malformed status payloads as response validation errors", async () => {
+    mockFetch.mockReturnValue(
+      jsonResponse({ ...loadUiContractFixture<Record<string, unknown>>("explore_status_response"), progress: "bad" }),
+    )
+
+    await expect(getExploreStatus("explore-job-1")).rejects.toMatchObject({
+      name: "ApiResponseValidationError",
+      message: expect.stringMatching(/could not read explore status.*parseExploreStatusResponse/i),
+      cause: expect.any(Error),
+    })
+  })
+
+  it("getExplorePivotStatus rejects malformed status payloads as response validation errors", async () => {
+    mockFetch.mockReturnValue(
+      jsonResponse({ ...loadUiContractFixture<Record<string, unknown>>("explore_pivot_status_response"), progress: "bad" }),
+    )
+
+    await expect(getExplorePivotStatus("pivot-job-1")).rejects.toMatchObject({
+      name: "ApiResponseValidationError",
+      message: expect.stringMatching(/could not read pivot status.*parseExplorePivotStatusResponse/i),
+      cause: expect.any(Error),
+    })
   })
 
   it("preserves optimiser auto-range start contract metadata", async () => {

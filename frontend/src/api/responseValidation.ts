@@ -5,3 +5,13 @@ export class ApiResponseValidationError extends Error {
     this.name = "ApiResponseValidationError"
   }
 }
+
+/** Run a response parser, reporting its failure as a contract violation. */
+export function validateApiResponse<T>(context: string, parse: () => T): T {
+  try {
+    return parse()
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new ApiResponseValidationError(`${context}: ${detail}`, error)
+  }
+}

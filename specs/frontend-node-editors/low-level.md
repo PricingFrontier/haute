@@ -128,7 +128,8 @@
    Clipboard/drag/dialog operations remain local until that callback. `BandingRulesGrid` derives
    stable local keys for legacy rules without `_id` when it opens or rerenders, but this view-only
    work never calls `onUpdateFactor`; generated keys enter persisted rules only with a subsequent
-   user edit, paste, or delete operation.
+   user edit, paste, or delete operation. Generated keys are remembered per rule record, so a
+   parent that recreates the rules array without an edit keeps row identity and the user's focus.
 5. Format, file, catalog and MLflow controls issue their own API calls. I/O capabilities are
    fetched for each later editor mount, while consumers mounting during one pending fetch share
    that request. Request state is local to the editor; the editor never assumes an out-of-order response still describes a
