@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import math
 
 import pytest
 
@@ -1229,7 +1228,6 @@ class TestLogExperiment:
         import mlflow
 
         from haute._mlflow_io import _find_model_artifact
-
         from haute._sandbox import set_project_root
 
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
