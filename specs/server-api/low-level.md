@@ -126,13 +126,17 @@ structured diagnostics, capabilities, source-selection trust, submodels, and a r
 revision. `RecoveryPipelineNode` uses `recovery_id`, `authored_id`, `decorator_name`,
 `node_type`, `display_position`, `availability`, optional validated `config`, server-owned
 `function_name`, nullable `default_input_name`, exact `source_handle_input_names`, source/config
-locations, diagnostic ids, and blocker path; it intentionally has no canonical
+locations, diagnostic ids, blocker path, and the server-derived `scoped_editable`
+eligibility flag; it intentionally has no canonical
 `id/type/position/data` tuple. Recovery edges likewise use recovery endpoint identities, not
 canonical `source`/`target`, and carry nullable `input_name` (non-null for ready executable
 edges). Submodel definitions exactly map every public input port to its executable identity.
 `PipelineRecoveryDiagnostic` supplies a stable id/code,
 severity, scope, safe message, optional element identity and source span, remediation, and
-incident id. `PipelineDocumentCapabilities` is the server-derived mutation/persistence/
+incident id. `PipelineEditorDocument` also carries a bounded `completeness` list —
+field-level required-value gaps for loadable Data Input/Output nodes, recomputed by the
+document loader from the strict validators' completeness mode; entries never affect
+availability, capabilities, or `diagnostics`. `PipelineDocumentCapabilities` is the server-derived mutation/persistence/
 execution/preview/submodel/repair fence and carries a sorted unique
 `reserved_api_input_frame_labels` list. The response types do not subclass or relax
 `PipelineGraph`.
@@ -822,12 +826,18 @@ Any verification or write failure rolls back all touched artifacts.
 
 The additional `/api/pipeline/repair/recover/dry-run` and `/apply` routes accept
 `PipelineRepairRecoverRequest` / `PipelineRepairRecoverApplyRequest`, replacing the
-removal-only `delete_config` option with `action: update | reset`. Their plan responses
-use `update_node` / `reset_node`, keep `delete_config` false and otherwise share the
-bounded repair transport. The full scope and acceptance criteria are defined in
-[node recovery actions](node-recovery-actions.md). Updates and resets retain the target;
-application checks its recovered availability and compares the complete staged structure
-against the isolated preview. Python replacements use the shared LibCST boundary.
+removal-only `delete_config` option with `action: update | reset | recover`. Their plan
+responses use `update_node` / `reset_node` / `recover_node`, keep `delete_config` false
+and otherwise share the bounded repair transport; recover responses add the engine's
+`field_changes` outcome report, the target's completeness entries, and `previous_config`.
+The full scope and acceptance criteria are defined in
+[node recovery actions](node-recovery-actions.md). Updates, resets, and recovers retain
+the target; application checks its recovered availability and compares the complete
+staged structure against the isolated preview. Python replacements use the shared LibCST
+boundary. Ordinary saves validate Data Input/Output structure strictly but tolerate
+declared-incomplete locators (`require_complete=False`), so a loadable incomplete node
+round-trips through save. `POST /api/pipeline/node/save` provides the node-scoped save
+for `scoped_editable` nodes in degraded documents, per the same specification.
 
 ## Persistent recovery drafts
 
