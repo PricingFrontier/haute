@@ -4,7 +4,7 @@
 
 | File | Responsibility |
 |---|---|
-| `frontend/src/api/responseValidation.ts` | `ApiResponseValidationError` distinguishes invalid API responses from retryable transport failures while preserving the parser error as its cause; training polling reports it as a terminal response error. |
+| `frontend/src/api/responseValidation.ts` | `ApiResponseValidationError` distinguishes invalid API responses from retryable transport failures while preserving the parser error as its cause; `validateApiResponse` wraps a parser call in that contract. Every background job poller (train, optimiser, Explore, pivot) reports it as a terminal response error. |
 | `frontend/src/utils/editorIdentities.ts` | Builds bounded identity requests, applies exact-order server responses, and attaches authoritative node/edge metadata without mutating the candidate graph. |
 | `frontend/src/main.tsx` | Local-session bootstrap: establishes the browser-managed HttpOnly cookie before mounting `App` inside `StrictMode` + a root `ErrorBoundary`; renders an actionable reload state if the local backend is unavailable. |
 | `frontend/src/api/client.ts` | Typed `fetch()` wrapper: same-origin cookie credentials, single-flight `bootstrapHauteSession`, retry/backoff, timeout, abort handling, session-expiry event, and one function per backend endpoint. Exports `request`/`post` so split-chunk endpoint modules can reuse the same fetch machinery, and a raw-stream helper (cookie credentials + `ApiError` mapping, no JSON parse) for split modules with non-JSON transports — the assistant SSE stream (see [frontend-assistant-ui](../frontend-assistant-ui/low-level.md)). Modelling train/status/estimate methods dynamically import `types/trainGuards.ts` only after their response arrives so the large training contract stays out of the initial bundle. |
@@ -262,7 +262,11 @@ poll errors trigger a toast (poll errors are tolerated silently up to that
 point — the network hiccup case is expected). A 404/410 from the poll
 endpoint (`TERMINAL_MISSING_JOB_STATUSES`, checked via
 `getMissingJobPollErrorMessage`) is treated as "job is gone, stop polling"
-rather than a retryable transient error. Reconciliation aborts and retires a
+rather than a retryable transient error. An `ApiResponseValidationError`
+from any of the four status parsers is likewise terminal
+(`getJobPollErrorMessage`): the same payload would fail identically on every
+poll, so the job ends with the validation message instead of holding stale
+progress behind the retry loop. Reconciliation aborts and retires a
 poller when its node disappears or the same node is replaced by a different
 job id; completions from retired identities cannot publish progress or
 terminal state. Controller disposal performs the same retirement for every

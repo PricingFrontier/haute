@@ -76,7 +76,9 @@ in-memory schema, builds a missing or invalid full cache through the existing
 JSON-cache build endpoint, and awaits publication before execution. The preview
 panel shows cache preparation and elapsed build time. Build or status failures
 stop preview with an actionable error; cancellation prevents stale progress or
-late execution. A valid cache is reused without rebuilding.
+late execution. A valid cache is reused without rebuilding. Progress reporting
+is presentational only: a failed progress poll stops further progress updates
+without failing the preparation — the build outcome alone decides it.
 
 Before Studio sends a preview that uses snapshot-backed Data Inputs, it checks
 each required snapshot through the existing status endpoint. A missing,

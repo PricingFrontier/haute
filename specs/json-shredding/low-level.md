@@ -7,7 +7,9 @@ Studio's preview preflight checks structured Quote Inputs with
 `volatile_schema`. When `cached` is false it awaits `POST /api/json-cache/build`
 before sending the preview request. It uses the existing full-cache publication
 and progress endpoints, and shows the building phase until completion. Status
-and build errors propagate through the normal preview error surface. All
+and build errors propagate through the normal preview error surface; a
+progress-poll failure only ends progress reporting (with a console warning)
+and never fails the preparation itself. All
 requests and progress callbacks respect the owning preview's AbortSignal.
 Ready caches are not refreshed; recovery-document previews retain their
 server-planned, read-only execution boundary.

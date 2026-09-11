@@ -42,7 +42,10 @@ function getMissingJobPollErrorMessage(error: unknown): string | undefined {
   return "Job not found"
 }
 
-function getTrainPollErrorMessage(error: unknown): string | undefined {
+// An ApiResponseValidationError is deterministic — the same payload fails the
+// same way on every poll — so it ends the job with a visible error instead of
+// leaving stale progress behind a retry loop. Transport failures stay retryable.
+function getJobPollErrorMessage(error: unknown): string | undefined {
   if (error instanceof ApiResponseValidationError) return error.message
   return getMissingJobPollErrorMessage(error)
 }
@@ -110,7 +113,7 @@ export default function useBackgroundJobs() {
       status: s.status,
       terminalReason: s.terminal_reason,
     }),
-    getTerminalPollErrorMessage: getMissingJobPollErrorMessage,
+    getTerminalPollErrorMessage: getJobPollErrorMessage,
     addToast,
     successLabel: "Optimisation complete",
     failLabel: "Optimisation failed",
@@ -151,7 +154,7 @@ export default function useBackgroundJobs() {
       status: s.status,
       terminalReason: s.terminal_reason,
     }),
-    getTerminalPollErrorMessage: getTrainPollErrorMessage,
+    getTerminalPollErrorMessage: getJobPollErrorMessage,
     addToast,
     successLabel: "Training complete",
     failLabel: "Training failed",
@@ -192,7 +195,7 @@ export default function useBackgroundJobs() {
       status: s.status,
       terminalReason: s.terminal_reason,
     }),
-    getTerminalPollErrorMessage: getMissingJobPollErrorMessage,
+    getTerminalPollErrorMessage: getJobPollErrorMessage,
     addToast,
     successLabel: "Explore complete",
     failLabel: "Explore failed",
@@ -236,7 +239,7 @@ export default function useBackgroundJobs() {
         terminalReason: s.terminal_reason,
       },
     ),
-    getTerminalPollErrorMessage: getMissingJobPollErrorMessage,
+    getTerminalPollErrorMessage: getJobPollErrorMessage,
     addToast,
     successLabel: "Pivot complete",
     failLabel: "Pivot failed",

@@ -119,6 +119,24 @@ describe("BandingRulesGrid", () => {
     expect(assignedRules[0]._id.length).toBeGreaterThan(0)
   })
 
+  it("keeps row identity when the parent recreates an id-less rules array", () => {
+    const onUpdate = vi.fn()
+    const rules: ContinuousRule[] = [
+      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young" },
+      { op1: ">=", val1: "25", op2: "", val2: "", assignment: "old" },
+    ]
+    const factor = makeFactor({ rules })
+    const { rerender } = render(<BandingRulesGrid factor={factor} onUpdateFactor={onUpdate} />)
+    const textbox = screen.getByLabelText("Rule 1 lower value")
+    textbox.focus()
+
+    rerender(<BandingRulesGrid factor={{ ...factor, rules: [...rules] }} onUpdateFactor={onUpdate} />)
+
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(screen.getByLabelText("Rule 1 lower value")).toBe(textbox)
+    expect(document.activeElement).toBe(textbox)
+  })
+
   it("rules with existing _id are not reassigned", () => {
     const onUpdate = vi.fn()
     const rules = [

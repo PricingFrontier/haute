@@ -1,4 +1,4 @@
-import { useMemo, useCallback } from "react"
+import { useMemo, useCallback, useState } from "react"
 import { Copy, Trash } from "lucide-react"
 import { CHART_COLORS } from "../../../theme/colors"
 import useToastStore from "../../../stores/useToastStore"
@@ -18,13 +18,23 @@ export function nextRuleId(): string {
   return `rule_${++_ruleIdSeq}_${Date.now().toString(36)}`
 }
 
-/** Ensure every rule has a stable `_id` key. */
-function ensureRuleIds(rules: (ContinuousRule | CategoricalRule | BreakpointRule)[]): (ContinuousRule | CategoricalRule | BreakpointRule)[] {
+/** Ensure every rule has a stable `_id` key. Ids generated for id-less rules
+ *  are remembered per rule object, so a parent that recreates the rules array
+ *  without an edit keeps the same row identity (and the user's focus). */
+function ensureRuleIds(
+  rules: (ContinuousRule | CategoricalRule | BreakpointRule)[],
+  generatedIds: WeakMap<object, string>,
+): (ContinuousRule | CategoricalRule | BreakpointRule)[] {
   let changed = false
   const result = rules.map((r) => {
     if ((r as Record<string, unknown>)._id) return r
     changed = true
-    return { ...r, _id: nextRuleId() }
+    let id = generatedIds.get(r)
+    if (!id) {
+      id = nextRuleId()
+      generatedIds.set(r, id)
+    }
+    return { ...r, _id: id }
   })
   return changed ? result : rules
 }
@@ -197,7 +207,8 @@ export function BandingRulesGrid({
   const addToast = useToastStore(s => s.addToast)
   const rawRules = useMemo(() => factor.rules || [], [factor.rules])
 
-  const rules = useMemo(() => ensureRuleIds(rawRules), [rawRules])
+  const [generatedRuleIds] = useState(() => new WeakMap<object, string>())
+  const rules = useMemo(() => ensureRuleIds(rawRules, generatedRuleIds), [rawRules, generatedRuleIds])
 
   const bt = factor.banding || "continuous"
 

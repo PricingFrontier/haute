@@ -185,7 +185,7 @@ import {
   type RemoveUnavailableNodeRequest,
 } from "../types/pipelineRepair"
 
-import { ApiResponseValidationError } from "./responseValidation"
+import { validateApiResponse } from "./responseValidation"
 
 export class ApiError extends Error {
   status: number
@@ -1144,7 +1144,7 @@ export function getExploreStatus<T extends ExploreStatusResponse = ExploreStatus
   options?: { signal?: AbortSignal },
 ): Promise<T> {
   return request<unknown>(`/api/explore/status/${encodeURIComponent(jobId)}`, options)
-    .then((data) => parseExploreStatusResponse(data) as T)
+    .then((data) => validateApiResponse("Could not read Explore status", () => parseExploreStatusResponse(data) as T))
 }
 
 export function cancelExplore<T extends ExploreStatusResponse = ExploreStatusResponse>(
@@ -1179,7 +1179,7 @@ export function getExplorePivotStatus(
   options?: { signal?: AbortSignal },
 ): Promise<ExplorePivotStatusResponse> {
   return request<unknown>(`/api/explore/pivots/status/${encodeURIComponent(jobId)}`, options)
-    .then(parseExplorePivotStatusResponse)
+    .then((data) => validateApiResponse("Could not read pivot status", () => parseExplorePivotStatusResponse(data)))
 }
 
 export function cancelExplorePivot(
@@ -1229,12 +1229,7 @@ export function getTrainStatus<T extends TrainStatusResponse = TrainStatusRespon
   return request<unknown>(`/api/modelling/train/status/${encodeURIComponent(jobId)}`, options)
     .then(async (data) => {
       const { parseTrainStatusResponse } = await import("../types/trainGuards")
-      try {
-        return parseTrainStatusResponse(data) as T
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error)
-        throw new ApiResponseValidationError(`Could not read training status: ${detail}`, error)
-      }
+      return validateApiResponse("Could not read training status", () => parseTrainStatusResponse(data) as T)
     })
 }
 
@@ -1338,7 +1333,7 @@ export function getOptimiserStatus<T extends OptimiserStatusResponse = Optimiser
   options?: { signal?: AbortSignal },
 ): Promise<T> {
   return request<unknown>(`/api/optimiser/solve/status/${encodeURIComponent(jobId)}`, options)
-    .then((data) => parseOptimiserStatusResponse(data) as T)
+    .then((data) => validateApiResponse("Could not read optimiser status", () => parseOptimiserStatusResponse(data) as T))
 }
 
 export function applyOptimiser(
