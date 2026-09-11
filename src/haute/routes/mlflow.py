@@ -178,9 +178,7 @@ def _ensure_tracking() -> tuple[_types.ModuleType, MlflowClient]:
 # underlying error text never reaches the client (it may carry tokens or
 # infrastructure detail); the category-mapped message does.
 _DISCOVERY_CATEGORY_DETAILS = {
-    "authentication": (
-        "MLflow authentication failed. Check the credentials in your .env file."
-    ),
+    "authentication": ("MLflow authentication failed. Check the credentials in your .env file."),
     "permission": "MLflow denied access. Check your workspace permissions.",
     "missing_resource": "The requested MLflow resource was not found.",
     "connectivity": (
