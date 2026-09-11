@@ -323,15 +323,57 @@ def resolve_tracking_config(project_root: Path | None = None) -> TrackingConfig:
     return _local_tracking(root / _DEFAULT_FOLDER, config_source="default")
 
 
-def _config_from_settings(settings: MlflowSettings, root: Path) -> TrackingConfig:
+def _config_from_settings(
+    settings: MlflowSettings, root: Path, *, config_source: str = "toml"
+) -> TrackingConfig:
     if settings.mode == "databricks":
-        return _databricks_config("databricks", config_source="toml")
+        return _databricks_config("databricks", config_source=config_source)
     if settings.mode == "server":
-        return TrackingConfig(
-            "server", settings.tracking_uri, redact_uri(settings.tracking_uri), "toml"
-        )
+        uri = _server_uri_with_env_credentials(settings.tracking_uri)
+        return TrackingConfig("server", uri, redact_uri(uri), config_source)
     folder = _local_folder(settings.folder or _DEFAULT_FOLDER, root)
-    return _local_tracking(folder, config_source="toml")
+    return _local_tracking(folder, config_source=config_source)
+
+
+def _server_uri_with_env_credentials(stored_uri: str) -> str:
+    """Re-attach matching env credentials to a stored (non-secret) server URI.
+
+    ``haute.toml`` persists the credential-free destination; ``.env`` may
+    carry the same server with embedded auth. When the stored URI equals the
+    redaction of a credentialed env server URI, the env value wins for
+    connecting — so saving the displayed (redacted) configuration never
+    silently drops working authentication.
+    """
+    env_uri = os.getenv("MLFLOW_TRACKING_URI", "").strip()
+    if not env_uri:
+        return stored_uri
+    try:
+        env_mode, env_value = classify_tracking_uri(env_uri)
+    except MlflowConfigError:
+        return stored_uri
+    if (
+        env_mode == "server"
+        and "@" in urlsplit(env_value).netloc
+        and redact_uri(env_value) == redact_uri(stored_uri)
+    ):
+        return env_value
+    return stored_uri
+
+
+def candidate_tracking_config(
+    settings: MlflowSettings, project_root: Path | None = None
+) -> TrackingConfig:
+    """Resolve a *candidate* (unsaved) selection exactly as a save would.
+
+    Validates with the same rules as :func:`save_mlflow_settings` and
+    resolves through the same branches — env-credential re-attachment
+    included — without reading or writing ``haute.toml``. Used by the
+    connection-test endpoint so a draft selection is probed as the
+    configuration it would become.
+    """
+    root = project_root if project_root is not None else _project_root_default()
+    _validate_settings(settings)
+    return _config_from_settings(settings, root, config_source="toml")
 
 
 def _databricks_config(uri: str, *, config_source: str) -> TrackingConfig:

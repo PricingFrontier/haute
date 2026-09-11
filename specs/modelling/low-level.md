@@ -502,6 +502,18 @@ which returns a `TrackingConfig` (`mode`, `tracking_uri`, human-readable
    Without that variable, `DATABRICKS_HOST` + `DATABRICKS_TOKEN` → databricks.
 3. **Default**: local mode at `./mlruns` (`config_source="default"`).
 
+Server-mode resolution re-attaches matching environment credentials:
+`haute.toml` persists the credential-free destination, and when
+`MLFLOW_TRACKING_URI` is a credentialed server URI whose redaction equals
+the stored URI, the env value wins for connecting (destination stays
+redacted). Saving the displayed configuration therefore never silently
+drops working authentication — the toml carries the non-secret selection,
+`.env` carries the secret. `candidate_tracking_config(settings, root)`
+resolves an *unsaved* selection through exactly the same validation and
+branches (env re-attachment included) without touching `haute.toml`; the
+connection-test endpoint uses it so a draft is probed as the configuration
+it would become.
+
 `load_mlflow_settings()` reads the stored section (tomllib);
 `save_mlflow_settings()` validates the same rules and rewrites only the
 `[mlflow]` table via tomlkit, preserving every other section, comment, and

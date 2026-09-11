@@ -358,20 +358,28 @@ capitalised), and "MLflow off" on any error state — with the store's
 The modal fetches `GET /api/mlflow/settings` on mount and renders: a
 current-resolution line built from `resolved` (mode, destination, config
 source) or the `detail` reason when resolution failed; a three-option mode
-choice (radio semantics) with one-line plain-language descriptions — Local
-folder ("zero setup", always displaying the resolved runs folder), MLflow
-server ("connect by URL", with an `http(s)` URL field shown while selected,
-prefilled from the stored `tracking_uri`), Databricks ("uses the workspace
-credentials from `.env`") — a Test connection action that POSTs
-`/api/mlflow/test-connection` and renders the ok/category/detail result
-inline, and Save/Close actions. Save PUTs `{mode, tracking_uri}` (URL only
-for server mode; `folder` is always sent empty so the backend persists the
-resolved folder), then calls `invalidateMlflow()` and re-renders from the
-PUT response, so the chip and every panel refresh without a reload; a `400`
-renders its field-naming `detail` in the modal's error area. The browser
-never renders or submits a secret: stored server URLs are credential-free
-by backend validation, displayed destinations arrive pre-redacted, and the
-modal adds no credential inputs.
+choice — **native** radio inputs (so the radio role carries its keyboard
+behaviour) styled as cards with one-line plain-language descriptions —
+Local folder ("zero setup", always displaying the resolved runs folder),
+MLflow server ("connect by URL", with an `http(s)` URL field shown while
+selected, prefilled from the stored `tracking_uri`), Databricks ("uses the
+workspace credentials from `.env`") — a Test connection action, and
+Save/Close actions. Test connection POSTs the **draft** selection
+(`{mode, tracking_uri}`) as the candidate body, so the user tests what a
+save would produce, not what is currently persisted; a displayed result is
+cleared by any draft edit, and a completion that lands after an edit is
+discarded via a request-sequence guard. Save PUTs `{mode, tracking_uri}`
+(URL only for server mode; `folder` is always sent empty so the backend
+persists the resolved folder) with every input locked while the request is
+in flight — a "Saved" acknowledgement can therefore never sit beside
+edits it does not cover — then calls `invalidateMlflow()` and re-renders
+from the PUT response, so the chip and every panel refresh without a
+reload; a `400` renders its field-naming `detail` in the modal's error
+area. The browser never renders or submits a secret: stored server URLs
+are credential-free by backend validation, displayed destinations arrive
+pre-redacted, the modal adds no credential inputs, and an unchanged save
+of an env-derived configuration keeps its authentication because
+resolution re-attaches matching env credentials server-side.
 
 **Process-wide MLflow fetch guard.** `useSettingsStore.fetchMlflow` guards
 re-entrancy with a module-level `let _mlflowFetchingGuard` rather than store

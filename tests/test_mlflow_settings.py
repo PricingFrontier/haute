@@ -385,6 +385,36 @@ class TestResolvePrecedence:
         assert config.mode == "local"
         assert config.config_source == "toml"
 
+    def test_toml_server_uri_inherits_matching_env_credentials(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # haute.toml stores the non-secret destination; .env supplies the
+        # credentials. When the stored server URI matches the redaction of a
+        # credentialed env URI, resolution keeps the env authentication —
+        # so an unchanged save can never silently break auth.
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "https://alice:hunter2xyz@mlflow.example.com")
+        _write_mlflow_section(
+            project_root,
+            'mode = "server"\ntracking_uri = "https://mlflow.example.com"\n',
+        )
+        config = resolve_tracking_config(project_root)
+        assert config.mode == "server"
+        assert config.config_source == "toml"
+        assert config.tracking_uri == "https://alice:hunter2xyz@mlflow.example.com"
+        assert config.destination == "https://mlflow.example.com"
+
+    def test_toml_server_uri_ignores_env_credentials_for_other_hosts(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "https://alice:hunter2xyz@other.example.com")
+        _write_mlflow_section(
+            project_root,
+            'mode = "server"\ntracking_uri = "https://mlflow.example.com"\n',
+        )
+        config = resolve_tracking_config(project_root)
+        assert config.tracking_uri == "https://mlflow.example.com"
+        assert "hunter2xyz" not in config.tracking_uri
+
     def test_env_credentialed_server_uri_has_redacted_destination(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -354,8 +354,14 @@ Three endpoints own connection visibility and configuration. They consume
   after the write. A validation failure → `400` naming the offending field
   without echoing the rejected value; nothing is written.
 - **`POST /api/mlflow/test-connection` → `MlflowTestConnectionResponse`** —
-  resolves the configuration and runs `search_experiments(max_results=1)`
-  under a 5-second bound; returns `ok=true`, or `ok=false` with `category`
+  probes a destination with `search_experiments(max_results=1)` under a
+  5-second bound. An optional `MlflowTestConnectionRequest` body with a
+  non-empty `mode` carries a *candidate* selection, validated and resolved
+  via `candidate_tracking_config()` so the user tests exactly what a save
+  would produce (env-credential re-attachment included); an absent body or
+  empty `mode` probes the currently resolved configuration. An invalid
+  candidate reports `category="configuration"` with the field-naming
+  reason. Returns `ok=true`, or `ok=false` with `category`
   (`"authentication"|"permission"|"missing_resource"|"connectivity"|`
   `"configuration"|"unknown"`) and a non-secret `detail`. The probe never
   calls `mlflow.set_tracking_uri` — testing a candidate destination must

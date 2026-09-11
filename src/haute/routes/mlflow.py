@@ -36,6 +36,7 @@ from haute.schemas import (
     MlflowSettingsResponse,
     MlflowSettingsUpdateRequest,
     MlflowStatusResponse,
+    MlflowTestConnectionRequest,
     MlflowTestConnectionResponse,
     MlflowVersionBrief,
 )
@@ -381,15 +382,36 @@ def _classify_probe_error(exc: BaseException) -> str:
 
 
 @router.post("/test-connection", response_model=MlflowTestConnectionResponse)
-def mlflow_test_connection() -> MlflowTestConnectionResponse:
-    """Probe the resolved tracking destination; expected failures never 5xx."""
-    from haute.modelling._mlflow_settings import resolve_tracking_config
+def mlflow_test_connection(
+    body: MlflowTestConnectionRequest | None = None,
+) -> MlflowTestConnectionResponse:
+    """Probe a tracking destination; expected failures never 5xx.
+
+    With a candidate selection in the body (non-empty ``mode``), the draft
+    is validated and probed as the configuration it would become on save;
+    otherwise the currently resolved configuration is probed.
+    """
+    from haute.modelling._mlflow_settings import (
+        MlflowSettings,
+        candidate_tracking_config,
+        resolve_tracking_config,
+    )
 
     installed, importable, detail = _mlflow_availability()
     if not (installed and importable):
         return MlflowTestConnectionResponse(ok=False, category="configuration", detail=detail)
     try:
-        config = resolve_tracking_config(_get_project_root())
+        if body is not None and body.mode:
+            config = candidate_tracking_config(
+                MlflowSettings(
+                    mode=body.mode,
+                    tracking_uri=body.tracking_uri,
+                    folder=body.folder,
+                ),
+                _get_project_root(),
+            )
+        else:
+            config = resolve_tracking_config(_get_project_root())
     except MlflowConfigError as exc:
         return MlflowTestConnectionResponse(ok=False, category="configuration", detail=str(exc))
     try:

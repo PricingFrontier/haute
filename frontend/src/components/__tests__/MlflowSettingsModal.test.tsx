@@ -69,24 +69,26 @@ async function renderModal(onClose = vi.fn()) {
 }
 
 describe("MlflowSettingsModal", () => {
-  it("renders the current resolution and three mode cards from the settings GET", async () => {
+  it("renders the current resolution and three native radio mode cards", async () => {
     await renderModal()
     expect(screen.getByText(/MLflow server — http:\/\/localhost:5000/)).toBeInTheDocument()
-    expect(screen.getByRole("radio", { name: /local folder/i })).toBeInTheDocument()
-    expect(screen.getByRole("radio", { name: /mlflow server/i })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    )
-    expect(screen.getByRole("radio", { name: /databricks/i })).toBeInTheDocument()
+    const radios = [
+      screen.getByRole("radio", { name: /local folder/i }),
+      screen.getByRole("radio", { name: /mlflow server/i }),
+      screen.getByRole("radio", { name: /databricks/i }),
+    ]
+    for (const radio of radios) {
+      // Native inputs carry the keyboard behaviour the radio role promises.
+      expect(radio.tagName).toBe("INPUT")
+      expect(radio).toHaveAttribute("type", "radio")
+    }
+    expect(screen.getByRole("radio", { name: /mlflow server/i })).toBeChecked()
   })
 
   it("shows the resolved folder on the local card", async () => {
     vi.mocked(getMlflowSettings).mockResolvedValue(DEFAULT_LOCAL_SETTINGS)
     await renderModal()
-    expect(screen.getByRole("radio", { name: /local folder/i })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    )
+    expect(screen.getByRole("radio", { name: /local folder/i })).toBeChecked()
     expect(screen.getAllByText(/C:\/proj\/mlruns/).length).toBeGreaterThan(0)
   })
 
@@ -127,6 +129,7 @@ describe("MlflowSettingsModal", () => {
     await renderModal()
 
     fireEvent.click(screen.getByRole("radio", { name: /local folder/i }))
+    expect(screen.getByRole("radio", { name: /local folder/i })).toBeChecked()
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
 
     await waitFor(() => {
@@ -158,15 +161,79 @@ describe("MlflowSettingsModal", () => {
     expect(mockInvalidateMlflow).not.toHaveBeenCalled()
   })
 
-  it("renders a successful connection test inline", async () => {
+  it("tests the draft selection, not the saved configuration", async () => {
+    vi.mocked(testMlflowConnection).mockResolvedValue({ ok: true, category: "", detail: "" })
+    await renderModal()
+
+    const field = screen.getByLabelText(/server url/i)
+    fireEvent.change(field, { target: { value: "http://localhost:6000" } })
+    fireEvent.click(screen.getByRole("button", { name: /test connection/i }))
+
+    await waitFor(() => {
+      expect(testMlflowConnection).toHaveBeenCalledWith({
+        mode: "server",
+        tracking_uri: "http://localhost:6000",
+        folder: "",
+      })
+      expect(screen.getByText(/connection ok/i)).toBeInTheDocument()
+    })
+  })
+
+  it("clears a displayed test result when the target changes", async () => {
     vi.mocked(testMlflowConnection).mockResolvedValue({ ok: true, category: "", detail: "" })
     await renderModal()
 
     fireEvent.click(screen.getByRole("button", { name: /test connection/i }))
-
     await waitFor(() => {
       expect(screen.getByText(/connection ok/i)).toBeInTheDocument()
     })
+
+    fireEvent.change(screen.getByLabelText(/server url/i), {
+      target: { value: "http://localhost:7000" },
+    })
+    expect(screen.queryByText(/connection ok/i)).toBeNull()
+  })
+
+  it("discards a stale test completion that lands after an edit", async () => {
+    let resolveProbe: (value: { ok: boolean; category: ""; detail: string }) => void
+    vi.mocked(testMlflowConnection).mockReturnValue(
+      new Promise((resolve) => {
+        resolveProbe = resolve
+      }),
+    )
+    await renderModal()
+
+    fireEvent.click(screen.getByRole("button", { name: /test connection/i }))
+    fireEvent.change(screen.getByLabelText(/server url/i), {
+      target: { value: "http://localhost:7000" },
+    })
+    resolveProbe!({ ok: true, category: "", detail: "" })
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /test connection/i })).toBeEnabled()
+    })
+    expect(screen.queryByText(/connection ok/i)).toBeNull()
+  })
+
+  it("locks editing while a save is in flight", async () => {
+    let resolvePut: (value: MlflowSettingsResponse) => void
+    vi.mocked(putMlflowSettings).mockReturnValue(
+      new Promise((resolve) => {
+        resolvePut = resolve
+      }),
+    )
+    await renderModal()
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
+
+    expect(screen.getByLabelText(/server url/i)).toBeDisabled()
+    expect(screen.getByRole("radio", { name: /local folder/i })).toBeDisabled()
+
+    resolvePut!(SERVER_SETTINGS)
+    await waitFor(() => {
+      expect(screen.getByText(/saved/i)).toBeInTheDocument()
+    })
+    expect(screen.getByLabelText(/server url/i)).toBeEnabled()
   })
 
   it("renders a categorised connection failure inline", async () => {

@@ -7,7 +7,7 @@
  * toolbar chip and every panel refresh without a reload. `folder` is always
  * sent empty — the backend persists the currently resolved local folder.
  */
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { CheckCircle2, Loader2, TriangleAlert } from "lucide-react"
 import ModalShell from "./ModalShell"
 import {
@@ -79,6 +79,14 @@ export default function MlflowSettingsModal({ onClose }: { onClose: () => void }
   const [saved, setSaved] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<MlflowTestConnectionResponse | null>(null)
+  // A test result belongs to the draft it probed: bump the sequence on any
+  // draft edit so a completion for the old target is discarded.
+  const testSeqRef = useRef(0)
+
+  const invalidateTestResult = useCallback(() => {
+    testSeqRef.current += 1
+    setTestResult(null)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -132,18 +140,27 @@ export default function MlflowSettingsModal({ onClose }: { onClose: () => void }
     if (testing) return
     setTesting(true)
     setTestResult(null)
+    const seq = (testSeqRef.current += 1)
     try {
-      setTestResult(await testMlflowConnection())
-    } catch (e: unknown) {
-      setTestResult({
-        ok: false,
-        category: "unknown",
-        detail: e instanceof Error ? e.message : "Connection test failed",
+      // Probe the draft selection, not the saved configuration.
+      const result = await testMlflowConnection({
+        mode: selectedMode,
+        tracking_uri: selectedMode === "server" ? serverUri.trim() : "",
+        folder: "",
       })
+      if (seq === testSeqRef.current) setTestResult(result)
+    } catch (e: unknown) {
+      if (seq === testSeqRef.current) {
+        setTestResult({
+          ok: false,
+          category: "unknown",
+          detail: e instanceof Error ? e.message : "Connection test failed",
+        })
+      }
     } finally {
       setTesting(false)
     }
-  }, [testing])
+  }, [testing, selectedMode, serverUri])
 
   const localFolderDisplay =
     settings?.resolved?.mode === "local"
@@ -184,20 +201,26 @@ export default function MlflowSettingsModal({ onClose }: { onClose: () => void }
             {MODE_CARDS.map((card) => {
               const selected = selectedMode === card.key
               return (
-                <button
+                <label
                   key={card.key}
-                  role="radio"
-                  aria-checked={selected}
-                  onClick={() => {
-                    setSelectedMode(card.key)
-                    setSaved(false)
-                  }}
-                  className="w-full rounded-lg px-3 py-2 text-left"
+                  className="block w-full cursor-pointer rounded-lg px-3 py-2"
                   style={{
                     background: selected ? "var(--accent-soft-subtle)" : "var(--bg-input)",
                     border: `1px solid ${selected ? "var(--accent-ring)" : "var(--border)"}`,
                   }}
                 >
+                  <input
+                    type="radio"
+                    name="mlflow-tracking-mode"
+                    className="sr-only"
+                    checked={selected}
+                    disabled={saving}
+                    onChange={() => {
+                      setSelectedMode(card.key)
+                      setSaved(false)
+                      invalidateTestResult()
+                    }}
+                  />
                   <span className="block text-xs font-semibold" style={{ color: "var(--text-primary)" }}>
                     {card.title}
                   </span>
@@ -209,7 +232,7 @@ export default function MlflowSettingsModal({ onClose }: { onClose: () => void }
                       {localFolderDisplay}
                     </span>
                   )}
-                </button>
+                </label>
               )
             })}
           </div>
@@ -221,9 +244,11 @@ export default function MlflowSettingsModal({ onClose }: { onClose: () => void }
               type="text"
               aria-label="Server URL"
               value={serverUri}
+              disabled={saving}
               onChange={(e) => {
                 setServerUri(e.target.value)
                 setSaved(false)
+                invalidateTestResult()
               }}
               placeholder="http://localhost:5000"
               className="mt-0.5 w-full rounded-lg px-2.5 py-1.5 font-mono text-xs"
@@ -269,7 +294,7 @@ export default function MlflowSettingsModal({ onClose }: { onClose: () => void }
       <div className="flex items-center gap-2 px-4 py-3" style={{ borderTop: "1px solid var(--border)" }}>
         <button
           onClick={handleTest}
-          disabled={testing || !settings}
+          disabled={testing || saving || !settings}
           className="rounded-lg px-3 py-1.5 text-xs"
           style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
         >

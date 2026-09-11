@@ -65,6 +65,7 @@ import type {
   MlflowSettingsResponse,
   MlflowSettingsUpdateRequest,
   MlflowStatusResponse,
+  MlflowTestConnectionRequest,
   MlflowTestConnectionResponse,
   MlflowExperiment,
   MlflowLogResponse,
@@ -1573,9 +1574,10 @@ export function putMlflowSettings(
 }
 
 export function testMlflowConnection(
+  payload: MlflowTestConnectionRequest = { mode: "" },
   options?: { signal?: AbortSignal },
 ): Promise<MlflowTestConnectionResponse> {
-  return post<unknown>("/api/mlflow/test-connection", {}, options ?? {})
+  return post<unknown>("/api/mlflow/test-connection", payload, options ?? {})
     .then(parseMlflowTestConnectionResponse)
 }
 

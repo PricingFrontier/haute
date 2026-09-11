@@ -2592,6 +2592,18 @@ class MlflowSettingsUpdateRequest(BaseModel):
     folder: str = ""
 
 
+class MlflowTestConnectionRequest(BaseModel):
+    """Optional candidate selection to probe instead of the saved config.
+
+    An empty ``mode`` (or an absent body) probes the currently resolved
+    configuration.
+    """
+
+    mode: str = ""
+    tracking_uri: str = ""
+    folder: str = ""
+
+
 class MlflowTestConnectionResponse(BaseModel):
     ok: bool
     category: Literal[

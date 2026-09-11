@@ -502,6 +502,12 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
     ),
     (
         "src/haute/modelling/_mlflow_settings.py",
+        "<module>._server_uri_with_env_credentials",
+        "MLFLOW_TRACKING_URI",
+        "os.getenv",
+    ),
+    (
+        "src/haute/modelling/_mlflow_settings.py",
         "<module>._databricks_config",
         "DATABRICKS_HOST",
         "os.getenv",

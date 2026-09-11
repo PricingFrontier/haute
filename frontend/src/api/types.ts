@@ -550,6 +550,13 @@ export interface MlflowSettingsUpdateRequest {
   folder?: string
 }
 
+export interface MlflowTestConnectionRequest {
+  /** Empty mode probes the currently saved/resolved configuration. */
+  mode: "" | "databricks" | "server" | "local"
+  tracking_uri?: string
+  folder?: string
+}
+
 export interface MlflowTestConnectionResponse {
   ok: boolean
   category:

@@ -219,6 +219,28 @@ class TestSettings:
         assert resp.status_code == 400
         assert "hunter2xyz" not in resp.json()["detail"]
 
+    def test_unchanged_save_of_env_credentialed_server_keeps_auth_working(
+        self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The modal shows the redacted destination; saving it must not break
+        # authentication — toml persists the non-secret URI and resolution
+        # re-attaches the matching env credentials.
+        from haute.modelling._mlflow_settings import resolve_tracking_config
+
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "https://alice:hunter2xyz@mlflow.example.com")
+        resp = client.put(
+            "/api/mlflow/settings",
+            json={"mode": "server", "tracking_uri": "https://mlflow.example.com"},
+        )
+        assert resp.status_code == 200
+        parsed = tomllib.loads((project_root / "haute.toml").read_text(encoding="utf-8"))
+        assert parsed["mlflow"]["tracking_uri"] == "https://mlflow.example.com"
+        assert "hunter2xyz" not in str(parsed)
+
+        config = resolve_tracking_config(project_root)
+        assert config.tracking_uri == "https://alice:hunter2xyz@mlflow.example.com"
+        assert resp.json()["resolved"]["destination"] == "https://mlflow.example.com"
+
     def test_put_local_preserves_env_derived_folder(
         self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -241,6 +263,49 @@ class TestTestConnection:
         with patch("haute.routes.mlflow._search_experiments_probe", return_value=None):
             body = client.post("/api/mlflow/test-connection").json()
         assert body == {"ok": True, "category": "", "detail": ""}
+
+    def test_candidate_configuration_is_probed_instead_of_the_saved_one(
+        self, client, project_root: Path
+    ) -> None:
+        # Saved config is default local; the request carries a server draft.
+        # The probe must target the draft, so the user tests what they are
+        # about to save, not what is currently persisted.
+        probed: list[str] = []
+        with patch(
+            "haute.routes.mlflow._search_experiments_probe",
+            side_effect=lambda uri: probed.append(uri),
+        ):
+            body = client.post(
+                "/api/mlflow/test-connection",
+                json={"mode": "server", "tracking_uri": "http://localhost:6000"},
+            ).json()
+        assert body["ok"] is True
+        assert probed == ["http://localhost:6000"]
+
+    def test_invalid_candidate_is_configuration_category(self, client, project_root: Path) -> None:
+        body = client.post(
+            "/api/mlflow/test-connection",
+            json={"mode": "server", "tracking_uri": "sqlite:///x"},
+        ).json()
+        assert body["ok"] is False
+        assert body["category"] == "configuration"
+        assert "tracking_uri" in body["detail"]
+
+    def test_candidate_server_draft_inherits_matching_env_credentials(
+        self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "https://alice:hunter2xyz@mlflow.example.com")
+        probed: list[str] = []
+        with patch(
+            "haute.routes.mlflow._search_experiments_probe",
+            side_effect=lambda uri: probed.append(uri),
+        ):
+            body = client.post(
+                "/api/mlflow/test-connection",
+                json={"mode": "server", "tracking_uri": "https://mlflow.example.com"},
+            ).json()
+        assert body["ok"] is True
+        assert probed == ["https://alice:hunter2xyz@mlflow.example.com"]
 
     def test_configuration_error_is_classified(self, client, project_root: Path) -> None:
         _write_mlflow_section(project_root, 'mode = "databricks"\n')
