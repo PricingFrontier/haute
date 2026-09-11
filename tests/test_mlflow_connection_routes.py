@@ -359,6 +359,48 @@ class TestProbeMechanics:
         assert body["category"] == "unknown"
         assert "still running" in body["detail"]
 
+    def test_timed_out_probes_hold_their_slots_until_workers_finish(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The full capacity lifecycle through real timeouts: a timed-out
+        # probe's slot stays occupied while its worker still runs (the
+        # resource-growth defect the bound exists for), and frees only when
+        # the underlying call returns.
+        import threading
+        import time
+
+        import haute.routes.mlflow as mlflow_routes
+        from haute.routes.mlflow import _ProbeBusyError, _run_probe_bounded
+
+        monkeypatch.setattr(mlflow_routes, "_PROBE_SLOTS", threading.BoundedSemaphore(2))
+        gate_one, gate_two = threading.Event(), threading.Event()
+        try:
+            with pytest.raises(TimeoutError):
+                _run_probe_bounded(lambda: gate_one.wait(30), timeout=0.1)
+            with pytest.raises(TimeoutError):
+                _run_probe_bounded(lambda: gate_two.wait(30), timeout=0.1)
+
+            # Both abandoned workers still run, so capacity is exhausted.
+            with pytest.raises(_ProbeBusyError):
+                _run_probe_bounded(lambda: None, timeout=1)
+
+            # Finishing one worker frees exactly one slot.
+            gate_one.set()
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    _run_probe_bounded(lambda: None, timeout=1)
+                    break
+                except _ProbeBusyError:
+                    if time.monotonic() > deadline:
+                        pytest.fail("slot was not released after its worker finished")
+                    time.sleep(0.02)
+        finally:
+            gate_one.set()
+            gate_two.set()
+            # Let the daemon workers drain before monkeypatch restores.
+            time.sleep(0.05)
+
     def test_search_probe_request_shape_and_no_global_mutation(self) -> None:
         from unittest.mock import MagicMock
 
@@ -399,6 +441,9 @@ class TestSavedFolderKeepsRunsDiscoverable:
 
             assert client.put("/api/mlflow/settings", json={"mode": "local"}).status_code == 200
             monkeypatch.delenv("MLFLOW_TRACKING_URI")
+            # Discovery must find the runs from the saved settings alone —
+            # clear the ambient global so it cannot mask a resolver defect.
+            mlflow.set_tracking_uri(None)
 
             resp = client.get("/api/mlflow/experiments")
             assert resp.status_code == 200

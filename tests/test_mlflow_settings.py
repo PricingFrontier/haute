@@ -107,6 +107,13 @@ class TestClassifyTrackingUri:
         assert mode == "server"
         assert uri == "https://alice:secret@mlflow.example.com"
 
+    def test_invalid_port_is_config_error_without_echoing_credentials(self) -> None:
+        with pytest.raises(MlflowConfigError) as excinfo:
+            classify_tracking_uri("https://alice:hunter2xyz@mlflow.example.com:70000")
+        message = str(excinfo.value)
+        assert "port" in message.lower()
+        assert "hunter2xyz" not in message
+
 
 # ---------------------------------------------------------------------------
 # load / save round trip
@@ -392,3 +399,13 @@ class TestResolvePrecedence:
         monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://[")
         with pytest.raises(MlflowConfigError):
             resolve_tracking_config(project_root)
+
+    def test_env_invalid_port_is_config_error_not_crash(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(
+            "MLFLOW_TRACKING_URI", "https://alice:hunter2xyz@mlflow.example.com:70000"
+        )
+        with pytest.raises(MlflowConfigError) as excinfo:
+            resolve_tracking_config(project_root)
+        assert "hunter2xyz" not in str(excinfo.value)

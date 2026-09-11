@@ -86,10 +86,14 @@ def _split_uri(value: str, *, source: str) -> SplitResult:
 
 
 def _parse_http_uri(value: str, *, source: str) -> SplitResult:
-    """Parse and validate an ``http(s)`` URI: scheme plus a non-empty host."""
+    """Parse and validate an ``http(s)`` URI: scheme, non-empty host, valid port."""
     parts = _split_uri(value, source=source)
     if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
         raise MlflowConfigError(f"{source} must be an http(s):// URL with a host.")
+    try:
+        parts.port  # noqa: B018 — SplitResult.port raises on out-of-range/non-numeric ports
+    except ValueError as exc:
+        raise MlflowConfigError(f"{source} has an invalid port.") from exc
     return parts
 
 
@@ -97,14 +101,16 @@ def redact_uri(value: str) -> str:
     """Strip any userinfo credentials from a URI for display purposes."""
     try:
         parts = urlsplit(value)
+        if "@" not in parts.netloc:
+            return value
+        host = parts.hostname or ""
+        if parts.port is not None:
+            host = f"{host}:{parts.port}"
+        return urlunsplit(parts._replace(netloc=host))
     except ValueError:
+        # Never let a malformed netloc (e.g. an out-of-range port) surface
+        # the original — it may carry the very credentials being stripped.
         return "<unparseable URI>"
-    if "@" not in parts.netloc:
-        return value
-    host = parts.hostname or ""
-    if parts.port is not None:
-        host = f"{host}:{parts.port}"
-    return urlunsplit(parts._replace(netloc=host))
 
 
 def classify_tracking_uri(value: str) -> tuple[str, str]:

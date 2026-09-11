@@ -491,8 +491,8 @@ which returns a `TrackingConfig` (`mode`, `tracking_uri`, human-readable
    it is a validation error, not silently ignored. Local mode without
    `folder` uses `./mlruns`. Validation errors never echo a rejected URI —
    a malformed or credential-bearing value must not leak through its own
-   error message. An unparseable URI (from toml or env) is an
-   `MlflowConfigError`, never an uncaught `ValueError`.
+   error message. An unparseable URI or an invalid port (from toml or env)
+   is an `MlflowConfigError`, never an uncaught `ValueError`.
 2. **Environment fallback** (no `[mlflow]` section): `MLFLOW_TRACKING_URI`
    is classified by form via `classify_tracking_uri()` — `databricks` or a
    `databricks://` profile URI → databricks mode; `http://`/`https://` →
@@ -543,8 +543,10 @@ secret.
   `experiment_id` via `mlflow.get_experiment_by_name` (run URLs require the
   numeric id, so the name is resolved first) and returns the Databricks
   workspace URL for databricks mode, `{tracking_uri}/#/experiments/{id}/runs/{run_id}`
-  for server mode, and `None` for local mode or on a failed experiment
-  lookup (logged, not raised).
+  for server mode — with the tracking URI passed through `redact_uri()`, so
+  a credential-bearing env URI never reappears in a displayed run link —
+  and `None` for local mode or on a failed experiment lookup (logged, not
+  raised).
 
 `src/haute/routes/optimiser.py` calls the naming/setup/url helpers;
 `src/haute/routes/mlflow.py` (mlflow-model-registry) consumes

@@ -253,6 +253,23 @@ class TestBuildRunUrl:
 
             assert build_run_url("server", "freq", "run123") is None
 
+    def test_server_run_url_redacts_embedded_credentials(self) -> None:
+        mock_experiment = MagicMock()
+        mock_experiment.experiment_id = "42"
+
+        with (
+            patch("mlflow.get_experiment_by_name", return_value=mock_experiment),
+            patch(
+                "mlflow.get_tracking_uri",
+                return_value="https://alice:hunter2xyz@mlflow.example.com:8443",
+            ),
+        ):
+            from haute.modelling._mlflow_log import build_run_url
+
+            url = build_run_url("server", "freq", "run123")
+            assert url == "https://mlflow.example.com:8443/#/experiments/42/runs/run123"
+            assert "hunter2xyz" not in url
+
 
 class TestLogExperiment:
     def test_calls_mlflow_correctly(self, monkeypatch: pytest.MonkeyPatch) -> None:

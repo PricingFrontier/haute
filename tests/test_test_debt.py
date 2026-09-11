@@ -245,6 +245,14 @@ _EXPECTED_DEBT_IDS = {
     # See tests/test_config_io_gaps.py::TestConfigPathEscapeGuard
     # ::test_escape_guard_triggers_on_resolved_outside.
     "1e4116d06849b611",
+    # Windows symlink privilege — the MLflow settings write-containment guard
+    # test symlinks haute.toml at an external victim file to prove a save
+    # refuses to follow it, but symlink creation needs a privilege Windows
+    # withholds by default (WinError 1314). Skipped when symlink creation
+    # raises, mirroring the other symlink-guard tests; Linux CI runs it.
+    # See tests/test_mlflow_settings.py::TestLoadSaveSettings
+    # ::test_save_refuses_symlinked_haute_toml_escaping_the_project.
+    "f696e54d030dc852",
     # Windows symlink privilege — the file-browser short-path regression test
     # builds a symlinked project dir so ``Path.cwd()`` differs from its
     # ``resolve()`` (the cross-platform stand-in for a Windows 8.3 short cwd),

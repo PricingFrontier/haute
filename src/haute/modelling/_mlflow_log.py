@@ -136,7 +136,11 @@ def build_run_url(
         base = os.getenv("DATABRICKS_HOST", "").rstrip("/")
         path = "#mlflow/experiments"
     else:
-        base = mlflow.get_tracking_uri().rstrip("/")
+        from haute.modelling._mlflow_settings import redact_uri
+
+        # A credential-bearing env tracking URI must not leak into the
+        # displayed run link.
+        base = redact_uri(mlflow.get_tracking_uri()).rstrip("/")
         path = "#/experiments"
     if not base:
         return None
