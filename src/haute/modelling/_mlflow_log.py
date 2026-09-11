@@ -112,6 +112,12 @@ def configure_mlflow_tracking() -> tuple[str, str]:
     mlflow.set_tracking_uri(tracking_uri)
     if backend == "databricks":
         mlflow.set_registry_uri("databricks-uc")
+    else:
+        # Explicitly point the registry at the selected tracking store: the
+        # registry URI is process-global, so a leftover databricks-uc from
+        # an earlier destination must never capture local/server
+        # registrations.
+        mlflow.set_registry_uri(tracking_uri)
     return tracking_uri, backend
 
 
@@ -553,6 +559,12 @@ def _log_model_with_signature(
             artifact_path="model",
             signature=signature,
         )
+        # mlflow 3.x stores logged models as LoggedModel entities outside
+        # the run's artifact listing, so Haute's run-artifact discovery
+        # (`_find_cbm_artifact`) would no longer see the model. Log the
+        # native file at the run root too — the same rule the non-CatBoost
+        # branch below has always applied.
+        mlflow.log_artifact(str(model_file))
         return
 
     # Non-CatBoost flavors (RustyStats .rsglm, generic): log via pyfunc so

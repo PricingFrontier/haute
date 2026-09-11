@@ -520,10 +520,12 @@ class TestLocalRegistryDiscovery:
         # Model Score picker's discovery routes exactly like a Databricks
         # one — including the file store's int-typed versions, which the
         # routes must serialise to the string wire contract.
+        import mlflow
         from mlflow.tracking import MlflowClient
 
         monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-        registry = MlflowClient(tracking_uri=(project_root / "mlruns").as_uri())
+        uri = (project_root / "mlruns").as_uri()
+        registry = MlflowClient(tracking_uri=uri, registry_uri=uri)
         experiment_id = registry.create_experiment("registry-exp")
         run = registry.create_run(experiment_id)
         registry.create_registered_model("local-reg-model")
@@ -533,16 +535,22 @@ class TestLocalRegistryDiscovery:
             run_id=run.info.run_id,
         )
 
-        resp = client.get("/api/mlflow/models")
-        assert resp.status_code == 200
-        by_name = {m["name"]: m for m in resp.json()}
-        assert "local-reg-model" in by_name
-        assert [v["version"] for v in by_name["local-reg-model"]["latest_versions"]] == ["1"]
+        # Ambient process-global registry state from another destination
+        # must not influence the discovery routes.
+        mlflow.set_registry_uri("databricks-uc")
+        try:
+            resp = client.get("/api/mlflow/models")
+            assert resp.status_code == 200
+            by_name = {m["name"]: m for m in resp.json()}
+            assert "local-reg-model" in by_name
+            assert [v["version"] for v in by_name["local-reg-model"]["latest_versions"]] == ["1"]
 
-        versions = client.get("/api/mlflow/model-versions?model_name=local-reg-model")
-        assert versions.status_code == 200
-        assert [v["version"] for v in versions.json()] == ["1"]
-        assert versions.json()[0]["run_id"] == run.info.run_id
+            versions = client.get("/api/mlflow/model-versions?model_name=local-reg-model")
+            assert versions.status_code == 200
+            assert [v["version"] for v in versions.json()] == ["1"]
+            assert versions.json()[0]["run_id"] == run.info.run_id
+        finally:
+            mlflow.set_registry_uri(None)
 
 
 class TestSavedFolderKeepsRunsDiscoverable:

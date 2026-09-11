@@ -298,7 +298,10 @@ the discovery routes exactly like a Databricks one.
 ### Routes (`routes/mlflow.py`)
 
 `_ensure_tracking()` imports mlflow (`ImportError` → `503`), resolves the
-tracking backend and builds a client (`Exception` → `502`, logged).
+tracking backend and builds a client (`Exception` → `502`, logged) with the
+registry URI pinned to the resolved destination (`databricks-uc` for
+Databricks, the tracking URI otherwise) — ambient process-global registry
+state from another destination can never answer discovery queries.
 `list_runs` is O(N) in `max_results` — MLflow has no batch artifacts API,
 so each candidate run gets its own `client.list_artifacts` call to check
 for a matching model/optimiser-result artifact; a run whose artifact

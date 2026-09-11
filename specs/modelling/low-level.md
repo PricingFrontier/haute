@@ -549,9 +549,11 @@ secret.
   server and local modes alike).
 - `configure_mlflow_tracking()` — resolves the tracking backend, calls
   `mlflow.set_tracking_uri`, sets `MLFLOW_ALLOW_FILE_STORE` (setdefault) for
-  local mode, and conditionally `set_registry_uri("databricks-uc")` for
-  Databricks; server mode keeps MLflow's default registry-follows-tracking
-  behaviour. The single place connection setup happens.
+  local mode, and sets the registry URI **explicitly for every backend** —
+  `databricks-uc` for Databricks, the tracking URI itself for server/local.
+  The registry URI is process-global, so a leftover `databricks-uc` from an
+  earlier destination must never capture local/server registrations. The
+  single place connection setup happens.
 - `build_run_url(backend, experiment_name, run_id)` — resolves the numeric
   `experiment_id` via `mlflow.get_experiment_by_name` (run URLs require the
   numeric id, so the name is resolved first) and returns the Databricks
@@ -595,9 +597,11 @@ calls `log_experiment` via `run_in_threadpool` to keep the event loop responsive
 `log_experiment` passes the persisted contract metadata to `_log_model_with_signature`. A `.cbm`
 artifact is loaded and logged through `mlflow.catboost.log_model` at artifact path `model`; a
 `.rsglm` (or other non-CatBoost native file) is represented by an MLflow pyfunc model with the
-same signature and the native file is also logged at the run root for Haute's native-artifact
-discovery path. Thus both families carry a `ModelSignature`, but only CatBoost uses MLflow's
-native CatBoost flavor.
+same signature. **Every** flavor also logs the native file at the run root: mlflow 3.x stores
+logged models as LoggedModel entities outside the run's artifact listing, so Haute's
+run-artifact discovery (`_find_cbm_artifact` / `_find_rsglm_artifact`) would otherwise never
+see a freshly logged model. Thus both families carry a `ModelSignature`, but only CatBoost
+uses MLflow's native CatBoost flavor.
 
 `build_signature` classifies canonical Polars dtype descriptors structurally.
 `Date`, bare `Datetime`, and parameterised `Datetime` descriptors for every

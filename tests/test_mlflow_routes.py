@@ -980,7 +980,12 @@ class TestEnsureTrackingDirect:
 
         assert os.environ["MLFLOW_ALLOW_FILE_STORE"] == "true"
         mlflow_mod.set_tracking_uri.assert_called_once_with("file:///tmp/mlruns")
-        tracking_mod.MlflowClient.assert_called_once_with(tracking_uri="file:///tmp/mlruns")
+        tracking_mod.MlflowClient.assert_called_once_with(
+            tracking_uri="file:///tmp/mlruns",
+            # The registry is pinned to the resolved destination so ambient
+            # process-global registry state can never answer discovery.
+            registry_uri="file:///tmp/mlruns",
+        )
 
 
 # ---------------------------------------------------------------------------

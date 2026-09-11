@@ -162,7 +162,12 @@ def _ensure_tracking() -> tuple[_types.ModuleType, MlflowClient]:
         tracking_uri, backend = resolve_tracking_backend()
         allow_file_store_if_local(tracking_uri, backend)
         mlflow.set_tracking_uri(tracking_uri)
-        client = MlflowClient(tracking_uri=tracking_uri)
+        # Pin the registry to the resolved destination explicitly: without
+        # this, the client falls back to the process-global registry URI,
+        # so ambient state from another destination could answer registry
+        # queries.
+        registry_uri = "databricks-uc" if backend == "databricks" else tracking_uri
+        client = MlflowClient(tracking_uri=tracking_uri, registry_uri=registry_uri)
         return mlflow, client
     except HTTPException:
         raise
