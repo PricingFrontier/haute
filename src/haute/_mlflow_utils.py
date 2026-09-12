@@ -62,9 +62,10 @@ def _restore_env(name: str, value: str | None) -> None:
 
 @contextmanager
 def mlflow_fluent_operation() -> Iterator[None]:
-    """Serialize fluent writers and restore their ambient state on every exit.
+    """Serialize global-state SDK operations and restore state on every exit.
 
-    Read paths use pinned clients/downloads and do not take this lock. Settings
+    Discovery and native reads use pinned clients without this lock. Pyfunc
+    downloads share it for MLflow's nested global-state model lookup. Settings
     can change while a log is in progress; its fluent URI remains fixed until
     the run has terminated. The next writer then resolves the new settings.
     """

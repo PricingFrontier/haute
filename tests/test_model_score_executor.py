@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import numpy as np
 import polars as pl
@@ -559,7 +559,8 @@ class TestResolveArtifactLocal:
 
         monkeypatch.chdir(tmp_path)
 
-        def fake_download(uri, dst_path):
+        def fake_download(uri, dst_path, *, tracking_uri):
+            assert tracking_uri == "http://tracking.example.invalid"
             Path(dst_path).mkdir(parents=True, exist_ok=True)
             out = Path(dst_path) / "model.cbm"
             out.write_bytes(b"downloaded model")
@@ -568,7 +569,16 @@ class TestResolveArtifactLocal:
         mock_mlflow = MagicMock()
         mock_mlflow.artifacts.download_artifacts.side_effect = fake_download
 
-        result = _resolve_artifact_local(mock_mlflow, "run456", "model.cbm")
+        result = _resolve_artifact_local(
+            mock_mlflow,
+            "run456",
+            "model.cbm",
+            tracking_uri="http://tracking.example.invalid",
+        )
 
         assert Path(result).is_file()
-        mock_mlflow.artifacts.download_artifacts.assert_called_once()
+        mock_mlflow.artifacts.download_artifacts.assert_called_once_with(
+            "runs:/run456/model.cbm",
+            dst_path=ANY,
+            tracking_uri="http://tracking.example.invalid",
+        )

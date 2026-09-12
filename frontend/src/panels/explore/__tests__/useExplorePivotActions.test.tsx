@@ -1,7 +1,8 @@
-import { act, renderHook } from "@testing-library/react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type {
+  ExploreCacheReport,
   ExplorePivotResult,
   ExplorePivotRunResponse,
   ExplorePivotStatusResponse,
@@ -19,6 +20,7 @@ import {
   type ExplorePivotConfig,
 } from "../pivotConfig"
 import useExplorePivotActions from "../useExplorePivotActions"
+import useAutoUpdateExplorePivots from "../useAutoUpdateExplorePivots"
 
 const mockRunExplorePivot = vi.fn()
 const mockCancelExplorePivot = vi.fn()
@@ -105,6 +107,8 @@ function startActiveJob(config: ExplorePivotConfig, jobId = "active-job") {
 }
 
 describe("useExplorePivotActions", () => {
+  afterEach(cleanup)
+
   beforeEach(() => {
     mockRunExplorePivot.mockReset()
     mockCancelExplorePivot.mockReset()
@@ -120,6 +124,58 @@ describe("useExplorePivotActions", () => {
     })
     useGraphStore.setState({ structuralVersion: 0 })
     useDocumentStatusStore.getState().reset()
+  })
+
+  it.each([1, 2])("resumes automatic calculation after document adoption with %i mounted consumers", async (consumers) => {
+    let finishOld!: (response: ExplorePivotRunResponse) => void
+    const currentResult = { ...result, generated_at: 2 }
+    const completed = (value: ExplorePivotResult): ExplorePivotRunResponse => ({
+      status: "completed", job_id: null, cached: true, message: "Pivot cache hit",
+      result: value, failure: null,
+    })
+    mockRunExplorePivot
+      .mockReturnValueOnce(new Promise<ExplorePivotRunResponse>((resolve) => { finishOld = resolve }))
+      .mockResolvedValueOnce(completed(currentResult))
+    const config = pivot()
+    const pivots = [config]
+    const report = { dataframe_cache_key: result.dataframe_cache_key } as ExploreCacheReport
+    for (let consumer = 0; consumer < consumers; consumer += 1) {
+      renderHook(() => {
+        const actions = useExplorePivotActions({ node, allNodes: [node], edges: [] })
+        useAutoUpdateExplorePivots({ nodeId: node.id, pivots, report, ...actions })
+        return actions
+      })
+    }
+    expect(mockRunExplorePivot).toHaveBeenCalledTimes(1)
+
+    act(() => { useDocumentStatusStore.getState().setSourceRevision("adopted-document") })
+    await act(async () => { finishOld(completed(result)) })
+
+    await waitFor(() => expect(mockRunExplorePivot).toHaveBeenCalledTimes(2))
+    expect(useNodeResultsStore.getState().pivotResults[`${node.id}:claims`]?.result).toEqual(currentResult)
+    expect(useNodeResultsStore.getState().pivotStartClaims).toEqual({})
+  })
+
+  it("does not strand an automatic claim while the document cannot execute", async () => {
+    useDocumentStatusStore.setState({ loadStatus: "degraded" })
+    const config = pivot()
+    const pivots = [config]
+    const report = { dataframe_cache_key: result.dataframe_cache_key } as ExploreCacheReport
+    mockRunExplorePivot.mockResolvedValue({
+      status: "completed", job_id: null, cached: true, message: "Pivot cache hit",
+      result, failure: null,
+    })
+    renderHook(() => {
+      const actions = useExplorePivotActions({ node, allNodes: [node], edges: [] })
+      useAutoUpdateExplorePivots({ nodeId: node.id, pivots, report, ...actions })
+      return actions
+    })
+    expect(mockRunExplorePivot).not.toHaveBeenCalled()
+    expect(useNodeResultsStore.getState().pivotStartClaims).toEqual({})
+
+    act(() => { useDocumentStatusStore.getState().reset() })
+    await waitFor(() => expect(mockRunExplorePivot).toHaveBeenCalledTimes(1))
+    expect(useNodeResultsStore.getState().pivotResults[`${node.id}:claims`]?.result).toEqual(result)
   })
 
   it("does nothing for a pivot without values", async () => {
@@ -148,9 +204,14 @@ describe("useExplorePivotActions", () => {
     })
     const { result: hook } = renderActions()
 
-    await act(() => hook.current.updatePivot(pivot()))
+    const key = explorePivotResultKey(node.id, "claims")
+    const token = useNodeResultsStore.getState().claimExplorePivotAuto(
+      key, node.id, "df-1", pivotCalculationIdentity(pivot()),
+    )
+    await act(() => hook.current.updatePivot(pivot(), "df-1", token!))
 
     expect(mockRunExplorePivot).not.toHaveBeenCalled()
+    expect(useNodeResultsStore.getState().pivotStartClaims).toEqual({})
     expect(hook.current.submitting).toEqual({})
     expect(useNodeResultsStore.getState().pivotJobs).toEqual({})
   })

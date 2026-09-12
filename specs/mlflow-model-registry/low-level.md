@@ -327,8 +327,13 @@ No speculative cache, retry fan-out, or concurrent request burst is added.
 
 ### Connection surface (`routes/mlflow.py`)
 
-Discovery clients, registered-source resolution, and artifact downloads are
+Discovery clients, registered-source resolution, and native artifact downloads are
 pinned to the same destination without mutating global MLflow tracking state.
+Pyfunc downloads also carry an explicit destination, but MLflow 3's nested
+logged-model resolution consults global tracking state. That download therefore
+uses the shared fluent-operation lock, temporarily selects the requested tracking
+and registry URIs, and restores both URIs and the environment on every exit.
+Loading the downloaded local model happens outside that critical section.
 Experiment discovery follows every continuation token on that same client so
 switching from the fluent API preserves the complete experiment list.
 Databricks profile selection also applies to the Unity Catalog registry. A

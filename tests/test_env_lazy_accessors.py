@@ -485,12 +485,6 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
     (
         "src/haute/modelling/_mlflow_settings.py",
         "<module>.resolve_tracking_config",
-        "MLFLOW_TRACKING_URI",
-        "os.getenv",
-    ),
-    (
-        "src/haute/modelling/_mlflow_settings.py",
-        "<module>.resolve_tracking_config",
         "DATABRICKS_HOST",
         "os.getenv",
     ),
@@ -501,10 +495,16 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
         "os.getenv",
     ),
     (
-        "src/haute/modelling/_mlflow_settings.py",
-        "<module>._server_uri_with_env_credentials",
+        "src/haute/_mlflow_utils.py",
+        "<module>.tracking_uri_from_environment",
         "MLFLOW_TRACKING_URI",
-        "os.getenv",
+        "os.environ.get",
+    ),
+    (
+        "src/haute/_mlflow_utils.py",
+        "<module>.set_tracking_uri_preserving_env",
+        "MLFLOW_TRACKING_URI",
+        "os.environ.get",
     ),
     (
         "src/haute/modelling/_mlflow_settings.py",

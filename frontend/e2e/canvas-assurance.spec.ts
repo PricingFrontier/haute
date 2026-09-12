@@ -31,6 +31,9 @@ const mixedBandingNarrowSnapshot = process.platform === "linux"
 const rebuiltRatingNarrowSnapshot = process.platform === "linux"
   ? "rebuilt-three-factor-rating-narrow-1024x768-linux.png"
   : "rebuilt-three-factor-rating-narrow-1024x768.png"
+const rebuiltRatingDesktopSnapshot = process.platform === "linux"
+  ? "rebuilt-three-factor-rating-desktop-1440x900-linux.png"
+  : "rebuilt-three-factor-rating-desktop-1440x900.png"
 const selectedOptimiserDesktopSnapshot = process.platform === "linux"
   ? "selected-optimiser-point-desktop-1440x900-linux.png"
   : "selected-optimiser-point-desktop-1440x900.png"
@@ -196,7 +199,7 @@ test.describe("frontend canvas assurance", () => {
 
     await expectCanvasScreenshot(
       ratingPanel,
-      "rebuilt-three-factor-rating-desktop-1440x900.png",
+      rebuiltRatingDesktopSnapshot,
     )
     await page.setViewportSize(narrowViewport)
     await expectCanvasScreenshot(

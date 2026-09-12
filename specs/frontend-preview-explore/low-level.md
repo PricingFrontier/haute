@@ -122,6 +122,12 @@
 
 1. The Pivots pane parses current node config once and renders enabled pivots as full-width
    sections in persisted order. It keys `pivotResults` and `pivotJobs` by `${nodeId}:${pivotId}`.
+   Automatic attempts are scoped to the current document execution generation.
+   If document adoption invalidates an in-flight response, the current generation
+   may submit again after the old claim is released. An unsynchronized or
+   non-executable document must not claim work or consume an automatic attempt;
+   calculation resumes when the document becomes executable. A real terminal
+   failure still requires Retry or a changed calculation/cache identity.
    When a current Explore cache report exists, the mounted pane automatically sends every stale
    or uncalculated configured card to the dedicated endpoint once per node, pivot calculation
    identity, and dataframe-cache identity. A synchronous cache hit is stored immediately; a

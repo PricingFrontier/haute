@@ -470,7 +470,10 @@ decides whether `variance_power` needs to be rendered (CatBoost `Tweedie` loss, 
 
 Destination changes are operation-scoped. Discovery and scoring use clients and
 artifact downloads explicitly pinned to the resolved tracking and registry URIs;
-they never change MLflow's process-global destination. Fluent logging operations
+discovery and native downloads never change MLflow's process-global destination.
+Pyfunc downloads share the fluent-operation lock because MLflow's nested
+logged-model lookup still reads global state; they temporarily select the resolved
+destination and restore it on every exit. Fluent logging operations
 are serialized for their complete lifetime (including run termination and URL
 construction), restore their previous tracking/registry state on success or
 failure, and preserve the configured environment URI. Saving settings may proceed
@@ -574,8 +577,9 @@ secret.
   The registry URI is process-global, so a leftover `databricks-uc` from an
   earlier destination must never capture local/server registrations. The
   fluent setup runs inside `mlflow_fluent_operation()` for the entire logging
-  lifecycle. Discovery and artifact downloads use explicitly pinned clients
-  and tracking URIs without changing fluent state.
+  lifecycle. Discovery and native artifact downloads use explicitly pinned clients
+  and tracking URIs without changing fluent state; pyfunc downloads use the same
+  operation scope as logging for the SDK's nested model lookup.
 - `build_run_url(backend, experiment_name, run_id)` — resolves the numeric
   `experiment_id` via `mlflow.get_experiment_by_name` (run URLs require the
   numeric id, so the name is resolved first) and returns the Databricks

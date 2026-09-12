@@ -22,7 +22,12 @@ import polars as pl
 
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
-from haute._mlflow_utils import resolve_mlflow_source
+from haute._mlflow_utils import (
+    mlflow_fluent_operation,
+    registry_uri_for_tracking,
+    resolve_mlflow_source,
+    set_tracking_uri_preserving_env,
+)
 from haute._model_flavors import _SUPPORTED_FLAVORS, ModelFlavor
 
 if TYPE_CHECKING:
@@ -530,10 +535,17 @@ def _load_pyfunc_model(
 ) -> Any:
     """Load a model via MLflow pyfunc flavor."""
     model_uri = f"runs:/{run_id}/{artifact_path}"
-    local_path = mlflow_module.artifacts.download_artifacts(
-        model_uri,
-        tracking_uri=tracking_uri,
-    )
+    # MLflow 3's nested logged-model repository still constructs a client from
+    # global state, even when download_artifacts receives tracking_uri. Share
+    # the fluent lock with logging so this lookup cannot redirect an active run.
+    with mlflow_fluent_operation():
+        if tracking_uri is not None:
+            set_tracking_uri_preserving_env(mlflow_module, tracking_uri)
+            mlflow_module.set_registry_uri(registry_uri_for_tracking(tracking_uri))
+        local_path = mlflow_module.artifacts.download_artifacts(
+            model_uri,
+            tracking_uri=tracking_uri,
+        )
     return mlflow_module.pyfunc.load_model(local_path)
 
 
