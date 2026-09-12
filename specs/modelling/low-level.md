@@ -493,34 +493,61 @@ The Databricks destination is configured by an environment
 `databricks://<profile>` URI (which counts as configured even if the profile's
 credentials cannot be loaded or its probe fails — the failure is reported, never
 worked around by falling back to host/token variables or another destination),
-or, without a profile reference, by the `DATABRICKS_HOST`/`DATABRICKS_TOKEN`
-pair; a profile takes precedence over the pair and is preserved through settings
-saves and probes. That precedence is enforced, not assumed: MLflow's default
-Databricks-SDK credential path resolves a named profile environment-first, so a
-profile paired with a conflicting host/token pair would send the environment
-token to the profile's host. `haute._mlflow_utils` therefore pins
-`MLFLOW_ENABLE_DB_SDK` to `false` (`os.environ.setdefault`), and the pin is
-applied from this module's Databricks resolver — the one place a Databricks
-`TrackingConfig` is minted, which the inventory, the per-key resolver, the auto
-rule, and candidate resolution all pass through — so every consumer (discovery,
-probes, logging, exports, loads) is bound before its first Databricks credential
-lookup, cold process included. The pin makes MLflow resolve `databricks://<profile>`
-host **and** token from the profile alone and plain `databricks` from the
-environment pair, and those providers resolve credentials on every request, so a
-repointed `DATABRICKS_HOST` or a rewritten profile is followed by the very next
-request on an existing client (MLflow's SDK path, by contrast, caches its client
-and would keep serving the previous host under a new identity). haute therefore
-supports exactly these two credential forms: when Databricks is configured and the
-environment explicitly sets `MLFLOW_ENABLE_DB_SDK=true`, the Databricks resolver
-raises `MlflowConfigError` naming the variable — the inventory reports that entry
-unconfigured with the reason while server and local keep their own verdicts, and
-the auto rule fails loudly rather than skipping past it — and the value is never
-silently overridden. The check reads the environment directly (no mlflow import),
-so destination resolution and the inventory never require the optional mlflow
-package. With no Databricks configuration at all the variable is irrelevant and
-the entry is simply unconfigured. Its Unity
-Catalog registry URI retains the same profile as `databricks-uc://<profile>`.
-All tracking consumers share this registry mapping.
+or, without a profile reference, by the dedicated MLflow pair
+`DATABRICKS_MLFLOW_HOST`/`DATABRICKS_MLFLOW_TOKEN`; a profile takes precedence
+over the pair and is preserved through settings saves and probes. The pair is
+separate from the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` (and
+service-principal) credentials data access uses
+([databricks-io](../databricks-io/low-level.md)), because Databricks token
+scopes may not let one token cover both: MLflow **never** reads the general
+pair, and when only the general pair is set the Databricks entry is unconfigured
+with a detail naming the MLflow pair and saying the general pair is not used for
+MLflow (copy the values when one token covers both). The pair carries a
+personal access token only; a service principal is selected through a profile.
+
+Credentials are **bound**, not assumed. Left alone, MLflow 3.15 would
+authenticate a bare `databricks` URI from the general pair by several routes: its
+per-request provider chain starts with an environment provider reading
+`DATABRICKS_HOST`/`DATABRICKS_TOKEN`; a `DATABRICKS_CONFIG_PROFILE` variable
+replaces that chain with the named profile; its default Databricks-SDK path
+resolves credentials environment-first and caches its client; and its run and
+logged-model artifact repositories first try a bare SDK client built from the
+environment before falling back to MLflow's REST artifact repository.
+`haute._mlflow_utils.bind_mlflow_databricks_credentials()` therefore,
+idempotently and under a lock: pins `MLFLOW_ENABLE_DB_SDK` to `false`
+(`os.environ.setdefault`); replaces MLflow's environment credential provider
+with one that reads the MLflow pair on every call and **raises** naming both
+variables when either is unset, so a bare request never falls through to the
+`DEFAULT` profile or any later provider; and replaces the SDK artifact repository
+those run and logged-model repositories construct with a shim whose operations
+raise, so every upload, listing and download takes MLflow's REST fallback, which
+the provider (or the profile) binds. No SDK client is ever built from the
+general pair, and a REST failure propagates to the caller. Providers resolve
+credentials on every request, so a repointed `DATABRICKS_MLFLOW_HOST` or a
+rewritten profile is followed by the very next request on an existing client.
+The binder is called from this module's Databricks resolver — the one place a
+Databricks `TrackingConfig` is minted, which the inventory, the per-key
+resolver, the auto rule, candidate resolution and deploy all pass through — so
+every consumer is bound before its first Databricks credential lookup, cold
+process included. It returns immediately when mlflow is not installed and skips
+binding when importing MLflow fails (such a process cannot make MLflow
+requests), so destination resolution never requires the optional package. The
+binding is process-global; `_restore_mlflow_databricks_credentials()` undoes it
+so tests stay independent of execution order.
+
+haute supports exactly these two credential forms and rejects configurations
+that would silently select different credentials: when Databricks is configured
+and the environment explicitly sets `MLFLOW_ENABLE_DB_SDK=true`, or when the pair
+form is selected while `DATABRICKS_CONFIG_PROFILE` is set, the Databricks
+resolver raises `MlflowConfigError` naming the variable (a profile is selected
+with `MLFLOW_TRACKING_URI=databricks://<profile>` instead). The inventory reports
+that entry unconfigured with the reason while server and local keep their own
+verdicts, the auto rule fails loudly rather than skipping past it, and neither
+value is ever silently overridden. Both checks read the environment directly
+(no mlflow import). With no Databricks configuration at all these variables are
+irrelevant and the entry is simply unconfigured. Its Unity Catalog registry URI
+retains the same profile as `databricks-uc://<profile>`. All tracking consumers
+share this registry mapping.
 Credential-bearing tracking URIs are internal connection values only: training
 and optimiser logging responses redact userinfo from both tracking URI and run
 URL before returning them to the browser.
@@ -553,10 +580,14 @@ never stored. `list_destinations(project_root)` returns the three
    it counts as configured even when the profile's credentials cannot be
    loaded — the failure surfaces from the probe or the load, never as a
    fallback to environment credentials or another destination), or, without a
-   profile reference, by both `DATABRICKS_HOST` and `DATABRICKS_TOKEN`
-   (`destination` is the host). A profile takes precedence over the pair. A
-   partially set pair names the missing variable; nothing set names both
-   options. This key never reads `haute.toml`.
+   profile reference, by both `DATABRICKS_MLFLOW_HOST` and
+   `DATABRICKS_MLFLOW_TOKEN` (`destination` is the host). A profile takes
+   precedence over the pair. A partially set pair names the missing variable;
+   nothing set names both options and, when the general
+   `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair is set, says it is not used for
+   MLflow. The pair form with `DATABRICKS_CONFIG_PROFILE` set, and a configured
+   Databricks with `MLFLOW_ENABLE_DB_SDK=true`, raise `MlflowConfigError`. This
+   key never reads `haute.toml`.
 2. **`server`** — configured by `[mlflow] tracking_uri` (`http(s)://` with a
    non-empty host and **no embedded credentials** — secrets belong in `.env`,
    never in the checked-in toml; `config_source="toml"`), else by an `http(s)`
@@ -1051,7 +1082,7 @@ rows/features) and retry.
 - `tests/test_gpu_fit_cancel.py` verifies algorithm-level cancellation and metric-polling cancellation behavior.
 - `tests/test_mem_helpers.py` verifies RSS/available-memory helpers and checkpoint behavior.
 - `tests/test_mlflow_log.py` verifies the destination-aware tracking backend/experiment resolution wrappers (an explicit key winning over the auto destination, an unconfigured explicit key raising, an unknown key rejected before resolution, the experiment default following the destination), databricks/server/local run URL construction, experiment/model-card/JSON logging, and tracking configuration.
-- `tests/test_mlflow_settings.py` verifies the `[mlflow]` inventory load/validate/save round trip (tomlkit layout preservation, the retired `mode` key and other unknown keys rejected, empty `tracking_uri` clearing the key, resolved-folder persistence for a bare save, credential-bearing and non-`http(s)` URIs rejected without echoing them, symlink containment), `validate_destination_key`, the per-key `resolve_destination` precedence matrix (toml × env × credentials for each key, profile precedence over host/token, an unsupported env scheme failing server/local/auto but not databricks), the auto rule, `list_destinations` (all three entries, secret-free profile and redacted server destinations), and `candidate_tracking_config` for every key.
+- `tests/test_mlflow_settings.py` verifies the `[mlflow]` inventory load/validate/save round trip (tomlkit layout preservation, the retired `mode` key and other unknown keys rejected, empty `tracking_uri` clearing the key, resolved-folder persistence for a bare save, credential-bearing and non-`http(s)` URIs rejected without echoing them, symlink containment), `validate_destination_key`, the per-key `resolve_destination` precedence matrix (toml × env × credentials for each key, profile precedence over the MLflow pair, the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair alone leaving Databricks unconfigured with the not-used-for-MLflow hint, `DATABRICKS_CONFIG_PROFILE` with the pair form rejected, an unsupported env scheme failing server/local/auto but not databricks), the auto rule, `list_destinations` (all three entries, secret-free profile and redacted server destinations), and `candidate_tracking_config` for every key.
 - `tests/test_mlflow_signature.py` verifies structural Date/Datetime mapping,
   parameterised unit/time-zone coverage, Decimal rejection, signature
   persistence, and a real local MLflow log/load/predict round trip.

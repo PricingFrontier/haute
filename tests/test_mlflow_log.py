@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -20,6 +21,9 @@ def _clean_tracking_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "MLFLOW_TRACKING_URI",
         "DATABRICKS_HOST",
         "DATABRICKS_TOKEN",
+        "DATABRICKS_MLFLOW_HOST",
+        "DATABRICKS_MLFLOW_TOKEN",
+        "DATABRICKS_CONFIG_PROFILE",
         "MLFLOW_ENABLE_DB_SDK",
     ):
         monkeypatch.delenv(var, raising=False)
@@ -27,8 +31,8 @@ def _clean_tracking_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 class TestResolveTrackingBackend:
     def test_databricks_when_env_vars_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi_test_token")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://myhost.databricks.com")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi_test_token")
 
         from haute.modelling._mlflow_log import resolve_tracking_backend
 
@@ -39,6 +43,8 @@ class TestResolveTrackingBackend:
     def test_local_when_env_vars_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         from haute.modelling._mlflow_log import resolve_tracking_backend
 
@@ -48,8 +54,9 @@ class TestResolveTrackingBackend:
         assert backend == "local"
 
     def test_local_when_only_host_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://myhost.databricks.com")
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         from haute.modelling._mlflow_log import resolve_tracking_backend
 
@@ -58,7 +65,8 @@ class TestResolveTrackingBackend:
 
     def test_local_when_only_token_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi_test_token")
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi_test_token")
 
         from haute.modelling._mlflow_log import resolve_tracking_backend
 
@@ -68,6 +76,8 @@ class TestResolveTrackingBackend:
     def test_env_tracking_uri_selects_server(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
         monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
 
         from haute.modelling._mlflow_log import resolve_tracking_backend
@@ -82,8 +92,8 @@ class TestResolveTrackingBackend:
         from haute._sandbox import set_project_root
 
         set_project_root(tmp_path)
-        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "t")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "t")
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
 
         from haute.modelling._mlflow_log import resolve_tracking_backend
@@ -95,7 +105,13 @@ class TestResolveTrackingBackend:
     def test_explicit_unconfigured_destination_raises(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        for var in ("DATABRICKS_HOST", "DATABRICKS_TOKEN", "MLFLOW_TRACKING_URI"):
+        for var in (
+            "DATABRICKS_HOST",
+            "DATABRICKS_TOKEN",
+            "DATABRICKS_MLFLOW_HOST",
+            "DATABRICKS_MLFLOW_TOKEN",
+            "MLFLOW_TRACKING_URI",
+        ):
             monkeypatch.delenv(var, raising=False)
 
         from haute.errors import MlflowConfigError
@@ -197,6 +213,8 @@ class TestResolveExperimentName:
     def test_auto_detects_backend(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         from haute.modelling._mlflow_log import resolve_experiment_name
 
@@ -216,8 +234,8 @@ class TestResolveExperimentName:
         )
 
     def test_destination_drives_the_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "t")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "t")
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
 
         from haute.modelling._mlflow_log import resolve_experiment_name
@@ -234,40 +252,54 @@ class TestBuildRunUrl:
 
         assert build_run_url("local", "exp", "run123") is None
 
-    def test_returns_url_for_databricks(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
-
+    def test_returns_url_for_databricks(self) -> None:
         mock_experiment = MagicMock()
         mock_experiment.experiment_id = "42"
 
-        with patch("mlflow.get_experiment_by_name", return_value=mock_experiment):
+        with (
+            patch(
+                "mlflow.utils.databricks_utils.get_databricks_host_creds",
+                return_value=SimpleNamespace(host="https://myhost.databricks.com"),
+            ),
+            patch("mlflow.get_experiment_by_name", return_value=mock_experiment),
+        ):
             from haute.modelling._mlflow_log import build_run_url
 
             url = build_run_url("databricks", "/Shared/haute/freq", "run123")
             assert url == "https://myhost.databricks.com/#mlflow/experiments/42/runs/run123"
 
-    def test_returns_none_when_experiment_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
-
-        with patch("mlflow.get_experiment_by_name", return_value=None):
+    def test_returns_none_when_experiment_not_found(self) -> None:
+        with (
+            patch(
+                "mlflow.utils.databricks_utils.get_databricks_host_creds",
+                return_value=SimpleNamespace(host="https://myhost.databricks.com"),
+            ),
+            patch("mlflow.get_experiment_by_name", return_value=None),
+        ):
             from haute.modelling._mlflow_log import build_run_url
 
             assert build_run_url("databricks", "/Shared/haute/freq", "run123") is None
 
-    def test_returns_none_when_host_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    def test_returns_none_when_host_missing(self) -> None:
+        with patch(
+            "mlflow.utils.databricks_utils.get_databricks_host_creds",
+            return_value=SimpleNamespace(host=""),
+        ):
+            from haute.modelling._mlflow_log import build_run_url
 
-        from haute.modelling._mlflow_log import build_run_url
+            assert build_run_url("databricks", "/Shared/haute/freq", "run123") is None
 
-        assert build_run_url("databricks", "/Shared/haute/freq", "run123") is None
-
-    def test_strips_trailing_slash_from_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com/")
-
+    def test_strips_trailing_slash_from_host(self) -> None:
         mock_experiment = MagicMock()
         mock_experiment.experiment_id = "42"
 
-        with patch("mlflow.get_experiment_by_name", return_value=mock_experiment):
+        with (
+            patch(
+                "mlflow.utils.databricks_utils.get_databricks_host_creds",
+                return_value=SimpleNamespace(host="https://myhost.databricks.com/"),
+            ),
+            patch("mlflow.get_experiment_by_name", return_value=mock_experiment),
+        ):
             from haute.modelling._mlflow_log import build_run_url
 
             url = build_run_url("databricks", "/Shared/haute/freq", "run123")
@@ -344,13 +376,13 @@ class TestRegistryUriFollowsDestination:
             patch("mlflow.set_tracking_uri"),
             patch("mlflow.set_registry_uri") as m_registry,
         ):
-            monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
-            monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-token")
+            monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
+            monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi-token")
             configure_mlflow_tracking()
             assert m_registry.call_args_list[-1].args == ("databricks-uc",)
 
-            monkeypatch.delenv("DATABRICKS_HOST")
-            monkeypatch.delenv("DATABRICKS_TOKEN")
+            monkeypatch.delenv("DATABRICKS_MLFLOW_HOST")
+            monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN")
             tracking_uri, backend = configure_mlflow_tracking()
             assert backend == "local"
             # The registry explicitly follows the local tracking store.
@@ -417,7 +449,13 @@ class TestLocalRegistrationEndToEnd:
 
         from haute._sandbox import set_project_root
 
-        for var in ("MLFLOW_TRACKING_URI", "DATABRICKS_HOST", "DATABRICKS_TOKEN"):
+        for var in (
+            "MLFLOW_TRACKING_URI",
+            "DATABRICKS_HOST",
+            "DATABRICKS_TOKEN",
+            "DATABRICKS_MLFLOW_HOST",
+            "DATABRICKS_MLFLOW_TOKEN",
+        ):
             monkeypatch.delenv(var, raising=False)
         set_project_root(tmp_path)
 
@@ -502,7 +540,13 @@ class TestRegistrationFollowsBackend:
     def test_local_backend_registers_when_model_name_given(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        for var in ("MLFLOW_TRACKING_URI", "DATABRICKS_HOST", "DATABRICKS_TOKEN"):
+        for var in (
+            "MLFLOW_TRACKING_URI",
+            "DATABRICKS_HOST",
+            "DATABRICKS_TOKEN",
+            "DATABRICKS_MLFLOW_HOST",
+            "DATABRICKS_MLFLOW_TOKEN",
+        ):
             monkeypatch.delenv(var, raising=False)
         register = self._log(tmp_path, model_name="motor-pricing")
         register.assert_called_once_with("runs:/run_reg/model", "motor-pricing")
@@ -512,6 +556,8 @@ class TestRegistrationFollowsBackend:
     ) -> None:
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
         monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
         register = self._log(tmp_path, model_name="motor-pricing")
         register.assert_called_once_with("runs:/run_reg/model", "motor-pricing")
@@ -519,7 +565,13 @@ class TestRegistrationFollowsBackend:
     def test_no_model_name_skips_registration(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        for var in ("MLFLOW_TRACKING_URI", "DATABRICKS_HOST", "DATABRICKS_TOKEN"):
+        for var in (
+            "MLFLOW_TRACKING_URI",
+            "DATABRICKS_HOST",
+            "DATABRICKS_TOKEN",
+            "DATABRICKS_MLFLOW_HOST",
+            "DATABRICKS_MLFLOW_TOKEN",
+        ):
             monkeypatch.delenv(var, raising=False)
         register = self._log(tmp_path, model_name=None)
         register.assert_not_called()
@@ -530,6 +582,8 @@ class TestLogExperiment:
         """Mock mlflow and verify correct calls are made."""
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         mock_run = MagicMock()
         mock_run.info.run_id = "abc123"
@@ -570,8 +624,8 @@ class TestLogExperiment:
 
     def test_databricks_sets_registry(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When Databricks env vars present, set_registry_uri('databricks-uc') is called."""
-        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi_test_token")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://myhost.databricks.com")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi_test_token")
 
         mock_run = MagicMock()
         mock_run.info.run_id = "abc123"
@@ -613,6 +667,8 @@ class TestLogExperiment:
         """Non-existent model path should not crash."""
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         mock_run = MagicMock()
         mock_run.info.run_id = "abc123"
@@ -665,6 +721,8 @@ class TestLogExperiment:
         """
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         mock_run = MagicMock()
         mock_run.info.run_id = "glm-artifact"
@@ -730,6 +788,8 @@ class TestLogExperiment:
         """
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         mock_run = MagicMock()
         mock_run.info.run_id = "cbm-artifact"
@@ -784,6 +844,8 @@ class TestLogExperiment:
         """SHAP, importance, and CV results are all logged as artifacts."""
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         mock_run = MagicMock()
         mock_run.info.run_id = "abc123"
@@ -839,8 +901,8 @@ class TestLogExperiment:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """When backend is databricks and model_name is set, model is registered."""
-        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi_test")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://myhost.databricks.com")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi_test")
 
         mock_run = MagicMock()
         mock_run.info.run_id = "abc123"
@@ -887,6 +949,8 @@ class TestLogExperiment:
         """With full data, model card artifact should be logged."""
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         mock_run = MagicMock()
         mock_run.info.run_id = "abc123"
@@ -941,6 +1005,8 @@ class TestLogExperiment:
         """With minimal data (no double_lift/importance), model card should still be generated."""
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         mock_run = MagicMock()
         mock_run.info.run_id = "abc123"
@@ -978,6 +1044,8 @@ class TestLogExperiment:
         """If model card generation raises, log_experiment should still succeed."""
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         mock_run = MagicMock()
         mock_run.info.run_id = "abc123"
@@ -1012,6 +1080,8 @@ class TestLogExperiment:
         """All diagnostic fields should be logged as artifacts."""
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         mock_run = MagicMock()
         mock_run.info.run_id = "full123"
@@ -1103,6 +1173,8 @@ class TestLogExperiment:
         """GLM-specific diagnostics should be logged as artifacts and metrics."""
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         mock_run = MagicMock()
         mock_run.info.run_id = "glm123"
@@ -1155,6 +1227,8 @@ class TestLogExperiment:
         """Metadata fields should be added to params."""
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         mock_run = MagicMock()
         mock_run.info.run_id = "meta123"
@@ -1199,6 +1273,8 @@ class TestLogExperiment:
     ) -> None:
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
         mock_run = MagicMock()
         mock_run.info.run_id = "tuning123"
 
@@ -1254,6 +1330,8 @@ class TestLogExperiment:
         """More than 100 params should be batched in groups of 100."""
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         mock_run = MagicMock()
         mock_run.info.run_id = "batch123"
@@ -1286,6 +1364,8 @@ class TestLogExperiment:
         """Param values longer than 500 chars should be truncated."""
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         mock_run = MagicMock()
         mock_run.info.run_id = "trunc123"
@@ -1336,6 +1416,8 @@ class TestLogExperiment:
 
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
         # Tracking resolution follows the sandbox project root (not cwd),
         # so scope it to the temp directory; conftest restores the original.
@@ -1374,11 +1456,15 @@ class TestLogExperiment:
 
 
 class TestBuildRunUrlExtra:
-    def test_returns_none_on_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_none_on_exception(self) -> None:
         """When mlflow.get_experiment_by_name raises, return None."""
-        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
-
-        with patch("mlflow.get_experiment_by_name", side_effect=RuntimeError("boom")):
+        with (
+            patch(
+                "mlflow.utils.databricks_utils.get_databricks_host_creds",
+                return_value=SimpleNamespace(host="https://myhost.databricks.com"),
+            ),
+            patch("mlflow.get_experiment_by_name", side_effect=RuntimeError("boom")),
+        ):
             from haute.modelling._mlflow_log import build_run_url
 
             assert build_run_url("databricks", "/Shared/haute/freq", "run123") is None
@@ -1389,6 +1475,8 @@ class TestConfigureMlflowTracking:
         """Local backend should set tracking URI to file:// path."""
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         with (
             patch("mlflow.set_tracking_uri") as m_tracking,
@@ -1407,8 +1495,8 @@ class TestConfigureMlflowTracking:
 
     def test_databricks_tracking(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Databricks backend should set both tracking and registry URIs."""
-        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi_test")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://myhost.databricks.com")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi_test")
 
         with (
             patch("mlflow.set_tracking_uri") as m_tracking,
@@ -1439,8 +1527,8 @@ class TestConfigureMlflowTracking:
         )
         monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(cfg))
         monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
-        monkeypatch.setenv("DATABRICKS_HOST", "https://env-host.example.net")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "env-token-value")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://env-host.example.net")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "env-token-value")
         monkeypatch.delenv("MLFLOW_ENABLE_DB_SDK", raising=False)
         captured: dict[str, object] = {}
 
@@ -1557,6 +1645,8 @@ class TestLoggedModelEnvironment:
     ) -> None:
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
         monkeypatch.delenv("MLFLOW_UV_AUTO_DETECT", raising=False)
         mock_run = MagicMock()
         mock_run.info.run_id = "rsglm-run"
@@ -1618,7 +1708,13 @@ class TestLoggedModelEnvironment:
         from haute._mlflow_utils import mlflow_fluent_operation
         from haute._sandbox import set_project_root
 
-        for var in ("MLFLOW_TRACKING_URI", "DATABRICKS_HOST", "DATABRICKS_TOKEN"):
+        for var in (
+            "MLFLOW_TRACKING_URI",
+            "DATABRICKS_HOST",
+            "DATABRICKS_TOKEN",
+            "DATABRICKS_MLFLOW_HOST",
+            "DATABRICKS_MLFLOW_TOKEN",
+        ):
             monkeypatch.delenv(var, raising=False)
         monkeypatch.delenv("MLFLOW_UV_AUTO_DETECT", raising=False)
         monkeypatch.delenv("MLFLOW_LOG_UV_FILES", raising=False)

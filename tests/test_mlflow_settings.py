@@ -55,9 +55,18 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "MLFLOW_TRACKING_URI",
         "DATABRICKS_HOST",
         "DATABRICKS_TOKEN",
+        "DATABRICKS_MLFLOW_HOST",
+        "DATABRICKS_MLFLOW_TOKEN",
+        "DATABRICKS_CONFIG_PROFILE",
         "MLFLOW_ENABLE_DB_SDK",
     ):
         monkeypatch.delenv(var, raising=False)
+
+
+_DATABRICKS_UNCONFIGURED_DETAIL = (
+    "Databricks is not configured for MLflow: set MLFLOW_TRACKING_URI=databricks://<profile> "
+    "or both DATABRICKS_MLFLOW_HOST and DATABRICKS_MLFLOW_TOKEN in the environment (.env)."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -248,8 +257,8 @@ class TestResolveDestination:
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
-        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-secret")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi-secret")
         config = resolve_destination("databricks", project_root)
         assert config.tracking_uri == "databricks://team"
         assert "dapi-secret" not in config.destination
@@ -257,8 +266,8 @@ class TestResolveDestination:
     def test_databricks_host_token_pair(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net/")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-secret")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net/")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi-secret")
         config = resolve_destination("databricks", project_root)
         assert config.tracking_uri == "databricks"
         assert config.destination == "https://adb.example.net"
@@ -267,8 +276,8 @@ class TestResolveDestination:
     def test_databricks_missing_token_names_the_variable(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
-        with pytest.raises(MlflowConfigError, match="DATABRICKS_TOKEN"):
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
+        with pytest.raises(MlflowConfigError, match="DATABRICKS_MLFLOW_TOKEN is not set"):
             resolve_destination("databricks", project_root)
 
     def test_databricks_unconfigured_names_both_options(self, project_root: Path) -> None:
@@ -276,7 +285,50 @@ class TestResolveDestination:
             resolve_destination("databricks", project_root)
         message = str(excinfo.value)
         assert "databricks://<profile>" in message
-        assert "DATABRICKS_HOST" in message and "DATABRICKS_TOKEN" in message
+        assert "DATABRICKS_MLFLOW_HOST" in message and "DATABRICKS_MLFLOW_TOKEN" in message
+        assert message == _DATABRICKS_UNCONFIGURED_DETAIL
+
+    def test_general_pair_alone_leaves_databricks_unconfigured_with_hint(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-general")
+        with pytest.raises(MlflowDestinationUnconfigured) as excinfo:
+            resolve_destination("databricks", project_root)
+        message = str(excinfo.value)
+        assert "DATABRICKS_MLFLOW_HOST" in message and "DATABRICKS_MLFLOW_TOKEN" in message
+        assert "DATABRICKS_HOST/DATABRICKS_TOKEN are set but are never used for MLflow" in message
+        assert "dapi-general" not in message
+        assert resolve_tracking_config(project_root).mode == "local"
+
+    def test_pair_form_rejects_ambient_databricks_config_profile(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi-secret")
+        monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "team")
+        with pytest.raises(MlflowConfigError, match="DATABRICKS_CONFIG_PROFILE") as excinfo:
+            resolve_destination("databricks", project_root)
+        assert not isinstance(excinfo.value, MlflowDestinationUnconfigured)
+        by_key = {e.key: e for e in list_destinations(project_root)}
+        assert by_key["databricks"].configured is False
+        assert by_key["databricks"].detail == str(excinfo.value)
+        assert by_key["server"].configured is False
+        assert "tracking_uri" in by_key["server"].detail
+        assert by_key["local"].configured is True
+        assert Path(by_key["local"].destination) == project_root / "mlruns"
+        with pytest.raises(MlflowConfigError, match="DATABRICKS_CONFIG_PROFILE"):
+            resolve_tracking_config(project_root)
+
+    def test_profile_uri_ignores_ambient_databricks_config_profile(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+        monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "other")
+        config = resolve_destination("databricks", project_root)
+        assert config.mode == "databricks"
+        assert config.tracking_uri == "databricks://team"
+        assert config.destination == "databricks://team"
 
     @pytest.mark.parametrize("form", ["profile", "pair"])
     def test_databricks_sdk_mode_is_rejected_naming_the_variable(
@@ -285,8 +337,8 @@ class TestResolveDestination:
         if form == "profile":
             monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
         else:
-            monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
-            monkeypatch.setenv("DATABRICKS_TOKEN", "t")
+            monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
+            monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "t")
         monkeypatch.setenv("MLFLOW_ENABLE_DB_SDK", "true")
         with pytest.raises(MlflowConfigError, match="MLFLOW_ENABLE_DB_SDK") as excinfo:
             resolve_destination("databricks", project_root)
@@ -422,8 +474,8 @@ class TestResolveDestination:
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
-        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "t")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "t")
         with pytest.raises(MlflowConfigError, match="sqlite"):
             resolve_destination("server", project_root)
         with pytest.raises(MlflowConfigError, match="sqlite"):
@@ -457,14 +509,14 @@ class TestAutoRule:
     def test_host_token_pair_selects_databricks(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "t")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "t")
         assert resolve_tracking_config(project_root).mode == "databricks"
 
     def test_partial_host_token_is_not_databricks(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
         assert resolve_tracking_config(project_root).mode == "local"
 
     def test_unsupported_env_scheme_fails_auto_loudly(
@@ -481,7 +533,7 @@ class TestListDestinations:
         assert [e.key for e in entries] == ["databricks", "server", "local"]
         by_key = {e.key: e for e in entries}
         assert by_key["databricks"].configured is False
-        assert "DATABRICKS_HOST" in by_key["databricks"].detail
+        assert by_key["databricks"].detail == _DATABRICKS_UNCONFIGURED_DETAIL
         assert by_key["server"].configured is False
         assert "tracking_uri" in by_key["server"].detail
         assert by_key["local"].configured is True
@@ -492,7 +544,7 @@ class TestListDestinations:
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-secret")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi-secret")
         entry = next(e for e in list_destinations(project_root) if e.key == "databricks")
         assert entry == DestinationEntry("databricks", True, "databricks://team", "env", "")
 

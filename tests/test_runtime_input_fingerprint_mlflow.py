@@ -57,6 +57,9 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "MLFLOW_ENABLE_DB_SDK",
         "DATABRICKS_HOST",
         "DATABRICKS_TOKEN",
+        "DATABRICKS_MLFLOW_HOST",
+        "DATABRICKS_MLFLOW_TOKEN",
+        "DATABRICKS_CONFIG_PROFILE",
     ):
         monkeypatch.delenv(var, raising=False)
     _write_settings(tmp_path)
@@ -113,8 +116,8 @@ def test_auto_switch_changes_runtime_fingerprint(
 
     local_auto = _fingerprint(graph)
 
-    monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
-    monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-not-a-real-token")
+    monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
+    monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi-not-a-real-token")
     with patch(
         "mlflow.utils.databricks_utils.get_databricks_host_creds",
         return_value=MagicMock(host="https://adb.example.net"),

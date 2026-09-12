@@ -685,8 +685,8 @@ class TestExecutedExportMlflowDestinations:
     ) -> None:
         from haute._sandbox import set_project_root
 
-        monkeypatch.setenv("DATABRICKS_HOST", "https://adb-fake.example.com")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-fake-token")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb-fake.example.com")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi-fake-token")
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
         monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
         monkeypatch.chdir(tmp_path)
@@ -725,6 +725,8 @@ class TestExecutedExportMlflowDestinations:
 
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
         monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
 
@@ -778,6 +780,8 @@ class TestExecutedExportMlflowDestinations:
 
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
         monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
         monkeypatch.chdir(tmp_path)
@@ -813,6 +817,8 @@ class TestExecutedExportMlflowDestinations:
 
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
         monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
         monkeypatch.chdir(tmp_path)

@@ -312,7 +312,7 @@ describe("useSettingsStore", () => {
         auto: "",
         destinations: [
           entry("databricks", {
-            detail: "Set DATABRICKS_HOST and DATABRICKS_TOKEN, or MLFLOW_TRACKING_URI=databricks://<profile>",
+            detail: "Set DATABRICKS_MLFLOW_HOST and DATABRICKS_MLFLOW_TOKEN, or MLFLOW_TRACKING_URI=databricks://<profile>",
           }),
           entry("server", { detail: "Set [mlflow] tracking_uri in haute.toml" }),
           entry("local", { detail: "[mlflow] mode is no longer a supported key" }),
@@ -329,7 +329,7 @@ describe("useSettingsStore", () => {
       })
       const { mlflow } = useSettingsStore.getState()
       expect(mlflow.auto).toBe("")
-      expect(mlflow.destinations[0].detail).toContain("DATABRICKS_TOKEN")
+      expect(mlflow.destinations[0].detail).toContain("DATABRICKS_MLFLOW_TOKEN")
       expect(mlflow.detail).toContain("mode")
     })
   })

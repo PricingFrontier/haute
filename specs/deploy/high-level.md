@@ -126,6 +126,8 @@ golden validation, and served response therefore describe one output contract.
 **Packaging and shipping.** Two backends are implemented:
 - **Databricks**: logs the pipeline as an `mlflow.pyfunc.PythonModel` (models-from-code),
   registers it in Unity Catalog, and creates/updates a Databricks Model Serving endpoint.
+  Logging and registration authenticate with the dedicated MLflow credentials, the
+  serving endpoint with the rating credentials.
   Multi-row scoring stays in the serving process there — there is no worker and no hard
   memory cap — so this target gets no conservative execution policy: a group-by whose
   materialisation cannot be estimated fails the bundle with a correction naming the node

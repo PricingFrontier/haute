@@ -13,7 +13,7 @@
 | `src/haute/deploy/_scorer.py` | Runtime scoring engine (`score_graph`, `score_graph_lazy`) shared by every deploy target; `NodeBuildHooks` interception for live-input injection and artefact-path remapping; stat-gated model/contract caches; execution admission. |
 | `src/haute/deploy/_validators.py` | Pre-deploy validation (`validate_deploy`): structural checks + exactly one test-quote scoring pass, returning successful per-file results to its caller; golden test-quote parsing and expected-output tolerance comparison; `score_test_quotes`. |
 | `src/haute/deploy/_utils.py` | Shared helpers: `get_user`, `get_haute_version`, `build_manifest` (the canonical deploy-manifest schema). |
-| `src/haute/deploy/_mlflow.py` | Databricks target: `deploy_to_mlflow`, `get_deploy_status`, MLflow signature/conda-env building, Databricks Model Serving endpoint create/update, connectivity pre-check. |
+| `src/haute/deploy/_mlflow.py` | Databricks target: `deploy_to_mlflow`, `get_deploy_status`, MLflow signature/conda-env building, Databricks Model Serving endpoint create/update, connectivity pre-check, and the MLflow destination check (`_resolve_mlflow_databricks`) that binds its logging and registry calls. |
 | `src/haute/deploy/_model_code.py` | MLflow models-from-code entry point: `HauteModel` (`mlflow.pyfunc.PythonModel` subclass) wrapping `score_graph`. |
 | `src/haute/deploy/_container.py` | Container build/push orchestration, build-directory preparation (`prepare_build_directory`), generated FastAPI `/health` and `/quote` runtime, stable JSON/NDJSON response handling, pinned Dockerfile generation, Docker subprocess calls, and the platform service-update stub. |
 | `scripts/container_smoke.py` | Standalone CLI script to verify the container deployment pipeline for an example (copy bundle, resolve deploy config, prepare build directory, and optionally execute a live uvicorn process smoke check). |
@@ -340,6 +340,19 @@ Databricks Model Serving endpoint (`_create_or_update_serving_endpoint`) if
 `effective_endpoint_name` is set. Any exception during this whole block removes the build
 directory before re-raising.
 
+**Databricks credentials.** Deploy uses two credential spaces. Its MLflow calls —
+experiment setup, model logging, Unity Catalog registration and the version lookup in
+`deploy_to_mlflow`, and the registry client in `get_deploy_status` — first resolve the
+Databricks MLflow destination through `resolve_destination("databricks")`
+([modelling](../modelling/low-level.md)). That enforces the `MLFLOW_ENABLE_DB_SDK` and
+`DATABRICKS_CONFIG_PROFILE` rejections, requires `MLFLOW_TRACKING_URI=databricks://<profile>`
+or the dedicated `DATABRICKS_MLFLOW_HOST`/`DATABRICKS_MLFLOW_TOKEN` pair, and binds MLflow's
+credentials; a resolution failure raises `DeployError` with the non-secret reason before any
+MLflow or HTTP request. The tracking URI and its Unity Catalog registry URI come from the
+resolved destination, so a selected profile is honoured. The connectivity pre-check and the
+Model Serving endpoint client keep the `DATABRICKS_RATING_HOST`/`DATABRICKS_RATING_TOKEN`
+pair. Deploy never uses the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair.
+
 **Runtime scoring (`_scorer.py::score_graph_lazy` → `score_graph`)**
 1. Resolve the graph's relative path configs against `graph.source_file`
    (`_resolve_runtime_graph_paths`) and attach bundled feature-contract paths to
@@ -561,6 +574,7 @@ Tests live in `tests/`, one or more files per concern, all using `pytest` with p
 function/class-based tests (no property-based testing in this component). Key files and
 what they cover:
 
+- **`test_deploy_mlflow_credentials.py`** — deploy's credential split: `MLFLOW_ENABLE_DB_SDK=true`, a missing MLflow pair (general pair only) and a conflicting `DATABRICKS_CONFIG_PROFILE` each raise `DeployError` naming the variable before any connectivity request, MLflow call or model log; the MLflow pair form sets `databricks` / `databricks-uc`, a profile URI sets `databricks://<profile>` / `databricks-uc://<profile>`, the serving client receives only the rating host and token, and `get_deploy_status` resolves the same destination before constructing its registry client.
 - **`test_deploy.py`** — broad unit coverage
   across nearly every module: `TestPruner` (ancestor walking, `liveSwitch` collapsing),
   `TestBundler` (artefact discovery per node type, path resolution precedence),

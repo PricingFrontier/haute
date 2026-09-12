@@ -193,14 +193,14 @@ class TestListExperiments:
         with patch(
             "haute.modelling._mlflow_settings.resolve_tracking_config",
             side_effect=MlflowConfigError(
-                "Databricks tracking is selected but DATABRICKS_TOKEN is not set "
+                "Databricks tracking is selected but DATABRICKS_MLFLOW_TOKEN is not set "
                 "in the environment (.env)."
             ),
         ):
             resp = client.get("/api/mlflow/experiments")
 
         assert resp.status_code == 502
-        assert "DATABRICKS_TOKEN" in resp.json()["detail"]
+        assert "DATABRICKS_MLFLOW_TOKEN" in resp.json()["detail"]
 
     def test_multiple_experiments(self, client):
         """Returns multiple experiments in correct structure."""
@@ -1078,11 +1078,18 @@ class TestEnsureTrackingDirect:
 
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
         with pytest.raises(HTTPException) as excinfo:
             _ensure_tracking("databricks")
         assert excinfo.value.status_code == 502
-        assert "DATABRICKS_HOST" in excinfo.value.detail
+        assert "DATABRICKS_MLFLOW_HOST" in excinfo.value.detail
+        assert excinfo.value.detail == (
+            "Databricks is not configured for MLflow: set "
+            "MLFLOW_TRACKING_URI=databricks://<profile> or both DATABRICKS_MLFLOW_HOST and "
+            "DATABRICKS_MLFLOW_TOKEN in the environment (.env)."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1363,6 +1370,8 @@ class TestFailureLogsCarryNoExceptionText:
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         with (
             patch("mlflow.tracking.MlflowClient", side_effect=RuntimeError(_LEAKY_MESSAGE)),

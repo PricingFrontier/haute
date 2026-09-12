@@ -38,7 +38,7 @@
 | `frontend/src/components/ContextMenu.tsx` | Node right-click menu: rename/duplicate/create-instance/dissolve-submodel/delete, arrow-key roving focus. |
 | `frontend/src/components/KeyboardShortcuts.tsx` | `?`-triggered modal listing keyboard shortcuts, built on `ModalShell`. |
 | `frontend/src/components/Toolbar.tsx` | App top chrome: package-derived browser version, source selector, row-limit/chunk-size inputs, undo/redo, timing/memory breakdowns, Submodel/Instance selection actions, utility/imports/assistant buttons, zoom, centre/layout, and Save + Commit. Actions share the `.toolbar-btn` surface; the selection actions carry `aria-disabled` rather than `disabled` so an unavailable action stays focusable and its handler can explain the refusal. Numeric fields suppress native spinners without clipping either the configured row-limit value or the chunk-size backend maximum. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). |
-| `frontend/src/components/MlflowSettingsModal.tsx` | `ModalShell`-based MLflow destinations inventory editor: an MLflow server URL field, a Local folder field showing the resolved folder, a read-only Databricks block (selected profile, detected host, or the missing configuration), one Test action per remote with its inline categorised result, and Save through `PUT /api/mlflow/settings` (`tracking_uri` and `folder` only) followed by `invalidateMlflow()`. Rendered by the toolbar while the UI store's MLflow-settings-open flag is set; opened from each node's MLflow gear or greyed light. |
+| `frontend/src/components/MlflowSettingsModal.tsx` | `ModalShell`-based MLflow destinations inventory editor: an MLflow server URL field, a Local folder field showing the resolved folder, a read-only Databricks block (selected profile, the dedicated MLflow host, or the missing configuration), one Test action per remote with its inline categorised result, and Save through `PUT /api/mlflow/settings` (`tracking_uri` and `folder` only) followed by `invalidateMlflow()`. Rendered by the toolbar while the UI store's MLflow-settings-open flag is set; opened from each node's MLflow gear or greyed light. |
 | `frontend/src/components/BreakdownDropdown.tsx` | Sorted, accessible timing/memory breakdown disclosure used by the shared toolbar. |
 | `frontend/src/panels/ImportsPanel.tsx` | Active pipeline-imports right panel: `PanelShell` plus `CodeEditor`, explanatory always-included imports, and callback-only preamble mutation/close handling. `App.tsx` supplies the graph-store-backed preamble and selects it through `importsOpen`. |
 | `frontend/src/components/BackgroundJobPolling.tsx` | Zero-render mount point (`memo`) that only invokes `useBackgroundJobs()`. |
@@ -396,7 +396,7 @@ renders: an "MLflow server URL" field prefilled from the stored
 `tracking_uri`; a "Local folder" field prefilled from the stored `folder`
 with the resolved folder as placeholder and helper line; a read-only
 Databricks block naming the selected profile (a `databricks://` inventory
-destination), the detected host when no profile is selected, or the missing
+destination), the host from `DATABRICKS_MLFLOW_HOST` when no profile is selected, or the missing
 configuration (a profile reference or the host/token variables); one Test
 action per remote — "Test server" POSTs `{destination: "server",
 tracking_uri: <draft>}` and "Test Databricks" POSTs `{destination:

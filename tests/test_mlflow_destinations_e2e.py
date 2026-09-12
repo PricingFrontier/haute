@@ -7,8 +7,9 @@ writes to *that* destination even while the workspace auto rule resolves
 somewhere else entirely, and an explicit destination that is unavailable
 fails loudly instead of quietly consulting another backend.
 
-Auto is made remote by declaring ``DATABRICKS_HOST`` / ``DATABRICKS_TOKEN``
-for a deliberately unroutable ``.invalid`` host with a placeholder token, and
+Auto is made remote by declaring ``DATABRICKS_MLFLOW_HOST`` /
+``DATABRICKS_MLFLOW_TOKEN`` for a deliberately unroutable ``.invalid`` host with
+a placeholder token, and
 by patching ``mlflow.utils.databricks_utils.get_databricks_host_creds`` so the
 secret-free backend identity can be minted without a single outbound request.
 Anything that tried to *use* that backend would fail; the tests additionally
@@ -60,8 +61,8 @@ FEATURES = ["x", "c"]
 CAT_FEATURES = ["c"]
 TARGET = "y"
 
-DATABRICKS_HOST = "https://adb.example.invalid"
-DATABRICKS_TOKEN = "not-a-real-token"  # noqa: S105 — placeholder, never a credential
+DATABRICKS_MLFLOW_HOST = "https://adb.example.invalid"
+DATABRICKS_MLFLOW_TOKEN = "not-a-real-token"  # noqa: S105 — placeholder, never a credential
 
 MODEL_ARTIFACT = "freq.cbm"
 OPTIMISER_ARTIFACT = "optimiser_result.json"
@@ -86,7 +87,10 @@ def project(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Path]:
         "MLFLOW_ENABLE_DB_SDK",
         "DATABRICKS_HOST",
         "DATABRICKS_TOKEN",
+        "DATABRICKS_MLFLOW_HOST",
+        "DATABRICKS_MLFLOW_TOKEN",
         "DATABRICKS_CONFIG_FILE",
+        "DATABRICKS_CONFIG_PROFILE",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
@@ -105,11 +109,11 @@ def _make_auto_databricks(monkeypatch: pytest.MonkeyPatch) -> None:
     MLflow's own stores use, so that one call is stubbed; nothing else about
     the Databricks backend is reachable, which is the point.
     """
-    monkeypatch.setenv("DATABRICKS_HOST", DATABRICKS_HOST)
-    monkeypatch.setenv("DATABRICKS_TOKEN", DATABRICKS_TOKEN)
+    monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", DATABRICKS_MLFLOW_HOST)
+    monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", DATABRICKS_MLFLOW_TOKEN)
     monkeypatch.setattr(
         "mlflow.utils.databricks_utils.get_databricks_host_creds",
-        lambda *_args, **_kwargs: SimpleNamespace(host=DATABRICKS_HOST),
+        lambda *_args, **_kwargs: SimpleNamespace(host=DATABRICKS_MLFLOW_HOST),
     )
 
 
@@ -135,7 +139,7 @@ def _assert_auto_is_databricks() -> None:
 
     backend = resolve_backend("")
     assert backend.mode == "databricks", f"auto resolved to {backend.mode!r}, expected databricks"
-    assert backend.identity.startswith(f"databricks:{DATABRICKS_HOST}|profile=")
+    assert backend.identity.startswith(f"databricks:{DATABRICKS_MLFLOW_HOST}|profile=")
 
 
 # ---------------------------------------------------------------------------

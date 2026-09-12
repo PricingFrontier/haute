@@ -107,7 +107,11 @@
   `.env.example` header), `env_body` (literal credential block), `secrets` (ordered CI
   secret/env-var names), and `toml_section` (a `Callable[[str], str]` building that target's
   `[deploy.*]` TOML block from the project name). `_get_target` raises `ValueError` on an
-  unknown target rather than returning a default.
+  unknown target rather than returning a default. The Databricks `env_body` separates three
+  credential spaces — data access (`DATABRICKS_HOST`/`DATABRICKS_TOKEN`), MLflow tracking and
+  registry (`DATABRICKS_MLFLOW_HOST`/`DATABRICKS_MLFLOW_TOKEN`), and the serving endpoint
+  (`DATABRICKS_RATING_HOST`/`DATABRICKS_RATING_TOKEN`) — and its `secrets` list both deploy-time
+  pairs, MLflow and rating.
 - **`GraphNode` / `GraphEdge` / `NodeData` / `PipelineGraph`** (`haute._types`, not owned by
   this component but constructed here in `_graph_builders.py`).
 

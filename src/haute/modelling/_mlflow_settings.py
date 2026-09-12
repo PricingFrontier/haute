@@ -317,34 +317,65 @@ def _reject_databricks_sdk_mode() -> None:
     if os.environ.get("MLFLOW_ENABLE_DB_SDK", "").strip().lower() in _TRUTHY_ENV:
         raise MlflowConfigError(
             "MLFLOW_ENABLE_DB_SDK=true is not supported: haute binds Databricks credentials "
-            "through the selected profile or DATABRICKS_HOST/DATABRICKS_TOKEN on every request; "
-            "unset MLFLOW_ENABLE_DB_SDK."
+            "through the selected profile or DATABRICKS_MLFLOW_HOST/DATABRICKS_MLFLOW_TOKEN on "
+            "every request; unset MLFLOW_ENABLE_DB_SDK."
         )
 
 
-def _resolve_databricks() -> TrackingConfig:
-    from haute._mlflow_utils import pin_databricks_profile_binding
+def _reject_ambient_databricks_profile() -> None:
+    """The pair form must not coexist with ``DATABRICKS_CONFIG_PROFILE``.
 
-    pin_databricks_profile_binding()  # before any Databricks credential lookup, in every consumer
+    MLflow reads that variable in place of its credential providers for a bare
+    ``databricks`` URI, so the profile would silently replace the MLflow pair.
+    """
+    if os.environ.get("DATABRICKS_CONFIG_PROFILE", "").strip():
+        raise MlflowConfigError(
+            "DATABRICKS_CONFIG_PROFILE is set, which makes MLflow read that profile instead of "
+            "DATABRICKS_MLFLOW_HOST/DATABRICKS_MLFLOW_TOKEN: unset it, or select the profile "
+            "with MLFLOW_TRACKING_URI=databricks://<profile>."
+        )
+
+
+def _general_pair_hint() -> str:
+    """Say so when the data-access pair is set but cannot configure MLflow."""
+    if os.getenv("DATABRICKS_HOST", "").strip() or os.getenv("DATABRICKS_TOKEN", "").strip():
+        return (
+            " DATABRICKS_HOST/DATABRICKS_TOKEN are set but are never used for MLflow; copy "
+            "their values into the MLflow pair if one token covers both."
+        )
+    return ""
+
+
+def _resolve_databricks() -> TrackingConfig:
+    from haute._mlflow_utils import bind_mlflow_databricks_credentials
+
+    # Before any Databricks credential lookup, in every consumer (deploy included).
+    bind_mlflow_databricks_credentials()
     env_uri = tracking_uri_from_environment().strip()
     if env_uri.startswith("databricks://"):
         _reject_databricks_sdk_mode()  # only a *configured* Databricks trips this
         return TrackingConfig("databricks", env_uri, env_uri, "env")
-    host = os.getenv("DATABRICKS_HOST", "")
-    token = os.getenv("DATABRICKS_TOKEN", "")
+    host = os.getenv("DATABRICKS_MLFLOW_HOST", "").strip()
+    token = os.getenv("DATABRICKS_MLFLOW_TOKEN", "").strip()
     if host and token:
         _reject_databricks_sdk_mode()
+        _reject_ambient_databricks_profile()
         return TrackingConfig("databricks", "databricks", host.rstrip("/"), "env")
     if host or token or env_uri == "databricks":
-        missing = [n for n, v in (("DATABRICKS_HOST", host), ("DATABRICKS_TOKEN", token)) if not v]
+        missing = [
+            n
+            for n, v in (("DATABRICKS_MLFLOW_HOST", host), ("DATABRICKS_MLFLOW_TOKEN", token))
+            if not v
+        ]
         verb = "is" if len(missing) == 1 else "are"
         raise MlflowDestinationUnconfigured(
-            f"Databricks tracking is not configured: {' and '.join(missing)} {verb} "
-            "not set in the environment (.env)."
+            f"Databricks MLflow tracking is not configured: {' and '.join(missing)} {verb} "
+            f"not set in the environment (.env).{_general_pair_hint()}"
         )
     raise MlflowDestinationUnconfigured(
-        "Databricks is not configured: set MLFLOW_TRACKING_URI=databricks://<profile> "
-        "or both DATABRICKS_HOST and DATABRICKS_TOKEN in the environment (.env)."
+        "Databricks is not configured for MLflow: set MLFLOW_TRACKING_URI=databricks://<profile> "
+        "or both DATABRICKS_MLFLOW_HOST and DATABRICKS_MLFLOW_TOKEN in the environment (.env)."
+        f"{_general_pair_hint()}"
     )
 
 

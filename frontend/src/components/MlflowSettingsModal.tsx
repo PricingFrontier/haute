@@ -57,7 +57,7 @@ function describeDatabricks(state: MlflowInventoryState): string {
     const profile = entry.destination.slice(DATABRICKS_PROFILE_PREFIX.length)
     return `Profile: ${profile} (from MLFLOW_TRACKING_URI)`
   }
-  return `Host: ${entry.destination} (from DATABRICKS_HOST)`
+  return `Host: ${entry.destination} (from DATABRICKS_MLFLOW_HOST)`
 }
 
 function TestResult({ result, testId }: { result: MlflowTestConnectionResponse; testId: string }) {

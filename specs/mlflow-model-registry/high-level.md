@@ -27,8 +27,10 @@ understand *where* tracking can go: a destinations endpoint reporting the
 inventory of the three destinations (Databricks, MLflow server, Local) with
 optional connection probes, settings endpoints that read and persist the
 `[mlflow]` inventory table of `haute.toml`, and a bounded per-destination
-test-connection probe — credentials stay in `.env` or the selected Databricks
-profile and never pass through this surface. Which destination a node uses is
+test-connection probe — credentials stay in `.env` (Databricks MLflow uses its
+own `DATABRICKS_MLFLOW_HOST`/`DATABRICKS_MLFLOW_TOKEN` pair, never the
+data-access pair) or the selected Databricks profile and never pass through this
+surface. Which destination a node uses is
 that node's own choice (`mlflow_destination`, absent = auto), never a
 workspace-wide selection.
 

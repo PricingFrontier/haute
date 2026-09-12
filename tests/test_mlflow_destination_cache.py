@@ -40,7 +40,13 @@ _BASE_TOML = '[project]\nname = "main"\npipeline = "rating/main.py"\n'
 @pytest.fixture(autouse=True)
 def _env_free(monkeypatch: pytest.MonkeyPatch):
     """No ambient credentials: every destination comes from the fixture."""
-    for var in ("MLFLOW_TRACKING_URI", "DATABRICKS_HOST", "DATABRICKS_TOKEN"):
+    for var in (
+        "MLFLOW_TRACKING_URI",
+        "DATABRICKS_HOST",
+        "DATABRICKS_TOKEN",
+        "DATABRICKS_MLFLOW_HOST",
+        "DATABRICKS_MLFLOW_TOKEN",
+    ):
         monkeypatch.delenv(var, raising=False)
     _model_cache.clear()
     yield
@@ -241,14 +247,14 @@ class TestTwoLocalFolders:
         real_resolve_backend = resolve_backend
 
         def resolve_with_databricks(destination: str = "", project_root: Path | None = None):
-            if destination == "" and os.environ.get("DATABRICKS_HOST"):
+            if destination == "" and os.environ.get("DATABRICKS_MLFLOW_HOST"):
                 return backend_c
             return real_resolve_backend(destination, project_root)
 
         with _patched_loaders(downloader):
             auto_local = _load()
-            monkeypatch.setenv("DATABRICKS_HOST", "https://adb-1.example.net")
-            monkeypatch.setenv("DATABRICKS_TOKEN", "synthetic-token")
+            monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb-1.example.net")
+            monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "synthetic-token")
             with patch(
                 "haute._mlflow_utils.resolve_backend",
                 side_effect=resolve_with_databricks,

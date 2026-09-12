@@ -11,18 +11,22 @@ Eliminates duplication of:
     resolve a source_type/run_id/registered_model to a concrete run_id, and return
     the ``ResolvedBackend`` alongside the client
 
-Databricks Profile Binding:
-  MLflow 3.15 defaults ``MLFLOW_ENABLE_DB_SDK`` to true and builds a ``WorkspaceClient``,
-  which resolves environment variables before profile files and caches the client across
-  repoints. To make profile selection take precedence over environment variables and ensure
-  requests follow repointed workspaces without cache clearing, haute binds Databricks
-  credentials only through MLflow's per-request profile and host-token providers.
-  ``pin_databricks_profile_binding()`` sets ``MLFLOW_ENABLE_DB_SDK=false``.
+Databricks credential binding:
+  MLflow authenticates a bare ``databricks`` tracking URI from the general
+  ``DATABRICKS_HOST``/``DATABRICKS_TOKEN`` pair by default, but haute keeps MLflow on
+  its own ``DATABRICKS_MLFLOW_HOST``/``DATABRICKS_MLFLOW_TOKEN`` pair because Databricks
+  token scopes may not let one token cover data access and MLflow.
+  ``bind_mlflow_databricks_credentials()`` pins ``MLFLOW_ENABLE_DB_SDK=false`` (MLflow's
+  SDK path resolves environment-first and caches its client), replaces MLflow's
+  environment credential provider with one that reads the MLflow pair on every request,
+  and routes run and logged-model artifacts through MLflow's REST repository so no
+  Databricks SDK client is built from the general pair.
 """
 
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import os
 import threading
 from collections.abc import Iterator
@@ -43,10 +47,153 @@ _FLUENT_LOCK = threading.RLock()
 _tracking_environment_snapshot: tuple[str | None] | None = None
 
 
-def pin_databricks_profile_binding() -> None:
-    """os.environ.setdefault("MLFLOW_ENABLE_DB_SDK", "false"). haute binds Databricks
-    credentials only through MLflow's per-request profile / host-token providers."""
+MLFLOW_DATABRICKS_HOST_ENV = "DATABRICKS_MLFLOW_HOST"
+MLFLOW_DATABRICKS_TOKEN_ENV = "DATABRICKS_MLFLOW_TOKEN"
+
+_DATABRICKS_BINDING_LOCK = threading.Lock()
+# ``(MLflow's environment provider class, MLflow's SDK artifact repository class)``
+# as they were before binding, or ``None`` while unbound.
+_databricks_binding_originals: tuple[Any, Any] | None = None
+
+_UNBOUND_PAIR_MESSAGE = (
+    "Databricks MLflow credentials are not configured: set DATABRICKS_MLFLOW_HOST and "
+    "DATABRICKS_MLFLOW_TOKEN in the environment (.env), or select a profile with "
+    "MLFLOW_TRACKING_URI=databricks://<profile>. The general DATABRICKS_HOST/"
+    "DATABRICKS_TOKEN pair is never used for MLflow."
+)
+_REST_ONLY_ARTIFACTS_MESSAGE = (
+    "haute routes Databricks run and logged-model artifacts through MLflow's REST "
+    "artifact repository, which is bound to the MLflow credentials"
+)
+
+
+# The two MLflow module globals the binder replaces, in the order of
+# ``_binding_classes()``: MLflow's per-request environment credential provider,
+# and the SDK artifact repository its run and logged-model repositories try first.
+_BOUND_SYMBOLS: tuple[tuple[str, str], tuple[str, str]] = (
+    ("mlflow.utils.databricks_utils", "EnvironmentVariableConfigProvider"),
+    ("mlflow.store.artifact.databricks_tracking_artifact_repo", "DatabricksSdkArtifactRepository"),
+)
+
+
+def _bound_mlflow_modules() -> tuple[ModuleType, ModuleType]:
+    import importlib
+
+    return (
+        importlib.import_module(_BOUND_SYMBOLS[0][0]),
+        importlib.import_module(_BOUND_SYMBOLS[1][0]),
+    )
+
+
+def _binding_classes() -> tuple[type, type]:
+    """Build the provider and artifact-repository stand-in against the installed MLflow."""
+    from mlflow.exceptions import MlflowException
+    from mlflow.legacy_databricks_cli.configure.provider import (
+        DatabricksConfig,
+        DatabricksConfigProvider,
+    )
+
+    class MlflowPairConfigProvider(DatabricksConfigProvider):
+        """MLflow's environment credential provider, reading the dedicated MLflow pair.
+
+        Read on every call, so a repointed pair is followed by the very next request.
+        An unset pair raises instead of returning ``None``: MLflow would otherwise move
+        on to the ``DEFAULT`` profile and later providers.
+        """
+
+        def get_config(self) -> Any:
+            host = os.environ.get(MLFLOW_DATABRICKS_HOST_ENV, "").strip().rstrip("/")
+            token = os.environ.get(MLFLOW_DATABRICKS_TOKEN_ENV, "").strip()
+            if not host or not token:
+                raise MlflowException(_UNBOUND_PAIR_MESSAGE)
+            return DatabricksConfig.from_token(host, token)
+
+    class RestOnlyDatabricksArtifacts:
+        """Stand-in for MLflow's SDK artifact repository.
+
+        MLflow's run and logged-model artifact repositories try this object first and
+        fall back to the REST repository on any exception. The real SDK repository
+        builds a bare ``WorkspaceClient()`` from the general environment pair, so
+        every operation refuses and the credential-bound REST path does the work.
+        """
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            del args, kwargs
+
+        def log_artifact(self, *args: Any, **kwargs: Any) -> None:
+            raise MlflowException(_REST_ONLY_ARTIFACTS_MESSAGE)
+
+        def log_artifacts(self, *args: Any, **kwargs: Any) -> None:
+            raise MlflowException(_REST_ONLY_ARTIFACTS_MESSAGE)
+
+        def list_artifacts(self, *args: Any, **kwargs: Any) -> Any:
+            raise MlflowException(_REST_ONLY_ARTIFACTS_MESSAGE)
+
+        def _download_file(self, *args: Any, **kwargs: Any) -> None:
+            raise MlflowException(_REST_ONLY_ARTIFACTS_MESSAGE)
+
+    return MlflowPairConfigProvider, RestOnlyDatabricksArtifacts
+
+
+def bind_mlflow_databricks_credentials() -> None:
+    """Bind every MLflow Databricks request to the dedicated MLflow credentials.
+
+    Idempotent and lock-guarded; called from the Databricks destination resolver, which
+    every consumer passes through before it can build a Databricks tracking URI. A
+    ``databricks://<profile>`` URI keeps using that profile (MLflow reads only the profile
+    for it); a bare ``databricks`` URI reads ``DATABRICKS_MLFLOW_HOST`` /
+    ``DATABRICKS_MLFLOW_TOKEN``. Returns without binding when mlflow is not installed or
+    cannot be imported, since such a process cannot make MLflow requests. An installed
+    MLflow that no longer exposes the two symbols this replaces raises ``MlflowConfigError``
+    rather than leaving MLflow on the general credentials.
+    """
+    global _databricks_binding_originals
+
     os.environ.setdefault("MLFLOW_ENABLE_DB_SDK", "false")
+    if _databricks_binding_originals is not None:
+        return
+    if importlib.util.find_spec("mlflow") is None:
+        return
+    try:
+        import mlflow  # noqa: F401
+    except Exception:
+        return
+    with _DATABRICKS_BINDING_LOCK:
+        if _databricks_binding_originals is not None:
+            return
+        try:
+            modules = _bound_mlflow_modules()
+            originals = (
+                getattr(modules[0], _BOUND_SYMBOLS[0][1]),
+                getattr(modules[1], _BOUND_SYMBOLS[1][1]),
+            )
+            replacements = _binding_classes()
+        except (ImportError, AttributeError) as exc:
+            from haute.errors import MlflowConfigError
+
+            raise MlflowConfigError(
+                "haute cannot bind Databricks MLflow credentials for this MLflow version "
+                f"({type(exc).__name__}); pin MLflow to a supported release."
+            ) from None
+        for module, (_, name), replacement in zip(
+            modules, _BOUND_SYMBOLS, replacements, strict=True
+        ):
+            setattr(module, name, replacement)
+        _databricks_binding_originals = originals
+
+
+def _restore_mlflow_databricks_credentials() -> None:
+    """Undo :func:`bind_mlflow_databricks_credentials` (test isolation only)."""
+    global _databricks_binding_originals
+
+    with _DATABRICKS_BINDING_LOCK:
+        if _databricks_binding_originals is None:
+            return
+        for module, (_, name), original in zip(
+            _bound_mlflow_modules(), _BOUND_SYMBOLS, _databricks_binding_originals, strict=True
+        ):
+            setattr(module, name, original)
+        _databricks_binding_originals = None
 
 
 def tracking_uri_from_environment() -> str:

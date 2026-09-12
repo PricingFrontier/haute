@@ -44,8 +44,21 @@ def test_log_response_never_exposes_uri_credentials(response_type: str) -> None:
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in ("MLFLOW_TRACKING_URI", "DATABRICKS_HOST", "DATABRICKS_TOKEN"):
+    for var in (
+        "MLFLOW_TRACKING_URI",
+        "DATABRICKS_HOST",
+        "DATABRICKS_TOKEN",
+        "DATABRICKS_MLFLOW_HOST",
+        "DATABRICKS_MLFLOW_TOKEN",
+        "DATABRICKS_CONFIG_PROFILE",
+    ):
         monkeypatch.delenv(var, raising=False)
+
+
+_DATABRICKS_UNCONFIGURED_DETAIL = (
+    "Databricks is not configured for MLflow: set MLFLOW_TRACKING_URI=databricks://<profile> "
+    "or both DATABRICKS_MLFLOW_HOST and DATABRICKS_MLFLOW_TOKEN in the environment (.env)."
+)
 
 
 @pytest.fixture
@@ -77,7 +90,8 @@ class TestDestinations:
         assert body["auto"] == "local"
         assert [d["key"] for d in body["destinations"]] == ["databricks", "server", "local"]
         databricks, server, local = body["destinations"]
-        assert databricks["configured"] is False and "DATABRICKS_HOST" in databricks["detail"]
+        assert databricks["configured"] is False
+        assert databricks["detail"] == _DATABRICKS_UNCONFIGURED_DETAIL
         assert databricks["probed"] is False
         assert server["configured"] is False and "tracking_uri" in server["detail"]
         assert local["configured"] is True and local["probed"] is False
@@ -125,8 +139,8 @@ class TestDestinations:
         import time
 
         _write_mlflow_section(project_root, 'tracking_uri = "http://localhost:5000"\n')
-        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "t")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "t")
         barrier = threading.Barrier(2, timeout=5)
 
         def slow_probe(uri: str) -> None:
@@ -145,7 +159,8 @@ class TestDestinations:
         _write_mlflow_section(project_root, 'mode = "local"\n')
         body = client.get("/api/mlflow/destinations?probe=true").json()
         databricks, server, local = body["destinations"]
-        assert databricks["configured"] is False and "DATABRICKS_HOST" in databricks["detail"]
+        assert databricks["configured"] is False
+        assert databricks["detail"] == _DATABRICKS_UNCONFIGURED_DETAIL
         assert server["configured"] is False and "mode" in server["detail"]
         assert local["configured"] is False and "mode" in local["detail"]
         assert body["auto"] == "" and "mode" in body["detail"]
@@ -354,8 +369,8 @@ class TestTestConnection:
         )
         monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(cfg))
         monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
-        monkeypatch.setenv("DATABRICKS_HOST", "https://env-host.example.net")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "env-token-value")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://env-host.example.net")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "env-token-value")
         monkeypatch.delenv("MLFLOW_ENABLE_DB_SDK", raising=False)
         captured: dict[str, object] = {}
 
@@ -408,7 +423,7 @@ class TestTestConnection:
     ) -> None:
         body = client.post("/api/mlflow/test-connection", json={"destination": "databricks"}).json()
         assert body["ok"] is False and body["category"] == "configuration"
-        assert "DATABRICKS_HOST" in body["detail"]
+        assert body["detail"] == _DATABRICKS_UNCONFIGURED_DETAIL
 
     def test_unknown_destination_is_configuration_category(
         self, client, project_root: Path
@@ -428,8 +443,8 @@ class TestTestConnection:
         self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://missing-profile")
-        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-secret")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi-secret")
         with patch("haute.routes.mlflow._search_experiments_probe") as probe:
             probe.side_effect = RuntimeError("profile 'missing-profile' not found dapi-secret")
             body = client.post(

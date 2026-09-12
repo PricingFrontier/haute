@@ -83,6 +83,20 @@ def _isolate_repository_source_cache(
 
 
 @pytest.fixture(autouse=True)
+def _restore_mlflow_databricks_binding() -> Iterator[None]:
+    """Undo the process-global MLflow Databricks credential binding after each test.
+
+    Any Databricks destination resolution binds MLflow's credential provider and
+    artifact repository globals for the rest of the process; restoring them keeps
+    every test independent of execution order.
+    """
+    yield
+    from haute._mlflow_utils import _restore_mlflow_databricks_credentials
+
+    _restore_mlflow_databricks_credentials()
+
+
+@pytest.fixture(autouse=True)
 def _patient_preparation_join(monkeypatch: pytest.MonkeyPatch) -> None:
     """Wait longer for a preparation thread than a production shutdown does.
 

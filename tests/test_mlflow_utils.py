@@ -141,7 +141,13 @@ def test_source_resolution_uses_selected_registry_without_changing_globals(
     from haute._sandbox import set_project_root
     from haute.modelling._mlflow_settings import MlflowSettings, save_mlflow_settings
 
-    for v in ("DATABRICKS_HOST", "DATABRICKS_TOKEN", "MLFLOW_TRACKING_URI"):
+    for v in (
+        "DATABRICKS_HOST",
+        "DATABRICKS_TOKEN",
+        "DATABRICKS_MLFLOW_HOST",
+        "DATABRICKS_MLFLOW_TOKEN",
+        "MLFLOW_TRACKING_URI",
+    ):
         monkeypatch.delenv(v, raising=False)
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
     monkeypatch.setattr("haute._mlflow_io._disk_cache_root", lambda: tmp_path / "model-cache")
@@ -273,7 +279,13 @@ class TestResolveBackend:
         from haute._sandbox import set_project_root
 
         set_project_root(tmp_path)
-        for v in ("DATABRICKS_HOST", "DATABRICKS_TOKEN", "MLFLOW_TRACKING_URI"):
+        for v in (
+            "DATABRICKS_HOST",
+            "DATABRICKS_TOKEN",
+            "DATABRICKS_MLFLOW_HOST",
+            "DATABRICKS_MLFLOW_TOKEN",
+            "MLFLOW_TRACKING_URI",
+        ):
             monkeypatch.delenv(v, raising=False)
         backend = resolve_backend("local")
         assert backend.mode == "local"
@@ -287,7 +299,13 @@ class TestResolveBackend:
         from haute._sandbox import set_project_root
         from haute.modelling._mlflow_settings import MlflowSettings, save_mlflow_settings
 
-        for v in ("DATABRICKS_HOST", "DATABRICKS_TOKEN", "MLFLOW_TRACKING_URI"):
+        for v in (
+            "DATABRICKS_HOST",
+            "DATABRICKS_TOKEN",
+            "DATABRICKS_MLFLOW_HOST",
+            "DATABRICKS_MLFLOW_TOKEN",
+            "MLFLOW_TRACKING_URI",
+        ):
             monkeypatch.delenv(v, raising=False)
         set_project_root(tmp_path)
         save_mlflow_settings(MlflowSettings(folder="folder_a"), tmp_path)
@@ -354,8 +372,8 @@ class TestResolveBackend:
         )
         monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(cfg))
         monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
-        monkeypatch.setenv("DATABRICKS_HOST", "https://env-host.example.net")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "env-token-value")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://env-host.example.net")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "env-token-value")
         monkeypatch.delenv("MLFLOW_ENABLE_DB_SDK", raising=False)
         backend = resolve_backend("databricks")
         assert backend.identity.startswith(
@@ -419,8 +437,8 @@ class TestResolveBackend:
 
         cfg = tmp_path / "databrickscfg"
         if form == "pair":
-            monkeypatch.setenv("DATABRICKS_HOST", "https://host-a.example.net")
-            monkeypatch.setenv("DATABRICKS_TOKEN", "token-a")
+            monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://host-a.example.net")
+            monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "token-a")
             monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks")
         else:
             cfg.write_text(
@@ -430,6 +448,8 @@ class TestResolveBackend:
             monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
             monkeypatch.delenv("DATABRICKS_HOST", raising=False)
             monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+            monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+            monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         backend_a = resolve_backend("databricks")
         client = MlflowClient(
@@ -442,10 +462,10 @@ class TestResolveBackend:
             )
             assert captured[-1]["auth"] == "Bearer token-a"
 
-            # Repoint: pair -> set DATABRICKS_HOST/TOKEN = B; profile -> rewrite cfg file
+            # Repoint: pair -> set DATABRICKS_MLFLOW_HOST/TOKEN = B; profile -> rewrite cfg file
             if form == "pair":
-                monkeypatch.setenv("DATABRICKS_HOST", "https://host-b.example.net")
-                monkeypatch.setenv("DATABRICKS_TOKEN", "token-b")
+                monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://host-b.example.net")
+                monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "token-b")
             else:
                 cfg.write_text(
                     "[team]\nhost = https://host-b.example.net\ntoken = token-b\n", encoding="utf-8"
@@ -473,8 +493,8 @@ class TestResolveBackend:
     def test_plain_databricks_identity_uses_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from unittest.mock import patch
 
-        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "token-val")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "token-val")
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
         monkeypatch.delenv("MLFLOW_ENABLE_DB_SDK", raising=False)
         with patch(
@@ -494,13 +514,19 @@ class TestResolveBackend:
         from haute._sandbox import set_project_root
 
         set_project_root(tmp_path)
-        for v in ("DATABRICKS_HOST", "DATABRICKS_TOKEN", "MLFLOW_TRACKING_URI"):
+        for v in (
+            "DATABRICKS_HOST",
+            "DATABRICKS_TOKEN",
+            "DATABRICKS_MLFLOW_HOST",
+            "DATABRICKS_MLFLOW_TOKEN",
+            "MLFLOW_TRACKING_URI",
+        ):
             monkeypatch.delenv(v, raising=False)
         backend = resolve_backend("")
         assert backend.mode == "local"
 
-        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "token-val")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "token-val")
         monkeypatch.delenv("MLFLOW_ENABLE_DB_SDK", raising=False)
         with patch(
             "mlflow.utils.databricks_utils.get_databricks_host_creds",
@@ -528,7 +554,13 @@ class TestResolveMlflowSourceDestination:
         from haute._sandbox import set_project_root
 
         set_project_root(tmp_path)
-        for v in ("DATABRICKS_HOST", "DATABRICKS_TOKEN", "MLFLOW_TRACKING_URI"):
+        for v in (
+            "DATABRICKS_HOST",
+            "DATABRICKS_TOKEN",
+            "DATABRICKS_MLFLOW_HOST",
+            "DATABRICKS_MLFLOW_TOKEN",
+            "MLFLOW_TRACKING_URI",
+        ):
             monkeypatch.delenv(v, raising=False)
         with patch("mlflow.tracking.MlflowClient") as client_cls:
             res = resolve_mlflow_source(source_type="run", run_id="run-123")
@@ -547,8 +579,8 @@ class TestResolveMlflowSourceDestination:
         from haute._sandbox import set_project_root
 
         set_project_root(tmp_path)
-        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "token-val")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "token-val")
         monkeypatch.delenv("MLFLOW_ENABLE_DB_SDK", raising=False)
         with patch("mlflow.tracking.MlflowClient"):
             _, _, _, _, backend = resolve_mlflow_source(

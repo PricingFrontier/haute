@@ -415,7 +415,13 @@ class TestMlflowNotInstalled:
         """Raises ImportError with pip install instruction when mlflow missing."""
         # Destination resolution runs first; keep it on Local (which needs no
         # mlflow import) so the friendly error from the loader is what surfaces.
-        for var in ("MLFLOW_TRACKING_URI", "DATABRICKS_HOST", "DATABRICKS_TOKEN"):
+        for var in (
+            "MLFLOW_TRACKING_URI",
+            "DATABRICKS_HOST",
+            "DATABRICKS_TOKEN",
+            "DATABRICKS_MLFLOW_HOST",
+            "DATABRICKS_MLFLOW_TOKEN",
+        ):
             monkeypatch.delenv(var, raising=False)
         with patch.dict(sys.modules, {"mlflow": None}):
             with pytest.raises(ImportError, match="pip install mlflow"):

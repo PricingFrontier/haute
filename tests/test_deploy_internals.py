@@ -4541,6 +4541,14 @@ class TestResolveConfigEdgeCases:
 class TestGetDeployStatus:
     """Tests for get_deploy_status()."""
 
+    @pytest.fixture(autouse=True)
+    def _mlflow_databricks_pair(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """get_deploy_status resolves the dedicated Databricks MLflow pair first."""
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://myhost.databricks.com")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "mlflow-test-token")
+        for name in ("MLFLOW_TRACKING_URI", "DATABRICKS_CONFIG_PROFILE", "MLFLOW_ENABLE_DB_SDK"):
+            monkeypatch.delenv(name, raising=False)
+
     def test_model_not_found(self):
         from haute.deploy._mlflow import get_deploy_status
 

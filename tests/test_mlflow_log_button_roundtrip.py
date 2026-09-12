@@ -68,6 +68,8 @@ def local_mlflow(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Pa
 
     monkeypatch.delenv("DATABRICKS_HOST", raising=False)
     monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+    monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+    monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
     monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
     monkeypatch.chdir(tmp_path)

@@ -106,6 +106,24 @@ class TestEnvExample:
         assert "DATABRICKS_TOKEN" in result
         assert "DATABRICKS_RATING_HOST" in result
         assert "DATABRICKS_RATING_TOKEN" in result
+
+    def test_databricks_env_example_separates_the_three_credential_spaces(self) -> None:
+        """Data access, MLflow and serving each get their own pair, in that order."""
+        result = env_example("databricks")
+        lines = [
+            line.split("=", 1)[0]
+            for line in result.splitlines()
+            if "=" in line and not line.startswith("#")
+        ]
+        assert lines == [
+            "DATABRICKS_HOST",
+            "DATABRICKS_TOKEN",
+            "DATABRICKS_MLFLOW_HOST",
+            "DATABRICKS_MLFLOW_TOKEN",
+            "DATABRICKS_RATING_HOST",
+            "DATABRICKS_RATING_TOKEN",
+        ]
+        assert "MLflow never uses the data access" in result
         assert "AWS_ACCESS_KEY" not in result
         assert "AZURE_" not in result
 
@@ -179,6 +197,12 @@ class TestGithubDeployYml:
         result = github_deploy_yml("databricks")
         assert "secrets.DATABRICKS_RATING_HOST" in result
         assert "secrets.DATABRICKS_RATING_TOKEN" in result
+        # Deploy registers the model through MLflow with its own credentials.
+        assert "secrets.DATABRICKS_MLFLOW_HOST" in result
+        assert "secrets.DATABRICKS_MLFLOW_TOKEN" in result
+        # The data access pair is never a deploy secret.
+        assert "secrets.DATABRICKS_HOST " not in result
+        assert "secrets.DATABRICKS_TOKEN " not in result
         assert "secrets.AWS_ACCESS_KEY_ID" not in result
 
     def test_sagemaker_secrets(self) -> None:
@@ -458,6 +482,8 @@ class TestAzureDevopsYml:
         )
         env = deploy_script["env"]
         assert env == {
+            "DATABRICKS_MLFLOW_HOST": "$(DATABRICKS_MLFLOW_HOST)",
+            "DATABRICKS_MLFLOW_TOKEN": "$(DATABRICKS_MLFLOW_TOKEN)",
             "DATABRICKS_RATING_HOST": "$(DATABRICKS_RATING_HOST)",
             "DATABRICKS_RATING_TOKEN": "$(DATABRICKS_RATING_TOKEN)",
         }

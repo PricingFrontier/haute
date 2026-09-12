@@ -109,8 +109,10 @@ Your pipeline needs credentials to deploy. In GitLab, these are stored as **CI/C
 
 | Variable | Value | Options |
 |---|---|---|
+| `DATABRICKS_MLFLOW_HOST` | The workspace URL for MLflow and the model registry | Mask variable ✓ |
+| `DATABRICKS_MLFLOW_TOKEN` | A personal access token scoped for MLflow and the model registry | Mask variable ✓ |
 | `DATABRICKS_RATING_HOST` | Your workspace URL | Mask variable ✓ |
-| `DATABRICKS_RATING_TOKEN` | Your personal access token | Mask variable ✓ |
+| `DATABRICKS_RATING_TOKEN` | Your personal access token scoped for Model Serving | Mask variable ✓ |
 
 **For Docker/Container targets:**
 

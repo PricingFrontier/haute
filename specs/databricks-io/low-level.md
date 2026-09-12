@@ -57,6 +57,10 @@ hostname for the SQL connector, and passes selected authentication values
 byte-for-byte rather than rewriting secret material. Errors report only
 environment-variable names—never their values. Callers may add named non-secret
 requirements to the same aggregated configuration error.
+MLflow never uses these variables: its Databricks credentials are the dedicated
+`DATABRICKS_MLFLOW_HOST`/`DATABRICKS_MLFLOW_TOKEN` pair
+([modelling](../modelling/low-level.md)), so a data token and an MLflow token
+can carry different scopes.
 
 `_connection_settings(http_path)` passes the mandatory node `http_path` as such
 an additional requirement; there is no `DATABRICKS_HTTP_PATH` fallback. It

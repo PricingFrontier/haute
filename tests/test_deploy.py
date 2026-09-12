@@ -6,6 +6,7 @@ config). MLflow-specific tests are integration-level and require mlflow installe
 
 from __future__ import annotations
 
+import os
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -96,13 +97,29 @@ class MLflowMocks:
     create_or_update_endpoint: MagicMock
 
 
+# Deploy resolves the dedicated Databricks MLflow pair before any MLflow call. An
+# ambient profile URI, DATABRICKS_CONFIG_PROFILE, or MLFLOW_ENABLE_DB_SDK would change
+# or reject that resolution, so the patch block clears them.
+_MLFLOW_DATABRICKS_PAIR = {
+    "DATABRICKS_MLFLOW_HOST": "https://myhost.databricks.com",
+    "DATABRICKS_MLFLOW_TOKEN": "mlflow-test-token",
+}
+_AMBIENT_MLFLOW_DATABRICKS_ENV = (
+    "MLFLOW_TRACKING_URI",
+    "DATABRICKS_CONFIG_PROFILE",
+    "MLFLOW_ENABLE_DB_SDK",
+)
+
+
 @contextmanager
 def mock_mlflow_deploy():
     """Patch all 10 MLflow/deploy targets used by deploy_to_mlflow().
 
+    Also sets the dedicated Databricks MLflow pair deploy resolves first.
     Yields an MLflowMocks dataclass so callers can assert on specific mocks.
     """
     with (
+        patch.dict("os.environ", _MLFLOW_DATABRICKS_PAIR),
         patch("mlflow.set_tracking_uri") as m_tracking,
         patch("mlflow.set_registry_uri") as m_registry,
         patch("mlflow.set_experiment") as m_experiment,
@@ -114,6 +131,8 @@ def mock_mlflow_deploy():
         patch("haute.deploy._mlflow._build_signature") as m_sig,
         patch("haute.deploy._mlflow._create_or_update_serving_endpoint") as m_ep,
     ):
+        for name in _AMBIENT_MLFLOW_DATABRICKS_ENV:
+            os.environ.pop(name, None)
         registered = MagicMock()
         registered.version = "1"
         m_client.return_value.search_model_versions.return_value = [registered]

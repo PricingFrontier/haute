@@ -6991,6 +6991,8 @@ class TestOptimiserMlflowLog:
 
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
         monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
         monkeypatch.chdir(tmp_path)
@@ -7064,6 +7066,8 @@ class TestOptimiserMlflowLog:
 
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
         monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
         monkeypatch.chdir(tmp_path)
@@ -15602,6 +15606,13 @@ class TestMlflowLogExceptionPath:
         mock_mlflow = MagicMock()
         with (
             patch.dict("sys.modules", {"mlflow": mock_mlflow}),
+            # Destination resolution binds the real MLflow's Databricks credential
+            # globals, which the stub module cannot provide; this test is about the
+            # summary failure, so tracking is configured as in the sibling test.
+            patch(
+                "haute.modelling._mlflow_log.configure_mlflow_tracking",
+                return_value=("http://localhost:5000", "local"),
+            ),
             patch("haute.routes.optimiser.logger.error") as log_error,
         ):
             resp = client.post(

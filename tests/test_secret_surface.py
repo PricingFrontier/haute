@@ -125,7 +125,11 @@ _REVIEWED_SECRET_ENV_REFERENCES: set[tuple[str, str]] = {
     # Tracking-destination resolution reads the token only for a presence
     # check; TrackingConfig carries host/URI destinations and the
     # missing-prerequisite error lists variable names, never values.
+    ("modelling/_mlflow_settings.py", "DATABRICKS_MLFLOW_TOKEN"),
+    # General-pair hint: a per-call presence check whose detail names the variable, never its value.
     ("modelling/_mlflow_settings.py", "DATABRICKS_TOKEN"),
+    # MLflow credential binding: read per request into MLflow's own auth config; errors list names.
+    ("_mlflow_utils.py", "DATABRICKS_MLFLOW_TOKEN"),
     ("deploy/_mlflow.py", "DATABRICKS_RATING_TOKEN"),
     ("assistant/_config.py", "ANTHROPIC_API_KEY"),
     ("assistant/_config.py", "OPENAI_API_KEY"),
@@ -151,6 +155,8 @@ _REVIEWED_SECRET_ENV_REFERENCES: set[tuple[str, str]] = {
     # Scaffold templates: CI secret PLACEHOLDER names written into generated
     # workflow files, never values.
     ("_scaffold.py", "DATABRICKS_RATING_TOKEN"),
+    # The .env template's MLflow pair: a placeholder name and example value, never a real token.
+    ("_scaffold.py", "DATABRICKS_MLFLOW_TOKEN"),
     ("_scaffold.py", "DOCKER_PASSWORD"),
     ("_scaffold.py", "AWS_SECRET_ACCESS_KEY"),
     ("_scaffold.py", "AZURE_CLIENT_SECRET"),

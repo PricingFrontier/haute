@@ -73,7 +73,7 @@ const DATABRICKS_HOST = entry("databricks", { destination: "https://adb-42.azure
 const DATABRICKS_UNCONFIGURED = entry("databricks", {
   configured: false,
   config_source: "",
-  detail: "Set MLFLOW_TRACKING_URI=databricks://<profile>, or DATABRICKS_HOST and DATABRICKS_TOKEN.",
+  detail: "Set MLFLOW_TRACKING_URI=databricks://<profile>, or DATABRICKS_MLFLOW_HOST and DATABRICKS_MLFLOW_TOKEN.",
 })
 const SERVER = entry("server", { destination: "http://localhost:5000", config_source: "toml" })
 const LOCAL = entry("local", { destination: "C:/proj/runs", config_source: "toml" })
@@ -151,7 +151,7 @@ describe("MlflowSettingsModal", () => {
     setInventory({ destinations: [DATABRICKS_HOST, SERVER, LOCAL] })
     await renderModal()
     expect(databricksBlock()).toHaveTextContent(
-      "Host: https://adb-42.azuredatabricks.net (from DATABRICKS_HOST)",
+      "Host: https://adb-42.azuredatabricks.net (from DATABRICKS_MLFLOW_HOST)",
     )
   })
 

@@ -146,7 +146,15 @@ def build_run_url(
     import mlflow
 
     if backend == "databricks":
-        base = os.getenv("DATABRICKS_HOST", "").rstrip("/")
+        # The host MLflow's requests actually target: the MLflow pair or the
+        # selected profile, never the data-access DATABRICKS_HOST.
+        from mlflow.utils.databricks_utils import get_databricks_host_creds
+
+        try:
+            base = (get_databricks_host_creds(mlflow.get_tracking_uri()).host or "").rstrip("/")
+        except Exception:
+            logger.debug("run_url_host_unavailable", exc_info=True)
+            return None
         path = "#mlflow/experiments"
     else:
         from haute.modelling._mlflow_settings import redact_uri

@@ -198,6 +198,8 @@ class TestMLflowSignatureLogged:
         pytest.importorskip("mlflow", reason="core mlflow dependency is unavailable")
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         mock_run = MagicMock()
         mock_run.info.run_id = "run_sig_1"
@@ -260,6 +262,8 @@ class TestMLflowSignatureLogged:
         pytest.importorskip("mlflow", reason="core mlflow dependency is unavailable")
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
         monkeypatch.setattr(
             "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
             lambda *a, **kw: [],
