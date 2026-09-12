@@ -167,6 +167,27 @@ describe("MlflowDestinationSelector", () => {
     expect(onChange).toHaveBeenCalledWith("local")
   })
 
+  it("pins the destination auto currently resolves to when its checked option is clicked", () => {
+    // A checked radio emits no change event, so without an explicit pin a
+    // local-only project could never move a node from Auto to Local.
+    setInventory({ auto: "local", destinations: [DATABRICKS_GREY, SERVER_AMBER, LOCAL] })
+    const { onChange } = renderSelector({ value: "" })
+
+    const local = radio("Local folder")
+    expect(local).toBeChecked()
+    fireEvent.click(local)
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenCalledWith("local")
+  })
+
+  it("does not re-emit an explicit choice when its checked option is clicked again", () => {
+    setInventory({ auto: "databricks" })
+    const { onChange } = renderSelector({ value: "local" })
+
+    fireEvent.click(radio("Local folder"))
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it("greys an unconfigured remote: aria-disabled, no onChange, opens the settings modal", () => {
     setInventory({ auto: "local", destinations: [DATABRICKS_GREY, SERVER_AMBER, LOCAL] })
     const { onChange } = renderSelector({ value: "" })

@@ -1258,3 +1258,91 @@ class TestListModelVersionsAdditional:
         data = resp.json()
         assert data[0]["creation_timestamp"] == 1700000000
         assert data[0]["description"] == "v1 desc"
+
+
+# ---------------------------------------------------------------------------
+# Secret hygiene in failure logs (MLF-D01): category + exception type only
+# ---------------------------------------------------------------------------
+
+_SECRET = "dapi-SECRET-TOKEN-0123"
+_LEAKY_MESSAGE = f"401 Unauthorized for https://alice:{_SECRET}@adb.example.net (token {_SECRET})"
+
+
+def _records_named(logs: list[dict], event: str) -> list[dict]:
+    return [record for record in logs if record.get("event") == event]
+
+
+def _assert_secret_free_failure_record(record: dict) -> None:
+    """A failure record names the category and exception type, never the text."""
+    from typing import get_args
+
+    from haute.schemas import MlflowProbeCategory
+
+    assert record["category"] in get_args(MlflowProbeCategory)
+    assert record["error_type"] == "RuntimeError"
+    assert "error" not in record
+    assert _SECRET not in repr(record)
+
+
+class TestFailureLogsCarryNoExceptionText:
+    """Discovery and tracking-setup failures must not echo ``str(exc)``.
+
+    A tracking error can carry a bearer token or a credential-bearing URI;
+    the client receives the category-mapped detail and the log record keeps
+    only the category and the exception type (plan constraint: secret
+    hygiene in logs).
+    """
+
+    def test_discovery_failure_record_is_secret_free(self, client):
+        mock_client = MagicMock()
+        mock_client.search_experiments.side_effect = RuntimeError(_LEAKY_MESSAGE)
+
+        with (
+            _mock_tracking(client=mock_client),
+            structlog.testing.capture_logs() as logs,
+        ):
+            resp = client.get("/api/mlflow/experiments")
+
+        assert resp.status_code == 502
+        assert _SECRET not in resp.text
+        records = _records_named(logs, "mlflow_list_experiments_failed")
+        assert len(records) == 1
+        _assert_secret_free_failure_record(records[0])
+        assert _SECRET not in repr(logs)
+
+    def test_artifact_list_failure_record_is_secret_free(self, client):
+        mock_client = MagicMock()
+        mock_client.search_runs.return_value = [_make_run(run_id="run-1")]
+        mock_client.list_artifacts.side_effect = RuntimeError(_LEAKY_MESSAGE)
+
+        with (
+            _mock_tracking(client=mock_client),
+            structlog.testing.capture_logs() as logs,
+        ):
+            resp = client.get("/api/mlflow/runs?experiment_id=1")
+
+        assert resp.status_code == 200
+        assert resp.json() == []
+        records = _records_named(logs, "artifact_list_failed")
+        assert len(records) == 1
+        assert records[0]["run_id"] == "run-1"
+        _assert_secret_free_failure_record(records[0])
+        assert _SECRET not in repr(logs)
+
+    def test_tracking_setup_failure_record_is_secret_free(self, client, monkeypatch):
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+
+        with (
+            patch("mlflow.tracking.MlflowClient", side_effect=RuntimeError(_LEAKY_MESSAGE)),
+            structlog.testing.capture_logs() as logs,
+        ):
+            resp = client.get("/api/mlflow/experiments")
+
+        assert resp.status_code == 502
+        assert _SECRET not in resp.text
+        records = _records_named(logs, "mlflow_tracking_setup_failed")
+        assert len(records) == 1
+        _assert_secret_free_failure_record(records[0])
+        assert _SECRET not in repr(logs)

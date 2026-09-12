@@ -203,6 +203,12 @@ _EXPECTED_DEBT_IDS = {
     # install skipping cleanly while the dev-group CI legs (mlflow
     # installed) execute every test.
     "e278858fa0b5e3b7",
+    # MLF-D03 — tests/test_mlflow_destinations_e2e.py proves per-node destination
+    # isolation against REAL local file stores (logging, scoring, optimiser
+    # apply, deploy scoring, generated scripts). Same module-level
+    # importorskip convention as test_mlflow_log_button_roundtrip.py so the
+    # core-only CI leg (no mlflow) skips cleanly while the dev-group legs run it.
+    "752af62493a1e027",
     # 4b.8 — tests/test_mlflow_log_button_roundtrip.py proves the "Log to
     # MLflow" button's signature/artifact round-trip against a REAL local
     # file-store MLflow (a wrong signature only fails at genuine pyfunc
@@ -252,7 +258,7 @@ _EXPECTED_DEBT_IDS = {
     # raises, mirroring the other symlink-guard tests; Linux CI runs it.
     # See tests/test_mlflow_settings.py::TestLoadSaveSettings
     # ::test_save_refuses_symlinked_haute_toml_escaping_the_project.
-    "f696e54d030dc852",
+    "0d633b8caaa866db",
     # Windows symlink privilege — the file-browser short-path regression test
     # builds a symlinked project dir so ``Path.cwd()`` differs from its
     # ``resolve()`` (the cross-platform stand-in for a Windows 8.3 short cwd),

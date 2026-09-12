@@ -128,7 +128,13 @@ def _run_summaries(
                 continue
         except Exception as exc:
             measurement.artifact_failures += 1
-            logger.warning("artifact_list_failed", run_id=run_id, error=str(exc))
+            # Never str(exc): tracking errors can echo credential-bearing URIs.
+            logger.warning(
+                "artifact_list_failed",
+                run_id=run_id,
+                category=_classify_probe_error(exc),
+                error_type=type(exc).__name__,
+            )
             continue
         finally:
             measurement.record_artifact_call(artifact_started_at, perf_counter())
@@ -190,7 +196,12 @@ def _ensure_tracking(destination: str = "") -> tuple[_types.ModuleType, MlflowCl
         # Our own configuration messages are actionable and never secret.
         raise HTTPException(status_code=502, detail=str(exc))
     except Exception as exc:
-        logger.error("mlflow_tracking_setup_failed", error=str(exc))
+        # Never str(exc): a client construction failure can echo the tracking URI.
+        logger.error(
+            "mlflow_tracking_setup_failed",
+            category=_classify_probe_error(exc),
+            error_type=type(exc).__name__,
+        )
         raise HTTPException(status_code=502, detail=_INTERNAL_ERROR_DETAIL)
 
 
@@ -211,7 +222,9 @@ _DISCOVERY_CATEGORY_DETAILS = {
 def _discovery_http_error(exc: BaseException, event: str) -> HTTPException:
     """Map a discovery failure to a 502 with a categorised, non-secret detail."""
     category = _classify_probe_error(exc)
-    logger.error(event, category=category, error=str(exc))
+    # Category and exception type only: the raw text may carry tokens or
+    # credential-bearing URIs, and the client already gets the mapped detail.
+    logger.error(event, category=category, error_type=type(exc).__name__)
     return HTTPException(
         status_code=502,
         detail=_DISCOVERY_CATEGORY_DETAILS.get(category, _INTERNAL_ERROR_DETAIL),

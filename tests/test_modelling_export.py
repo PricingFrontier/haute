@@ -715,6 +715,58 @@ class TestExecutedExportMlflowDestinations:
         runs = client.search_runs([exp.experiment_id])
         assert len(runs) >= 1
 
+    def test_executed_export_auto_follows_the_execution_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        tiny_training_data: Path,
+    ) -> None:
+        from haute._sandbox import set_project_root
+
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+
+        gen_root = tmp_path / "gen"
+        gen_root.mkdir()
+        (gen_root / "haute.toml").write_text('[mlflow]\nfolder = "store_a"\n', encoding="utf-8")
+        exec_root = tmp_path / "exec"
+        exec_root.mkdir()
+        (exec_root / "haute.toml").write_text('[mlflow]\nfolder = "store_b"\n', encoding="utf-8")
+
+        # Generation environment: auto resolves to the local store_a folder here.
+        monkeypatch.chdir(gen_root)
+        set_project_root(gen_root)
+
+        config = {
+            **MINIMAL_CONFIG,
+            "params": {"iterations": 2},
+            "output_dir": str(exec_root / "outputs"),
+            "mlflow_experiment": "/Shared/test_auto",
+        }
+        script = generate_training_script(config, str(tiny_training_data))
+        assert "mlflow_destination" not in script
+
+        # Execution environment: auto must re-resolve here, to store_b.
+        monkeypatch.chdir(exec_root)
+        set_project_root(exec_root)
+
+        namespace: dict[str, Any] = {"__name__": "__main__"}
+        exec(compile(script, "<exported_training_script>", "exec"), namespace)
+
+        import mlflow
+
+        store_b = exec_root / "store_b"
+        assert store_b.exists()
+        client = mlflow.tracking.MlflowClient(tracking_uri=store_b.as_uri())
+        exp = client.get_experiment_by_name("/Shared/test_auto")
+        assert exp is not None
+        assert len(client.search_runs([exp.experiment_id])) == 1
+
+        # The generation environment's store was never touched.
+        assert not (gen_root / "store_a").exists()
+
     def test_executed_export_unavailable_server_destination_raises_config_error(
         self,
         monkeypatch: pytest.MonkeyPatch,

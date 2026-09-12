@@ -259,21 +259,28 @@ class TestLoadMlflowOptimiserArtifactRegistered:
         mlflow_mocks.backend.assert_called_once_with("local")
 
     def test_same_run_on_two_backends_does_not_alias(self, tmp_path):
-        """The same run ID on two backends yields two distinct cache entries."""
+        """The same run ID on two backend identities yields two cache entries.
+
+        Both backends carry the *same* tracking URI (a Databricks profile whose
+        workspace was repointed between the two loads), so only the backend
+        identity distinguishes them: a cache keyed on the URI alone would
+        serve the first workspace's artifact for the second.
+        """
         backend_a = ResolvedBackend(
-            mode="local",
-            tracking_uri="file:///a",
-            registry_uri="file:///a",
-            identity="local:a|registry=file:///a",
+            mode="databricks",
+            tracking_uri="databricks://team",
+            registry_uri="databricks-uc://team",
+            identity="databricks:https://host-a.example.net|profile=team|registry=databricks-uc://team",
             digest="aaaaaaaaaaaaaaaa",
         )
         backend_b = ResolvedBackend(
-            mode="local",
-            tracking_uri="file:///b",
-            registry_uri="file:///b",
-            identity="local:b|registry=file:///b",
+            mode="databricks",
+            tracking_uri="databricks://team",
+            registry_uri="databricks-uc://team",
+            identity="databricks:https://host-b.example.net|profile=team|registry=databricks-uc://team",
             digest="bbbbbbbbbbbbbbbb",
         )
+        assert backend_a.tracking_uri == backend_b.tracking_uri
         path_a = tmp_path / "a.json"
         path_a.write_text(json.dumps({"mode": "online", "version": "from_a"}))
         path_b = tmp_path / "b.json"

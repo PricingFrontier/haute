@@ -126,11 +126,18 @@ export default function MlflowDestinationSelector({
                 disabled={disabled || loading}
                 aria-disabled={blocked ? true : undefined}
                 onClick={(event) => {
-                  if (!blocked) return
-                  // Cancel the radio's activation behaviour: an unconfigured
-                  // destination is offered as a fix, never selected.
-                  event.preventDefault()
-                  setMlflowSettingsOpen(true)
+                  if (blocked) {
+                    // Cancel the radio's activation behaviour: an unconfigured
+                    // destination is offered as a fix, never selected.
+                    event.preventDefault()
+                    setMlflowSettingsOpen(true)
+                    return
+                  }
+                  // A radio that is already checked fires no change event, so
+                  // clicking the option auto currently resolves to must still
+                  // pin it: the node then names that destination explicitly and
+                  // stops following the auto rule.
+                  if (selected && value === "" && !disabled && !loading) onChange(key)
                 }}
                 onChange={() => {
                   // Also reached by keyboard navigation, which no click can
