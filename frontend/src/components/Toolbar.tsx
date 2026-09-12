@@ -4,16 +4,10 @@ import type { WsStatus } from "../hooks/useWebSocketSync"
 import type { NodeTiming, NodeMemory } from "../api/types"
 import BreakdownDropdown, { type BreakdownItem } from "./BreakdownDropdown"
 import BranchIndicator from "./BranchIndicator"
-import useSettingsStore, { MAX_STREAMING_CHUNK_SIZE, MIN_STREAMING_CHUNK_SIZE, useMlflowStatus } from "../stores/useSettingsStore"
+import useSettingsStore, { MAX_STREAMING_CHUNK_SIZE, MIN_STREAMING_CHUNK_SIZE } from "../stores/useSettingsStore"
 import useUIStore from "../stores/useUIStore"
 import useClickOutside from "../hooks/useClickOutside"
 import MlflowSettingsModal from "./MlflowSettingsModal"
-
-const MLFLOW_MODE_NAMES: Record<string, string> = {
-  databricks: "Databricks",
-  server: "Server",
-  local: "Local",
-}
 
 declare const __APP_VERSION__: string
 
@@ -102,22 +96,9 @@ export default function Toolbar({
   useClickOutside(sourceRef, closeSource, sourceOpen)
   const wsConfig = WS_STATUS_CONFIG[wsStatus]
 
-  const { mlflowStatus, mlflowMode, mlflowDestination, mlflowDetail } = useMlflowStatus()
   const mlflowSettingsOpen = useUIStore((s) => s.mlflowSettingsOpen)
   const setMlflowSettingsOpen = useUIStore((s) => s.setMlflowSettingsOpen)
   const closeMlflowSettings = useCallback(() => setMlflowSettingsOpen(false), [setMlflowSettingsOpen])
-  const mlflowChipLabel =
-    mlflowStatus === "loading"
-      ? "MLflow…"
-      : mlflowStatus === "connected"
-        ? `MLflow: ${MLFLOW_MODE_NAMES[mlflowMode] ?? mlflowMode}`
-        : "MLflow off"
-  const mlflowChipDot =
-    mlflowStatus === "connected"
-      ? "var(--success)"
-      : mlflowStatus === "loading"
-        ? "var(--text-muted)"
-        : "var(--warning-strong)"
 
   const timingItems: BreakdownItem[] = useMemo(
     () => (timings ?? []).map((t) => ({ node_id: t.node_id, label: t.label, value: t.timing_ms })),
@@ -297,21 +278,6 @@ export default function Toolbar({
           style={{ width: 'calc(8ch + 16px)', background: 'var(--chrome-hover)', border: '1px solid var(--chrome-border)', color: 'var(--text-primary)' }}
         />
       </div>
-      {/* MLflow status chip — settings cluster; opens the tracking settings modal */}
-      <button
-        data-testid="toolbar-mlflow-chip"
-        onClick={() => setMlflowSettingsOpen(true)}
-        aria-label="MLflow settings"
-        title={mlflowDetail || mlflowDestination || "MLflow tracking settings"}
-        className="toolbar-btn ml-2.5 flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-[11px]"
-      >
-        <span
-          className={`h-2 w-2 shrink-0 rounded-full${mlflowStatus === "loading" ? " animate-pulse-dot" : ""}`}
-          style={{ background: mlflowChipDot }}
-          aria-hidden="true"
-        />
-        <span style={{ color: "var(--text-muted)" }}>{mlflowChipLabel}</span>
-      </button>
       {/* Undo / Redo.  Grouped so they take the shared 10px gap — as bare
           icons they sat flush against each other, which only became visible
           once they grew borders. */}

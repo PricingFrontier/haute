@@ -1,11 +1,20 @@
 /**
- * MLflow tracking settings dialog (ModalShell-based).
+ * MLflow destinations inventory editor (ModalShell-based).
  *
- * Fetches GET /api/mlflow/settings on mount, offers the three tracking
- * modes as plain-language cards, tests the connection on demand, and saves
- * through PUT /api/mlflow/settings followed by invalidateMlflow() so the
- * toolbar chip and every panel refresh without a reload. `folder` is always
- * sent empty — the backend persists the currently resolved local folder.
+ * The workspace offers up to three tracking destinations and each node picks
+ * one; this modal edits the two the workspace can configure — the MLflow
+ * server URL and the local folder — and reports what Databricks resolves to
+ * read-only, since that configuration lives in the environment. It fetches
+ * `GET /api/mlflow/settings` on mount, reads the inventory from the settings
+ * store, tests each remote on demand, and saves through
+ * `PUT /api/mlflow/settings` followed by `invalidateMlflow()` so every node's
+ * selector refreshes without a reload.
+ *
+ * No credential is ever rendered or submitted: stored server URLs are
+ * credential-free by backend validation, inventory destinations arrive
+ * pre-redacted, and the modal adds no credential inputs.
+ *
+ * Per `specs/frontend-shared/low-level.md` ("MLflow settings modal").
  */
 import { useCallback, useEffect, useRef, useState } from "react"
 import { CheckCircle2, Loader2, TriangleAlert } from "lucide-react"
@@ -20,73 +29,87 @@ import type {
   MlflowSettingsResponse,
   MlflowTestConnectionResponse,
 } from "../api/types"
-import useSettingsStore from "../stores/useSettingsStore"
+import useSettingsStore, { useMlflowDestinations } from "../stores/useSettingsStore"
+import {
+  mlflowDestinationEntry,
+  type MlflowInventoryState,
+} from "../utils/mlflowDestinations"
 
-type TrackingMode = "local" | "server" | "databricks"
+/** The two destinations that can actually be probed. */
+type RemoteKey = "server" | "databricks"
 
-const MODE_CARDS: { key: TrackingMode; title: string; description: string }[] = [
-  {
-    key: "local",
-    title: "Local folder",
-    description: "Zero setup — runs are saved to a folder in your project.",
-  },
-  {
-    key: "server",
-    title: "MLflow server",
-    description: "Connect to a running MLflow server by URL.",
-  },
-  {
-    key: "databricks",
-    title: "Databricks",
-    description: "Uses the workspace credentials from your .env file.",
-  },
-]
+const DATABRICKS_PROFILE_PREFIX = "databricks://"
 
-const MODE_NAMES: Record<TrackingMode, string> = {
-  local: "Local folder",
-  server: "MLflow server",
-  databricks: "Databricks",
-}
-
-const SOURCE_NAMES: Record<string, string> = {
-  toml: "from haute.toml",
-  env: "from environment",
-  default: "default",
-}
-
-function describeResolution(settings: MlflowSettingsResponse): string {
-  if (!settings.resolved) return ""
-  const { mode, destination, config_source } = settings.resolved
-  return `${MODE_NAMES[mode]} — ${destination} (${SOURCE_NAMES[config_source] ?? config_source})`
-}
-
-function initialMode(settings: MlflowSettingsResponse): TrackingMode {
-  if (settings.mode === "local" || settings.mode === "server" || settings.mode === "databricks") {
-    return settings.mode
+/**
+ * What Databricks resolves to, in words: the selected profile, the detected
+ * host, or what is missing. Never a credential — the inventory's destination
+ * is already the secret-free display form.
+ */
+function describeDatabricks(state: MlflowInventoryState): string {
+  const entry = mlflowDestinationEntry(state.destinations, "databricks")
+  if (!entry) {
+    // No entry yet (still fetching) or none at all (the fetch failed): the
+    // store's own detail is the only reason anybody has.
+    return state.status === "loading" ? "Checking Databricks…" : state.detail
   }
-  return settings.resolved?.mode ?? "local"
+  if (!entry.configured) return entry.detail
+  if (entry.destination.startsWith(DATABRICKS_PROFILE_PREFIX)) {
+    const profile = entry.destination.slice(DATABRICKS_PROFILE_PREFIX.length)
+    return `Profile: ${profile} (from MLFLOW_TRACKING_URI)`
+  }
+  return `Host: ${entry.destination} (from DATABRICKS_HOST)`
+}
+
+function TestResult({ result, testId }: { result: MlflowTestConnectionResponse; testId: string }) {
+  return (
+    <p
+      data-testid={testId}
+      className="mt-1 flex items-center gap-1 text-[11px]"
+      style={{ color: result.ok ? "var(--success)" : "var(--warning-strong)" }}
+    >
+      {result.ok ? (
+        <>
+          <CheckCircle2 size={12} aria-hidden="true" />
+          Connection OK
+        </>
+      ) : (
+        <>
+          <TriangleAlert size={12} aria-hidden="true" />
+          {result.detail || `Connection test failed (${result.category}).`}
+        </>
+      )}
+    </p>
+  )
 }
 
 export default function MlflowSettingsModal({ onClose }: { onClose: () => void }) {
+  const state = useMlflowDestinations()
+  const fetchMlflow = useSettingsStore((s) => s.fetchMlflow)
   const invalidateMlflow = useSettingsStore((s) => s.invalidateMlflow)
 
   const [settings, setSettings] = useState<MlflowSettingsResponse | null>(null)
   const [loadError, setLoadError] = useState("")
-  const [selectedMode, setSelectedMode] = useState<TrackingMode>("local")
-  const [serverUri, setServerUri] = useState("")
+  const [serverDraft, setServerDraft] = useState("")
+  const [folderDraft, setFolderDraft] = useState("")
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState("")
   const [saved, setSaved] = useState(false)
-  const [testing, setTesting] = useState(false)
-  const [testResult, setTestResult] = useState<MlflowTestConnectionResponse | null>(null)
-  // A test result belongs to the draft it probed: bump the sequence on any
-  // draft edit so a completion for the old target is discarded.
-  const testSeqRef = useRef(0)
+  const [testing, setTesting] = useState<Record<RemoteKey, boolean>>({
+    server: false,
+    databricks: false,
+  })
+  const [results, setResults] = useState<Record<RemoteKey, MlflowTestConnectionResponse | null>>({
+    server: null,
+    databricks: null,
+  })
+  // A test result belongs to the draft it probed, per remote: any draft edit
+  // bumps both sequences so a completion for the old target is discarded.
+  const testSeqRef = useRef<Record<RemoteKey, number>>({ server: 0, databricks: 0 })
 
-  const invalidateTestResult = useCallback(() => {
-    testSeqRef.current += 1
-    setTestResult(null)
-  }, [])
+  const inventoryLoading = state.status === "loading"
+  useEffect(() => {
+    if (inventoryLoading) fetchMlflow()
+  }, [inventoryLoading, fetchMlflow])
 
   useEffect(() => {
     let cancelled = false
@@ -94,11 +117,8 @@ export default function MlflowSettingsModal({ onClose }: { onClose: () => void }
       .then((data) => {
         if (cancelled) return
         setSettings(data)
-        setSelectedMode(initialMode(data))
-        setServerUri(
-          data.tracking_uri
-            || (data.resolved?.mode === "server" ? data.resolved.destination : ""),
-        )
+        setServerDraft(data.tracking_uri)
+        setFolderDraft(data.folder)
       })
       .catch((e: unknown) => {
         if (cancelled) return
@@ -109,6 +129,49 @@ export default function MlflowSettingsModal({ onClose }: { onClose: () => void }
     }
   }, [])
 
+  /** A draft edit invalidates every displayed result and the save receipt. */
+  const handleDraftEdit = useCallback(() => {
+    testSeqRef.current = {
+      server: testSeqRef.current.server + 1,
+      databricks: testSeqRef.current.databricks + 1,
+    }
+    setResults({ server: null, databricks: null })
+    setSaved(false)
+  }, [])
+
+  const handleTest = useCallback(
+    async (key: RemoteKey) => {
+      if (testing[key] || saving) return
+      setTesting((prev) => ({ ...prev, [key]: true }))
+      setResults((prev) => ({ ...prev, [key]: null }))
+      const seq = (testSeqRef.current[key] += 1)
+      try {
+        // The server is probed against the draft, not the saved value;
+        // Databricks has nothing to draft, so the key alone identifies it.
+        const result = await testMlflowConnection(
+          key === "server"
+            ? { destination: "server", tracking_uri: serverDraft.trim() }
+            : { destination: "databricks" },
+        )
+        if (seq === testSeqRef.current[key]) setResults((prev) => ({ ...prev, [key]: result }))
+      } catch (e: unknown) {
+        if (seq === testSeqRef.current[key]) {
+          setResults((prev) => ({
+            ...prev,
+            [key]: {
+              ok: false,
+              category: "unknown",
+              detail: e instanceof Error ? e.message : "Connection test failed",
+            },
+          }))
+        }
+      } finally {
+        setTesting((prev) => ({ ...prev, [key]: false }))
+      }
+    },
+    [testing, saving, serverDraft],
+  )
+
   const handleSave = useCallback(async () => {
     if (saving) return
     setSaving(true)
@@ -116,11 +179,12 @@ export default function MlflowSettingsModal({ onClose }: { onClose: () => void }
     setSaved(false)
     try {
       const updated = await putMlflowSettings({
-        mode: selectedMode,
-        tracking_uri: selectedMode === "server" ? serverUri.trim() : "",
-        folder: "",
+        tracking_uri: serverDraft.trim(),
+        folder: folderDraft.trim(),
       })
       setSettings(updated)
+      setServerDraft(updated.tracking_uri)
+      setFolderDraft(updated.folder)
       setSaved(true)
       invalidateMlflow()
     } catch (e: unknown) {
@@ -134,188 +198,186 @@ export default function MlflowSettingsModal({ onClose }: { onClose: () => void }
     } finally {
       setSaving(false)
     }
-  }, [saving, selectedMode, serverUri, invalidateMlflow])
+  }, [saving, serverDraft, folderDraft, invalidateMlflow])
 
-  const handleTest = useCallback(async () => {
-    if (testing) return
-    setTesting(true)
-    setTestResult(null)
-    const seq = (testSeqRef.current += 1)
-    try {
-      // Probe the draft selection, not the saved configuration.
-      const result = await testMlflowConnection({
-        mode: selectedMode,
-        tracking_uri: selectedMode === "server" ? serverUri.trim() : "",
-        folder: "",
-      })
-      if (seq === testSeqRef.current) setTestResult(result)
-    } catch (e: unknown) {
-      if (seq === testSeqRef.current) {
-        setTestResult({
-          ok: false,
-          category: "unknown",
-          detail: e instanceof Error ? e.message : "Connection test failed",
-        })
-      }
-    } finally {
-      setTesting(false)
-    }
-  }, [testing, selectedMode, serverUri])
-
-  const localFolderDisplay =
-    settings?.resolved?.mode === "local"
-      ? settings.resolved.destination
-      : settings?.folder || "mlruns/ in your project (default)"
+  const fieldStyle = {
+    background: "var(--bg-input)",
+    border: "1px solid var(--border)",
+    color: "var(--text-primary)",
+  }
+  const buttonStyle = {
+    background: "var(--bg-input)",
+    border: "1px solid var(--border)",
+    color: "var(--text-secondary)",
+  }
 
   return (
-    <ModalShell ariaLabel="MLflow settings" onClose={onClose} width="w-[440px]" testId="mlflow-settings-modal">
+    <ModalShell
+      ariaLabel="MLflow settings"
+      onClose={onClose}
+      width="w-[460px]"
+      testId="mlflow-settings-modal"
+    >
       <div className="px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
         <h2 className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>
-          MLflow tracking
+          MLflow destinations
         </h2>
-        {settings && settings.resolved && (
-          <p className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
-            Currently: {describeResolution(settings)}
-          </p>
-        )}
-        {settings && !settings.resolved && settings.detail && (
-          <p className="mt-1 flex items-center gap-1 text-[11px]" style={{ color: "var(--warning-strong)" }}>
+        <p className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+          Each node chooses where it logs. This is what the workspace offers.
+        </p>
+        {settings?.detail && (
+          <p
+            className="mt-1 flex items-center gap-1 text-[11px]"
+            style={{ color: "var(--warning-strong)" }}
+          >
             <TriangleAlert size={12} aria-hidden="true" />
             {settings.detail}
           </p>
         )}
+        {/* A failed load leaves no drafts to edit — showing empty fields would
+            invite a save that wipes a configuration nobody has seen. */}
         {loadError && (
-          <p className="mt-1 text-[11px]" style={{ color: "var(--danger)" }}>{loadError}</p>
+          <p className="mt-1 text-[11px]" style={{ color: "var(--danger)" }}>
+            {loadError}
+          </p>
         )}
       </div>
 
-      <div className="px-4 py-3 space-y-2">
+      <div className="space-y-3 px-4 py-3">
         {!settings && !loadError && (
           <div className="flex items-center gap-2 text-xs" style={{ color: "var(--text-muted)" }}>
             <Loader2 size={14} className="animate-spin" aria-hidden="true" />
             Loading settings…
           </div>
         )}
+
         {settings && (
-          <div role="radiogroup" aria-label="Tracking destination" className="space-y-2">
-            {MODE_CARDS.map((card) => {
-              const selected = selectedMode === card.key
-              return (
-                <label
-                  key={card.key}
-                  className="block w-full cursor-pointer rounded-lg px-3 py-2"
-                  style={{
-                    background: selected ? "var(--accent-soft-subtle)" : "var(--bg-input)",
-                    border: `1px solid ${selected ? "var(--accent-ring)" : "var(--border)"}`,
-                  }}
-                >
-                  <input
-                    type="radio"
-                    name="mlflow-tracking-mode"
-                    className="sr-only"
-                    checked={selected}
-                    disabled={saving}
-                    onChange={() => {
-                      setSelectedMode(card.key)
-                      setSaved(false)
-                      invalidateTestResult()
-                    }}
-                  />
-                  <span className="block text-xs font-semibold" style={{ color: "var(--text-primary)" }}>
-                    {card.title}
-                  </span>
-                  <span className="block text-[11px]" style={{ color: "var(--text-muted)" }}>
-                    {card.description}
-                  </span>
-                  {card.key === "local" && (
-                    <span className="mt-0.5 block break-all font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>
-                      {localFolderDisplay}
-                    </span>
-                  )}
-                </label>
-              )
-            })}
-          </div>
-        )}
-        {settings && selectedMode === "server" && (
-          <label className="block text-[11px]" style={{ color: "var(--text-muted)" }}>
-            Server URL
-            <input
-              type="text"
-              aria-label="Server URL"
-              value={serverUri}
-              disabled={saving}
-              onChange={(e) => {
-                setServerUri(e.target.value)
-                setSaved(false)
-                invalidateTestResult()
-              }}
-              placeholder="http://localhost:5000"
-              className="mt-0.5 w-full rounded-lg px-2.5 py-1.5 font-mono text-xs"
-              style={{
-                background: "var(--bg-input)",
-                border: "1px solid var(--border)",
-                color: "var(--text-primary)",
-              }}
-            />
-          </label>
-        )}
-        {saveError && (
-          <p className="rounded-lg px-3 py-2 text-[11px]" style={{ background: "var(--danger-soft-subtle)", border: "1px solid var(--danger-border)", color: "var(--danger-text-soft)" }}>
-            {saveError}
-          </p>
-        )}
-        {saved && !saveError && (
-          <p className="flex items-center gap-1 text-[11px]" style={{ color: "var(--success)" }}>
-            <CheckCircle2 size={12} aria-hidden="true" />
-            Saved.
-          </p>
-        )}
-        {testResult && (
-          <p
-            className="flex items-center gap-1 text-[11px]"
-            style={{ color: testResult.ok ? "var(--success)" : "var(--warning-strong)" }}
-          >
-            {testResult.ok ? (
-              <>
-                <CheckCircle2 size={12} aria-hidden="true" />
-                Connection OK
-              </>
-            ) : (
-              <>
-                <TriangleAlert size={12} aria-hidden="true" />
-                {testResult.detail || `Connection test failed (${testResult.category}).`}
-              </>
+          <>
+            <div
+              data-testid="mlflow-databricks-block"
+              className="rounded-lg px-3 py-2"
+              style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }}
+            >
+              <span className="block text-xs font-semibold" style={{ color: "var(--text-primary)" }}>
+                Databricks
+              </span>
+              <span className="mt-0.5 block break-all text-[11px]" style={{ color: "var(--text-muted)" }}>
+                {describeDatabricks(state)}
+              </span>
+              <button
+                onClick={() => void handleTest("databricks")}
+                disabled={testing.databricks || saving}
+                className="mt-1.5 rounded-lg px-2.5 py-1 text-[11px]"
+                style={buttonStyle}
+              >
+                {testing.databricks ? "Testing…" : "Test Databricks"}
+              </button>
+              {results.databricks && (
+                <TestResult result={results.databricks} testId="mlflow-test-result-databricks" />
+              )}
+            </div>
+
+            <div>
+              <label
+                htmlFor="mlflow-server-url"
+                className="block text-[11px]"
+                style={{ color: "var(--text-muted)" }}
+              >
+                MLflow server URL
+              </label>
+              <input
+                id="mlflow-server-url"
+                type="text"
+                value={serverDraft}
+                disabled={saving}
+                onChange={(e) => {
+                  setServerDraft(e.target.value)
+                  handleDraftEdit()
+                }}
+                placeholder="http://localhost:5000"
+                className="mt-0.5 w-full rounded-lg px-2.5 py-1.5 font-mono text-xs"
+                style={fieldStyle}
+              />
+              <button
+                onClick={() => void handleTest("server")}
+                disabled={testing.server || saving}
+                className="mt-1.5 rounded-lg px-2.5 py-1 text-[11px]"
+                style={buttonStyle}
+              >
+                {testing.server ? "Testing…" : "Test server"}
+              </button>
+              {results.server && (
+                <TestResult result={results.server} testId="mlflow-test-result-server" />
+              )}
+            </div>
+
+            <div>
+              <label
+                htmlFor="mlflow-local-folder"
+                className="block text-[11px]"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Local folder
+              </label>
+              <input
+                id="mlflow-local-folder"
+                type="text"
+                value={folderDraft}
+                disabled={saving}
+                onChange={(e) => {
+                  setFolderDraft(e.target.value)
+                  handleDraftEdit()
+                }}
+                placeholder={settings.resolved_folder}
+                className="mt-0.5 w-full rounded-lg px-2.5 py-1.5 font-mono text-xs"
+                style={fieldStyle}
+              />
+              <span className="mt-0.5 block break-all text-[10px]" style={{ color: "var(--text-muted)" }}>
+                Resolves to: {settings.resolved_folder}
+              </span>
+            </div>
+
+            {saveError && (
+              <p
+                className="rounded-lg px-3 py-2 text-[11px]"
+                style={{
+                  background: "var(--danger-soft-subtle)",
+                  border: "1px solid var(--danger-border)",
+                  color: "var(--danger-text-soft)",
+                }}
+              >
+                {saveError}
+              </p>
             )}
-          </p>
+            {saved && !saveError && (
+              <p className="flex items-center gap-1 text-[11px]" style={{ color: "var(--success)" }}>
+                <CheckCircle2 size={12} aria-hidden="true" />
+                Saved.
+              </p>
+            )}
+          </>
         )}
       </div>
 
       <div className="flex items-center gap-2 px-4 py-3" style={{ borderTop: "1px solid var(--border)" }}>
-        <button
-          onClick={handleTest}
-          disabled={testing || saving || !settings}
-          className="rounded-lg px-3 py-1.5 text-xs"
-          style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
-        >
-          {testing ? "Testing…" : "Test connection"}
-        </button>
         <div className="flex-1" />
-        <button
-          onClick={onClose}
-          className="rounded-lg px-3 py-1.5 text-xs"
-          style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
-        >
+        <button onClick={onClose} className="rounded-lg px-3 py-1.5 text-xs" style={buttonStyle}>
           Close
         </button>
-        <button
-          onClick={handleSave}
-          disabled={saving || !settings || (selectedMode === "server" && !serverUri.trim())}
-          className="rounded-lg px-3 py-1.5 text-xs font-medium"
-          style={{ background: "var(--accent-soft-strong)", border: "1px solid var(--accent-ring)", color: "var(--text-accent)" }}
-        >
-          {saving ? "Saving…" : "Save"}
-        </button>
+        {settings && (
+          <button
+            onClick={() => void handleSave()}
+            disabled={saving}
+            className="rounded-lg px-3 py-1.5 text-xs font-medium"
+            style={{
+              background: "var(--accent-soft-strong)",
+              border: "1px solid var(--accent-ring)",
+              color: "var(--text-accent)",
+            }}
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+        )}
       </div>
     </ModalShell>
   )

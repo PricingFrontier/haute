@@ -7,17 +7,7 @@ vi.mock("../MlflowSettingsModal", () => ({
 
 import Toolbar from "../Toolbar"
 import useSettingsStore from "../../stores/useSettingsStore"
-
-const MLFLOW_CONNECTED = {
-  status: "connected" as const,
-  mode: "databricks",
-  destination: "https://adb.example.net",
-  configSource: "env",
-  installed: true,
-  importable: true,
-  configured: true,
-  detail: "",
-}
+import useUIStore from "../../stores/useUIStore"
 
 function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
   return {
@@ -53,6 +43,7 @@ describe("Toolbar", () => {
       sources: ["live"],
       activeSource: "live",
     })
+    useUIStore.setState({ mlflowSettingsOpen: false })
   })
 
   afterEach(cleanup)
@@ -62,58 +53,19 @@ describe("Toolbar", () => {
     expect(screen.getByText("Haute")).toBeInTheDocument()
   })
 
-  describe("MLflow chip", () => {
-    beforeEach(async () => {
-      const { default: useUIStore } = await import("../../stores/useUIStore")
-      useUIStore.setState({ mlflowSettingsOpen: false })
-    })
+  it("renders no MLflow chip", () => {
+    // The destination is a per-node choice now, so the toolbar carries no
+    // MLflow control — it only still mounts the settings modal for the UI
+    // flag the node selectors set.
+    render(<Toolbar {...makeProps()} />)
+    expect(screen.queryByTestId("toolbar-mlflow-chip")).toBeNull()
+    expect(screen.queryByTestId("mlflow-modal-stub")).toBeNull()
 
-    it("shows the connected mode with the destination as tooltip", () => {
-      useSettingsStore.setState({ mlflow: MLFLOW_CONNECTED })
-      render(<Toolbar {...makeProps()} />)
-      const chip = screen.getByTestId("toolbar-mlflow-chip")
-      expect(chip).toHaveTextContent("MLflow: Databricks")
-      expect(chip).toHaveAttribute("title", "https://adb.example.net")
-    })
-
-    it("shows MLflow off with the reason as tooltip on error", () => {
-      useSettingsStore.setState({
-        mlflow: {
-          ...MLFLOW_CONNECTED,
-          status: "error",
-          mode: "",
-          destination: "",
-          configured: false,
-          detail: "Databricks tracking is selected but DATABRICKS_TOKEN is not set in the environment (.env).",
-        },
-      })
-      render(<Toolbar {...makeProps()} />)
-      const chip = screen.getByTestId("toolbar-mlflow-chip")
-      expect(chip).toHaveTextContent("MLflow off")
-      expect(chip.getAttribute("title")).toContain("DATABRICKS_TOKEN")
-    })
-
-    it("shows a pending label while the status is loading", () => {
-      useSettingsStore.setState({
-        mlflow: {
-          ...MLFLOW_CONNECTED,
-          status: "pending",
-          mode: "",
-          destination: "",
-          configured: null,
-        },
-      })
-      render(<Toolbar {...makeProps()} />)
-      expect(screen.getByTestId("toolbar-mlflow-chip")).toHaveTextContent("MLflow…")
-    })
-
-    it("opens the settings modal on click", () => {
-      useSettingsStore.setState({ mlflow: MLFLOW_CONNECTED })
-      render(<Toolbar {...makeProps()} />)
-      expect(screen.queryByTestId("mlflow-modal-stub")).toBeNull()
-      fireEvent.click(screen.getByTestId("toolbar-mlflow-chip"))
-      expect(screen.getByTestId("mlflow-modal-stub")).toBeInTheDocument()
-    })
+    cleanup()
+    useUIStore.setState({ mlflowSettingsOpen: true })
+    render(<Toolbar {...makeProps()} />)
+    expect(screen.queryByTestId("toolbar-mlflow-chip")).toBeNull()
+    expect(screen.getByTestId("mlflow-modal-stub")).toBeInTheDocument()
   })
 
   it("renders the package-derived browser version", () => {
