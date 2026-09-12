@@ -141,7 +141,6 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "background-jobs-api",
     "explore-eda",
-    "mlflow-destinations",
     "optimiser",
 )
 _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = ()
