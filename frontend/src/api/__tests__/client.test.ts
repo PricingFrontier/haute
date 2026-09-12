@@ -26,7 +26,9 @@ import {
   createSubmodel,
   dissolveSubmodel,
   loadSubmodel,
-  getMlflowStatus,
+  getMlflowDestinations,
+  getExperiments,
+  getRuns,
   getTrainStatus,
   cancelTrain,
   estimateTrainingRam,
@@ -483,7 +485,7 @@ describe("request() core via loadPipeline", () => {
       detail: "Missing or invalid Haute session token",
     }))
 
-    await expect(getMlflowStatus()).rejects.toThrow(ApiError)
+    await expect(getMlflowDestinations(false)).rejects.toThrow(ApiError)
 
     expect(listener).toHaveBeenCalledTimes(1)
     const event = listener.mock.calls[0][0] as CustomEvent<{ reason: string }>
@@ -516,42 +518,34 @@ describe("request() core via loadPipeline", () => {
   it("putMlflowSettings issues a PUT with the JSON payload and parses the response", async () => {
     const settingsBody = {
       section_present: true,
-      mode: "server",
       tracking_uri: "http://localhost:5000",
-      folder: "",
-      resolved: {
-        mode: "server",
-        destination: "http://localhost:5000",
-        config_source: "toml",
-      },
+      folder: "team-runs",
+      resolved_folder: "C:/proj/team-runs",
       detail: "",
     }
     mockFetch.mockReturnValue(jsonResponse(settingsBody))
 
     const result = await putMlflowSettings({
-      mode: "server",
       tracking_uri: "http://localhost:5000",
-      folder: "",
+      folder: "team-runs",
     })
 
     const [url, init] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/mlflow/settings")
     expect(init.method).toBe("PUT")
     expect(JSON.parse(init.body as string)).toEqual({
-      mode: "server",
       tracking_uri: "http://localhost:5000",
-      folder: "",
+      folder: "team-runs",
     })
-    expect(result.resolved?.destination).toBe("http://localhost:5000")
+    expect(result.resolved_folder).toBe("C:/proj/team-runs")
   })
 
   it("getMlflowSettings issues a GET and parses the response", async () => {
     mockFetch.mockReturnValue(jsonResponse({
       section_present: false,
-      mode: "",
       tracking_uri: "",
       folder: "",
-      resolved: { mode: "local", destination: "C:/proj/mlruns", config_source: "default" },
+      resolved_folder: "C:/proj/mlruns",
       detail: "",
     }))
 
@@ -560,34 +554,51 @@ describe("request() core via loadPipeline", () => {
     const [url, init] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/mlflow/settings")
     expect(init?.method ?? "GET").toBe("GET")
-    expect(result.resolved?.mode).toBe("local")
+    expect(result.resolved_folder).toBe("C:/proj/mlruns")
   })
 
   it("testMlflowConnection POSTs the candidate payload and parses the result", async () => {
     mockFetch.mockReturnValue(jsonResponse({ ok: true, category: "", detail: "" }))
 
     const result = await testMlflowConnection({
-      mode: "server",
+      destination: "server",
       tracking_uri: "http://localhost:6000",
-      folder: "",
     })
 
     const [url, init] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/mlflow/test-connection")
     expect(init.method).toBe("POST")
     expect(JSON.parse(init.body as string)).toEqual({
-      mode: "server",
+      destination: "server",
       tracking_uri: "http://localhost:6000",
-      folder: "",
     })
     expect(result.ok).toBe(true)
+  })
+
+  it("getExperiments scopes discovery to the requested destination", async () => {
+    mockFetch.mockReturnValue(jsonResponse([{ experiment_id: "1", name: "pricing" }]))
+
+    await getExperiments("local")
+
+    const [url] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/mlflow/experiments?destination=local")
+  })
+
+  it("getRuns omits the destination param for the auto destination", async () => {
+    mockFetch.mockReturnValue(jsonResponse([]))
+
+    await getRuns("1", "optimiser", "")
+
+    const [url] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/mlflow/runs?experiment_id=1&artifact_filter=optimiser")
+    expect(url).not.toContain("destination")
   })
 
   it("uses statusText as detail when response body is not JSON", async () => {
     mockFetch.mockReturnValue(errorResponse(503))
     try {
-      // Use getMlflowStatus as it doesn't catch errors like loadPipeline
-      await getMlflowStatus()
+      // Use getMlflowDestinations as it doesn't catch errors like loadPipeline
+      await getMlflowDestinations(false)
     } catch (err) {
       expect(err).toBeInstanceOf(ApiError)
       expect((err as ApiError).detail).toBe("Error")
@@ -596,7 +607,7 @@ describe("request() core via loadPipeline", () => {
 
   it("handles network error (fetch throws)", async () => {
     mockFetch.mockRejectedValue(new TypeError("Failed to fetch"))
-    await expect(getMlflowStatus()).rejects.toThrow("Failed to fetch")
+    await expect(getMlflowDestinations(false)).rejects.toThrow("Failed to fetch")
   })
 
   it("passes AbortController signal to fetch", async () => {

@@ -519,54 +519,62 @@ export interface OutputAssembleDryRunResponse {
 // Modelling types
 // ---------------------------------------------------------------------------
 
-export interface MlflowStatusResponse {
-  mlflow_installed: boolean
-  mlflow_importable: boolean
+/** The three tracking destinations; `""` means the auto destination. */
+export type MlflowDestinationKey = "databricks" | "server" | "local"
+
+export type MlflowProbeCategory =
+  | ""
+  | "authentication"
+  | "permission"
+  | "missing_resource"
+  | "connectivity"
+  | "configuration"
+  | "unknown"
+
+export interface MlflowDestinationEntry {
+  key: MlflowDestinationKey
   configured: boolean
-  mode: "" | "databricks" | "server" | "local"
+  /** Secret-free display form of what the key resolves to. */
   destination: string
   config_source: "" | "toml" | "env" | "default"
-  detail?: string
+  detail: string
+  probed: boolean
+  ok: boolean
+  category: MlflowProbeCategory
 }
 
-export interface MlflowResolvedDestination {
-  mode: "databricks" | "server" | "local"
-  destination: string
-  config_source: "toml" | "env" | "default"
+export interface MlflowDestinationsResponse {
+  mlflow_installed: boolean
+  mlflow_importable: boolean
+  /** The auto rule's result, or `""` when nothing resolves. */
+  auto: "" | MlflowDestinationKey
+  destinations: MlflowDestinationEntry[]
+  detail: string
 }
 
 export interface MlflowSettingsResponse {
   section_present: boolean
-  mode: string
   tracking_uri: string
   folder: string
-  resolved: MlflowResolvedDestination | null
-  detail?: string
+  resolved_folder: string
+  detail: string
 }
 
 export interface MlflowSettingsUpdateRequest {
-  mode: "databricks" | "server" | "local"
-  tracking_uri?: string
-  folder?: string
+  tracking_uri: string
+  folder: string
 }
 
 export interface MlflowTestConnectionRequest {
-  /** Empty mode probes the currently saved/resolved configuration. */
-  mode: "" | "databricks" | "server" | "local"
+  /** Empty destination probes the auto destination. */
+  destination: "" | MlflowDestinationKey
   tracking_uri?: string
   folder?: string
 }
 
 export interface MlflowTestConnectionResponse {
   ok: boolean
-  category:
-    | ""
-    | "authentication"
-    | "permission"
-    | "missing_resource"
-    | "connectivity"
-    | "configuration"
-    | "unknown"
+  category: MlflowProbeCategory
   detail?: string
 }
 
@@ -1150,6 +1158,8 @@ export interface LogOptimiserToMlflowRequest {
   experiment_name?: string | null
   model_name?: string | null
   point_index?: number
+  /** `""` logs to the auto destination. */
+  destination: "" | MlflowDestinationKey
 }
 
 export type FrontierPoint = Record<string, unknown> & {

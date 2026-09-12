@@ -112,9 +112,9 @@ import type {
   FileListItem,
   JsonCacheProgressResponse,
   JsonCacheStatusResponse,
-  MlflowResolvedDestination,
+  MlflowDestinationEntry,
+  MlflowDestinationsResponse,
   MlflowSettingsResponse,
-  MlflowStatusResponse,
   MlflowTestConnectionResponse,
   MlflowExperiment,
   MlflowLogResponse,
@@ -2318,40 +2318,9 @@ export function parseExplorePivotMembersResponse(value: unknown): ExplorePivotMe
   }
 }
 
-const MLFLOW_MODES = ["", "databricks", "server", "local"] as const
+const MLFLOW_DESTINATION_KEYS = ["databricks", "server", "local"] as const
+const MLFLOW_AUTO_DESTINATIONS = ["", "databricks", "server", "local"] as const
 const MLFLOW_CONFIG_SOURCES = ["", "toml", "env", "default"] as const
-
-export function parseMlflowStatusResponse(value: unknown): MlflowStatusResponse {
-  const obj = expectPlainObject("parseMlflowStatusResponse", value)
-  const mode = optionalString("parseMlflowStatusResponse", obj, "mode")
-  if (!(MLFLOW_MODES as readonly string[]).includes(mode)) {
-    throw new Error(`parseMlflowStatusResponse: unexpected mode \`${mode}\``)
-  }
-  const configSource = optionalString("parseMlflowStatusResponse", obj, "config_source")
-  if (!(MLFLOW_CONFIG_SOURCES as readonly string[]).includes(configSource)) {
-    throw new Error(`parseMlflowStatusResponse: unexpected config_source \`${configSource}\``)
-  }
-  return {
-    mlflow_installed: expectBoolean(
-      "parseMlflowStatusResponse",
-      obj.mlflow_installed,
-      "field `mlflow_installed`",
-    ),
-    mlflow_importable: expectBoolean(
-      "parseMlflowStatusResponse",
-      obj.mlflow_importable,
-      "field `mlflow_importable`",
-    ),
-    configured: expectBoolean("parseMlflowStatusResponse", obj.configured, "field `configured`"),
-    mode: mode as MlflowStatusResponse["mode"],
-    destination: optionalString("parseMlflowStatusResponse", obj, "destination"),
-    config_source: configSource as MlflowStatusResponse["config_source"],
-    detail: optionalString("parseMlflowStatusResponse", obj, "detail"),
-  }
-}
-
-const MLFLOW_RESOLVED_MODES = ["databricks", "server", "local"] as const
-const MLFLOW_RESOLVED_SOURCES = ["toml", "env", "default"] as const
 const MLFLOW_TEST_CATEGORIES = [
   "",
   "authentication",
@@ -2362,41 +2331,52 @@ const MLFLOW_TEST_CATEGORIES = [
   "unknown",
 ] as const
 
-function parseMlflowResolvedDestination(value: unknown): MlflowResolvedDestination {
-  const obj = expectPlainObject("parseMlflowSettingsResponse", value)
-  const mode = optionalString("parseMlflowSettingsResponse", obj, "mode")
-  if (!(MLFLOW_RESOLVED_MODES as readonly string[]).includes(mode)) {
-    throw new Error(`parseMlflowSettingsResponse: unexpected resolved mode \`${mode}\``)
-  }
-  const configSource = optionalString("parseMlflowSettingsResponse", obj, "config_source")
-  if (!(MLFLOW_RESOLVED_SOURCES as readonly string[]).includes(configSource)) {
-    throw new Error(
-      `parseMlflowSettingsResponse: unexpected resolved config_source \`${configSource}\``,
-    )
-  }
+function parseMlflowDestinationEntry(value: unknown, field: string): MlflowDestinationEntry {
+  const p = "parseMlflowDestinationsResponse"
+  const obj = expectPlainObject(p, value, field)
   return {
-    mode: mode as MlflowResolvedDestination["mode"],
-    destination: optionalString("parseMlflowSettingsResponse", obj, "destination"),
-    config_source: configSource as MlflowResolvedDestination["config_source"],
+    key: expectStringLiteral(p, obj.key, `${field}.key`, MLFLOW_DESTINATION_KEYS),
+    configured: expectBoolean(p, obj.configured, `${field}.configured`),
+    destination: expectString(p, obj.destination, `${field}.destination`),
+    config_source: expectStringLiteral(
+      p,
+      obj.config_source,
+      `${field}.config_source`,
+      MLFLOW_CONFIG_SOURCES,
+    ),
+    detail: expectString(p, obj.detail, `${field}.detail`),
+    probed: expectBoolean(p, obj.probed, `${field}.probed`),
+    ok: expectBoolean(p, obj.ok, `${field}.ok`),
+    category: expectStringLiteral(p, obj.category, `${field}.category`, MLFLOW_TEST_CATEGORIES),
+  }
+}
+
+export function parseMlflowDestinationsResponse(value: unknown): MlflowDestinationsResponse {
+  const p = "parseMlflowDestinationsResponse"
+  const obj = expectPlainObject(p, value)
+  return {
+    mlflow_installed: expectBoolean(p, obj.mlflow_installed, "field `mlflow_installed`"),
+    mlflow_importable: expectBoolean(p, obj.mlflow_importable, "field `mlflow_importable`"),
+    auto: expectStringLiteral(p, obj.auto, "field `auto`", MLFLOW_AUTO_DESTINATIONS),
+    destinations: parseArray(
+      p,
+      obj.destinations,
+      "field `destinations`",
+      parseMlflowDestinationEntry,
+    ),
+    detail: expectString(p, obj.detail, "field `detail`"),
   }
 }
 
 export function parseMlflowSettingsResponse(value: unknown): MlflowSettingsResponse {
-  const obj = expectPlainObject("parseMlflowSettingsResponse", value)
+  const p = "parseMlflowSettingsResponse"
+  const obj = expectPlainObject(p, value)
   return {
-    section_present: expectBoolean(
-      "parseMlflowSettingsResponse",
-      obj.section_present,
-      "field `section_present`",
-    ),
-    mode: optionalString("parseMlflowSettingsResponse", obj, "mode"),
-    tracking_uri: optionalString("parseMlflowSettingsResponse", obj, "tracking_uri"),
-    folder: optionalString("parseMlflowSettingsResponse", obj, "folder"),
-    resolved:
-      obj.resolved === null || obj.resolved === undefined
-        ? null
-        : parseMlflowResolvedDestination(obj.resolved),
-    detail: optionalString("parseMlflowSettingsResponse", obj, "detail"),
+    section_present: expectBoolean(p, obj.section_present, "field `section_present`"),
+    tracking_uri: expectString(p, obj.tracking_uri, "field `tracking_uri`"),
+    folder: expectString(p, obj.folder, "field `folder`"),
+    resolved_folder: expectString(p, obj.resolved_folder, "field `resolved_folder`"),
+    detail: expectString(p, obj.detail, "field `detail`"),
   }
 }
 

@@ -62,9 +62,10 @@ import type {
   JsonCacheBuildResponse,
   JsonCacheProgressResponse,
   JsonCacheStatusResponse,
+  MlflowDestinationKey,
+  MlflowDestinationsResponse,
   MlflowSettingsResponse,
   MlflowSettingsUpdateRequest,
-  MlflowStatusResponse,
   MlflowTestConnectionRequest,
   MlflowTestConnectionResponse,
   MlflowExperiment,
@@ -147,8 +148,8 @@ import {
   parseJsonCacheProgressResponse,
   parseJsonCacheSchemaInferenceResponse,
   parseJsonCacheStatusResponse,
+  parseMlflowDestinationsResponse,
   parseMlflowSettingsResponse,
-  parseMlflowStatusResponse,
   parseMlflowTestConnectionResponse,
   parseMlflowExperiments,
   parseMlflowLogResponse,
@@ -1303,7 +1304,13 @@ export function estimateTrainingRam(
 }
 
 export function logToMlflow(
-  payload: { job_id: string; experiment_name?: string | null; model_name?: string | null },
+  payload: {
+    job_id: string
+    experiment_name?: string | null
+    model_name?: string | null
+    /** `""` logs to the auto destination. */
+    destination: "" | MlflowDestinationKey
+  },
   options?: { signal?: AbortSignal },
 ): Promise<MlflowLogResponse> {
   return post<unknown>("/api/modelling/mlflow/log", payload, { timeout: 600_000, ...options })
@@ -1549,10 +1556,12 @@ export function inferJsonCacheSchema(
 // MLflow endpoints (connection surface + discovery for the model editors)
 // ---------------------------------------------------------------------------
 
-export function getMlflowStatus(
+export function getMlflowDestinations(
+  probe: boolean,
   options?: { signal?: AbortSignal },
-): Promise<MlflowStatusResponse> {
-  return request<unknown>("/api/mlflow/status", options).then(parseMlflowStatusResponse)
+): Promise<MlflowDestinationsResponse> {
+  return request<unknown>(`/api/mlflow/destinations?probe=${probe ? "true" : "false"}`, options)
+    .then(parseMlflowDestinationsResponse)
 }
 
 export function getMlflowSettings(
@@ -1574,40 +1583,59 @@ export function putMlflowSettings(
 }
 
 export function testMlflowConnection(
-  payload: MlflowTestConnectionRequest = { mode: "" },
+  payload: MlflowTestConnectionRequest = { destination: "" },
   options?: { signal?: AbortSignal },
 ): Promise<MlflowTestConnectionResponse> {
   return post<unknown>("/api/mlflow/test-connection", payload, options ?? {})
     .then(parseMlflowTestConnectionResponse)
 }
 
+// Discovery is destination-scoped: `""` means the auto destination and is
+// sent as an absent query param so the backend applies its own auto rule.
+function destinationQuery(destination: string): string {
+  return destination === "" ? "" : `destination=${encodeURIComponent(destination)}`
+}
+
 export function getExperiments(
+  destination: string,
   options?: { signal?: AbortSignal },
 ): Promise<MlflowExperiment[]> {
-  return request<unknown>("/api/mlflow/experiments", options).then(parseMlflowExperiments)
+  const query = destinationQuery(destination)
+  return request<unknown>(`/api/mlflow/experiments${query === "" ? "" : `?${query}`}`, options)
+    .then(parseMlflowExperiments)
 }
 
 export function getRuns(
   experimentId: string,
-  artifactFilter?: string,
+  artifactFilter: string | undefined,
+  destination: string,
   options?: { signal?: AbortSignal },
 ): Promise<MlflowRun[]> {
   const params = new URLSearchParams({ experiment_id: experimentId })
   if (artifactFilter) params.set("artifact_filter", artifactFilter)
+  if (destination !== "") params.set("destination", destination)
   return request<unknown>(`/api/mlflow/runs?${params.toString()}`, options).then(parseMlflowRuns)
 }
 
 export function getModels(
+  destination: string,
   options?: { signal?: AbortSignal },
 ): Promise<MlflowModel[]> {
-  return request<unknown>("/api/mlflow/models", options).then(parseMlflowModels)
+  const query = destinationQuery(destination)
+  return request<unknown>(`/api/mlflow/models${query === "" ? "" : `?${query}`}`, options)
+    .then(parseMlflowModels)
 }
 
 export function getModelVersions(
   modelName: string,
+  destination: string,
   options?: { signal?: AbortSignal },
 ): Promise<MlflowModelVersion[]> {
-  return request<unknown>(`/api/mlflow/model-versions?model_name=${encodeURIComponent(modelName)}`, options).then(parseMlflowModelVersions)
+  const query = destinationQuery(destination)
+  return request<unknown>(
+    `/api/mlflow/model-versions?model_name=${encodeURIComponent(modelName)}${query === "" ? "" : `&${query}`}`,
+    options,
+  ).then(parseMlflowModelVersions)
 }
 
 // ---------------------------------------------------------------------------

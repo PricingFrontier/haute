@@ -7,8 +7,8 @@ import {
   cancelExplore,
   cancelExplorePivot,
   cancelOptimiserFrontierAutoRange,
+  getMlflowDestinations,
   getMlflowSettings,
-  getMlflowStatus,
   testMlflowConnection,
   createSubmodel,
   createUtilityFile,
@@ -680,7 +680,7 @@ describe("client runtime contracts", () => {
     })
 
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("mlflow_log_response")))
-    await logOptimiserToMlflow({ job_id: "opt-job-1", point_index: 3 })
+    await logOptimiserToMlflow({ job_id: "opt-job-1", point_index: 3, destination: "" })
     expect(JSON.parse(String(mockFetch.mock.calls[2][1]?.body))).toMatchObject({
       job_id: "opt-job-1",
       point_index: 3,
@@ -805,10 +805,10 @@ describe("next-wave client runtime contracts", () => {
       error: /parseDissolveSubmodelResponse/i,
     },
     {
-      name: "getMlflowStatus",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_status_response"), mlflow_installed: "yes" },
-      call: () => getMlflowStatus(),
-      error: /parseMlflowStatusResponse/i,
+      name: "getMlflowDestinations",
+      response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_destinations_response"), auto: "managed" },
+      call: () => getMlflowDestinations(true),
+      error: /parseMlflowDestinationsResponse/i,
     },
     {
       name: "getMlflowSettings",
@@ -831,7 +831,7 @@ describe("next-wave client runtime contracts", () => {
     {
       name: "logToMlflow",
       response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_log_response"), run_id: 42 },
-      call: () => logToMlflow({ job_id: "job-1" }),
+      call: () => logToMlflow({ job_id: "job-1", destination: "" }),
       error: /parseMlflowLogResponse/i,
     },
     {
@@ -861,7 +861,7 @@ describe("next-wave client runtime contracts", () => {
     {
       name: "logOptimiserToMlflow",
       response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_log_response"), tracking_uri: 42 },
-      call: () => logOptimiserToMlflow({ job_id: "opt-job-1" }),
+      call: () => logOptimiserToMlflow({ job_id: "opt-job-1", destination: "" }),
       error: /parseMlflowLogResponse/i,
     },
     {
@@ -980,10 +980,10 @@ describe("shared client trust-boundary endpoints", () => {
     { name: "outputAssembleDryRun", body: { status: "ok", document: [], row_count: 0, error: null }, call: () => outputAssembleDryRun({ graph: dummyGraph, nodeId: "out", outputMapping: [] }), url: "/api/output-assemble/dry-run", method: "POST", malformed: { status: "ok", document: [], row_count: "1" } },
     { name: "deleteJsonCache", body: { cached: false, data_path: "cache/data" }, call: () => deleteJsonCache("/data/input.json"), url: "/api/json-cache?path=%2Fdata%2Finput.json", method: "DELETE", malformed: { cached: false } },
     { name: "inferJsonCacheSchema", body: { tables: [{ name: "drivers" }] }, call: () => inferJsonCacheSchema({ path: "/data/input.json" }), url: "/api/json-cache/infer", method: "POST", malformed: { tables: ["bad"] } },
-    { name: "getExperiments", body: [{ experiment_id: "1", name: "pricing" }], call: () => getExperiments(), url: "/api/mlflow/experiments", malformed: [{ experiment_id: "1" }] },
-    { name: "getRuns", body: [{ run_id: "r", run_name: "baseline", metrics: { auc: 0.9 }, artifacts: [] }], call: () => getRuns("exp", "model"), url: "/api/mlflow/runs?experiment_id=exp&artifact_filter=model", malformed: [{ run_id: "r", run_name: "baseline", metrics: {}, artifacts: [1] }] },
-    { name: "getModels", body: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY", run_id: "r" }] }], call: () => getModels(), url: "/api/mlflow/models", malformed: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY" }] }] },
-    { name: "getModelVersions", body: [{ version: "1", run_id: "r", status: "READY", description: "baseline" }], call: () => getModelVersions("pricing model"), url: "/api/mlflow/model-versions?model_name=pricing%20model", malformed: [{ version: "1", run_id: "r", status: "READY" }] },
+    { name: "getExperiments", body: [{ experiment_id: "1", name: "pricing" }], call: () => getExperiments(""), url: "/api/mlflow/experiments", malformed: [{ experiment_id: "1" }] },
+    { name: "getRuns", body: [{ run_id: "r", run_name: "baseline", metrics: { auc: 0.9 }, artifacts: [] }], call: () => getRuns("exp", "model", ""), url: "/api/mlflow/runs?experiment_id=exp&artifact_filter=model", malformed: [{ run_id: "r", run_name: "baseline", metrics: {}, artifacts: [1] }] },
+    { name: "getModels", body: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY", run_id: "r" }] }], call: () => getModels(""), url: "/api/mlflow/models", malformed: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY" }] }] },
+    { name: "getModelVersions", body: [{ version: "1", run_id: "r", status: "READY", description: "baseline" }], call: () => getModelVersions("pricing model", ""), url: "/api/mlflow/model-versions?model_name=pricing%20model", malformed: [{ version: "1", run_id: "r", status: "READY" }] },
     { name: "listFiles", body: { items: [{ name: "data", path: "/data", type: "directory" }] }, call: () => listFiles("/data", ".json"), url: "/api/files?dir=%2Fdata&extensions=.json", malformed: { items: [{ name: "data", path: "/data", type: "other" }] } },
     { name: "getGitGraph", body: validGitGraph, call: () => getGitGraph(5), url: "/api/git/graph?limit=5", malformed: { ...validGitGraph, branches: [{ ...validGitGraph.branches[0], entries: [{ ...validGitGraph.branches[0].entries[0], parents: [1] }] }] } },
   ]
