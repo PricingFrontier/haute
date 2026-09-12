@@ -133,10 +133,17 @@
 5. Format, file, catalog and MLflow controls issue their own API calls. I/O capabilities are
    fetched for each later editor mount, while consumers mounting during one pending fetch share
    that request. Request state is local to the editor; the editor never assumes an out-of-order response still describes a
-   changed node unless its own effect/request guards accept it. The
-   `MlflowStatusBadge` is a button whose activation opens the shared MLflow
-   settings dialog (`useUIStore.setMlflowSettingsOpen`); its tooltip carries
-   the status detail plus the click affordance. `ModelScoreEditor` explains
+   changed node unless its own effect/request guards accept it.
+   `ModelScoreEditor` and `OptimiserApplyEditor` (for its MLflow source
+   types) mount the shared `MlflowDestinationSelector`
+   ([frontend-shared](../frontend-shared/low-level.md)) above the source
+   picker, bound to the node's `mlflow_destination` (absent = auto); there is
+   no status badge. Choosing a different destination clears the picked run
+   or model (`run_id`, `run_name`, `experiment_id`, `experiment_name`,
+   `artifact_path`, `registered_model`, `version` reset to `"latest"`, and
+   for optimiser apply `optimiser_mode`) in the same config update and shows
+   an inline note that identifiers are not portable across backends until
+   the next pick. `ModelScoreEditor` explains
    the selected model source in one plain-language line under the toggle
    ("registered model — a named, versioned model in the registry" versus
    "pick one specific training run"), and the shared pickers render honest
@@ -145,12 +152,17 @@
    no matching finished runs → "no finished runs with a model artifact in
    this experiment yet". Discovery-error details arrive pre-categorised
    from the server and are shown verbatim.
-   MLflow discovery state is scoped to the resolved destination. A mode or
-   destination change clears all experiment/run/model/version arrays, errors,
-   loading state and fetch guards in an already mounted editor. Responses from
-   the previous destination are discarded, including an A-to-B-to-A switch.
-   The next focus fetches the new destination. Train-pane experiment suggestions
-   reuse this same lifecycle rather than keeping a second destination cache.
+   MLflow discovery state is scoped to the node's effective destination:
+   `useMlflowBrowser({destination})` passes the node's value (`""` = auto) to
+   every experiments/runs/models/versions request, so the pickers list only
+   that backend's content. A change of the effective destination — the node's
+   value, the inventory's auto result, or the resolved destination string of
+   the effective entry — clears all experiment/run/model/version arrays,
+   errors, loading state and fetch guards in an already mounted editor.
+   Responses from the previous destination are discarded, including an
+   A-to-B-to-A switch. The next focus fetches the new destination. Train-pane
+   experiment suggestions reuse this same lifecycle rather than keeping a
+   second destination cache.
 6. `EdgeJoinEditor` derives its two role displays exclusively from canonical `base`/`join`
    incoming handles. Role text and its truncation tooltip are
    resolved with the shared `edgeInputName` helper, including API-input frame handles and submodel

@@ -879,6 +879,17 @@ present a structural or schema result as execution evidence.
   Selecting `run` or `registered` is a configuration commitment: a missing `run_id`
   or `registered_model` is a loud `ConfigError` in both contract planning and the
   runtime builder, never an identity passthrough.
+- **MLflow-sourced read nodes carry their own destination.** The `MODEL_SCORE`
+  builder passes the node's `mlflow_destination` (absent or `""` = auto;
+  `"databricks"|"server"|"local"` explicit) into `ModelScorer`, and the
+  `OPTIMISER_APPLY` builder's shared `apply_optimiser_apply_from_config` passes it
+  into `load_mlflow_optimiser_artifact`, so a node pointed at Local loads from Local
+  even when the environment's auto destination is remote. Generated scripts read the
+  same field from the node's config sidecar (`score_from_config`, the optimiser-apply
+  config), and `validate_node_config` rejects any other value with `ConfigError`.
+  The field is classified as an artifact input in the execution cache so a
+  destination change re-executes rather than replaying a result loaded from another
+  backend.
 - **`_compile_preamble` single-flight cache.** Keyed on `(preamble text, cwd,
   pipeline_dir, execution_fingerprint)`; a `_PreambleCell` per key is created under a
   tiny `_preamble_cells_guard` lock (never held during exec, so a hot cache hit never

@@ -33,7 +33,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/modelling/TargetAndTaskConfig.tsx`, `frontend/src/panels/modelling/CommonFeatureConfig.tsx`, `frontend/src/panels/modelling/SplitAndMetricsConfig.tsx` | CatBoost target/loss/metric controls with loss-derived task compatibility, the common feature/monotonicity browser, and the canonical evaluation editor with exact-plan preview. |
 | `frontend/src/panels/modelling/HyperparametersConfig.tsx`, `frontend/src/panels/modelling/hyperparameters.ts`, `frontend/src/panels/modelling/featureSelection.ts` | Algorithm-neutral fixed-parameter JSON editing, optional bounded CatBoost tuning/search-space editing, and pure parameter/feature transitions. |
 | `frontend/src/panels/modelling/GLMTargetConfig.tsx`, `frontend/src/panels/modelling/GLMFactorConfig.tsx`, `frontend/src/panels/modelling/GLMRegularizationConfig.tsx` | GLM family/dispersion, terms/factors and regularisation controls. |
-| `frontend/src/panels/modelling/TrainingActionsAndResults.tsx`, `frontend/src/panels/modelling/TrainingProgress.tsx`, `frontend/src/panels/modelling/MlflowExportSection.tsx` | Train action/result summary, progress and MLflow export. |
+| `frontend/src/panels/modelling/TrainingActionsAndResults.tsx`, `frontend/src/panels/modelling/TrainingProgress.tsx`, `frontend/src/panels/modelling/MlflowExportSection.tsx` | Train action/result summary, progress and the manual MLflow log action (names the node's destination, disabled with the reason when that destination is unconfigured, always sends `destination`). |
 | `frontend/src/panels/modelling/SummaryTab.tsx` | Model info, diagnostics/errors, development/selection/final-test metrics, tuning baseline/winner evidence, warnings and MLflow export summary. |
 | `frontend/src/panels/modelling/GLMCoefficientsTab.tsx`, `frontend/src/panels/modelling/GLMRelativitiesTab.tsx` | GLM-specific coefficient and relativity result tables. |
 | `frontend/src/panels/modelling/FeatureImportance.tsx`, `frontend/src/panels/modelling/FeaturesTab.tsx`, `frontend/src/panels/modelling/FeatureBrowser.tsx` | Feature-importance display, tab and feature browser. |
@@ -148,7 +148,9 @@ Only a current, accepted save response may acknowledge this revision transition.
    point. In ratebook mode a selected point without tables is materialised only on Rates/Summary;
    request sequence bookkeeping drops stale replies and persists accepted tables in the result
    store. A point change aborts and clears materialised export detail before Save/MLflow actions
-   can be used for the new point.
+   can be used for the new point. The MLflow log request carries the node's current
+   `mlflow_destination` (found through `allNodes` by `nodeId`; `""` for Auto) and the Export tab
+   and detail card derive availability from that destination alone.
 5. `frontend/src/panels/OptimiserDataPreview.tsx` caps rows at 5,000 before grouping by quote,
    orders scenario rows, and calculates full-preview statistics only when its Statistics tab is open.
 
@@ -304,8 +306,28 @@ The behavioural contract is defined in
   canonicalise random/group/temporal keys; validation changes canonicalise none/single/CV shapes;
   final-test controls use source-relative fractions for random/group and explicit starts for
   temporal. The neutral exact-plan card renders guarded backend counts/ranges only when present.
-  The Train pane owns GPU, row limit, MLflow fields,
-  actions, progress and results. Those editable controls retain the standard modelling input
+  The Train pane owns GPU, row limit, the "MLflow logging" section,
+  actions, progress and results. The MLflow logging section is headed by an Info icon whose
+  tooltip carries the manual-only note ("used only when you press Log run to MLflow after
+  training completes; nothing is logged automatically"), mounts the shared
+  `MlflowDestinationSelector` bound to `mlflow_destination` (absent = auto), and gives the
+  Experiment path and Model name labels Info icons in the offset-field pattern — the experiment
+  tooltip names the computed default, which follows the node's effective destination
+  (`/Shared/haute/<label>` for databricks, else `<label>`), and the field's placeholder is that
+  default. The section carries no always-visible instruction prose and no "Logging destination"
+  line. The experiment datalist loads through `useMlflowBrowser({destination})` from the node's
+  destination on focus, only when that destination can accept a log. The optimiser config's
+  collapsible MLflow section receives the same selector and tooltip treatment on its experiment
+  field. The post-training `MlflowExportSection` and the optimiser `ExportMlflowSection` show one
+  line naming the node's destination under the button (`mlflowLogAvailability`), render the button
+  disabled with the reason and a "Configure MLflow" link (opens the settings modal) only when the
+  node's *own* destination is unconfigured or the package is unavailable — never because some
+  other remote is — and always include `destination` in the log request: the explicit node key or
+  `""` for Auto, read from the node's current config at click time, so "Use auto" after a job
+  completes sends `""` and the response names the current auto backend. The optimiser
+  `DetailCard` log button gets the same disabled-with-reason treatment plus a "Configure" link.
+  The local success surface (run ID, folder, copyable `mlflow ui` command) is unchanged.
+  Those editable controls retain the standard modelling input
   background, border, text, spacing and monospace-value treatment instead of relying on unstyled
   browser defaults. `TrainingProgress.tsx` renders authoritative planning/trial/fold/final-fit/
   publication phases, bounded fit counts and best objective, plus the final model's bounded

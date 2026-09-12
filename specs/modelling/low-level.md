@@ -18,8 +18,8 @@
 | `src/haute/modelling/_signature.py` | `build_signature()` — MLflow `ModelSignature` construction with loud dtype/metadata validation, structural Date/parameterised-Datetime mapping, and the explicit no-lossy-Decimal policy. |
 | `src/haute/modelling/_charts.py` | Pure-SVG renderers used by model cards. |
 | `src/haute/modelling/_model_card.py` | `generate_model_card()` — self-contained HTML assembled for MLflow artifact logging; ordinary training does not persist it beside the model. |
-| `src/haute/modelling/_mlflow_log.py` | Tracking-backend resolution wrappers over `_mlflow_settings.py`, `log_experiment()`, flavor-aware model/signature logging, diagnostics artifacts, and best-effort model-card logging. |
-| `src/haute/modelling/_mlflow_settings.py` | `[mlflow]` settings in `haute.toml`: load/validate/save (tomlkit round-trip), tracking-URI form classification via `classify_tracking_uri()`, and `resolve_tracking_config()` — the single three-mode (databricks/server/local) precedence resolver behind every tracking consumer. |
+| `src/haute/modelling/_mlflow_log.py` | Destination-aware tracking-backend resolution wrappers over `_mlflow_settings.py` (every wrapper takes `destination`, `""` = auto), `log_experiment()`, flavor-aware model/signature logging, diagnostics artifacts, and best-effort model-card logging. |
+| `src/haute/modelling/_mlflow_settings.py` | The `[mlflow]` destination inventory in `haute.toml` (`tracking_uri`, `folder`): load/validate/save (tomlkit round-trip), tracking-URI form classification via `classify_tracking_uri()`, `resolve_destination(key)` (the per-key resolver), `list_destinations()` (the three-entry inventory), `candidate_tracking_config(key, settings)` (draft resolution), and `resolve_tracking_config()` — the auto rule (databricks if configured, else server if configured, else local) behind every consumer that has no explicit destination. |
 | `src/haute/modelling/_result_types.py` | `ModelDiagnostics` and `ModelCardMetadata` bundles shared by training, MLflow logging, and model-card generation. |
 | `src/haute/modelling/_export.py` | `generate_training_script()` code generation for standalone Python training scripts. |
 | `src/haute/routes/modelling.py` | FastAPI router for training, status/cancel, estimates, MLflow log, export, model-cache clear, and dispersion jobs. |
@@ -87,7 +87,9 @@
   `name`, `data` (path/DataFrame/LazyFrame), `target`, `weight`, `exclude`,
   `feature_columns`, `fold_column`, `id_columns`, `algorithm`, `task`, `params`,
   required canonical `evaluation`, optional canonical `tuning`, `metrics` (defaulted
-  via `default_metrics()` when omitted), `mlflow_experiment`, `model_name`,
+  via `default_metrics()` when omitted), `mlflow_experiment`,
+  `mlflow_destination` (`""` = auto, else `"databricks"|"server"|"local"`;
+  any other value is rejected at construction), `model_name`,
   `output_dir`, `loss_function`, `variance_power`, `offset`,
   `monotone_constraints`, `feature_weights`, and a normalised
   `_declared_categorical_levels`. Internal clones additionally receive an
@@ -412,7 +414,14 @@ omit it retain the constructor-only internal/test-seam split pipeline described 
 `TrainingJob`'s own default (so the script stays readable), plus a `__main__` block
 that runs the job and prints its metrics. `_training_job_uses_tweedie_variance_power`
 decides whether `variance_power` needs to be rendered (CatBoost `Tweedie` loss, or GLM
-`family == "tweedie"`).
+`family == "tweedie"`). `mlflow_destination` is rendered only when the node stores an
+explicit key; an Auto node leaves it unrendered so the exported script resolves the
+destination in the environment it runs in. The exported script keeps standalone
+training's optional logging (a run is logged only when `mlflow_experiment` is set) and
+honours the rendered destination: an explicit Local logs locally even when a remote is
+configured where the script runs, an explicit destination that is not configured there
+fails with `MlflowConfigError` without a remote write, and a destination without an
+experiment logs nothing.
 
 ### Dispersion estimation (HTTP)
 
@@ -480,9 +489,13 @@ failure, and preserve the configured environment URI. Saving settings may procee
 while an existing log finishes at its original destination; subsequent operations
 resolve the new destination.
 
-A selected Databricks mode retains an environment `databricks://<profile>` URI,
-including after an unchanged save. Only plain `databricks` requires the host/token
-environment pair. Its Unity Catalog registry URI retains the same profile as
+The Databricks destination is configured by an environment
+`databricks://<profile>` URI (which counts as configured even if the profile's
+credentials cannot be loaded or its probe fails — the failure is reported, never
+worked around by falling back to host/token variables or another destination),
+or, without a profile reference, by the `DATABRICKS_HOST`/`DATABRICKS_TOKEN`
+pair; a profile takes precedence over the pair and is preserved through settings
+saves and probes. Its Unity Catalog registry URI retains the same profile as
 `databricks-uc://<profile>`. All tracking consumers share this registry mapping.
 Credential-bearing tracking URIs are internal connection values only: training
 and optimiser logging responses redact userinfo from both tracking URI and run
@@ -494,56 +507,85 @@ mlflow-model-registry component all call, so experiment-naming and
 tracking-setup logic exists in exactly one place rather than being duplicated
 per consumer.
 
-**`_mlflow_settings.py` contract.** Tracking resolves to exactly one of three
-modes — `"databricks"`, `"server"`, `"local"` — via `resolve_tracking_config()`,
-which returns a `TrackingConfig` (`mode`, `tracking_uri`, human-readable
-`destination`, `config_source: "toml"|"env"|"default"`) or raises
-`MlflowConfigError` with an actionable, non-secret reason. Precedence:
+**`_mlflow_settings.py` contract.** The workspace configuration is an
+*inventory*, not a selection: three destinations, keyed `"databricks"`,
+`"server"`, `"local"` (`DESTINATION_KEYS`, in auto order), each independently
+configured or not. `resolve_destination(key, project_root)` returns a
+`TrackingConfig` (`mode` — the key —, `tracking_uri`, human-readable
+secret-free `destination`, `config_source: "toml"|"env"|"default"`) for that
+key or raises `MlflowConfigError` naming the missing prerequisite;
+`validate_destination_key(value)` accepts the three keys and `""` (auto) and
+rejects anything else naming the choices. The empty string is never a
+destination for `resolve_destination`; only `resolve_tracking_config()` — the
+**auto rule**: databricks if configured, else server if configured, else
+local — resolves it. Auto follows the environment the pipeline runs in and is
+never stored. `list_destinations(project_root)` returns the three
+`DestinationEntry` rows (`key`, `configured`, `destination`, `config_source`,
+`detail`) in auto order; an unconfigured entry carries its prerequisite in
+`detail`. Per key:
 
-1. **`[mlflow]` in `haute.toml`** (keys: `mode`, required; `tracking_uri`,
-   server mode only, must be an `http(s)://` URL with a non-empty host and
-   **no embedded credentials** — secrets belong in `.env`, never in the
-   checked-in toml; `folder`, local mode only, optional). Mode `databricks`
-   preserves a `databricks://profile` selection from `MLFLOW_TRACKING_URI`;
-   otherwise it requires `DATABRICKS_HOST` + `DATABRICKS_TOKEN` in the
-   environment. A missing prerequisite raises `MlflowConfigError` naming
-   the missing variable or field — never a silent fallback to another
-   mode. A `folder`/`tracking_uri` supplied for a mode that does not use
-   it is a validation error, not silently ignored. Local mode without
-   `folder` uses `./mlruns`. Validation errors never echo a rejected URI —
-   a malformed or credential-bearing value must not leak through its own
-   error message. An unparseable URI or an invalid port (from toml or env)
-   is an `MlflowConfigError`, never an uncaught `ValueError`.
-2. **Environment fallback** (no `[mlflow]` section): `MLFLOW_TRACKING_URI`
-   is classified by form via `classify_tracking_uri()` — `databricks` or a
-   `databricks://` profile URI → databricks mode; `http://`/`https://` →
-   server mode; a `file:` URI or plain filesystem path (including a Windows
-   drive path) → local mode at that folder; any other scheme (for example
-   `sqlite:`) raises `MlflowConfigError` naming the unsupported scheme.
-   Without that variable, `DATABRICKS_HOST` + `DATABRICKS_TOKEN` → databricks.
-3. **Default**: local mode at `./mlruns` (`config_source="default"`).
+1. **`databricks`** — configured by `MLFLOW_TRACKING_URI=databricks://<profile>`
+   (a syntactically valid profile reference; `destination` is that reference;
+   it counts as configured even when the profile's credentials cannot be
+   loaded — the failure surfaces from the probe or the load, never as a
+   fallback to environment credentials or another destination), or, without a
+   profile reference, by both `DATABRICKS_HOST` and `DATABRICKS_TOKEN`
+   (`destination` is the host). A profile takes precedence over the pair. A
+   partially set pair names the missing variable; nothing set names both
+   options. This key never reads `haute.toml`.
+2. **`server`** — configured by `[mlflow] tracking_uri` (`http(s)://` with a
+   non-empty host and **no embedded credentials** — secrets belong in `.env`,
+   never in the checked-in toml; `config_source="toml"`), else by an `http(s)`
+   `MLFLOW_TRACKING_URI` (`config_source="env"`); `haute.toml` wins where both
+   are present. Otherwise the error names both prerequisites.
+3. **`local`** — always resolves: `[mlflow] folder` (relative to the project
+   root, `config_source="toml"`), else a `file:` URI or plain filesystem path
+   (including a Windows drive path) in `MLFLOW_TRACKING_URI`
+   (`config_source="env"`), else `<project>/mlruns` (`config_source="default"`).
 
-Server-mode resolution re-attaches matching environment credentials:
+`MLFLOW_TRACKING_URI` therefore seeds the inventory entry matching its form
+(`classify_tracking_uri()`): a `databricks://` profile seeds databricks; an
+`http(s)` URL seeds server only when the toml has no `tracking_uri`; a `file:`
+URI or path seeds the local folder only when the toml has no `folder`. Any
+other scheme (for example `sqlite:`) raises `MlflowConfigError` naming the
+unsupported scheme from the server and local resolvers (databricks checks the
+`databricks` prefix textually and is unaffected), so the auto rule fails loudly
+rather than skipping past it — the auto loop continues only past the
+"not configured" marker subclass `MlflowDestinationUnconfigured`. The retired
+single-mode `mode` key, like any other unknown key, is rejected by
+`load_mlflow_settings()` naming the key and the allowed keys
+(`tracking_uri`, `folder`); there are no users to migrate. Validation errors
+never echo a rejected URI — a malformed or credential-bearing value must not
+leak through its own error message. An unparseable URI or an invalid port
+(from toml or env) is an `MlflowConfigError`, never an uncaught `ValueError`.
+
+Server resolution re-attaches matching environment credentials:
 `haute.toml` persists the credential-free destination, and when
 `MLFLOW_TRACKING_URI` is a credentialed server URI whose redaction equals
 the stored URI, the env value wins for connecting (destination stays
 redacted). Saving the displayed configuration therefore never silently
 drops working authentication — the toml carries the non-secret selection,
-`.env` carries the secret. `candidate_tracking_config(settings, root)`
-resolves an *unsaved* selection through exactly the same validation,
-normalization (a bare local selection keeps the currently resolved folder,
-via the shared `_effective_settings()`), and branches (env re-attachment
-included) without writing `haute.toml`; the connection-test endpoint uses
-it so a draft is probed as exactly the configuration a save would produce.
+`.env` carries the secret. `candidate_tracking_config(key, settings, root)`
+resolves an *unsaved* draft for one key exactly as a save would make it:
+`server` uses the draft `tracking_uri` (validated, env re-attachment
+included; an empty draft names the field), `local` uses the draft `folder`
+or, when blank, the folder a bare save would keep (via the shared
+`_effective_settings()`), and `databricks` ignores the drafts and resolves
+the environment — all without writing `haute.toml`; the connection-test
+endpoint uses it so a draft is probed as exactly the configuration a save
+would produce.
 
 `load_mlflow_settings()` reads the stored section (tomllib);
 `save_mlflow_settings()` validates the same rules and rewrites only the
 `[mlflow]` table via tomlkit, preserving every other section, comment, and
-layout byte-for-byte. Saving local mode with an empty `folder` persists the
-currently *resolved* local folder, so saving an unchanged env-derived local
-configuration (a `file:` `MLFLOW_TRACKING_URI`) can never silently redirect
-logging or discovery to `./mlruns` — and the runs already logged in that
-folder stay discoverable through `/api/mlflow/experiments` after the save.
+layout byte-for-byte. `tracking_uri` and `folder` are saved independently:
+an empty `tracking_uri` clears the server key, and an empty `folder`
+persists the currently *resolved* local folder (a stored folder keeps its
+spelling, an env-derived folder is persisted as its absolute path, else the
+default `mlruns`), so saving an unchanged env-derived local configuration (a
+`file:` `MLFLOW_TRACKING_URI`) can never silently redirect logging or
+discovery to `./mlruns` — and the runs already logged in that folder stay
+discoverable through `/api/mlflow/experiments` after the save.
 Before writing, the resolved target path must remain inside the project
 root (case-folded, fully resolved containment, mirroring
 `haute._sandbox.validate_project_path`): a `haute.toml` that is a symlink
@@ -558,19 +600,25 @@ displayed field derives from `redact_uri()`, which strips userinfo, so
 `TrackingConfig.destination` and everything built from it never contain a
 secret.
 
-**`_mlflow_log.py` wrappers** (call-site shapes unchanged):
+**`_mlflow_log.py` wrappers** (every wrapper takes `destination: str = ""`,
+where `""` is auto and any value outside the three keys is rejected via
+`validate_destination_key` before resolution):
 
-- `resolve_tracking_backend()` — returns `(tracking_uri, mode)` from
-  `resolve_tracking_config()`; propagates `MlflowConfigError`.
-- `resolve_experiment_name(*, explicit, config_value, node_label, backend)` —
-  standard fallback chain (highest wins): an explicit override from the
-  request body, then the node config's `mlflow_experiment` value, then a
-  backend-aware default (`/Shared/haute/{label}` for Databricks — the
-  `/Shared/` prefix is Databricks-specific — and the bare `{label}` for
-  server and local modes alike).
-- `configure_mlflow_tracking()` — resolves the tracking backend, calls
-  `mlflow.set_tracking_uri`, sets `MLFLOW_ALLOW_FILE_STORE` (setdefault) for
-  local mode, and sets the registry URI **explicitly for every backend** —
+- `resolve_tracking_backend(destination="")` — returns `(tracking_uri, mode)`
+  from `resolve_destination(destination)` for a key or
+  `resolve_tracking_config()` for auto; propagates `MlflowConfigError`.
+- `resolve_experiment_name(*, explicit, config_value, node_label, backend,
+  destination="")` — standard fallback chain (highest wins): an explicit
+  override from the request body, then the node config's `mlflow_experiment`
+  value, then a backend-aware default (`/Shared/haute/{label}` for Databricks
+  — the `/Shared/` prefix is Databricks-specific — and the bare `{label}` for
+  server and local alike). When `backend` is not supplied it is resolved
+  from `destination`, so the default follows the node's effective
+  destination, not the workspace auto value.
+- `configure_mlflow_tracking(destination="")` — resolves the requested
+  destination, calls `mlflow.set_tracking_uri`, sets
+  `MLFLOW_ALLOW_FILE_STORE` (setdefault) for local, and sets the registry URI
+  **explicitly for every backend** —
   `databricks-uc` (retaining any `://profile`) for Databricks, the tracking URI
   itself for server/local. The SDK's tracking setter must preserve the original
   `MLFLOW_TRACKING_URI` environment value so it cannot overwrite configuration.
@@ -589,12 +637,15 @@ secret.
   and `None` for local mode or on a failed experiment lookup (logged, not
   raised).
 
-`src/haute/routes/optimiser.py` calls the naming/setup/url helpers;
-`src/haute/routes/mlflow.py` (mlflow-model-registry) consumes
-`resolve_tracking_backend` plus the settings load/save/resolve surface for
-its status/settings endpoints. `TrainingJob._log_to_mlflow`
-itself does not — it passes `mlflow_experiment` straight through to `log_experiment()`, since
-that is the programmatic-API path where the caller has already chosen the value. Rejected
+`log_experiment(..., destination="")` resolves its backend through
+`configure_mlflow_tracking(destination)` inside the fluent operation.
+`src/haute/routes/optimiser.py` calls the naming/setup/url helpers with the
+request's destination; `src/haute/routes/mlflow.py` (mlflow-model-registry)
+consumes the inventory, per-key, auto, and candidate resolvers plus the
+settings load/save surface for its destinations/settings/test-connection
+endpoints. `TrainingJob._log_to_mlflow` passes `mlflow_experiment` and
+`mlflow_destination` straight through to `log_experiment()`, since that is
+the programmatic-API path where the caller has already chosen both values. Rejected
 alternatives: routing the optimiser's MLflow logging through this component's `log_experiment()`
 (rejected — the optimiser logs a different artifact shape, solver params/frontier CSV/
 `optimiser_result.json`, vs. training's model diagnostics/SHAP/model card, and forcing both
@@ -607,18 +658,49 @@ mode's viewing surface is deliberately just the run ID, folder path, and a copya
 
 ### MLflow-log-after-the-fact
 
-Connection availability/status reporting is not this router's concern: the
+Connection availability reporting is not this router's concern: the
 former `GET /api/modelling/mlflow/check` route and its `MlflowCheckResponse`
-schema are deleted, and the UI reads `GET /api/mlflow/status` (owned by
+schema are deleted, and the UI reads `GET /api/mlflow/destinations` (owned by
 [mlflow-model-registry](../mlflow-model-registry/low-level.md)) instead.
 
-`POST /mlflow/log` looks up a completed job's cached `TrainResponse`; if the saved
-model file exists, reloads its persisted feature contract from disk (via
+GUI logging is manual. Live training (`_training_lifecycle.py`) builds its
+job kwargs through `build_training_job_kwargs` and then sets
+`mlflow_experiment=None`, so a run started from the canvas is logged only by
+the post-training "Log run to MLflow" action; the node's `mlflow_experiment`
+still seeds that action's experiment name and the standalone export. The
+MODEL node config gains the optional `mlflow_destination` field (absent or
+`""` = auto; `"databricks"|"server"|"local"` explicit) — declared on the
+`ModellingConfig` TypedDict and `MODELLING_CONFIG_KEYS` (so it round-trips
+through save, parse, and codegen), classified as node config for the
+execution cache, and rejected by `validate_node_config` and
+`build_training_job_kwargs` for any other value. `build_training_job_kwargs`
+emits `mlflow_destination` (`""` when absent) and `TrainingJob` carries it
+into `log_experiment(destination=...)`; choosing a destination alone never
+enables logging.
+
+`POST /mlflow/log` (`LogExperimentRequest`: `job_id`, `experiment_name`,
+`model_name`, and `destination: Literal["", "databricks", "server", "local"] = ""`)
+looks up a completed job's cached `TrainResponse`. The request's `destination`
+is the single source of truth for where the run goes: `""` (or an omitted
+field) means the current auto destination, a key means that destination, and
+the job's training-time `mlflow_destination` snapshot is **never** consulted —
+the node's choice can change after training, and the UI must never show one
+destination while the run goes to another (the frontend always sends the
+node's current value). This deliberately differs from `experiment_name`, whose
+`config.get("mlflow_experiment")` snapshot fallback is an existing contract
+left unchanged. An unknown value is a `422` from request validation before any
+work; a destination that is not configured resolves first
+(`resolve_tracking_backend(body.destination)`) and fails with `400` carrying
+the prerequisite-naming `MlflowConfigError` detail, writing nothing. The
+experiment-name default follows that resolved backend. If the saved
+model file exists, the route reloads its persisted feature contract from disk (via
 `load_contract_cached`, next to the model at `model_contract_filename(model.stem)`) —
 never re-derives feature metadata from the job payload, because a model file without a
 contract is treated as an error condition rather than a reason to guess Float64 for
 everything; builds `ModelDiagnostics`/`ModelCardMetadata` (including the GLM fields);
-calls `log_experiment` via `run_in_threadpool` to keep the event loop responsive.
+calls `log_experiment(destination=body.destination)` via `run_in_threadpool` to keep the
+event loop responsive. The response's `backend` and `tracking_uri` name the
+destination the run actually went to.
 
 `log_experiment` passes the persisted contract metadata to `_log_model_with_signature`. A `.cbm`
 artifact is loaded and logged through `mlflow.catboost.log_model` at artifact path `model`; a
@@ -937,12 +1019,12 @@ rows/features) and retry.
 - `tests/test_ave.py` verifies AVE numeric/categorical binning, weights, NaN/null/constant/missing/empty inputs, category limits, and feature limits.
 - `tests/test_gpu_fit_cancel.py` verifies algorithm-level cancellation and metric-polling cancellation behavior.
 - `tests/test_mem_helpers.py` verifies RSS/available-memory helpers and checkpoint behavior.
-- `tests/test_mlflow_log.py` verifies tracking backend/experiment resolution wrappers, databricks/server/local run URL construction, experiment/model-card/JSON logging, and tracking configuration.
-- `tests/test_mlflow_settings.py` verifies the `[mlflow]` load/validate/save round trip (tomlkit layout preservation, per-mode field validation, resolved-folder persistence for an unchanged env-derived local configuration) and the full `resolve_tracking_config()` precedence matrix, including `MLFLOW_TRACKING_URI` form classification and loud `MlflowConfigError` cases.
+- `tests/test_mlflow_log.py` verifies the destination-aware tracking backend/experiment resolution wrappers (an explicit key winning over the auto destination, an unconfigured explicit key raising, an unknown key rejected before resolution, the experiment default following the destination), databricks/server/local run URL construction, experiment/model-card/JSON logging, and tracking configuration.
+- `tests/test_mlflow_settings.py` verifies the `[mlflow]` inventory load/validate/save round trip (tomlkit layout preservation, the retired `mode` key and other unknown keys rejected, empty `tracking_uri` clearing the key, resolved-folder persistence for a bare save, credential-bearing and non-`http(s)` URIs rejected without echoing them, symlink containment), `validate_destination_key`, the per-key `resolve_destination` precedence matrix (toml × env × credentials for each key, profile precedence over host/token, an unsupported env scheme failing server/local/auto but not databricks), the auto rule, `list_destinations` (all three entries, secret-free profile and redacted server destinations), and `candidate_tracking_config` for every key.
 - `tests/test_mlflow_signature.py` verifies structural Date/Datetime mapping,
   parameterised unit/time-zone coverage, Decimal rejection, signature
   persistence, and a real local MLflow log/load/predict round trip.
-- `tests/test_mlflow_log_button_roundtrip.py` verifies CatBoost/GLM log-button round-trip construction and button payloads.
+- `tests/test_mlflow_log_button_roundtrip.py` verifies CatBoost/GLM log-button round-trip construction and button payloads, and that the request's `destination` is authoritative: a job whose config snapshot names one destination is logged to the current auto destination when the field is omitted or empty and to the named destination when a key is sent, an unconfigured key fails with `400` naming the prerequisite and writes nothing, and an unknown value is a `422` before any write.
 
 Tests live in the flat `tests/` directory rather than mirroring the package layout:
 
@@ -953,7 +1035,12 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
   status polling, completion payload) and `TestDispersionErrorPaths` (every 400
   validation branch, worker-side failure mapping, cancellation).
 - `tests/test_modelling_export.py` — exhaustive coverage of
-  `generate_training_script` and its kwarg-rendering rules.
+  `generate_training_script` and its kwarg-rendering rules, including
+  `mlflow_destination` rendered only for an explicit key, and executed exports
+  proving an explicit Local logs locally while a remote is configured, an Auto
+  export follows the execution environment, an unavailable explicit destination
+  fails without a remote write, and a destination without an experiment logs
+  nothing.
 - `tests/test_evaluation.py` and `tests/test_train_evaluation_config.py` — strict
   canonical config parsing, deterministic random/group/temporal plans,
   stratification and failure counts, membership/order invariants, digest-linked

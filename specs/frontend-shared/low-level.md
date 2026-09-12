@@ -19,7 +19,7 @@
 | `frontend/src/types/trainGuards.ts` | Dynamically imported runtime parsers for modelling train/status/estimate responses. Training parsing strictly retains authoritative live-history/truncation and validates complete evaluation/tuning reports, weighted fit evidence, deterministic winner/count links, and bounded evaluation previews while remaining outside the initial JavaScript graph. |
 | `frontend/src/types/pipelineRepair.ts` | Exact-key minimal repair dry-run/apply wire types and parsers. Apply delegates its nested document to `parsePipelineEditorDocument`; no response or request type contains replacement source bytes or migration operations. |
 | `frontend/src/stores/useNodeResultsStore.ts` | Zustand store: preview/solve/train/explore/pivot result and job caches, authoritative training history plus bounded ETA samples, column cache, derived-getter memoization, LRU eviction, and the atomic per-pivot start claim (one current claim per Explore node + pivot id holding the owning node id, the requested dataframe cache key, calculation identity, and a unique generation token; taking a claim before submission serialises concurrent consumers, an identical automatic target no-ops, every manual Retry and every newer automatic target atomically replaces the generation, only the current token may promote it to a job or release it — superseded outcomes are discarded — and clearing a node's results drops exactly the claims whose stored node id matches). |
-| `frontend/src/stores/useSettingsStore.ts` | Zustand store: row limit, streaming chunk size, section open/closed state, MLflow status cache, data sources, file-listing cache. |
+| `frontend/src/stores/useSettingsStore.ts` | Zustand store: row limit, streaming chunk size, section open/closed state, the MLflow destinations inventory cache (fetched once with probing, re-fetched by `invalidateMlflow()`), data sources, file-listing cache. The pure destination helpers (`effectiveMlflowDestination`, `mlflowDestinationEntry`, `mlflowLight`, `mlflowLogAvailability`, `defaultExperimentName`) live in a dedicated `mlflowDestinations` utility module next to `mlflowOptimiser.ts`, and the shared per-node control is the `MlflowDestinationSelector` component described under the MLflow destination surface below. |
 | `frontend/src/stores/useToastStore.ts` | Zustand store: toast queue with dedup, capped at 10 entries. |
 | `frontend/src/stores/useUIStore.ts` | Zustand store: modal/panel open flags (git/utility/imports/assistant, mutually exclusive by construction — each setter clears the others), sync banner, node panel width, per-node Explore/modelling selection memory (editor pane, preview pane, and the configured chart/pivot Configure-subview ids), hover highlight, node search open flag. |
 | `frontend/src/theme/colors.ts` | CSS-variable-backed colour token constants (`STRUCTURE_COLORS`, `STATUS_COLORS`, `MODEL_COLORS`, `CHART_COLORS`, `SYNTAX_COLORS`) plus the fixed `NODE_GROUP_COLORS`, `PIVOT_CHART_COLORS`, and `PIVOT_CONDITIONAL_FORMAT_COLORS` visualisation palettes. |
@@ -35,8 +35,8 @@
 | `frontend/src/components/Tooltip.tsx` | Zero-delay CSS-hover tooltip with edge-clamped horizontal position and top/bottom auto-flip. |
 | `frontend/src/components/ContextMenu.tsx` | Node right-click menu: rename/duplicate/create-instance/dissolve-submodel/delete, arrow-key roving focus. |
 | `frontend/src/components/KeyboardShortcuts.tsx` | `?`-triggered modal listing keyboard shortcuts, built on `ModalShell`. |
-| `frontend/src/components/Toolbar.tsx` | App top chrome: package-derived browser version, source selector, row-limit/chunk-size inputs, the MLflow status chip (opens `MlflowSettingsModal`), undo/redo, timing/memory breakdowns, Submodel/Instance selection actions, utility/imports/assistant buttons, zoom, centre/layout, and Save + Commit. Actions share the `.toolbar-btn` surface; the selection actions carry `aria-disabled` rather than `disabled` so an unavailable action stays focusable and its handler can explain the refusal. Numeric fields suppress native spinners without clipping either the configured row-limit value or the chunk-size backend maximum. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). |
-| `frontend/src/components/MlflowSettingsModal.tsx` | `ModalShell`-based MLflow tracking settings dialog: current-resolution line, three plain-language mode cards (local folder / MLflow server / Databricks), server-URL field, test-connection action with inline result, and Save through `PUT /api/mlflow/settings` followed by `invalidateMlflow()`. |
+| `frontend/src/components/Toolbar.tsx` | App top chrome: package-derived browser version, source selector, row-limit/chunk-size inputs, undo/redo, timing/memory breakdowns, Submodel/Instance selection actions, utility/imports/assistant buttons, zoom, centre/layout, and Save + Commit. Actions share the `.toolbar-btn` surface; the selection actions carry `aria-disabled` rather than `disabled` so an unavailable action stays focusable and its handler can explain the refusal. Numeric fields suppress native spinners without clipping either the configured row-limit value or the chunk-size backend maximum. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). |
+| `frontend/src/components/MlflowSettingsModal.tsx` | `ModalShell`-based MLflow destinations inventory editor: an MLflow server URL field, a Local folder field showing the resolved folder, a read-only Databricks block (selected profile, detected host, or the missing configuration), one Test action per remote with its inline categorised result, and Save through `PUT /api/mlflow/settings` (`tracking_uri` and `folder` only) followed by `invalidateMlflow()`. Rendered by `Toolbar` while `useUIStore.mlflowSettingsOpen` is set; opened from each node's MLflow gear or greyed light. |
 | `frontend/src/components/BreakdownDropdown.tsx` | Sorted, accessible timing/memory breakdown disclosure used by the shared toolbar. |
 | `frontend/src/panels/ImportsPanel.tsx` | Active pipeline-imports right panel: `PanelShell` plus `CodeEditor`, explanatory always-included imports, and callback-only preamble mutation/close handling. `App.tsx` supplies the graph-store-backed preamble and selects it through `importsOpen`. |
 | `frontend/src/components/BackgroundJobPolling.tsx` | Zero-render mount point (`memo`) that only invokes `useBackgroundJobs()`. |
@@ -47,7 +47,7 @@
 | `frontend/src/hooks/useJobPolling.ts` | Thin React adapter that keeps one `JobPollingController` configured, reconciles the current job record after commit, and disposes it on unmount. |
 | `frontend/src/hooks/jobPollingController.ts` | The single state authority for generic background polling: active poller identities, timers, abort controllers, interval ramp, progress throttling, replacement, terminal completion/error, and disposal. |
 | `frontend/src/hooks/useBackgroundJobs.ts` | Wires `useJobPolling` to the optimiser/train/explore endpoints and `useNodeResultsStore` actions; mounted once in `App.tsx`. |
-| `frontend/src/hooks/useMlflowBrowser.ts` | Lazy-loads MLflow experiments/runs/models/versions for dropdown UIs; shared by `ModelScoreEditor` and `OptimiserApplyEditor` (node-editors). |
+| `frontend/src/hooks/useMlflowBrowser.ts` | Lazy-loads MLflow experiments/runs/models/versions for dropdown UIs from one destination (`destination` option: the node's stored value, `""` = auto, passed to every discovery request); shared by `ModelScoreEditor`, `OptimiserApplyEditor` (node-editors), and the Train pane's experiment suggestions. |
 | `frontend/src/hooks/useSchemaFetch.ts` | Fetch-schema-on-mount-and-on-path-change pattern used by `frontend/src/panels/editors/ApiInputEditor.tsx` and `frontend/src/panels/editors/DataInputEditor.tsx` (node-editors). |
 | `frontend/src/hooks/useStaleConfigEstimate.ts` | Generic "estimate endpoint keyed by config hash + source + structural version, refetch when any of the three changes" pattern, built on `hashConfig`. Takes a required `context: {source, structuralVersion}` argument alongside the cached result. |
 | `frontend/src/index.css` | Global Tailwind import and dark-theme CSS-variable contract: root sizing/type, native-control and scrollbar defaults, React Flow interaction overrides, canonical semantic surface/status/chart/git-node tokens consumed directly by the theme module and components, and typography role tokens (`--font-data`) that alias Tailwind theme tokens rather than redeclaring them (no Tailwind theme token may be redeclared in the file's plain blocks — they are unlayered and would shadow `@layer theme`; a deliberate override belongs in an `@theme` block, which the gate exempts automatically; and components conventionally reference the role token rather than the raw Tailwind name — adoption and emission both pinned by `frontend/src/__tests__/cssColorTokenization.test.ts`). Also owns the `.toolbar-btn` action-button surface (resting/hover/pressed fills, engaged `aria-pressed` toggle, and a flat unavailable state that keeps its label readable) and the `.toolbar-number-input` spinner suppression. |
@@ -142,19 +142,25 @@
   that is exempted from LRU eviction in the four caches trimmed by
   `trimCacheByRecency` and whose pivot entries are likewise exempted by
   `trimExplorePivotCache`.
-- **`SettingsState.mlflow`**: `{status: "pending"|"connected"|"error",
-  mode, destination, configSource, installed, importable, configured,
-  detail}` — populated from `GET /api/mlflow/status`
-  (`parseMlflowStatusResponse`); `status` is `"connected"` exactly when the
-  response reports installed, importable, and configured all true. `mode`
-  (`""|"databricks"|"server"|"local"`), the human-readable `destination`,
-  and `configSource` (`""|"toml"|"env"|"default"`) mirror the wire fields.
-  `useMlflowStatus()` (exported alongside the store) maps `"pending"` to
-  `"loading"` for display purposes only; the store itself never uses the
-  word "loading". `invalidateMlflow()` resets `status` to `"pending"` and
-  triggers a refetch — the settings modal calls it after a successful
-  `PUT /api/mlflow/settings`, so a configuration change is reflected
-  without a page reload.
+- **`SettingsState.mlflow`**: `{status: "pending"|"ready"|"error",
+  installed, importable, auto, destinations, detail}` — populated from
+  `GET /api/mlflow/destinations?probe=true`
+  (`parseMlflowDestinationsResponse`), fetched once on the first render of
+  any MLflow section. `status` is `"ready"` when the inventory arrived,
+  whatever the probes said; it is `"error"` when the package is missing or
+  unimportable or the request failed, with the reason in `detail`. `auto`
+  (`""|"databricks"|"server"|"local"`) is the backend's auto rule result and
+  `destinations` mirrors the three wire entries (`key`, `configured`,
+  secret-free `destination`, `config_source`, `detail`, `probed`, `ok`,
+  `category`). `useMlflowDestinations()` (exported alongside the store)
+  maps `"pending"` to `"loading"` for display purposes only; the store
+  itself never uses the word "loading". `invalidateMlflow()` resets
+  `status` to `"pending"` and triggers a re-fetch with probing — the
+  settings modal calls it after a successful `PUT /api/mlflow/settings`,
+  and the selector's re-check action calls it directly, so a configuration
+  change or a recovered connection is reflected without a page reload. Node
+  config, not this store, holds each node's choice (`mlflow_destination`,
+  absent = auto); the store only says what the environment offers.
 - **`ToastMessage`** (`components/Toast.tsx`): `{id, type: "success"|
   "error"|"info"|"warning", text}`. `id` is a monotonically increasing
   string counter, not a UUID.
@@ -347,44 +353,62 @@ focus nor leaves stale callbacks.
   `preventDefault`ed and focus is forced back onto the container itself
   rather than escaping.
 
-**MLflow settings surface (Toolbar chip + `MlflowSettingsModal`).** The
-toolbar renders a compact MLflow chip in the settings cluster (after the
-chunk-size input): a status dot plus a short label — "MLflow…" while the
-status fetch is pending, `MLflow: <Mode>` when connected (mode name
-capitalised), and "MLflow off" on any error state — with the store's
-`detail` or `destination` as its tooltip. Activating the chip opens
-`MlflowSettingsModal` (local open state in `Toolbar`).
+**MLflow destination selector (`MlflowDestinationSelector`).** The
+destination is a per-node decision, so the control lives on the node: the
+toolbar renders no MLflow chip, and no surface's copy refers to one. The
+selector takes the node's stored value (`""` = auto, else a key) and an
+`onChange`. It renders a `radiogroup` labelled "MLflow destination" of three
+**native** radios (so the radio role carries its keyboard behaviour) in the
+fixed order Databricks, MLflow server, Local folder. The selected radio is
+the *effective* destination (`effectiveMlflowDestination(value, auto)`);
+while the node stores no choice the selected option carries an "auto"
+suffix and no "Use auto" control, and once a choice is stored a "Use auto"
+button clears it (`onChange("")`). Each remote carries a light dot
+(`mlflowLight`): green when configured and its probe passed (tooltip: the
+secret-free destination), amber when configured but the probe failed
+(tooltip: the probe detail), grey when unconfigured (the option is
+`aria-disabled`, its tooltip names what to set, and activating it opens
+the settings modal instead of selecting), and pending while the inventory
+loads. Local has no light — it always works. Under the row sits the
+resolved destination line (`<Label> — <destination>`, or the entry's
+reason when unconfigured, or the store's package reason), a re-check icon
+(`invalidateMlflow()`, disabled while loading) and a gear icon that opens
+`MlflowSettingsModal` (`useUIStore.setMlflowSettingsOpen`). Auto is the
+absent config value: the same node config selects different options under
+different inventories, and nothing is written until the user clicks.
+Colours come from the theme tokens (`--success`, `--warning-strong`,
+`--text-muted`).
 
 The toolbar wraps complete control groups onto additional rows when the
 viewport cannot contain them on one row. Its height adapts, all actions remain
 reachable, and it never causes document-level horizontal overflow or scrolling
 that displaces the pipeline canvas. Menus and settings dialogs remain unclipped.
 
-The modal fetches `GET /api/mlflow/settings` on mount and renders: a
-current-resolution line built from `resolved` (mode, destination, config
-source) or the `detail` reason when resolution failed; a three-option mode
-choice — **native** radio inputs (so the radio role carries its keyboard
-behaviour) styled as cards with one-line plain-language descriptions —
-Local folder ("zero setup", always displaying the resolved runs folder),
-MLflow server ("connect by URL", with an `http(s)` URL field shown while
-selected, prefilled from the stored `tracking_uri`), Databricks ("uses the
-workspace credentials from `.env`") — a Test connection action, and
-Save/Close actions. Test connection POSTs the **draft** selection
-(`{mode, tracking_uri}`) as the candidate body, so the user tests what a
-save would produce, not what is currently persisted; a displayed result is
-cleared by any draft edit, and a completion that lands after an edit is
-discarded via a request-sequence guard. Save PUTs `{mode, tracking_uri}`
-(URL only for server mode; `folder` is always sent empty so the backend
-persists the resolved folder) with every input locked while the request is
-in flight — a "Saved" acknowledgement can therefore never sit beside
-edits it does not cover — then calls `invalidateMlflow()` and re-renders
-from the PUT response, so the chip and every panel refresh without a
-reload; a `400` renders its field-naming `detail` in the modal's error
-area. The browser never renders or submits a secret: stored server URLs
-are credential-free by backend validation, displayed destinations arrive
-pre-redacted, the modal adds no credential inputs, and an unchanged save
-of an env-derived configuration keeps its authentication because
-resolution re-attaches matching env credentials server-side.
+**MLflow settings modal (`MlflowSettingsModal`).** The modal is the
+inventory editor. It fetches `GET /api/mlflow/settings` on mount, reads the
+inventory from the store (triggering the first fetch if pending), and
+renders: an "MLflow server URL" field prefilled from the stored
+`tracking_uri`; a "Local folder" field prefilled from the stored `folder`
+with the resolved folder as placeholder and helper line; a read-only
+Databricks block naming the selected profile (a `databricks://` inventory
+destination), the detected host when no profile is selected, or the missing
+configuration (a profile reference or the host/token variables); one Test
+action per remote — "Test server" POSTs `{destination: "server",
+tracking_uri: <draft>}` and "Test Databricks" POSTs `{destination:
+"databricks"}` — each rendering its own inline categorised result, cleared by
+any draft edit and protected by a request-sequence guard against a stale
+completion; and Save/Close. Save PUTs `{tracking_uri, folder}` exactly as
+drafted (an empty folder lets the backend persist the resolved folder) with
+every input locked while the request is in flight — a "Saved"
+acknowledgement can therefore never sit beside edits it does not cover —
+then calls `invalidateMlflow()` and re-renders from the PUT response, so
+every node's selector refreshes without a reload; a `400` renders its
+field-naming `detail` in the modal's error area. The browser never renders
+or submits a secret: stored server URLs are credential-free by backend
+validation, displayed destinations arrive pre-redacted, the modal adds no
+credential inputs, and an unchanged save of an env-derived configuration
+keeps its authentication because resolution re-attaches matching env
+credentials server-side.
 
 **Process-wide MLflow fetch guard.** `useSettingsStore.fetchMlflow` guards
 re-entrancy with a module-level `let _mlflowFetchingGuard` rather than store
@@ -487,14 +511,23 @@ same Vitest config.
   `frontend/src/stores/__tests__/useUIStore.dirty.derived.test.ts`): modal-mutual-exclusion (opening
   utility/imports/git/assistant closes the other three) and per-node selection-map
   helpers.
-- **MLflow settings surface**
-  (`frontend/src/components/__tests__/MlflowSettingsModal.test.tsx`): mode
-  cards and current-resolution line rendered from the settings GET, the
-  server-URL field round trip, a `400` detail surfaced in the error area
-  with nothing saved, Save issuing the PUT (empty `folder`) and then
-  `invalidateMlflow()`, test-connection ok and categorised-failure
-  rendering, and the chip states (loading / connected-with-mode / off)
-  proven in `frontend/src/components/__tests__/Toolbar.test.tsx`.
+- **MLflow destination surface**
+  (`frontend/src/components/__tests__/MlflowDestinationSelector.test.tsx`,
+  `frontend/src/utils/__tests__/mlflowDestinations.test.ts`,
+  `frontend/src/components/__tests__/MlflowSettingsModal.test.tsx`,
+  `frontend/src/__tests__/stores/useSettingsStore.test.ts`): the three light
+  states per remote from a mocked inventory including hover text and the
+  disabled greyed state that opens the modal; the same node config selecting
+  different options under different inventories; explicit choice and "Use
+  auto" callbacks; the resolved line, re-check, and gear; the availability
+  helper's loading / package-missing / unconfigured-own-destination /
+  amber-but-available cases; the modal's prefilled fields, the three
+  Databricks block variants, per-remote tests posting the draft or the key,
+  Save PUTting both fields then `invalidateMlflow()`, a `400` detail with
+  nothing saved and no invalidation, and inputs locked while saving; the
+  store fetching with `probe=true`, mapping package facts to `"error"`, and
+  the dedup/queued-refetch guard. `frontend/src/components/__tests__/Toolbar.test.tsx`
+  proves no MLflow chip renders and the modal still opens from the UI flag.
 - **Chrome components**: `frontend/src/__tests__/components/ErrorBoundary.test.tsx`
   (root-level, under `frontend/src/__tests__/components/`),
   `frontend/src/components/__tests__/ModalShell.test.tsx` and

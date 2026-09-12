@@ -5,9 +5,9 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/deploy/__init__.py` | Public API surface (`deploy`, `deploy_resolved`, config/result re-exports); target validation (`_validate_target`) and dispatch (`_dispatch_resolved`) by `config.target`. |
-| `src/haute/deploy/_config.py` | `DeployConfig` (user input), target sub-configs (`DatabricksConfig`, `ContainerConfig`, `AzureContainerAppsConfig`, `AwsEcsConfig`, `GcpRunConfig`, `SafetyConfig`, `CIConfig`), `haute.toml` loading + schema validation, base-image pinning validation, `.env` loading, `resolve_config()` producing `ResolvedDeploy`. |
+| `src/haute/deploy/_config.py` | `DeployConfig` (user input), target sub-configs (`DatabricksConfig`, `ContainerConfig`, `AzureContainerAppsConfig`, `AwsEcsConfig`, `GcpRunConfig`, `SafetyConfig`, `CIConfig`), `haute.toml` loading + schema validation (the `[mlflow]` table, owned by the MLflow settings endpoint, is accepted with exactly `tracking_uri` and `folder`; the retired `mode` key is an unknown key), base-image pinning validation, `.env` loading, `resolve_config()` producing `ResolvedDeploy`. |
 | `src/haute/deploy/_pruner.py` | Graph pruning to the output node's ancestors; `liveSwitch` live-branch collapsing; output/input/source node discovery. |
-| `src/haute/deploy/_bundler.py` | Artefact discovery and collection (`collect_artifacts`): external files, file-backed optimiser artefacts, supported MLflow-sourced local models + feature contracts, and retained Data Inputs; path resolution plus canonical provider/schema validation and a bounded one-row readability probe. MLflow-sourced optimiser applies are deliberately not bundled. |
+| `src/haute/deploy/_bundler.py` | Artefact discovery and collection (`collect_artifacts`): external files, file-backed optimiser artefacts, supported MLflow-sourced local models + feature contracts (resolved and downloaded through each `modelScore` node's `mlflow_destination`, absent = auto, via `resolve_backend`), and retained Data Inputs; path resolution plus canonical provider/schema validation and a bounded one-row readability probe. MLflow-sourced optimiser applies are deliberately not bundled. |
 | `src/haute/deploy/_schema.py` | Input schema inference (read source file schema), output schema inference (dry-run scoring with the bundled artefacts) with a graph-and-artefact-fingerprint-keyed on-disk cache, and bundle-time, target-aware batch strategy planning (`infer_deploy_execution_policy`) over the shared one-row sample (`_read_sample_row`), with a hard-capped-worker dry-run fallback (`_capped_worker_output_schema`) for an unprovable group-by. |
 | `src/haute/deploy/_batch_scoring.py` | Multi-row `/quote` scoring in a hard-capped spawn worker: the picklable `BatchScoreRequest`/`BatchScoreOutcome` pair, the child entrypoint `score_batch_worker`, and the parent supervisor helpers `prepare_batch_scoring` / `accept_batch_outcome` / `deploy_batch_timeout_seconds`. |
 | `src/haute/deploy/_scorer.py` | Runtime scoring engine (`score_graph`, `score_graph_lazy`) shared by every deploy target; `NodeBuildHooks` interception for live-input injection and artefact-path remapping; stat-gated model/contract caches; execution admission. |
@@ -125,7 +125,12 @@
    boundary. Explicit `modelScore.feature_contract_path` files are copied under the
    canonical `<node>__feature_contract.json` key and override an adjacent downloaded
    contract. MLflow artifact identifiers reject absolute and `..`-containing forms before
-   download.
+   download. Registered-model resolution (`_resolve_registered_model`) and the download
+   itself (`_download_model_artifact`) take the node's `mlflow_destination` and resolve it
+   through `resolve_backend`, so the bundle is built from the destination the pipeline author
+   browsed; the download lands in the shared model disk cache under that backend's digest
+   partition, and an unconfigured explicit destination fails with `MlflowConfigError` rather
+   than resolving another backend.
    A retained file-backed Parquet input is derived direct (`data_input_is_direct`) and
    bundles its validated source file. Every other retained Data Input is snapshot-backed;
    its ready snapshot acquires a `SourceCacheStore.lease()` that
@@ -358,7 +363,11 @@ directory before re-raising.
    preamble namespace, and executor post-processing);
    `externalFile` with a remapped bundled path (run its user code against the
    loaded object, or passthrough if no code); `optimiserApply` either file-based-remapped
-   or MLflow-sourced (`run`/`registered`, downloaded at request time); `modelScore` in three sub-cases (remapped
+   or MLflow-sourced (`run`/`registered`, downloaded at request time from the node's
+   `mlflow_destination` — absent = auto in the deployed environment — through
+   `load_mlflow_optimiser_artifact(destination=...)`, so a Local artifact is served from Local
+   even when the deployed environment's auto destination is remote, and an explicit destination
+   that is not configured there fails without consulting another backend); `modelScore` in three sub-cases (remapped
    model artefact present → score; contract bundled but no model artefact → validate
    contract then raise `RuntimeError`; neither present and no usable model source
    configured → raise `DeployError` immediately, never a silent passthrough).
