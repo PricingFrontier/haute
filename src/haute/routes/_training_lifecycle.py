@@ -1551,6 +1551,9 @@ class TrainService:
                 default_name=node_id,
             )
             job_kwargs["params"] = train_params
+            job_kwargs["mlflow_experiment"] = (
+                None  # GUI logging is manual: the post-training button logs.
+            )
             output_root = Path(str(job_kwargs.pop("output_dir"))).expanduser().resolve()
             output_root.mkdir(parents=True, exist_ok=True)
             artifact_root = Path(

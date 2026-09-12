@@ -320,6 +320,28 @@ def warn_unrecognized_config_keys(
     return bad
 
 
+_MLFLOW_DESTINATION_NODE_TYPES = frozenset(
+    {
+        NodeType.MODELLING,
+        NodeType.OPTIMISER,
+        NodeType.MODEL_SCORE,
+        NodeType.OPTIMISER_APPLY,
+    }
+)
+
+
+def validate_mlflow_destination(node_type: NodeType, config: Mapping[str, Any]) -> None:
+    value = config.get("mlflow_destination", "")
+    if value in ("", None):
+        return
+    if not isinstance(value, str) or value not in ("databricks", "server", "local"):
+        raise ConfigError(
+            f"{node_type.value} config has an unknown mlflow_destination; "
+            "expected databricks, server, or local.",
+            mlflow_destination=value if isinstance(value, str) else type(value).__name__,
+        )
+
+
 def validate_node_config(
     node_type: NodeType | str, config: dict[str, Any], *, require_complete: bool = True
 ) -> dict[str, Any]:
@@ -334,6 +356,8 @@ def validate_node_config(
     """
     nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
     reject_removed_config_keys(nt, config)
+    if nt in _MLFLOW_DESTINATION_NODE_TYPES:
+        validate_mlflow_destination(nt, config)
     if nt == NodeType.DATA_INPUT:
         from haute._polars_io_registry import validate_data_input_config
 

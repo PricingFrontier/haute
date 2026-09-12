@@ -265,6 +265,7 @@ class ModelScoreConfig(TypedDict, total=False):
     code: str  # optional post-processing code
     instanceOf: str
     inputMapping: dict[str, str]
+    mlflow_destination: str  # "" | "databricks" | "server" | "local"; absent = auto
 
 
 class BandingFactor(TypedDict, total=False):
@@ -595,6 +596,7 @@ class ModellingConfig(TypedDict, total=False):
     fold_column: str
     id_columns: list[str]
     categorical_levels: dict[str, list[str | None]]
+    mlflow_destination: str  # "" | "databricks" | "server" | "local"; absent = auto
 
 
 class OptimiserConfig(TypedDict, total=False):
@@ -640,6 +642,7 @@ class OptimiserConfig(TypedDict, total=False):
     # MLflow
     mlflow_experiment: str
     model_name: str
+    mlflow_destination: str  # "" | "databricks" | "server" | "local"; absent = auto
 
 
 class OptimiserApplyConfig(TypedDict, total=False):
@@ -658,6 +661,7 @@ class OptimiserApplyConfig(TypedDict, total=False):
     experiment_name: str  # UI-only: display name for panel re-open
     run_id: str  # MLflow run ID (when sourceType="run")
     run_name: str  # UI-only: display name for panel re-open
+    mlflow_destination: str  # "" | "databricks" | "server" | "local"; absent = auto
 
 
 class ScenarioExpanderConfig(TypedDict, total=False):
@@ -764,6 +768,7 @@ MODEL_SCORE_CONFIG_KEYS: tuple[str, ...] = (
     "categorical_levels",
     "experiment_name",
     "experiment_id",
+    "mlflow_destination",
 )
 
 MODELLING_CONFIG_KEYS: tuple[str, ...] = (
@@ -781,6 +786,7 @@ MODELLING_CONFIG_KEYS: tuple[str, ...] = (
     "model_name",
     "output_dir",
     "categorical_levels",
+    "mlflow_destination",
 )
 
 OPTIMISER_CONFIG_KEYS: tuple[str, ...] = (
@@ -808,6 +814,7 @@ OPTIMISER_CONFIG_KEYS: tuple[str, ...] = (
     "banding_source",
     "mlflow_experiment",
     "model_name",
+    "mlflow_destination",
 )
 
 OPTIMISER_APPLY_CONFIG_KEYS: tuple[str, ...] = (
@@ -823,6 +830,7 @@ OPTIMISER_APPLY_CONFIG_KEYS: tuple[str, ...] = (
     "experiment_name",
     "run_id",
     "run_name",
+    "mlflow_destination",
 )
 
 SCENARIO_EXPANDER_CONFIG_KEYS: tuple[str, ...] = (

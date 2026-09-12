@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 import pytest
 
 from haute.modelling._export import generate_training_script
@@ -633,3 +636,150 @@ class TestFullConfig:
         assert "mlflow_experiment='/Shared/severity'" in script
         assert "model_name='severity_prod'" in script
         assert "output_dir='artifacts'" in script
+
+
+class TestMlflowDestinationExport:
+    def test_mlflow_destination_rendered_when_set(self):
+        config = {
+            **MINIMAL_CONFIG,
+            "mlflow_destination": "local",
+        }
+        script = generate_training_script(config, "d.parquet")
+        assert "mlflow_destination='local'" in script
+        compile(script, "<test>", "exec")
+
+    def test_mlflow_destination_omitted_for_auto(self):
+        config_empty = {
+            **MINIMAL_CONFIG,
+            "mlflow_destination": "",
+        }
+        script_empty = generate_training_script(config_empty, "d.parquet")
+        assert "mlflow_destination" not in script_empty
+        compile(script_empty, "<test>", "exec")
+
+        script_absent = generate_training_script(MINIMAL_CONFIG, "d.parquet")
+        assert "mlflow_destination" not in script_absent
+        compile(script_absent, "<test>", "exec")
+
+
+class TestExecutedExportMlflowDestinations:
+    @pytest.fixture
+    def tiny_training_data(self, tmp_path: Path) -> Path:
+        import polars as pl
+
+        df = pl.DataFrame(
+            {
+                "ClaimCount": [1.0, 2.0, 1.5, 3.0, 2.5, 4.0, 1.0, 2.0],
+                "feature_a": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+            }
+        )
+        data_path = tmp_path / "data.parquet"
+        df.write_parquet(data_path)
+        return data_path
+
+    @pytest.mark.xfail(strict=True, reason="Task A4 adds destination to log_experiment")
+    def test_executed_export_local_destination_logs_locally_despite_databricks_env(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        tiny_training_data: Path,
+    ) -> None:
+        from haute._sandbox import set_project_root
+
+        monkeypatch.setenv("DATABRICKS_HOST", "https://adb-fake.example.com")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-fake-token")
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+
+        output_dir = tmp_path / "outputs"
+        config = {
+            **MINIMAL_CONFIG,
+            "params": {"iterations": 2},
+            "output_dir": str(output_dir),
+            "mlflow_experiment": "/Shared/test_local",
+            "mlflow_destination": "local",
+        }
+        script = generate_training_script(config, str(tiny_training_data))
+        assert "mlflow_destination='local'" in script
+
+        namespace: dict[str, Any] = {"__name__": "__main__"}
+        exec(compile(script, "<exported_training_script>", "exec"), namespace)
+
+        assert (tmp_path / "mlruns").exists()
+        import mlflow
+
+        client = mlflow.tracking.MlflowClient(tracking_uri=(tmp_path / "mlruns").as_uri())
+        exp = client.get_experiment_by_name("/Shared/test_local")
+        assert exp is not None
+        runs = client.search_runs([exp.experiment_id])
+        assert len(runs) >= 1
+
+    @pytest.mark.xfail(strict=True, reason="Task A4 adds destination to log_experiment")
+    def test_executed_export_unavailable_server_destination_raises_config_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        tiny_training_data: Path,
+    ) -> None:
+        from haute._sandbox import set_project_root
+        from haute.errors import MlflowConfigError
+
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+
+        output_dir = tmp_path / "outputs"
+        config = {
+            **MINIMAL_CONFIG,
+            "params": {"iterations": 2},
+            "output_dir": str(output_dir),
+            "mlflow_experiment": "/Shared/test_server",
+            "mlflow_destination": "server",
+        }
+        script = generate_training_script(config, str(tiny_training_data))
+        assert "mlflow_destination='server'" in script
+
+        namespace: dict[str, Any] = {"__name__": "<not_main>"}
+        exec(compile(script, "<exported_training_script>", "exec"), namespace)
+        job = namespace["job"]
+
+        with pytest.raises(MlflowConfigError):
+            job.run()
+
+        assert not (tmp_path / "mlruns").exists()
+
+    def test_executed_export_destination_without_experiment_logs_nothing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        tiny_training_data: Path,
+    ) -> None:
+        from haute._sandbox import set_project_root
+
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+
+        output_dir = tmp_path / "outputs"
+        config = {
+            **MINIMAL_CONFIG,
+            "params": {"iterations": 2},
+            "output_dir": str(output_dir),
+            "mlflow_destination": "local",
+        }
+        script = generate_training_script(config, str(tiny_training_data))
+        assert "mlflow_destination='local'" in script
+        assert "mlflow_experiment" not in script
+
+        namespace: dict[str, Any] = {"__name__": "__main__"}
+        exec(compile(script, "<exported_training_script>", "exec"), namespace)
+
+        assert not (tmp_path / "mlruns").exists()

@@ -345,6 +345,13 @@ def build_training_job_kwargs(
         configured_metrics=metrics,
     )
 
+    destination = config.get("mlflow_destination") or ""
+    if destination not in ("", "databricks", "server", "local"):
+        raise TrainingConfigError(
+            "Modelling config has an unknown mlflow_destination; "
+            "expected databricks, server, or local."
+        )
+
     return {
         "name": config.get("name", default_name),
         "data": data,
@@ -369,4 +376,5 @@ def build_training_job_kwargs(
         "monotone_constraints": _effective_monotone_constraints(config),
         "feature_weights": config.get("feature_weights") or None,
         "categorical_levels": config.get("categorical_levels") or None,
+        "mlflow_destination": destination,
     }

@@ -1666,3 +1666,41 @@ def test_train_service_publication_wins_late_cancel_and_records_elapsed(tmp_path
     assert not cancel_thread.is_alive()
     assert job["status"] == cancellation["status"] == "completed"
     assert job["elapsed_seconds"] >= 2 and (output / "quoted.cbm").read_bytes() == b"model"
+
+
+def test_live_training_never_auto_logs(tmp_path: Path) -> None:
+    store = JobStore()
+    service = TrainService(store)
+    prepared = tmp_path / "prepared.parquet"
+    prepared.write_bytes(b"prepared")
+    output = tmp_path / "outputs"
+    job_id = store.create_job(
+        {"status": "running", "job_type": "training", "start_time": time.monotonic(), "timeout": 60}
+    )
+    with patch.object(service._supervisor, "launch_protocol") as mock_launch:
+        service._launch_background(
+            job_id,
+            "train_node",
+            {
+                "name": "train_node",
+                "target": "y",
+                "algorithm": "catboost",
+                "loss_function": "RMSE",
+                "output_dir": str(output),
+                "evaluation": _request(tmp_path).payload["job_kwargs"]["evaluation"],
+                "mlflow_experiment": "/Shared/x",
+            },
+            {"iterations": 1},
+            str(prepared),
+            None,
+            10,
+            execution_context=ExecutionContext(
+                operation="training_pipeline",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_limit_bytes=_TEST_WORKER_MEMORY_LIMIT_BYTES,
+            ),
+        )
+
+    assert mock_launch.call_count == 1
+    request: WorkerRequest = mock_launch.call_args[0][2]
+    assert request.payload["job_kwargs"]["mlflow_experiment"] is None

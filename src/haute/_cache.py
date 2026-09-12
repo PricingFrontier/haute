@@ -734,6 +734,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
             artifacts=(
                 "artifact_path",
                 "feature_contract_path",
+                "mlflow_destination",
                 "registered_model",
                 "run_id",
                 "sourceType",
@@ -792,6 +793,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
                 "link",
                 "loss_function",
                 "metrics",
+                "mlflow_destination",
                 "mlflow_experiment",
                 "model_name",
                 "monotone_constraints",
@@ -825,6 +827,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
                 "frontier_steps",
                 "max_cd_iterations",
                 "max_iter",
+                "mlflow_destination",
                 "mlflow_experiment",
                 "mode",
                 "model_name",
@@ -861,6 +864,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
             source_selection=("ratebook_input",),
             artifacts=(
                 "artifact_path",
+                "mlflow_destination",
                 "registered_model",
                 "run_id",
                 "sourceType",

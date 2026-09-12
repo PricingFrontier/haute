@@ -177,6 +177,73 @@ class TestBuildTrainingJobKwargs:
         ):
             assert kwargs[key] is None, key
         assert kwargs["exclude"] == []
+        assert kwargs["mlflow_destination"] == ""
+
+    def test_mlflow_destination_passthrough(self):
+        kwargs = build_training_job_kwargs(
+            {
+                "target": "y",
+                "loss_function": "RMSE",
+                "evaluation": MINIMAL_EVALUATION,
+                "mlflow_destination": "local",
+            },
+            data="d.parquet",
+        )
+        assert kwargs["mlflow_destination"] == "local"
+
+    def test_mlflow_destination_absent_is_auto(self):
+        kwargs = build_training_job_kwargs(
+            {"target": "y", "loss_function": "RMSE", "evaluation": MINIMAL_EVALUATION},
+            data="d.parquet",
+        )
+        assert kwargs["mlflow_destination"] == ""
+
+    def test_mlflow_destination_unknown_is_rejected(self):
+        with pytest.raises(TrainingConfigError, match="databricks, server, or local"):
+            build_training_job_kwargs(
+                {
+                    "target": "y",
+                    "loss_function": "RMSE",
+                    "evaluation": MINIMAL_EVALUATION,
+                    "mlflow_destination": "invalid",
+                },
+                data="d.parquet",
+            )
+
+    def test_training_job_passes_destination_to_log_experiment(self, tmp_path):
+        from unittest.mock import patch
+
+        import polars as pl
+
+        from haute.modelling import TrainingJob
+        from haute.modelling._training_job import TrainResult
+
+        job = TrainingJob(
+            name="test_model",
+            data=pl.DataFrame({"y": [1.0]}),
+            target="y",
+            mlflow_experiment="/Shared/test",
+            mlflow_destination="local",
+            output_dir=str(tmp_path),
+        )
+        assert job.mlflow_destination == "local"
+
+        result = TrainResult(
+            metrics={"rmse": 0.5},
+            feature_importance=[],
+            model_path=str(tmp_path / "model.cbm"),
+            train_rows=10,
+            validation_rows=2,
+            features=[],
+            cat_features=[],
+            holdout_rows=0,
+            holdout_metrics={},
+            diagnostics_set="train",
+        )
+        with patch("haute.modelling._mlflow_log.log_experiment") as mock_log:
+            job._log_to_mlflow(result)
+        mock_log.assert_called_once()
+        assert mock_log.call_args.kwargs.get("destination") == "local"
 
     def test_default_name_override(self):
         kwargs = build_training_job_kwargs(

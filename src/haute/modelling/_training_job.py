@@ -408,6 +408,8 @@ class TrainingJob:
         Optional bounded, seeded search on the evaluation validation fits.
     mlflow_experiment : str | None
         MLflow experiment path. If set and mlflow is importable, logs the run.
+    mlflow_destination : str
+        MLflow tracking destination key ("" | "databricks" | "server" | "local"; absent = auto).
     model_name : str | None
         Optional MLflow registered model name.
     output_dir : str
@@ -431,6 +433,7 @@ class TrainingJob:
         split: dict[str, Any] | SplitConfig | None = None,
         metrics: list[str] | None = None,
         mlflow_experiment: str | None = None,
+        mlflow_destination: str = "",
         model_name: str | None = None,
         output_dir: str = "outputs",
         loss_function: str | None = None,
@@ -462,6 +465,7 @@ class TrainingJob:
             family=self.params.get("family") if algorithm == "glm" else None,
         )
         self.mlflow_experiment = mlflow_experiment
+        self.mlflow_destination = mlflow_destination
         self.model_name = model_name
         self.output_dir = output_dir
         self.loss_function = loss_function
@@ -787,6 +791,7 @@ class TrainingJob:
             params=copy.deepcopy(dict(self.params if params is None else params)),
             metrics=list(self.metrics),
             mlflow_experiment=mlflow_experiment,
+            mlflow_destination=self.mlflow_destination,
             model_name=self.model_name,
             output_dir=output_dir,
             loss_function=self.loss_function,
@@ -2602,6 +2607,7 @@ class TrainingJob:
         log_experiment(
             experiment_name=self.mlflow_experiment,
             run_name=self.name,
+            destination=self.mlflow_destination,
             metrics=result.final_test_metrics or result.metrics,
             params={
                 "algorithm": self.algorithm,

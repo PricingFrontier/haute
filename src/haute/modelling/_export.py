@@ -103,6 +103,8 @@ def generate_training_script(config: dict[str, Any], data_path: str) -> str:
 
     if kwargs["mlflow_experiment"]:
         parts.append(f"    mlflow_experiment={kwargs['mlflow_experiment']!r},")
+    if kwargs["mlflow_destination"]:
+        parts.append(f"    mlflow_destination={kwargs['mlflow_destination']!r},")
     if kwargs["model_name"]:
         parts.append(f"    model_name={kwargs['model_name']!r},")
 
