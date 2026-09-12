@@ -499,8 +499,12 @@ saves and probes. That precedence is enforced, not assumed: MLflow's default
 Databricks-SDK credential path resolves a named profile environment-first, so a
 profile paired with a conflicting host/token pair would send the environment
 token to the profile's host. `haute._mlflow_utils` therefore pins
-`MLFLOW_ENABLE_DB_SDK` to `false` (`os.environ.setdefault`, before any
-Databricks credential lookup), which makes MLflow resolve `databricks://<profile>`
+`MLFLOW_ENABLE_DB_SDK` to `false` (`os.environ.setdefault`), and the pin is
+applied from this module's Databricks resolver — the one place a Databricks
+`TrackingConfig` is minted, which the inventory, the per-key resolver, the auto
+rule, and candidate resolution all pass through — so every consumer (discovery,
+probes, logging, exports, loads) is bound before its first Databricks credential
+lookup, cold process included. The pin makes MLflow resolve `databricks://<profile>`
 host **and** token from the profile alone and plain `databricks` from the
 environment pair; an explicit `MLFLOW_ENABLE_DB_SDK=true` in the environment is
 respected and opts out of profile precedence (SDK-only auth flows). Its Unity

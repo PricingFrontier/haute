@@ -58,10 +58,16 @@
   raises `MlflowConfigError` naming the profile (never its credentials)
   before any cache lookup. Neither an absent auto value nor the bare
   category key identifies a backend — only the resolved identity does.
-  The identity is derived from the same `get_databricks_host_creds`
-  path MLflow's own stores use, under the `MLFLOW_ENABLE_DB_SDK` pin
-  described in [modelling](../modelling/low-level.md), so identity and
-  request target can never disagree. **One backend per operation:** a
+  The Databricks host in the identity is the host MLflow's requests will
+  actually target, which depends on the credential path: under haute's
+  default `MLFLOW_ENABLE_DB_SDK` pin (see
+  [modelling](../modelling/low-level.md)) it comes from MLflow's own
+  `get_databricks_host_creds` provider, and under the user's explicit
+  SDK opt-in it comes from the Databricks SDK's resolved configuration
+  for the selected profile (which the SDK resolves environment-first),
+  so identity and request target agree in both modes and repointing the
+  effective workspace under either mode yields a new identity and cache
+  partition. **One backend per operation:** a
   load, download, registry lookup, or bundling step resolves the backend
   exactly once and threads that object through
   (`resolve_mlflow_source(backend=...)`, the bundler's registered-model
