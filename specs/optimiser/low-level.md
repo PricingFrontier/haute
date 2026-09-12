@@ -790,7 +790,7 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   and explicit keys, and the same run on two backend identities producing two distinct cache
   entries. `tests/test_optimiser_apply.py`, the deploy scorer tests, and
   `tests/test_optimiser_apply_trace_enrichment.py` pin that every config-driven caller forwards
-  `mlflow_destination`; `tests/test_mlflow_destinations_e2e.py` (mlflow-model-registry) proves the
+  `mlflow_destination`; the destinations end-to-end module (mlflow-model-registry) proves the
   Local-while-auto-is-remote apply, deployed scoring, and explanation paths end to end.
 - **`tests/test_optimiser_golden.py`** — golden-snapshot pinning: the `/solve/status` route
   response against `tests/fixtures/ui_contracts/solve_optimiser_response.json`, and
