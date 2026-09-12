@@ -2,9 +2,11 @@
  * Manual "Log run to MLflow" action + result display.
  *
  * Logging is deliberately manual — training never logs automatically — so
- * this section states where a log would go, stays visible (disabled, with
- * the reason and a Configure MLflow link) when tracking is unavailable,
- * and gives every backend a useful success surface: run links for
+ * this section states where a log would go (the node's own
+ * `mlflow_destination`, or the workspace's auto pick), stays visible
+ * (disabled, with the reason and a Configure MLflow link) when *that*
+ * destination cannot accept a log — never because some other remote is
+ * unconfigured — and gives every backend a useful success surface: run links for
  * Databricks/server, and the run ID, folder, and a copyable `mlflow ui`
  * command for the local file store.
  */
@@ -13,8 +15,10 @@ import { Loader2, FlaskConical, Copy } from "lucide-react"
 import { logToMlflow } from "../../api/client"
 import { configField } from "../../utils/configField"
 import { MODEL_COLORS } from "../../theme/colors"
-import { useMlflowStatus } from "../../stores/useSettingsStore"
+import { useMlflowDestinations } from "../../stores/useSettingsStore"
 import useUIStore from "../../stores/useUIStore"
+import { mlflowLogAvailability } from "../../utils/mlflowDestinations"
+import type { MlflowDestinationKey } from "../../api/types"
 
 type MlflowResult = {
   status: string
@@ -24,12 +28,6 @@ type MlflowResult = {
   run_url?: string | null
   tracking_uri?: string
   error?: string | null
-}
-
-const MODE_NAMES: Record<string, string> = {
-  databricks: "Databricks",
-  server: "MLflow server",
-  local: "Local folder",
 }
 
 type MlflowExportSectionProps = {
@@ -53,14 +51,19 @@ function defaultTerminalShell(): TerminalShell {
 }
 
 export function MlflowExportSection({ trainJobId, config, onMlflowResult }: MlflowExportSectionProps) {
-  const { mlflowStatus, mlflowMode, mlflowDestination, mlflowDetail } = useMlflowStatus()
+  // The node's own destination decides everything here: an unconfigured
+  // remote the node names disables the action with that remote's reason, and
+  // a remote nobody selected never does.
+  const inventory = useMlflowDestinations()
+  const availability = mlflowLogAvailability(
+    inventory,
+    configField(config, "mlflow_destination", ""),
+  )
   const setMlflowSettingsOpen = useUIStore((s) => s.setMlflowSettingsOpen)
   const [loggingToMlflow, setLoggingToMlflow] = useState(false)
   const [mlflowResult, setMlflowResult] = useState<MlflowResult | null>(null)
   const [copyFeedback, setCopyFeedback] = useState<"" | "copied" | "failed">("")
   const [terminalShell, setTerminalShell] = useState<TerminalShell>(defaultTerminalShell)
-
-  const available = mlflowStatus === "connected"
 
   const handleLogExperiment = useCallback(async () => {
     setLoggingToMlflow(true)
@@ -72,6 +75,8 @@ export function MlflowExportSection({ trainJobId, config, onMlflowResult }: Mlfl
         job_id: trainJobId,
         experiment_name: configField(config, "mlflow_experiment", "") || null,
         model_name: configField(config, "model_name", "") || null,
+        // Read at click time, so "Use auto" after the job finished sends "".
+        destination: configField(config, "mlflow_destination", "") as "" | MlflowDestinationKey,
       })
       setMlflowResult(result)
       onMlflowResult?.(result)
@@ -94,7 +99,7 @@ export function MlflowExportSection({ trainJobId, config, onMlflowResult }: Mlfl
     <div className="space-y-1.5">
       <button
         onClick={handleLogExperiment}
-        disabled={!available || loggingToMlflow}
+        disabled={!availability.available || loggingToMlflow}
         className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors disabled:opacity-60"
         style={{
           background: loggingToMlflow ? "var(--chrome-hover)" : "var(--accent-soft-strong)",
@@ -105,26 +110,28 @@ export function MlflowExportSection({ trainJobId, config, onMlflowResult }: Mlfl
         {loggingToMlflow ? <Loader2 size={14} className="animate-spin" /> : <FlaskConical size={14} />}
         {loggingToMlflow ? "Logging..." : "Log run to MLflow"}
       </button>
-      {available ? (
-        <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-          Destination: {MODE_NAMES[mlflowMode] ?? mlflowMode} — {mlflowDestination}
-        </p>
-      ) : (
-        <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-          {mlflowStatus === "loading"
-            ? "Checking MLflow…"
-            : `MLflow is off${mlflowDetail ? ` — ${mlflowDetail}` : ""}. `}
-          {mlflowStatus !== "loading" && (
-            <button
-              onClick={() => setMlflowSettingsOpen(true)}
-              className="underline"
-              style={{ color: "var(--text-accent)" }}
-            >
-              Configure MLflow
-            </button>
-          )}
-        </p>
-      )}
+      <p
+        data-testid="mlflow-export-destination"
+        className="text-[10px]"
+        style={{ color: "var(--text-muted)" }}
+      >
+        {availability.available ? (
+          `Destination: ${availability.label} — ${availability.destination}`
+        ) : (
+          <>
+            {`${availability.reason} `}
+            {inventory.status !== "loading" && (
+              <button
+                onClick={() => setMlflowSettingsOpen(true)}
+                className="underline"
+                style={{ color: "var(--text-accent)" }}
+              >
+                Configure MLflow
+              </button>
+            )}
+          </>
+        )}
+      </p>
       {mlflowResult && mlflowResult.status === "ok" && (
         <div className="px-3 py-2 rounded-lg text-xs space-y-1" style={{ background: "var(--accent-soft-subtle)", border: "1px solid var(--accent-soft-hover)" }}>
           <div style={{ color: MODEL_COLORS.logAction }}>Logged to {mlflowResult.experiment_name}</div>

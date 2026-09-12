@@ -1,5 +1,6 @@
-import { useCallback, useState } from "react"
-import { cancelTrain, estimateTrainingRam, trainModel } from "../api/client"
+import { useCallback, useRef, useState } from "react"
+import { Info } from "lucide-react"
+import { cancelTrain, estimateTrainingRam, getExperiments, trainModel } from "../api/client"
 import { runDispersionEstimate } from "../api/dispersion"
 import {
   FAILED_JOB_STATUSES,
@@ -7,21 +8,28 @@ import {
   type TrainEstimate,
 } from "../api/types"
 import { CommittedTextField } from "../components/form"
+import MlflowDestinationSelector from "../components/MlflowDestinationSelector"
+import Tooltip from "../components/Tooltip"
 import {
   useStaleConfigEstimate,
   type UseStaleConfigEstimateResult,
 } from "../hooks/useStaleConfigEstimate"
-import { useMlflowBrowser } from "../hooks/useMlflowBrowser"
 import useGraphStore from "../stores/useGraphStore"
 import useNodeResultsStore, { type TrainProgress, type TrainResult } from "../stores/useNodeResultsStore"
 import {
   captureDocumentExecutionFence,
   isDocumentExecutionFenceCurrent,
 } from "../stores/useDocumentStatusStore"
-import useSettingsStore, { useMlflowStatus } from "../stores/useSettingsStore"
+import useSettingsStore, { useMlflowDestinations } from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
-import useUIStore, { type ModellingPane } from "../stores/useUIStore"
+import { type ModellingPane } from "../stores/useUIStore"
 import { configField } from "../utils/configField"
+import {
+  defaultExperimentName,
+  effectiveMlflowDestination,
+  mlflowDestinationEntry,
+  mlflowLogAvailability,
+} from "../utils/mlflowDestinations"
 import {
   executionErrorDetailMessage,
   executionJobStatusFromReason,
@@ -165,10 +173,27 @@ type TrainPaneProps = {
   nodeLabel: string
 }
 
-const MLFLOW_MODE_NAMES: Record<string, string> = {
-  databricks: "Databricks",
-  server: "MLflow server",
-  local: "Local folder",
+/**
+ * The manual-only note. It used to sit in the pane as always-visible prose;
+ * it is help, not state, so it now lives behind the section's Info icon and
+ * nowhere else.
+ */
+const MLFLOW_MANUAL_HELP =
+  "Used only when you press “Log run to MLflow” after training completes. " +
+  "Nothing is logged automatically."
+
+const MLFLOW_MODEL_NAME_HELP =
+  "Optional: also register the logged model under this name."
+
+/** The offset-field help pattern: a hover-only Info icon beside a label. */
+function MlflowHelpIcon({ label, ariaLabel }: { label: string; ariaLabel: string }) {
+  return (
+    <Tooltip label={label}>
+      <span className="inline-flex cursor-help" aria-label={ariaLabel}>
+        <Info size={11} style={{ color: "var(--text-muted)" }} />
+      </span>
+    </Tooltip>
+  )
 }
 
 function TrainPane({
@@ -190,15 +215,51 @@ function TrainPane({
   const rowLimit = typeof config.row_limit === "number" ? config.row_limit : null
   const [validationRevealed, setValidationRevealed] = useState(false)
 
-  const { mlflowStatus, mlflowMode, mlflowDestination, mlflowDetail } = useMlflowStatus()
-  const setMlflowSettingsOpen = useUIStore((s) => s.setMlflowSettingsOpen)
-  const mlflowConnected = mlflowStatus === "connected"
-  const defaultExperimentName =
-    mlflowMode === "databricks" ? `/Shared/haute/${nodeLabel}` : nodeLabel
-  const { experiments, refreshExperiments } = useMlflowBrowser()
+  // Where this node logs is its own config, so every derived value below —
+  // the default experiment path, whether logging is possible, and which
+  // destination the datalist browses — follows `mlflow_destination`.
+  const mlflowDestination = configField(config, "mlflow_destination", "")
+  const mlflowInventory = useMlflowDestinations()
+  const mlflowAvailability = mlflowLogAvailability(mlflowInventory, mlflowDestination)
+  const effectiveDestination = effectiveMlflowDestination(mlflowDestination, mlflowInventory.auto)
+  const experimentDefault = defaultExperimentName(nodeLabel, effectiveDestination)
+
+  // Experiment suggestions belong to one backend. The scope key names that
+  // backend (the resolved destination, not just the key, so a repointed
+  // server counts as a change), and every change discards what was fetched
+  // for the previous one — including an in-flight response.
+  // TODO(C7): once `useMlflowBrowser` takes a destination, this becomes
+  // `useMlflowBrowser({ destination: mlflowDestination })`.
+  const mlflowScope = `${effectiveDestination}|${
+    mlflowDestinationEntry(mlflowInventory.destinations, effectiveDestination)?.destination ?? ""
+  }`
+  const [loadedExperiments, setLoadedExperiments] = useState<{
+    scope: string
+    items: { experiment_id: string; name: string }[]
+  }>({ scope: "", items: [] })
+  // Suggestions are stamped with the scope they came from, so a scope change
+  // hides them by derivation — no effect, and a response that lands after the
+  // change can never be shown against the new backend.
+  const experiments = loadedExperiments.scope === mlflowScope ? loadedExperiments.items : []
+  const experimentsRequest = useRef({ scope: "", generation: 0 })
   const loadExperimentOptions = () => {
-    if (!mlflowConnected) return
-    refreshExperiments()
+    if (!mlflowAvailability.available) return
+    const scope = mlflowScope
+    const request = experimentsRequest.current
+    if (request.scope === scope) return
+    request.scope = scope
+    const generation = ++request.generation
+    getExperiments(mlflowDestination)
+      .then((data) => {
+        if (generation !== request.generation) return
+        setLoadedExperiments({ scope, items: Array.isArray(data) ? data : [] })
+      })
+      .catch(() => {
+        if (generation !== request.generation) return
+        // Let the next focus retry this scope.
+        request.scope = ""
+        setLoadedExperiments({ scope, items: [] })
+      })
   }
 
   const toggleGpu = (enabled: boolean) => {
@@ -260,46 +321,34 @@ function TrainPane({
         )}
       </div>
       <section className="space-y-2" aria-labelledby="mlflow-logging-heading">
-        <h3
-          id="mlflow-logging-heading"
-          className="text-[11px] font-bold uppercase tracking-[0.08em]"
-          style={{ color: "var(--text-muted)" }}
-        >
-          MLflow Logging
-        </h3>
-        <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-          Used when you press “Log run to MLflow” after training completes —
-          nothing is logged automatically.
-        </p>
-        {mlflowConnected ? (
-          <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-            Logging destination: {MLFLOW_MODE_NAMES[mlflowMode] ?? mlflowMode} — {mlflowDestination}
-          </p>
-        ) : (
-          <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-            {mlflowStatus === "loading"
-              ? "Checking MLflow…"
-              : `MLflow is off${mlflowDetail ? ` — ${mlflowDetail}` : ""}. `}
-            {mlflowStatus !== "loading" && (
-              <button
-                onClick={() => setMlflowSettingsOpen(true)}
-                className="underline"
-                style={{ color: "var(--text-accent)" }}
-              >
-                Configure MLflow
-              </button>
-            )}
-          </p>
-        )}
+        <div className="flex items-center gap-1">
+          <h3
+            id="mlflow-logging-heading"
+            className="text-[11px] font-bold uppercase tracking-[0.08em]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            MLflow logging
+          </h3>
+          <MlflowHelpIcon label={MLFLOW_MANUAL_HELP} ariaLabel="About MLflow logging" />
+        </div>
+        <MlflowDestinationSelector
+          value={mlflowDestination}
+          onChange={(value) => onUpdate("mlflow_destination", value)}
+        />
         <label className="block text-[11px]" style={{ color: "var(--text-muted)" }}>
-          Experiment path
+          <span className="inline-flex items-center gap-1">
+            Experiment path
+            <MlflowHelpIcon
+              label={`Leave blank to use the default: ${experimentDefault}`}
+              ariaLabel="About the experiment path"
+            />
+          </span>
           <CommittedTextField
             type="text"
             aria-label="MLflow experiment path"
             value={configField(config, "mlflow_experiment", "")}
             onCommit={(value) => onUpdate("mlflow_experiment", value)}
-            placeholder={defaultExperimentName}
-            title={`Leave blank to use the default: ${defaultExperimentName}`}
+            placeholder={experimentDefault}
             list="mlflow-experiment-options"
             onFocus={loadExperimentOptions}
             className="mt-0.5 w-full rounded-lg px-2.5 py-1.5 text-xs font-mono"
@@ -312,14 +361,16 @@ function TrainPane({
           </datalist>
         </label>
         <label className="block text-[11px]" style={{ color: "var(--text-muted)" }}>
-          Model name
+          <span className="inline-flex items-center gap-1">
+            Model name
+            <MlflowHelpIcon label={MLFLOW_MODEL_NAME_HELP} ariaLabel="About the model name" />
+          </span>
           <CommittedTextField
             type="text"
             aria-label="MLflow model name"
             value={configField(config, "model_name", "")}
             onCommit={(value) => onUpdate("model_name", value)}
             placeholder="MLflow model name"
-            title="Optional: also register the logged model under this name"
             className="mt-0.5 w-full rounded-lg px-2.5 py-1.5 text-xs font-mono"
             style={TRAIN_INPUT_STYLE}
           />
