@@ -65,12 +65,12 @@ def test_mlflow_experiments_route_succeeds_with_installed_dependency_and_mocked_
     client,
     monkeypatch,
 ) -> None:
-    fake_mlflow = SimpleNamespace(
+    fake_mlflow = SimpleNamespace()
+    fake_client = SimpleNamespace(
         search_experiments=lambda: [
             SimpleNamespace(experiment_id="42", name="pricing/dev"),
         ]
     )
-    fake_client = SimpleNamespace()
     monkeypatch.setattr(
         "haute.routes.mlflow._ensure_tracking",
         lambda: (fake_mlflow, fake_client),
