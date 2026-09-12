@@ -664,17 +664,20 @@ def _model_version_run_params(client: MlflowClient, run_id: str) -> dict[str, st
     A registered model version may reference a run that has been deleted or
     is otherwise inaccessible — in that case the version itself is still
     valid, so swallow the lookup error and return ``{}`` rather than failing
-    the whole ``/model-versions`` response. The exception is logged with a
-    stack trace so the underlying cause is diagnosable.
+    the whole ``/model-versions`` response. The record carries the probe
+    category and the exception type only — never the text or a traceback,
+    which can echo a bearer token or a credential-bearing URI.
     """
     if not run_id:
         return {}
     try:
         run = client.get_run(run_id)
-    except Exception:
-        logger.exception(
+    except Exception as exc:
+        logger.warning(
             "mlflow_model_version_params_unavailable",
             run_id=run_id,
+            category=_classify_probe_error(exc),
+            error_type=type(exc).__name__,
         )
         return {}
     return dict(run.data.params)

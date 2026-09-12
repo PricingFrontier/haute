@@ -1281,6 +1281,9 @@ def _assert_secret_free_failure_record(record: dict) -> None:
     assert record["category"] in get_args(MlflowProbeCategory)
     assert record["error_type"] == "RuntimeError"
     assert "error" not in record
+    # No traceback either: ``exc_info``/``exception`` would render the text.
+    assert "exc_info" not in record
+    assert "exception" not in record
     assert _SECRET not in repr(record)
 
 
@@ -1326,6 +1329,33 @@ class TestFailureLogsCarryNoExceptionText:
         records = _records_named(logs, "artifact_list_failed")
         assert len(records) == 1
         assert records[0]["run_id"] == "run-1"
+        _assert_secret_free_failure_record(records[0])
+        assert _SECRET not in repr(logs)
+
+    def test_model_version_params_failure_record_is_secret_free(self, client):
+        version = MagicMock()
+        version.version = "2"
+        version.run_id = "run-2"
+        version.status = "READY"
+        version.creation_timestamp = 2_000
+        version.description = "second"
+        mock_client = MagicMock()
+        mock_client.get_run.side_effect = RuntimeError(_LEAKY_MESSAGE)
+
+        with (
+            _mock_tracking(client=mock_client),
+            patch("haute.routes.mlflow.search_versions", return_value=[version]),
+            structlog.testing.capture_logs() as logs,
+        ):
+            resp = client.get("/api/mlflow/model-versions", params={"model_name": "m"})
+
+        # The version itself is still served; only its params are unavailable.
+        assert resp.status_code == 200
+        assert resp.json()[0]["params"] == {}
+        assert _SECRET not in resp.text
+        records = _records_named(logs, "mlflow_model_version_params_unavailable")
+        assert len(records) == 1
+        assert records[0]["run_id"] == "run-2"
         _assert_secret_free_failure_record(records[0])
         assert _SECRET not in repr(logs)
 
