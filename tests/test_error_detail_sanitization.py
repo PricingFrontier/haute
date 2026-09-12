@@ -706,16 +706,6 @@ _LOG_ON_ERROR_CASES: list[tuple] = [
         500,
         id="json-cache-build-log",
     ),
-    pytest.param(
-        "get",
-        "/api/mlflow/experiments",
-        None,
-        lambda err: _mlflow_tracking_patch("search_experiments", err),
-        "haute.routes.mlflow",
-        "secret-mlflow-err",
-        502,
-        id="mlflow-experiments-log",
-    ),
 ]
 
 
@@ -755,6 +745,29 @@ class TestLogOnError:
         assert resp.status_code == expected_status
         mock_logger.error.assert_called()
         assert error_msg in str(mock_logger.error.call_args)
+
+    def test_mlflow_discovery_failure_is_logged_by_type_never_by_text(
+        self, client: TestClient
+    ) -> None:
+        """MLflow discovery is the deliberate exception to logging the real message.
+
+        Tracking errors can echo bearer tokens or credential-bearing URIs, so
+        the server-side record keeps the category and the exception type
+        (enough to diagnose) and never the text; see
+        ``tests/test_mlflow_routes.py::TestFailureLogsCarryNoExceptionText``.
+        """
+        mock_logger = MagicMock()
+        with (
+            _mlflow_tracking_patch("search_experiments", "secret-mlflow-err"),
+            patch("haute.routes.mlflow.logger", mock_logger),
+        ):
+            resp = client.get("/api/mlflow/experiments")
+
+        assert resp.status_code == 502
+        mock_logger.error.assert_called_once()
+        assert mock_logger.error.call_args.kwargs["error_type"] == "RuntimeError"
+        assert "secret-mlflow-err" not in str(mock_logger.error.call_args)
+        assert "secret-mlflow-err" not in resp.text
 
     # -- Pipeline routes need the pipeline_graph fixture --
 
