@@ -516,7 +516,8 @@ same Vitest config.
   utility/imports/git/assistant closes the other three) and per-node selection-map
   helpers.
 - **MLflow destination surface**
-  (the selector and destination-helper test modules added with MLF-D02,
+  (the selector test module added with MLF-D02,
+  `frontend/src/utils/__tests__/mlflowDestinations.test.ts`,
   `frontend/src/components/__tests__/MlflowSettingsModal.test.tsx`,
   `frontend/src/__tests__/stores/useSettingsStore.test.ts`): the three light
   states per remote from a mocked inventory including hover text and the

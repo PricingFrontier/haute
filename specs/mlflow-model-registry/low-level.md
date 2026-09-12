@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_mlflow_io.py` | Model loading, disk + in-memory caching (keyed in part on artifact byte identity via `_local_artifact_fingerprint`), per-artifact I/O locks, artifact discovery, flavor-specific loaders, the `ScoringModel` carrier, predict-frame preparation per flavor, the shared eager-scoring delegate (`_score_eager`) used by both `_model_scorer.py` and deploy. |
-| `src/haute/_mlflow_utils.py` | Shared MLflow bootstrap used by `_mlflow_io.py`, the optimiser IO layer, and deploy's bundler: version resolution, safe model-version search, backend resolution (a destination key — or the empty string for auto — to a resolved backend carrying the tracking/registry URIs plus a secret-free backend identity and filesystem digest; see Key types), and `resolve_mlflow_source` (import mlflow, resolve that backend, build a client pinned to it, resolve `source_type` to a concrete run ID/version, and return the backend alongside the client). |
+| `src/haute/_mlflow_utils.py` | Shared MLflow bootstrap used by `_mlflow_io.py`, the optimiser IO layer, and deploy's bundler: version resolution, safe model-version search, `resolve_backend` (a destination key — or the empty string for auto — to a `ResolvedBackend` carrying the tracking/registry URIs plus a secret-free backend identity and filesystem digest; see Key types), and `resolve_mlflow_source` (import mlflow, resolve that backend, build a client pinned to it, resolve `source_type` to a concrete run ID/version, and return the backend alongside the client). |
 | `src/haute/_model_flavors.py` | Single source of truth for the scoring flavor domain: `ModelFlavor` (`Literal["catboost", "pyfunc", "rustystats"]`) and `_SUPPORTED_FLAVORS`, derived via `get_args` so the two can never drift apart. Dependency-free leaf module (see high-level Design rationale for why). |
 | `src/haute/_model_scorer.py` | MODEL_SCORE node logic: the `ModelScorer` class, the unified `score_frame` dispatch (eager vs batched), the feature-validation cache, offset-column resolution, write-projection application, and `score_from_config` (codegen's delegation target). |
 | `src/haute/_model_explainability.py` | Per-prediction SHAP (CatBoost) and native GLM contribution (RustyStats) explanations for trace enrichment, plus `explain_model_score_from_config`, the config-driven entry point trace enrichment calls. |
@@ -710,8 +710,7 @@ to a live MLflow tracking server.
   unloadable profile failing secret-free, auto following the environment,
   unknown keys rejected, and `resolve_mlflow_source` pinning its client to
   the returned backend for both auto and explicit destinations.
-- **Destination-aware cache contract** (its own test module, added with
-  MLF-D03) — identical run IDs and artifact paths with different contents on
+- **`tests/test_mlflow_destination_cache.py`** — identical run IDs and artifact paths with different contents on
   two local folders and on two server endpoints of the same category never
   alias (distinct digest partitions on disk, distinct memory entries and
   locks); warm-cache loads follow a toml folder change, an auto switch, and
