@@ -29,6 +29,7 @@ from haute._mlflow_io import (
     clear_model_cache,
     load_mlflow_model,
 )
+from haute._mlflow_utils import resolve_backend
 
 RUN_ID = "run_relog"
 ARTIFACT = "model.cbm"
@@ -76,7 +77,12 @@ class TestFastPathArtifactPerturbation:
     def test_relogged_artifact_bytes_invalidate_in_process_cache(self, tmp_path, monkeypatch):
         """Re-log under the same run ref → the NEW model is served, not stale."""
         monkeypatch.chdir(tmp_path)
-        local = _artifact_cache_path(tmp_path / ".cache" / "models", RUN_ID, ARTIFACT)
+        local = _artifact_cache_path(
+            tmp_path / ".cache" / "models",
+            resolve_backend("").digest,
+            RUN_ID,
+            ARTIFACT,
+        )
         _write_artifact(local, b"weights-v1")
 
         first = self._load()
@@ -96,7 +102,12 @@ class TestFastPathArtifactPerturbation:
     def test_unchanged_artifact_still_hits_cache(self, tmp_path, monkeypatch):
         """No perturbation → second call is an in-process hit (same object)."""
         monkeypatch.chdir(tmp_path)
-        local = _artifact_cache_path(tmp_path / ".cache" / "models", RUN_ID, ARTIFACT)
+        local = _artifact_cache_path(
+            tmp_path / ".cache" / "models",
+            resolve_backend("").digest,
+            RUN_ID,
+            ARTIFACT,
+        )
         _write_artifact(local, b"weights-v1")
 
         first = self._load()
@@ -121,7 +132,7 @@ class TestFullPathArtifactPerturbation:
         with (
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=(RUN_ID, "latest", mock_mlflow, MagicMock()),
+                return_value=(RUN_ID, "latest", mock_mlflow, MagicMock(), resolve_backend("")),
             ),
             patch(
                 "haute._mlflow_io._resolve_artifact_local",
@@ -172,6 +183,7 @@ class TestKeyContract:
             version="",
             artifact_path=ARTIFACT,
             task="regression",
+            backend_identity="local:/runs|registry=file:///runs",
         )
         key_a = _model_cache_key(artifact_fingerprint="fp-a", **base)
         key_b = _model_cache_key(artifact_fingerprint="fp-b", **base)
@@ -188,6 +200,7 @@ class TestKeyContract:
             artifact_path=ARTIFACT,
             task="regression",
             artifact_fingerprint="fp-a",
+            backend_identity="local:/runs|registry=file:///runs",
         )
         _model_cache.put(
             key,

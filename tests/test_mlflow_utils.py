@@ -164,19 +164,14 @@ def test_source_resolution_uses_selected_registry_without_changing_globals(
         mlflow.set_tracking_uri(records["a"][0])
         mlflow.set_registry_uri(records["a"][0])
         save_mlflow_settings(MlflowSettings(folder="b"), tmp_path)
-        run_id, _, _, client, _backend = resolve_mlflow_source(
+        run_id, _, _, client, backend = resolve_mlflow_source(
             source_type="registered",
             registered_model="pricing-model",
             version="latest",
         )
         assert run_id == records["b"][1]
         assert client.get_run(run_id).info.run_id == run_id
-        artifact_path = _resolve_artifact_local(
-            mlflow,
-            run_id,
-            "model.cbm",
-            tracking_uri=client.tracking_uri,
-        )
+        artifact_path = _resolve_artifact_local(mlflow, backend, run_id, "model.cbm")
         assert Path(artifact_path).read_text(encoding="utf-8") == "b"
         assert mlflow.get_tracking_uri() == records["a"][0]
         assert mlflow.get_registry_uri() == records["a"][0]

@@ -1076,6 +1076,7 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         feature_contract_path=config.get("feature_contract_path") or None,
         categorical_levels=declared_categorical_levels,
         reuse_loaded_model=ctx.reuse_loaded_model,
+        mlflow_destination=str(config.get("mlflow_destination", "") or ""),
     )
 
     return ctx.func_name, scorer.score, False

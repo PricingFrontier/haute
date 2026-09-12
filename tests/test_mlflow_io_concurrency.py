@@ -47,6 +47,7 @@ from haute._mlflow_io import (
     _resolve_artifact_local,
     load_mlflow_model,
 )
+from haute._mlflow_utils import ResolvedBackend, resolve_backend
 
 # Generous upper bounds for "this MUST happen" waits — they only matter on
 # a wedged run.  The single short wait used to assert "this must NOT
@@ -54,6 +55,16 @@ from haute._mlflow_io import (
 # fixed (green) path.
 WAIT_MUST_HAPPEN_S = 10.0
 WAIT_MUST_NOT_HAPPEN_S = 1.0
+
+
+def _auto_backend() -> ResolvedBackend:
+    """The auto-resolved backend every load in this module shares.
+
+    Loads here exercise concurrency, not destination choice, so they all run
+    on the auto destination; the digest and identity are what partition the
+    disk cache, the memory cache, and the artifact I/O locks.
+    """
+    return resolve_backend("")
 
 
 @pytest.fixture(autouse=True)
@@ -179,8 +190,12 @@ class TestDownloadSingleFlight:
 
         results, errors, threads = _run_threads(
             {
-                "t1": lambda: _resolve_artifact_local(transport, "run-x", "model.cbm"),
-                "t2": lambda: _resolve_artifact_local(transport, "run-x", "model.cbm"),
+                "t1": lambda: _resolve_artifact_local(
+                    transport, _auto_backend(), "run-x", "model.cbm"
+                ),
+                "t2": lambda: _resolve_artifact_local(
+                    transport, _auto_backend(), "run-x", "model.cbm"
+                ),
             }
         )
         try:
@@ -214,8 +229,12 @@ class TestDownloadSingleFlight:
 
         results, errors, threads = _run_threads(
             {
-                "a": lambda: _resolve_artifact_local(transport_a, "run-a", "model.cbm"),
-                "b": lambda: _resolve_artifact_local(transport_b, "run-b", "model.cbm"),
+                "a": lambda: _resolve_artifact_local(
+                    transport_a, _auto_backend(), "run-a", "model.cbm"
+                ),
+                "b": lambda: _resolve_artifact_local(
+                    transport_b, _auto_backend(), "run-b", "model.cbm"
+                ),
             }
         )
         for t in threads.values():
@@ -239,8 +258,12 @@ class TestDownloadSingleFlight:
 
         results, errors, threads = _run_threads(
             {
-                "t1": lambda: _resolve_artifact_local(transport, "run-f", "model.cbm"),
-                "t2": lambda: _resolve_artifact_local(transport, "run-f", "model.cbm"),
+                "t1": lambda: _resolve_artifact_local(
+                    transport, _auto_backend(), "run-f", "model.cbm"
+                ),
+                "t2": lambda: _resolve_artifact_local(
+                    transport, _auto_backend(), "run-f", "model.cbm"
+                ),
             }
         )
         try:
@@ -307,7 +330,7 @@ class TestLoadModelSingleFlight:
         with (
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run-sf", "", transport, MagicMock()),
+                return_value=("run-sf", "", transport, MagicMock(), _auto_backend()),
             ),
             patch("haute._mlflow_io._load_catboost_model", side_effect=gated_load_catboost),
         ):
@@ -322,6 +345,7 @@ class TestLoadModelSingleFlight:
                 # The artifact bytes must be untouched while the load is open.
                 cached_file = _artifact_cache_path(
                     tmp_path / ".cache" / "models",
+                    _auto_backend().digest,
                     "run-sf",
                     "model.cbm",
                 )
@@ -352,7 +376,7 @@ class TestLoadModelSingleFlight:
         with (
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run-seq", "", transport, MagicMock()),
+                return_value=("run-seq", "", transport, MagicMock(), _auto_backend()),
             ),
             patch("haute._mlflow_io._load_catboost_model", side_effect=counting_load),
         ):
@@ -405,7 +429,7 @@ class TestArtifactDiskIdentity:
         with (
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run-shared", "", transport, MagicMock()),
+                return_value=("run-shared", "", transport, MagicMock(), _auto_backend()),
             ),
             patch(
                 "haute._mlflow_io._load_catboost_model",
@@ -426,8 +450,12 @@ class TestArtifactDiskIdentity:
             )
 
         cache_root = tmp_path / ".cache" / "models"
-        freq_path = _artifact_cache_path(cache_root, "run-shared", "freq/model.cbm")
-        sev_path = _artifact_cache_path(cache_root, "run-shared", "sev/model.cbm")
+        freq_path = _artifact_cache_path(
+            cache_root, _auto_backend().digest, "run-shared", "freq/model.cbm"
+        )
+        sev_path = _artifact_cache_path(
+            cache_root, _auto_backend().digest, "run-shared", "sev/model.cbm"
+        )
         assert freq_path != sev_path
         assert freq_path.read_bytes() == b"freq-bytes"
         assert sev_path.read_bytes() == b"sev-bytes"
@@ -443,8 +471,12 @@ class TestArtifactDiskIdentity:
         tmp_path,
     ):
         cache_root = tmp_path / ".cache" / "models"
-        freq_path = _artifact_cache_path(cache_root, "run-x", "freq/model.cbm")
-        sev_path = _artifact_cache_path(cache_root, "run-x", "sev/model.cbm")
+        freq_path = _artifact_cache_path(
+            cache_root, _auto_backend().digest, "run-x", "freq/model.cbm"
+        )
+        sev_path = _artifact_cache_path(
+            cache_root, _auto_backend().digest, "run-x", "sev/model.cbm"
+        )
 
         assert freq_path != sev_path
         assert freq_path.name.endswith(".cbm")
@@ -454,17 +486,17 @@ class TestArtifactDiskIdentity:
 
         for bad_artifact in ("../model.cbm", "freq/../../model.cbm", "/tmp/model.cbm"):
             with pytest.raises(ValueError, match="Invalid artifact_path"):
-                _artifact_cache_path(cache_root, "run-x", bad_artifact)
+                _artifact_cache_path(cache_root, _auto_backend().digest, "run-x", bad_artifact)
         for alias_artifact in (
             "./model.cbm",
             "nested/./model.cbm",
             "nested//model.cbm",
         ):
             with pytest.raises(ValueError, match="Invalid artifact_path"):
-                _artifact_cache_path(cache_root, "run-x", alias_artifact)
+                _artifact_cache_path(cache_root, _auto_backend().digest, "run-x", alias_artifact)
 
         with pytest.raises(ValueError, match="Invalid run_id"):
-            _artifact_cache_path(cache_root, "../outside", "model.cbm")
+            _artifact_cache_path(cache_root, _auto_backend().digest, "../outside", "model.cbm")
 
     def test_registered_same_version_same_basename_artifacts_store_distinct_models(
         self,
@@ -483,7 +515,7 @@ class TestArtifactDiskIdentity:
         with (
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run-registered", "7", transport, MagicMock()),
+                return_value=("run-registered", "7", transport, MagicMock(), _auto_backend()),
             ),
             patch(
                 "haute._mlflow_io._load_catboost_model",
@@ -520,7 +552,9 @@ class TestArtifactDiskIdentity:
         """A cold process must not serve ``freq/model.cbm`` for ``sev/model.cbm``."""
         monkeypatch.chdir(tmp_path)
         cache_root = tmp_path / ".cache" / "models"
-        poisoned = _artifact_cache_path(cache_root, "run-restart", "freq/model.cbm")
+        poisoned = _artifact_cache_path(
+            cache_root, _auto_backend().digest, "run-restart", "freq/model.cbm"
+        )
         poisoned.parent.mkdir(parents=True)
         poisoned.write_bytes(b"freq-poison")
         transport = _MappingTransport({"sev/model.cbm": b"sev-fresh"})
@@ -528,7 +562,7 @@ class TestArtifactDiskIdentity:
         with (
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run-restart", "", transport, MagicMock()),
+                return_value=("run-restart", "", transport, MagicMock(), _auto_backend()),
             ),
             patch(
                 "haute._mlflow_io._load_catboost_model",
@@ -542,7 +576,9 @@ class TestArtifactDiskIdentity:
                 task="regression",
             )
 
-        sev_path = _artifact_cache_path(cache_root, "run-restart", "sev/model.cbm")
+        sev_path = _artifact_cache_path(
+            cache_root, _auto_backend().digest, "run-restart", "sev/model.cbm"
+        )
         assert result.feature_names == ["sev-fresh"]
         assert poisoned.read_bytes() == b"freq-poison"
         assert sev_path.read_bytes() == b"sev-fresh"
@@ -556,15 +592,19 @@ class TestArtifactDiskIdentity:
         """Eviction must not delete files another thread is actively loading."""
         monkeypatch.chdir(tmp_path)
         cache_root = tmp_path / ".cache" / "models"
-        active_path = _artifact_cache_path(cache_root, "run-active", "freq/model.cbm")
+        active_path = _artifact_cache_path(
+            cache_root, _auto_backend().digest, "run-active", "freq/model.cbm"
+        )
         active_path.parent.mkdir(parents=True)
         active_path.write_bytes(b"active")
-        inactive_path = _artifact_cache_path(cache_root, "run-inactive", "model.cbm")
+        inactive_path = _artifact_cache_path(
+            cache_root, _auto_backend().digest, "run-inactive", "model.cbm"
+        )
         inactive_path.parent.mkdir(parents=True)
         inactive_path.write_bytes(b"inactive")
 
-        active_dir = cache_root / "run-active"
-        inactive_dir = cache_root / "run-inactive"
+        active_dir = cache_root / _auto_backend().digest / "run-active"
+        inactive_dir = cache_root / _auto_backend().digest / "run-inactive"
         old = 1_700_000_000
         fresh = old + 100
         active_dir.touch()
@@ -602,7 +642,7 @@ class TestArtifactDiskIdentity:
         ):
             threads["loader"].start()
             assert entered_load.wait(WAIT_MUST_HAPPEN_S), "disk-cache load never began"
-            resolved = _resolve_artifact_local(transport, "run-new", "model.cbm")
+            resolved = _resolve_artifact_local(transport, _auto_backend(), "run-new", "model.cbm")
             assert Path(resolved).read_bytes() == b"new"
             assert active_path.is_file(), "eviction deleted a file being loaded"
             release_load.set()
@@ -623,10 +663,14 @@ class TestArtifactDiskIdentity:
 
         monkeypatch.chdir(tmp_path)
         cache_root = tmp_path / ".cache" / "models"
-        active_path = _artifact_cache_path(cache_root, "run-active", "model.cbm")
+        active_path = _artifact_cache_path(
+            cache_root, _auto_backend().digest, "run-active", "model.cbm"
+        )
         active_path.parent.mkdir(parents=True)
         active_path.write_bytes(b"active")
-        inactive_path = _artifact_cache_path(cache_root, "run-inactive", "model.cbm")
+        inactive_path = _artifact_cache_path(
+            cache_root, _auto_backend().digest, "run-inactive", "model.cbm"
+        )
         inactive_path.parent.mkdir(parents=True)
         inactive_path.write_bytes(b"inactive")
 
@@ -643,13 +687,14 @@ class TestArtifactDiskIdentity:
         ):
             resolved = _resolve_artifact_local(
                 _FakeTransport(payload=b"new", artifact_name="model.cbm"),
+                _auto_backend(),
                 "run-new",
                 "model.cbm",
             )
 
         assert Path(resolved).read_bytes() == b"new"
         assert active_seen == [frozenset({"run-new"})]
-        assert (cache_root / "run-new").is_dir()
+        assert (cache_root / _auto_backend().digest / "run-new").is_dir()
 
     def test_eviction_rechecks_active_runs_before_deleting_candidate(
         self,
@@ -661,17 +706,21 @@ class TestArtifactDiskIdentity:
 
         monkeypatch.chdir(tmp_path)
         cache_root = tmp_path / ".cache" / "models"
-        race_path = _artifact_cache_path(cache_root, "run-race", "model.cbm")
+        race_path = _artifact_cache_path(
+            cache_root, _auto_backend().digest, "run-race", "model.cbm"
+        )
         race_path.parent.mkdir(parents=True)
         race_path.write_bytes(b"race")
-        keep_path = _artifact_cache_path(cache_root, "run-keep", "model.cbm")
+        keep_path = _artifact_cache_path(
+            cache_root, _auto_backend().digest, "run-keep", "model.cbm"
+        )
         keep_path.parent.mkdir(parents=True)
         keep_path.write_bytes(b"keep")
 
         old = 1_700_000_000
         fresh = old + 100
-        os.utime(cache_root / "run-race", (old, old))
-        os.utime(cache_root / "run-keep", (fresh, fresh))
+        os.utime(cache_root / _auto_backend().digest / "run-race", (old, old))
+        os.utime(cache_root / _auto_backend().digest / "run-keep", (fresh, fresh))
         entered = threading.Event()
         release = threading.Event()
         thread: threading.Thread | None = None
@@ -715,23 +764,27 @@ class TestArtifactDiskIdentity:
 
         monkeypatch.chdir(tmp_path)
         cache_root = tmp_path / ".cache" / "models"
-        race_path = _artifact_cache_path(cache_root, "run-race", "model.cbm")
+        race_path = _artifact_cache_path(
+            cache_root, _auto_backend().digest, "run-race", "model.cbm"
+        )
         race_path.parent.mkdir(parents=True)
         race_path.write_bytes(b"race")
-        keep_path = _artifact_cache_path(cache_root, "run-keep", "model.cbm")
+        keep_path = _artifact_cache_path(
+            cache_root, _auto_backend().digest, "run-keep", "model.cbm"
+        )
         keep_path.parent.mkdir(parents=True)
         keep_path.write_bytes(b"keep")
         old = 1_700_000_000
         fresh = old + 100
-        os.utime(cache_root / "run-race", (old, old))
-        os.utime(cache_root / "run-keep", (fresh, fresh))
+        os.utime(cache_root / _auto_backend().digest / "run-race", (old, old))
+        os.utime(cache_root / _auto_backend().digest / "run-keep", (fresh, fresh))
         entered = threading.Event()
         observed_paths: list[Path] = []
         real_rmtree = shutil.rmtree
 
         def user_enters_run() -> None:
             with _mlflow_io._disk_cache_run_in_use("run-race"):
-                assert not (cache_root / "run-race").exists()
+                assert not (cache_root / _auto_backend().digest / "run-race").exists()
                 entered.set()
 
         def observing_rmtree(path: Path, ignore_errors: bool = False) -> None:
@@ -764,7 +817,9 @@ class TestArtifactDiskIdentity:
         """The disk-cache hit path must be eviction-safe before is_file()."""
         monkeypatch.chdir(tmp_path)
         cache_root = tmp_path / ".cache" / "models"
-        cached_file = _artifact_cache_path(cache_root, "run-fast", "model.cbm")
+        cached_file = _artifact_cache_path(
+            cache_root, _auto_backend().digest, "run-fast", "model.cbm"
+        )
         cached_file.parent.mkdir(parents=True)
         cached_file.write_bytes(b"model")
         active_seen: list[frozenset[str]] = []
@@ -812,8 +867,8 @@ class TestLockAcquisitionRaces:
         real_lock = _mlflow_io._artifact_io_lock
         calls = [0]
 
-        def locked(run_id: str, artifact_path: str):
-            lock = real_lock(run_id, artifact_path)
+        def locked(backend_digest: str, run_id: str, artifact_path: str):
+            lock = real_lock(backend_digest, run_id, artifact_path)
             calls[0] += 1
             if calls[0] == fire_on:
                 hook()
@@ -828,6 +883,7 @@ class TestLockAcquisitionRaces:
         monkeypatch.chdir(tmp_path)
         cached_file = _artifact_cache_path(
             tmp_path / ".cache" / "models",
+            _auto_backend().digest,
             "run-h",
             "model.cbm",
         )
@@ -841,6 +897,7 @@ class TestLockAcquisitionRaces:
             artifact_path="model.cbm",
             task="regression",
             artifact_fingerprint=_local_artifact_fingerprint("model.cbm", str(cached_file)),
+            backend_identity=_auto_backend().identity,
         )
 
         def winner_populates_cache() -> None:
@@ -872,6 +929,7 @@ class TestLockAcquisitionRaces:
         monkeypatch.chdir(tmp_path)
         cached_file = _artifact_cache_path(
             tmp_path / ".cache" / "models",
+            _auto_backend().digest,
             "run-v",
             "model.cbm",
         )
@@ -889,7 +947,7 @@ class TestLockAcquisitionRaces:
             ),
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run-v", "", transport, MagicMock()),
+                return_value=("run-v", "", transport, MagicMock(), _auto_backend()),
             ),
             patch(
                 "haute._mlflow_io._load_catboost_model",
@@ -921,6 +979,7 @@ class TestLockAcquisitionRaces:
         transport = _FakeTransport()
         local_file = _artifact_cache_path(
             tmp_path / ".cache" / "models",
+            _auto_backend().digest,
             "run-r",
             "model.cbm",
         )
@@ -933,6 +992,7 @@ class TestLockAcquisitionRaces:
                 artifact_path="model.cbm",
                 task="regression",
                 artifact_fingerprint=_local_artifact_fingerprint("model.cbm", str(local_file)),
+                backend_identity=_auto_backend().identity,
             )
             _model_cache.put(cache_key, winner_model)
 
@@ -946,7 +1006,7 @@ class TestLockAcquisitionRaces:
             ),
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run-r", "", transport, MagicMock()),
+                return_value=("run-r", "", transport, MagicMock(), _auto_backend()),
             ),
             patch("haute._mlflow_io._load_catboost_model") as load_catboost,
         ):

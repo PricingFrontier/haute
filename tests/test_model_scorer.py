@@ -186,6 +186,7 @@ class TestModelScorerInit:
         assert scorer.source == "live"
         assert scorer.row_limit is None
         assert scorer.reuse_loaded_model is False
+        assert scorer.mlflow_destination == ""
 
     def test_custom_values(self):
         scorer = ModelScorer(
@@ -213,6 +214,41 @@ class TestModelScorerInit:
     def test_feature_contract_path_defaults_to_none(self):
         scorer = ModelScorer(source_type="run")
         assert scorer.feature_contract_path is None
+
+    def test_mlflow_destination_is_stored(self):
+        scorer = ModelScorer(source_type="run", mlflow_destination="local")
+        assert scorer.mlflow_destination == "local"
+
+
+class TestModelScorerDestination:
+    """MLF-D03: the node's destination reaches the shared model loader."""
+
+    @patch("haute._mlflow_io._score_eager")
+    @patch("haute._mlflow_io.load_mlflow_model")
+    def test_explicit_destination_forwarded_to_loader(self, mock_load, mock_score_eager):
+        mock_load.return_value = _make_scoring_model()
+        mock_score_eager.return_value = pl.DataFrame({"x": [1], "prediction": [0.5]}).lazy()
+
+        scorer = ModelScorer(
+            source_type="run",
+            run_id="abc",
+            source="live",
+            mlflow_destination="local",
+        )
+        scorer.score(pl.DataFrame({"a": [1], "b": [2]}).lazy()).collect()
+
+        assert mock_load.call_args.kwargs["destination"] == "local"
+
+    @patch("haute._mlflow_io._score_eager")
+    @patch("haute._mlflow_io.load_mlflow_model")
+    def test_default_destination_is_auto(self, mock_load, mock_score_eager):
+        mock_load.return_value = _make_scoring_model()
+        mock_score_eager.return_value = pl.DataFrame({"x": [1], "prediction": [0.5]}).lazy()
+
+        scorer = ModelScorer(source_type="run", run_id="abc", source="live")
+        scorer.score(pl.DataFrame({"a": [1], "b": [2]}).lazy()).collect()
+
+        assert mock_load.call_args.kwargs["destination"] == ""
 
 
 # ===========================================================================
@@ -847,6 +883,7 @@ class TestScoreFromConfig:
             registered_model="",
             version="latest",
             task="regression",
+            destination="",
         )
 
     # ---------------------------------------------------------------

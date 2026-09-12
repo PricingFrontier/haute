@@ -569,6 +569,7 @@ def explain_model_score_from_config(
         registered_model=config.get("registered_model", ""),
         version=config.get("version", "latest"),
         task=config.get("task", "regression"),
+        destination=str(config.get("mlflow_destination", "") or ""),
     )
     effective_prediction = (
         prediction_value if prediction_value is not None else output_row.get(prediction_column)
