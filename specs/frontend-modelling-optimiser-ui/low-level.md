@@ -311,14 +311,20 @@ The behavioural contract is defined in
   tooltip carries the manual-only note ("used only when you press Log run to MLflow after
   training completes; nothing is logged automatically"), mounts the shared
   `MlflowDestinationSelector` bound to `mlflow_destination` (absent = auto), and gives the
-  Experiment path and Model name labels Info icons in the offset-field pattern — the experiment
-  tooltip names the computed default, which follows the node's effective destination
-  (`/Shared/haute/<label>` for databricks, else `<label>`), and the field's placeholder is that
-  default. The section carries no always-visible instruction prose and no "Logging destination"
+  Experiment path and Model name labels Info icons in the offset-field pattern whose tooltips
+  explain what the field is. The experiment tooltip says an MLflow experiment is the named group
+  a logged run is filed under so related runs can be compared, that on Databricks it is a
+  workspace folder path and elsewhere a plain name, and names the computed default used when
+  blank, which follows the node's effective destination (`/Shared/haute/<label>` for databricks,
+  else `<label>`); the field's placeholder is that default. The model name tooltip says a name
+  also registers the trained model in the MLflow model registry, adding a new version on each
+  log so a Model Score node can load it by name and version, that on Databricks it is a
+  three-level Unity Catalog name (`catalog.schema.model`), and that leaving it blank logs the run
+  without registering. The section carries no always-visible instruction prose and no "Logging destination"
   line. The experiment datalist loads through `useMlflowBrowser({destination})` from the node's
   destination on focus, only when that destination can accept a log. The optimiser config's
-  collapsible MLflow section receives the same selector and tooltip treatment on its experiment
-  field. The post-training `MlflowExportSection` and the optimiser `ExportMlflowSection` show one
+  collapsible MLflow section receives the same selector and the same explanatory experiment
+  tooltip, worded for an optimisation result. The post-training `MlflowExportSection` and the optimiser `ExportMlflowSection` show one
   line naming the node's destination under the button (`mlflowLogAvailability`), render the button
   disabled with the reason and a "Configure MLflow" link (opens the settings modal) only when the
   node's *own* destination is unconfigured or the package is unavailable — never because some

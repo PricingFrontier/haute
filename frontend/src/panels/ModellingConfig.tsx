@@ -183,7 +183,10 @@ const MLFLOW_MANUAL_HELP =
   "Nothing is logged automatically."
 
 const MLFLOW_MODEL_NAME_HELP =
-  "Optional: also register the logged model under this name."
+  "Optional. Also registers the trained model in the MLflow model registry under this name, " +
+  "adding a new version each time you log, so a Model Score node can load it by name and " +
+  "version. On Databricks use a Unity Catalog name: catalog.schema.model. Leave blank to log " +
+  "the run without registering it."
 
 /** The offset-field help pattern: a hover-only Info icon beside a label. */
 function MlflowHelpIcon({ label, ariaLabel }: { label: string; ariaLabel: string }) {
@@ -313,7 +316,12 @@ function TrainPane({
           <span className="inline-flex items-center gap-1">
             Experiment path
             <MlflowHelpIcon
-              label={`Leave blank to use the default: ${experimentDefault}`}
+              label={
+                "The MLflow experiment this run is logged into: a named group that collects " +
+                "related runs so you can compare them. On Databricks it is a workspace folder " +
+                "path; on an MLflow server or local folder it is a plain name. " +
+                `Leave blank to use ${experimentDefault}.`
+              }
               ariaLabel="About the experiment path"
             />
           </span>

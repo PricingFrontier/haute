@@ -2251,9 +2251,9 @@ describe("OptimiserConfig", () => {
 
     function tooltipTextOf(ariaLabel: string): string {
       const icon = screen.getByLabelText(ariaLabel)
-      const anchor = icon.parentElement!
-      fireEvent.mouseEnter(anchor)
-      return within(anchor).getByRole("tooltip", { hidden: true }).textContent ?? ""
+      const wrapper = icon.closest<HTMLElement>("[aria-describedby]")!
+      fireEvent.mouseEnter(wrapper)
+      return document.getElementById(wrapper.getAttribute("aria-describedby")!)!.textContent ?? ""
     }
 
     it("mounts the destination selector and drops the instruction prose", () => {
@@ -2269,9 +2269,10 @@ describe("OptimiserConfig", () => {
         destinations: [MLFLOW_DATABRICKS, MLFLOW_SERVER, MLFLOW_LOCAL],
       })
       renderMlflowSection()
-      expect(tooltipTextOf("About the experiment path")).toBe(
-        "Leave blank to use the default: /Shared/haute/My Optimiser",
-      )
+      const help = tooltipTextOf("About the experiment path")
+      expect(help).toContain("Leave blank to use /Shared/haute/My Optimiser.")
+      expect(help).toContain("named group")
+      expect(help).toContain("workspace folder path")
       expect(screen.getByLabelText("MLflow experiment path")).toHaveAttribute(
         "placeholder",
         "/Shared/haute/My Optimiser",
@@ -2292,9 +2293,10 @@ describe("OptimiserConfig", () => {
           mlflow_destination: "local",
         },
       })
-      expect(tooltipTextOf("About the experiment path")).toBe(
-        "Leave blank to use the default: My Optimiser",
-      )
+      const help = tooltipTextOf("About the experiment path")
+      expect(help).toContain("Leave blank to use My Optimiser.")
+      expect(help).toContain("named group")
+      expect(help).toContain("workspace folder path")
       expect(screen.getByLabelText("MLflow experiment path")).toHaveAttribute(
         "placeholder",
         "My Optimiser",

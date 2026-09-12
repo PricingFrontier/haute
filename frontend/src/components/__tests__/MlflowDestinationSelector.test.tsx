@@ -92,8 +92,9 @@ function radio(name: string): HTMLElement {
 
 function tooltipOf(key: MlflowDestinationKey): string {
   const option = screen.getByTestId(`mlflow-option-${key}`)
-  fireEvent.mouseEnter(option)
-  return within(option).getByRole("tooltip", { hidden: true }).textContent ?? ""
+  const wrapper = option.querySelector<HTMLElement>("[aria-describedby]")!
+  fireEvent.mouseEnter(wrapper)
+  return document.getElementById(wrapper.getAttribute("aria-describedby")!)!.textContent ?? ""
 }
 
 let fetchMlflow: Mock<() => void>
@@ -138,21 +139,19 @@ describe("MlflowDestinationSelector", () => {
     expect(radio("Local folder")).not.toBeChecked()
   })
 
-  it("marks the selected option 'auto' and offers no 'Use auto' when the node stores nothing", () => {
+  it("labels no option 'auto' and offers no 'Use auto' when the node stores nothing", () => {
     renderSelector({ value: "" })
 
-    const suffix = screen.getByTestId("mlflow-destination-auto-suffix")
-    expect(suffix).toHaveTextContent("auto")
-    expect(within(screen.getByTestId("mlflow-option-databricks")).getByTestId(
-      "mlflow-destination-auto-suffix",
-    )).toBe(suffix)
+    const group = screen.getByRole("radiogroup", { name: "MLflow destination" })
+    expect(within(group).queryByText("auto")).toBeNull()
     expect(screen.queryByRole("button", { name: "Use auto" })).toBeNull()
   })
 
   it("renders 'Use auto' which clears the stored choice when the node stores one", () => {
     const { onChange } = renderSelector({ value: "local" })
 
-    expect(screen.queryByTestId("mlflow-destination-auto-suffix")).toBeNull()
+    const group = screen.getByRole("radiogroup", { name: "MLflow destination" })
+    expect(within(group).queryByText("auto")).toBeNull()
     fireEvent.click(screen.getByRole("button", { name: "Use auto" }))
     expect(onChange).toHaveBeenCalledWith("")
   })

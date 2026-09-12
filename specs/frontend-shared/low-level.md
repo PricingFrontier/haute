@@ -34,7 +34,7 @@
 | `frontend/src/components/ErrorBoundary.tsx` | Class-component error boundary with a "Try again" fallback UI. |
 | `frontend/src/components/Toast.tsx` | `ToastMessage` type + `ToastContainer`, rendering `useToastStore`'s queue with per-type icon/colour and auto-dismiss. |
 | `frontend/src/components/ModalShell.tsx` | Shared dialog chrome: backdrop, Escape-close, full Tab focus trap, focus restore on unmount. |
-| `frontend/src/components/Tooltip.tsx` | Zero-delay CSS-hover tooltip with edge-clamped horizontal position and top/bottom auto-flip. |
+| `frontend/src/components/Tooltip.tsx` | Zero-delay hover and focus tooltip. The bubble renders into the document body with fixed positioning, so scrolling or overflow-clipped panels never cut it off; it is placed from the anchor's viewport rectangle, clamped inside the viewport horizontally, flipped between top and bottom when the preferred side would clip, closed on scroll or resize, wraps long unbroken text such as URLs, and is linked to its anchor through the anchor's described-by reference. |
 | `frontend/src/components/ContextMenu.tsx` | Node right-click menu: rename/duplicate/create-instance/dissolve-submodel/delete, arrow-key roving focus. |
 | `frontend/src/components/KeyboardShortcuts.tsx` | `?`-triggered modal listing keyboard shortcuts, built on `ModalShell`. |
 | `frontend/src/components/Toolbar.tsx` | App top chrome: package-derived browser version, source selector, row-limit/chunk-size inputs, undo/redo, timing/memory breakdowns, Submodel/Instance selection actions, utility/imports/assistant buttons, zoom, centre/layout, and Save + Commit. Actions share the `.toolbar-btn` surface; the selection actions carry `aria-disabled` rather than `disabled` so an unavailable action stays focusable and its handler can explain the refusal. Numeric fields suppress native spinners without clipping either the configured row-limit value or the chunk-size backend maximum. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). |
@@ -366,8 +366,8 @@ selector takes the node's stored value (`""` = auto, else a key) and an
 **native** radios (so the radio role carries its keyboard behaviour) in the
 fixed order Databricks, MLflow server, Local folder. The selected radio is
 the *effective* destination (`effectiveMlflowDestination(value, auto)`);
-while the node stores no choice the selected option carries an "auto"
-suffix and no "Use auto" control, and once a choice is stored a "Use auto"
+the options carry no "auto" label, and while the node stores no choice
+there is no "Use auto" control — once a choice is stored a "Use auto"
 button clears it (`onChange("")`). Each remote carries a light dot
 (`mlflowLight`): green when configured and its probe passed (tooltip: the
 secret-free destination), amber when configured but the probe failed

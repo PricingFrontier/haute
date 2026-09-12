@@ -156,16 +156,6 @@ export default function MlflowDestinationSelector({
                 />
               )}
               <span>{MLFLOW_DESTINATION_LABELS[key]}</span>
-              {selected && value === "" && (
-                <span
-                  data-testid="mlflow-destination-auto-suffix"
-                  aria-hidden="true"
-                  className="text-[10px] italic"
-                  style={{ color: "var(--text-muted)" }}
-                >
-                  auto
-                </span>
-              )}
             </label>
           )
 

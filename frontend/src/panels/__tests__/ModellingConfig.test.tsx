@@ -1596,9 +1596,9 @@ describe("ModellingConfig", () => {
 
       function tooltipTextOf(ariaLabel: string): string {
         const icon = screen.getByLabelText(ariaLabel)
-        const anchor = icon.parentElement!
-        fireEvent.mouseEnter(anchor)
-        return within(anchor).getByRole("tooltip", { hidden: true }).textContent ?? ""
+        const wrapper = icon.closest<HTMLElement>("[aria-describedby]")!
+        fireEvent.mouseEnter(wrapper)
+        return document.getElementById(wrapper.getAttribute("aria-describedby")!)!.textContent ?? ""
       }
 
       it("keeps the manual-only note in the heading tooltip, not in the pane", () => {
@@ -1620,9 +1620,10 @@ describe("ModellingConfig", () => {
           destinations: [MLFLOW_DATABRICKS, MLFLOW_SERVER, MLFLOW_LOCAL],
         })
         renderConfig({ activePane: "train" })
-        expect(tooltipTextOf("About the experiment path")).toBe(
-          "Leave blank to use the default: /Shared/haute/model",
-        )
+        const help = tooltipTextOf("About the experiment path")
+        expect(help).toContain("Leave blank to use /Shared/haute/model.")
+        expect(help).toContain("named group")
+        expect(help).toContain("workspace folder path")
         expect(screen.getByLabelText("MLflow experiment path")).toHaveAttribute(
           "placeholder",
           "/Shared/haute/model",
@@ -1638,9 +1639,10 @@ describe("ModellingConfig", () => {
           activePane: "train",
           config: { _nodeId: "node_1", algorithm: "catboost", mlflow_destination: "local" },
         })
-        expect(tooltipTextOf("About the experiment path")).toBe(
-          "Leave blank to use the default: model",
-        )
+        const help = tooltipTextOf("About the experiment path")
+        expect(help).toContain("Leave blank to use model.")
+        expect(help).toContain("named group")
+        expect(help).toContain("workspace folder path")
         expect(screen.getByLabelText("MLflow experiment path")).toHaveAttribute(
           "placeholder",
           "model",
@@ -1649,9 +1651,10 @@ describe("ModellingConfig", () => {
 
       it("explains the model name field through its own tooltip", () => {
         renderConfig({ activePane: "train" })
-        expect(tooltipTextOf("About the model name")).toBe(
-          "Optional: also register the logged model under this name.",
-        )
+        const help = tooltipTextOf("About the model name")
+        expect(help).toContain("model registry")
+        expect(help).toContain("new version")
+        expect(help).toContain("catalog.schema.model")
       })
 
       it("follows auto, so one node config selects different destinations under two inventories", () => {

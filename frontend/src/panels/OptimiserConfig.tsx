@@ -732,7 +732,14 @@ export default function OptimiserConfig({
               <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>
                 <span className="inline-flex items-center gap-1">
                   Experiment path
-                  <Tooltip label={`Leave blank to use the default: ${mlflowExperimentDefault}`}>
+                  <Tooltip
+                    label={
+                      "The MLflow experiment this optimisation result is logged into: a named " +
+                      "group that collects related runs so you can compare them. On Databricks " +
+                      "it is a workspace folder path; on an MLflow server or local folder it is " +
+                      `a plain name. Leave blank to use ${mlflowExperimentDefault}.`
+                    }
+                  >
                     <span className="inline-flex cursor-help" aria-label="About the experiment path">
                       <Info size={11} style={{ color: "var(--text-muted)" }} />
                     </span>
