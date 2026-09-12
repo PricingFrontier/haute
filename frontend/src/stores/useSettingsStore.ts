@@ -2,7 +2,7 @@
  * Zustand store for application-level settings and caches:
  *   - Row limit (preview configuration)
  *   - Streaming chunk size (rows per streaming chunk for pipeline execution)
- *   - MLflow connection status (fetched once, shared by all panels)
+ *   - MLflow destinations inventory (fetched once, shared by all panels)
  *   - Source system (data source routing)
  *   - Collapsible section states (persisted across panel mounts)
  *   - File listing cache (short-lived FS cache for file browsers)
@@ -11,8 +11,9 @@
  * directly control layout or chrome visibility.
  */
 import { create } from "zustand"
-import { getMlflowStatus } from "../api/client"
-import type { FileListItem } from "../api/types"
+import { getMlflowDestinations } from "../api/client"
+import type { FileListItem, MlflowDestinationEntry, MlflowDestinationKey } from "../api/types"
+import type { MlflowInventoryState } from "../utils/mlflowDestinations"
 import { portableKey } from "../utils/portableKey"
 
 export const MIN_STREAMING_CHUNK_SIZE = 1000
@@ -37,15 +38,22 @@ export type AddSourceResult =
 let _mlflowFetchingGuard = false
 let _mlflowRefetchQueued = false
 
-const MLFLOW_PENDING = {
-  status: "pending" as const,
-  mode: "",
-  destination: "",
-  configSource: "",
-  installed: null,
-  importable: null,
-  configured: null,
-  detail: "",
+/**
+ * Deadline for the whole inventory request. The backend probes each remote
+ * concurrently under its own 5-second budget, so a probe that exhausts its
+ * budget must still arrive (as an amber entry) rather than trip this deadline.
+ */
+export const MLFLOW_INVENTORY_TIMEOUT_MS = 15_000
+
+function mlflowPending(): SettingsState["mlflow"] {
+  return {
+    status: "pending",
+    installed: null,
+    importable: null,
+    auto: "",
+    destinations: [],
+    detail: "",
+  }
 }
 
 interface SettingsState {
@@ -61,18 +69,20 @@ interface SettingsState {
   toggleSection: (key: string) => void
   isSectionOpen: (key: string, defaultOpen?: boolean) => boolean
 
-  // MLflow status cache (fetched once, shared by all panels)
+  // MLflow destinations inventory (fetched once, shared by all panels)
   mlflow: {
-    status: "pending" | "connected" | "error"
-    /** Resolved backend mode: "" | "databricks" | "server" | "local". */
-    mode: string
-    /** Human-readable destination: workspace host, server URI, or runs folder. */
-    destination: string
-    /** Which precedence tier decided: "" | "toml" | "env" | "default". */
-    configSource: string
+    /**
+     * `"ready"` once the inventory arrived, whatever the probes said;
+     * `"error"` when the package is missing or unimportable or the request
+     * failed, with the reason in `detail`.
+     */
+    status: "pending" | "ready" | "error"
     installed: boolean | null
     importable: boolean | null
-    configured: boolean | null
+    /** The backend's auto rule result; `""` when nothing resolves. */
+    auto: "" | MlflowDestinationKey
+    /** The three wire entries, in backend order. */
+    destinations: MlflowDestinationEntry[]
     detail: string
   }
   _mlflowFetching: boolean
@@ -116,8 +126,8 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
     return val === undefined ? defaultOpen : val
   },
 
-  // MLflow status cache — fetched once on first call, shared by all panels
-  mlflow: { ...MLFLOW_PENDING },
+  // MLflow inventory — fetched once on first call, shared by all panels
+  mlflow: mlflowPending(),
   _mlflowFetching: false,
   _mlflowLastAttempt: 0,
   fetchMlflow: () => {
@@ -132,31 +142,36 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
     set({ _mlflowFetching: true, _mlflowLastAttempt: Date.now() })
     let timeoutId: ReturnType<typeof setTimeout> | undefined
     const timeout = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(() => reject(new Error("MLflow status check timed out after 5s")), 5_000)
+      timeoutId = setTimeout(
+        () => reject(new Error(
+          `MLflow inventory check timed out after ${MLFLOW_INVENTORY_TIMEOUT_MS / 1000}s`,
+        )),
+        MLFLOW_INVENTORY_TIMEOUT_MS,
+      )
     })
-    Promise.race([getMlflowStatus(), timeout])
+    Promise.race([getMlflowDestinations(true), timeout])
       .then((data) => {
-        const connected = data.mlflow_installed && data.mlflow_importable && data.configured
+        // The probes' verdicts live in the entries; only the package facts
+        // decide whether the inventory itself is usable.
+        const usable = data.mlflow_installed && data.mlflow_importable
         set({
           mlflow: {
-            status: connected ? "connected" : "error",
-            mode: data.mode || "",
-            destination: data.destination || "",
-            configSource: data.config_source || "",
+            status: usable ? "ready" : "error",
             installed: data.mlflow_installed,
             importable: data.mlflow_importable,
-            configured: data.configured,
-            detail: data.detail || "",
+            auto: data.auto,
+            destinations: data.destinations,
+            detail: data.detail,
           },
         })
       })
       .catch((e) => {
-        console.warn("MLflow status check failed:", e)
+        console.warn("MLflow inventory check failed:", e)
         set({
           mlflow: {
-            ...MLFLOW_PENDING,
+            ...mlflowPending(),
             status: "error",
-            detail: e instanceof Error ? e.message : "MLflow status check failed",
+            detail: e instanceof Error ? e.message : "MLflow inventory check failed",
           },
         })
       })
@@ -169,7 +184,7 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
           // response just stored is potentially stale, so reset and fetch
           // exactly once more.
           _mlflowRefetchQueued = false
-          set({ mlflow: { ...MLFLOW_PENDING } })
+          set({ mlflow: mlflowPending() })
           get().fetchMlflow()
         }
       })
@@ -179,7 +194,7 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
       _mlflowRefetchQueued = true
       return
     }
-    set({ mlflow: { ...MLFLOW_PENDING } })
+    set({ mlflow: mlflowPending() })
     get().fetchMlflow()
   },
 
@@ -233,17 +248,19 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
 
 export default useSettingsStore
 
-/** Derive MLflow connection status for panel display (maps "pending" -> "loading"). */
-export function useMlflowStatus() {
+/**
+ * The MLflow inventory as display code wants it: the store's `"pending"`
+ * becomes `"loading"` here and nowhere else — the store itself never uses
+ * that word.
+ */
+export function useMlflowDestinations(): MlflowInventoryState {
   const mlflow = useSettingsStore((s) => s.mlflow)
   return {
-    mlflowStatus: mlflow.status === "pending" ? "loading" as const : mlflow.status,
-    mlflowMode: mlflow.mode,
-    mlflowDestination: mlflow.destination,
-    mlflowConfigSource: mlflow.configSource,
-    mlflowInstalled: mlflow.installed,
-    mlflowImportable: mlflow.importable,
-    mlflowConfigured: mlflow.configured,
-    mlflowDetail: mlflow.detail,
+    status: mlflow.status === "pending" ? "loading" as const : mlflow.status,
+    installed: mlflow.installed,
+    importable: mlflow.importable,
+    auto: mlflow.auto,
+    destinations: mlflow.destinations,
+    detail: mlflow.detail,
   }
 }

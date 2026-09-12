@@ -1,27 +1,82 @@
 /**
- * Tests for useSettingsStore — MLflow dedup, file list cache,
- * collapsible sections, and row limit.
+ * Tests for useSettingsStore — the MLflow destinations inventory (dedup,
+ * invalidation, 15-second deadline), file list cache, collapsible sections,
+ * and row limit.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 
 // Mock the API module BEFORE importing the store
 vi.mock("../../api/client.ts", () => ({
-  getMlflowStatus: vi.fn(),
+  getMlflowDestinations: vi.fn(),
 }))
 
 import useSettingsStore from "../../stores/useSettingsStore.ts"
-import { getMlflowStatus } from "../../api/client.ts"
-import type { MlflowStatusResponse } from "../../api/types.ts"
+import { getMlflowDestinations } from "../../api/client.ts"
+import type {
+  MlflowDestinationEntry,
+  MlflowDestinationKey,
+  MlflowDestinationsResponse,
+} from "../../api/types.ts"
 
 // ── Helpers ──────────────────────────────────────────────────────
 
-const OK_LOCAL: MlflowStatusResponse = {
-  mlflow_installed: true,
-  mlflow_importable: true,
+function entry(
+  key: MlflowDestinationKey,
+  over: Partial<MlflowDestinationEntry> = {},
+): MlflowDestinationEntry {
+  return {
+    key,
+    configured: false,
+    destination: "",
+    config_source: "",
+    detail: "",
+    probed: false,
+    ok: false,
+    category: "",
+    ...over,
+  }
+}
+
+const LOCAL_ENTRY = entry("local", {
   configured: true,
-  mode: "local",
   destination: "C:/proj/mlruns",
   config_source: "default",
+})
+
+/** A server whose probe exhausted its budget: configured, probed, not ok. */
+const SERVER_AMBER = entry("server", {
+  configured: true,
+  destination: "http://localhost:5000",
+  config_source: "toml",
+  detail: "Connection to the MLflow server timed out",
+  probed: true,
+  ok: false,
+  category: "connectivity",
+})
+
+const OK_LOCAL: MlflowDestinationsResponse = {
+  mlflow_installed: true,
+  mlflow_importable: true,
+  auto: "local",
+  destinations: [entry("databricks"), entry("server"), LOCAL_ENTRY],
+  detail: "",
+}
+
+const OK_SERVER: MlflowDestinationsResponse = {
+  mlflow_installed: true,
+  mlflow_importable: true,
+  auto: "server",
+  destinations: [
+    entry("databricks"),
+    entry("server", {
+      configured: true,
+      destination: "http://localhost:5000",
+      config_source: "toml",
+      probed: true,
+      ok: true,
+    }),
+    LOCAL_ENTRY,
+  ],
   detail: "",
 }
 
@@ -32,12 +87,10 @@ function resetStore() {
     openSections: {},
     mlflow: {
       status: "pending",
-      mode: "",
-      destination: "",
-      configSource: "",
       installed: null,
       importable: null,
-      configured: null,
+      auto: "",
+      destinations: [],
       detail: "",
     },
     _mlflowFetching: false,
@@ -109,18 +162,18 @@ describe("useSettingsStore", () => {
 
   describe("MLflow fetch dedup", () => {
     it("calling fetchMlflow twice rapidly only makes one API request", async () => {
-      const mockStatus = vi.mocked(getMlflowStatus)
-      let resolvePromise: (value: MlflowStatusResponse) => void
-      const promise = new Promise<MlflowStatusResponse>((resolve) => {
+      const mockInventory = vi.mocked(getMlflowDestinations)
+      let resolvePromise: (value: MlflowDestinationsResponse) => void
+      const promise = new Promise<MlflowDestinationsResponse>((resolve) => {
         resolvePromise = resolve
       })
-      mockStatus.mockReturnValue(promise)
+      mockInventory.mockReturnValue(promise)
 
       const s = useSettingsStore.getState()
       s.fetchMlflow()
       s.fetchMlflow() // second call should be deduped
 
-      expect(mockStatus).toHaveBeenCalledTimes(1)
+      expect(mockInventory).toHaveBeenCalledTimes(1)
 
       // Resolve the promise to clean up
       resolvePromise!(OK_LOCAL)
@@ -130,37 +183,56 @@ describe("useSettingsStore", () => {
       })
     })
 
-    it("successful MLflow status sets connected with mode and destination", async () => {
-      const mockStatus = vi.mocked(getMlflowStatus)
-      mockStatus.mockResolvedValue({
+    it("requests the inventory with probing enabled", async () => {
+      const mockInventory = vi.mocked(getMlflowDestinations)
+      mockInventory.mockResolvedValue(OK_LOCAL)
+
+      useSettingsStore.getState().fetchMlflow()
+
+      await vi.waitFor(() => {
+        expect(useSettingsStore.getState().mlflow.status).toBe("ready")
+      })
+      expect(mockInventory).toHaveBeenCalledWith(true)
+    })
+
+    it("successful inventory sets ready with auto and destinations", async () => {
+      const mockInventory = vi.mocked(getMlflowDestinations)
+      mockInventory.mockResolvedValue({
         mlflow_installed: true,
         mlflow_importable: true,
-        configured: true,
-        mode: "databricks",
-        destination: "https://db.example.com",
-        config_source: "env",
+        auto: "databricks",
+        destinations: [
+          entry("databricks", {
+            configured: true,
+            destination: "databricks://team",
+            config_source: "env",
+            probed: true,
+            ok: true,
+          }),
+          entry("server"),
+          LOCAL_ENTRY,
+        ],
         detail: "",
       })
 
       useSettingsStore.getState().fetchMlflow()
 
       await vi.waitFor(() => {
-        expect(useSettingsStore.getState().mlflow.status).toBe("connected")
+        expect(useSettingsStore.getState().mlflow.status).toBe("ready")
       })
 
       const { mlflow } = useSettingsStore.getState()
-      expect(mlflow.mode).toBe("databricks")
-      expect(mlflow.destination).toBe("https://db.example.com")
-      expect(mlflow.configSource).toBe("env")
+      expect(mlflow.auto).toBe("databricks")
+      expect(mlflow.destinations.map((d) => d.key)).toEqual(["databricks", "server", "local"])
+      expect(mlflow.destinations[0].destination).toBe("databricks://team")
       expect(mlflow.installed).toBe(true)
       expect(mlflow.importable).toBe(true)
-      expect(mlflow.configured).toBe(true)
       expect(mlflow.detail).toBe("")
     })
 
-    it("failed MLflow status request sets error status", async () => {
-      const mockStatus = vi.mocked(getMlflowStatus)
-      mockStatus.mockRejectedValue(new Error("Network error"))
+    it("failed inventory request sets error status", async () => {
+      const mockInventory = vi.mocked(getMlflowDestinations)
+      mockInventory.mockRejectedValue(new Error("Network error"))
 
       useSettingsStore.getState().fetchMlflow()
 
@@ -170,35 +242,34 @@ describe("useSettingsStore", () => {
       const { mlflow } = useSettingsStore.getState()
       expect(mlflow.installed).toBeNull()
       expect(mlflow.importable).toBeNull()
-      expect(mlflow.configured).toBeNull()
+      expect(mlflow.auto).toBe("")
+      expect(mlflow.destinations).toEqual([])
       expect(mlflow.detail).toBe("Network error")
     })
 
-    it("does not re-fetch after successful connection", async () => {
-      const mockStatus = vi.mocked(getMlflowStatus)
-      mockStatus.mockResolvedValue(OK_LOCAL)
+    it("does not re-fetch after a ready inventory", async () => {
+      const mockInventory = vi.mocked(getMlflowDestinations)
+      mockInventory.mockResolvedValue(OK_LOCAL)
 
       useSettingsStore.getState().fetchMlflow()
       await vi.waitFor(() => {
-        expect(useSettingsStore.getState().mlflow.status).toBe("connected")
+        expect(useSettingsStore.getState().mlflow.status).toBe("ready")
       })
 
-      // Second call should be a no-op since status is "connected"
-      mockStatus.mockClear()
+      // Second call should be a no-op since status is "ready"
+      mockInventory.mockClear()
       useSettingsStore.getState().fetchMlflow()
-      expect(mockStatus).not.toHaveBeenCalled()
+      expect(mockInventory).not.toHaveBeenCalled()
     })
 
-    it("mlflow_installed: false sets error status", async () => {
-      const mockStatus = vi.mocked(getMlflowStatus)
-      mockStatus.mockResolvedValue({
+    it("mlflow_installed: false sets error status with the package detail", async () => {
+      const mockInventory = vi.mocked(getMlflowDestinations)
+      mockInventory.mockResolvedValue({
         mlflow_installed: false,
         mlflow_importable: false,
-        configured: false,
-        mode: "",
-        destination: "",
-        config_source: "",
-        detail: "MLflow package is not installed",
+        auto: "",
+        destinations: [],
+        detail: "MLflow is not installed (pip install mlflow)",
       })
 
       useSettingsStore.getState().fetchMlflow()
@@ -209,20 +280,17 @@ describe("useSettingsStore", () => {
       const { mlflow } = useSettingsStore.getState()
       expect(mlflow.installed).toBe(false)
       expect(mlflow.importable).toBe(false)
-      expect(mlflow.configured).toBe(false)
-      expect(mlflow.detail).toBe("MLflow package is not installed")
+      expect(mlflow.detail).toBe("MLflow is not installed (pip install mlflow)")
     })
 
-    it("installed MLflow with a misconfigured selection keeps package availability distinct", async () => {
-      const mockStatus = vi.mocked(getMlflowStatus)
-      mockStatus.mockResolvedValue({
+    it("an unimportable MLflow package sets error status", async () => {
+      const mockInventory = vi.mocked(getMlflowDestinations)
+      mockInventory.mockResolvedValue({
         mlflow_installed: true,
-        mlflow_importable: true,
-        configured: false,
-        mode: "",
-        destination: "",
-        config_source: "",
-        detail: "Databricks tracking is selected but DATABRICKS_TOKEN is not set in the environment (.env).",
+        mlflow_importable: false,
+        auto: "",
+        destinations: [],
+        detail: "MLflow is installed but cannot be imported",
       })
 
       useSettingsStore.getState().fetchMlflow()
@@ -232,9 +300,37 @@ describe("useSettingsStore", () => {
       })
       const { mlflow } = useSettingsStore.getState()
       expect(mlflow.installed).toBe(true)
-      expect(mlflow.importable).toBe(true)
-      expect(mlflow.configured).toBe(false)
-      expect(mlflow.detail).toContain("DATABRICKS_TOKEN")
+      expect(mlflow.importable).toBe(false)
+      expect(mlflow.detail).toContain("cannot be imported")
+    })
+
+    it("an inventory with nothing configured is still ready, with the reason in detail", async () => {
+      const mockInventory = vi.mocked(getMlflowDestinations)
+      mockInventory.mockResolvedValue({
+        mlflow_installed: true,
+        mlflow_importable: true,
+        auto: "",
+        destinations: [
+          entry("databricks", {
+            detail: "Set DATABRICKS_HOST and DATABRICKS_TOKEN, or MLFLOW_TRACKING_URI=databricks://<profile>",
+          }),
+          entry("server", { detail: "Set [mlflow] tracking_uri in haute.toml" }),
+          entry("local", { detail: "[mlflow] mode is no longer a supported key" }),
+        ],
+        detail: "[mlflow] mode is no longer a supported key",
+      })
+
+      useSettingsStore.getState().fetchMlflow()
+
+      // The package is present, so the inventory arrived: the per-entry
+      // reasons are the story, not a whole-inventory error.
+      await vi.waitFor(() => {
+        expect(useSettingsStore.getState().mlflow.status).toBe("ready")
+      })
+      const { mlflow } = useSettingsStore.getState()
+      expect(mlflow.auto).toBe("")
+      expect(mlflow.destinations[0].detail).toContain("DATABRICKS_TOKEN")
+      expect(mlflow.detail).toContain("mode")
     })
   })
 
@@ -243,47 +339,37 @@ describe("useSettingsStore", () => {
   // ────────────────────────────────────────────────────────────────
 
   describe("invalidateMlflow", () => {
-    it("resets to pending and refetches fresh status", async () => {
-      const mockStatus = vi.mocked(getMlflowStatus)
-      mockStatus.mockResolvedValue(OK_LOCAL)
+    it("resets to pending and refetches a fresh inventory", async () => {
+      const mockInventory = vi.mocked(getMlflowDestinations)
+      mockInventory.mockResolvedValue(OK_LOCAL)
 
       useSettingsStore.getState().fetchMlflow()
       await vi.waitFor(() => {
-        expect(useSettingsStore.getState().mlflow.status).toBe("connected")
+        expect(useSettingsStore.getState().mlflow.status).toBe("ready")
       })
+      expect(useSettingsStore.getState().mlflow.auto).toBe("local")
 
-      mockStatus.mockResolvedValue({
-        mlflow_installed: true,
-        mlflow_importable: true,
-        configured: true,
-        mode: "server",
-        destination: "http://localhost:5000",
-        config_source: "toml",
-        detail: "",
-      })
+      mockInventory.mockResolvedValue(OK_SERVER)
       useSettingsStore.getState().invalidateMlflow()
 
       await vi.waitFor(() => {
-        expect(useSettingsStore.getState().mlflow.mode).toBe("server")
+        expect(useSettingsStore.getState().mlflow.auto).toBe("server")
       })
-      expect(useSettingsStore.getState().mlflow.destination).toBe("http://localhost:5000")
-      expect(useSettingsStore.getState().mlflow.configSource).toBe("toml")
+      const { mlflow } = useSettingsStore.getState()
+      expect(mlflow.status).toBe("ready")
+      expect(mlflow.destinations[1].destination).toBe("http://localhost:5000")
+      expect(mlflow.destinations[1].ok).toBe(true)
     })
 
     it("invalidation during an in-flight fetch results in exactly one follow-up fetch", async () => {
-      const mockStatus = vi.mocked(getMlflowStatus)
-      let resolveFirst: (value: MlflowStatusResponse) => void
-      mockStatus.mockReturnValueOnce(
-        new Promise<MlflowStatusResponse>((resolve) => {
+      const mockInventory = vi.mocked(getMlflowDestinations)
+      let resolveFirst: (value: MlflowDestinationsResponse) => void
+      mockInventory.mockReturnValueOnce(
+        new Promise<MlflowDestinationsResponse>((resolve) => {
           resolveFirst = resolve
         }),
       )
-      mockStatus.mockResolvedValue({
-        ...OK_LOCAL,
-        mode: "server",
-        destination: "http://localhost:5000",
-        config_source: "toml",
-      })
+      mockInventory.mockResolvedValue(OK_SERVER)
 
       useSettingsStore.getState().fetchMlflow()
       useSettingsStore.getState().invalidateMlflow() // while first fetch is in flight
@@ -291,9 +377,9 @@ describe("useSettingsStore", () => {
       resolveFirst!(OK_LOCAL)
 
       await vi.waitFor(() => {
-        expect(useSettingsStore.getState().mlflow.mode).toBe("server")
+        expect(useSettingsStore.getState().mlflow.auto).toBe("server")
       })
-      expect(mockStatus).toHaveBeenCalledTimes(2)
+      expect(mockInventory).toHaveBeenCalledTimes(2)
     })
   })
 
@@ -524,12 +610,15 @@ describe("useSettingsStore", () => {
   })
 
   // ────────────────────────────────────────────────────────────────
-  // MLflow 5-second timeout race
-  // Catches: if the 5s timeout is removed, a hung MLflow check would
-  // block the UI indefinitely with status "pending" / spinner.
+  // MLflow 15-second inventory deadline
+  // Catches: if the deadline is removed, a hung inventory request would
+  // block every MLflow surface indefinitely with status "pending". The
+  // deadline is 15s, not 5s, because the backend probes each remote
+  // concurrently under its own 5s budget — a slow probe must arrive as an
+  // amber entry rather than trip a whole-inventory error.
   // ────────────────────────────────────────────────────────────────
 
-  describe("MLflow 5s timeout", () => {
+  describe("MLflow 15s inventory deadline", () => {
     beforeEach(() => {
       vi.useFakeTimers()
     })
@@ -538,15 +627,15 @@ describe("useSettingsStore", () => {
       vi.useRealTimers()
     })
 
-    it("times out and sets error status when the status request hangs for >5s", async () => {
-      const mockStatus = vi.mocked(getMlflowStatus)
+    it("times out and sets error status when the inventory request hangs past 15s", async () => {
+      const mockInventory = vi.mocked(getMlflowDestinations)
       // Return a promise that never resolves
-      mockStatus.mockReturnValue(new Promise(() => {}))
+      mockInventory.mockReturnValue(new Promise(() => {}))
 
       useSettingsStore.getState().fetchMlflow()
 
-      // Advance past the 5s timeout
-      vi.advanceTimersByTime(5_001)
+      // Advance past the 15s deadline
+      vi.advanceTimersByTime(15_001)
 
       // Wait for BOTH the error status (.catch) and the fetching flag
       // clear (.finally) — .finally runs as a separate microtask after
@@ -558,22 +647,54 @@ describe("useSettingsStore", () => {
         expect(useSettingsStore.getState().mlflow.status).toBe("error")
         expect(useSettingsStore.getState()._mlflowFetching).toBe(false)
       })
+      expect(useSettingsStore.getState().mlflow.detail).toContain("15")
     })
 
-    it("succeeds before the timeout if the status request resolves quickly", async () => {
-      const mockStatus = vi.mocked(getMlflowStatus)
-      mockStatus.mockResolvedValue(OK_LOCAL)
+    it("a remote that exhausted its probe budget still lands as ready with an amber entry", async () => {
+      const mockInventory = vi.mocked(getMlflowDestinations)
+      // The backend spent 6s on the server probe (its own 5s budget plus
+      // request overhead) and reported it as a failed probe, not an error.
+      mockInventory.mockReturnValue(
+        new Promise<MlflowDestinationsResponse>((resolve) => {
+          setTimeout(() => resolve({
+            mlflow_installed: true,
+            mlflow_importable: true,
+            auto: "server",
+            destinations: [entry("databricks"), SERVER_AMBER, LOCAL_ENTRY],
+            detail: "",
+          }), 6_000)
+        }),
+      )
+
+      useSettingsStore.getState().fetchMlflow()
+
+      vi.advanceTimersByTime(6_000)
+
+      await vi.waitFor(() => {
+        expect(useSettingsStore.getState().mlflow.status).toBe("ready")
+      })
+      const amber = useSettingsStore.getState().mlflow.destinations[1]
+      expect(amber.key).toBe("server")
+      expect(amber.configured).toBe(true)
+      expect(amber.probed).toBe(true)
+      expect(amber.ok).toBe(false)
+      expect(amber.detail).toContain("timed out")
+    })
+
+    it("succeeds before the deadline if the inventory request resolves quickly", async () => {
+      const mockInventory = vi.mocked(getMlflowDestinations)
+      mockInventory.mockResolvedValue(OK_LOCAL)
 
       useSettingsStore.getState().fetchMlflow()
 
       // Let the resolved promise flush
       await vi.waitFor(() => {
-        expect(useSettingsStore.getState().mlflow.status).toBe("connected")
+        expect(useSettingsStore.getState().mlflow.status).toBe("ready")
       })
 
-      // The timeout should not overwrite the connected status even if it fires later
-      vi.advanceTimersByTime(6_000)
-      expect(useSettingsStore.getState().mlflow.status).toBe("connected")
+      // The deadline should not overwrite the ready inventory when it fires later
+      vi.advanceTimersByTime(16_000)
+      expect(useSettingsStore.getState().mlflow.status).toBe("ready")
     })
   })
 })
