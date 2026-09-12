@@ -1,7 +1,7 @@
 """MLflow experiment logging and shared tracking helpers.
 
 Shared helpers (used by training, optimiser, and model-loading routes):
-- ``resolve_tracking_backend()`` — detect Databricks vs local MLflow.
+- ``resolve_tracking_backend()`` — resolve a destination key (or auto) to a tracking URI.
 - ``configure_mlflow_tracking()`` — set tracking/registry URIs.
 - ``resolve_experiment_name()`` — standard fallback chain for experiment names.
 - ``build_run_url()`` — build a Databricks run URL from experiment name + run ID.

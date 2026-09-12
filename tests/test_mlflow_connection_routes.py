@@ -1,12 +1,12 @@
 """API tests for the MLflow connection surface (routes/mlflow.py).
 
-Covers GET /api/mlflow/status, GET/PUT /api/mlflow/settings, and
+Covers GET /api/mlflow/destinations, GET/PUT /api/mlflow/settings, and
 POST /api/mlflow/test-connection per
-specs/mlflow-model-registry/low-level.md (Connection surface): status
-truthfulness in all three modes, misconfiguration reported as data (never a
-5xx), the settings round trip with per-mode validation and resolved-folder
+specs/mlflow-model-registry/low-level.md (Connection surface): per-entry
+inventory truthfulness for all three destination keys, misconfiguration
+reported as data (never a 5xx), the settings round trip with resolved-folder
 persistence, probe error classification, and the removal of the old
-/api/modelling/mlflow/check route.
+/api/modelling/mlflow/check and /api/mlflow/status routes.
 """
 
 from __future__ import annotations

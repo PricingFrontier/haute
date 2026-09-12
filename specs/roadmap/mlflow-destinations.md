@@ -196,7 +196,7 @@ fixture is removed.
 `tests/test_mlflow_log_button_roundtrip.py`;
 `tests/test_train_config_builder.py`; `tests/test_modelling_export.py`;
 `tests/test_training_evaluation.py`;
-`tests/fixtures/ui_contracts/mlflow_status_response.json`;
+`tests/fixtures/ui_contracts/mlflow_destinations_response.json`;
 `tests/fixtures/ui_contracts/mlflow_settings_response.json`;
 `tests/fixtures/ui_contracts/mlflow_test_connection_response.json`.
 

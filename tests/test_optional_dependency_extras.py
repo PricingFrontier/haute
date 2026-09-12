@@ -34,8 +34,8 @@ def test_server_import_succeeds_with_optional_extras_installed() -> None:
     assert "/api/databricks/warehouses" in route_paths
 
 
-def test_mlflow_status_reports_installed_with_backend(client, monkeypatch) -> None:
-    from haute.modelling._mlflow_settings import TrackingConfig
+def test_mlflow_destinations_report_installed_with_inventory(client, monkeypatch) -> None:
+    from haute.modelling._mlflow_settings import DestinationEntry, TrackingConfig
 
     monkeypatch.setattr(
         "haute.modelling._mlflow_settings.resolve_tracking_config",
@@ -46,18 +46,33 @@ def test_mlflow_status_reports_installed_with_backend(client, monkeypatch) -> No
             config_source="default",
         ),
     )
+    monkeypatch.setattr(
+        "haute.modelling._mlflow_settings.list_destinations",
+        lambda project_root=None: [
+            DestinationEntry("databricks", False, detail="Databricks is not configured."),
+            DestinationEntry("server", False, detail="MLflow server is not configured."),
+            DestinationEntry("local", True, "/proj/mlruns", "default"),
+        ],
+    )
 
-    resp = client.get("/api/mlflow/status")
+    resp = client.get("/api/mlflow/destinations")
 
     assert resp.status_code == 200
-    assert resp.json() == {
-        "mlflow_installed": True,
-        "mlflow_importable": True,
+    body = resp.json()
+    assert body["mlflow_installed"] is True
+    assert body["mlflow_importable"] is True
+    assert body["auto"] == "local"
+    assert body["detail"] == ""
+    assert [e["key"] for e in body["destinations"]] == ["databricks", "server", "local"]
+    assert body["destinations"][2] == {
+        "key": "local",
         "configured": True,
-        "mode": "local",
         "destination": "/proj/mlruns",
         "config_source": "default",
         "detail": "",
+        "probed": False,
+        "ok": False,
+        "category": "",
     }
 
 
@@ -76,7 +91,7 @@ def test_mlflow_experiments_route_succeeds_with_installed_dependency_and_mocked_
     )
     monkeypatch.setattr(
         "haute.routes.mlflow._ensure_tracking",
-        lambda: (fake_mlflow, fake_client),
+        lambda destination="": (fake_mlflow, fake_client),
     )
 
     resp = client.get("/api/mlflow/experiments")
@@ -101,7 +116,7 @@ def test_mlflow_models_route_succeeds_with_installed_dependency_and_mocked_backe
     )
     monkeypatch.setattr(
         "haute.routes.mlflow._ensure_tracking",
-        lambda: (SimpleNamespace(), fake_client),
+        lambda destination="": (SimpleNamespace(), fake_client),
     )
 
     resp = client.get("/api/mlflow/models")
@@ -123,7 +138,7 @@ def test_mlflow_model_versions_route_succeeds_with_installed_dependency_and_mock
 ) -> None:
     monkeypatch.setattr(
         "haute.routes.mlflow._ensure_tracking",
-        lambda: (SimpleNamespace(), SimpleNamespace()),
+        lambda destination="": (SimpleNamespace(), SimpleNamespace()),
     )
     monkeypatch.setattr(
         "haute.routes.mlflow.search_versions",

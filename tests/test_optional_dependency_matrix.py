@@ -32,8 +32,8 @@ def test_server_import_succeeds_without_optional_extras() -> None:
     assert "/api/databricks/warehouses" in route_paths
 
 
-def test_mlflow_status_reports_core_dependency_installed(client) -> None:
-    resp = client.get("/api/mlflow/status")
+def test_mlflow_destinations_report_core_dependency_installed(client) -> None:
+    resp = client.get("/api/mlflow/destinations")
 
     assert resp.status_code == 200
     assert resp.json()["mlflow_installed"] is True
