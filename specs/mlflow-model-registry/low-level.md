@@ -329,6 +329,8 @@ No speculative cache, retry fan-out, or concurrent request burst is added.
 
 Discovery clients, registered-source resolution, and artifact downloads are
 pinned to the same destination without mutating global MLflow tracking state.
+Experiment discovery follows every continuation token on that same client so
+switching from the fluent API preserves the complete experiment list.
 Databricks profile selection also applies to the Unity Catalog registry. A
 destination switch during logging must neither redirect an existing run nor
 leave it unterminated; existing logs finish against their captured destination.

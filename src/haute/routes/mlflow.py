@@ -479,7 +479,11 @@ def list_experiments() -> list[MlflowExperimentSummary]:
     _mlflow, client = _ensure_tracking()
 
     try:
-        experiments = client.search_experiments()
+        page = client.search_experiments()
+        experiments = list(page)
+        while page.token:
+            page = client.search_experiments(page_token=page.token)
+            experiments.extend(page)
     except Exception as exc:
         raise _discovery_http_error(exc, "mlflow_list_experiments_failed")
 

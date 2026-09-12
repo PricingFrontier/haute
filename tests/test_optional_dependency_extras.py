@@ -65,11 +65,14 @@ def test_mlflow_experiments_route_succeeds_with_installed_dependency_and_mocked_
     client,
     monkeypatch,
 ) -> None:
+    from mlflow.store.entities.paged_list import PagedList
+
     fake_mlflow = SimpleNamespace()
     fake_client = SimpleNamespace(
-        search_experiments=lambda: [
-            SimpleNamespace(experiment_id="42", name="pricing/dev"),
-        ]
+        search_experiments=lambda: PagedList(
+            [SimpleNamespace(experiment_id="42", name="pricing/dev")],
+            None,
+        )
     )
     monkeypatch.setattr(
         "haute.routes.mlflow._ensure_tracking",

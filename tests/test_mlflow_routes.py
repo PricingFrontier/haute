@@ -19,11 +19,12 @@ import os
 import sys
 import types
 from math import isfinite
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 import structlog.testing
 from fastapi import HTTPException
+from mlflow.store.entities.paged_list import PagedList
 
 
 def _mock_tracking(mlflow=None, client=None):
@@ -57,6 +58,28 @@ def _make_run(
 
 
 class TestListExperiments:
+    def test_collects_all_pages_from_the_same_client(self, client):
+        mock_client = MagicMock()
+        mock_client.search_experiments.side_effect = [
+            PagedList([types.SimpleNamespace(experiment_id="1", name="first")], "page-two"),
+            PagedList([types.SimpleNamespace(experiment_id="2", name="second")], "page-three"),
+            PagedList([], None),
+        ]
+
+        with _mock_tracking(client=mock_client):
+            response = client.get("/api/mlflow/experiments")
+
+        assert response.status_code == 200
+        assert response.json() == [
+            {"experiment_id": "1", "name": "first"},
+            {"experiment_id": "2", "name": "second"},
+        ]
+        assert mock_client.search_experiments.call_args_list == [
+            call(),
+            call(page_token="page-two"),
+            call(page_token="page-three"),
+        ]
+
     def test_list_experiments(self, client):
         """Returns list of experiments from MLflow."""
 
@@ -66,7 +89,7 @@ class TestListExperiments:
 
         mock_mlflow = MagicMock()
         mock_client = MagicMock()
-        mock_client.search_experiments.return_value = [FakeExp()]
+        mock_client.search_experiments.return_value = PagedList([FakeExp()], None)
 
         with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
             resp = client.get("/api/mlflow/experiments")
@@ -81,7 +104,7 @@ class TestListExperiments:
         """Returns empty list when no experiments exist."""
         mock_mlflow = MagicMock()
         mock_client = MagicMock()
-        mock_client.search_experiments.return_value = []
+        mock_client.search_experiments.return_value = PagedList([], None)
 
         with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
             resp = client.get("/api/mlflow/experiments")
@@ -192,7 +215,7 @@ class TestListExperiments:
 
         mock_mlflow = MagicMock()
         mock_client = MagicMock()
-        mock_client.search_experiments.return_value = [Exp1(), Exp2()]
+        mock_client.search_experiments.return_value = PagedList([Exp1(), Exp2()], None)
 
         with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
             resp = client.get("/api/mlflow/experiments")
