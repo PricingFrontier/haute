@@ -11,7 +11,7 @@
  * directly control layout or chrome visibility.
  */
 import { create } from "zustand"
-import { checkMlflow } from "../api/client"
+import { getMlflowStatus } from "../api/client"
 import type { FileListItem } from "../api/types"
 import { portableKey } from "../utils/portableKey"
 
@@ -35,6 +35,18 @@ export type AddSourceResult =
   | { ok: false; reason: "duplicate"; key: string }
 
 let _mlflowFetchingGuard = false
+let _mlflowRefetchQueued = false
+
+const MLFLOW_PENDING = {
+  status: "pending" as const,
+  mode: "",
+  destination: "",
+  configSource: "",
+  installed: null,
+  importable: null,
+  configured: null,
+  detail: "",
+}
 
 interface SettingsState {
   // Row limit
@@ -52,16 +64,22 @@ interface SettingsState {
   // MLflow status cache (fetched once, shared by all panels)
   mlflow: {
     status: "pending" | "connected" | "error"
-    backend: string
-    host: string
+    /** Resolved backend mode: "" | "databricks" | "server" | "local". */
+    mode: string
+    /** Human-readable destination: workspace host, server URI, or runs folder. */
+    destination: string
+    /** Which precedence tier decided: "" | "toml" | "env" | "default". */
+    configSource: string
     installed: boolean | null
     importable: boolean | null
-    trackingConfigured: boolean | null
+    configured: boolean | null
     detail: string
   }
   _mlflowFetching: boolean
   _mlflowLastAttempt: number
   fetchMlflow: () => void
+  /** Reset to pending and refetch — call after PUT /api/mlflow/settings. */
+  invalidateMlflow: () => void
 
   // Source system
   sources: string[]
@@ -99,15 +117,7 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
   },
 
   // MLflow status cache — fetched once on first call, shared by all panels
-  mlflow: {
-    status: "pending",
-    backend: "",
-    host: "",
-    installed: null,
-    importable: null,
-    trackingConfigured: null,
-    detail: "",
-  },
+  mlflow: { ...MLFLOW_PENDING },
   _mlflowFetching: false,
   _mlflowLastAttempt: 0,
   fetchMlflow: () => {
@@ -122,48 +132,30 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
     set({ _mlflowFetching: true, _mlflowLastAttempt: Date.now() })
     let timeoutId: ReturnType<typeof setTimeout> | undefined
     const timeout = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(() => reject(new Error("MLflow check timed out after 5s")), 5_000)
+      timeoutId = setTimeout(() => reject(new Error("MLflow status check timed out after 5s")), 5_000)
     })
-    Promise.race([checkMlflow(), timeout])
+    Promise.race([getMlflowStatus(), timeout])
       .then((data) => {
-        const mlflowImportable = data.mlflow_importable
-        const trackingConfigured = data.tracking_configured
-        if (data.mlflow_installed && mlflowImportable && trackingConfigured) {
-          set({
-            mlflow: {
-              status: "connected",
-              backend: data.backend || "local",
-              host: data.databricks_host || "",
-              installed: true,
-              importable: true,
-              trackingConfigured: true,
-              detail: data.detail || "",
-            },
-          })
-        } else {
-          set({
-            mlflow: {
-              status: "error",
-              backend: data.backend || "",
-              host: data.databricks_host || "",
-              installed: data.mlflow_installed,
-              importable: mlflowImportable,
-              trackingConfigured,
-              detail: data.detail || "",
-            },
-          })
-        }
-      })
-      .catch((e) => {
-        console.warn("MLflow check failed:", e)
+        const connected = data.mlflow_installed && data.mlflow_importable && data.configured
         set({
           mlflow: {
+            status: connected ? "connected" : "error",
+            mode: data.mode || "",
+            destination: data.destination || "",
+            configSource: data.config_source || "",
+            installed: data.mlflow_installed,
+            importable: data.mlflow_importable,
+            configured: data.configured,
+            detail: data.detail || "",
+          },
+        })
+      })
+      .catch((e) => {
+        console.warn("MLflow status check failed:", e)
+        set({
+          mlflow: {
+            ...MLFLOW_PENDING,
             status: "error",
-            backend: "",
-            host: "",
-            installed: null,
-            importable: null,
-            trackingConfigured: null,
             detail: e instanceof Error ? e.message : "MLflow status check failed",
           },
         })
@@ -172,7 +164,23 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
         clearTimeout(timeoutId)
         _mlflowFetchingGuard = false
         set({ _mlflowFetching: false })
+        if (_mlflowRefetchQueued) {
+          // An invalidation arrived while this fetch was in flight: the
+          // response just stored is potentially stale, so reset and fetch
+          // exactly once more.
+          _mlflowRefetchQueued = false
+          set({ mlflow: { ...MLFLOW_PENDING } })
+          get().fetchMlflow()
+        }
       })
+  },
+  invalidateMlflow: () => {
+    if (_mlflowFetchingGuard) {
+      _mlflowRefetchQueued = true
+      return
+    }
+    set({ mlflow: { ...MLFLOW_PENDING } })
+    get().fetchMlflow()
   },
 
   // Source system
@@ -230,10 +238,12 @@ export function useMlflowStatus() {
   const mlflow = useSettingsStore((s) => s.mlflow)
   return {
     mlflowStatus: mlflow.status === "pending" ? "loading" as const : mlflow.status,
-    mlflowBackend: mlflow.backend,
+    mlflowMode: mlflow.mode,
+    mlflowDestination: mlflow.destination,
+    mlflowConfigSource: mlflow.configSource,
     mlflowInstalled: mlflow.installed,
     mlflowImportable: mlflow.importable,
-    mlflowTrackingConfigured: mlflow.trackingConfigured,
+    mlflowConfigured: mlflow.configured,
     mlflowDetail: mlflow.detail,
   }
 }

@@ -19,11 +19,12 @@ import os
 import sys
 import types
 from math import isfinite
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 import structlog.testing
 from fastapi import HTTPException
+from mlflow.store.entities.paged_list import PagedList
 
 
 def _mock_tracking(mlflow=None, client=None):
@@ -57,6 +58,28 @@ def _make_run(
 
 
 class TestListExperiments:
+    def test_collects_all_pages_from_the_same_client(self, client):
+        mock_client = MagicMock()
+        mock_client.search_experiments.side_effect = [
+            PagedList([types.SimpleNamespace(experiment_id="1", name="first")], "page-two"),
+            PagedList([types.SimpleNamespace(experiment_id="2", name="second")], "page-three"),
+            PagedList([], None),
+        ]
+
+        with _mock_tracking(client=mock_client):
+            response = client.get("/api/mlflow/experiments")
+
+        assert response.status_code == 200
+        assert response.json() == [
+            {"experiment_id": "1", "name": "first"},
+            {"experiment_id": "2", "name": "second"},
+        ]
+        assert mock_client.search_experiments.call_args_list == [
+            call(),
+            call(page_token="page-two"),
+            call(page_token="page-three"),
+        ]
+
     def test_list_experiments(self, client):
         """Returns list of experiments from MLflow."""
 
@@ -65,9 +88,10 @@ class TestListExperiments:
             name = "test-exp"
 
         mock_mlflow = MagicMock()
-        mock_mlflow.search_experiments.return_value = [FakeExp()]
+        mock_client = MagicMock()
+        mock_client.search_experiments.return_value = PagedList([FakeExp()], None)
 
-        with _mock_tracking(mlflow=mock_mlflow):
+        with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
             resp = client.get("/api/mlflow/experiments")
 
         assert resp.status_code == 200
@@ -79,9 +103,10 @@ class TestListExperiments:
     def test_empty_experiments(self, client):
         """Returns empty list when no experiments exist."""
         mock_mlflow = MagicMock()
-        mock_mlflow.search_experiments.return_value = []
+        mock_client = MagicMock()
+        mock_client.search_experiments.return_value = PagedList([], None)
 
-        with _mock_tracking(mlflow=mock_mlflow):
+        with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
             resp = client.get("/api/mlflow/experiments")
 
         assert resp.status_code == 200
@@ -98,15 +123,84 @@ class TestListExperiments:
         assert resp.status_code == 503
 
     def test_connection_error_502(self, client):
-        """Returns 502 when MLflow tracking server is unreachable."""
+        """Returns 502 with the connectivity category when unreachable."""
         mock_mlflow = MagicMock()
-        mock_mlflow.search_experiments.side_effect = ConnectionError("refused")
+        mock_client = MagicMock()
+        mock_client.search_experiments.side_effect = ConnectionError("refused")
 
-        with _mock_tracking(mlflow=mock_mlflow):
+        with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
             resp = client.get("/api/mlflow/experiments")
 
         assert resp.status_code == 502
-        assert "Check the server logs" in resp.json()["detail"]
+        assert "Could not reach the MLflow tracking server" in resp.json()["detail"]
+        assert "refused" not in resp.json()["detail"]
+
+    def test_authentication_failure_names_env_credentials(self, client):
+        """RestException auth codes map to an actionable, non-leaking detail."""
+        from mlflow.exceptions import RestException
+
+        mock_mlflow = MagicMock()
+        mock_client = MagicMock()
+        mock_client.search_experiments.side_effect = RestException(
+            {"error_code": "UNAUTHENTICATED", "message": "bad token dapi-secret"}
+        )
+
+        with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
+            resp = client.get("/api/mlflow/experiments")
+
+        assert resp.status_code == 502
+        detail = resp.json()["detail"]
+        assert "authentication" in detail.lower()
+        assert ".env" in detail
+        assert "dapi-secret" not in detail
+
+    def test_permission_failure_is_categorised(self, client):
+        from mlflow.exceptions import RestException
+
+        mock_mlflow = MagicMock()
+        mock_client = MagicMock()
+        mock_client.search_experiments.side_effect = RestException(
+            {"error_code": "PERMISSION_DENIED", "message": "nope"}
+        )
+
+        with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
+            resp = client.get("/api/mlflow/experiments")
+
+        assert resp.status_code == 502
+        assert "denied access" in resp.json()["detail"].lower()
+
+    def test_wrapped_transport_failure_is_connectivity(self, client):
+        """MlflowException-wrapped transport errors classify via the chain."""
+        import requests
+        from mlflow.exceptions import MlflowException
+
+        wrapped = MlflowException("API request failed")
+        wrapped.__cause__ = requests.exceptions.ConnectionError("refused")
+        mock_mlflow = MagicMock()
+        mock_client = MagicMock()
+        mock_client.search_experiments.side_effect = wrapped
+
+        with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
+            resp = client.get("/api/mlflow/experiments")
+
+        assert resp.status_code == 502
+        assert "Could not reach the MLflow tracking server" in resp.json()["detail"]
+
+    def test_misconfiguration_detail_is_actionable(self, client):
+        """A tracking misconfiguration surfaces its own reason, not a generic 502."""
+        from haute.errors import MlflowConfigError
+
+        with patch(
+            "haute.modelling._mlflow_log.resolve_tracking_backend",
+            side_effect=MlflowConfigError(
+                "Databricks tracking is selected but DATABRICKS_TOKEN is not set "
+                "in the environment (.env)."
+            ),
+        ):
+            resp = client.get("/api/mlflow/experiments")
+
+        assert resp.status_code == 502
+        assert "DATABRICKS_TOKEN" in resp.json()["detail"]
 
     def test_multiple_experiments(self, client):
         """Returns multiple experiments in correct structure."""
@@ -120,9 +214,10 @@ class TestListExperiments:
             name = "scoring"
 
         mock_mlflow = MagicMock()
-        mock_mlflow.search_experiments.return_value = [Exp1(), Exp2()]
+        mock_client = MagicMock()
+        mock_client.search_experiments.return_value = PagedList([Exp1(), Exp2()], None)
 
-        with _mock_tracking(mlflow=mock_mlflow):
+        with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
             resp = client.get("/api/mlflow/experiments")
 
         assert resp.status_code == 200
@@ -188,8 +283,8 @@ class TestListRuns:
         """A 100-run search emits one aggregate, payload-free measurement."""
         runs = [_make_run(run_id=f"secret-run-{index}") for index in range(100)]
         mock_mlflow = MagicMock()
-        mock_mlflow.search_runs.return_value = runs
         mock_client = MagicMock()
+        mock_client.search_runs.return_value = runs
         mock_client.list_artifacts.return_value = [MagicMock(path="secret-model.cbm")]
 
         with (
@@ -230,8 +325,8 @@ class TestListRuns:
         good_run = _make_run(run_id="secret-good-run")
         broken_run = _make_run(run_id="secret-broken-run")
         mock_mlflow = MagicMock()
-        mock_mlflow.search_runs.return_value = [good_run, broken_run]
         mock_client = MagicMock()
+        mock_client.search_runs.return_value = [good_run, broken_run]
         mock_client.list_artifacts.side_effect = [
             [MagicMock(path="secret-good-model.cbm")],
             RuntimeError("secret artifact failure"),
@@ -279,10 +374,11 @@ class TestListRuns:
     def test_run_discovery_measurement_emitted_after_search_failure(self, client):
         """A failed search still emits exactly one safe measurement."""
         mock_mlflow = MagicMock()
-        mock_mlflow.search_runs.side_effect = RuntimeError("secret search failure")
+        mock_client = MagicMock()
+        mock_client.search_runs.side_effect = RuntimeError("secret search failure")
 
         with (
-            _mock_tracking(mlflow=mock_mlflow),
+            _mock_tracking(mlflow=mock_mlflow, client=mock_client),
             structlog.testing.capture_logs() as logs,
         ):
             resp = client.get("/api/mlflow/runs?experiment_id=secret-experiment")
@@ -330,8 +426,8 @@ class TestListRuns:
         broken_run = MagicMock()
         broken_run.info = BrokenInfo()
         mock_mlflow = MagicMock()
-        mock_mlflow.search_runs.return_value = [broken_run]
         mock_client = MagicMock()
+        mock_client.search_runs.return_value = [broken_run]
         mock_client.list_artifacts.return_value = [MagicMock(path="secret-model.cbm")]
 
         from haute.routes.mlflow import list_runs
@@ -365,8 +461,8 @@ class TestListRuns:
 
         cbm_art = MagicMock(path="model.cbm")
         mock_mlflow = MagicMock()
-        mock_mlflow.search_runs.return_value = [run1]
         mock_client = MagicMock()
+        mock_client.search_runs.return_value = [run1]
         mock_client.list_artifacts.return_value = [cbm_art]
 
         with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
@@ -384,8 +480,8 @@ class TestListRuns:
 
         txt_art = MagicMock(path="readme.txt")
         mock_mlflow = MagicMock()
-        mock_mlflow.search_runs.return_value = [run1]
         mock_client = MagicMock()
+        mock_client.search_runs.return_value = [run1]
         mock_client.list_artifacts.return_value = [txt_art]
 
         with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
@@ -400,8 +496,8 @@ class TestListRuns:
 
         opt_art = MagicMock(path="optimiser_result.json")
         mock_mlflow = MagicMock()
-        mock_mlflow.search_runs.return_value = [run1]
         mock_client = MagicMock()
+        mock_client.search_runs.return_value = [run1]
         mock_client.list_artifacts.return_value = [opt_art]
 
         with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
@@ -421,8 +517,8 @@ class TestListRuns:
 
         cbm_art = MagicMock(path="model.cbm")
         mock_mlflow = MagicMock()
-        mock_mlflow.search_runs.return_value = [run1]
         mock_client = MagicMock()
+        mock_client.search_runs.return_value = [run1]
         mock_client.list_artifacts.return_value = [cbm_art]
 
         with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
@@ -436,9 +532,10 @@ class TestListRuns:
     def test_empty_runs(self, client):
         """Empty experiment returns empty list."""
         mock_mlflow = MagicMock()
-        mock_mlflow.search_runs.return_value = []
+        mock_client = MagicMock()
+        mock_client.search_runs.return_value = []
 
-        with _mock_tracking(mlflow=mock_mlflow):
+        with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
             resp = client.get("/api/mlflow/runs?experiment_id=1")
 
         assert resp.status_code == 200
@@ -451,8 +548,8 @@ class TestListRuns:
 
         cbm_art = MagicMock(path="model.cbm")
         mock_mlflow = MagicMock()
-        mock_mlflow.search_runs.return_value = [run1, run2]
         mock_client = MagicMock()
+        mock_client.search_runs.return_value = [run1, run2]
         # First call succeeds, second fails
         mock_client.list_artifacts.side_effect = [
             [cbm_art],
@@ -471,13 +568,14 @@ class TestListRuns:
     def test_connection_error_502(self, client):
         """search_runs failure returns 502."""
         mock_mlflow = MagicMock()
-        mock_mlflow.search_runs.side_effect = ConnectionError("timeout")
+        mock_client = MagicMock()
+        mock_client.search_runs.side_effect = ConnectionError("timeout")
 
-        with _mock_tracking(mlflow=mock_mlflow):
+        with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
             resp = client.get("/api/mlflow/runs?experiment_id=1")
 
         assert resp.status_code == 502
-        assert "Check the server logs" in resp.json()["detail"]
+        assert "Could not reach the MLflow tracking server" in resp.json()["detail"]
 
     def test_missing_experiment_id_422(self, client):
         """Missing required experiment_id returns 422."""
@@ -497,8 +595,8 @@ class TestListRuns:
         )
         cbm = MagicMock(path="best.cbm")
         mock_mlflow = MagicMock()
-        mock_mlflow.search_runs.return_value = [run]
         mock_client = MagicMock()
+        mock_client.search_runs.return_value = [run]
         mock_client.list_artifacts.return_value = [cbm]
 
         with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
@@ -519,8 +617,8 @@ class TestListRuns:
 
         rsglm_art = MagicMock(path="fitted.rsglm")
         mock_mlflow = MagicMock()
-        mock_mlflow.search_runs.return_value = [run]
         mock_client = MagicMock()
+        mock_client.search_runs.return_value = [run]
         mock_client.list_artifacts.return_value = [rsglm_art]
 
         with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
@@ -543,8 +641,8 @@ class TestListRuns:
         run_txt = _make_run(run_id="txt_run", run_name="txt")
 
         mock_mlflow = MagicMock()
-        mock_mlflow.search_runs.return_value = [run_cbm, run_rsglm, run_txt]
         mock_client = MagicMock()
+        mock_client.search_runs.return_value = [run_cbm, run_rsglm, run_txt]
         mock_client.list_artifacts.side_effect = [
             [MagicMock(path="model.cbm")],
             [MagicMock(path="model.rsglm")],
@@ -563,17 +661,17 @@ class TestListRuns:
     def test_max_results_forwarded(self, client):
         """max_results query param is forwarded to search_runs."""
         mock_mlflow = MagicMock()
-        mock_mlflow.search_runs.return_value = []
+        mock_client = MagicMock()
+        mock_client.search_runs.return_value = []
 
-        with _mock_tracking(mlflow=mock_mlflow):
+        with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
             resp = client.get("/api/mlflow/runs?experiment_id=1&max_results=5")
 
         assert resp.status_code == 200
-        mock_mlflow.search_runs.assert_called_once_with(
+        mock_client.search_runs.assert_called_once_with(
             experiment_ids=["1"],
             filter_string="status = 'FINISHED'",
             max_results=5,
-            output_format="list",
         )
 
 
@@ -640,7 +738,7 @@ class TestListModels:
             resp = client.get("/api/mlflow/models")
 
         assert resp.status_code == 502
-        assert "Check the server logs" in resp.json()["detail"]
+        assert "Could not reach the MLflow tracking server" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -756,7 +854,7 @@ class TestListModelVersions:
             resp = client.get("/api/mlflow/model-versions?model_name=my-model")
 
         assert resp.status_code == 502
-        assert "Check the server logs" in resp.json()["detail"]
+        assert "Could not reach the MLflow tracking server" in resp.json()["detail"]
 
     def test_version_missing_optional_fields(self, client):
         """Versions with missing optional fields default gracefully."""
@@ -914,8 +1012,32 @@ class TestEnsureTrackingDirect:
             _ensure_tracking()
 
         assert os.environ["MLFLOW_ALLOW_FILE_STORE"] == "true"
-        mlflow_mod.set_tracking_uri.assert_called_once_with("file:///tmp/mlruns")
-        tracking_mod.MlflowClient.assert_called_once_with(tracking_uri="file:///tmp/mlruns")
+        mlflow_mod.set_tracking_uri.assert_not_called()
+        tracking_mod.MlflowClient.assert_called_once_with(
+            tracking_uri="file:///tmp/mlruns",
+            # The registry is pinned to the resolved destination so ambient
+            # process-global registry state can never answer discovery.
+            registry_uri="file:///tmp/mlruns",
+        )
+
+    def test_databricks_profile_pins_the_matching_unity_catalog_registry(self):
+        from haute.routes.mlflow import _ensure_tracking
+
+        mlflow_mod, tracking_mod = self._fake_mlflow_modules()
+        with (
+            patch.dict(sys.modules, {"mlflow": mlflow_mod, "mlflow.tracking": tracking_mod}),
+            patch(
+                "haute.modelling._mlflow_log.resolve_tracking_backend",
+                return_value=("databricks://team-profile", "databricks"),
+            ),
+        ):
+            _ensure_tracking()
+
+        mlflow_mod.set_tracking_uri.assert_not_called()
+        tracking_mod.MlflowClient.assert_called_once_with(
+            tracking_uri="databricks://team-profile",
+            registry_uri="databricks-uc://team-profile",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -931,8 +1053,8 @@ class TestListRunsAdditional:
 
         cbm = MagicMock(path="model.cbm")
         mock_mlflow = MagicMock()
-        mock_mlflow.search_runs.return_value = [run]
         mock_client = MagicMock()
+        mock_client.search_runs.return_value = [run]
         mock_client.list_artifacts.return_value = [cbm]
 
         with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
@@ -951,8 +1073,8 @@ class TestListRunsAdditional:
         txt = MagicMock(path="readme.txt")
 
         mock_mlflow = MagicMock()
-        mock_mlflow.search_runs.return_value = [run]
         mock_client = MagicMock()
+        mock_client.search_runs.return_value = [run]
         mock_client.list_artifacts.return_value = [cbm, rsglm, txt]
 
         with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
@@ -971,8 +1093,8 @@ class TestListRunsAdditional:
 
         cbm = MagicMock(path="model.cbm")
         mock_mlflow = MagicMock()
-        mock_mlflow.search_runs.return_value = [run]
         mock_client = MagicMock()
+        mock_client.search_runs.return_value = [run]
         mock_client.list_artifacts.return_value = [cbm]
 
         with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
@@ -989,8 +1111,8 @@ class TestListRunsAdditional:
         wrong = MagicMock(path="optimiser_result.json.bak")
 
         mock_mlflow = MagicMock()
-        mock_mlflow.search_runs.return_value = [run]
         mock_client = MagicMock()
+        mock_client.search_runs.return_value = [run]
         mock_client.list_artifacts.return_value = [wrong]
 
         with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
@@ -1005,8 +1127,8 @@ class TestListRunsAdditional:
         run2 = _make_run(run_id="r2")
 
         mock_mlflow = MagicMock()
-        mock_mlflow.search_runs.return_value = [run1, run2]
         mock_client = MagicMock()
+        mock_client.search_runs.return_value = [run1, run2]
         mock_client.list_artifacts.side_effect = Exception("storage down")
 
         with _mock_tracking(mlflow=mock_mlflow, client=mock_client):

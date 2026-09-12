@@ -34,21 +34,29 @@ def test_server_import_succeeds_with_optional_extras_installed() -> None:
     assert "/api/databricks/warehouses" in route_paths
 
 
-def test_modelling_mlflow_check_reports_installed_with_backend(client, monkeypatch) -> None:
+def test_mlflow_status_reports_installed_with_backend(client, monkeypatch) -> None:
+    from haute.modelling._mlflow_settings import TrackingConfig
+
     monkeypatch.setattr(
-        "haute.modelling._mlflow_log.resolve_tracking_backend",
-        lambda: ("sqlite:///mlruns", "local"),
+        "haute.modelling._mlflow_settings.resolve_tracking_config",
+        lambda project_root=None: TrackingConfig(
+            mode="local",
+            tracking_uri="file:///mlruns",
+            destination="/proj/mlruns",
+            config_source="default",
+        ),
     )
 
-    resp = client.get("/api/modelling/mlflow/check")
+    resp = client.get("/api/mlflow/status")
 
     assert resp.status_code == 200
     assert resp.json() == {
         "mlflow_installed": True,
         "mlflow_importable": True,
-        "tracking_configured": True,
-        "backend": "local",
-        "databricks_host": "",
+        "configured": True,
+        "mode": "local",
+        "destination": "/proj/mlruns",
+        "config_source": "default",
         "detail": "",
     }
 
@@ -57,12 +65,15 @@ def test_mlflow_experiments_route_succeeds_with_installed_dependency_and_mocked_
     client,
     monkeypatch,
 ) -> None:
-    fake_mlflow = SimpleNamespace(
-        search_experiments=lambda: [
-            SimpleNamespace(experiment_id="42", name="pricing/dev"),
-        ]
+    from mlflow.store.entities.paged_list import PagedList
+
+    fake_mlflow = SimpleNamespace()
+    fake_client = SimpleNamespace(
+        search_experiments=lambda: PagedList(
+            [SimpleNamespace(experiment_id="42", name="pricing/dev")],
+            None,
+        )
     )
-    fake_client = SimpleNamespace()
     monkeypatch.setattr(
         "haute.routes.mlflow._ensure_tracking",
         lambda: (fake_mlflow, fake_client),

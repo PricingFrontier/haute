@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import math
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from haute.modelling._result_types import ModelCardMetadata, ModelDiagnostics
+
+
+@pytest.fixture(autouse=True)
+def _clean_tracking_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each test opts into its own environment destination, including real-store tests."""
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
 
 
 class TestResolveTrackingBackend:
@@ -49,6 +57,42 @@ class TestResolveTrackingBackend:
 
         uri, backend = resolve_tracking_backend()
         assert backend == "local"
+
+    def test_env_tracking_uri_selects_server(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
+
+        from haute.modelling._mlflow_log import resolve_tracking_backend
+
+        uri, backend = resolve_tracking_backend()
+        assert uri == "http://localhost:5000"
+        assert backend == "server"
+
+    def test_toml_local_mode_overrides_databricks_credentials(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from haute._sandbox import set_project_root
+
+        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi_test_token")
+        (tmp_path / "haute.toml").write_text('[mlflow]\nmode = "local"\n', encoding="utf-8")
+        set_project_root(tmp_path)  # conftest restores the original root
+
+        from haute.modelling._mlflow_log import resolve_tracking_backend
+
+        uri, backend = resolve_tracking_backend()
+        assert backend == "local"
+        assert uri.startswith("file://")
+
+    def test_unsupported_env_scheme_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
+
+        from haute.errors import MlflowConfigError
+        from haute.modelling._mlflow_log import resolve_tracking_backend
+
+        with pytest.raises(MlflowConfigError, match="sqlite"):
+            resolve_tracking_backend()
 
 
 def test_decimal_signature_error_happens_before_pyfunc_model_logging(tmp_path: Path) -> None:
@@ -191,6 +235,257 @@ class TestBuildRunUrl:
             url = build_run_url("databricks", "/Shared/haute/freq", "run123")
             assert "databricks.com//" not in url  # no double slash
 
+    def test_returns_url_for_server(self) -> None:
+        mock_experiment = MagicMock()
+        mock_experiment.experiment_id = "42"
+
+        with (
+            patch("mlflow.get_experiment_by_name", return_value=mock_experiment),
+            patch("mlflow.get_tracking_uri", return_value="http://localhost:5000/"),
+        ):
+            from haute.modelling._mlflow_log import build_run_url
+
+            url = build_run_url("server", "freq", "run123")
+            assert url == "http://localhost:5000/#/experiments/42/runs/run123"
+
+    def test_server_returns_none_when_experiment_not_found(self) -> None:
+        with (
+            patch("mlflow.get_experiment_by_name", return_value=None),
+            patch("mlflow.get_tracking_uri", return_value="http://localhost:5000"),
+        ):
+            from haute.modelling._mlflow_log import build_run_url
+
+            assert build_run_url("server", "freq", "run123") is None
+
+    def test_server_run_url_redacts_embedded_credentials(self) -> None:
+        mock_experiment = MagicMock()
+        mock_experiment.experiment_id = "42"
+
+        with (
+            patch("mlflow.get_experiment_by_name", return_value=mock_experiment),
+            patch(
+                "mlflow.get_tracking_uri",
+                return_value="https://alice:hunter2xyz@mlflow.example.com:8443",
+            ),
+        ):
+            from haute.modelling._mlflow_log import build_run_url
+
+            url = build_run_url("server", "freq", "run123")
+            assert url == "https://mlflow.example.com:8443/#/experiments/42/runs/run123"
+            assert "hunter2xyz" not in url
+
+
+class TestRegistryUriFollowsDestination:
+    def test_databricks_registry_retains_profile(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from haute._sandbox import set_project_root
+        from haute.modelling._mlflow_log import configure_mlflow_tracking
+
+        set_project_root(tmp_path)
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team-profile")
+        with patch("mlflow.set_tracking_uri"), patch("mlflow.set_registry_uri") as registry:
+            configure_mlflow_tracking()
+        registry.assert_called_once_with("databricks-uc://team-profile")
+
+    def test_leaving_databricks_resets_the_registry_uri(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The process-global registry URI must never stay on Unity Catalog
+        after the destination switches away from Databricks."""
+        from haute._sandbox import set_project_root
+
+        set_project_root(tmp_path)
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+
+        from haute.modelling._mlflow_log import configure_mlflow_tracking
+
+        with (
+            patch("mlflow.set_tracking_uri"),
+            patch("mlflow.set_registry_uri") as m_registry,
+        ):
+            monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
+            monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-token")
+            configure_mlflow_tracking()
+            assert m_registry.call_args_list[-1].args == ("databricks-uc",)
+
+            monkeypatch.delenv("DATABRICKS_HOST")
+            monkeypatch.delenv("DATABRICKS_TOKEN")
+            tracking_uri, backend = configure_mlflow_tracking()
+            assert backend == "local"
+            # The registry explicitly follows the local tracking store.
+            assert m_registry.call_args_list[-1].args == (tracking_uri,)
+
+
+class TestLocalRegistrationEndToEnd:
+    def test_destination_switch_during_log_keeps_run_at_original_store(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        import mlflow
+        from mlflow.tracking import MlflowClient
+
+        from haute._sandbox import set_project_root
+        from haute.modelling._mlflow_log import log_experiment
+        from haute.modelling._mlflow_settings import MlflowSettings, save_mlflow_settings
+        from haute.routes.mlflow import list_experiments
+
+        set_project_root(tmp_path)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        save_mlflow_settings(MlflowSettings(mode="local", folder="a"), tmp_path)
+        checks = 0
+
+        def interleave() -> None:
+            nonlocal checks
+            checks += 1
+            if checks == 2:
+                save_mlflow_settings(MlflowSettings(mode="local", folder="b"), tmp_path)
+                list_experiments()
+
+        previous_tracking, previous_registry = mlflow.get_tracking_uri(), mlflow.get_registry_uri()
+        try:
+            with patch("haute.modelling._mlflow_log._log_model_card"):
+                result = log_experiment(
+                    experiment_name="review",
+                    run_name="review",
+                    metrics={"metric": 1},
+                    params={"key": "value"},
+                    check_cancelled=interleave,
+                )
+            original = MlflowClient(tracking_uri=(tmp_path / "a").as_uri())
+            assert original.get_run(result.run_id).info.status == "FINISHED"
+            assert original.get_run(result.run_id).data.params == {"key": "value"}
+            assert mlflow.get_tracking_uri() == previous_tracking
+            assert mlflow.get_registry_uri() == previous_registry
+            assert "MLFLOW_TRACKING_URI" not in os.environ
+        finally:
+            mlflow.set_tracking_uri(previous_tracking)
+            mlflow.set_registry_uri(previous_registry)
+
+    def test_log_register_discover_load_and_score_locally(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The full U04 acceptance path against a real local file store:
+        haute logs a genuine CatBoost model with a model name, the
+        registered version is discoverable, and the registered-model path
+        (including "latest" resolution over the file store's int versions)
+        loads a scoring-capable model."""
+        import pandas as pd
+        from catboost import CatBoostRegressor
+
+        from haute._sandbox import set_project_root
+
+        for var in ("MLFLOW_TRACKING_URI", "DATABRICKS_HOST", "DATABRICKS_TOKEN"):
+            monkeypatch.delenv(var, raising=False)
+        set_project_root(tmp_path)
+
+        frame = pd.DataFrame({"age": [20.0, 30.0, 40.0, 50.0]})
+        target = [1.0, 2.0, 3.0, 4.0]
+        model = CatBoostRegressor(iterations=2, depth=1, verbose=0)
+        model.fit(frame, target)
+        model_file = tmp_path / "model.cbm"
+        model.save_model(str(model_file))
+
+        import mlflow
+
+        from haute.modelling._mlflow_log import log_experiment
+
+        try:
+            result = log_experiment(
+                experiment_name="e2e-exp",
+                run_name="e2e-run",
+                metrics={"gini": 0.1},
+                params={"depth": 1},
+                model_path=str(model_file),
+                model_name="e2e-model",
+            )
+            assert result.backend == "local"
+
+            from haute._mlflow_io import load_mlflow_model
+
+            scoring = load_mlflow_model(
+                source_type="registered",
+                registered_model="e2e-model",
+                version="latest",
+                task="regression",
+            )
+            predictions = scoring.raw_model.predict(frame)
+            assert len(predictions) == 4
+            assert all(math.isfinite(float(p)) for p in predictions)
+        finally:
+            mlflow.set_tracking_uri(None)
+            mlflow.set_registry_uri(None)
+
+
+class TestRegistrationFollowsBackend:
+    """Registration is gated on backend *capability*, not on Databricks."""
+
+    def _log(self, tmp_path: Path, *, model_name: str | None) -> MagicMock:
+        mock_run = MagicMock()
+        mock_run.info.run_id = "run_reg"
+        model_file = tmp_path / "model.cbm"
+        model_file.write_bytes(b"fake")
+
+        with (
+            patch("mlflow.set_tracking_uri"),
+            patch("mlflow.set_registry_uri"),
+            patch("mlflow.set_experiment"),
+            patch("mlflow.start_run") as m_run,
+            patch("mlflow.log_params"),
+            patch("mlflow.log_metrics"),
+            patch("mlflow.log_artifact"),
+            patch("mlflow.register_model") as m_register,
+            # build_run_url would otherwise make real lookups against the
+            # fake server URI (with mlflow's slow retry storm).
+            patch("mlflow.get_experiment_by_name", return_value=None),
+            patch("mlflow.get_tracking_uri", return_value="http://localhost:5000"),
+            patch("haute.modelling._mlflow_log._log_model_with_signature"),
+            patch("haute.modelling._mlflow_log._log_model_card"),
+        ):
+            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
+            m_run.return_value.__exit__ = MagicMock(return_value=False)
+
+            from haute.modelling._mlflow_log import log_experiment
+
+            log_experiment(
+                experiment_name="exp",
+                run_name="run",
+                metrics={"gini": 0.4},
+                params={},
+                model_path=str(model_file),
+                model_name=model_name,
+            )
+        return m_register
+
+    def test_local_backend_registers_when_model_name_given(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        for var in ("MLFLOW_TRACKING_URI", "DATABRICKS_HOST", "DATABRICKS_TOKEN"):
+            monkeypatch.delenv(var, raising=False)
+        register = self._log(tmp_path, model_name="motor-pricing")
+        register.assert_called_once_with("runs:/run_reg/model", "motor-pricing")
+
+    def test_server_backend_registers_when_model_name_given(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
+        register = self._log(tmp_path, model_name="motor-pricing")
+        register.assert_called_once_with("runs:/run_reg/model", "motor-pricing")
+
+    def test_no_model_name_skips_registration(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        for var in ("MLFLOW_TRACKING_URI", "DATABRICKS_HOST", "DATABRICKS_TOKEN"):
+            monkeypatch.delenv(var, raising=False)
+        register = self._log(tmp_path, model_name=None)
+        register.assert_not_called()
+
 
 class TestLogExperiment:
     def test_calls_mlflow_correctly(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -225,7 +520,7 @@ class TestLogExperiment:
 
             m_tracking.assert_called_once()
             assert "file://" in m_tracking.call_args[0][0]
-            m_registry.assert_not_called()  # local backend, no registry
+            m_registry.assert_called_once()  # registry follows the local tracking store
             m_experiment.assert_called_once_with("/test/experiment")
             m_params.assert_called_once_with({"algorithm": "catboost", "task": "regression"})
             m_metrics.assert_called_once_with({"rmse": 0.5, "gini": 0.8})
@@ -382,16 +677,18 @@ class TestLogExperiment:
         assert native_model_calls[0].args == (str(model_file),)
         assert native_model_calls[0].kwargs == {}
 
-    def test_catboost_model_file_not_re_logged_as_native_artifact(
+    def test_catboost_model_file_is_logged_at_the_run_root(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        """``mlflow.catboost.log_model`` already bundles the .cbm; don't dup it.
+        """The native .cbm is logged as a run-root artifact alongside the
+        flavor.
 
-        Adding a top-level ``mlflow.log_artifact(<.cbm>)`` would re-upload
-        the binary on every run with no functional benefit (run discovery
-        already finds the .cbm inside the catboost model directory).
+        mlflow 3.x stores logged models as LoggedModel entities outside the
+        run's artifact listing, so Haute's run-artifact discovery would
+        otherwise never see a freshly logged CatBoost model — the same rule
+        the non-CatBoost branch has always applied.
         """
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
@@ -440,7 +737,7 @@ class TestLogExperiment:
             for call in m_artifact.call_args_list
             if call.args and Path(call.args[0]).name == "model.cbm"
         ]
-        assert native_model_calls == []
+        assert len(native_model_calls) == 1
 
     def test_with_artifacts(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """SHAP, importance, and CV results are all logged as artifacts."""
@@ -667,46 +964,6 @@ class TestLogExperiment:
                 params={},
             )
             assert result.run_id == "abc123"
-
-    def test_local_does_not_register_model(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """When backend is local, model_name should be ignored (no UC registry)."""
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-
-        mock_run = MagicMock()
-        mock_run.info.run_id = "abc123"
-
-        model_file = tmp_path / "model.cbm"
-        model_file.write_text("fake model")
-
-        with (
-            patch("mlflow.set_tracking_uri"),
-            patch("mlflow.set_experiment"),
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params"),
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_artifact"),
-            patch("mlflow.register_model") as m_register,
-            patch("mlflow.catboost.log_model"),
-            patch("mlflow.pyfunc.log_model"),
-        ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
-
-            from haute.modelling._mlflow_log import log_experiment
-
-            log_experiment(
-                experiment_name="/test/experiment",
-                run_name="test-run",
-                metrics={"rmse": 0.5},
-                params={},
-                model_path=str(model_file),
-                model_name="my-registered-model",
-            )
-
-            m_register.assert_not_called()
 
     def test_with_all_diagnostics_artifacts(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -1034,10 +1291,14 @@ class TestLogExperiment:
         import mlflow
 
         from haute._mlflow_io import _find_model_artifact
+        from haute._sandbox import set_project_root
 
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        # Tracking resolution follows the sandbox project root (not cwd),
+        # so scope it to the temp directory; conftest restores the original.
+        set_project_root(tmp_path)
 
         model_file = tmp_path / "conversion.rsglm"
         model_file.write_bytes(b"fake-rsglm-bytes")
@@ -1065,9 +1326,10 @@ class TestLogExperiment:
 
         assert flavor == "rustystats"
         assert Path(artifact_path).name == "conversion.rsglm"
-        # Reset any tracking URI mlflow set during the run so other tests
-        # in the same process don't inherit our temp file-store URI.
+        # Reset the tracking AND registry URIs mlflow set during the run so
+        # other tests in the same process don't inherit our temp file-store.
         mlflow.set_tracking_uri("")
+        mlflow.set_registry_uri(None)
 
 
 class TestBuildRunUrlExtra:
@@ -1097,7 +1359,10 @@ class TestConfigureMlflowTracking:
             assert backend == "local"
             assert uri.startswith("file://")
             m_tracking.assert_called_once_with(uri)
-            m_registry.assert_not_called()
+            # The registry explicitly follows the tracking store, so a
+            # leftover databricks-uc registry URI can never capture local
+            # registrations.
+            m_registry.assert_called_once_with(uri)
 
     def test_databricks_tracking(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Databricks backend should set both tracking and registry URIs."""

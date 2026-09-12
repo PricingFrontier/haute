@@ -22,6 +22,11 @@ from pathlib import Path
 from typing import Any
 
 from haute._logging import get_logger
+from haute._mlflow_utils import (
+    mlflow_fluent_operation,
+    registry_uri_for_tracking,
+    set_tracking_uri_preserving_env,
+)
 from haute.errors import HauteValidationError
 from haute.modelling._result_types import ModelCardMetadata, ModelDiagnostics
 
@@ -32,28 +37,31 @@ logger = get_logger(component="mlflow_log")
 class MLflowLogResult:
     """Result of logging an experiment to MLflow."""
 
-    backend: str  # "databricks" or "local"
+    backend: str  # "databricks", "server", or "local"
     experiment_name: str
     run_id: str
     tracking_uri: str
-    run_url: str | None  # Databricks URL to the run, or None for local
+    run_url: str | None  # Databricks/server URL to the run, or None for local
 
 
 def resolve_tracking_backend() -> tuple[str, str]:
-    """Detect whether to use Databricks MLflow or local file-based MLflow.
+    """Resolve the tracking destination to ``(tracking_uri, backend)``.
 
-    Returns:
-        (tracking_uri, backend_label) — e.g. ("databricks", "databricks")
-        or ("file:///path/to/mlruns", "local").
+    Thin wrapper over
+    :func:`haute.modelling._mlflow_settings.resolve_tracking_config` —
+    ``[mlflow]`` in ``haute.toml`` first, environment second
+    (``MLFLOW_TRACKING_URI`` classified by form, then
+    ``DATABRICKS_HOST``/``DATABRICKS_TOKEN``), local ``./mlruns`` last.
+    ``backend`` is ``"databricks"``, ``"server"``, or ``"local"``.
+
+    Raises:
+        MlflowConfigError: for a misconfigured explicit selection or an
+            unsupported tracking-URI form — never a silent fallback.
     """
-    host = os.getenv("DATABRICKS_HOST", "")
-    token = os.getenv("DATABRICKS_TOKEN", "")
+    from haute.modelling._mlflow_settings import resolve_tracking_config
 
-    if host and token:
-        return "databricks", "databricks"
-
-    mlruns_dir = Path.cwd() / "mlruns"
-    return mlruns_dir.as_uri(), "local"
+    config = resolve_tracking_config()
+    return config.tracking_uri, config.mode
 
 
 def resolve_experiment_name(
@@ -69,7 +77,7 @@ def resolve_experiment_name(
       1. *explicit* — user override from the UI request body.
       2. *config_value* — ``mlflow_experiment`` from the node config.
       3. Backend-aware default — ``/Shared/haute/{node_label}`` for
-         Databricks, ``{node_label}`` for local.
+         Databricks, the bare ``{node_label}`` for server and local modes.
 
     If *backend* is not supplied the current backend is detected via
     :func:`resolve_tracking_backend`.
@@ -89,8 +97,9 @@ def configure_mlflow_tracking() -> tuple[str, str]:
     """Resolve the MLflow backend and configure tracking/registry URIs.
 
     Calls :func:`resolve_tracking_backend`, then sets the tracking URI
-    (and registry URI for Databricks).  Must be called after
-    ``import mlflow``.
+    and matching registry URI while preserving the configured environment.
+    Call inside :func:`mlflow_fluent_operation` so another writer cannot
+    change the destination before the run finishes.
 
     Returns:
         ``(tracking_uri, backend)`` — same pair as
@@ -106,9 +115,8 @@ def configure_mlflow_tracking() -> tuple[str, str]:
         # workflow logs to ./mlruns, so opt in here. setdefault keeps a user
         # who set the variable explicitly in control.
         os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
-    mlflow.set_tracking_uri(tracking_uri)
-    if backend == "databricks":
-        mlflow.set_registry_uri("databricks-uc")
+    set_tracking_uri_preserving_env(mlflow, tracking_uri)
+    mlflow.set_registry_uri(registry_uri_for_tracking(tracking_uri))
     return tracking_uri, backend
 
 
@@ -117,18 +125,29 @@ def build_run_url(
     experiment_name: str,
     run_id: str,
 ) -> str | None:
-    """Build a Databricks run URL, or return ``None`` for local backends.
+    """Build a Databricks/server run URL, or return ``None`` for local mode.
 
     Uses ``mlflow.get_experiment_by_name`` to resolve the experiment ID
-    (Databricks URLs require the numeric ID, not the name).
+    (run URLs require the numeric ID, not the name). Databricks URLs point
+    at the workspace host; server URLs point at the configured tracking
+    server's own UI.
     """
-    if backend != "databricks":
+    if backend not in ("databricks", "server"):
         return None
 
     import mlflow
 
-    host = os.getenv("DATABRICKS_HOST", "").rstrip("/")
-    if not host:
+    if backend == "databricks":
+        base = os.getenv("DATABRICKS_HOST", "").rstrip("/")
+        path = "#mlflow/experiments"
+    else:
+        from haute.modelling._mlflow_settings import redact_uri
+
+        # A credential-bearing env tracking URI must not leak into the
+        # displayed run link.
+        base = redact_uri(mlflow.get_tracking_uri()).rstrip("/")
+        path = "#/experiments"
+    if not base:
         return None
     try:
         exp = mlflow.get_experiment_by_name(experiment_name)
@@ -138,7 +157,7 @@ def build_run_url(
                 experiment_name=experiment_name,
             )
             return None
-        return f"{host}/#mlflow/experiments/{exp.experiment_id}/runs/{run_id}"
+        return f"{base}/{path}/{exp.experiment_id}/runs/{run_id}"
     except Exception:
         logger.debug("run_url_build_failed", exc_info=True)
         return None
@@ -160,6 +179,7 @@ def _log_json_artifact(mlflow: Any, data: Any, prefix: str, artifact_dir: str) -
         os.unlink(f.name)
 
 
+@mlflow_fluent_operation()
 def log_experiment(
     *,
     experiment_name: str,
@@ -445,8 +465,11 @@ def log_experiment(
         except Exception:
             logger.warning("model_card_generation_failed", exc_info=True)
 
-        # Register model (Databricks UC only)
-        if model_name and model_path and backend == "databricks":
+        # Register the model on any registry-capable backend (best-effort):
+        # Databricks registers into Unity Catalog via the databricks-uc
+        # registry URI; server and local registries follow the tracking
+        # store. A registry error never discards the successful run.
+        if model_name and model_path:
             _check_cancelled()
             try:
                 mlflow.register_model(f"runs:/{run.info.run_id}/model", model_name)
@@ -536,6 +559,12 @@ def _log_model_with_signature(
             artifact_path="model",
             signature=signature,
         )
+        # mlflow 3.x stores logged models as LoggedModel entities outside
+        # the run's artifact listing, so Haute's run-artifact discovery
+        # (`_find_cbm_artifact`) would no longer see the model. Log the
+        # native file at the run root too — the same rule the non-CatBoost
+        # branch below has always applied.
+        mlflow.log_artifact(str(model_file))
         return
 
     # Non-CatBoost flavors (RustyStats .rsglm, generic): log via pyfunc so

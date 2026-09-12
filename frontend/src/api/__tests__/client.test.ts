@@ -26,7 +26,7 @@ import {
   createSubmodel,
   dissolveSubmodel,
   loadSubmodel,
-  checkMlflow,
+  getMlflowStatus,
   getTrainStatus,
   cancelTrain,
   estimateTrainingRam,
@@ -64,6 +64,9 @@ import {
   deleteJsonCache,
   dryRunRemoveUnavailableNode,
   applyRemoveUnavailableNode,
+  getMlflowSettings,
+  putMlflowSettings,
+  testMlflowConnection,
 } from "../client"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
@@ -480,7 +483,7 @@ describe("request() core via loadPipeline", () => {
       detail: "Missing or invalid Haute session token",
     }))
 
-    await expect(checkMlflow()).rejects.toThrow(ApiError)
+    await expect(getMlflowStatus()).rejects.toThrow(ApiError)
 
     expect(listener).toHaveBeenCalledTimes(1)
     const event = listener.mock.calls[0][0] as CustomEvent<{ reason: string }>
@@ -510,11 +513,81 @@ describe("request() core via loadPipeline", () => {
     await expect(loadPipeline()).rejects.toThrow(ApiError)
   })
 
+  it("putMlflowSettings issues a PUT with the JSON payload and parses the response", async () => {
+    const settingsBody = {
+      section_present: true,
+      mode: "server",
+      tracking_uri: "http://localhost:5000",
+      folder: "",
+      resolved: {
+        mode: "server",
+        destination: "http://localhost:5000",
+        config_source: "toml",
+      },
+      detail: "",
+    }
+    mockFetch.mockReturnValue(jsonResponse(settingsBody))
+
+    const result = await putMlflowSettings({
+      mode: "server",
+      tracking_uri: "http://localhost:5000",
+      folder: "",
+    })
+
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/mlflow/settings")
+    expect(init.method).toBe("PUT")
+    expect(JSON.parse(init.body as string)).toEqual({
+      mode: "server",
+      tracking_uri: "http://localhost:5000",
+      folder: "",
+    })
+    expect(result.resolved?.destination).toBe("http://localhost:5000")
+  })
+
+  it("getMlflowSettings issues a GET and parses the response", async () => {
+    mockFetch.mockReturnValue(jsonResponse({
+      section_present: false,
+      mode: "",
+      tracking_uri: "",
+      folder: "",
+      resolved: { mode: "local", destination: "C:/proj/mlruns", config_source: "default" },
+      detail: "",
+    }))
+
+    const result = await getMlflowSettings()
+
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/mlflow/settings")
+    expect(init?.method ?? "GET").toBe("GET")
+    expect(result.resolved?.mode).toBe("local")
+  })
+
+  it("testMlflowConnection POSTs the candidate payload and parses the result", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ ok: true, category: "", detail: "" }))
+
+    const result = await testMlflowConnection({
+      mode: "server",
+      tracking_uri: "http://localhost:6000",
+      folder: "",
+    })
+
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/mlflow/test-connection")
+    expect(init.method).toBe("POST")
+    expect(JSON.parse(init.body as string)).toEqual({
+      mode: "server",
+      tracking_uri: "http://localhost:6000",
+      folder: "",
+    })
+    expect(result.ok).toBe(true)
+  })
+
   it("uses statusText as detail when response body is not JSON", async () => {
     mockFetch.mockReturnValue(errorResponse(503))
     try {
-      // Use checkMlflow as it doesn't catch errors like loadPipeline
-      await checkMlflow()
+      // Use getMlflowStatus as it doesn't catch errors like loadPipeline
+      await getMlflowStatus()
     } catch (err) {
       expect(err).toBeInstanceOf(ApiError)
       expect((err as ApiError).detail).toBe("Error")
@@ -523,7 +596,7 @@ describe("request() core via loadPipeline", () => {
 
   it("handles network error (fetch throws)", async () => {
     mockFetch.mockRejectedValue(new TypeError("Failed to fetch"))
-    await expect(checkMlflow()).rejects.toThrow("Failed to fetch")
+    await expect(getMlflowStatus()).rejects.toThrow("Failed to fetch")
   })
 
   it("passes AbortController signal to fetch", async () => {

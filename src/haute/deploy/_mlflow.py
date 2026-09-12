@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from haute._logging import get_logger
-from haute._mlflow_utils import search_versions
+from haute._mlflow_utils import (
+    mlflow_fluent_operation,
+    search_versions,
+    set_tracking_uri_preserving_env,
+)
 from haute.deploy._config import ResolvedDeploy
 from haute.deploy._utils import build_manifest
 from haute.errors import DeployError
@@ -52,6 +56,7 @@ def build_experiment_name(config: DeployConfig) -> str:
     return name
 
 
+@mlflow_fluent_operation()
 def deploy_to_mlflow(
     resolved: ResolvedDeploy,
     progress: Callable[[str], None] | None = None,
@@ -85,7 +90,7 @@ def deploy_to_mlflow(
     # Point MLflow at the Databricks workspace (uses DATABRICKS_RATING_HOST/TOKEN env vars)
     _log("Connecting to Databricks MLflow...")
     _check_databricks_connectivity(_log)
-    mlflow.set_tracking_uri("databricks")
+    set_tracking_uri_preserving_env(mlflow, "databricks")
     mlflow.set_registry_uri("databricks-uc")
 
     # Use Unity Catalog three-level namespace: catalog.schema.model_name
@@ -193,11 +198,8 @@ def get_deploy_status(
     """
     import mlflow
 
-    mlflow.set_tracking_uri("databricks")
-    mlflow.set_registry_uri("databricks-uc")
-
     uc_model_name = f"{catalog}.{schema}.{model_name}"
-    client = mlflow.tracking.MlflowClient()
+    client = mlflow.tracking.MlflowClient(tracking_uri="databricks", registry_uri="databricks-uc")
     versions = search_versions(client, uc_model_name)
 
     if not versions:

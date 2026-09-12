@@ -708,6 +708,10 @@ export default function OptimiserConfig({
         </button>
         {mlflowOpen && (
           <div className="mt-1.5 space-y-2">
+            <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+              Used when you press “Log to MLflow” on a solved result —
+              nothing is logged automatically.
+            </p>
             <div>
               <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Experiment path</label>
               <CommittedTextField

@@ -47,7 +47,6 @@ class _MlflowSearch:
             "experiment_ids": ["representative"],
             "filter_string": "status = 'FINISHED'",
             "max_results": 100,
-            "output_format": "list",
         }
         return self.runs
 
@@ -86,7 +85,11 @@ def test_mlflow_run_discovery_maximum_cardinality_budget(
     """The capped N+1 path is cheap locally and never exceeds 101 provider calls."""
     search = _MlflowSearch(_representative_runs(100))
     artifacts = _MlflowArtifacts()
-    monkeypatch.setattr(mlflow_routes, "_ensure_tracking", lambda: (search, artifacts))
+    client = SimpleNamespace(
+        search_runs=search.search_runs,
+        list_artifacts=artifacts.list_artifacts,
+    )
+    monkeypatch.setattr(mlflow_routes, "_ensure_tracking", lambda: (SimpleNamespace(), client))
 
     with structlog.testing.capture_logs() as logs:
         started_at = time.perf_counter()

@@ -35,7 +35,8 @@
 | `frontend/src/components/Tooltip.tsx` | Zero-delay CSS-hover tooltip with edge-clamped horizontal position and top/bottom auto-flip. |
 | `frontend/src/components/ContextMenu.tsx` | Node right-click menu: rename/duplicate/create-instance/dissolve-submodel/delete, arrow-key roving focus. |
 | `frontend/src/components/KeyboardShortcuts.tsx` | `?`-triggered modal listing keyboard shortcuts, built on `ModalShell`. |
-| `frontend/src/components/Toolbar.tsx` | App top chrome: package-derived browser version, source selector, row-limit/chunk-size inputs, undo/redo, timing/memory breakdowns, Submodel/Instance selection actions, utility/imports/assistant buttons, zoom, centre/layout, and Save + Commit. Actions share the `.toolbar-btn` surface; the selection actions carry `aria-disabled` rather than `disabled` so an unavailable action stays focusable and its handler can explain the refusal. Numeric fields suppress native spinners without clipping either the configured row-limit value or the chunk-size backend maximum. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). |
+| `frontend/src/components/Toolbar.tsx` | App top chrome: package-derived browser version, source selector, row-limit/chunk-size inputs, the MLflow status chip (opens `MlflowSettingsModal`), undo/redo, timing/memory breakdowns, Submodel/Instance selection actions, utility/imports/assistant buttons, zoom, centre/layout, and Save + Commit. Actions share the `.toolbar-btn` surface; the selection actions carry `aria-disabled` rather than `disabled` so an unavailable action stays focusable and its handler can explain the refusal. Numeric fields suppress native spinners without clipping either the configured row-limit value or the chunk-size backend maximum. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). |
+| `frontend/src/components/MlflowSettingsModal.tsx` | `ModalShell`-based MLflow tracking settings dialog: current-resolution line, three plain-language mode cards (local folder / MLflow server / Databricks), server-URL field, test-connection action with inline result, and Save through `PUT /api/mlflow/settings` followed by `invalidateMlflow()`. |
 | `frontend/src/components/BreakdownDropdown.tsx` | Sorted, accessible timing/memory breakdown disclosure used by the shared toolbar. |
 | `frontend/src/panels/ImportsPanel.tsx` | Active pipeline-imports right panel: `PanelShell` plus `CodeEditor`, explanatory always-included imports, and callback-only preamble mutation/close handling. `App.tsx` supplies the graph-store-backed preamble and selects it through `importsOpen`. |
 | `frontend/src/components/BackgroundJobPolling.tsx` | Zero-render mount point (`memo`) that only invokes `useBackgroundJobs()`. |
@@ -142,10 +143,18 @@
   `trimCacheByRecency` and whose pivot entries are likewise exempted by
   `trimExplorePivotCache`.
 - **`SettingsState.mlflow`**: `{status: "pending"|"connected"|"error",
-  backend, host, installed, importable, trackingConfigured, detail}` —
+  mode, destination, configSource, installed, importable, configured,
+  detail}` — populated from `GET /api/mlflow/status`
+  (`parseMlflowStatusResponse`); `status` is `"connected"` exactly when the
+  response reports installed, importable, and configured all true. `mode`
+  (`""|"databricks"|"server"|"local"`), the human-readable `destination`,
+  and `configSource` (`""|"toml"|"env"|"default"`) mirror the wire fields.
   `useMlflowStatus()` (exported alongside the store) maps `"pending"` to
   `"loading"` for display purposes only; the store itself never uses the
-  word "loading".
+  word "loading". `invalidateMlflow()` resets `status` to `"pending"` and
+  triggers a refetch — the settings modal calls it after a successful
+  `PUT /api/mlflow/settings`, so a configuration change is reflected
+  without a page reload.
 - **`ToastMessage`** (`components/Toast.tsx`): `{id, type: "success"|
   "error"|"info"|"warning", text}`. `id` is a monotonically increasing
   string counter, not a UUID.
@@ -338,11 +347,53 @@ focus nor leaves stale callbacks.
   `preventDefault`ed and focus is forced back onto the container itself
   rather than escaping.
 
+**MLflow settings surface (Toolbar chip + `MlflowSettingsModal`).** The
+toolbar renders a compact MLflow chip in the settings cluster (after the
+chunk-size input): a status dot plus a short label — "MLflow…" while the
+status fetch is pending, `MLflow: <Mode>` when connected (mode name
+capitalised), and "MLflow off" on any error state — with the store's
+`detail` or `destination` as its tooltip. Activating the chip opens
+`MlflowSettingsModal` (local open state in `Toolbar`).
+
+The toolbar wraps complete control groups onto additional rows when the
+viewport cannot contain them on one row. Its height adapts, all actions remain
+reachable, and it never causes document-level horizontal overflow or scrolling
+that displaces the pipeline canvas. Menus and settings dialogs remain unclipped.
+
+The modal fetches `GET /api/mlflow/settings` on mount and renders: a
+current-resolution line built from `resolved` (mode, destination, config
+source) or the `detail` reason when resolution failed; a three-option mode
+choice — **native** radio inputs (so the radio role carries its keyboard
+behaviour) styled as cards with one-line plain-language descriptions —
+Local folder ("zero setup", always displaying the resolved runs folder),
+MLflow server ("connect by URL", with an `http(s)` URL field shown while
+selected, prefilled from the stored `tracking_uri`), Databricks ("uses the
+workspace credentials from `.env`") — a Test connection action, and
+Save/Close actions. Test connection POSTs the **draft** selection
+(`{mode, tracking_uri}`) as the candidate body, so the user tests what a
+save would produce, not what is currently persisted; a displayed result is
+cleared by any draft edit, and a completion that lands after an edit is
+discarded via a request-sequence guard. Save PUTs `{mode, tracking_uri}`
+(URL only for server mode; `folder` is always sent empty so the backend
+persists the resolved folder) with every input locked while the request is
+in flight — a "Saved" acknowledgement can therefore never sit beside
+edits it does not cover — then calls `invalidateMlflow()` and re-renders
+from the PUT response, so the chip and every panel refresh without a
+reload; a `400` renders its field-naming `detail` in the modal's error
+area. The browser never renders or submits a secret: stored server URLs
+are credential-free by backend validation, displayed destinations arrive
+pre-redacted, the modal adds no credential inputs, and an unchanged save
+of an env-derived configuration keeps its authentication because
+resolution re-attaches matching env credentials server-side.
+
 **Process-wide MLflow fetch guard.** `useSettingsStore.fetchMlflow` guards
 re-entrancy with a module-level `let _mlflowFetchingGuard` rather than store
 state. The guard is shared across every store instance in the process, so tests
 that create fresh instances must retain process-wide concurrency semantics
-rather than assume per-instance isolation.
+rather than assume per-instance isolation. `invalidateMlflow()` cooperates
+with the guard rather than bypassing it: it resets the cached status to
+`"pending"` and calls `fetchMlflow`, and an invalidation issued while a fetch
+is already in flight still results in exactly one follow-up fetch.
 
 ## Error handling
 
@@ -436,6 +487,14 @@ same Vitest config.
   `frontend/src/stores/__tests__/useUIStore.dirty.derived.test.ts`): modal-mutual-exclusion (opening
   utility/imports/git/assistant closes the other three) and per-node selection-map
   helpers.
+- **MLflow settings surface**
+  (`frontend/src/components/__tests__/MlflowSettingsModal.test.tsx`): mode
+  cards and current-resolution line rendered from the settings GET, the
+  server-URL field round trip, a `400` detail surfaced in the error area
+  with nothing saved, Save issuing the PUT (empty `folder`) and then
+  `invalidateMlflow()`, test-connection ok and categorised-failure
+  rendering, and the chip states (loading / connected-with-mode / off)
+  proven in `frontend/src/components/__tests__/Toolbar.test.tsx`.
 - **Chrome components**: `frontend/src/__tests__/components/ErrorBoundary.test.tsx`
   (root-level, under `frontend/src/__tests__/components/`),
   `frontend/src/components/__tests__/ModalShell.test.tsx` and

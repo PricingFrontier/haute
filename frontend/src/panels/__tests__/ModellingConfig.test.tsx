@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
+import { act, render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import ModellingConfig from "../ModellingConfig"
 import { GraphProvider } from "../GraphContext"
 import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore"
@@ -16,12 +16,14 @@ import { makeTrainResult as makeCanonicalTrainResult } from "../../test-utils/fa
 const mockTrainModel = vi.fn()
 const mockCancelTrain = vi.fn()
 const mockEstimateTrainingRam = vi.fn()
+const mockGetExperiments = vi.fn()
 let defaultPane: ModellingPane = "target"
 
 vi.mock("../../api/client", () => ({
   trainModel: (...args: unknown[]) => mockTrainModel(...args),
   cancelTrain: (...args: unknown[]) => mockCancelTrain(...args),
   estimateTrainingRam: (...args: unknown[]) => mockEstimateTrainingRam(...args),
+  getExperiments: (...args: unknown[]) => mockGetExperiments(...args),
   // GLMTargetConfig narrows errors with `instanceof ApiError`, so the mock
   // must export a real class or the instanceof check throws.
   ApiError: class ApiError extends Error {},
@@ -122,11 +124,12 @@ beforeEach(() => {
   useSettingsStore.setState({
     mlflow: {
       status: "pending",
-      backend: "",
-      host: "",
+      mode: "",
+      destination: "",
+      configSource: "",
       installed: null,
       importable: null,
-      trackingConfigured: null,
+      configured: null,
       detail: "",
     },
     openSections: {},
@@ -1522,8 +1525,147 @@ describe("ModellingConfig", () => {
       rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="train" /></GraphProvider>)
       expect(screen.getByRole("checkbox", { name: /GPU training/ })).toBeTruthy()
       expect(screen.getByLabelText("Row limit")).toBeTruthy()
-      expect(screen.getByPlaceholderText("MLflow experiment")).toBeTruthy()
+      expect(screen.getByLabelText("MLflow experiment path")).toBeTruthy()
       expect(screen.getByPlaceholderText("MLflow model name")).toBeTruthy()
+    })
+
+    describe("MLflow section", () => {
+      const CONNECTED = {
+        status: "connected" as const,
+        mode: "databricks",
+        destination: "https://adb.example.net",
+        configSource: "env",
+        installed: true,
+        importable: true,
+        configured: true,
+        detail: "",
+      }
+
+      beforeEach(async () => {
+        mockGetExperiments.mockReset().mockResolvedValue([])
+        const { default: useUIStore } = await import("../../stores/useUIStore")
+        useUIStore.setState({ mlflowSettingsOpen: false })
+      })
+
+      it("explains that logging is manual", () => {
+        renderConfig({ activePane: "train" })
+        expect(screen.getByText(/nothing is logged automatically/i)).toBeTruthy()
+      })
+
+      it("shows the logging destination when connected", () => {
+        useSettingsStore.setState({ mlflow: CONNECTED })
+        renderConfig({ activePane: "train" })
+        expect(
+          screen.getByText(/Logging destination: Databricks — https:\/\/adb\.example\.net/),
+        ).toBeTruthy()
+      })
+
+      it("offers a Configure MLflow link when tracking is off", async () => {
+        useSettingsStore.setState({
+          mlflow: {
+            ...CONNECTED,
+            status: "error",
+            mode: "",
+            destination: "",
+            configured: false,
+            detail: "MLflow package is not installed. Install it with: pip install mlflow",
+          },
+        })
+        renderConfig({ activePane: "train" })
+        expect(screen.getByText(/MLflow is off/)).toBeTruthy()
+        fireEvent.click(screen.getByRole("button", { name: /configure mlflow/i }))
+        const { default: useUIStore } = await import("../../stores/useUIStore")
+        expect(useUIStore.getState().mlflowSettingsOpen).toBe(true)
+      })
+
+      it("uses the Databricks default experiment path as the placeholder", () => {
+        useSettingsStore.setState({ mlflow: CONNECTED })
+        renderConfig({ activePane: "train" })
+        expect(screen.getByLabelText("MLflow experiment path")).toHaveAttribute(
+          "placeholder",
+          "/Shared/haute/model",
+        )
+      })
+
+      it("uses the bare node label placeholder for non-Databricks modes", () => {
+        useSettingsStore.setState({
+          mlflow: { ...CONNECTED, mode: "local", destination: "C:/proj/mlruns" },
+        })
+        renderConfig({ activePane: "train" })
+        expect(screen.getByLabelText("MLflow experiment path")).toHaveAttribute(
+          "placeholder",
+          "model",
+        )
+      })
+
+      it("invalidates suggestions and discards stale responses on a destination switch", async () => {
+        useSettingsStore.setState({ mlflow: CONNECTED })
+        let resolveFirst: (value: { experiment_id: string; name: string }[]) => void
+        mockGetExperiments.mockReturnValueOnce(
+          new Promise((resolve) => {
+            resolveFirst = resolve
+          }),
+        )
+        renderConfig({ activePane: "train" })
+        fireEvent.focus(screen.getByLabelText("MLflow experiment path"))
+        expect(mockGetExperiments).toHaveBeenCalledTimes(1)
+
+        // Destination changes while the first fetch is still in flight.
+        act(() => {
+          useSettingsStore.setState({
+            mlflow: { ...CONNECTED, mode: "server", destination: "http://localhost:5000" },
+          })
+        })
+        // Resolve the stale request and let every resulting update settle
+        // BEFORE asserting absence — a not-yet-rendered option must not be
+        // what makes this pass.
+        await act(async () => {
+          resolveFirst!([{ experiment_id: "9", name: "stale-exp" }])
+        })
+        expect(document.querySelector("datalist option[value='stale-exp']")).toBeNull()
+
+        mockGetExperiments.mockResolvedValueOnce([
+          { experiment_id: "2", name: "fresh-exp" },
+        ])
+        fireEvent.focus(screen.getByLabelText("MLflow experiment path"))
+        await waitFor(() => {
+          expect(mockGetExperiments).toHaveBeenCalledTimes(2)
+          expect(document.querySelector("datalist option[value='fresh-exp']")).toBeTruthy()
+        })
+        expect(document.querySelector("datalist option[value='stale-exp']")).toBeNull()
+      })
+
+      it("clears already populated suggestions when the destination changes", async () => {
+        useSettingsStore.setState({ mlflow: CONNECTED })
+        mockGetExperiments.mockResolvedValueOnce([
+          { experiment_id: "1", name: "old-exp" },
+        ])
+        renderConfig({ activePane: "train" })
+        fireEvent.focus(screen.getByLabelText("MLflow experiment path"))
+        await waitFor(() => {
+          expect(document.querySelector("datalist option[value='old-exp']")).toBeTruthy()
+        })
+
+        act(() => {
+          useSettingsStore.setState({
+            mlflow: { ...CONNECTED, mode: "server", destination: "http://localhost:5000" },
+          })
+        })
+        expect(document.querySelector("datalist option[value='old-exp']")).toBeNull()
+      })
+
+      it("lists existing experiments in a datalist on focus", async () => {
+        useSettingsStore.setState({ mlflow: CONNECTED })
+        mockGetExperiments.mockResolvedValue([
+          { experiment_id: "1", name: "/Shared/haute/team-exp" },
+        ])
+        renderConfig({ activePane: "train" })
+        fireEvent.focus(screen.getByLabelText("MLflow experiment path"))
+        await waitFor(() => {
+          expect(mockGetExperiments).toHaveBeenCalledOnce()
+          expect(document.querySelector("datalist option[value='/Shared/haute/team-exp']")).toBeTruthy()
+        })
+      })
     })
 
     it("uses the standard themed form styling throughout the Train pane", () => {

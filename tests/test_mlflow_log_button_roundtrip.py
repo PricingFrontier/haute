@@ -63,14 +63,16 @@ TARGET = "y"
 
 @pytest.fixture
 def local_mlflow(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Path]:
-    """Local file-store MLflow rooted in tmp; resets the tracking URI after."""
+    """Local file-store MLflow rooted in tmp without ambient credentials."""
+    from haute._sandbox import set_project_root
+
     monkeypatch.delenv("DATABRICKS_HOST", raising=False)
     monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
     monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)  # conftest restores the original project root.
     yield tmp_path
-    # Reset the process-wide tracking URI mlflow picked up during the run so
-    # other tests don't inherit our temp file-store.
-    mlflow.set_tracking_uri("")
 
 
 @contextmanager
@@ -195,10 +197,10 @@ def _completed_result(model_path: str, **overrides: Any) -> TrainResponse:
     return TrainResponse(**base)
 
 
-def _signature_inputs(run_id: str) -> list[tuple[str, str]]:
-    info = mlflow.models.get_model_info(f"runs:/{run_id}/model")
-    assert info.signature is not None, "logged model carries no signature"
-    return [(col["name"], col["type"]) for col in info.signature.inputs.to_dict()]
+def _signature_inputs(model_metadata: Any) -> list[tuple[str, str]]:
+    signature = model_metadata.signature
+    assert signature is not None, "logged model carries no signature"
+    return [(col["name"], col["type"]) for col in signature.inputs.to_dict()]
 
 
 # ---------------------------------------------------------------------------
@@ -226,14 +228,21 @@ class TestCatboostButtonRoundTrip:
             )
         assert resp.status_code == 200, resp.text
         run_id = resp.json()["run_id"]
+        tracking_uri = resp.json()["tracking_uri"]
+        from haute._mlflow_io import _load_pyfunc_model
+
+        previous_tracking_uri = mlflow.get_tracking_uri()
+        previous_registry_uri = mlflow.get_registry_uri()
+        loaded = _load_pyfunc_model(mlflow, run_id, "model", tracking_uri=tracking_uri)
+        assert mlflow.get_tracking_uri() == previous_tracking_uri
+        assert mlflow.get_registry_uri() == previous_registry_uri
 
         # The signature must describe what the model actually consumes —
         # the categorical feature is a string, not a double.
-        assert _signature_inputs(run_id) == [("x", "double"), ("c", "string")]
+        assert _signature_inputs(loaded.metadata) == [("x", "double"), ("c", "string")]
 
         # Logged-then-reloaded model must score a native-dtype frame.
         score_frame = pl.DataFrame({"x": [0.1, 0.9], "c": ["red", "blue"]}).to_pandas()
-        loaded = mlflow.pyfunc.load_model(f"runs:/{run_id}/model")
         preds = np.asarray(loaded.predict(score_frame)).ravel()
         native = np.asarray(native_model.predict(score_frame)).ravel()
         np.testing.assert_allclose(preds, native, rtol=1e-9)
@@ -273,10 +282,11 @@ class TestGlmButtonRoundTrip:
             )
         assert resp.status_code == 200, resp.text
         run_id = resp.json()["run_id"]
+        tracking_uri = resp.json()["tracking_uri"]
 
         from mlflow.tracking import MlflowClient
 
-        mlflow_client = MlflowClient()
+        mlflow_client = MlflowClient(tracking_uri=tracking_uri, registry_uri=tracking_uri)
 
         # GLM diagnostics artifacts must be logged (previously dropped).
         glm_artifact_names = [
@@ -297,8 +307,24 @@ class TestGlmButtonRoundTrip:
         for key in ("aic", "bic", "deviance", "null_deviance"):
             assert key in run_metrics, f"GLM stat {key!r} not logged as metric"
 
-        # Signature mirrors the feature contract (string categorical).
-        assert _signature_inputs(run_id) == [("x", "double"), ("c", "string")]
+        # Inspect signature metadata through the pinned logged-model record;
+        # the native GLM reload and scoring contract is checked below.
+        logged_models = mlflow_client.search_logged_models(
+            experiment_ids=[mlflow_client.get_run(run_id).info.experiment_id]
+        )
+        assert len(logged_models) == 1
+        logged_model = logged_models[0]
+        assert logged_model.source_run_id == run_id
+        assert logged_model.name == "model"
+        local_model_path = mlflow.artifacts.download_artifacts(
+            artifact_uri=logged_model.artifact_location,
+            tracking_uri=tracking_uri,
+            dst_path=str(local_mlflow / "glm_model"),
+        )
+        assert _signature_inputs(mlflow.models.Model.load(local_model_path)) == [
+            ("x", "double"),
+            ("c", "string"),
+        ]
 
         # The native .rsglm is at the run root, reloads, and scores
         # identically to the in-memory model.
@@ -308,8 +334,8 @@ class TestGlmButtonRoundTrip:
         import rustystats as rs
 
         downloaded = mlflow.artifacts.download_artifacts(
-            run_id=run_id,
-            artifact_path="sev.rsglm",
+            artifact_uri=f"runs:/{run_id}/sev.rsglm",
+            tracking_uri=tracking_uri,
             dst_path=str(local_mlflow / "dl"),
         )
         with open(downloaded, "rb") as f:
@@ -456,8 +482,13 @@ class TestButtonLogConstruction:
             )
         assert resp.status_code == 200, resp.text
         run_id = resp.json()["run_id"]
+        tracking_uri = resp.json()["tracking_uri"]
 
         from mlflow.tracking import MlflowClient
 
-        run_metrics = MlflowClient().get_run(run_id).data.metrics
+        run_metrics = (
+            MlflowClient(tracking_uri=tracking_uri, registry_uri=tracking_uri)
+            .get_run(run_id)
+            .data.metrics
+        )
         assert run_metrics["rmse"] == pytest.approx(0.25)

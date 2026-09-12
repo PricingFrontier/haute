@@ -62,7 +62,11 @@ import type {
   JsonCacheBuildResponse,
   JsonCacheProgressResponse,
   JsonCacheStatusResponse,
-  MlflowCheckResponse,
+  MlflowSettingsResponse,
+  MlflowSettingsUpdateRequest,
+  MlflowStatusResponse,
+  MlflowTestConnectionRequest,
+  MlflowTestConnectionResponse,
   MlflowExperiment,
   MlflowLogResponse,
   MlflowModel,
@@ -143,7 +147,9 @@ import {
   parseJsonCacheProgressResponse,
   parseJsonCacheSchemaInferenceResponse,
   parseJsonCacheStatusResponse,
-  parseMlflowCheckResponse,
+  parseMlflowSettingsResponse,
+  parseMlflowStatusResponse,
+  parseMlflowTestConnectionResponse,
   parseMlflowExperiments,
   parseMlflowLogResponse,
   parseMlflowModels,
@@ -1242,11 +1248,6 @@ export function fetchExplorePivotMembers(
 // Modelling endpoints
 // ---------------------------------------------------------------------------
 
-export function checkMlflow(
-  options?: { signal?: AbortSignal },
-): Promise<MlflowCheckResponse> {
-  return request<unknown>("/api/modelling/mlflow/check", options).then(parseMlflowCheckResponse)
-}
 
 export function getTrainStatus<T extends TrainStatusResponse = TrainStatusResponse>(
   jobId: string,
@@ -1545,8 +1546,40 @@ export function inferJsonCacheSchema(
 }
 
 // ---------------------------------------------------------------------------
-// MLflow endpoints (used by ModelScoreEditor + OptimiserApplyEditor)
+// MLflow endpoints (connection surface + discovery for the model editors)
 // ---------------------------------------------------------------------------
+
+export function getMlflowStatus(
+  options?: { signal?: AbortSignal },
+): Promise<MlflowStatusResponse> {
+  return request<unknown>("/api/mlflow/status", options).then(parseMlflowStatusResponse)
+}
+
+export function getMlflowSettings(
+  options?: { signal?: AbortSignal },
+): Promise<MlflowSettingsResponse> {
+  return request<unknown>("/api/mlflow/settings", options).then(parseMlflowSettingsResponse)
+}
+
+export function putMlflowSettings(
+  payload: MlflowSettingsUpdateRequest,
+  options?: { signal?: AbortSignal },
+): Promise<MlflowSettingsResponse> {
+  return request<unknown>("/api/mlflow/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    ...options,
+  }).then(parseMlflowSettingsResponse)
+}
+
+export function testMlflowConnection(
+  payload: MlflowTestConnectionRequest = { mode: "" },
+  options?: { signal?: AbortSignal },
+): Promise<MlflowTestConnectionResponse> {
+  return post<unknown>("/api/mlflow/test-connection", payload, options ?? {})
+    .then(parseMlflowTestConnectionResponse)
+}
 
 export function getExperiments(
   options?: { signal?: AbortSignal },

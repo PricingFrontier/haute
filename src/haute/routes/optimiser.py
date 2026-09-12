@@ -22,6 +22,7 @@ from haute._execution_context import (
 )
 from haute._file_ops import atomic_write_text
 from haute._logging import get_logger
+from haute._mlflow_utils import mlflow_fluent_operation
 from haute._polars_utils import (
     DEFAULT_STREAMING_CHUNK_SIZE,
     streaming_collect,
@@ -2284,103 +2285,104 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
         )
 
     try:
-        from haute.modelling._mlflow_log import (
-            build_run_url,
-            configure_mlflow_tracking,
-            resolve_experiment_name,
-        )
-
-        tracking_uri, backend = configure_mlflow_tracking()
-
-        node_label = job.get("node_label", "optimiser")
-        job_config = job.get("config", {})
-        # Invariant from the setup at the top of this function:
-        #   ``selected_frontier_point is None`` IFF ``selected_result is None``
-        # When that's the case, ``solver`` is non-None — the ``else`` branch
-        # above validated it (lines 1421-1441).  mypy doesn't track the
-        # cross-branch invariant, so cast through ``Any`` rather than adding
-        # runtime "fail-loudly" guards that double-check what the surrounding
-        # code already enforces.
-        if selected_frontier_point is None:
-            summary = cast(Any, solver).summary(solve_result)
-        else:
-            summary = _frontier_point_mlflow_summary(
-                job,
-                cast(dict[str, Any], selected_result),
-                selected_frontier_point,
+        with mlflow_fluent_operation():
+            from haute.modelling._mlflow_log import (
+                build_run_url,
+                configure_mlflow_tracking,
+                resolve_experiment_name,
             )
 
-        experiment_name = resolve_experiment_name(
-            explicit=body.experiment_name,
-            config_value=job_config.get("mlflow_experiment"),
-            node_label=node_label,
-            backend=backend,
-        )
-        mlflow.set_experiment(experiment_name)
+            tracking_uri, backend = configure_mlflow_tracking()
 
-        with mlflow.start_run(run_name=node_label) as run:
-            mlflow.log_params(summary["params"])
-            mlflow.log_metrics(summary["metrics"])
-
-            # Log artifacts as JSON files
-            import tempfile
-
-            with tempfile.TemporaryDirectory() as tmpdir:
-                artifacts = summary.get("artifacts", {})
-                for name, data in artifacts.items():
-                    if data is None:
-                        continue
-                    artifact_path = Path(tmpdir) / f"{name}.json"
-                    artifact_path.write_text(json.dumps(data, indent=2, default=str))
-                    mlflow.log_artifact(str(artifact_path))
-
-                # Also log the complete artifact used by OPTIMISER_APPLY
-                complete_payload = _build_artifact_payload(
+            node_label = job.get("node_label", "optimiser")
+            job_config = job.get("config", {})
+            # Invariant from the setup at the top of this function:
+            #   ``selected_frontier_point is None`` IFF ``selected_result is None``
+            # When that's the case, ``solver`` is non-None — the ``else`` branch
+            # above validated it (lines 1421-1441).  mypy doesn't track the
+            # cross-branch invariant, so cast through ``Any`` rather than adding
+            # runtime "fail-loudly" guards that double-check what the surrounding
+            # code already enforces.
+            if selected_frontier_point is None:
+                summary = cast(Any, solver).summary(solve_result)
+            else:
+                summary = _frontier_point_mlflow_summary(
                     job,
-                    solve_result,
-                    selected_frontier_point=selected_frontier_point,
+                    cast(dict[str, Any], selected_result),
+                    selected_frontier_point,
                 )
-                complete_path = Path(tmpdir) / "optimiser_result.json"
-                complete_path.write_text(json.dumps(complete_payload, indent=2, default=str))
-                mlflow.log_artifact(str(complete_path))
 
-                # Log frontier CSV artifact + provenance tags
-                frontier_data = job.get("frontier_data")
-                if frontier_data and frontier_data.get("points"):
-                    import csv
-                    import io
+            experiment_name = resolve_experiment_name(
+                explicit=body.experiment_name,
+                config_value=job_config.get("mlflow_experiment"),
+                node_label=node_label,
+                backend=backend,
+            )
+            mlflow.set_experiment(experiment_name)
 
-                    points = frontier_data["points"]
-                    buf = io.StringIO()
-                    writer = csv.DictWriter(buf, fieldnames=points[0].keys())
-                    writer.writeheader()
-                    writer.writerows(points)
-                    frontier_path = Path(tmpdir) / "frontier.csv"
-                    frontier_path.write_text(buf.getvalue())
-                    mlflow.log_artifact(str(frontier_path))
-                    mlflow.set_tag("frontier.n_points", str(frontier_data["n_points"]))
+            with mlflow.start_run(run_name=node_label) as run:
+                mlflow.log_params(summary["params"])
+                mlflow.log_metrics(summary["metrics"])
 
-                selected_idx = (
-                    selected_frontier_point
-                    if selected_frontier_point is not None
-                    else job.get("selected_frontier_point")
-                )
-                if selected_idx is not None:
-                    mlflow.set_tag("frontier.selected_point_index", str(selected_idx))
+                # Log artifacts as JSON files
+                import tempfile
 
-            run_id = run.info.run_id
-            run_url = build_run_url(backend, experiment_name, run_id)
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    artifacts = summary.get("artifacts", {})
+                    for name, data in artifacts.items():
+                        if data is None:
+                            continue
+                        artifact_path = Path(tmpdir) / f"{name}.json"
+                        artifact_path.write_text(json.dumps(data, indent=2, default=str))
+                        mlflow.log_artifact(str(artifact_path))
 
-        response = OptimiserMlflowLogResponse(
-            status="ok",
-            backend=backend,
-            experiment_name=experiment_name,
-            run_id=run_id,
-            run_url=run_url,
-            tracking_uri=tracking_uri,
-        )
-        _clear_result_data_after_user_action(body.job_id)
-        return response
+                    # Also log the complete artifact used by OPTIMISER_APPLY
+                    complete_payload = _build_artifact_payload(
+                        job,
+                        solve_result,
+                        selected_frontier_point=selected_frontier_point,
+                    )
+                    complete_path = Path(tmpdir) / "optimiser_result.json"
+                    complete_path.write_text(json.dumps(complete_payload, indent=2, default=str))
+                    mlflow.log_artifact(str(complete_path))
+
+                    # Log frontier CSV artifact + provenance tags
+                    frontier_data = job.get("frontier_data")
+                    if frontier_data and frontier_data.get("points"):
+                        import csv
+                        import io
+
+                        points = frontier_data["points"]
+                        buf = io.StringIO()
+                        writer = csv.DictWriter(buf, fieldnames=points[0].keys())
+                        writer.writeheader()
+                        writer.writerows(points)
+                        frontier_path = Path(tmpdir) / "frontier.csv"
+                        frontier_path.write_text(buf.getvalue())
+                        mlflow.log_artifact(str(frontier_path))
+                        mlflow.set_tag("frontier.n_points", str(frontier_data["n_points"]))
+
+                    selected_idx = (
+                        selected_frontier_point
+                        if selected_frontier_point is not None
+                        else job.get("selected_frontier_point")
+                    )
+                    if selected_idx is not None:
+                        mlflow.set_tag("frontier.selected_point_index", str(selected_idx))
+
+                run_id = run.info.run_id
+                run_url = build_run_url(backend, experiment_name, run_id)
+
+            response = OptimiserMlflowLogResponse(
+                status="ok",
+                backend=backend,
+                experiment_name=experiment_name,
+                run_id=run_id,
+                run_url=run_url,
+                tracking_uri=tracking_uri,
+            )
+            _clear_result_data_after_user_action(body.job_id)
+            return response
     except Exception as exc:
         logger.error("mlflow_log_failed", error=str(exc), job_id=body.job_id, exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)

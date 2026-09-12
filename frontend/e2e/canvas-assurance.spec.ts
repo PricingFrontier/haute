@@ -31,6 +31,9 @@ const mixedBandingNarrowSnapshot = process.platform === "linux"
 const rebuiltRatingNarrowSnapshot = process.platform === "linux"
   ? "rebuilt-three-factor-rating-narrow-1024x768-linux.png"
   : "rebuilt-three-factor-rating-narrow-1024x768.png"
+const rebuiltRatingDesktopSnapshot = process.platform === "linux"
+  ? "rebuilt-three-factor-rating-desktop-1440x900-linux.png"
+  : "rebuilt-three-factor-rating-desktop-1440x900.png"
 const selectedOptimiserDesktopSnapshot = process.platform === "linux"
   ? "selected-optimiser-point-desktop-1440x900-linux.png"
   : "selected-optimiser-point-desktop-1440x900.png"
@@ -97,6 +100,23 @@ test.describe.configure({ mode: "serial" })
 test.describe("frontend canvas assurance", () => {
   test.beforeEach(() => {
     resetE2eProject()
+  })
+
+  test("keeps the toolbar and canvas within the viewport", async ({ page }) => {
+    await page.goto("/")
+    await expect(page.getByTestId("toolbar-mlflow-chip")).toBeVisible()
+    for (const width of [1440, 1280, 1024]) {
+      await page.setViewportSize({ width, height: 900 })
+      await expect.poll(() => page.evaluate(() => (
+        document.documentElement.scrollWidth <= document.documentElement.clientWidth
+      ))).toBe(true)
+      await expect(page.getByTestId("toolbar-centre")).toBeInViewport()
+      await expect(page.getByRole("button", { name: "Save", exact: true })).toBeInViewport()
+      await page.getByTestId("toolbar-mlflow-chip").click()
+      await expect(page.getByRole("dialog", { name: "MLflow settings" })).toBeInViewport()
+      await page.getByRole("button", { name: "Close", exact: true }).click()
+      expect(await page.evaluate(() => window.scrollX)).toBe(0)
+    }
   })
 
   test("discovers mixed Banding factors and rebuilds, edits, and reloads a three-factor Rating table by keyboard", async ({
@@ -179,7 +199,7 @@ test.describe("frontend canvas assurance", () => {
 
     await expectCanvasScreenshot(
       ratingPanel,
-      "rebuilt-three-factor-rating-desktop-1440x900.png",
+      rebuiltRatingDesktopSnapshot,
     )
     await page.setViewportSize(narrowViewport)
     await expectCanvasScreenshot(
@@ -218,14 +238,15 @@ test.describe("frontend canvas assurance", () => {
     await page.setViewportSize(desktopViewport)
 
     let mlflowLogRequest: JsonObject | null = null
-    await page.route("**/api/modelling/mlflow/check", async (route) => {
+    await page.route("**/api/mlflow/status", async (route) => {
       await route.fulfill({
         json: {
           mlflow_installed: true,
           mlflow_importable: true,
-          tracking_configured: true,
-          backend: "browser-contract",
-          databricks_host: "",
+          configured: true,
+          mode: "local",
+          destination: "mlruns",
+          config_source: "default",
           detail: "Deterministic Playwright boundary",
         },
       })

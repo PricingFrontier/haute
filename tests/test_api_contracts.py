@@ -461,10 +461,26 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/ExportScriptResponse"},
         },
     },
-    "/api/modelling/mlflow/check": {
+    "/api/mlflow/status": {
         "GET": {
             "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/MlflowCheckResponse"},
+            "success_schema": {"$ref": "#/components/schemas/MlflowStatusResponse"},
+        },
+    },
+    "/api/mlflow/settings": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/MlflowSettingsResponse"},
+        },
+        "PUT": {
+            "request_ref": "#/components/schemas/MlflowSettingsUpdateRequest",
+            "success_schema": {"$ref": "#/components/schemas/MlflowSettingsResponse"},
+        },
+    },
+    "/api/mlflow/test-connection": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/MlflowTestConnectionResponse"},
         },
     },
     "/api/modelling/mlflow/log": {

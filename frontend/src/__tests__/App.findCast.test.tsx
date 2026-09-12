@@ -188,7 +188,7 @@ vi.mock("../components/ErrorBoundary", () => ({
 vi.mock("../api/client", () => ({
   HAUTE_SESSION_EXPIRED_EVENT: "haute:session-expired",
   HAUTE_SESSION_EXPIRED_REASON: "Missing or invalid Haute session token",
-  checkMlflow: vi.fn(() => Promise.resolve({ mlflow_installed: false })),
+  getMlflowStatus: vi.fn(() => Promise.resolve({ mlflow_installed: false })),
   getWorkingBranch: vi.fn(() => Promise.resolve({
     state: "no-repository",
     working_branch: null,
@@ -237,11 +237,12 @@ describe("App — lastSelectedId referencing deleted node resolves cleanly (#38)
     useSettingsStore.setState({
       mlflow: {
         status: "pending",
-        backend: "",
-        host: "",
+        mode: "",
+        destination: "",
+        configSource: "",
         installed: null,
         importable: null,
-        trackingConfigured: null,
+        configured: null,
         detail: "",
       },
       _mlflowFetching: false,

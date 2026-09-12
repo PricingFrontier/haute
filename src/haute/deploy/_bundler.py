@@ -448,9 +448,13 @@ def _download_model_artifact(
     from haute.modelling._mlflow_log import resolve_tracking_backend
 
     tracking_uri, _ = resolve_tracking_backend()
-    mlflow.set_tracking_uri(tracking_uri)
 
-    local_path = _resolve_artifact_local(mlflow, run_id, artifact_path)
+    local_path = _resolve_artifact_local(
+        mlflow,
+        run_id,
+        artifact_path,
+        tracking_uri=tracking_uri,
+    )
     resolved = Path(local_path)
     if not resolved.is_file():
         raise FileNotFoundError(f"MODEL_SCORE artifact not found after download: {local_path}")

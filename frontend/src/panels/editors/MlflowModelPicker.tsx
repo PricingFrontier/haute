@@ -71,6 +71,12 @@ export function RegisteredModelPicker({
             {errorModels}
           </span>
         )}
+        {!errorModels && !loadingModels && models.length === 0 && (
+          <p className="mt-0.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
+            No registered models yet — train a model and log it with a model
+            name to register one.
+          </p>
+        )}
       </div>
       {selectedModel && (
         <div>
@@ -255,6 +261,11 @@ export function ExperimentRunPicker({
             >
               {errorRuns}
             </span>
+          )}
+          {!errorRuns && !loadingRuns && runs.length === 0 && (
+            <p className="mt-0.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
+              No finished runs with a model artifact in this experiment yet.
+            </p>
           )}
         </div>
       )}

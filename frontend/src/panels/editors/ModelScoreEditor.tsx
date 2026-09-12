@@ -48,6 +48,11 @@ export default function ModelScoreEditor({
             accentColor={accentColor}
           />
         </div>
+        <p className="mt-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
+          {sourceType === "registered"
+            ? "Registered model — a named, versioned model in the registry (recommended)."
+            : "Experiment run — pick one specific training run by experiment."}
+        </p>
       </div>
 
       {/* Registered Model Selection */}

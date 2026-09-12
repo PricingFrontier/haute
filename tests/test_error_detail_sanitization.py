@@ -242,13 +242,12 @@ def _databricks_client_patch(attr_chain: str, error_msg: str):
     return patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws)
 
 
-def _mlflow_tracking_patch(attr: str, error_msg: str, on_client: bool = False):
+def _mlflow_tracking_patch(attr: str, error_msg: str):
     """Return a context-manager that patches _ensure_tracking so that the
-    mlflow client (or registry client) raises on *attr*."""
+    destination-pinned MLflow client raises on *attr*."""
     mock_mlflow = MagicMock()
     mock_client = MagicMock()
-    target = mock_client if on_client else mock_mlflow
-    getattr(target, attr).side_effect = RuntimeError(error_msg)
+    getattr(mock_client, attr).side_effect = RuntimeError(error_msg)
     return patch(
         "haute.routes.mlflow._ensure_tracking",
         return_value=(mock_mlflow, mock_client),
@@ -361,7 +360,7 @@ _SIMPLE_SAFE_DETAIL_CASES: list[tuple] = [
         "get",
         "/api/mlflow/models",
         None,
-        lambda err: _mlflow_tracking_patch("search_registered_models", err, on_client=True),
+        lambda err: _mlflow_tracking_patch("search_registered_models", err),
         "PermissionDenied: access token for service-account@corp expired",
         502,
         ["service-account@corp"],

@@ -53,7 +53,7 @@ describe("SummaryTab", () => {
       final_test_rows: 2000,
     })
 
-    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
+    render(<SummaryTab result={result} jobId="j1" config={{}} />)
 
     expect(screen.getByText("/models/test.cbm")).toBeInTheDocument()
     expect(screen.getAllByText("Development rows").length).toBeGreaterThan(0)
@@ -70,7 +70,7 @@ describe("SummaryTab", () => {
       diagnostics_set: "development",
     })
 
-    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
+    render(<SummaryTab result={result} jobId="j1" config={{}} />)
 
     const finalMetrics = screen.getByRole("region", { name: "Final-test metrics" })
     const diagnostics = screen.getByRole("region", { name: "Development diagnostics" })
@@ -95,7 +95,7 @@ describe("SummaryTab", () => {
       diagnostics_set: "development",
     })
 
-    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
+    render(<SummaryTab result={result} jobId="j1" config={{}} />)
 
     expect(screen.queryByText("Final-test metrics")).not.toBeInTheDocument()
     expect(screen.getByText("Development diagnostics")).toBeInTheDocument()
@@ -109,7 +109,7 @@ describe("SummaryTab", () => {
       glm_regularization_path: { selected_alpha: 0, n_nonzero: 0 },
     })
 
-    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
+    render(<SummaryTab result={result} jobId="j1" config={{}} />)
 
     const regularization = screen.getByRole("region", { name: "Regularization" })
     expect(within(regularization).getByText("Alpha")).toBeInTheDocument()
@@ -132,7 +132,7 @@ describe("SummaryTab", () => {
       ],
     })
 
-    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
+    render(<SummaryTab result={result} jobId="j1" config={{}} />)
 
     expect(screen.getByText("Downsampled to 50k rows")).toBeInTheDocument()
     const notice = screen.getByRole("alert", { name: "Diagnostic issues" })
@@ -147,7 +147,7 @@ describe("SummaryTab", () => {
       glm_fit_statistics: { deviance: 1234.56 },
     })
 
-    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
+    render(<SummaryTab result={result} jobId="j1" config={{}} />)
 
     expect(screen.getByText("Best iteration")).toBeInTheDocument()
     expect(screen.getByText("750")).toBeInTheDocument()
@@ -193,7 +193,7 @@ describe("SummaryTab", () => {
       },
     })
 
-    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
+    render(<SummaryTab result={result} jobId="j1" config={{}} />)
 
     expect(screen.getAllByText("2-fold cross-validation").length).toBeGreaterThan(0)
     const aggregate = screen.getByRole("table", { name: "Selection aggregate metrics" })
@@ -215,7 +215,7 @@ describe("SummaryTab", () => {
       <SummaryTab
         result={result}
         jobId="j1"
-        mlflowBackend={null}
+       
         config={{}}
         onUseBestParameters={onUseBestParameters}
         elapsedSeconds={12.5}

@@ -104,8 +104,8 @@ vi.mock("../api/client", async () => {
     dissolveSubmodel: vi.fn(() => Promise.resolve({})),
     // Schema
     fetchSchema: vi.fn(() => Promise.resolve({ columns: [] })),
-    // MLflow — checkMlflow is invoked on startup by useSettingsStore.
-    checkMlflow: vi.fn(() => Promise.resolve({ mlflow_installed: false })),
+    // MLflow — getMlflowStatus is invoked on startup by useSettingsStore.
+    getMlflowStatus: vi.fn(() => Promise.resolve({ mlflow_installed: false })),
     getTrainStatus: vi.fn(() => Promise.resolve({})),
     trainModel: vi.fn(() => Promise.resolve({})),
     estimateTrainingRam: vi.fn(() => Promise.resolve({})),
@@ -297,11 +297,12 @@ function resetAllStores(): void {
     rowLimit: 100,
     mlflow: {
       status: "pending",
-      backend: "",
-      host: "",
+      mode: "",
+      destination: "",
+      configSource: "",
       installed: null,
       importable: null,
-      trackingConfigured: null,
+      configured: null,
       detail: "",
     },
     _mlflowFetching: false,
@@ -466,12 +467,13 @@ beforeEach(() => {
   vi.mocked(api.getExploreCacheSnapshot).mockReset().mockResolvedValue({ state: "missing", message: "No cache", result: null })
   vi.mocked(api.getExploreStatus).mockReset().mockResolvedValue({ status: "running", progress: 0, message: "running", result: null })
   vi.mocked(api.cancelExplore).mockReset().mockResolvedValue({ status: "cancelled", progress: 1, message: "cancelled", result: null })
-  vi.mocked(api.checkMlflow).mockReset().mockResolvedValue({
+  vi.mocked(api.getMlflowStatus).mockReset().mockResolvedValue({
     mlflow_installed: false,
     mlflow_importable: false,
-    tracking_configured: false,
-    backend: "",
-    databricks_host: "",
+    configured: false,
+    mode: "",
+    destination: "",
+    config_source: "",
   })
   vi.mocked(api.listUtilityFiles).mockReset().mockResolvedValue({ files: [] })
   // Default to a healthy clone so the startup modal stays closed; tests that

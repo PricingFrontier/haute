@@ -9,7 +9,7 @@
 | `src/haute/_model_flavors.py` | Single source of truth for the scoring flavor domain: `ModelFlavor` (`Literal["catboost", "pyfunc", "rustystats"]`) and `_SUPPORTED_FLAVORS`, derived via `get_args` so the two can never drift apart. Dependency-free leaf module (see high-level Design rationale for why). |
 | `src/haute/_model_scorer.py` | MODEL_SCORE node logic: the `ModelScorer` class, the unified `score_frame` dispatch (eager vs batched), the feature-validation cache, offset-column resolution, write-projection application, and `score_from_config` (codegen's delegation target). |
 | `src/haute/_model_explainability.py` | Per-prediction SHAP (CatBoost) and native GLM contribution (RustyStats) explanations for trace enrichment, plus `explain_model_score_from_config`, the config-driven entry point trace enrichment calls. |
-| `src/haute/routes/mlflow.py` | FastAPI router (`/api/mlflow/*`) exposing read-only experiment/run/model/version discovery for the MODEL_SCORE node's config UI. |
+| `src/haute/routes/mlflow.py` | FastAPI router (`/api/mlflow/*`) exposing read-only experiment/run/model/version discovery for the MODEL_SCORE node's config UI, plus the connection surface: tracking status, `[mlflow]` settings read/write, and a bounded test-connection probe. |
 | `src/haute/schemas.py` | Shared Pydantic contracts owned by [server-api](../server-api/low-level.md) and returned by the MLflow discovery routes (`MlflowExperimentSummary`, run/model/version summaries). |
 
 ## Key types and data structures
@@ -285,10 +285,23 @@ disagrees with the independently-computed prediction beyond
 traced `prediction_value` disagrees with the model's own response beyond
 the same tolerance.
 
+### Registry-provider representation differences
+
+The wire contracts normalise two provider quirks at the route boundary:
+the file-store registry reports model versions as **ints** where
+Databricks reports strings (`/models`, `/model-versions`, and
+`resolve_version()` all serialise to `str`), and file-store versions carry
+`description=None` where Databricks omits or supplies a string
+(coerced to `""`). A locally registered model therefore surfaces through
+the discovery routes exactly like a Databricks one.
+
 ### Routes (`routes/mlflow.py`)
 
 `_ensure_tracking()` imports mlflow (`ImportError` → `503`), resolves the
-tracking backend and builds a client (`Exception` → `502`, logged).
+tracking backend and builds a client (`Exception` → `502`, logged) with the
+registry URI pinned to the resolved destination (`databricks-uc` for
+Databricks, the tracking URI otherwise) — ambient process-global registry
+state from another destination can never answer discovery queries.
 `list_runs` is O(N) in `max_results` — MLflow has no batch artifacts API,
 so each candidate run gets its own `client.list_artifacts` call to check
 for a matching model/optimiser-result artifact; a run whose artifact
@@ -311,6 +324,88 @@ machine-local claim: production phase measurements provide that evidence, with
 5,000 ms p95 total time at the 100-candidate cap as the operational decision
 gate. The bounded N+1 path is retained, performing one search and capped artifact calls.
 No speculative cache, retry fan-out, or concurrent request burst is added.
+
+### Connection surface (`routes/mlflow.py`)
+
+Discovery clients, registered-source resolution, and native artifact downloads are
+pinned to the same destination without mutating global MLflow tracking state.
+Pyfunc downloads also carry an explicit destination, but MLflow 3's nested
+logged-model resolution consults global tracking state. That download therefore
+uses the shared fluent-operation lock, temporarily selects the requested tracking
+and registry URIs, and restores both URIs and the environment on every exit.
+Loading the downloaded local model happens outside that critical section.
+Experiment discovery follows every continuation token on that same client so
+switching from the fluent API preserves the complete experiment list.
+Databricks profile selection also applies to the Unity Catalog registry. A
+destination switch during logging must neither redirect an existing run nor
+leave it unterminated; existing logs finish against their captured destination.
+
+Three endpoints own connection visibility and configuration. They consume
+`resolve_tracking_config()` / `load_mlflow_settings()` /
+`save_mlflow_settings()` from `haute.modelling._mlflow_settings`
+([modelling](../modelling/low-level.md) owns that contract) and treat
+`MlflowConfigError` as reportable data, never a 5xx:
+
+- **`GET /api/mlflow/status` → `MlflowStatusResponse`** — `mlflow_installed`,
+  `mlflow_importable`, `configured`, `mode`
+  (`""|"databricks"|"server"|"local"`), human-readable `destination`
+  (workspace host, credential-redacted server URI, or absolute runs-folder
+  path), `config_source` (`""|"toml"|"env"|"default"`), and an actionable
+  `detail`. Package presence, importability, and resolution are reported
+  independently; none of the three is inferred from another — a missing or
+  unimportable mlflow package still reports the resolved configuration
+  (resolution needs no mlflow package), and `detail` carries the package
+  problem when there is one, else the configuration problem. A
+  misconfigured selection yields `configured=false` plus the reason — the
+  route never converts `MlflowConfigError` into a 5xx. No response field
+  ever contains a credential embedded in a tracking URI.
+- **`GET /api/mlflow/settings` → `MlflowSettingsResponse`** — the stored
+  `[mlflow]` table verbatim (`section_present`, `mode`, `tracking_uri`,
+  `folder`; empty strings when absent) plus the same resolved
+  `mode`/`destination`/`config_source` trio and `detail`, so the UI can show
+  both what is written and what it currently means.
+- **`PUT /api/mlflow/settings`** (`MlflowSettingsUpdateRequest`: `mode` as a
+  plain string so every invalid value — including an unknown mode — takes
+  the documented `400` path rather than a Pydantic `422`; `tracking_uri=""`,
+  `folder=""`) — validates per mode before writing: `server` requires an
+  `http(s)://` `tracking_uri` with a host and without embedded credentials;
+  `tracking_uri` must be empty for the other modes; `folder` is local-only.
+  Local mode with an empty `folder` persists the currently *resolved* local
+  folder, so saving an unchanged env-derived local configuration keeps its
+  custom folder and the runs already logged there discoverable.
+  The write goes through `save_mlflow_settings()` (tomlkit), replacing only
+  the `[mlflow]` table and preserving every other section, comment, and
+  layout choice, and refuses a `haute.toml` whose resolved path escapes the
+  project root (symlink containment); the response repeats the GET shape
+  after the write. A validation failure → `400` naming the offending field
+  without echoing the rejected value; nothing is written.
+- **`POST /api/mlflow/test-connection` → `MlflowTestConnectionResponse`** —
+  probes a destination with `search_experiments(max_results=1)` under a
+  5-second bound. An optional `MlflowTestConnectionRequest` body with a
+  non-empty `mode` carries a *candidate* selection, validated and resolved
+  via `candidate_tracking_config()` so the user tests exactly what a save
+  would produce (env-credential re-attachment included); an absent body or
+  empty `mode` probes the currently resolved configuration. An invalid
+  candidate reports `category="configuration"` with the field-naming
+  reason. Returns `ok=true`, or `ok=false` with `category`
+  (`"authentication"|"permission"|"missing_resource"|"connectivity"|`
+  `"configuration"|"unknown"`) and a non-secret `detail`. The probe never
+  calls `mlflow.set_tracking_uri` — testing a candidate destination must
+  not mutate the process-global tracking URI other consumers read. The
+  probe runs on a **daemon** worker thread with a hard deadline; an
+  abandoned worker cannot delay process exit, worker slots are bounded
+  (2), a slot frees only when its underlying call returns, and with every
+  slot occupied the route reports a still-running detail instead of
+  spawning more workers. Categories map from MLflow
+  `RestException.error_code` values (`UNAUTHENTICATED` and
+  invalid-credential codes → authentication; `PERMISSION_DENIED` →
+  permission; `RESOURCE_DOES_NOT_EXIST` → missing_resource), transport
+  connection/timeout errors → connectivity, and `MlflowConfigError` →
+  configuration. Classification walks the full
+  `__cause__`/`__context__` exception chain — MLflow wraps transport
+  failures in `MlflowException`, so the outer type alone is never
+  trusted — and never keys on exception class alone. Expected probe
+  failures never surface as 5xx.
 
 `list_model_versions` fetches each version's backing-run params
 via `_model_version_run_params`, which swallows (and logs with a full
@@ -417,8 +512,12 @@ endpoint.
 | Multiclass / malformed `predict_proba` shape | `ValueError` | `_positive_class_proba_vector`, shared by eager and batch. |
 | Write projection references un-produced/un-preserved columns | `ValueError` | `_score_output_projection_columns`. |
 | Explanation reconstruction/shape/finiteness failures | `ModelExplanationError` | `_model_explainability.py`, both `explain_catboost_prediction` and `explain_rustystats_glm_prediction`. |
-| MLflow search call failure in a discovery route | Logged `Exception` → `HTTPException(502, _INTERNAL_ERROR_DETAIL)` | `routes/mlflow.py`; the real error is never sent to the client. |
+| MLflow search call failure in a discovery route | Logged `Exception` → `HTTPException(502)` with a category-mapped, non-secret detail | `routes/mlflow.py::_discovery_http_error` — the same chain-walking classifier as the probe maps authentication (".env credentials"), permission, missing-resource, and connectivity failures to actionable messages; anything unclassified keeps `_INTERNAL_ERROR_DETAIL`. The real error text is never sent to the client. |
+| Tracking misconfiguration in `_ensure_tracking` | `MlflowConfigError` → `HTTPException(502, str(exc))` | Configuration messages are haute's own, actionable and secret-free, so they surface verbatim; other setup failures keep the generic detail. |
 | Registered model version's backing run inaccessible | Swallowed (`Exception`), logged with `logger.exception` | `_model_version_run_params` returns `{}` for that version only; the endpoint still returns `200`. |
+| Misconfigured tracking selection reaching the connection surface | `MlflowConfigError` caught | `/status` reports `configured=false` + reason; `/test-connection` reports `category="configuration"`; discovery routes still propagate it via `_ensure_tracking` → `502`. |
+| Invalid settings update (bad mode, non-`http(s)` server URI, field for the wrong mode) | `HTTPException(400)` naming the field | `PUT /api/mlflow/settings`, before any write. |
+| Probe failure in test-connection | Classified result, never a 5xx | `POST /api/mlflow/test-connection` — `RestException.error_code` + transport errors → `category`/`detail`. |
 
 `FeatureMismatchError`, `ConfigError`, and `ModelExplanationError`'s
 sibling errors in this component all carry structured context — see
@@ -491,6 +590,26 @@ to a live MLflow tracking server.
 - **`tests/test_mlflow_utils.py`** — `search_versions` (name quoting) and
   `resolve_version` (`"latest"` resolution, explicit version passthrough,
   no-versions-found error).
+- **`tests/test_mlflow_connection_routes.py`** — the connection surface plus
+  registry parity: a model registered in a real local file store surfaces
+  through `/models` and `/model-versions` with string versions and the
+  backing run id (pinning the int-version and null-description provider
+  normalisations); the connection surface itself:
+  status truthfulness in all three modes, for misconfigured selections
+  (`configured=false` + reason, never a 5xx), and package/configuration
+  independence (missing or unimportable mlflow still reports the resolved
+  configuration); credential redaction across status and settings
+  responses; settings GET/PUT round trip against a real `haute.toml`
+  (layout preservation, per-mode `400` validation including unknown modes
+  and credential-bearing URIs without echoing them, resolved-folder
+  persistence); an end-to-end regression proving a run logged in an
+  env-selected folder remains discoverable through
+  `/api/mlflow/experiments` after an unchanged local save; test-connection
+  classification with one named case per category plus a wrapped
+  `MlflowException` transport chain and a real dead-port transport
+  boundary; and probe mechanics (deadline on hanging work, daemon workers,
+  bounded slots with a still-running busy report, request shape with no
+  global tracking-URI mutation).
 - **`tests/test_mlflow_routes.py`** — full FastAPI coverage of every
   route: experiments/runs/models/model-versions happy paths, the
   artifact-filter behaviour of `/runs` (model vs optimiser), a failing

@@ -11,15 +11,16 @@ import {
   useStaleConfigEstimate,
   type UseStaleConfigEstimateResult,
 } from "../hooks/useStaleConfigEstimate"
+import { useMlflowBrowser } from "../hooks/useMlflowBrowser"
 import useGraphStore from "../stores/useGraphStore"
 import useNodeResultsStore, { type TrainProgress, type TrainResult } from "../stores/useNodeResultsStore"
 import {
   captureDocumentExecutionFence,
   isDocumentExecutionFenceCurrent,
 } from "../stores/useDocumentStatusStore"
-import useSettingsStore from "../stores/useSettingsStore"
+import useSettingsStore, { useMlflowStatus } from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
-import type { ModellingPane } from "../stores/useUIStore"
+import useUIStore, { type ModellingPane } from "../stores/useUIStore"
 import { configField } from "../utils/configField"
 import {
   executionErrorDetailMessage,
@@ -161,6 +162,13 @@ type TrainPaneProps = {
   onTrain: () => void
   onCancel: () => void
   tuningEnabled: boolean
+  nodeLabel: string
+}
+
+const MLFLOW_MODE_NAMES: Record<string, string> = {
+  databricks: "Databricks",
+  server: "MLflow server",
+  local: "Local folder",
 }
 
 function TrainPane({
@@ -177,9 +185,21 @@ function TrainPane({
   onTrain,
   onCancel,
   tuningEnabled,
+  nodeLabel,
 }: TrainPaneProps) {
   const rowLimit = typeof config.row_limit === "number" ? config.row_limit : null
   const [validationRevealed, setValidationRevealed] = useState(false)
+
+  const { mlflowStatus, mlflowMode, mlflowDestination, mlflowDetail } = useMlflowStatus()
+  const setMlflowSettingsOpen = useUIStore((s) => s.setMlflowSettingsOpen)
+  const mlflowConnected = mlflowStatus === "connected"
+  const defaultExperimentName =
+    mlflowMode === "databricks" ? `/Shared/haute/${nodeLabel}` : nodeLabel
+  const { experiments, refreshExperiments } = useMlflowBrowser()
+  const loadExperimentOptions = () => {
+    if (!mlflowConnected) return
+    refreshExperiments()
+  }
 
   const toggleGpu = (enabled: boolean) => {
     const { task_type: _taskType, ...nonGpuParams } = params
@@ -247,6 +267,30 @@ function TrainPane({
         >
           MLflow Logging
         </h3>
+        <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+          Used when you press “Log run to MLflow” after training completes —
+          nothing is logged automatically.
+        </p>
+        {mlflowConnected ? (
+          <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+            Logging destination: {MLFLOW_MODE_NAMES[mlflowMode] ?? mlflowMode} — {mlflowDestination}
+          </p>
+        ) : (
+          <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+            {mlflowStatus === "loading"
+              ? "Checking MLflow…"
+              : `MLflow is off${mlflowDetail ? ` — ${mlflowDetail}` : ""}. `}
+            {mlflowStatus !== "loading" && (
+              <button
+                onClick={() => setMlflowSettingsOpen(true)}
+                className="underline"
+                style={{ color: "var(--text-accent)" }}
+              >
+                Configure MLflow
+              </button>
+            )}
+          </p>
+        )}
         <label className="block text-[11px]" style={{ color: "var(--text-muted)" }}>
           Experiment path
           <CommittedTextField
@@ -254,10 +298,18 @@ function TrainPane({
             aria-label="MLflow experiment path"
             value={configField(config, "mlflow_experiment", "")}
             onCommit={(value) => onUpdate("mlflow_experiment", value)}
-            placeholder="MLflow experiment"
+            placeholder={defaultExperimentName}
+            title={`Leave blank to use the default: ${defaultExperimentName}`}
+            list="mlflow-experiment-options"
+            onFocus={loadExperimentOptions}
             className="mt-0.5 w-full rounded-lg px-2.5 py-1.5 text-xs font-mono"
             style={TRAIN_INPUT_STYLE}
           />
+          <datalist id="mlflow-experiment-options">
+            {experiments.map((experiment) => (
+              <option key={experiment.experiment_id} value={experiment.name} />
+            ))}
+          </datalist>
         </label>
         <label className="block text-[11px]" style={{ color: "var(--text-muted)" }}>
           Model name
@@ -267,6 +319,7 @@ function TrainPane({
             value={configField(config, "model_name", "")}
             onCommit={(value) => onUpdate("model_name", value)}
             placeholder="MLflow model name"
+            title="Optional: also register the logged model under this name"
             className="mt-0.5 w-full rounded-lg px-2.5 py-1.5 text-xs font-mono"
             style={TRAIN_INPUT_STYLE}
           />
@@ -541,6 +594,7 @@ export default function ModellingConfig({
       onTrain={onTrain}
       onCancel={onCancel}
       tuningEnabled={tuning !== null}
+      nodeLabel={allNodes.find((node) => node.id === nodeId)?.data.label ?? "model"}
     />
   )
 

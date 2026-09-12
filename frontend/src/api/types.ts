@@ -519,12 +519,54 @@ export interface OutputAssembleDryRunResponse {
 // Modelling types
 // ---------------------------------------------------------------------------
 
-export interface MlflowCheckResponse {
+export interface MlflowStatusResponse {
   mlflow_installed: boolean
   mlflow_importable: boolean
-  tracking_configured: boolean
-  backend: string
-  databricks_host: string
+  configured: boolean
+  mode: "" | "databricks" | "server" | "local"
+  destination: string
+  config_source: "" | "toml" | "env" | "default"
+  detail?: string
+}
+
+export interface MlflowResolvedDestination {
+  mode: "databricks" | "server" | "local"
+  destination: string
+  config_source: "toml" | "env" | "default"
+}
+
+export interface MlflowSettingsResponse {
+  section_present: boolean
+  mode: string
+  tracking_uri: string
+  folder: string
+  resolved: MlflowResolvedDestination | null
+  detail?: string
+}
+
+export interface MlflowSettingsUpdateRequest {
+  mode: "databricks" | "server" | "local"
+  tracking_uri?: string
+  folder?: string
+}
+
+export interface MlflowTestConnectionRequest {
+  /** Empty mode probes the currently saved/resolved configuration. */
+  mode: "" | "databricks" | "server" | "local"
+  tracking_uri?: string
+  folder?: string
+}
+
+export interface MlflowTestConnectionResponse {
+  ok: boolean
+  category:
+    | ""
+    | "authentication"
+    | "permission"
+    | "missing_resource"
+    | "connectivity"
+    | "configuration"
+    | "unknown"
   detail?: string
 }
 

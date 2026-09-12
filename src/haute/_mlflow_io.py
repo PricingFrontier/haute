@@ -22,7 +22,12 @@ import polars as pl
 
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
-from haute._mlflow_utils import resolve_mlflow_source
+from haute._mlflow_utils import (
+    mlflow_fluent_operation,
+    registry_uri_for_tracking,
+    resolve_mlflow_source,
+    set_tracking_uri_preserving_env,
+)
 from haute._model_flavors import _SUPPORTED_FLAVORS, ModelFlavor
 
 if TYPE_CHECKING:
@@ -521,10 +526,27 @@ def load_local_model(path: str, task: str = "regression") -> ScoringModel:
 # ---------------------------------------------------------------------------
 
 
-def _load_pyfunc_model(mlflow_module: Any, run_id: str, artifact_path: str) -> Any:
+def _load_pyfunc_model(
+    mlflow_module: Any,
+    run_id: str,
+    artifact_path: str,
+    *,
+    tracking_uri: str | None = None,
+) -> Any:
     """Load a model via MLflow pyfunc flavor."""
     model_uri = f"runs:/{run_id}/{artifact_path}"
-    return mlflow_module.pyfunc.load_model(model_uri)
+    # MLflow 3's nested logged-model repository still constructs a client from
+    # global state, even when download_artifacts receives tracking_uri. Share
+    # the fluent lock with logging so this lookup cannot redirect an active run.
+    with mlflow_fluent_operation():
+        if tracking_uri is not None:
+            set_tracking_uri_preserving_env(mlflow_module, tracking_uri)
+            mlflow_module.set_registry_uri(registry_uri_for_tracking(tracking_uri))
+        local_path = mlflow_module.artifacts.download_artifacts(
+            model_uri,
+            tracking_uri=tracking_uri,
+        )
+    return mlflow_module.pyfunc.load_model(local_path)
 
 
 def _wrap_pyfunc(model: Any) -> ScoringModel:
@@ -704,6 +726,8 @@ def _resolve_artifact_local(
     mlflow: Any,
     run_id: str,
     artifact_path: str,
+    *,
+    tracking_uri: str | None = None,
 ) -> str:
     """Return a local path to the model artifact, downloading only if needed.
 
@@ -721,13 +745,20 @@ def _resolve_artifact_local(
     never land on a file another thread is concurrently writing.
     """
     with _disk_cache_run_in_use(run_id):
-        return _resolve_artifact_local_in_use(mlflow, run_id, artifact_path)
+        return _resolve_artifact_local_in_use(
+            mlflow,
+            run_id,
+            artifact_path,
+            tracking_uri=tracking_uri,
+        )
 
 
 def _resolve_artifact_local_in_use(
     mlflow: Any,
     run_id: str,
     artifact_path: str,
+    *,
+    tracking_uri: str | None = None,
 ) -> str:
     """Implementation for ``_resolve_artifact_local`` while eviction is guarded."""
     import shutil
@@ -768,6 +799,7 @@ def _resolve_artifact_local_in_use(
             downloaded = mlflow.artifacts.download_artifacts(
                 f"runs:/{run_id}/{artifact_path}",
                 dst_path=str(tmp_dir),
+                tracking_uri=tracking_uri,
             )
             downloaded_path = Path(downloaded)
             if not downloaded_path.is_file():
@@ -878,6 +910,7 @@ def _load_with_bounded_retry(
     artifact: str,
     flavor: str,
     task: str,
+    tracking_uri: str | None = None,
 ) -> ScoringModel:
     """Resolve artifact and load the model with a bounded retry window.
 
@@ -895,7 +928,12 @@ def _load_with_bounded_retry(
     for attempt in range(1, _LOAD_MAX_ATTEMPTS + 1):
         local_path: str | None = None
         try:
-            local_path = _resolve_artifact_local(mlflow_mod, run_id, artifact)
+            local_path = _resolve_artifact_local(
+                mlflow_mod,
+                run_id,
+                artifact,
+                tracking_uri=tracking_uri,
+            )
             if flavor == "catboost":
                 raw = _load_catboost_model(local_path, task)
                 return _wrap_catboost(raw)
@@ -1106,6 +1144,7 @@ def load_mlflow_model(
                 mlflow_mod,
                 resolved_run_id,
                 resolved_artifact,
+                tracking_uri=client.tracking_uri,
             )
             artifact_fp = _local_artifact_fingerprint(resolved_artifact, local_artifact_path)
 
@@ -1165,6 +1204,7 @@ def load_mlflow_model(
                     artifact=resolved_artifact,
                     flavor=flavor,
                     task=task,
+                    tracking_uri=client.tracking_uri,
                 )
                 # The bounded retry may have deleted and re-downloaded the
                 # artifact; re-derive the fingerprint so the entry is keyed
@@ -1182,7 +1222,12 @@ def load_mlflow_model(
                     ),
                 )
         else:
-            raw_model = _load_pyfunc_model(mlflow_mod, resolved_run_id, resolved_artifact)
+            raw_model = _load_pyfunc_model(
+                mlflow_mod,
+                resolved_run_id,
+                resolved_artifact,
+                tracking_uri=client.tracking_uri,
+            )
             scoring_model = _wrap_pyfunc(raw_model)
 
         _model_cache.put(cache_key, scoring_model)

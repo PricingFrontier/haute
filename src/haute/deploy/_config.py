@@ -171,6 +171,9 @@ _VALID_TOML_SCHEMA: dict[str, set[str] | dict[str, set[str]]] = {
         "gcp-run": {"project", "region", "service"},
     },
     "test_quotes": {"dir"},
+    # Owned by the MLflow settings endpoint (routes/mlflow.py), not deploy;
+    # listed so whole-file validation accepts the file that endpoint writes.
+    "mlflow": {"mode", "tracking_uri", "folder"},
     "safety": {
         "_self": {"impact_dataset"},
         "approval": {"min_approvers"},

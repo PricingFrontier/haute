@@ -34,7 +34,6 @@ from haute.schemas import (
     ExportScriptResponse,
     LogExperimentRequest,
     LogExperimentResponse,
-    MlflowCheckResponse,
     ModelCacheClearResponse,
     TrainEstimateRequest,
     TrainEstimateResponse,
@@ -279,57 +278,6 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
         gpu_vram_available_mb=vram_check.available_mb,
         gpu_warning=vram_check.warning,
         evaluation_preview=evaluation_preview_payload,
-    )
-
-
-@router.get("/mlflow/check", response_model=MlflowCheckResponse)
-async def mlflow_check() -> MlflowCheckResponse:
-    """Check whether MLflow is installed and detect the tracking backend."""
-    import importlib
-    import importlib.util
-
-    if importlib.util.find_spec("mlflow") is None:
-        return MlflowCheckResponse(
-            mlflow_installed=False,
-            mlflow_importable=False,
-            tracking_configured=False,
-            detail="MLflow package is not installed",
-        )
-
-    try:
-        importlib.import_module("mlflow")
-    except ImportError as exc:
-        logger.warning("mlflow_check_package_import_failed", error=str(exc))
-        return MlflowCheckResponse(
-            mlflow_installed=True,
-            mlflow_importable=False,
-            tracking_configured=False,
-            detail=f"MLflow package import failed: {exc}",
-        )
-
-    import os
-
-    from haute.modelling._mlflow_log import resolve_tracking_backend
-
-    try:
-        _uri, backend = resolve_tracking_backend()
-    except Exception as exc:
-        logger.warning("mlflow_check_backend_resolution_failed", error=str(exc))
-        return MlflowCheckResponse(
-            mlflow_installed=True,
-            mlflow_importable=True,
-            tracking_configured=False,
-            detail=str(exc),
-        )
-
-    databricks_host = os.getenv("DATABRICKS_HOST", "") if backend == "databricks" else ""
-
-    return MlflowCheckResponse(
-        mlflow_installed=True,
-        mlflow_importable=True,
-        tracking_configured=True,
-        backend=backend,
-        databricks_host=databricks_host,
     )
 
 

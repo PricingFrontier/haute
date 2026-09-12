@@ -111,6 +111,46 @@ describe("ModelScoreEditor", () => {
   afterEach(cleanup)
 
   // 1. Renders with default registered source type
+  it("explains the selected model source in plain language", () => {
+    const { unmount } = render(<ModelScoreEditor {...defaultProps()} />)
+    expect(screen.getByText(/named, versioned model in the registry/i)).toBeInTheDocument()
+    unmount()
+
+    render(<ModelScoreEditor {...defaultProps()} config={{ sourceType: "run" }} />)
+    expect(screen.getByText(/pick one specific training run/i)).toBeInTheDocument()
+  })
+
+  it("shows an empty-state hint when no registered models exist", () => {
+    render(<ModelScoreEditor {...defaultProps()} />)
+    expect(
+      screen.getByText(/No registered models yet — train a model and log it with a model name/i),
+    ).toBeInTheDocument()
+  })
+
+  it("hides the empty-state hint when models exist", () => {
+    mockMlflow.models = [
+      { name: "motor-pricing", latest_versions: [] },
+    ]
+    try {
+      render(<ModelScoreEditor {...defaultProps()} />)
+      expect(screen.queryByText(/No registered models yet/i)).toBeNull()
+    } finally {
+      mockMlflow.models = []
+    }
+  })
+
+  it("shows an empty-runs hint once an experiment is chosen and no runs match", () => {
+    mockMlflow.browseExpId = "1"
+    try {
+      render(<ModelScoreEditor {...defaultProps()} config={{ sourceType: "run" }} />)
+      expect(
+        screen.getByText(/No finished runs with a model artifact in this experiment yet/i),
+      ).toBeInTheDocument()
+    } finally {
+      mockMlflow.browseExpId = ""
+    }
+  })
+
   it("renders with default registered source type selected", () => {
     render(<ModelScoreEditor {...defaultProps()} />)
     const registeredBtn = screen.getByText("Registered Model")

@@ -51,6 +51,10 @@ Out of scope, owned elsewhere:
   own, by design — see [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/high-level.md).
 - Scoring a trained model against new data at serve time — see
   [mlflow-model-registry](../mlflow-model-registry/high-level.md).
+- The MLflow connection status/settings/test-connection HTTP surface (including
+  persistence of the `[mlflow]` section of `haute.toml`) — see
+  [mlflow-model-registry](../mlflow-model-registry/high-level.md); this component
+  owns the resolution helpers those endpoints and the logging path share.
 - Pipeline graph compilation and lazy execution — see
   [execution-engine](../execution-engine/high-level.md).
 - Background job storage, lifecycle state machine, and cancellation plumbing — see
@@ -115,9 +119,12 @@ compatibility facade and route own no duplicate state or worker implementation.
   live training.
 - `POST /api/modelling/mlflow/log` logs an already-completed job's results to MLflow
   after the fact (the "Log to MLflow" button), reusing the persisted feature contract
-  so the logged model's signature matches what was actually trained. Databricks
-  registry publication uses the logged `runs:/…/model` URI and is best-effort:
-  a registry error is logged without discarding the successful run.
+  so the logged model's signature matches what was actually trained. When a model name
+  is supplied, registry publication uses the logged `runs:/…/model` URI on **every**
+  backend — Databricks registers into Unity Catalog via the `databricks-uc` registry
+  URI, while server and local registries follow the tracking store (the mlflow 3.x
+  file store is registry-capable) — and is best-effort: a registry error is logged
+  without discarding the successful run.
 - `POST /api/modelling/train/cancel/{job_id}` is idempotent. If cancellation wins the
   terminal race, it marks the run cancelled and trips the same token used by upstream
   preparation and the spawned fit worker; if another terminal transition won first,

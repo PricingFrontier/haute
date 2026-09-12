@@ -37,7 +37,9 @@ import {
   parseJsonCacheSchemaInferenceResponse,
   parseFileListResponse,
   parseMlflowExperiments,
-  parseMlflowCheckResponse,
+  parseMlflowSettingsResponse,
+  parseMlflowStatusResponse,
+  parseMlflowTestConnectionResponse,
   parseMlflowLogResponse,
   parseMlflowModels,
   parseMlflowModelVersions,
@@ -1837,13 +1839,16 @@ describe("API response guards", () => {
   })
 
   it("parses modelling preflight payloads", () => {
-    const mlflow = parseMlflowCheckResponse(loadUiContractFixture("mlflow_check_response"))
+    const mlflow = parseMlflowStatusResponse(loadUiContractFixture("mlflow_status_response"))
     const estimate = parseTrainEstimateResponse(loadUiContractFixture("train_estimate_response"))
     const log = parseMlflowLogResponse(loadUiContractFixture("mlflow_log_response"))
 
     expect(mlflow.mlflow_installed).toBe(true)
     expect(mlflow.mlflow_importable).toBe(true)
-    expect(mlflow.tracking_configured).toBe(true)
+    expect(mlflow.configured).toBe(true)
+    expect(mlflow.mode).toBe("databricks")
+    expect(mlflow.destination).toBe("https://adb-12345.azuredatabricks.net")
+    expect(mlflow.config_source).toBe("env")
     expect(mlflow.detail).toBe("")
     expect(estimate.estimated_mb).toBe(12.5)
     expect(log.run_id).toBe("run-123")
@@ -2144,22 +2149,75 @@ describe("API response guards", () => {
     ).toThrow(/nodes/i)
   })
 
-  it("rejects malformed mlflow check payloads", () => {
-    const fixture = loadUiContractFixture<Record<string, unknown>>("mlflow_check_response")
+  it("parses mlflow settings and test-connection payloads", () => {
+    const settings = parseMlflowSettingsResponse(loadUiContractFixture("mlflow_settings_response"))
+    expect(settings.section_present).toBe(true)
+    expect(settings.mode).toBe("server")
+    expect(settings.tracking_uri).toBe("http://localhost:5000")
+    expect(settings.resolved).toEqual({
+      mode: "server",
+      destination: "http://localhost:5000",
+      config_source: "toml",
+    })
+
+    const probe = parseMlflowTestConnectionResponse(
+      loadUiContractFixture("mlflow_test_connection_response"),
+    )
+    expect(probe.ok).toBe(false)
+    expect(probe.category).toBe("connectivity")
+  })
+
+  it("rejects malformed mlflow settings and test-connection payloads", () => {
+    const settings = loadUiContractFixture<Record<string, unknown>>("mlflow_settings_response")
+    expect(() =>
+      parseMlflowSettingsResponse({ ...settings, section_present: "yes" }),
+    ).toThrow(/section_present/i)
+    expect(() =>
+      parseMlflowSettingsResponse({
+        ...settings,
+        resolved: { mode: "filesystem", destination: "x", config_source: "toml" },
+      }),
+    ).toThrow(/mode/i)
+
+    const probe = loadUiContractFixture<Record<string, unknown>>(
+      "mlflow_test_connection_response",
+    )
+    expect(() => parseMlflowTestConnectionResponse({ ...probe, ok: "no" })).toThrow(/`ok`/i)
+    expect(() =>
+      parseMlflowTestConnectionResponse({ ...probe, category: "offline" }),
+    ).toThrow(/category/i)
+  })
+
+  it("rejects malformed mlflow status payloads", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("mlflow_status_response")
 
     expect(() =>
-      parseMlflowCheckResponse({
+      parseMlflowStatusResponse({
         ...fixture,
         mlflow_installed: "yes",
       }),
     ).toThrow(/mlflow_installed/i)
 
     expect(() =>
-      parseMlflowCheckResponse({
+      parseMlflowStatusResponse({
         ...fixture,
-        tracking_configured: "yes",
+        configured: "yes",
       }),
-    ).toThrow(/tracking_configured/i)
+    ).toThrow(/configured/i)
+
+    expect(() =>
+      parseMlflowStatusResponse({
+        ...fixture,
+        mode: "filesystem",
+      }),
+    ).toThrow(/mode/i)
+
+    expect(() =>
+      parseMlflowStatusResponse({
+        ...fixture,
+        config_source: "registry",
+      }),
+    ).toThrow(/config_source/i)
   })
 
   it("rejects malformed utility write payloads", () => {
