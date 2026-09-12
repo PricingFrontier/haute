@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     import types as _types
 
     from mlflow.tracking import MlflowClient
+    from mlflow.utils.rest_utils import MlflowHostCreds
 
 from haute._logging import get_logger
 from haute._mlflow_utils import (
@@ -359,18 +360,56 @@ def _run_probe_bounded(
         raise result
 
 
+_PROBE_SEARCH_ENDPOINT = "/api/2.0/mlflow/experiments/search"
+
+
+def _probe_host_creds(tracking_uri: str) -> MlflowHostCreds:
+    """The credentials MLflow's own REST store would use for *tracking_uri*."""
+    if tracking_uri == "databricks" or tracking_uri.startswith("databricks://"):
+        from mlflow.utils.databricks_utils import get_databricks_host_creds
+
+        return get_databricks_host_creds(tracking_uri)
+    from mlflow.tracking._tracking_service.utils import get_default_host_creds
+
+    return get_default_host_creds(tracking_uri)
+
+
 def _search_experiments_probe(tracking_uri: str) -> None:
-    """One ``search_experiments`` call against *tracking_uri* (the real
-    network body of the connection test; bounding runs in the caller).
+    """One ``experiments/search`` call against *tracking_uri* — the real
+    network body of the connection test.
+
+    A REST destination (server or Databricks) gets exactly one HTTP attempt
+    with retries disabled and the connect/read timeout set to the probe
+    budget. MLflow's client defaults (120 s timeout, 7 retries, exponential
+    backoff) would keep an abandoned worker — and the probe slot it holds —
+    busy for minutes after the route has already reported the failure. The
+    local file store has no transport, so it is probed through the client.
 
     Deliberately never calls ``mlflow.set_tracking_uri``: probing a
     candidate destination must not mutate the process-global tracking URI
     other consumers read.
     """
-    import mlflow.tracking
+    from haute.modelling._mlflow_settings import classify_tracking_uri
 
     allow_file_store_if_local(tracking_uri)
-    mlflow.tracking.MlflowClient(tracking_uri=tracking_uri).search_experiments(max_results=1)
+    if classify_tracking_uri(tracking_uri)[0] == "local":
+        import mlflow.tracking
+
+        mlflow.tracking.MlflowClient(tracking_uri=tracking_uri).search_experiments(max_results=1)
+        return
+
+    from mlflow.utils.rest_utils import http_request, verify_rest_response
+
+    response = http_request(
+        _probe_host_creds(tracking_uri),
+        _PROBE_SEARCH_ENDPOINT,
+        "POST",
+        json={"max_results": 1},
+        max_retries=0,
+        timeout=_PROBE_TIMEOUT_SECONDS,
+        retry_timeout_seconds=_PROBE_TIMEOUT_SECONDS,
+    )
+    verify_rest_response(response, _PROBE_SEARCH_ENDPOINT)
 
 
 def _iter_exception_chain(exc: BaseException) -> list[BaseException]:

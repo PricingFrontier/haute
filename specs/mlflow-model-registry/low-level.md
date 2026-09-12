@@ -380,8 +380,8 @@ Three endpoints own connection visibility and configuration. They consume
   after the write. A validation failure → `400` naming the offending field
   without echoing the rejected value; nothing is written.
 - **`POST /api/mlflow/test-connection` → `MlflowTestConnectionResponse`** —
-  probes a destination with `search_experiments(max_results=1)` under a
-  5-second bound. An optional `MlflowTestConnectionRequest` body with a
+  probes a destination with one `experiments/search` request for a single
+  experiment under a 5-second bound. An optional `MlflowTestConnectionRequest` body with a
   non-empty `mode` carries a *candidate* selection, validated and resolved
   via `candidate_tracking_config()` so the user tests exactly what a save
   would produce (env-credential re-attachment included); an absent body or
@@ -396,7 +396,16 @@ Three endpoints own connection visibility and configuration. They consume
   abandoned worker cannot delay process exit, worker slots are bounded
   (2), a slot frees only when its underlying call returns, and with every
   slot occupied the route reports a still-running detail instead of
-  spawning more workers. Categories map from MLflow
+  spawning more workers. The underlying call is itself bounded: a REST
+  destination (server or Databricks) is probed with exactly one HTTP
+  attempt — retries disabled and the connect/read timeout set to the probe
+  budget — using the same host credentials MLflow's own REST store would
+  resolve for that URI, so an abandoned worker returns within about two
+  probe budgets and frees its slot. MLflow's client defaults (120 s
+  timeout, 7 retries, exponential backoff) would otherwise keep the slot
+  occupied for minutes after the route had answered, and two failed tests
+  would lock the connection test out for that long. The local file store
+  has no transport and is probed through the client. Categories map from MLflow
   `RestException.error_code` values (`UNAUTHENTICATED` and
   invalid-credential codes → authentication; `PERMISSION_DENIED` →
   permission; `RESOURCE_DOES_NOT_EXIST` → missing_resource), transport
@@ -607,9 +616,13 @@ to a live MLflow tracking server.
   `/api/mlflow/experiments` after an unchanged local save; test-connection
   classification with one named case per category plus a wrapped
   `MlflowException` transport chain and a real dead-port transport
-  boundary; and probe mechanics (deadline on hanging work, daemon workers,
-  bounded slots with a still-running busy report, request shape with no
-  global tracking-URI mutation).
+  boundary run under MLflow's default retry policy, proving both probe
+  slots are free again once the route has answered; and probe mechanics
+  (deadline on hanging work, daemon workers, bounded slots with a
+  still-running busy report, and the per-destination request shape — one
+  retry-free, timeout-bounded request with the REST store's host
+  credentials for server and Databricks, the file-store client for local,
+  never a global tracking-URI mutation).
 - **`tests/test_mlflow_routes.py`** — full FastAPI coverage of every
   route: experiments/runs/models/model-versions happy paths, the
   artifact-filter behaviour of `/runs` (model vs optimiser), a failing

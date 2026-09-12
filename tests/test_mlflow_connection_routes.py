@@ -388,16 +388,35 @@ class TestTestConnection:
     def test_real_transport_boundary_dead_port_is_connectivity(
         self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # No probe patching: this exercises the real MLflow REST transport
-        # against a closed local port, with retries/timeout bounded.
-        monkeypatch.setenv("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "0")
-        monkeypatch.setenv("MLFLOW_HTTP_REQUEST_TIMEOUT", "2")
+        # No probe patching and no retry/timeout environment overrides: this
+        # exercises the real MLflow REST transport against a closed local
+        # port under MLflow's own defaults (120 s timeout, 7 retries with
+        # exponential backoff). The probe must bound its single attempt
+        # itself — otherwise the abandoned worker keeps retrying for minutes
+        # after the route has answered and its slot stays occupied, locking
+        # later tests out with a "still running" busy report.
+        import threading
+
+        import haute.routes.mlflow as mlflow_routes
+
+        fresh = threading.BoundedSemaphore(2)
+        monkeypatch.setattr(mlflow_routes, "_PROBE_SLOTS", fresh)
         _write_mlflow_section(
             project_root, 'mode = "server"\ntracking_uri = "http://127.0.0.1:1"\n'
         )
         body = client.post("/api/mlflow/test-connection").json()
         assert body["ok"] is False
         assert body["category"] == "connectivity"
+
+        # The worker finished with the route, so both slots are free again.
+        held = 0
+        try:
+            for _ in range(2):
+                assert fresh.acquire(timeout=2), "probe worker still holds its slot"
+                held += 1
+        finally:
+            for _ in range(held):
+                fresh.release()
 
     def test_unexpected_error_is_unknown_and_not_5xx(self, client, project_root: Path) -> None:
         with patch(
@@ -502,21 +521,73 @@ class TestProbeMechanics:
                     drained += 1
             assert drained == 2, "probe workers did not release their slots"
 
-    def test_search_probe_request_shape_and_no_global_mutation(self) -> None:
+    def test_server_probe_is_one_bounded_request_without_global_mutation(self) -> None:
+        from unittest.mock import MagicMock
+
+        from haute.routes.mlflow import _PROBE_TIMEOUT_SECONDS, _search_experiments_probe
+
+        response = MagicMock()
+        with (
+            patch("mlflow.set_tracking_uri") as set_uri,
+            patch("mlflow.tracking.MlflowClient") as client_cls,
+            patch("mlflow.utils.rest_utils.http_request", return_value=response) as request,
+            patch("mlflow.utils.rest_utils.verify_rest_response") as verify,
+        ):
+            _search_experiments_probe("http://mlflow.example.com:5000")
+        # Probing must not mutate the process-global tracking URI, and must
+        # not go through a default client whose retry policy outlives the
+        # route's deadline.
+        set_uri.assert_not_called()
+        client_cls.assert_not_called()
+        request.assert_called_once()
+        creds, endpoint, method = request.call_args.args
+        assert creds.host == "http://mlflow.example.com:5000"
+        assert (endpoint, method) == ("/api/2.0/mlflow/experiments/search", "POST")
+        assert request.call_args.kwargs == {
+            "json": {"max_results": 1},
+            "max_retries": 0,
+            "timeout": _PROBE_TIMEOUT_SECONDS,
+            "retry_timeout_seconds": _PROBE_TIMEOUT_SECONDS,
+        }
+        verify.assert_called_once_with(response, "/api/2.0/mlflow/experiments/search")
+
+    def test_databricks_probe_uses_workspace_credentials_for_its_one_request(self) -> None:
+        from unittest.mock import MagicMock
+
+        from haute.routes.mlflow import _search_experiments_probe
+
+        creds = MagicMock(name="databricks-host-creds")
+        with (
+            patch("mlflow.set_tracking_uri") as set_uri,
+            patch("mlflow.tracking.MlflowClient") as client_cls,
+            patch(
+                "mlflow.utils.databricks_utils.get_databricks_host_creds", return_value=creds
+            ) as host_creds,
+            patch("mlflow.utils.rest_utils.http_request", return_value=MagicMock()) as request,
+            patch("mlflow.utils.rest_utils.verify_rest_response"),
+        ):
+            _search_experiments_probe("databricks://team")
+        set_uri.assert_not_called()
+        client_cls.assert_not_called()
+        host_creds.assert_called_once_with("databricks://team")
+        assert request.call_args.args[0] is creds
+        assert request.call_args.kwargs["max_retries"] == 0
+
+    def test_local_probe_uses_the_file_store_client(self, tmp_path: Path) -> None:
         from unittest.mock import MagicMock
 
         from haute.routes.mlflow import _search_experiments_probe
 
         client_instance = MagicMock()
-        client_cls = MagicMock(return_value=client_instance)
         with (
             patch("mlflow.set_tracking_uri") as set_uri,
-            patch("mlflow.tracking.MlflowClient", client_cls),
+            patch("mlflow.tracking.MlflowClient", return_value=client_instance) as client_cls,
+            patch("mlflow.utils.rest_utils.http_request") as request,
         ):
-            _search_experiments_probe("http://mlflow.example.com:5000")
-        # Probing must not mutate the process-global tracking URI.
+            _search_experiments_probe(tmp_path.as_uri())
         set_uri.assert_not_called()
-        client_cls.assert_called_once_with(tracking_uri="http://mlflow.example.com:5000")
+        request.assert_not_called()
+        client_cls.assert_called_once_with(tracking_uri=tmp_path.as_uri())
         client_instance.search_experiments.assert_called_once_with(max_results=1)
 
 
