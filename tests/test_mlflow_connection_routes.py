@@ -61,95 +61,167 @@ def _write_mlflow_section(project_root: Path, body: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# GET /api/mlflow/status
+# GET /api/mlflow/destinations
 # ---------------------------------------------------------------------------
 
 
-class TestStatus:
-    def test_default_local_is_reported_truthfully(self, client, project_root: Path) -> None:
-        resp = client.get("/api/mlflow/status")
+class TestDestinations:
+    def test_status_route_is_gone(self, client, project_root: Path) -> None:
+        assert client.get("/api/mlflow/status").status_code == 404
+
+    def test_default_inventory_without_probe(self, client, project_root: Path) -> None:
+        resp = client.get("/api/mlflow/destinations")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["mlflow_installed"] is True
-        assert body["mlflow_importable"] is True
-        assert body["configured"] is True
-        assert body["mode"] == "local"
-        assert Path(body["destination"]) == project_root / "mlruns"
-        assert body["config_source"] == "default"
-        assert body["detail"] == ""
+        assert body["mlflow_installed"] is True and body["mlflow_importable"] is True
+        assert body["auto"] == "local"
+        assert [d["key"] for d in body["destinations"]] == ["databricks", "server", "local"]
+        databricks, server, local = body["destinations"]
+        assert databricks["configured"] is False and "DATABRICKS_HOST" in databricks["detail"]
+        assert databricks["probed"] is False
+        assert server["configured"] is False and "tracking_uri" in server["detail"]
+        assert local["configured"] is True and local["probed"] is False
+        assert Path(local["destination"]) == project_root / "mlruns"
+        assert local["config_source"] == "default"
 
-    def test_toml_server_mode(self, client, project_root: Path) -> None:
-        _write_mlflow_section(
-            project_root, 'mode = "server"\ntracking_uri = "http://localhost:5000"\n'
-        )
-        body = client.get("/api/mlflow/status").json()
-        assert body["configured"] is True
-        assert body["mode"] == "server"
-        assert body["destination"] == "http://localhost:5000"
-        assert body["config_source"] == "toml"
-
-    def test_env_credentials_select_databricks(
+    def test_probe_touches_only_configured_remotes(
         self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-secret")
-        body = client.get("/api/mlflow/status").json()
-        assert body["configured"] is True
-        assert body["mode"] == "databricks"
-        assert body["destination"] == "https://adb.example.net"
-        assert body["config_source"] == "env"
+        _write_mlflow_section(project_root, 'tracking_uri = "http://localhost:5000"\n')
+        probed: list[str] = []
+
+        def fake_probe(uri: str) -> None:
+            probed.append(uri)
+
+        with patch("haute.routes.mlflow._search_experiments_probe", side_effect=fake_probe):
+            body = client.get("/api/mlflow/destinations?probe=true").json()
+        assert probed == ["http://localhost:5000"]
+        databricks, server, local = body["destinations"]
+        assert server["probed"] is True and server["ok"] is True and server["category"] == ""
+        assert databricks["probed"] is False and local["probed"] is False
+        assert body["auto"] == "server"
+
+    def test_failed_probe_keeps_auto_and_reports_reason(
+        self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+        with patch(
+            "haute.routes.mlflow._search_experiments_probe",
+            side_effect=ConnectionError("dial tcp: refused dapi-secret"),
+        ):
+            body = client.get("/api/mlflow/destinations?probe=true").json()
+        databricks = body["destinations"][0]
+        assert databricks["configured"] is True
+        assert databricks["destination"] == "databricks://team"
+        assert databricks["probed"] is True and databricks["ok"] is False
+        assert databricks["category"] == "connectivity"
         assert "dapi-secret" not in str(body)
+        assert body["auto"] == "databricks"
 
-    def test_misconfiguration_is_data_not_5xx(self, client, project_root: Path) -> None:
-        _write_mlflow_section(project_root, 'mode = "databricks"\n')
-        resp = client.get("/api/mlflow/status")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["configured"] is False
-        assert body["mode"] == ""
-        assert "DATABRICKS_HOST" in body["detail"]
+    def test_probes_run_concurrently_within_one_budget(
+        self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import threading
+        import time
 
-    def test_mlflow_not_installed_still_reports_configuration_independently(
+        _write_mlflow_section(project_root, 'tracking_uri = "http://localhost:5000"\n')
+        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "t")
+        barrier = threading.Barrier(2, timeout=5)
+
+        def slow_probe(uri: str) -> None:
+            barrier.wait()  # both probes must be in flight at once or this times out
+            time.sleep(0.2)
+
+        started = time.perf_counter()
+        with patch("haute.routes.mlflow._search_experiments_probe", side_effect=slow_probe):
+            body = client.get("/api/mlflow/destinations?probe=true").json()
+        assert time.perf_counter() - started < 1.0
+        assert all(d["ok"] for d in body["destinations"][:2])
+
+    def test_malformed_toml_marks_toml_backed_entries_and_fails_auto(
         self, client, project_root: Path
     ) -> None:
-        # Package presence and configuration are independent facts: the
-        # default local resolution needs no mlflow package at all.
-        with patch("importlib.util.find_spec", return_value=None):
-            resp = client.get("/api/mlflow/status")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["mlflow_installed"] is False
-        assert body["mlflow_importable"] is False
-        assert body["configured"] is True
-        assert body["mode"] == "local"
-        assert "install" in body["detail"].lower()
+        _write_mlflow_section(project_root, 'mode = "local"\n')
+        body = client.get("/api/mlflow/destinations?probe=true").json()
+        databricks, server, local = body["destinations"]
+        assert databricks["configured"] is False and "DATABRICKS_HOST" in databricks["detail"]
+        assert server["configured"] is False and "mode" in server["detail"]
+        assert local["configured"] is False and "mode" in local["detail"]
+        assert body["auto"] == "" and "mode" in body["detail"]
 
-    def test_import_failure_keeps_package_available(self, client, project_root: Path) -> None:
-        from types import SimpleNamespace
+    def test_rejected_databricks_sdk_mode_keeps_other_entries_and_fails_auto(
+        self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_mlflow_section(project_root, 'tracking_uri = "http://localhost:5000"\n')
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+        monkeypatch.setenv("MLFLOW_ENABLE_DB_SDK", "true")
+        with patch("haute.routes.mlflow._search_experiments_probe") as probe:
+            body = client.get("/api/mlflow/destinations?probe=true").json()
+        databricks, server, local = body["destinations"]
+        assert databricks["configured"] is False and "MLFLOW_ENABLE_DB_SDK" in databricks["detail"]
+        assert databricks["probed"] is False
+        assert server["configured"] is True and server["probed"] is True and server["ok"] is True
+        assert local["configured"] is True
+        probe.assert_called_once_with("http://localhost:5000")
+        assert body["auto"] == "" and "MLFLOW_ENABLE_DB_SDK" in body["detail"]
+        # An explicit Local still works while auto fails loudly:
+        assert client.get("/api/mlflow/experiments?destination=local").status_code == 200
+        resp = client.get("/api/mlflow/experiments")
+        assert resp.status_code == 502 and "MLFLOW_ENABLE_DB_SDK" in resp.json()["detail"]
 
+    def test_inventory_is_reported_without_the_mlflow_package(
+        self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys
+
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+        monkeypatch.setitem(sys.modules, "mlflow", None)
         with (
-            patch("importlib.util.find_spec", return_value=SimpleNamespace()),
-            patch("importlib.import_module", side_effect=ImportError("broken dependency")),
+            patch(
+                "haute.routes.mlflow._mlflow_availability",
+                return_value=(
+                    False,
+                    False,
+                    "MLflow package is not installed. Install it with: pip install mlflow",
+                ),
+            ),
+            patch("haute.routes.mlflow._search_experiments_probe") as probe,
         ):
-            body = client.get("/api/mlflow/status").json()
-        assert body["mlflow_installed"] is True
-        assert body["mlflow_importable"] is False
-        assert body["configured"] is True
-        assert body["mode"] == "local"
-        assert "broken dependency" in body["detail"]
+            body = client.get("/api/mlflow/destinations?probe=true").json()
+        assert body["mlflow_installed"] is False and "pip install mlflow" in body["detail"]
+        assert [d["configured"] for d in body["destinations"]] == [True, False, True]
+        assert body["auto"] == "databricks"
+        probe.assert_not_called()
+
+    def test_missing_package_reports_configuration_and_never_probes(
+        self, client, project_root: Path
+    ) -> None:
+        _write_mlflow_section(project_root, 'tracking_uri = "http://localhost:5000"\n')
+        with (
+            patch(
+                "haute.routes.mlflow._mlflow_availability",
+                return_value=(
+                    False,
+                    False,
+                    "MLflow package is not installed. Install it with: pip install mlflow",
+                ),
+            ),
+            patch("haute.routes.mlflow._search_experiments_probe") as probe,
+        ):
+            body = client.get("/api/mlflow/destinations?probe=true").json()
+        assert body["mlflow_installed"] is False
+        assert "pip install mlflow" in body["detail"]
+        assert body["destinations"][1]["configured"] is True
+        probe.assert_not_called()
 
     def test_credentialed_env_uri_destination_is_redacted(
         self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("MLFLOW_TRACKING_URI", "https://alice:hunter2xyz@mlflow.example.com")
-        status = client.get("/api/mlflow/status").json()
-        settings = client.get("/api/mlflow/settings").json()
-        assert status["destination"] == "https://mlflow.example.com"
-        assert "hunter2xyz" not in str(status)
-        assert "hunter2xyz" not in str(settings)
-
-    def test_old_modelling_check_route_is_gone(self, client) -> None:
-        assert client.get("/api/modelling/mlflow/check").status_code == 404
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "https://alice:secret@mlflow.example.com")
+        body = client.get("/api/mlflow/destinations").json()
+        assert body["destinations"][1]["destination"] == "https://mlflow.example.com"
+        assert "secret" not in str(body)
 
 
 # ---------------------------------------------------------------------------
@@ -161,110 +233,73 @@ class TestSettings:
     def test_get_with_no_section(self, client, project_root: Path) -> None:
         body = client.get("/api/mlflow/settings").json()
         assert body["section_present"] is False
-        assert body["mode"] == ""
-        assert body["tracking_uri"] == ""
-        assert body["folder"] == ""
-        assert body["resolved"]["mode"] == "local"
-        assert body["resolved"]["config_source"] == "default"
+        assert body["tracking_uri"] == "" and body["folder"] == ""
+        assert Path(body["resolved_folder"]) == project_root / "mlruns"
 
-    def test_put_server_then_get_round_trips(self, client, project_root: Path) -> None:
+    def test_put_then_get_round_trips(self, client, project_root: Path) -> None:
         resp = client.put(
             "/api/mlflow/settings",
-            json={"mode": "server", "tracking_uri": "http://localhost:5000"},
+            json={"tracking_uri": "http://localhost:5000", "folder": "team-runs"},
         )
         assert resp.status_code == 200
-        body = resp.json()
+        body = client.get("/api/mlflow/settings").json()
         assert body["section_present"] is True
-        assert body["mode"] == "server"
-        assert body["resolved"]["mode"] == "server"
-        assert body["resolved"]["destination"] == "http://localhost:5000"
-        assert body["resolved"]["config_source"] == "toml"
-
-        again = client.get("/api/mlflow/settings").json()
-        assert again == body
+        assert body["tracking_uri"] == "http://localhost:5000"
+        assert body["folder"] == "team-runs"
+        assert Path(body["resolved_folder"]) == project_root / "team-runs"
 
     def test_put_preserves_other_sections_and_comments(self, client, project_root: Path) -> None:
-        client.put(
-            "/api/mlflow/settings",
-            json={"mode": "server", "tracking_uri": "http://localhost:5000"},
-        )
+        client.put("/api/mlflow/settings", json={"tracking_uri": "http://localhost:5000"})
         text = (project_root / "haute.toml").read_text(encoding="utf-8")
         assert "# project comment survives settings writes" in text
-        parsed = tomllib.loads(text)
-        assert parsed["project"]["pipeline"] == "rating/main.py"
-        assert parsed["mlflow"] == {"mode": "server", "tracking_uri": "http://localhost:5000"}
+        assert tomllib.loads(text)["project"]["pipeline"] == "rating/main.py"
+
+    def test_put_empty_tracking_uri_clears_server(self, client, project_root: Path) -> None:
+        client.put("/api/mlflow/settings", json={"tracking_uri": "http://localhost:5000"})
+        client.put("/api/mlflow/settings", json={"tracking_uri": ""})
+        assert client.get("/api/mlflow/settings").json()["tracking_uri"] == ""
+        assert (
+            client.get("/api/mlflow/destinations").json()["destinations"][1]["configured"] is False
+        )
+
+    def test_put_mode_is_422(self, client, project_root: Path) -> None:
+        # ``mode`` is no longer a field; pydantic ignores unknown fields, so the
+        # round trip simply never writes it.
+        client.put("/api/mlflow/settings", json={"mode": "server", "tracking_uri": "http://x:5000"})
+        assert "mode" not in tomllib.loads((project_root / "haute.toml").read_text())["mlflow"]
 
     def test_put_invalid_server_uri_is_400_and_writes_nothing(
         self, client, project_root: Path
     ) -> None:
-        resp = client.put(
-            "/api/mlflow/settings",
-            json={"mode": "server", "tracking_uri": "sqlite:///mlflow.db"},
-        )
+        resp = client.put("/api/mlflow/settings", json={"tracking_uri": "sqlite:///x.db"})
         assert resp.status_code == 400
         assert "tracking_uri" in resp.json()["detail"]
-        assert "mlflow" not in tomllib.loads(
-            (project_root / "haute.toml").read_text(encoding="utf-8")
-        )
+        assert "mlflow" not in tomllib.loads((project_root / "haute.toml").read_text())
 
-    def test_put_field_for_wrong_mode_is_400(self, client, project_root: Path) -> None:
-        resp = client.put(
-            "/api/mlflow/settings",
-            json={"mode": "databricks", "folder": "mlruns"},
-        )
-        assert resp.status_code == 400
-        assert "folder" in resp.json()["detail"]
-
-    def test_put_unknown_mode_is_400_naming_the_field(self, client, project_root: Path) -> None:
-        resp = client.put("/api/mlflow/settings", json={"mode": "filesystem"})
-        assert resp.status_code == 400
-        assert "mode" in resp.json()["detail"]
-
-    def test_put_credentialed_server_uri_is_400_without_echoing_secret(
+    def test_put_credentialed_uri_is_400_without_echoing_secret(
         self, client, project_root: Path
     ) -> None:
         resp = client.put(
-            "/api/mlflow/settings",
-            json={
-                "mode": "server",
-                "tracking_uri": "https://alice:hunter2xyz@mlflow.example.com",
-            },
+            "/api/mlflow/settings", json={"tracking_uri": "https://a:hunter2xyz@h.example"}
         )
         assert resp.status_code == 400
-        assert "hunter2xyz" not in resp.json()["detail"]
+        assert "hunter2xyz" not in resp.text
 
-    def test_unchanged_save_of_env_credentialed_server_keeps_auth_working(
+    def test_bare_save_preserves_env_derived_folder(
         self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The modal shows the redacted destination; saving it must not break
-        # authentication — toml persists the non-secret URI and resolution
-        # re-attaches the matching env credentials.
-        from haute.modelling._mlflow_settings import resolve_tracking_config
+        custom = project_root / "custom-runs"
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", custom.as_uri())
+        client.put("/api/mlflow/settings", json={})
+        body = client.get("/api/mlflow/settings").json()
+        assert Path(body["folder"]) == custom
+        assert Path(body["resolved_folder"]) == custom
 
-        monkeypatch.setenv("MLFLOW_TRACKING_URI", "https://alice:hunter2xyz@mlflow.example.com")
-        resp = client.put(
-            "/api/mlflow/settings",
-            json={"mode": "server", "tracking_uri": "https://mlflow.example.com"},
-        )
+    def test_malformed_section_is_reported_not_5xx(self, client, project_root: Path) -> None:
+        _write_mlflow_section(project_root, 'mode = "local"\n')
+        resp = client.get("/api/mlflow/settings")
         assert resp.status_code == 200
-        parsed = tomllib.loads((project_root / "haute.toml").read_text(encoding="utf-8"))
-        assert parsed["mlflow"]["tracking_uri"] == "https://mlflow.example.com"
-        assert "hunter2xyz" not in str(parsed)
-
-        config = resolve_tracking_config(project_root)
-        assert config.tracking_uri == "https://alice:hunter2xyz@mlflow.example.com"
-        assert resp.json()["resolved"]["destination"] == "https://mlflow.example.com"
-
-    def test_put_local_preserves_env_derived_folder(
-        self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        team_runs = project_root / "team-runs"
-        monkeypatch.setenv("MLFLOW_TRACKING_URI", team_runs.as_uri())
-        resp = client.put("/api/mlflow/settings", json={"mode": "local"})
-        assert resp.status_code == 200
-        parsed = tomllib.loads((project_root / "haute.toml").read_text(encoding="utf-8"))
-        assert Path(parsed["mlflow"]["folder"]) == team_runs
-        assert Path(resp.json()["resolved"]["destination"]) == team_runs
+        assert "mode" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -273,74 +308,136 @@ class TestSettings:
 
 
 class TestTestConnection:
-    def test_ok_when_probe_succeeds(self, client, project_root: Path) -> None:
-        with patch("haute.routes.mlflow._search_experiments_probe", return_value=None):
+    def test_auto_when_body_absent(self, client, project_root: Path) -> None:
+        with patch("haute.routes.mlflow._search_experiments_probe") as probe:
             body = client.post("/api/mlflow/test-connection").json()
         assert body == {"ok": True, "category": "", "detail": ""}
+        assert probe.call_args.args[0].startswith("file:")
 
-    def test_candidate_configuration_is_probed_instead_of_the_saved_one(
+    def test_explicit_destination_without_draft_probes_the_inventory(
         self, client, project_root: Path
     ) -> None:
-        # Saved config is default local; the request carries a server draft.
-        # The probe must target the draft, so the user tests what they are
-        # about to save, not what is currently persisted.
-        probed: list[str] = []
-        with patch(
-            "haute.routes.mlflow._search_experiments_probe",
-            side_effect=lambda uri: probed.append(uri),
-        ):
-            body = client.post(
-                "/api/mlflow/test-connection",
-                json={"mode": "server", "tracking_uri": "http://localhost:6000"},
-            ).json()
-        assert body["ok"] is True
-        assert probed == ["http://localhost:6000"]
+        _write_mlflow_section(project_root, 'tracking_uri = "http://saved:5000"\n')
+        with patch("haute.routes.mlflow._search_experiments_probe") as probe:
+            client.post("/api/mlflow/test-connection", json={"destination": "server"})
+        probe.assert_called_once_with("http://saved:5000")
 
-    def test_invalid_candidate_is_configuration_category(self, client, project_root: Path) -> None:
-        body = client.post(
-            "/api/mlflow/test-connection",
-            json={"mode": "server", "tracking_uri": "sqlite:///x"},
-        ).json()
-        assert body["ok"] is False
-        assert body["category"] == "configuration"
+    def test_env_seeded_server_is_probed_without_draft(
+        self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://env:5000")
+        with patch("haute.routes.mlflow._search_experiments_probe") as probe:
+            body = client.post("/api/mlflow/test-connection", json={"destination": "server"}).json()
+        probe.assert_called_once_with("http://env:5000")
+        assert body["ok"] is True
+
+    def test_empty_server_draft_is_a_configuration_error(self, client, project_root: Path) -> None:
+        _write_mlflow_section(project_root, 'tracking_uri = "http://saved:5000"\n')
+        with patch("haute.routes.mlflow._search_experiments_probe") as probe:
+            body = client.post(
+                "/api/mlflow/test-connection", json={"destination": "server", "tracking_uri": ""}
+            ).json()
+        probe.assert_not_called()
+        assert body["ok"] is False and body["category"] == "configuration"
         assert "tracking_uri" in body["detail"]
 
-    def test_local_candidate_probes_the_folder_a_save_would_keep(
-        self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    def test_cold_process_probe_binds_the_selected_profile_not_the_environment(
+        self, client, project_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        team_runs = project_root / "team-runs"
-        monkeypatch.setenv("MLFLOW_TRACKING_URI", team_runs.as_uri())
-        probed: list[str] = []
-        with patch(
-            "haute.routes.mlflow._search_experiments_probe",
-            side_effect=lambda uri: probed.append(uri),
-        ):
-            body = client.post("/api/mlflow/test-connection", json={"mode": "local"}).json()
-        assert body["ok"] is True
-        assert probed == [team_runs.as_uri()]
+        """Nothing has resolved a backend yet in this test; the probe alone must apply the pin."""
+        import requests
 
-    def test_candidate_server_draft_inherits_matching_env_credentials(
-        self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("MLFLOW_TRACKING_URI", "https://alice:hunter2xyz@mlflow.example.com")
-        probed: list[str] = []
-        with patch(
-            "haute.routes.mlflow._search_experiments_probe",
-            side_effect=lambda uri: probed.append(uri),
-        ):
+        cfg = tmp_path / "databrickscfg"
+        cfg.write_text(
+            "[team]\nhost = https://profile-host.example.net\ntoken = profile-token-value\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(cfg))
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+        monkeypatch.setenv("DATABRICKS_HOST", "https://env-host.example.net")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "env-token-value")
+        monkeypatch.delenv("MLFLOW_ENABLE_DB_SDK", raising=False)
+        captured: dict[str, object] = {}
+
+        def fake_request(self_, method, url, **kwargs):
+            captured["url"] = url
+            captured["auth"] = dict(kwargs.get("headers") or {}).get("Authorization")
+            resp = requests.Response()
+            resp.status_code = 200
+            resp._content = b'{"experiments": []}'
+            resp.url = url
+            return resp
+
+        with patch("requests.Session.request", new=fake_request):
             body = client.post(
-                "/api/mlflow/test-connection",
-                json={"mode": "server", "tracking_uri": "https://mlflow.example.com"},
+                "/api/mlflow/test-connection", json={"destination": "databricks"}
             ).json()
         assert body["ok"] is True
-        assert probed == ["https://alice:hunter2xyz@mlflow.example.com"]
+        assert str(captured["url"]).startswith("https://profile-host.example.net/")
+        assert captured["auth"] == "Bearer profile-token-value"
 
-    def test_configuration_error_is_classified(self, client, project_root: Path) -> None:
-        _write_mlflow_section(project_root, 'mode = "databricks"\n')
-        body = client.post("/api/mlflow/test-connection").json()
-        assert body["ok"] is False
-        assert body["category"] == "configuration"
+    def test_probe_failure_log_is_secret_free(self, client, project_root: Path) -> None:
+        import structlog.testing
+
+        with (
+            patch(
+                "haute.routes.mlflow._search_experiments_probe",
+                side_effect=ConnectionError("refused; token dapi-synthetic-secret"),
+            ),
+            structlog.testing.capture_logs() as records,
+        ):
+            body = client.post("/api/mlflow/test-connection").json()
+        assert body["ok"] is False and "dapi-synthetic-secret" not in str(body)
+        assert "dapi-synthetic-secret" not in repr(records)
+        assert any(
+            r.get("category") == "connectivity" and r.get("error_type") == "ConnectionError"
+            for r in records
+        )
+
+    def test_draft_server_uri_is_probed_instead_of_saved(self, client, project_root: Path) -> None:
+        _write_mlflow_section(project_root, 'tracking_uri = "http://saved:5000"\n')
+        with patch("haute.routes.mlflow._search_experiments_probe") as probe:
+            client.post(
+                "/api/mlflow/test-connection",
+                json={"destination": "server", "tracking_uri": "http://draft:5000"},
+            )
+        probe.assert_called_once_with("http://draft:5000")
+
+    def test_unconfigured_destination_is_configuration_category(
+        self, client, project_root: Path
+    ) -> None:
+        body = client.post("/api/mlflow/test-connection", json={"destination": "databricks"}).json()
+        assert body["ok"] is False and body["category"] == "configuration"
         assert "DATABRICKS_HOST" in body["detail"]
+
+    def test_unknown_destination_is_configuration_category(
+        self, client, project_root: Path
+    ) -> None:
+        body = client.post("/api/mlflow/test-connection", json={"destination": "managed"}).json()
+        assert body["ok"] is False and body["category"] == "configuration"
+        assert "databricks, server, or local" in body["detail"]
+
+    def test_local_draft_folder_is_probed(self, client, project_root: Path) -> None:
+        with patch("haute.routes.mlflow._search_experiments_probe") as probe:
+            client.post(
+                "/api/mlflow/test-connection", json={"destination": "local", "folder": "draft-runs"}
+            )
+        assert probe.call_args.args[0] == (project_root / "draft-runs").as_uri()
+
+    def test_broken_profile_stays_configured_and_reports_failure(
+        self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://missing-profile")
+        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-secret")
+        with patch("haute.routes.mlflow._search_experiments_probe") as probe:
+            probe.side_effect = RuntimeError("profile 'missing-profile' not found dapi-secret")
+            body = client.post(
+                "/api/mlflow/test-connection", json={"destination": "databricks"}
+            ).json()
+        probe.assert_called_once_with("databricks://missing-profile")
+        assert body["ok"] is False
+        assert "dapi-secret" not in str(body)
 
     @pytest.mark.parametrize(
         ("error_code", "category"),
@@ -373,8 +470,6 @@ class TestTestConnection:
     def test_wrapped_transport_error_is_classified_as_connectivity(
         self, client, project_root: Path
     ) -> None:
-        # MLflow's REST layer wraps transport failures in MlflowException;
-        # classification must inspect the exception chain, not the outer type.
         import requests
         from mlflow.exceptions import MlflowException
 
@@ -388,27 +483,17 @@ class TestTestConnection:
     def test_real_transport_boundary_dead_port_is_connectivity(
         self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # No probe patching and no retry/timeout environment overrides: this
-        # exercises the real MLflow REST transport against a closed local
-        # port under MLflow's own defaults (120 s timeout, 7 retries with
-        # exponential backoff). The probe must bound its single attempt
-        # itself — otherwise the abandoned worker keeps retrying for minutes
-        # after the route has answered and its slot stays occupied, locking
-        # later tests out with a "still running" busy report.
         import threading
 
         import haute.routes.mlflow as mlflow_routes
 
         fresh = threading.BoundedSemaphore(2)
         monkeypatch.setattr(mlflow_routes, "_PROBE_SLOTS", fresh)
-        _write_mlflow_section(
-            project_root, 'mode = "server"\ntracking_uri = "http://127.0.0.1:1"\n'
-        )
-        body = client.post("/api/mlflow/test-connection").json()
+        _write_mlflow_section(project_root, 'tracking_uri = "http://127.0.0.1:1"\n')
+        body = client.post("/api/mlflow/test-connection", json={"destination": "server"}).json()
         assert body["ok"] is False
         assert body["category"] == "connectivity"
 
-        # The worker finished with the route, so both slots are free again.
         held = 0
         try:
             for _ in range(2):
@@ -653,7 +738,7 @@ class TestSavedFolderKeepsRunsDiscoverable:
             with mlflow.start_run(experiment_id=experiment_id):
                 pass
 
-            assert client.put("/api/mlflow/settings", json={"mode": "local"}).status_code == 200
+            assert client.put("/api/mlflow/settings", json={}).status_code == 200
             monkeypatch.delenv("MLFLOW_TRACKING_URI")
             # Discovery must find the runs from the saved settings alone —
             # clear the ambient global so it cannot mask a resolver defect.

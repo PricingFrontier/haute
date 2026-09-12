@@ -1,0 +1,11 @@
+{
+  "mlflow_installed": true,
+  "mlflow_importable": true,
+  "auto": "databricks",
+  "destinations": [
+    {"key": "databricks", "configured": true, "destination": "databricks://team", "config_source": "env", "detail": "", "probed": true, "ok": false, "category": "authentication"},
+    {"key": "server", "configured": true, "destination": "http://localhost:5000", "config_source": "toml", "detail": "", "probed": true, "ok": true, "category": ""},
+    {"key": "local", "configured": true, "destination": "C:/proj/mlruns", "config_source": "default", "detail": "", "probed": false, "ok": false, "category": ""}
+  ],
+  "detail": ""
+}

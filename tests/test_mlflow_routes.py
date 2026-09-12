@@ -191,7 +191,7 @@ class TestListExperiments:
         from haute.errors import MlflowConfigError
 
         with patch(
-            "haute.modelling._mlflow_log.resolve_tracking_backend",
+            "haute.modelling._mlflow_settings.resolve_tracking_config",
             side_effect=MlflowConfigError(
                 "Databricks tracking is selected but DATABRICKS_TOKEN is not set "
                 "in the environment (.env)."
@@ -225,6 +225,20 @@ class TestListExperiments:
         assert len(data) == 2
         names = {d["name"] for d in data}
         assert names == {"pricing", "scoring"}
+
+    def test_destination_query_is_forwarded(self, client):
+        with patch(
+            "haute.routes.mlflow._ensure_tracking",
+            return_value=(
+                MagicMock(),
+                MagicMock(search_experiments=MagicMock(return_value=PagedList([], None))),
+            ),
+        ) as ensure:
+            assert client.get("/api/mlflow/experiments?destination=local").status_code == 200
+        ensure.assert_called_once_with("local")
+
+    def test_unknown_destination_is_422(self, client):
+        assert client.get("/api/mlflow/experiments?destination=managed").status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -963,7 +977,7 @@ class TestEnsureTrackingDirect:
         with (
             patch.dict(sys.modules, {"mlflow": mlflow_mod, "mlflow.tracking": tracking_mod}),
             patch(
-                "haute.modelling._mlflow_log.resolve_tracking_backend",
+                "haute.modelling._mlflow_settings.resolve_tracking_config",
                 side_effect=RuntimeError("tracking backend misconfigured"),
             ),
         ):
@@ -974,6 +988,7 @@ class TestEnsureTrackingDirect:
         assert "Check the server logs" in str(exc_info.value.detail)
 
     def test_mlflow_client_initialization_failure_becomes_502(self):
+        from haute.modelling._mlflow_settings import TrackingConfig
         from haute.routes.mlflow import _ensure_tracking
 
         mlflow_mod, tracking_mod = self._fake_mlflow_modules()
@@ -981,8 +996,8 @@ class TestEnsureTrackingDirect:
         with (
             patch.dict(sys.modules, {"mlflow": mlflow_mod, "mlflow.tracking": tracking_mod}),
             patch(
-                "haute.modelling._mlflow_log.resolve_tracking_backend",
-                return_value=("sqlite:///mlruns", "local"),
+                "haute.modelling._mlflow_settings.resolve_tracking_config",
+                return_value=TrackingConfig("local", "sqlite:///mlruns", "sqlite:///mlruns", "env"),
             ),
         ):
             with pytest.raises(HTTPException) as exc_info:
@@ -992,6 +1007,7 @@ class TestEnsureTrackingDirect:
         assert "Check the server logs" in str(exc_info.value.detail)
 
     def test_local_backend_opts_into_mlflow_file_store_before_client_init(self, monkeypatch):
+        from haute.modelling._mlflow_settings import TrackingConfig
         from haute.routes.mlflow import _ensure_tracking
 
         monkeypatch.delenv("MLFLOW_ALLOW_FILE_STORE", raising=False)
@@ -1005,8 +1021,8 @@ class TestEnsureTrackingDirect:
         with (
             patch.dict(sys.modules, {"mlflow": mlflow_mod, "mlflow.tracking": tracking_mod}),
             patch(
-                "haute.modelling._mlflow_log.resolve_tracking_backend",
-                return_value=("file:///tmp/mlruns", "local"),
+                "haute.modelling._mlflow_settings.resolve_tracking_config",
+                return_value=TrackingConfig("local", "file:///tmp/mlruns", "/tmp/mlruns", "env"),
             ),
         ):
             _ensure_tracking()
@@ -1021,14 +1037,17 @@ class TestEnsureTrackingDirect:
         )
 
     def test_databricks_profile_pins_the_matching_unity_catalog_registry(self):
+        from haute.modelling._mlflow_settings import TrackingConfig
         from haute.routes.mlflow import _ensure_tracking
 
         mlflow_mod, tracking_mod = self._fake_mlflow_modules()
         with (
             patch.dict(sys.modules, {"mlflow": mlflow_mod, "mlflow.tracking": tracking_mod}),
             patch(
-                "haute.modelling._mlflow_log.resolve_tracking_backend",
-                return_value=("databricks://team-profile", "databricks"),
+                "haute.modelling._mlflow_settings.resolve_tracking_config",
+                return_value=TrackingConfig(
+                    "databricks", "databricks://team-profile", "databricks://team-profile", "env"
+                ),
             ),
         ):
             _ensure_tracking()
@@ -1038,6 +1057,32 @@ class TestEnsureTrackingDirect:
             tracking_uri="databricks://team-profile",
             registry_uri="databricks-uc://team-profile",
         )
+
+    def test_explicit_destination_resolves_that_backend(self, monkeypatch, tmp_path):
+        from haute._sandbox import set_project_root
+        from haute.routes.mlflow import _ensure_tracking
+
+        (tmp_path / "haute.toml").write_text(
+            '[mlflow]\ntracking_uri = "http://server:5000"\n', encoding="utf-8"
+        )
+        set_project_root(tmp_path)
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        with patch("mlflow.tracking.MlflowClient") as client_cls:
+            _ensure_tracking("local")
+            assert client_cls.call_args.kwargs["tracking_uri"] == (tmp_path / "mlruns").as_uri()
+            _ensure_tracking("server")
+            assert client_cls.call_args.kwargs["tracking_uri"] == "http://server:5000"
+
+    def test_unconfigured_destination_is_502_with_prerequisite(self, monkeypatch):
+        from haute.routes.mlflow import _ensure_tracking
+
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        with pytest.raises(HTTPException) as excinfo:
+            _ensure_tracking("databricks")
+        assert excinfo.value.status_code == 502
+        assert "DATABRICKS_HOST" in excinfo.value.detail
 
 
 # ---------------------------------------------------------------------------

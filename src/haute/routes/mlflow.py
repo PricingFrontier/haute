@@ -2,8 +2,9 @@
 
 Lists experiments, runs (with model artifacts), registered models,
 and model versions so the frontend can populate dropdowns; also owns the
-connection surface — tracking status, ``[mlflow]`` settings read/write in
-``haute.toml``, and a bounded test-connection probe.
+connection surface — the destinations inventory with optional concurrent
+bounded probes, ``[mlflow]`` settings read/write in ``haute.toml``, and a
+bounded test-connection probe.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from queue import Empty, Queue
 from time import perf_counter
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -33,14 +34,15 @@ from haute._sandbox import _get_project_root
 from haute.errors import MlflowConfigError
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.schemas import (
+    MlflowDestinationEntry,
+    MlflowDestinationsResponse,
     MlflowExperimentSummary,
     MlflowModelSummary,
     MlflowModelVersionSummary,
-    MlflowResolvedDestination,
+    MlflowProbeCategory,
     MlflowRunSummary,
     MlflowSettingsResponse,
     MlflowSettingsUpdateRequest,
-    MlflowStatusResponse,
     MlflowTestConnectionRequest,
     MlflowTestConnectionResponse,
     MlflowVersionBrief,
@@ -49,6 +51,8 @@ from haute.schemas import (
 logger = get_logger(component="server.mlflow")
 
 router = APIRouter(prefix="/api/mlflow", tags=["mlflow"])
+
+_DestinationQuery = Literal["", "databricks", "server", "local"]
 
 
 def _elapsed_ms(started_at: float, ended_at: float) -> float:
@@ -144,8 +148,8 @@ def _run_summaries(
     return results
 
 
-def _ensure_tracking() -> tuple[_types.ModuleType, MlflowClient]:
-    """Return ``(mlflow, client)`` with a client pinned to the current destination.
+def _ensure_tracking(destination: str = "") -> tuple[_types.ModuleType, MlflowClient]:
+    """Return ``(mlflow, client)`` with a client pinned to the requested destination.
 
     Raises ``HTTPException(503)`` if mlflow is not installed, or
     ``HTTPException(502)`` if the tracking backend cannot be resolved — a
@@ -162,9 +166,16 @@ def _ensure_tracking() -> tuple[_types.ModuleType, MlflowClient]:
     try:
         from mlflow.tracking import MlflowClient
 
-        from haute.modelling._mlflow_log import resolve_tracking_backend
+        from haute.modelling._mlflow_settings import (
+            resolve_destination,
+            resolve_tracking_config,
+        )
 
-        tracking_uri, backend = resolve_tracking_backend()
+        root = _get_project_root()
+        config = (
+            resolve_destination(destination, root) if destination else resolve_tracking_config(root)
+        )
+        tracking_uri, backend = config.tracking_uri, config.mode
         allow_file_store_if_local(tracking_uri, backend)
         # Pin the registry to the resolved destination explicitly: without
         # this, the client falls back to the process-global registry URI,
@@ -229,63 +240,25 @@ def _mlflow_availability() -> tuple[bool, bool, str]:
     return True, True, ""
 
 
-@router.get("/status", response_model=MlflowStatusResponse)
-def mlflow_status() -> MlflowStatusResponse:
-    """Report tracking-connection status; misconfiguration is data, not a 5xx.
-
-    Package presence, importability, and configuration are independent
-    facts: resolution needs no mlflow package, so a missing package never
-    forces ``configured=false``. ``detail`` carries the package problem
-    when there is one, else the configuration problem.
-    """
-    from haute.modelling._mlflow_settings import resolve_tracking_config
-
-    installed, importable, package_detail = _mlflow_availability()
-    try:
-        config = resolve_tracking_config(_get_project_root())
-    except MlflowConfigError as exc:
-        return MlflowStatusResponse(
-            mlflow_installed=installed,
-            mlflow_importable=importable,
-            configured=False,
-            detail=package_detail or str(exc),
-        )
-    return MlflowStatusResponse(
-        mlflow_installed=installed,
-        mlflow_importable=importable,
-        configured=True,
-        mode=config.mode,  # type: ignore[arg-type]
-        destination=config.destination,
-        config_source=config.config_source,  # type: ignore[arg-type]
-        detail=package_detail,
-    )
-
-
 def _settings_response() -> MlflowSettingsResponse:
     from haute.modelling._mlflow_settings import (
         load_mlflow_settings,
-        resolve_tracking_config,
+        resolve_destination,
     )
 
     root = _get_project_root()
     stored = load_mlflow_settings(root)
-    resolved: MlflowResolvedDestination | None = None
     detail = ""
+    resolved_folder = ""
     try:
-        config = resolve_tracking_config(root)
-        resolved = MlflowResolvedDestination(
-            mode=config.mode,  # type: ignore[arg-type]
-            destination=config.destination,
-            config_source=config.config_source,  # type: ignore[arg-type]
-        )
+        resolved_folder = resolve_destination("local", root).destination
     except MlflowConfigError as exc:
         detail = str(exc)
     return MlflowSettingsResponse(
         section_present=stored is not None,
-        mode=stored.mode if stored else "",
         tracking_uri=stored.tracking_uri if stored else "",
         folder=stored.folder if stored else "",
-        resolved=resolved,
+        resolved_folder=resolved_folder,
         detail=detail,
     )
 
@@ -306,7 +279,6 @@ def put_mlflow_settings(body: MlflowSettingsUpdateRequest) -> MlflowSettingsResp
     from haute.modelling._mlflow_settings import MlflowSettings, save_mlflow_settings
 
     settings = MlflowSettings(
-        mode=body.mode,
         tracking_uri=body.tracking_uri,
         folder=body.folder,
     )
@@ -368,10 +340,10 @@ def _probe_host_creds(tracking_uri: str) -> MlflowHostCreds:
     if tracking_uri == "databricks" or tracking_uri.startswith("databricks://"):
         from mlflow.utils.databricks_utils import get_databricks_host_creds
 
-        return get_databricks_host_creds(tracking_uri)
+        return cast("MlflowHostCreds", get_databricks_host_creds(tracking_uri))
     from mlflow.tracking._tracking_service.utils import get_default_host_creds
 
-    return get_default_host_creds(tracking_uri)
+    return cast("MlflowHostCreds", get_default_host_creds(tracking_uri))
 
 
 def _search_experiments_probe(tracking_uri: str) -> None:
@@ -423,7 +395,7 @@ def _iter_exception_chain(exc: BaseException) -> list[BaseException]:
     return chain
 
 
-def _classify_probe_error(exc: BaseException) -> str:
+def _classify_probe_error(exc: BaseException) -> MlflowProbeCategory:
     """Map a probe failure to a stable category.
 
     Uses MLflow's structured ``RestException.error_code`` plus transport
@@ -456,66 +428,124 @@ def _classify_probe_error(exc: BaseException) -> str:
     return "unknown"
 
 
+def _probe_outcome(tracking_uri: str) -> tuple[bool, MlflowProbeCategory, str]:
+    """``(ok, category, detail)`` for one bounded probe; never raises."""
+    try:
+        _run_probe_bounded(lambda: _search_experiments_probe(tracking_uri))
+    except _ProbeBusyError:
+        return False, "unknown", "Another connection test is still running; try again shortly."
+    except BaseException as exc:
+        category = _classify_probe_error(exc)
+        # Never log str(exc): transport and REST errors can echo tokens or URLs with userinfo.
+        logger.warning("mlflow_probe_failed", category=category, error_type=type(exc).__name__)
+        return False, category, f"Connection test failed ({category})."
+    return True, "", ""
+
+
+@router.get("/destinations", response_model=MlflowDestinationsResponse)
+def mlflow_destinations(probe: bool = Query(False)) -> MlflowDestinationsResponse:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from haute.modelling._mlflow_settings import (
+        DESTINATION_KEYS,
+        list_destinations,
+        resolve_destination,
+        resolve_tracking_config,
+    )
+
+    root = _get_project_root()
+    installed, importable, package_detail = _mlflow_availability()
+    # Per-entry truth first: list_destinations never raises for a configuration problem — each
+    # key reports its own reason (a malformed [mlflow] table lands on the toml-backed server and
+    # local entries; a rejected Databricks SDK mode lands on databricks only).
+    entries = list_destinations(root)
+    # The auto rule is reported separately so one broken entry never hides the usable ones.
+    try:
+        auto = resolve_tracking_config(root).mode
+        auto_detail = ""
+    except MlflowConfigError as exc:
+        auto, auto_detail = "", str(exc)
+    detail = package_detail or auto_detail
+    response_entries = {
+        e.key: MlflowDestinationEntry(
+            key=e.key,  # type: ignore[arg-type]
+            configured=e.configured,
+            destination=e.destination,
+            config_source=e.config_source,  # type: ignore[arg-type]
+            detail=e.detail,
+        )
+        for e in entries
+    }
+    if probe and installed and importable:
+        targets = [k for k in ("databricks", "server") if response_entries[k].configured]
+        if targets:
+            with ThreadPoolExecutor(max_workers=max(1, len(targets))) as pool:
+                outcomes = list(
+                    pool.map(
+                        lambda k: _probe_outcome(resolve_destination(k, root).tracking_uri),
+                        targets,
+                    )
+                )
+            for key, (ok, category, probe_detail) in zip(targets, outcomes, strict=True):
+                entry = response_entries[key]
+                response_entries[key] = entry.model_copy(
+                    update={
+                        "probed": True,
+                        "ok": ok,
+                        "category": category,
+                        "detail": probe_detail,
+                    }
+                )
+    return MlflowDestinationsResponse(
+        mlflow_installed=installed,
+        mlflow_importable=importable,
+        auto=auto,  # type: ignore[arg-type]
+        destinations=[response_entries[k] for k in DESTINATION_KEYS],
+        detail=detail,
+    )
+
+
 @router.post("/test-connection", response_model=MlflowTestConnectionResponse)
 def mlflow_test_connection(
     body: MlflowTestConnectionRequest | None = None,
 ) -> MlflowTestConnectionResponse:
-    """Probe a tracking destination; expected failures never 5xx.
-
-    With a candidate selection in the body (non-empty ``mode``), the draft
-    is validated and probed as the configuration it would become on save;
-    otherwise the currently resolved configuration is probed.
-    """
+    """Probe a tracking destination; expected failures never 5xx."""
     from haute.modelling._mlflow_settings import (
         MlflowSettings,
         candidate_tracking_config,
+        resolve_destination,
         resolve_tracking_config,
+        validate_destination_key,
     )
 
     installed, importable, detail = _mlflow_availability()
     if not (installed and importable):
         return MlflowTestConnectionResponse(ok=False, category="configuration", detail=detail)
+
+    root = _get_project_root()
     try:
-        if body is not None and body.mode:
-            config = candidate_tracking_config(
-                MlflowSettings(
-                    mode=body.mode,
-                    tracking_uri=body.tracking_uri,
-                    folder=body.folder,
-                ),
-                _get_project_root(),
-            )
+        if body is None or not body.destination:
+            config = resolve_tracking_config(root)
+        elif body.tracking_uri is None and body.folder is None:
+            config = resolve_destination(validate_destination_key(body.destination) or "", root)
         else:
-            config = resolve_tracking_config(_get_project_root())
+            config = candidate_tracking_config(
+                body.destination,
+                MlflowSettings(tracking_uri=body.tracking_uri or "", folder=body.folder or ""),
+                root,
+            )
     except MlflowConfigError as exc:
         return MlflowTestConnectionResponse(ok=False, category="configuration", detail=str(exc))
-    try:
-        _run_probe_bounded(lambda: _search_experiments_probe(config.tracking_uri))
-    except _ProbeBusyError:
-        return MlflowTestConnectionResponse(
-            ok=False,
-            category="unknown",
-            detail="Another connection test is still running; try again shortly.",
-        )
-    except BaseException as exc:
-        category = _classify_probe_error(exc)
-        logger.warning(
-            "mlflow_test_connection_failed",
-            category=category,
-            error=str(exc),
-        )
-        return MlflowTestConnectionResponse(
-            ok=False,
-            category=category,  # type: ignore[arg-type]
-            detail=f"Connection test failed ({category}).",
-        )
-    return MlflowTestConnectionResponse(ok=True)
+    ok, category, detail = _probe_outcome(config.tracking_uri)
+    return MlflowTestConnectionResponse(ok=ok, category=category, detail=detail)
 
 
 @router.get("/experiments", response_model=list[MlflowExperimentSummary])
-def list_experiments() -> list[MlflowExperimentSummary]:
+def list_experiments(
+    destination: Annotated[_DestinationQuery, Query()] = "",
+) -> list[MlflowExperimentSummary]:
     """List all MLflow experiments."""
-    _mlflow, client = _ensure_tracking()
+    _mlflow, client = _ensure_tracking(destination)
 
     try:
         page = client.search_experiments()
@@ -547,6 +577,7 @@ def list_runs(
             "'optimiser' for optimiser results (optimiser_result.json)"
         ),
     ),
+    destination: Annotated[_DestinationQuery, Query()] = "",
 ) -> list[MlflowRunSummary]:
     """List runs for an experiment, filtered to FINISHED runs with matching artifacts.
 
@@ -554,7 +585,7 @@ def list_runs(
     matching files.  MLflow has no batch artifacts API, so this is O(N) in
     the number of runs.  The ``max_results`` cap bounds the total calls.
     """
-    _mlflow, client = _ensure_tracking()
+    _mlflow, client = _ensure_tracking(destination)
     measurement = _RunDiscoveryMeasurement(max_results=max_results, started_at=perf_counter())
 
     search_started_at = perf_counter()
@@ -583,9 +614,10 @@ def list_runs(
 def list_models(
     max_results: int = Query(100, ge=1, le=1000),
     page_token: str | None = Query(None),
+    destination: Annotated[_DestinationQuery, Query()] = "",
 ) -> list[MlflowModelSummary]:
     """List registered models."""
-    _mlflow, client = _ensure_tracking()
+    _mlflow, client = _ensure_tracking(destination)
 
     try:
         result = client.search_registered_models(
@@ -638,9 +670,10 @@ def _model_version_run_params(client: MlflowClient, run_id: str) -> dict[str, st
 @router.get("/model-versions", response_model=list[MlflowModelVersionSummary])
 def list_model_versions(
     model_name: str = Query(..., description="Registered model name"),
+    destination: Annotated[_DestinationQuery, Query()] = "",
 ) -> list[MlflowModelVersionSummary]:
     """List versions of a registered model."""
-    _mlflow, client = _ensure_tracking()
+    _mlflow, client = _ensure_tracking(destination)
 
     try:
         versions = search_versions(client, model_name)

@@ -2517,6 +2517,7 @@ class LogExperimentRequest(BaseModel):
     job_id: str
     experiment_name: str | None = None
     model_name: str | None = None
+    destination: Literal["", "databricks", "server", "local"] = ""
 
 
 class MlflowLogResponse(BaseModel):
@@ -2557,71 +2558,59 @@ class ModelCacheClearResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class MlflowStatusResponse(BaseModel):
-    """Resolved tracking-connection status for the UI.
+MlflowDestinationKey = Literal["databricks", "server", "local"]
+MlflowProbeCategory = Literal[
+    "",
+    "authentication",
+    "permission",
+    "missing_resource",
+    "connectivity",
+    "configuration",
+    "unknown",
+]
 
-    Package presence, importability, and resolution are independent facts;
-    none is inferred from another. A misconfigured selection is reported as
-    ``configured=False`` plus an actionable ``detail`` — never a 5xx.
-    """
 
-    mlflow_installed: bool
-    mlflow_importable: bool
+class MlflowDestinationEntry(BaseModel):
+    key: MlflowDestinationKey
     configured: bool
-    mode: Literal["", "databricks", "server", "local"] = ""
     destination: str = ""
     config_source: Literal["", "toml", "env", "default"] = ""
     detail: str = ""
+    probed: bool = False
+    ok: bool = False
+    category: MlflowProbeCategory = ""
 
 
-class MlflowResolvedDestination(BaseModel):
-    mode: Literal["databricks", "server", "local"]
-    destination: str
-    config_source: Literal["toml", "env", "default"]
+class MlflowDestinationsResponse(BaseModel):
+    mlflow_installed: bool
+    mlflow_importable: bool
+    auto: Literal["", "databricks", "server", "local"] = ""
+    destinations: list[MlflowDestinationEntry] = Field(default_factory=list)
+    detail: str = ""
 
 
 class MlflowSettingsResponse(BaseModel):
-    """The stored ``[mlflow]`` table verbatim plus its current resolution."""
-
     section_present: bool
-    mode: str = ""
     tracking_uri: str = ""
     folder: str = ""
-    resolved: MlflowResolvedDestination | None = None
+    resolved_folder: str = ""
     detail: str = ""
 
 
 class MlflowSettingsUpdateRequest(BaseModel):
-    # ``mode`` is a plain string so an unknown mode flows into the settings
-    # validator and returns the documented field-naming 400 (not a 422).
-    mode: str
     tracking_uri: str = ""
     folder: str = ""
 
 
 class MlflowTestConnectionRequest(BaseModel):
-    """Optional candidate selection to probe instead of the saved config.
-
-    An empty ``mode`` (or an absent body) probes the currently resolved
-    configuration.
-    """
-
-    mode: str = ""
-    tracking_uri: str = ""
-    folder: str = ""
+    destination: str = ""
+    tracking_uri: str | None = None
+    folder: str | None = None
 
 
 class MlflowTestConnectionResponse(BaseModel):
     ok: bool
-    category: Literal[
-        "",
-        "authentication",
-        "permission",
-        "missing_resource",
-        "connectivity",
-        "configuration",
-        "unknown",
-    ] = ""
+    category: MlflowProbeCategory = ""
     detail: str = ""
 
 
@@ -2942,6 +2931,7 @@ class OptimiserMlflowLogRequest(BaseModel):
     point_index: int | None = Field(default=None, ge=0)
     experiment_name: str | None = None
     model_name: str | None = None
+    destination: Literal["", "databricks", "server", "local"] = ""
 
 
 class OptimiserMlflowLogResponse(MlflowLogResponse):
