@@ -286,6 +286,7 @@ class TestCatBoostParamRouting:
             },
             "metrics": ["rmse"],
             "mlflow_experiment": None,
+            "mlflow_destination": "",
             "model_name": None,
             "output_dir": kwargs["output_dir"],
             "loss_function": "RMSE",

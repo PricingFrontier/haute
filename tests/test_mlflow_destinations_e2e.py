@@ -787,14 +787,16 @@ class TestGeneratedScriptDestinations:
         # --- Clone into store B and make its contents distinguishable -------
         _copy_store(local_store, server_store)
         server_model_path, server_model = _train_catboost(project / "model_b", seed=99, scale=5.0)
-        shutil.copyfile(
-            server_model_path,
-            _run_artifact_dir(server_store, model_run) / MODEL_ARTIFACT,
-        )
+        # Write targets are spelled from the tmp-rooted store so the sandbox
+        # lint can see they never leave it; the run directories mirror the
+        # cloned local store exactly.
+        model_run_rel = _run_artifact_dir(local_store, model_run).relative_to(local_store)
+        optimiser_run_rel = _run_artifact_dir(local_store, optimiser_run).relative_to(local_store)
+        shutil.copyfile(server_model_path, server_store / model_run_rel / MODEL_ARTIFACT)
         server_artifact = dict(local_artifact)
         server_artifact["version"] = "server_side_version"
         server_artifact["lambdas"] = {"predicted_volume": 0.25}
-        (_run_artifact_dir(server_store, optimiser_run) / OPTIMISER_ARTIFACT).write_text(
+        (server_store / optimiser_run_rel / OPTIMISER_ARTIFACT).write_text(
             json.dumps(server_artifact, indent=2),
             encoding="utf-8",
         )

@@ -483,18 +483,6 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
     # Tracking-destination resolution: each read happens per resolve call so
     # the selected backend always reflects the current environment.
     (
-        "src/haute/modelling/_mlflow_settings.py",
-        "<module>.resolve_tracking_config",
-        "DATABRICKS_HOST",
-        "os.getenv",
-    ),
-    (
-        "src/haute/modelling/_mlflow_settings.py",
-        "<module>.resolve_tracking_config",
-        "DATABRICKS_TOKEN",
-        "os.getenv",
-    ),
-    (
         "src/haute/_mlflow_utils.py",
         "<module>.tracking_uri_from_environment",
         "MLFLOW_TRACKING_URI",
@@ -506,17 +494,27 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
         "MLFLOW_TRACKING_URI",
         "os.environ.get",
     ),
+    # Per-destination resolution (MLF-D01): the Databricks resolver reads the
+    # host/token pair per call, and the SDK-mode guard reads the MLflow flag
+    # per call so an operator's explicit setting is honoured (and rejected
+    # loudly) at every resolution, never cached from process start.
     (
         "src/haute/modelling/_mlflow_settings.py",
-        "<module>._databricks_config",
+        "<module>._resolve_databricks",
         "DATABRICKS_HOST",
         "os.getenv",
     ),
     (
         "src/haute/modelling/_mlflow_settings.py",
-        "<module>._databricks_config",
+        "<module>._resolve_databricks",
         "DATABRICKS_TOKEN",
         "os.getenv",
+    ),
+    (
+        "src/haute/modelling/_mlflow_settings.py",
+        "<module>._reject_databricks_sdk_mode",
+        "MLFLOW_ENABLE_DB_SDK",
+        "os.environ.get",
     ),
     # Hosted durable storage: deployment identity and credential locations,
     # each read per call so a container can be reconfigured without a rebuild.

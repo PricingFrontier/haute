@@ -230,10 +230,15 @@ class TestCatboostButtonRoundTrip:
         run_id = resp.json()["run_id"]
         tracking_uri = resp.json()["tracking_uri"]
         from haute._mlflow_io import _load_pyfunc_model
+        from haute._mlflow_utils import resolve_backend
 
+        # The route logged to the auto destination (the fixture's local
+        # folder), so resolving auto again yields the backend the run lives in.
+        backend = resolve_backend("")
+        assert backend.tracking_uri == tracking_uri
         previous_tracking_uri = mlflow.get_tracking_uri()
         previous_registry_uri = mlflow.get_registry_uri()
-        loaded = _load_pyfunc_model(mlflow, run_id, "model", tracking_uri=tracking_uri)
+        loaded = _load_pyfunc_model(mlflow, run_id, "model", backend=backend)
         assert mlflow.get_tracking_uri() == previous_tracking_uri
         assert mlflow.get_registry_uri() == previous_registry_uri
 
