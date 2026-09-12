@@ -533,13 +533,13 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
     # MLflow's bound credential provider reads the pair per request, so a repoint needs no reset.
     (
         "src/haute/_mlflow_utils.py",
-        "<module>._binding_classes.MlflowPairConfigProvider.get_config",
+        "<module>._binding_replacements.MlflowPairConfigProvider.get_config",
         "DATABRICKS_MLFLOW_HOST",
         "os.environ.get",
     ),
     (
         "src/haute/_mlflow_utils.py",
-        "<module>._binding_classes.MlflowPairConfigProvider.get_config",
+        "<module>._binding_replacements.MlflowPairConfigProvider.get_config",
         "DATABRICKS_MLFLOW_TOKEN",
         "os.environ.get",
     ),

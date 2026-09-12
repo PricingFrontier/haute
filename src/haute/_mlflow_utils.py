@@ -19,8 +19,9 @@ Databricks credential binding:
   ``bind_mlflow_databricks_credentials()`` pins ``MLFLOW_ENABLE_DB_SDK=false`` (MLflow's
   SDK path resolves environment-first and caches its client), replaces MLflow's
   environment credential provider with one that reads the MLflow pair on every request,
-  and routes run and logged-model artifacts through MLflow's REST repository so no
-  Databricks SDK client is built from the general pair.
+  routes run and logged-model artifacts through MLflow's REST repository, and pins the
+  Unity Catalog model-artifact SDK client to the same token, so no Databricks SDK client
+  authenticates with the general pair or an ambient service principal.
 """
 
 from __future__ import annotations
@@ -51,9 +52,9 @@ MLFLOW_DATABRICKS_HOST_ENV = "DATABRICKS_MLFLOW_HOST"
 MLFLOW_DATABRICKS_TOKEN_ENV = "DATABRICKS_MLFLOW_TOKEN"
 
 _DATABRICKS_BINDING_LOCK = threading.Lock()
-# ``(MLflow's environment provider class, MLflow's SDK artifact repository class)``
-# as they were before binding, or ``None`` while unbound.
-_databricks_binding_originals: tuple[Any, Any] | None = None
+# MLflow's originals for ``_BOUND_SYMBOLS``, in order, as they were before binding,
+# or ``None`` while unbound.
+_databricks_binding_originals: tuple[Any, ...] | None = None
 
 _UNBOUND_PAIR_MESSAGE = (
     "Databricks MLflow credentials are not configured: set DATABRICKS_MLFLOW_HOST and "
@@ -67,26 +68,28 @@ _REST_ONLY_ARTIFACTS_MESSAGE = (
 )
 
 
-# The two MLflow module globals the binder replaces, in the order of
-# ``_binding_classes()``: MLflow's per-request environment credential provider,
-# and the SDK artifact repository its run and logged-model repositories try first.
-_BOUND_SYMBOLS: tuple[tuple[str, str], tuple[str, str]] = (
+# The MLflow module globals the binder replaces, in the order of
+# ``_binding_replacements()``: MLflow's per-request environment credential
+# provider, the SDK artifact repository its run and logged-model repositories try
+# first, and the SDK client factory of its Unity Catalog model-artifact repository.
+_BOUND_SYMBOLS: tuple[tuple[str, str], ...] = (
     ("mlflow.utils.databricks_utils", "EnvironmentVariableConfigProvider"),
     ("mlflow.store.artifact.databricks_tracking_artifact_repo", "DatabricksSdkArtifactRepository"),
+    (
+        "mlflow.store.artifact.databricks_sdk_models_artifact_repo",
+        "_get_databricks_workspace_client",
+    ),
 )
 
 
-def _bound_mlflow_modules() -> tuple[ModuleType, ModuleType]:
+def _bound_mlflow_modules() -> tuple[ModuleType, ...]:
     import importlib
 
-    return (
-        importlib.import_module(_BOUND_SYMBOLS[0][0]),
-        importlib.import_module(_BOUND_SYMBOLS[1][0]),
-    )
+    return tuple(importlib.import_module(module_name) for module_name, _ in _BOUND_SYMBOLS)
 
 
-def _binding_classes() -> tuple[type, type]:
-    """Build the provider and artifact-repository stand-in against the installed MLflow."""
+def _binding_replacements() -> tuple[Any, ...]:
+    """Build the replacements for ``_BOUND_SYMBOLS``, in order, against the installed MLflow."""
     from mlflow.exceptions import MlflowException
     from mlflow.legacy_databricks_cli.configure.provider import (
         DatabricksConfig,
@@ -132,7 +135,31 @@ def _binding_classes() -> tuple[type, type]:
         def _download_file(self, *args: Any, **kwargs: Any) -> None:
             raise MlflowException(_REST_ONLY_ARTIFACTS_MESSAGE)
 
-    return MlflowPairConfigProvider, RestOnlyDatabricksArtifacts
+    def bound_models_workspace_client(registry_uri: str | None = None) -> Any:
+        """The Unity Catalog model-artifact SDK client, pinned to the bound credentials.
+
+        MLflow uses this SDK repository when the workspace (or
+        ``MLFLOW_USE_DATABRICKS_SDK_MODEL_ARTIFACTS_REPO_FOR_UC``) selects it. Its own
+        factory passes host and token but lets the SDK read every other field from the
+        environment, so a general service principal (``DATABRICKS_CLIENT_ID`` /
+        ``DATABRICKS_CLIENT_SECRET``, ``DATABRICKS_AUTH_TYPE``) either conflicts with the
+        token or replaces it. The host and token come from the bound provider or the
+        selected profile, and ``auth_type="pat"`` makes that token the only credential.
+        Missing credentials raise instead of falling back to the SDK's default auth.
+        """
+        from databricks.sdk import WorkspaceClient
+        from mlflow.utils.databricks_utils import get_databricks_host_creds
+
+        creds = get_databricks_host_creds(registry_uri)
+        if not creds.host or not creds.token:
+            raise MlflowException(
+                "Databricks Unity Catalog model artifacts need a personal access token: "
+                "set DATABRICKS_MLFLOW_HOST and DATABRICKS_MLFLOW_TOKEN, or select a profile "
+                "that carries a token with MLFLOW_TRACKING_URI=databricks://<profile>."
+            )
+        return WorkspaceClient(host=creds.host, token=creds.token, auth_type="pat")
+
+    return MlflowPairConfigProvider, RestOnlyDatabricksArtifacts, bound_models_workspace_client
 
 
 def bind_mlflow_databricks_credentials() -> None:
@@ -163,11 +190,11 @@ def bind_mlflow_databricks_credentials() -> None:
             return
         try:
             modules = _bound_mlflow_modules()
-            originals = (
-                getattr(modules[0], _BOUND_SYMBOLS[0][1]),
-                getattr(modules[1], _BOUND_SYMBOLS[1][1]),
+            originals = tuple(
+                getattr(module, name)
+                for module, (_, name) in zip(modules, _BOUND_SYMBOLS, strict=True)
             )
-            replacements = _binding_classes()
+            replacements = _binding_replacements()
         except (ImportError, AttributeError) as exc:
             from haute.errors import MlflowConfigError
 

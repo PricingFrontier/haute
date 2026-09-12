@@ -6,6 +6,12 @@ different hosts and tokens. Every HTTP request MLflow issues is captured at
 ``requests.Session.request`` — MLflow's REST calls and its signed-URL storage
 transfers both reach the network through that method — and the Databricks SDK
 client class is replaced by a mock that must never be called.
+
+Unity Catalog model artifacts can legitimately use the Databricks SDK, which
+attaches ``Authorization`` through a requests auth hook after
+``Session.request`` has been entered. Those tests capture every request at
+``requests.Session.send`` instead, where the prepared request carries its final
+headers and body, and record the real SDK clients that are built.
 """
 
 from __future__ import annotations
@@ -54,13 +60,18 @@ STORED_BYTES = b"bytes served by the signed storage URL"
 UPLOADED_BYTES = b"bytes written through the signed storage URL"
 STORAGE_HEADERS = {"x-amz-server-side-encryption": "AES256"}
 
+GENERAL_CLIENT_ID = "general-client-id"
+GENERAL_CLIENT_SECRET = "general-client-secret-000"
+
 _DELETED_ENVIRONMENT = (
     "MLFLOW_TRACKING_URI",
     "DATABRICKS_CONFIG_PROFILE",
     "DATABRICKS_CLIENT_ID",
     "DATABRICKS_CLIENT_SECRET",
+    "DATABRICKS_AUTH_TYPE",
     "MLFLOW_ENABLE_DB_SDK",
     "MLFLOW_DISABLE_DATABRICKS_SDK_FOR_RUN_ARTIFACTS",
+    "MLFLOW_USE_DATABRICKS_SDK_MODEL_ARTIFACTS_REPO_FOR_UC",
 )
 
 
@@ -102,29 +113,47 @@ class FakeDatabricks:
     and fails the host assertion rather than the routing.
     """
 
-    def __init__(self, workspace_client: MagicMock) -> None:
+    def __init__(self, workspace_client: MagicMock | None = None) -> None:
         self.workspace_client = workspace_client
         self.requests: list[CapturedRequest] = []
-        self._routes: dict[tuple[str, str], tuple[int, bytes]] = {}
+        self._routes: dict[tuple[str, str], tuple[int, bytes, dict[str, str]]] = {}
 
     def respond_json(
         self, method: str, path: str, payload: dict[str, Any], status: int = 200
     ) -> None:
-        self._routes[(method, path)] = (status, json.dumps(payload).encode("utf-8"))
+        content = json.dumps(payload).encode("utf-8")
+        self._routes[(method, path)] = (status, content, {"Content-Type": "application/json"})
 
-    def respond_bytes(self, method: str, path: str, content: bytes) -> None:
-        self._routes[(method, path)] = (200, content)
+    def respond_bytes(
+        self, method: str, path: str, content: bytes, headers: dict[str, str] | None = None
+    ) -> None:
+        self._routes[(method, path)] = (200, content, dict(headers or {}))
 
     def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
-        headers = {str(k): str(v) for k, v in (kwargs.get("headers") or {}).items()}
-        data = kwargs.get("data")
+        """``requests.Session.request`` stand-in: the caller's own headers and body."""
+        options = repr({k: v for k, v in kwargs.items() if k not in {"data", "headers"}})
+        return self._record_and_respond(
+            method, url, kwargs.get("headers") or {}, kwargs.get("data"), options
+        )
+
+    def send(self, prepared: requests.PreparedRequest, **kwargs: Any) -> requests.Response:
+        """``requests.Session.send`` stand-in: headers and body after auth hooks ran."""
+        response = self._record_and_respond(
+            str(prepared.method), str(prepared.url), prepared.headers, prepared.body, repr(kwargs)
+        )
+        response.request = prepared
+        return response
+
+    def _record_and_respond(
+        self, method: str, url: str, raw_headers: Any, data: Any, options: str
+    ) -> requests.Response:
+        headers = {str(k): str(v) for k, v in raw_headers.items()}
         if hasattr(data, "read"):
             body: bytes | None = data.read()
         elif isinstance(data, str):
             body = data.encode("utf-8")
         else:
             body = data
-        options = repr({k: v for k, v in kwargs.items() if k not in {"data", "headers"}})
         self.requests.append(
             CapturedRequest(
                 method.upper(), url, headers.get("Authorization"), headers, body, options
@@ -133,10 +162,11 @@ class FakeDatabricks:
         route = (method.upper(), urlsplit(url).path)
         if route not in self._routes:
             raise AssertionError(f"unscripted request: {method.upper()} {url}")
-        status, content = self._routes[route]
+        status, content, response_headers = self._routes[route]
         response = requests.Response()
         response.status_code = status
         response.reason = "OK" if status == 200 else "Error"
+        response.headers.update(response_headers)
         response._content = content
         response._content_consumed = True
         response.encoding = "utf-8"
@@ -157,6 +187,7 @@ class FakeDatabricks:
             assert captured.authorization == f"Bearer {MLFLOW_TOKEN}", captured
         assert GENERAL_TOKEN not in repr(self.requests)
         assert GENERAL_HOST not in repr(self.requests)
+        assert self.workspace_client is not None
         self.workspace_client.assert_not_called()
 
 
@@ -415,6 +446,231 @@ def test_artifact_rest_failure_propagates_without_an_sdk_client(
 
 
 # ---------------------------------------------------------------------------
+# Unity Catalog model artifacts through MLflow's Databricks SDK repository
+# ---------------------------------------------------------------------------
+
+UC_MODEL = "cat.sch.model"
+UC_VERSION = "1"
+UC_FILES_ROOT = "/Models/cat/sch/model/1"
+UC_SERVED_BYTES = b"MLmodel bytes served by the Files API"
+UC_UPLOADS = {"MLmodel": b"MLmodel bytes uploaded", "model.cbm": b"catboost bytes uploaded"}
+_UC_SDK_REPOSITORY_ENABLED = (
+    "GET",
+    "/api/2.0/mlflow/unity-catalog/registered-models"
+    ":is-databricks-sdk-models-artifact-repository-enabled",
+)
+_UC_EMIT_LINEAGE = ("POST", "/api/2.0/mlflow/unity-catalog/model-versions/emit-lineage")
+_FILES_DIRECTORY = f"/api/2.0/fs/directories{UC_FILES_ROOT}"
+_FILES_CREATE_DOWNLOAD_URL = ("POST", "/api/2.0/fs/create-download-url")
+
+
+@dataclass(frozen=True)
+class UnityCatalogTraffic:
+    http: FakeDatabricks
+    sdk_clients: list[Any]
+
+    def assert_bound_to_mlflow_pair(self) -> None:
+        assert self.http.requests, "no request was issued"
+        for captured in self.http.requests:
+            assert captured.url.startswith(f"{MLFLOW_HOST}/api/"), captured
+            assert captured.authorization == f"Bearer {MLFLOW_TOKEN}", captured
+            assert "/oidc/" not in urlsplit(captured.url).path, captured
+        wire = repr(self.http.requests)
+        for foreign in (GENERAL_TOKEN, GENERAL_CLIENT_SECRET, GENERAL_CLIENT_ID, GENERAL_HOST):
+            assert foreign not in wire, foreign
+        assert [(c.config.host, c.config.auth_type) for c in self.sdk_clients] == [
+            (MLFLOW_HOST, "pat")
+        ]
+
+
+@pytest.fixture()
+def unity_catalog(monkeypatch: pytest.MonkeyPatch) -> UnityCatalogTraffic:
+    """Capture at ``Session.send`` with a data-access service principal in the environment."""
+    from databricks.sdk import WorkspaceClient
+
+    monkeypatch.setenv("DATABRICKS_CLIENT_ID", GENERAL_CLIENT_ID)
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", GENERAL_CLIENT_SECRET)
+    monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "oauth-m2m")
+    # MLflow's Unity Catalog repositories build their client from the fluent tracking URI.
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks")
+
+    traffic = UnityCatalogTraffic(FakeDatabricks(), [])
+
+    class RecordingWorkspaceClient(WorkspaceClient):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            traffic.sdk_clients.append(self)
+
+    def session_send(
+        session: requests.Session, prepared: requests.PreparedRequest, **kwargs: Any
+    ) -> requests.Response:
+        del session
+        return traffic.http.send(prepared, **kwargs)
+
+    monkeypatch.setattr(requests.Session, "send", session_send)
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", RecordingWorkspaceClient)
+    traffic.http.respond_json(
+        *_UC_SDK_REPOSITORY_ENABLED, {"is_databricks_sdk_models_artifact_repository_enabled": True}
+    )
+    return traffic
+
+
+def _without_query(url: str) -> str:
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}{parts.path}"
+
+
+def test_unity_catalog_sdk_download_sends_only_the_mlflow_token(
+    unity_catalog: UnityCatalogTraffic, tmp_path: Path
+) -> None:
+    from mlflow.store.artifact.artifact_repository_registry import get_artifact_repository
+    from mlflow.store.artifact.unity_catalog_models_artifact_repo import (
+        UnityCatalogModelsArtifactRepository,
+    )
+
+    http = unity_catalog.http
+    http.respond_json(*_UC_EMIT_LINEAGE, {})
+    http.respond_bytes("HEAD", _FILES_DIRECTORY, b"")
+    http.respond_json(
+        "GET",
+        _FILES_DIRECTORY,
+        {
+            "contents": [
+                {
+                    "path": f"{UC_FILES_ROOT}/MLmodel",
+                    "name": "MLmodel",
+                    "is_directory": False,
+                    "file_size": len(UC_SERVED_BYTES),
+                }
+            ]
+        },
+    )
+    # The workspace has presigned download URLs disabled, so the SDK downloads
+    # through the Files API on the workspace host.
+    http.respond_json(
+        *_FILES_CREATE_DOWNLOAD_URL,
+        {
+            "error_code": "PERMISSION_DENIED",
+            "message": "Presigned URLs are not enabled",
+            "details": [
+                {
+                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                    "reason": "FILES_API_API_IS_NOT_ENABLED",
+                    "domain": "filesystem.databricks.com",
+                }
+            ],
+        },
+        status=403,
+    )
+    http.respond_bytes(
+        "GET",
+        f"/api/2.0/fs/files{UC_FILES_ROOT}/MLmodel",
+        UC_SERVED_BYTES,
+        headers={
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(len(UC_SERVED_BYTES)),
+            "Last-Modified": "Sat, 12 Sep 2026 00:00:00 GMT",
+        },
+    )
+    destination = tmp_path / "download"
+    destination.mkdir()
+
+    backend = resolve_backend("databricks")
+    repository = get_artifact_repository(
+        f"models:/{UC_MODEL}/{UC_VERSION}", registry_uri=backend.registry_uri
+    )
+    assert type(repository.repo) is UnityCatalogModelsArtifactRepository
+    repository.download_artifacts("", dst_path=str(destination))
+
+    assert (destination / "MLmodel").read_bytes() == UC_SERVED_BYTES
+    listing = [
+        ("HEAD", f"{MLFLOW_HOST}{_FILES_DIRECTORY}"),
+        ("GET", f"{MLFLOW_HOST}{_FILES_DIRECTORY}"),
+    ]
+    assert [(r.method, _without_query(r.url)) for r in http.requests] == [
+        (_UC_SDK_REPOSITORY_ENABLED[0], f"{MLFLOW_HOST}{_UC_SDK_REPOSITORY_ENABLED[1]}"),
+        (_UC_EMIT_LINEAGE[0], f"{MLFLOW_HOST}{_UC_EMIT_LINEAGE[1]}"),
+        *listing,
+        *listing,
+        *listing,
+        (_FILES_CREATE_DOWNLOAD_URL[0], f"{MLFLOW_HOST}{_FILES_CREATE_DOWNLOAD_URL[1]}"),
+        ("GET", f"{MLFLOW_HOST}/api/2.0/fs/files{UC_FILES_ROOT}/MLmodel"),
+    ]
+    unity_catalog.assert_bound_to_mlflow_pair()
+
+
+def test_unity_catalog_sdk_upload_through_the_registry_store_sends_only_the_mlflow_token(
+    unity_catalog: UnityCatalogTraffic, tmp_path: Path
+) -> None:
+    from mlflow.protos.databricks_uc_registry_messages_pb2 import ModelVersion
+    from mlflow.store._unity_catalog.registry.rest_store import UcModelRegistryStore
+
+    http = unity_catalog.http
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    for name, content in UC_UPLOADS.items():
+        (model_dir / name).write_bytes(content)
+        http.respond_bytes("PUT", f"/api/2.0/fs/files{UC_FILES_ROOT}/{name}", b"")
+
+    backend = resolve_backend("databricks")
+    store = _bound_client(backend)._get_registry_client().store
+    assert isinstance(store, UcModelRegistryStore)
+    # The registry store's own upload step after it creates a model version.
+    repository = store._get_artifact_repo(ModelVersion(name=UC_MODEL, version=UC_VERSION), UC_MODEL)
+    repository.log_artifacts(local_dir=str(model_dir), artifact_path="")
+
+    [enabled, *uploads] = http.requests
+    assert enabled.endpoint == (
+        _UC_SDK_REPOSITORY_ENABLED[0],
+        f"{MLFLOW_HOST}{_UC_SDK_REPOSITORY_ENABLED[1]}",
+    )
+    # Uploads run on MLflow's thread pool, so their order is not fixed.
+    assert sorted((r.method, _without_query(r.url), r.body) for r in uploads) == sorted(
+        ("PUT", f"{MLFLOW_HOST}/api/2.0/fs/files{UC_FILES_ROOT}/{name}", content)
+        for name, content in UC_UPLOADS.items()
+    )
+    unity_catalog.assert_bound_to_mlflow_pair()
+
+
+@pytest.mark.parametrize("credential_form", ["pair_token_unset", "token_less_profile"])
+def test_unity_catalog_sdk_client_refuses_missing_token_without_default_auth(
+    unity_catalog: UnityCatalogTraffic,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    credential_form: str,
+) -> None:
+    from mlflow.exceptions import MlflowException
+    from mlflow.store.artifact.databricks_sdk_models_artifact_repo import (
+        DatabricksSDKModelsArtifactRepository,
+    )
+
+    if credential_form == "token_less_profile":
+        (tmp_path / "databrickscfg").write_text(
+            "[sp]\nhost = https://service-principal.example.invalid\n"
+            "client_id = profile-client-id\nclient_secret = profile-client-secret\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://sp")
+    backend = resolve_backend("databricks")
+    if credential_form == "pair_token_unset":
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN")
+
+    with pytest.raises(MlflowException) as excinfo:
+        DatabricksSDKModelsArtifactRepository(
+            UC_MODEL, UC_VERSION, registry_uri=backend.registry_uri
+        )
+
+    expected = (
+        "DATABRICKS_MLFLOW_TOKEN"
+        if credential_form == "pair_token_unset"
+        else "personal access token"
+    )
+    assert expected in excinfo.value.message
+    assert unity_catalog.http.requests == []
+    assert unity_catalog.sdk_clients == []
+
+
+# ---------------------------------------------------------------------------
 # Repointing, unset pair, and the profile form
 # ---------------------------------------------------------------------------
 
@@ -501,13 +757,25 @@ def test_profile_uri_binds_the_profile_even_with_both_pairs_set(
 # ---------------------------------------------------------------------------
 
 
+_EXPECTED_BOUND_SYMBOLS = (
+    ("mlflow.utils.databricks_utils", "EnvironmentVariableConfigProvider"),
+    ("mlflow.store.artifact.databricks_tracking_artifact_repo", "DatabricksSdkArtifactRepository"),
+    (
+        "mlflow.store.artifact.databricks_sdk_models_artifact_repo",
+        "_get_databricks_workspace_client",
+    ),
+)
+
+
 def _mlflow_globals() -> tuple[Any, ...]:
     return tuple(getattr(importlib.import_module(module), name) for module, name in _BOUND_SYMBOLS)
 
 
 def test_binder_is_idempotent_restorable_and_reapplicable() -> None:
+    assert _BOUND_SYMBOLS == _EXPECTED_BOUND_SYMBOLS
     _restore_mlflow_databricks_credentials()
     originals = _mlflow_globals()
+    assert len(originals) == len(_EXPECTED_BOUND_SYMBOLS)
 
     bind_mlflow_databricks_credentials()
     first = _mlflow_globals()
@@ -557,18 +825,24 @@ def test_binder_refuses_an_mlflow_without_the_environment_provider(
 
 
 def test_mlflow_still_resolves_the_bound_symbols_at_call_time() -> None:
+    import mlflow.store.artifact.databricks_sdk_models_artifact_repo as sdk_models_repo
     import mlflow.utils.databricks_utils as databricks_utils
     from mlflow.store.artifact.databricks_tracking_artifact_repo import (
         DatabricksTrackingArtifactRepository,
     )
 
+    assert _BOUND_SYMBOLS == _EXPECTED_BOUND_SYMBOLS
     for module_name, attribute in _BOUND_SYMBOLS:
         assert hasattr(importlib.import_module(module_name), attribute), (module_name, attribute)
+    assert callable(sdk_models_repo._get_databricks_workspace_client)
     assert "EnvironmentVariableConfigProvider()" in inspect.getsource(
         databricks_utils._get_databricks_creds_config
     )
     assert "DatabricksSdkArtifactRepository(" in inspect.getsource(
         DatabricksTrackingArtifactRepository.__init__
+    )
+    assert "_get_databricks_workspace_client(" in inspect.getsource(
+        sdk_models_repo.DatabricksSDKModelsArtifactRepository.__init__
     )
 
 

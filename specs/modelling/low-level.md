@@ -512,7 +512,13 @@ per-request provider chain starts with an environment provider reading
 replaces that chain with the named profile; its default Databricks-SDK path
 resolves credentials environment-first and caches its client; and its run and
 logged-model artifact repositories first try a bare SDK client built from the
-environment before falling back to MLflow's REST artifact repository.
+environment before falling back to MLflow's REST artifact repository; and when the
+workspace (or `MLFLOW_USE_DATABRICKS_SDK_MODEL_ARTIFACTS_REPO_FOR_UC`) selects the
+SDK path for Unity Catalog model artifacts — required on Secure Egress Gateway
+workspaces — MLflow builds that client from the resolved host and token but lets
+the SDK read every other field from the environment, so a data-access service
+principal (`DATABRICKS_CLIENT_ID`/`DATABRICKS_CLIENT_SECRET`,
+`DATABRICKS_AUTH_TYPE`) would conflict with the token or replace it.
 `haute._mlflow_utils.bind_mlflow_databricks_credentials()` therefore,
 idempotently and under a lock: pins `MLFLOW_ENABLE_DB_SDK` to `false`
 (`os.environ.setdefault`); replaces MLflow's environment credential provider
@@ -521,8 +527,13 @@ variables when either is unset, so a bare request never falls through to the
 `DEFAULT` profile or any later provider; and replaces the SDK artifact repository
 those run and logged-model repositories construct with a shim whose operations
 raise, so every upload, listing and download takes MLflow's REST fallback, which
-the provider (or the profile) binds. No SDK client is ever built from the
-general pair, and a REST failure propagates to the caller. Providers resolve
+the provider (or the profile) binds; and replaces MLflow's Unity Catalog
+model-artifact SDK client factory with one that builds the client from the bound
+host and token with `auth_type="pat"`, so that token is its only credential (a
+missing token raises rather than falling back to the SDK's default
+authentication). The SDK path stays available for workspaces that require it. No
+Databricks SDK client ever authenticates with the general pair or an ambient
+service principal, and a REST failure propagates to the caller. Providers resolve
 credentials on every request, so a repointed `DATABRICKS_MLFLOW_HOST` or a
 rewritten profile is followed by the very next request on an existing client.
 The binder is called from this module's Databricks resolver — the one place a

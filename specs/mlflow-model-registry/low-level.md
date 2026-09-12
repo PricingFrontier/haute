@@ -722,15 +722,19 @@ to a live MLflow tracking server.
   the MLflow bearer token and construct no Databricks SDK client; the byte
   transfers go only to the signed cloud-storage URLs those credential
   responses return and carry neither workspace token; a REST artifact failure
-  propagates to the caller; identity and the next request on the same
+  propagates to the caller; Unity Catalog model-artifact listing, download
+  and upload through MLflow's SDK repository (selected by the workspace), with
+  a data-access service principal and `DATABRICKS_AUTH_TYPE=oauth-m2m` in the
+  environment, send only the MLflow bearer token to the MLflow host and make no
+  OAuth token request; identity and the next request on the same
   client follow a repointed `DATABRICKS_MLFLOW_HOST`; the bound provider with
   the pair unset raises naming both variables without consulting the
   `DEFAULT` profile; a profile URI still binds that profile; binding is
   idempotent, a no-op when mlflow is absent, restorable, and happens in a cold
   interpreter before the first client is built (subprocess); and an upgrade
-  guard asserts the two MLflow symbols the binder replaces still exist with the
-  expected shape. An autouse fixture restores both patched MLflow globals and
-  the binder state after every test.
+  guard asserts the three MLflow symbols the binder replaces still exist and
+  are still resolved at call time. An autouse fixture restores the patched
+  MLflow globals and the binder state after every test.
 - **`tests/test_mlflow_destination_cache.py`** — identical run IDs and artifact paths with different contents on
   two local folders and on two server endpoints of the same category never
   alias (distinct digest partitions on disk, distinct memory entries and
