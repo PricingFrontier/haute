@@ -1,13 +1,13 @@
 """Tests for haute.modelling._mlflow_settings.
 
 Covers the [mlflow] haute.toml round trip, MLFLOW_TRACKING_URI form
-classification, and the three-mode resolve_tracking_config() precedence
-matrix defined in specs/modelling/low-level.md (Shared MLflow
-tracking/experiment-name resolution).
+classification, and the destination inventory precedence matrix defined in
+specs/modelling/low-level.md (Shared MLflow tracking/experiment-name resolution).
 """
 
 from __future__ import annotations
 
+import os
 import tomllib
 from pathlib import Path
 
@@ -15,11 +15,18 @@ import pytest
 
 from haute.errors import MlflowConfigError
 from haute.modelling._mlflow_settings import (
+    DestinationEntry,
+    MlflowDestinationUnconfigured,
     MlflowSettings,
+    TrackingConfig,
+    candidate_tracking_config,
     classify_tracking_uri,
+    list_destinations,
     load_mlflow_settings,
+    resolve_destination,
     resolve_tracking_config,
     save_mlflow_settings,
+    validate_destination_key,
 )
 
 _TOML_WITH_COMMENTS = """\
@@ -44,7 +51,12 @@ def project_root(tmp_path: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in ("MLFLOW_TRACKING_URI", "DATABRICKS_HOST", "DATABRICKS_TOKEN"):
+    for var in (
+        "MLFLOW_TRACKING_URI",
+        "DATABRICKS_HOST",
+        "DATABRICKS_TOKEN",
+        "MLFLOW_ENABLE_DB_SDK",
+    ):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -121,370 +133,419 @@ class TestClassifyTrackingUri:
 
 
 # ---------------------------------------------------------------------------
-# load / save round trip
+# Destination inventory tests
 # ---------------------------------------------------------------------------
+
+
+def _write_mlflow(project_root: Path, body: str) -> None:
+    with (project_root / "haute.toml").open("a", encoding="utf-8") as f:
+        f.write("\n[mlflow]\n" + body)
 
 
 class TestLoadSaveSettings:
     def test_load_returns_none_when_section_absent(self, project_root: Path) -> None:
         assert load_mlflow_settings(project_root) is None
 
-    def test_save_server_then_load_round_trips(self, project_root: Path) -> None:
-        save_mlflow_settings(
-            MlflowSettings(mode="server", tracking_uri="http://localhost:5000"),
-            project_root,
-        )
-        loaded = load_mlflow_settings(project_root)
-        assert loaded == MlflowSettings(mode="server", tracking_uri="http://localhost:5000")
-
-    def test_save_preserves_other_sections_and_comments(self, project_root: Path) -> None:
-        save_mlflow_settings(
-            MlflowSettings(mode="server", tracking_uri="http://localhost:5000"),
-            project_root,
-        )
-        text = (project_root / "haute.toml").read_text(encoding="utf-8")
-        assert "# Haute project configuration" in text
-        assert "# project name comment" in text
-        assert "# deployment target" in text
-        parsed = tomllib.loads(text)
-        assert parsed["project"] == {"name": "main", "pipeline": "rating/main.py"}
-        assert parsed["deploy"] == {"target": "databricks", "model_name": "motor-pricing"}
-        assert parsed["mlflow"] == {"mode": "server", "tracking_uri": "http://localhost:5000"}
-
-    def test_save_replaces_existing_mlflow_table(self, project_root: Path) -> None:
-        save_mlflow_settings(
-            MlflowSettings(mode="server", tracking_uri="http://localhost:5000"),
-            project_root,
-        )
-        save_mlflow_settings(MlflowSettings(mode="local", folder="mlruns"), project_root)
-        parsed = tomllib.loads((project_root / "haute.toml").read_text(encoding="utf-8"))
-        assert parsed["mlflow"] == {"mode": "local", "folder": "mlruns"}
-
-    def test_save_local_with_empty_folder_persists_resolved_folder(
-        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # An env-derived custom local folder must survive an unchanged save:
-        # saving mode="local" with no folder writes the *resolved* folder,
-        # never silently redirecting tracking to ./mlruns.
-        team_runs = project_root / "team-runs"
-        monkeypatch.setenv("MLFLOW_TRACKING_URI", team_runs.as_uri())
-        save_mlflow_settings(MlflowSettings(mode="local"), project_root)
-
-        parsed = tomllib.loads((project_root / "haute.toml").read_text(encoding="utf-8"))
-        assert Path(parsed["mlflow"]["folder"]) == team_runs
-
-        config = resolve_tracking_config(project_root)
-        assert config.mode == "local"
-        assert Path(config.destination) == team_runs
-
-    @pytest.mark.parametrize(
-        ("settings", "match"),
-        [
-            (MlflowSettings(mode="server"), "tracking_uri"),
-            (MlflowSettings(mode="server", tracking_uri="ftp://x"), "tracking_uri"),
-            (MlflowSettings(mode="server", tracking_uri="http://x", folder="y"), "folder"),
-            (MlflowSettings(mode="local", tracking_uri="http://x"), "tracking_uri"),
-            (MlflowSettings(mode="databricks", tracking_uri="databricks"), "tracking_uri"),
-            (MlflowSettings(mode="databricks", folder="mlruns"), "folder"),
-            (MlflowSettings(mode="filesystem"), "mode"),
-        ],
-    )
-    def test_save_rejects_invalid_settings(
-        self, project_root: Path, settings: MlflowSettings, match: str
-    ) -> None:
-        with pytest.raises(MlflowConfigError, match=match):
-            save_mlflow_settings(settings, project_root)
-        assert "mlflow" not in tomllib.loads(
-            (project_root / "haute.toml").read_text(encoding="utf-8")
-        )
+    def test_mode_key_is_rejected_loudly(self, project_root: Path) -> None:
+        _write_mlflow(project_root, 'mode = "local"\n')
+        with pytest.raises(MlflowConfigError, match="mode"):
+            load_mlflow_settings(project_root)
 
     def test_load_rejects_unknown_key(self, project_root: Path) -> None:
-        with (project_root / "haute.toml").open("a", encoding="utf-8") as f:
-            f.write('\n[mlflow]\nmode = "local"\nexperiment = "nope"\n')
-        with pytest.raises(MlflowConfigError, match="experiment"):
+        _write_mlflow(project_root, 'registry = "x"\n')
+        with pytest.raises(MlflowConfigError, match="registry"):
             load_mlflow_settings(project_root)
 
-    def test_load_rejects_invalid_mode(self, project_root: Path) -> None:
-        with (project_root / "haute.toml").open("a", encoding="utf-8") as f:
-            f.write('\n[mlflow]\nmode = "filesystem"\n')
-        with pytest.raises(MlflowConfigError, match="filesystem"):
-            load_mlflow_settings(project_root)
-
-    def test_save_rejects_credentialed_server_uri_without_echoing_secret(
-        self, project_root: Path
-    ) -> None:
-        with pytest.raises(MlflowConfigError) as excinfo:
-            save_mlflow_settings(
-                MlflowSettings(
-                    mode="server",
-                    tracking_uri="https://alice:hunter2xyz@mlflow.example.com",
-                ),
-                project_root,
-            )
-        message = str(excinfo.value)
-        assert "credential" in message.lower() or ".env" in message
-        assert "hunter2xyz" not in message
-        assert "mlflow" not in tomllib.loads(
-            (project_root / "haute.toml").read_text(encoding="utf-8")
+    def test_save_then_load_round_trips_both_keys(self, project_root: Path) -> None:
+        save_mlflow_settings(
+            MlflowSettings(tracking_uri="http://localhost:5000", folder="team-runs"), project_root
+        )
+        assert load_mlflow_settings(project_root) == MlflowSettings(
+            tracking_uri="http://localhost:5000", folder="team-runs"
         )
 
-    def test_server_validation_error_does_not_echo_the_uri(self, project_root: Path) -> None:
+    def test_save_preserves_other_sections_and_comments(self, project_root: Path) -> None:
+        save_mlflow_settings(MlflowSettings(tracking_uri="http://localhost:5000"), project_root)
+        text = (project_root / "haute.toml").read_text(encoding="utf-8")
+        assert "# project name comment" in text
+        assert 'target = "databricks"          # deployment target' in text
+        data = tomllib.loads(text)
+        assert data["project"]["name"] == "main"
+        assert data["mlflow"] == {"tracking_uri": "http://localhost:5000", "folder": "mlruns"}
+
+    def test_empty_tracking_uri_clears_the_key(self, project_root: Path) -> None:
+        save_mlflow_settings(MlflowSettings(tracking_uri="http://localhost:5000"), project_root)
+        save_mlflow_settings(MlflowSettings(tracking_uri=""), project_root)
+        data = tomllib.loads((project_root / "haute.toml").read_text(encoding="utf-8"))
+        assert "tracking_uri" not in data["mlflow"]
+
+    def test_bare_save_persists_env_derived_folder(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        custom = project_root / "custom-runs"
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", custom.as_uri())
+        save_mlflow_settings(MlflowSettings(), project_root)
+        stored = load_mlflow_settings(project_root)
+        assert stored is not None
+        assert Path(stored.folder) == custom
+
+    def test_bare_save_keeps_stored_folder_spelling(self, project_root: Path) -> None:
+        _write_mlflow(project_root, 'folder = "team-runs"\n')
+        save_mlflow_settings(MlflowSettings(), project_root)
+        assert load_mlflow_settings(project_root) == MlflowSettings(folder="team-runs")
+
+    def test_save_rejects_non_http_tracking_uri(self, project_root: Path) -> None:
+        with pytest.raises(MlflowConfigError, match="http"):
+            save_mlflow_settings(MlflowSettings(tracking_uri="sqlite:///x.db"), project_root)
+        assert "mlflow" not in tomllib.loads((project_root / "haute.toml").read_text())
+
+    def test_save_rejects_credentialed_uri_without_echoing_secret(self, project_root: Path) -> None:
         with pytest.raises(MlflowConfigError) as excinfo:
             save_mlflow_settings(
-                MlflowSettings(mode="server", tracking_uri="ftp://user:hunter2@x"),
+                MlflowSettings(tracking_uri="https://alice:hunter2xyz@mlflow.example.com"),
                 project_root,
             )
-        assert "hunter2" not in str(excinfo.value)
+        assert "hunter2xyz" not in str(excinfo.value)
 
     def test_save_refuses_symlinked_haute_toml_escaping_the_project(self, tmp_path: Path) -> None:
-        outside = tmp_path / "outside"
-        outside.mkdir()
-        victim = outside / "haute.toml"
-        victim.write_text('[project]\nname = "victim"\n', encoding="utf-8")
+        outside = tmp_path / "outside.toml"
+        outside.write_text("[project]\nname='x'\n", encoding="utf-8")
         project = tmp_path / "project"
         project.mkdir()
         try:
-            (project / "haute.toml").symlink_to(victim)
+            (project / "haute.toml").symlink_to(outside)
         except OSError:
-            pytest.skip("symlink creation not permitted in this environment")
-        with pytest.raises(MlflowConfigError, match="outside the project"):
-            save_mlflow_settings(MlflowSettings(mode="local", folder="mlruns"), project)
-        assert victim.read_text(encoding="utf-8") == '[project]\nname = "victim"\n'
+            pytest.skip("symlinks unavailable")
+        with pytest.raises(MlflowConfigError, match="outside the project root"):
+            save_mlflow_settings(MlflowSettings(folder="mlruns"), project)
+        assert "mlflow" not in outside.read_text(encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
-# resolve_tracking_config precedence
-# ---------------------------------------------------------------------------
+class TestValidateDestinationKey:
+    @pytest.mark.parametrize("value", ["", "databricks", "server", "local"])
+    def test_accepts_known_keys_and_auto(self, value: str) -> None:
+        assert validate_destination_key(value) == value
+
+    @pytest.mark.parametrize("value", ["Databricks", "file", "managed", "auto"])
+    def test_rejects_unknown_key_naming_the_choices(self, value: str) -> None:
+        with pytest.raises(MlflowConfigError, match="databricks, server, or local"):
+            validate_destination_key(value)
 
 
-def _write_mlflow_section(project_root: Path, body: str) -> None:
-    with (project_root / "haute.toml").open("a", encoding="utf-8") as f:
-        f.write("\n[mlflow]\n" + body)
-
-
-class TestResolvePrecedence:
-    def test_unchanged_databricks_save_retains_environment_profile(
+class TestResolveDestination:
+    # --- databricks ---
+    def test_databricks_profile_reference_configures_without_host_token(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from haute.modelling._mlflow_settings import candidate_tracking_config
-
-        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team-profile")
-        selection = MlflowSettings(mode="databricks")
-        assert candidate_tracking_config(selection, project_root).tracking_uri == (
-            "databricks://team-profile"
-        )
-        save_mlflow_settings(selection, project_root)
-        assert resolve_tracking_config(project_root).tracking_uri == "databricks://team-profile"
-
-    def test_default_is_local_mlruns(self, project_root: Path) -> None:
-        config = resolve_tracking_config(project_root)
-        assert config.mode == "local"
-        assert config.config_source == "default"
-        assert Path(config.destination) == project_root / "mlruns"
-        assert config.tracking_uri == (project_root / "mlruns").as_uri()
-
-    def test_toml_local_wins_over_databricks_credentials(
-        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-secret")
-        _write_mlflow_section(project_root, 'mode = "local"\n')
-        config = resolve_tracking_config(project_root)
-        assert config.mode == "local"
-        assert config.config_source == "toml"
-        assert Path(config.destination) == project_root / "mlruns"
-
-    def test_toml_local_relative_folder_resolves_under_project_root(
-        self, project_root: Path
-    ) -> None:
-        _write_mlflow_section(project_root, 'mode = "local"\nfolder = "runs/mlflow"\n')
-        config = resolve_tracking_config(project_root)
-        assert Path(config.destination) == project_root / "runs" / "mlflow"
-
-    def test_toml_local_absolute_folder_used_as_is(
-        self, project_root: Path, tmp_path: Path
-    ) -> None:
-        absolute = tmp_path / "elsewhere"
-        _write_mlflow_section(
-            project_root, f'mode = "local"\nfolder = {str(absolute.as_posix())!r}\n'
-        )
-        config = resolve_tracking_config(project_root)
-        assert Path(config.destination) == absolute
-
-    def test_toml_databricks_with_credentials(
-        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-secret")
-        _write_mlflow_section(project_root, 'mode = "databricks"\n')
-        config = resolve_tracking_config(project_root)
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+        config = resolve_destination("databricks", project_root)
         assert config.mode == "databricks"
-        assert config.tracking_uri == "databricks"
-        assert config.config_source == "toml"
-        assert config.destination == "https://adb.example.net"
+        assert config.tracking_uri == "databricks://team"
+        assert config.destination == "databricks://team"
+        assert config.config_source == "env"
+
+    def test_databricks_profile_takes_precedence_over_host_token(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-secret")
+        config = resolve_destination("databricks", project_root)
+        assert config.tracking_uri == "databricks://team"
         assert "dapi-secret" not in config.destination
 
-    def test_toml_databricks_without_token_fails_naming_the_variable(
+    def test_databricks_host_token_pair(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net/")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-secret")
+        config = resolve_destination("databricks", project_root)
+        assert config.tracking_uri == "databricks"
+        assert config.destination == "https://adb.example.net"
+        assert config.config_source == "env"
+
+    def test_databricks_missing_token_names_the_variable(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
-        _write_mlflow_section(project_root, 'mode = "databricks"\n')
         with pytest.raises(MlflowConfigError, match="DATABRICKS_TOKEN"):
-            resolve_tracking_config(project_root)
-        # Loud failure, not a fallback: proven by the raise above; a config
-        # is never returned for a misconfigured explicit selection.
+            resolve_destination("databricks", project_root)
 
-    def test_toml_server_uses_its_uri(self, project_root: Path) -> None:
-        _write_mlflow_section(
-            project_root, 'mode = "server"\ntracking_uri = "http://localhost:5000"\n'
+    def test_databricks_unconfigured_names_both_options(self, project_root: Path) -> None:
+        with pytest.raises(MlflowConfigError) as excinfo:
+            resolve_destination("databricks", project_root)
+        message = str(excinfo.value)
+        assert "databricks://<profile>" in message
+        assert "DATABRICKS_HOST" in message and "DATABRICKS_TOKEN" in message
+
+    @pytest.mark.parametrize("form", ["profile", "pair"])
+    def test_databricks_sdk_mode_is_rejected_naming_the_variable(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch, form: str
+    ) -> None:
+        if form == "profile":
+            monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+        else:
+            monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
+            monkeypatch.setenv("DATABRICKS_TOKEN", "t")
+        monkeypatch.setenv("MLFLOW_ENABLE_DB_SDK", "true")
+        with pytest.raises(MlflowConfigError, match="MLFLOW_ENABLE_DB_SDK") as excinfo:
+            resolve_destination("databricks", project_root)
+        assert not isinstance(excinfo.value, MlflowDestinationUnconfigured)
+        # The inventory reports it and the auto rule fails loudly instead of skipping past it.
+        entry = next(e for e in list_destinations(project_root) if e.key == "databricks")
+        assert entry.configured is False and "MLFLOW_ENABLE_DB_SDK" in entry.detail
+        with pytest.raises(MlflowConfigError, match="MLFLOW_ENABLE_DB_SDK"):
+            resolve_tracking_config(project_root)
+
+    def test_sdk_mode_without_any_databricks_configuration_is_just_unconfigured(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MLFLOW_ENABLE_DB_SDK", "true")
+        with pytest.raises(MlflowDestinationUnconfigured):
+            resolve_destination("databricks", project_root)
+        assert resolve_tracking_config(project_root).mode == "local"
+
+    def test_pin_is_applied_by_the_resolver(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("MLFLOW_ENABLE_DB_SDK", raising=False)
+        with pytest.raises(MlflowDestinationUnconfigured):
+            resolve_destination("databricks", project_root)
+        assert os.environ["MLFLOW_ENABLE_DB_SDK"] == "false"
+
+    def test_resolution_never_imports_mlflow(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The inventory is reported even when the optional mlflow package is absent."""
+        import sys
+
+        monkeypatch.setitem(
+            sys.modules, "mlflow", None
+        )  # makes ``import mlflow`` raise ImportError
+        monkeypatch.setitem(sys.modules, "mlflow.environment_variables", None)
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+        assert resolve_destination("databricks", project_root).mode == "databricks"
+        assert [e.configured for e in list_destinations(project_root)] == [True, False, True]
+        monkeypatch.setenv("MLFLOW_ENABLE_DB_SDK", "true")
+        with pytest.raises(MlflowConfigError, match="MLFLOW_ENABLE_DB_SDK"):
+            resolve_destination("databricks", project_root)
+
+    def test_databricks_ignores_server_and_toml(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_mlflow(project_root, 'tracking_uri = "http://localhost:5000"\n')
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://env:5000")
+        with pytest.raises(MlflowConfigError):
+            resolve_destination("databricks", project_root)
+
+    # --- server ---
+    def test_server_from_toml(self, project_root: Path) -> None:
+        _write_mlflow(project_root, 'tracking_uri = "http://localhost:5000"\n')
+        config = resolve_destination("server", project_root)
+        assert config == TrackingConfig(
+            "server", "http://localhost:5000", "http://localhost:5000", "toml"
         )
-        config = resolve_tracking_config(project_root)
-        assert config.mode == "server"
-        assert config.tracking_uri == "http://localhost:5000"
-        assert config.destination == "http://localhost:5000"
+
+    def test_server_from_env_when_toml_has_no_tracking_uri(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_mlflow(project_root, 'folder = "team-runs"\n')
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://env:5000")
+        config = resolve_destination("server", project_root)
+        assert config.tracking_uri == "http://env:5000"
+        assert config.config_source == "env"
+
+    def test_toml_tracking_uri_wins_over_env_server_uri(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_mlflow(project_root, 'tracking_uri = "http://toml:5000"\n')
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://env:5000")
+        assert resolve_destination("server", project_root).tracking_uri == "http://toml:5000"
+
+    def test_server_toml_uri_inherits_matching_env_credentials(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_mlflow(project_root, 'tracking_uri = "https://mlflow.example.com"\n')
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "https://alice:secret@mlflow.example.com")
+        config = resolve_destination("server", project_root)
+        assert config.tracking_uri == "https://alice:secret@mlflow.example.com"
+        assert config.destination == "https://mlflow.example.com"
+
+    def test_server_unconfigured_names_the_prerequisites(self, project_root: Path) -> None:
+        with pytest.raises(MlflowConfigError) as excinfo:
+            resolve_destination("server", project_root)
+        message = str(excinfo.value)
+        assert "tracking_uri" in message and "MLFLOW_TRACKING_URI" in message
+
+    def test_server_ignores_databricks_env_uri(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+        with pytest.raises(MlflowConfigError):
+            resolve_destination("server", project_root)
+
+    # --- local ---
+    def test_local_default_is_project_mlruns(self, project_root: Path) -> None:
+        config = resolve_destination("local", project_root)
+        assert config.mode == "local"
+        assert Path(config.destination) == project_root / "mlruns"
+        assert config.config_source == "default"
+
+    def test_local_toml_relative_folder_resolves_under_project_root(
+        self, project_root: Path
+    ) -> None:
+        _write_mlflow(project_root, 'folder = "team-runs"\n')
+        config = resolve_destination("local", project_root)
+        assert Path(config.destination) == project_root / "team-runs"
         assert config.config_source == "toml"
 
-    def test_env_uri_databricks_value_is_databricks_not_server(
+    def test_local_env_file_uri_when_toml_has_no_folder(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks")
+        target = project_root / "env-runs"
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", target.as_uri())
+        config = resolve_destination("local", project_root)
+        assert Path(config.destination) == target
+        assert config.config_source == "env"
+
+    def test_local_toml_folder_wins_over_env_path(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_mlflow(project_root, 'folder = "team-runs"\n')
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "env-runs")
+        assert (
+            Path(resolve_destination("local", project_root).destination)
+            == project_root / "team-runs"
+        )
+
+    def test_unsupported_env_scheme_fails_server_and_local_not_databricks(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
         monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-secret")
-        config = resolve_tracking_config(project_root)
-        assert config.mode == "databricks"
-        assert config.config_source == "env"
+        monkeypatch.setenv("DATABRICKS_TOKEN", "t")
+        with pytest.raises(MlflowConfigError, match="sqlite"):
+            resolve_destination("server", project_root)
+        with pytest.raises(MlflowConfigError, match="sqlite"):
+            resolve_destination("local", project_root)
+        assert resolve_destination("databricks", project_root).mode == "databricks"
 
-    def test_env_uri_http_is_server(
+    def test_unknown_key_is_rejected(self, project_root: Path) -> None:
+        with pytest.raises(MlflowConfigError, match="databricks, server, or local"):
+            resolve_destination("file", project_root)
+
+    def test_empty_key_is_rejected_by_resolve_destination(self, project_root: Path) -> None:
+        with pytest.raises(MlflowConfigError):
+            resolve_destination("", project_root)
+
+
+class TestAutoRule:
+    def test_default_is_local(self, project_root: Path) -> None:
+        assert resolve_tracking_config(project_root).mode == "local"
+
+    def test_server_beats_local(self, project_root: Path) -> None:
+        _write_mlflow(project_root, 'tracking_uri = "http://localhost:5000"\n')
+        assert resolve_tracking_config(project_root).mode == "server"
+
+    def test_databricks_beats_server(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
-        config = resolve_tracking_config(project_root)
-        assert config.mode == "server"
-        assert config.tracking_uri == "http://localhost:5000"
-        assert config.config_source == "env"
+        _write_mlflow(project_root, 'tracking_uri = "http://localhost:5000"\n')
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+        assert resolve_tracking_config(project_root).mode == "databricks"
 
-    def test_env_uri_file_is_local_at_that_folder(
+    def test_host_token_pair_selects_databricks(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        team_runs = project_root / "team-runs"
-        monkeypatch.setenv("MLFLOW_TRACKING_URI", team_runs.as_uri())
-        config = resolve_tracking_config(project_root)
-        assert config.mode == "local"
-        assert Path(config.destination) == team_runs
-        assert config.config_source == "env"
+        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "t")
+        assert resolve_tracking_config(project_root).mode == "databricks"
 
-    def test_env_uri_unsupported_scheme_fails(
+    def test_partial_host_token_is_not_databricks(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
+        assert resolve_tracking_config(project_root).mode == "local"
+
+    def test_unsupported_env_scheme_fails_auto_loudly(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
         with pytest.raises(MlflowConfigError, match="sqlite"):
             resolve_tracking_config(project_root)
 
-    def test_env_credentials_alone_select_databricks(
+
+class TestListDestinations:
+    def test_reports_all_three_entries_in_auto_order(self, project_root: Path) -> None:
+        entries = list_destinations(project_root)
+        assert [e.key for e in entries] == ["databricks", "server", "local"]
+        by_key = {e.key: e for e in entries}
+        assert by_key["databricks"].configured is False
+        assert "DATABRICKS_HOST" in by_key["databricks"].detail
+        assert by_key["server"].configured is False
+        assert "tracking_uri" in by_key["server"].detail
+        assert by_key["local"].configured is True
+        assert Path(by_key["local"].destination) == project_root / "mlruns"
+        assert by_key["local"].config_source == "default"
+
+    def test_profile_entry_identifies_the_profile_without_secrets(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
         monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-secret")
-        config = resolve_tracking_config(project_root)
-        assert config.mode == "databricks"
-        assert config.config_source == "env"
+        entry = next(e for e in list_destinations(project_root) if e.key == "databricks")
+        assert entry == DestinationEntry("databricks", True, "databricks://team", "env", "")
 
-    def test_toml_takes_precedence_over_env_uri(
+    def test_credentialed_env_server_uri_is_redacted(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
-        _write_mlflow_section(project_root, 'mode = "local"\n')
-        config = resolve_tracking_config(project_root)
-        assert config.mode == "local"
-        assert config.config_source == "toml"
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "https://alice:secret@mlflow.example.com")
+        entry = next(e for e in list_destinations(project_root) if e.key == "server")
+        assert entry.configured is True
+        assert entry.destination == "https://mlflow.example.com"
+        assert "secret" not in repr(entry)
 
-    def test_toml_server_uri_inherits_matching_env_credentials(
-        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # haute.toml stores the non-secret destination; .env supplies the
-        # credentials. When the stored server URI matches the redaction of a
-        # credentialed env URI, resolution keeps the env authentication —
-        # so an unchanged save can never silently break auth.
-        monkeypatch.setenv("MLFLOW_TRACKING_URI", "https://alice:hunter2xyz@mlflow.example.com")
-        _write_mlflow_section(
-            project_root,
-            'mode = "server"\ntracking_uri = "https://mlflow.example.com"\n',
+
+class TestCandidateTrackingConfig:
+    def test_server_draft_is_resolved_without_writing(self, project_root: Path) -> None:
+        config = candidate_tracking_config(
+            "server", MlflowSettings(tracking_uri="http://draft:5000"), project_root
         )
-        config = resolve_tracking_config(project_root)
-        assert config.mode == "server"
-        assert config.config_source == "toml"
-        assert config.tracking_uri == "https://alice:hunter2xyz@mlflow.example.com"
-        assert config.destination == "https://mlflow.example.com"
+        assert config.tracking_uri == "http://draft:5000"
+        assert load_mlflow_settings(project_root) is None
 
-    def test_toml_server_uri_ignores_env_credentials_for_other_hosts(
+    def test_server_draft_inherits_matching_env_credentials(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("MLFLOW_TRACKING_URI", "https://alice:hunter2xyz@other.example.com")
-        _write_mlflow_section(
-            project_root,
-            'mode = "server"\ntracking_uri = "https://mlflow.example.com"\n',
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "https://alice:secret@mlflow.example.com")
+        config = candidate_tracking_config(
+            "server", MlflowSettings(tracking_uri="https://mlflow.example.com"), project_root
         )
-        config = resolve_tracking_config(project_root)
-        assert config.tracking_uri == "https://mlflow.example.com"
-        assert "hunter2xyz" not in config.tracking_uri
+        assert config.tracking_uri == "https://alice:secret@mlflow.example.com"
 
-    def test_local_candidate_matches_what_a_save_would_produce_env_folder(
-        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # A bare local draft must probe the same folder a save would keep —
-        # here the env-selected custom store, not the default ./mlruns.
-        from haute.modelling._mlflow_settings import candidate_tracking_config
+    def test_server_draft_without_uri_fails_naming_the_field(self, project_root: Path) -> None:
+        with pytest.raises(MlflowConfigError, match="tracking_uri"):
+            candidate_tracking_config("server", MlflowSettings(), project_root)
 
-        team_runs = project_root / "team-runs"
-        monkeypatch.setenv("MLFLOW_TRACKING_URI", team_runs.as_uri())
-
-        candidate = candidate_tracking_config(MlflowSettings(mode="local"), project_root)
-        save_mlflow_settings(MlflowSettings(mode="local"), project_root)
-        saved = resolve_tracking_config(project_root)
-
-        assert candidate.tracking_uri == saved.tracking_uri
-        assert Path(candidate.destination) == team_runs
-
-    def test_local_candidate_matches_what_a_save_would_produce_toml_folder(
-        self, project_root: Path
-    ) -> None:
-        from haute.modelling._mlflow_settings import candidate_tracking_config
-
-        _write_mlflow_section(project_root, 'mode = "local"\nfolder = "team-runs"\n')
-
-        candidate = candidate_tracking_config(MlflowSettings(mode="local"), project_root)
-        save_mlflow_settings(MlflowSettings(mode="local"), project_root)
-        saved = resolve_tracking_config(project_root)
-
-        assert candidate.tracking_uri == saved.tracking_uri
-        assert Path(candidate.destination) == project_root / "team-runs"
-
-    def test_env_credentialed_server_uri_has_redacted_destination(
-        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv(
-            "MLFLOW_TRACKING_URI", "https://alice:secret@mlflow.example.com:8443/base"
+    def test_local_draft_folder_is_used(self, project_root: Path) -> None:
+        config = candidate_tracking_config(
+            "local", MlflowSettings(folder="draft-runs"), project_root
         )
-        config = resolve_tracking_config(project_root)
-        assert config.mode == "server"
-        # The client keeps the full URI; every displayed field is redacted.
-        assert config.tracking_uri == "https://alice:secret@mlflow.example.com:8443/base"
-        assert config.destination == "https://mlflow.example.com:8443/base"
-        assert "secret" not in config.destination
+        assert Path(config.destination) == project_root / "draft-runs"
 
-    def test_env_malformed_uri_is_config_error_not_crash(
+    def test_bare_local_draft_matches_what_a_save_would_keep(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://[")
-        with pytest.raises(MlflowConfigError):
-            resolve_tracking_config(project_root)
+        custom = project_root / "custom-runs"
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", custom.as_uri())
+        config = candidate_tracking_config("local", MlflowSettings(), project_root)
+        assert Path(config.destination) == custom
 
-    def test_env_invalid_port_is_config_error_not_crash(
+    def test_databricks_candidate_ignores_draft_fields(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv(
-            "MLFLOW_TRACKING_URI", "https://alice:hunter2xyz@mlflow.example.com:70000"
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+        config = candidate_tracking_config(
+            "databricks", MlflowSettings(tracking_uri="http://ignored:5000"), project_root
         )
-        with pytest.raises(MlflowConfigError) as excinfo:
-            resolve_tracking_config(project_root)
-        assert "hunter2xyz" not in str(excinfo.value)
+        assert config.tracking_uri == "databricks://team"

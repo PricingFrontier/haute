@@ -25,6 +25,12 @@ _FLUENT_LOCK = threading.RLock()
 _tracking_environment_snapshot: tuple[str | None] | None = None
 
 
+def pin_databricks_profile_binding() -> None:
+    """os.environ.setdefault("MLFLOW_ENABLE_DB_SDK", "false"). haute binds Databricks
+    credentials only through MLflow's per-request profile / host-token providers."""
+    os.environ.setdefault("MLFLOW_ENABLE_DB_SDK", "false")
+
+
 def tracking_uri_from_environment() -> str:
     """Read configured credentials even while MLflow updates its own environment."""
     snapshot = _tracking_environment_snapshot

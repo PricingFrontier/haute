@@ -1,20 +1,23 @@
-"""``[mlflow]`` tracking-destination settings and three-mode resolution.
+"""``[mlflow]`` tracking destination inventory and resolution.
 
 Owns the tracking-destination domain defined in
 ``specs/modelling/low-level.md`` (Shared MLflow tracking/experiment-name
-resolution): the ``haute.toml`` ``[mlflow]`` table round trip, standard
-``MLFLOW_TRACKING_URI`` form classification, and ``resolve_tracking_config()``
-— the single precedence resolver every tracking consumer sits behind.
+resolution): the ``haute.toml`` ``[mlflow]`` inventory table (tracking_uri,
+folder) round trip, standard ``MLFLOW_TRACKING_URI`` form classification,
+per-destination resolution via ``resolve_destination()``, the destination
+inventory via ``list_destinations()``, candidate draft resolution for
+connection testing via ``candidate_tracking_config()``, and
+``resolve_tracking_config()`` — the auto rule (Databricks if configured, else
+MLflow server if configured, else Local).
 
-Tracking resolves to exactly one of three modes:
-
-- ``"databricks"`` — the Databricks workspace tracking backend.
+Destinations are keyed:
+- ``"databricks"`` — Databricks workspace tracking backend.
 - ``"server"``     — an ``http(s)`` MLflow tracking server.
 - ``"local"``      — MLflow's file store in a project folder.
 
 Misconfiguration raises :class:`haute.errors.MlflowConfigError` with an
-actionable, non-secret reason. A selected mode never silently degrades to a
-different one.
+actionable, non-secret reason. An unconfigured destination raises
+:class:`MlflowDestinationUnconfigured` (subclass of ``MlflowConfigError``).
 """
 
 from __future__ import annotations
@@ -28,16 +31,20 @@ from urllib.parse import SplitResult, unquote, urlsplit, urlunsplit
 from haute._mlflow_utils import tracking_uri_from_environment
 from haute.errors import MlflowConfigError
 
-_MODES = ("databricks", "server", "local")
-_ALLOWED_KEYS = frozenset({"mode", "tracking_uri", "folder"})
+DESTINATION_KEYS: tuple[str, ...] = ("databricks", "server", "local")
+_ALLOWED_KEYS = frozenset({"tracking_uri", "folder"})
 _DEFAULT_FOLDER = "mlruns"
+_TRUTHY_ENV = frozenset({"true", "1"})
+
+
+class MlflowDestinationUnconfigured(MlflowConfigError):  # noqa: N818
+    """Raised when a destination is not configured in the workspace environment."""
 
 
 @dataclass(frozen=True)
 class MlflowSettings:
-    """The stored ``[mlflow]`` table, verbatim (unresolved)."""
+    """The stored ``[mlflow]`` inventory table, verbatim (unresolved)."""
 
-    mode: str
     tracking_uri: str = ""
     folder: str = ""
 
@@ -56,6 +63,26 @@ class TrackingConfig:
     tracking_uri: str
     destination: str
     config_source: str
+
+
+@dataclass(frozen=True)
+class DestinationEntry:
+    """One inventory row: whether *key* is configured and, if so, where it points."""
+
+    key: str
+    configured: bool
+    destination: str = ""
+    config_source: str = ""
+    detail: str = ""
+
+
+def validate_destination_key(value: str) -> str:
+    """Return *value* when it is a destination key or ``""`` (auto); else raise."""
+    if value == "" or value in DESTINATION_KEYS:
+        return value
+    raise MlflowConfigError(
+        f"Unknown MLflow destination {value!r}; expected databricks, server, or local."
+    )
 
 
 def _project_root_default() -> Path:
@@ -161,27 +188,13 @@ def _local_folder(raw: str, project_root: Path) -> Path:
 
 
 def _validate_settings(settings: MlflowSettings) -> None:
-    if settings.mode not in _MODES:
-        raise MlflowConfigError(
-            f"[mlflow] mode must be one of {list(_MODES)}, not '{settings.mode}'."
-        )
-    if settings.mode == "server":
-        if not settings.tracking_uri:
-            raise MlflowConfigError("[mlflow] server mode requires an http(s):// tracking_uri.")
+    if settings.tracking_uri:
         parts = _parse_http_uri(settings.tracking_uri, source="[mlflow] tracking_uri")
         if "@" in parts.netloc:
             raise MlflowConfigError(
                 "[mlflow] tracking_uri must not embed credentials; "
                 "keep secrets in .env, not haute.toml."
             )
-    elif settings.tracking_uri:
-        raise MlflowConfigError(
-            f"[mlflow] tracking_uri is only valid for server mode, not '{settings.mode}'."
-        )
-    if settings.mode != "local" and settings.folder:
-        raise MlflowConfigError(
-            f"[mlflow] folder is only valid for local mode, not '{settings.mode}'."
-        )
 
 
 def load_mlflow_settings(project_root: Path | None = None) -> MlflowSettings | None:
@@ -209,7 +222,6 @@ def load_mlflow_settings(project_root: Path | None = None) -> MlflowSettings | N
         if not isinstance(value, str):
             raise MlflowConfigError(f"[mlflow] {key} must be a string.")
     settings = MlflowSettings(
-        mode=str(section.get("mode", "")),
         tracking_uri=str(section.get("tracking_uri", "")),
         folder=str(section.get("folder", "")),
     )
@@ -218,18 +230,15 @@ def load_mlflow_settings(project_root: Path | None = None) -> MlflowSettings | N
 
 
 def save_mlflow_settings(settings: MlflowSettings, project_root: Path | None = None) -> None:
-    """Validate *settings* and rewrite only the ``[mlflow]`` table.
+    """Validate and rewrite only the ``[mlflow]`` table (tomlkit round trip).
 
-    The write goes through tomlkit, preserving every other section, comment,
-    and layout choice. Saving local mode with an empty ``folder`` persists
-    the currently *resolved* local folder, so saving an unchanged env-derived
-    local configuration keeps its custom folder instead of being redirected
-    to the default ``./mlruns``.
+    ``tracking_uri`` is written only when non-empty (empty clears the key).
+    An empty ``folder`` persists the currently *resolved* local folder, so a
+    bare save of an env-derived folder keeps it.
     """
     import tomlkit
 
     effective = _effective_settings(settings, project_root)
-
     toml_path = _toml_path(project_root)
     write_target = _project_write_target(toml_path, project_root)
     document = (
@@ -238,11 +247,9 @@ def save_mlflow_settings(settings: MlflowSettings, project_root: Path | None = N
         else tomlkit.document()
     )
     table = tomlkit.table()
-    table["mode"] = effective.mode
     if effective.tracking_uri:
         table["tracking_uri"] = effective.tracking_uri
-    if effective.folder:
-        table["folder"] = effective.folder
+    table["folder"] = effective.folder
     document["mlflow"] = table
     write_target.write_text(tomlkit.dumps(document), encoding="utf-8")
 
@@ -271,81 +278,134 @@ def _project_write_target(toml_path: Path, project_root: Path | None) -> Path:
 
 
 def _effective_settings(settings: MlflowSettings, project_root: Path | None) -> MlflowSettings:
-    """Validate *settings* and normalize a bare local selection.
-
-    Local mode with an empty ``folder`` becomes the currently *resolved*
-    local folder — the single rule both a save and a candidate probe apply,
-    so a draft is always tested as exactly the configuration a save would
-    persist.
-    """
     _validate_settings(settings)
-    if settings.mode == "local" and not settings.folder:
-        return MlflowSettings(mode="local", folder=_folder_to_persist(project_root))
-    return settings
+    if settings.folder:
+        return settings
+    return MlflowSettings(
+        tracking_uri=settings.tracking_uri, folder=_folder_to_persist(project_root)
+    )
 
 
 def _folder_to_persist(project_root: Path | None) -> str:
-    """The folder value a bare local-mode save must write.
-
-    Preserves the currently resolved local destination: a stored toml folder
-    keeps its stored spelling, an env-derived folder is persisted as its
-    absolute path, and anything else (default, another mode, or a currently
-    misconfigured selection being replaced by this save) uses the default.
-    """
+    """Stored spelling if the toml has a folder; env-derived absolute path; else default."""
+    stored = load_mlflow_settings(project_root)
+    if stored is not None and stored.folder:
+        return stored.folder
     try:
-        current = resolve_tracking_config(project_root)
+        current = resolve_destination("local", project_root)
     except MlflowConfigError:
-        return _DEFAULT_FOLDER
-    if current.mode != "local":
-        return _DEFAULT_FOLDER
-    if current.config_source == "toml":
-        stored = load_mlflow_settings(project_root)
-        if stored is not None and stored.folder:
-            return stored.folder
         return _DEFAULT_FOLDER
     if current.config_source == "env":
         return current.destination
     return _DEFAULT_FOLDER
 
 
-def resolve_tracking_config(project_root: Path | None = None) -> TrackingConfig:
-    """Resolve the tracking destination: toml first, env second, default last."""
-    root = project_root if project_root is not None else _project_root_default()
-
-    stored = load_mlflow_settings(project_root)
-    if stored is not None:
-        return _config_from_settings(stored, root)
-
+def _env_uri_form() -> tuple[str, str] | None:
+    """``(mode, uri)`` for ``MLFLOW_TRACKING_URI`` by form, or ``None`` when unset."""
     env_uri = tracking_uri_from_environment().strip()
-    if env_uri:
-        mode, uri = classify_tracking_uri(env_uri)
-        if mode == "databricks":
-            return _databricks_config(uri, config_source="env")
-        if mode == "server":
-            return TrackingConfig("server", uri, redact_uri(uri), "env")
-        folder = _local_folder(uri, root)
-        return _local_tracking(folder, config_source="env")
+    if not env_uri:
+        return None
+    return classify_tracking_uri(env_uri)  # raises MlflowConfigError for unsupported schemes
 
+
+def _reject_databricks_sdk_mode() -> None:
+    """haute binds Databricks credentials only through MLflow's per-request providers.
+
+    Reads the environment directly: destination resolution must never require the
+    optional mlflow package (the inventory is reported even when mlflow is absent).
+    """
+    if os.environ.get("MLFLOW_ENABLE_DB_SDK", "").strip().lower() in _TRUTHY_ENV:
+        raise MlflowConfigError(
+            "MLFLOW_ENABLE_DB_SDK=true is not supported: haute binds Databricks credentials "
+            "through the selected profile or DATABRICKS_HOST/DATABRICKS_TOKEN on every request; "
+            "unset MLFLOW_ENABLE_DB_SDK."
+        )
+
+
+def _resolve_databricks() -> TrackingConfig:
+    from haute._mlflow_utils import pin_databricks_profile_binding
+
+    pin_databricks_profile_binding()  # before any Databricks credential lookup, in every consumer
+    env_uri = tracking_uri_from_environment().strip()
+    if env_uri.startswith("databricks://"):
+        _reject_databricks_sdk_mode()  # only a *configured* Databricks trips this
+        return TrackingConfig("databricks", env_uri, env_uri, "env")
     host = os.getenv("DATABRICKS_HOST", "")
     token = os.getenv("DATABRICKS_TOKEN", "")
     if host and token:
+        _reject_databricks_sdk_mode()
         return TrackingConfig("databricks", "databricks", host.rstrip("/"), "env")
+    if host or token or env_uri == "databricks":
+        missing = [n for n, v in (("DATABRICKS_HOST", host), ("DATABRICKS_TOKEN", token)) if not v]
+        verb = "is" if len(missing) == 1 else "are"
+        raise MlflowDestinationUnconfigured(
+            f"Databricks tracking is not configured: {' and '.join(missing)} {verb} "
+            "not set in the environment (.env)."
+        )
+    raise MlflowDestinationUnconfigured(
+        "Databricks is not configured: set MLFLOW_TRACKING_URI=databricks://<profile> "
+        "or both DATABRICKS_HOST and DATABRICKS_TOKEN in the environment (.env)."
+    )
 
+
+def _resolve_server(stored: MlflowSettings | None) -> TrackingConfig:
+    if stored is not None and stored.tracking_uri:
+        uri = _server_uri_with_env_credentials(stored.tracking_uri)
+        return TrackingConfig("server", uri, redact_uri(uri), "toml")
+    form = _env_uri_form()
+    if form is not None and form[0] == "server":
+        return TrackingConfig("server", form[1], redact_uri(form[1]), "env")
+    raise MlflowDestinationUnconfigured(
+        "MLflow server is not configured: set [mlflow] tracking_uri in haute.toml "
+        "or an http(s) MLFLOW_TRACKING_URI in the environment (.env)."
+    )
+
+
+def _resolve_local(stored: MlflowSettings | None, root: Path) -> TrackingConfig:
+    if stored is not None and stored.folder:
+        return _local_tracking(_local_folder(stored.folder, root), config_source="toml")
+    form = _env_uri_form()
+    if form is not None and form[0] == "local":
+        return _local_tracking(_local_folder(form[1], root), config_source="env")
     return _local_tracking(root / _DEFAULT_FOLDER, config_source="default")
 
 
-def _config_from_settings(
-    settings: MlflowSettings, root: Path, *, config_source: str = "toml"
-) -> TrackingConfig:
-    if settings.mode == "databricks":
-        env_uri = tracking_uri_from_environment().strip()
-        uri = env_uri if env_uri.startswith("databricks://") else "databricks"
-        return _databricks_config(uri, config_source=config_source)
-    if settings.mode == "server":
-        uri = _server_uri_with_env_credentials(settings.tracking_uri)
-        return TrackingConfig("server", uri, redact_uri(uri), config_source)
-    folder = _local_folder(settings.folder or _DEFAULT_FOLDER, root)
-    return _local_tracking(folder, config_source=config_source)
+def resolve_destination(key: str, project_root: Path | None = None) -> TrackingConfig:
+    """Resolve one destination key or raise ``MlflowConfigError`` naming the prerequisite."""
+    if key not in DESTINATION_KEYS:
+        validate_destination_key(key)
+        raise MlflowConfigError(
+            "A destination key is required; '' (auto) is resolved by resolve_tracking_config()."
+        )
+    root = project_root if project_root is not None else _project_root_default()
+    if key == "databricks":
+        return _resolve_databricks()
+    stored = load_mlflow_settings(project_root)
+    if key == "server":
+        return _resolve_server(stored)
+    return _resolve_local(stored, root)
+
+
+def list_destinations(project_root: Path | None = None) -> list[DestinationEntry]:
+    entries: list[DestinationEntry] = []
+    for key in DESTINATION_KEYS:
+        try:
+            config = resolve_destination(key, project_root)
+        except MlflowConfigError as exc:
+            entries.append(DestinationEntry(key, False, detail=str(exc)))
+            continue
+        entries.append(DestinationEntry(key, True, config.destination, config.config_source))
+    return entries
+
+
+def resolve_tracking_config(project_root: Path | None = None) -> TrackingConfig:
+    """The auto rule: databricks if configured, else server if configured, else local."""
+    for key in DESTINATION_KEYS:
+        try:
+            return resolve_destination(key, project_root)
+        except MlflowDestinationUnconfigured:
+            continue
+    raise MlflowConfigError("No MLflow destination could be resolved.")
 
 
 def _server_uri_with_env_credentials(stored_uri: str) -> str:
@@ -374,40 +434,23 @@ def _server_uri_with_env_credentials(stored_uri: str) -> str:
 
 
 def candidate_tracking_config(
-    settings: MlflowSettings, project_root: Path | None = None
+    key: str, settings: MlflowSettings, project_root: Path | None = None
 ) -> TrackingConfig:
-    """Resolve a *candidate* (unsaved) selection exactly as a save would.
-
-    Validates and normalizes with the same rules as
-    :func:`save_mlflow_settings` (a bare local selection keeps the
-    currently resolved folder) and resolves through the same branches —
-    env-credential re-attachment included — without writing
-    ``haute.toml``. Used by the connection-test endpoint so a draft
-    selection is probed as exactly the configuration it would become.
-    """
+    """Resolve an unsaved draft for *key* exactly as a save would make it."""
+    if key not in DESTINATION_KEYS:
+        validate_destination_key(key)
+        raise MlflowConfigError("A destination key is required for a candidate probe.")
     root = project_root if project_root is not None else _project_root_default()
-    effective = _effective_settings(settings, project_root)
-    return _config_from_settings(effective, root, config_source="toml")
-
-
-def _databricks_config(uri: str, *, config_source: str) -> TrackingConfig:
-    if uri != "databricks":
-        # databricks://<profile> carries its own credential reference.
-        return TrackingConfig("databricks", uri, uri, config_source)
-    host = os.getenv("DATABRICKS_HOST", "")
-    token = os.getenv("DATABRICKS_TOKEN", "")
-    missing = [
-        name
-        for name, value in (("DATABRICKS_HOST", host), ("DATABRICKS_TOKEN", token))
-        if not value
-    ]
-    if missing:
-        raise MlflowConfigError(
-            "Databricks tracking is selected but "
-            f"{' and '.join(missing)} {'is' if len(missing) == 1 else 'are'} "
-            "not set in the environment (.env)."
-        )
-    return TrackingConfig("databricks", "databricks", host.rstrip("/"), config_source)
+    if key == "databricks":
+        return _resolve_databricks()
+    if key == "server":
+        if not settings.tracking_uri:
+            raise MlflowConfigError("[mlflow] tracking_uri is required to test the MLflow server.")
+        _validate_settings(settings)
+        uri = _server_uri_with_env_credentials(settings.tracking_uri)
+        return TrackingConfig("server", uri, redact_uri(uri), "toml")
+    effective = _effective_settings(MlflowSettings(folder=settings.folder), project_root)
+    return _local_tracking(_local_folder(effective.folder, root), config_source="toml")
 
 
 def _local_tracking(folder: Path, *, config_source: str) -> TrackingConfig:
