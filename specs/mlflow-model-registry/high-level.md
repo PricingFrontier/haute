@@ -23,10 +23,14 @@ set of read-only discovery HTTP endpoints lets the pipeline-builder GUI
 browse experiments, runs, registered models, and versions to configure a
 MODEL_SCORE node without the user needing to know MLflow identifiers by
 heart. The same router also owns the connection surface the GUI uses to
-understand and choose *where* tracking goes: a status endpoint reporting the
-resolved backend mode and destination, settings endpoints that read and
-persist the `[mlflow]` section of `haute.toml`, and a bounded test-connection
-probe — credentials stay in `.env` and never pass through this surface.
+understand *where* tracking can go: a destinations endpoint reporting the
+inventory of the three destinations (Databricks, MLflow server, Local) with
+optional connection probes, settings endpoints that read and persist the
+`[mlflow]` inventory table of `haute.toml`, and a bounded per-destination
+test-connection probe — credentials stay in `.env` or the selected Databricks
+profile and never pass through this surface. Which destination a node uses is
+that node's own choice (`mlflow_destination`, absent = auto), never a
+workspace-wide selection.
 
 ## Scope
 
@@ -57,12 +61,18 @@ In scope:
 - Read-only MLflow discovery endpoints (`/api/mlflow/experiments`,
   `/runs`, `/models`, `/model-versions`) that populate the MODEL_SCORE
   node's configuration UI.
-- The MLflow connection surface: `GET /api/mlflow/status` (resolved mode,
-  human-readable destination, config source, actionable detail),
-  `GET`/`PUT /api/mlflow/settings` (the `[mlflow]` section of `haute.toml`,
+- The MLflow connection surface: `GET /api/mlflow/destinations` (the three
+  destinations with `configured`, human-readable destination, config source,
+  actionable detail, the auto-rule result, and optional concurrent bounded
+  probes of the configured remotes), `GET`/`PUT /api/mlflow/settings` (the
+  `[mlflow]` inventory table of `haute.toml` — `tracking_uri` and `folder` —
   written via a layout-preserving tomlkit round trip), and
-  `POST /api/mlflow/test-connection` (a bounded probe with categorised,
-  non-secret error reporting).
+  `POST /api/mlflow/test-connection` (a bounded probe of one destination,
+  with categorised, non-secret error reporting).
+- Resolving, once per operation, the backend a node's destination means —
+  tracking and registry URIs plus a secret-free identity — and keying every
+  model/artifact cache, disk-cache path, and I/O lock on that identity, so
+  the same run on two destinations never aliases.
 
 Out of scope (owned elsewhere):
 - Logging *new* MLflow runs — training diagnostics, SHAP summaries, model
@@ -70,8 +80,8 @@ Out of scope (owned elsewhere):
   [modelling](../modelling/high-level.md) (`_mlflow_log.py`) and, for the
   optimiser's own run logging, the [optimiser](../optimiser/high-level.md)
   component. Against the tracking backend itself this component only ever
-  reads; the one write it owns is the `[mlflow]` table of `haute.toml`
-  through the settings endpoint.
+  reads; the one write it owns is the `[mlflow]` inventory table of
+  `haute.toml` through the settings endpoint.
 - Deriving the train-time feature contract itself (declared features,
   offset column, categorical value domains) — owned by
   [modelling](../modelling/high-level.md) (`_feature_contract.py`); this
@@ -338,13 +348,17 @@ Out of scope (owned elsewhere):
   doesn't reconstruct the model's own prediction, non-finite values, an
   unsupported multi-output model, or an unexpected result shape):
   `ModelExplanationError`.
-- Connection-surface failures: `GET /api/mlflow/status` never raises for an
-  unconfigured or misconfigured backend — it reports `configured=false` with
-  the actionable reason. `PUT /api/mlflow/settings` rejects an invalid
-  update (unknown mode, non-`http(s)` server URI, a field supplied for a
-  mode that does not use it) with `400` and a field-naming detail, writing
-  nothing. `POST /api/mlflow/test-connection` reports `ok=false` with a
-  category and non-secret detail rather than raising for expected failures.
+- Connection-surface failures: `GET /api/mlflow/destinations` never raises
+  for an unconfigured destination — that entry reports `configured=false`
+  with the actionable reason, a failed probe keeps the entry configured with
+  its classified reason, and an unreadable `[mlflow]` table reports every
+  entry unconfigured with the parse reason. `PUT /api/mlflow/settings`
+  rejects an invalid update (a non-`http(s)` or credential-bearing server
+  URI) with `400` and a field-naming detail, writing nothing.
+  `POST /api/mlflow/test-connection` reports `ok=false` with a category and
+  non-secret detail rather than raising for expected failures. A node
+  whose explicit destination is not configured where it runs fails loudly
+  with the prerequisite; nothing redirects to another destination.
 - Discovery-route failures: `mlflow` not installed → `503`; a tracking
   misconfiguration → `502` carrying its own actionable, secret-free
   reason; an MLflow search call (`search_experiments` / `search_runs` /

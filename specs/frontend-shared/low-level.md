@@ -146,7 +146,10 @@
   installed, importable, auto, destinations, detail}` — populated from
   `GET /api/mlflow/destinations?probe=true`
   (`parseMlflowDestinationsResponse`), fetched once on the first render of
-  any MLflow section. `status` is `"ready"` when the inventory arrived,
+  any MLflow section under a 15-second deadline — the backend may spend its
+  full 5-second probe budget per remote, so a remote that exhausts its
+  budget arrives as an amber entry rather than tripping a whole-inventory
+  error. `status` is `"ready"` when the inventory arrived,
   whatever the probes said; it is `"error"` when the package is missing or
   unimportable or the request failed, with the reason in `detail`. `auto`
   (`""|"databricks"|"server"|"local"`) is the backend's auto rule result and

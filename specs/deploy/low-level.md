@@ -125,12 +125,13 @@
    boundary. Explicit `modelScore.feature_contract_path` files are copied under the
    canonical `<node>__feature_contract.json` key and override an adjacent downloaded
    contract. MLflow artifact identifiers reject absolute and `..`-containing forms before
-   download. Registered-model resolution (`_resolve_registered_model`) and the download
-   itself (`_download_model_artifact`) take the node's `mlflow_destination` and resolve it
-   through `resolve_backend`, so the bundle is built from the destination the pipeline author
-   browsed; the download lands in the shared model disk cache under that backend's digest
-   partition, and an unconfigured explicit destination fails with `MlflowConfigError` rather
-   than resolving another backend.
+   download. The bundler resolves each model-score node's `mlflow_destination` to one
+   backend exactly once and passes that object to both registered-model resolution
+   (`_resolve_registered_model`) and the download itself (`_download_model_artifact`), so
+   the bundle is built from the destination the pipeline author browsed and a settings save
+   mid-bundle cannot split lookup and download across backends; the download lands in the
+   shared model disk cache under that backend's digest partition, and an unconfigured
+   explicit destination fails with `MlflowConfigError` rather than resolving another backend.
    A retained file-backed Parquet input is derived direct (`data_input_is_direct`) and
    bundles its validated source file. Every other retained Data Input is snapshot-backed;
    its ready snapshot acquires a `SourceCacheStore.lease()` that

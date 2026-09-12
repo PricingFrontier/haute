@@ -58,6 +58,16 @@
   raises `MlflowConfigError` naming the profile (never its credentials)
   before any cache lookup. Neither an absent auto value nor the bare
   category key identifies a backend — only the resolved identity does.
+  The identity is derived from the same `get_databricks_host_creds`
+  path MLflow's own stores use, under the `MLFLOW_ENABLE_DB_SDK` pin
+  described in [modelling](../modelling/low-level.md), so identity and
+  request target can never disagree. **One backend per operation:** a
+  load, download, registry lookup, or bundling step resolves the backend
+  exactly once and threads that object through
+  (`resolve_mlflow_source(backend=...)`, the bundler's registered-model
+  resolution and download); no helper re-resolves from a destination key
+  mid-operation, so a settings save during an operation cannot split it
+  across two backends.
 - **`ModelFlavor`** / **`_SUPPORTED_FLAVORS`** (`_model_flavors.py`) —
   see Module map. `_model_flavors.py` is their only import surface;
   scoring and loading modules consume private local aliases.
@@ -442,14 +452,19 @@ no longer exists (a `404`); no frontend caller references it.
   probes one destination with one `experiments/search` request for a single
   experiment under a 5-second bound. The `MlflowTestConnectionRequest` body
   carries `destination` (a key, or `""`/absent body for the auto
-  destination) plus optional draft `tracking_uri`/`folder`; a key is
-  resolved via `candidate_tracking_config(key, settings)` so the user tests
-  exactly what a save would produce (server: the draft URL with
-  env-credential re-attachment; local: the draft folder, else the folder a
-  bare save would keep; databricks: the environment/profile, drafts
-  ignored). An unconfigured or unknown destination, or an invalid draft,
-  reports `category="configuration"` with the prerequisite- or
-  field-naming reason. Returns `ok=true`, or `ok=false` with `category`
+  destination) plus optional drafts `tracking_uri`/`folder`, each `null`
+  when not supplied. A key with no draft supplied probes that destination
+  exactly as the inventory currently resolves it (`resolve_destination`),
+  including an environment-seeded server; a key with any draft supplied
+  (even an empty string) is resolved via `candidate_tracking_config(key,
+  settings)` so the user tests exactly what a save of that draft would
+  produce (server: the draft URL with env-credential re-attachment, an
+  empty draft being a field-naming configuration error; local: the draft
+  folder, else the folder a bare save would keep; databricks: the
+  environment/profile, drafts ignored). An unconfigured or unknown
+  destination, or an invalid draft, reports `category="configuration"`
+  with the prerequisite- or field-naming reason. Returns `ok=true`, or
+  `ok=false` with `category`
   (`"authentication"|"permission"|"missing_resource"|"connectivity"|`
   `"configuration"|"unknown"`) and a non-secret `detail`. The probe never
   calls `mlflow.set_tracking_uri` — testing a candidate destination must
@@ -477,7 +492,10 @@ no longer exists (a `404`); no frontend caller references it.
   failures in `MlflowException`, so the outer type alone is never
   trusted — and never keys on exception class alone. Expected probe
   failures never surface as 5xx. The same `(ok, category, detail)`
-  outcome helper serves the destinations endpoint's per-entry probes.
+  outcome helper serves the destinations endpoint's per-entry probes, and
+  it is the only logger of probe failures: the log record carries the
+  category and the exception type name, never the exception text, which
+  can echo tokens or credential-bearing URLs.
 
 `list_model_versions` fetches each version's backing-run params
 via `_model_version_run_params`, which swallows (and logs with a full

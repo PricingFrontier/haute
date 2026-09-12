@@ -51,10 +51,11 @@ Out of scope, owned elsewhere:
   own, by design — see [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/high-level.md).
 - Scoring a trained model against new data at serve time — see
   [mlflow-model-registry](../mlflow-model-registry/high-level.md).
-- The MLflow connection status/settings/test-connection HTTP surface (including
-  persistence of the `[mlflow]` section of `haute.toml`) — see
+- The MLflow destinations/settings/test-connection HTTP surface (including
+  persistence of the `[mlflow]` inventory table of `haute.toml`) — see
   [mlflow-model-registry](../mlflow-model-registry/high-level.md); this component
-  owns the resolution helpers those endpoints and the logging path share.
+  owns the destination inventory, the per-key resolver, the auto rule, and the
+  resolution helpers those endpoints and the logging path share.
 - Pipeline graph compilation and lazy execution — see
   [execution-engine](../execution-engine/high-level.md).
 - Background job storage, lifecycle state machine, and cancellation plumbing — see

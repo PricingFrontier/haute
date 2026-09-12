@@ -887,9 +887,15 @@ present a structural or schema result as execution evidence.
   even when the environment's auto destination is remote. Generated scripts read the
   same field from the node's config sidecar (`score_from_config`, the optimiser-apply
   config), and `validate_node_config` rejects any other value with `ConfigError`.
-  The field is classified as an artifact input in the execution cache so a
-  destination change re-executes rather than replaying a result loaded from another
-  backend.
+  The field is classified as an artifact input in the execution cache, and the
+  runtime-input fingerprint entry of an MLflow-sourced `MODEL_SCORE` or
+  `OPTIMISER_APPLY` node additionally records the *resolved* backend identity
+  (`resolve_backend(mlflow_destination).identity`, secret-free; or an
+  "unresolved" marker with the configuration reason when resolution fails), so
+  a changed server URL or local folder, a repointed profile, or a re-resolved
+  auto destination misses the dataframe and preview caches instead of
+  replaying predictions loaded from another backend, and removed prerequisites
+  can never be served from a warm entry.
 - **`_compile_preamble` single-flight cache.** Keyed on `(preamble text, cwd,
   pipeline_dir, execution_fingerprint)`; a `_PreambleCell` per key is created under a
   tiny `_preamble_cells_guard` lock (never held during exec, so a hot cache hit never

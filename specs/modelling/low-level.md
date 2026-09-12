@@ -495,8 +495,17 @@ credentials cannot be loaded or its probe fails — the failure is reported, nev
 worked around by falling back to host/token variables or another destination),
 or, without a profile reference, by the `DATABRICKS_HOST`/`DATABRICKS_TOKEN`
 pair; a profile takes precedence over the pair and is preserved through settings
-saves and probes. Its Unity Catalog registry URI retains the same profile as
-`databricks-uc://<profile>`. All tracking consumers share this registry mapping.
+saves and probes. That precedence is enforced, not assumed: MLflow's default
+Databricks-SDK credential path resolves a named profile environment-first, so a
+profile paired with a conflicting host/token pair would send the environment
+token to the profile's host. `haute._mlflow_utils` therefore pins
+`MLFLOW_ENABLE_DB_SDK` to `false` (`os.environ.setdefault`, before any
+Databricks credential lookup), which makes MLflow resolve `databricks://<profile>`
+host **and** token from the profile alone and plain `databricks` from the
+environment pair; an explicit `MLFLOW_ENABLE_DB_SDK=true` in the environment is
+respected and opts out of profile precedence (SDK-only auth flows). Its Unity
+Catalog registry URI retains the same profile as `databricks-uc://<profile>`.
+All tracking consumers share this registry mapping.
 Credential-bearing tracking URIs are internal connection values only: training
 and optimiser logging responses redact userinfo from both tracking URI and run
 URL before returning them to the browser.
