@@ -1,8 +1,11 @@
-import { InputSourcesBar, MlflowStatusBadge, SELECT_STYLE } from "./_shared"
+import { useState } from "react"
+import { InputSourcesBar, SELECT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { RegisteredModelPicker, ExperimentRunPicker } from "./MlflowModelPicker"
 import { useMlflowBrowser } from "../../hooks/useMlflowBrowser"
 import { configField } from "../../utils/configField"
+import MlflowDestinationSelector from "../../components/MlflowDestinationSelector"
+import type { MlflowDestinationKey } from "../../api/types"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import { CommittedTextField } from "../../components/form"
 
@@ -23,16 +26,61 @@ export default function ModelScoreEditor({
   const sourceType = configField(config, "sourceType", "registered")
   const task = configField(config, "task", "regression")
   const outputColumn = configField(config, "output_column", "prediction")
+  const mlflowDestination = configField(config, "mlflow_destination", "")
 
-  const mlflow = useMlflowBrowser({ initialExpId: configField(config, "experiment_id", "") })
+  const mlflow = useMlflowBrowser({
+    destination: mlflowDestination,
+    initialExpId: configField(config, "experiment_id", ""),
+  })
 
+  // A run id or a registered model name means nothing at another backend, so
+  // changing destination drops the whole selection in the same config update
+  // and says so until the next pick.
+  const [selectionCleared, setSelectionCleared] = useState(false)
+
+  const handleDestinationChange = (next: "" | MlflowDestinationKey) => {
+    if (next === mlflowDestination) return
+    onUpdate({
+      mlflow_destination: next,
+      run_id: "",
+      run_name: "",
+      experiment_id: "",
+      experiment_name: "",
+      artifact_path: "",
+      registered_model: "",
+      version: "latest",
+    })
+    setSelectionCleared(true)
+  }
+
+  // Forward the picker's own arguments unchanged: an explicit `undefined`
+  // second argument is not the same call as a one-argument update.
+  const handlePickerUpdate: OnUpdateConfig = (...args) => {
+    setSelectionCleared(false)
+    return onUpdate(...args)
+  }
 
   return (
     <div className="flex-1 flex flex-col min-h-0 px-3 py-2 gap-3">
       <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
 
-      {/* MLflow Status */}
-      <MlflowStatusBadge />
+      {/* Where this node browses and loads from */}
+      <div>
+        <MlflowDestinationSelector
+          value={mlflowDestination}
+          onChange={handleDestinationChange}
+          idPrefix="model-score-mlflow-destination"
+        />
+        {selectionCleared && (
+          <p
+            data-testid="mlflow-selection-cleared"
+            className="mt-1 text-[10px]"
+            style={{ color: "var(--warning-strong)" }}
+          >
+            Selection cleared — run and model identifiers are not portable across destinations.
+          </p>
+        )}
+      </div>
 
       {/* Source Type Toggle */}
       <div>
@@ -57,14 +105,14 @@ export default function ModelScoreEditor({
 
       {/* Registered Model Selection */}
       {sourceType === "registered" && (
-        <RegisteredModelPicker config={config} onUpdate={onUpdate} mlflow={mlflow} />
+        <RegisteredModelPicker config={config} onUpdate={handlePickerUpdate} mlflow={mlflow} />
       )}
 
       {/* Run-based Selection */}
       {sourceType === "run" && (
         <ExperimentRunPicker
           config={config}
-          onUpdate={onUpdate}
+          onUpdate={handlePickerUpdate}
           mlflow={mlflow}
           showArtifactPath
           onRunSelected={(run) => ({ artifact_path: run.artifacts[0] || "" })}

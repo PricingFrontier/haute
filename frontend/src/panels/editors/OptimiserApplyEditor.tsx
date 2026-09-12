@@ -1,9 +1,11 @@
 import { useState, useEffect, useMemo } from "react"
-import { InputSourcesBar, MlflowStatusBadge, INPUT_STYLE } from "./_shared"
+import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { RegisteredModelPicker, ExperimentRunPicker } from "./MlflowModelPicker"
 import { useMlflowBrowser } from "../../hooks/useMlflowBrowser"
 import { configField } from "../../utils/configField"
+import MlflowDestinationSelector from "../../components/MlflowDestinationSelector"
+import type { MlflowDestinationKey } from "../../api/types"
 import { optimiserSelectionMode } from "../../utils/mlflowOptimiser"
 import { readJson } from "../../api/client"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
@@ -48,11 +50,44 @@ export default function OptimiserApplyEditor({
   const optimisedValueColumn = configField(config, "optimised_value_column", "")
   const ratebookInput = configField(config, "ratebook_input", "")
   const optimiserMode = configField(config, "optimiser_mode", "")
+  const mlflowDestination = configField(config, "mlflow_destination", "")
 
   const [meta, setMeta] = useState<LoadedArtifactMeta | null>(null)
   const [loadError, setLoadError] = useState<ArtifactLoadError | null>(null)
 
-  const mlflow = useMlflowBrowser({ runTag: "optimiser", initialExpId: configField(config, "experiment_id", "") })
+  const mlflow = useMlflowBrowser({
+    destination: mlflowDestination,
+    runTag: "optimiser",
+    initialExpId: configField(config, "experiment_id", ""),
+  })
+
+  // A run id or a registered model name means nothing at another backend, so
+  // changing destination drops the whole selection — including the mirrored
+  // optimiser mode it was derived from — and says so until the next pick.
+  const [selectionCleared, setSelectionCleared] = useState(false)
+
+  const handleDestinationChange = (next: "" | MlflowDestinationKey) => {
+    if (next === mlflowDestination) return
+    onUpdate({
+      mlflow_destination: next,
+      run_id: "",
+      run_name: "",
+      experiment_id: "",
+      experiment_name: "",
+      artifact_path: "",
+      registered_model: "",
+      version: "latest",
+      optimiser_mode: "",
+    })
+    setSelectionCleared(true)
+  }
+
+  // Forward the picker's own arguments unchanged: an explicit `undefined`
+  // second argument is not the same call as a one-argument update.
+  const handlePickerUpdate: OnUpdateConfig = (...args) => {
+    setSelectionCleared(false)
+    return onUpdate(...args)
+  }
   const loadedMeta = sourceType === "file" && meta?.artifactPath === artifactPath ? meta.data : null
   const activeLoadError = sourceType === "file" && artifactPath && loadError?.artifactPath === artifactPath
     ? loadError.message
@@ -127,8 +162,25 @@ export default function OptimiserApplyEditor({
     <div className="flex-1 flex flex-col min-h-0 px-3 py-2 gap-3">
       <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
 
-      {/* MLflow Status (shown when not in file mode) */}
-      {sourceType !== "file" && <MlflowStatusBadge />}
+      {/* Where this node browses and loads from (MLflow source types only) */}
+      {sourceType !== "file" && (
+        <div>
+          <MlflowDestinationSelector
+            value={mlflowDestination}
+            onChange={handleDestinationChange}
+            idPrefix="optimiser-apply-mlflow-destination"
+          />
+          {selectionCleared && (
+            <p
+              data-testid="mlflow-selection-cleared"
+              className="mt-1 text-[10px]"
+              style={{ color: "var(--warning-strong)" }}
+            >
+              Selection cleared — run and model identifiers are not portable across destinations.
+            </p>
+          )}
+        </div>
+      )}
 
       {showRatebookInput && (
         <div>
@@ -198,14 +250,14 @@ export default function OptimiserApplyEditor({
 
       {/* Registered Model Mode */}
       {sourceType === "registered" && (
-        <RegisteredModelPicker config={config} onUpdate={onUpdate} mlflow={mlflow} />
+        <RegisteredModelPicker config={config} onUpdate={handlePickerUpdate} mlflow={mlflow} />
       )}
 
       {/* Experiment Run Mode */}
       {sourceType === "run" && (
         <ExperimentRunPicker
           config={config}
-          onUpdate={onUpdate}
+          onUpdate={handlePickerUpdate}
           mlflow={mlflow}
           renderRunLabel={(run) => {
             const mode = optimiserSelectionMode(run)

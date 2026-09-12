@@ -1,6 +1,6 @@
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useState } from "react"
 import { Info } from "lucide-react"
-import { cancelTrain, estimateTrainingRam, getExperiments, trainModel } from "../api/client"
+import { cancelTrain, estimateTrainingRam, trainModel } from "../api/client"
 import { runDispersionEstimate } from "../api/dispersion"
 import {
   FAILED_JOB_STATUSES,
@@ -10,6 +10,7 @@ import {
 import { CommittedTextField } from "../components/form"
 import MlflowDestinationSelector from "../components/MlflowDestinationSelector"
 import Tooltip from "../components/Tooltip"
+import { useMlflowBrowser } from "../hooks/useMlflowBrowser"
 import {
   useStaleConfigEstimate,
   type UseStaleConfigEstimateResult,
@@ -27,7 +28,6 @@ import { configField } from "../utils/configField"
 import {
   defaultExperimentName,
   effectiveMlflowDestination,
-  mlflowDestinationEntry,
   mlflowLogAvailability,
 } from "../utils/mlflowDestinations"
 import {
@@ -224,42 +224,16 @@ function TrainPane({
   const effectiveDestination = effectiveMlflowDestination(mlflowDestination, mlflowInventory.auto)
   const experimentDefault = defaultExperimentName(nodeLabel, effectiveDestination)
 
-  // Experiment suggestions belong to one backend. The scope key names that
-  // backend (the resolved destination, not just the key, so a repointed
-  // server counts as a change), and every change discards what was fetched
-  // for the previous one — including an in-flight response.
-  // TODO(C7): once `useMlflowBrowser` takes a destination, this becomes
-  // `useMlflowBrowser({ destination: mlflowDestination })`.
-  const mlflowScope = `${effectiveDestination}|${
-    mlflowDestinationEntry(mlflowInventory.destinations, effectiveDestination)?.destination ?? ""
-  }`
-  const [loadedExperiments, setLoadedExperiments] = useState<{
-    scope: string
-    items: { experiment_id: string; name: string }[]
-  }>({ scope: "", items: [] })
-  // Suggestions are stamped with the scope they came from, so a scope change
-  // hides them by derivation — no effect, and a response that lands after the
-  // change can never be shown against the new backend.
-  const experiments = loadedExperiments.scope === mlflowScope ? loadedExperiments.items : []
-  const experimentsRequest = useRef({ scope: "", generation: 0 })
+  // Experiment suggestions belong to one backend, and the shared browser hook
+  // owns that lifecycle: it scopes every request to this node's destination
+  // and drops arrays, guards and in-flight responses whenever the effective
+  // destination changes.
+  const { experiments, refreshExperiments } = useMlflowBrowser({
+    destination: mlflowDestination,
+  })
   const loadExperimentOptions = () => {
     if (!mlflowAvailability.available) return
-    const scope = mlflowScope
-    const request = experimentsRequest.current
-    if (request.scope === scope) return
-    request.scope = scope
-    const generation = ++request.generation
-    getExperiments(mlflowDestination)
-      .then((data) => {
-        if (generation !== request.generation) return
-        setLoadedExperiments({ scope, items: Array.isArray(data) ? data : [] })
-      })
-      .catch(() => {
-        if (generation !== request.generation) return
-        // Let the next focus retry this scope.
-        request.scope = ""
-        setLoadedExperiments({ scope, items: [] })
-      })
+    refreshExperiments()
   }
 
   const toggleGpu = (enabled: boolean) => {

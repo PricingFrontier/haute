@@ -4,7 +4,7 @@ import path from "node:path"
 import { StrictMode } from "react"
 import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react"
 import type { EditorView } from "@codemirror/view"
-import { FileBrowser, InputSourcesBar, MlflowStatusBadge, SchemaPreview } from "../_shared"
+import { FileBrowser, InputSourcesBar, SchemaPreview } from "../_shared"
 import type { OnUpdateConfig, SchemaInfo } from "../_shared"
 import CodeEditor from "../CodeMirrorEditor"
 
@@ -19,25 +19,6 @@ vi.mock("../../../api/client", () => ({
 // Provide a minimal settings store with file-list cache helpers
 const mockGetFileListCache = vi.fn<(key: string) => unknown[] | null>().mockReturnValue(null)
 const mockSetFileListCache = vi.fn()
-type MockMlflowStatus = {
-  mlflowStatus: "loading" | "connected" | "error"
-  mlflowMode: string
-  mlflowInstalled: boolean | null
-  mlflowImportable: boolean | null
-  mlflowConfigured: boolean | null
-  mlflowDetail: string
-}
-const mockMlflowStatus = vi.hoisted(() => ({
-  current: {
-    mlflowStatus: "connected",
-    mlflowMode: "local",
-    mlflowInstalled: true,
-    mlflowImportable: true,
-    mlflowConfigured: true,
-    mlflowDetail: "",
-  } as MockMlflowStatus,
-}))
-
 vi.mock("../../../stores/useSettingsStore", () => {
   const store = (selector: (s: Record<string, unknown>) => unknown) =>
     selector({
@@ -53,7 +34,6 @@ vi.mock("../../../stores/useSettingsStore", () => {
   return {
     __esModule: true,
     default: store,
-    useMlflowStatus: () => mockMlflowStatus.current,
   }
 })
 
@@ -235,101 +215,6 @@ describe("InputSourcesBar", () => {
         /^(pre|pre-wrap|break-spaces)$/,
       )
     })
-  })
-})
-
-describe("MlflowStatusBadge", () => {
-  afterEach(cleanup)
-
-  it("activating the badge opens the MLflow settings dialog", async () => {
-    const { default: useUIStore } = await import("../../../stores/useUIStore")
-    useUIStore.setState({ mlflowSettingsOpen: false })
-    render(<MlflowStatusBadge />)
-    fireEvent.click(screen.getByRole("button", { name: /mlflow status/i }))
-    expect(useUIStore.getState().mlflowSettingsOpen).toBe(true)
-  })
-
-  beforeEach(() => {
-    mockMlflowStatus.current = {
-      mlflowStatus: "connected",
-      mlflowMode: "local",
-      mlflowInstalled: true,
-      mlflowImportable: true,
-      mlflowConfigured: true,
-      mlflowDetail: "",
-    }
-  })
-
-  it("shows configured tracking backend when MLflow tracking config is healthy", () => {
-    render(<MlflowStatusBadge />)
-
-    expect(screen.getByRole("button", { name: /mlflow status/i })).toHaveTextContent("MLflow tracking configured (local)")
-  })
-
-  it("does not imply scoring is unavailable when only tracking is not configured", () => {
-    mockMlflowStatus.current = {
-      mlflowStatus: "error",
-      mlflowMode: "",
-      mlflowInstalled: true,
-      mlflowImportable: true,
-      mlflowConfigured: false,
-      mlflowDetail: "tracking backend misconfigured",
-    }
-
-    render(<MlflowStatusBadge />)
-
-    const badge = screen.getByRole("button", { name: /mlflow status/i })
-    expect(badge).toHaveTextContent("MLflow tracking not configured")
-    expect(badge).toHaveAttribute(
-      "title",
-      "tracking backend misconfigured — click to open MLflow settings",
-    )
-    expect(badge).not.toHaveTextContent("MLflow not available")
-  })
-
-  it("distinguishes an import failure from tracking configuration failures", () => {
-    mockMlflowStatus.current = {
-      mlflowStatus: "error",
-      mlflowMode: "",
-      mlflowInstalled: true,
-      mlflowImportable: false,
-      mlflowConfigured: false,
-      mlflowDetail: "MLflow package import failed: broken dependency",
-    }
-
-    render(<MlflowStatusBadge />)
-
-    expect(screen.getByRole("button", { name: /mlflow status/i })).toHaveTextContent("MLflow package failed to load")
-  })
-
-  it("distinguishes a missing MLflow package from tracking failures", () => {
-    mockMlflowStatus.current = {
-      mlflowStatus: "error",
-      mlflowMode: "",
-      mlflowInstalled: false,
-      mlflowImportable: false,
-      mlflowConfigured: false,
-      mlflowDetail: "MLflow package is not installed",
-    }
-
-    render(<MlflowStatusBadge />)
-
-    expect(screen.getByRole("button", { name: /mlflow status/i })).toHaveTextContent("MLflow package missing")
-  })
-
-  it("reports status check failures without claiming MLflow itself is absent", () => {
-    mockMlflowStatus.current = {
-      mlflowStatus: "error",
-      mlflowMode: "",
-      mlflowInstalled: null,
-      mlflowImportable: null,
-      mlflowConfigured: null,
-      mlflowDetail: "MLflow check timed out after 5s",
-    }
-
-    render(<MlflowStatusBadge />)
-
-    expect(screen.getByRole("button", { name: /mlflow status/i })).toHaveTextContent("MLflow status unavailable")
   })
 })
 

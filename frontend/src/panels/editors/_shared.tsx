@@ -1,11 +1,10 @@
 import { useState, useEffect } from "react"
-import { X, Folder, FileText, ChevronLeft, Check, Table2, Loader2, AlertTriangle } from "lucide-react"
+import { X, Folder, FileText, ChevronLeft, Check, Table2, AlertTriangle } from "lucide-react"
 import type { ColumnInfo } from "../../types/node"
 import { listFiles } from "../../api/client"
 import type { FileListItem } from "../../api/types"
 import ColumnTable from "../../components/ColumnTable"
-import useSettingsStore, { useMlflowStatus } from "../../stores/useSettingsStore"
-import useUIStore from "../../stores/useUIStore"
+import useSettingsStore from "../../stores/useSettingsStore"
 import { formatValue } from "../../utils/formatValue"
 
 // ─── Shared Styles ───────────────────────────────────────────────
@@ -87,97 +86,6 @@ export type SimpleEdge = {
   sourceHandle?: string | null
   targetHandle?: string | null
   data?: Record<string, unknown>
-}
-
-// ─── MlflowStatusBadge ───────────────────────────────────────────
-
-export function MlflowStatusBadge() {
-  const {
-    mlflowStatus,
-    mlflowMode,
-    mlflowInstalled,
-    mlflowImportable,
-    mlflowConfigured,
-    mlflowDetail,
-  } = useMlflowStatus()
-
-  const isConnected = mlflowStatus === "connected"
-  const isLoading = mlflowStatus === "loading"
-  const isPackageMissing = mlflowStatus === "error" && mlflowInstalled === false
-  const isPackageLoadFailed =
-    mlflowStatus === "error" && mlflowInstalled === true && mlflowImportable === false
-  const isTrackingNotConfigured =
-    mlflowStatus === "error" &&
-    mlflowInstalled === true &&
-    mlflowImportable !== false &&
-    mlflowConfigured === false
-  const tone = isConnected
-    ? "success"
-    : isPackageMissing || isPackageLoadFailed
-      ? "danger"
-      : isTrackingNotConfigured || mlflowStatus === "error"
-        ? "warning"
-        : "neutral"
-  const background = tone === "success"
-    ? "var(--editor-status-success-bg)"
-    : tone === "danger"
-      ? "var(--danger-soft-faint)"
-      : tone === "warning"
-        ? "var(--warning-soft-subtle)"
-        : "var(--bg-panel)"
-  const border = tone === "success"
-    ? "var(--editor-status-success-border)"
-    : tone === "danger"
-      ? "var(--danger-border)"
-      : tone === "warning"
-        ? "var(--warning-border)"
-        : "var(--border)"
-  const iconColor = tone === "success"
-    ? "var(--editor-status-success-text)"
-    : tone === "danger"
-      ? "var(--danger)"
-      : tone === "warning"
-        ? "var(--warning-strong)"
-        : "var(--text-muted)"
-  const labelColor = tone === "danger"
-    ? "var(--danger)"
-    : tone === "warning"
-      ? "var(--warning-strong)"
-      : "var(--text-secondary)"
-  const label = isLoading
-    ? "Checking MLflow..."
-    : isConnected
-      ? `MLflow tracking configured (${mlflowMode || "local"})`
-      : isPackageMissing
-        ? "MLflow package missing"
-        : isPackageLoadFailed
-          ? "MLflow package failed to load"
-          : isTrackingNotConfigured
-            ? "MLflow tracking not configured"
-          : "MLflow status unavailable"
-
-  const setMlflowSettingsOpen = useUIStore((s) => s.setMlflowSettingsOpen)
-
-  return (
-    <button
-      className="flex w-full items-center gap-2 px-2.5 py-1.5 rounded-lg text-left text-[11px]"
-      aria-label={`MLflow status: ${label}. Open MLflow settings`}
-      onClick={() => setMlflowSettingsOpen(true)}
-      title={`${mlflowDetail || label} — click to open MLflow settings`}
-      style={{
-        background,
-        border: `1px solid ${border}`,
-      }}
-    >
-      {isLoading ? (
-        <><Loader2 size={11} className="animate-spin" style={{ color: iconColor }} /><span style={{ color: "var(--text-muted)" }}>{label}</span></>
-      ) : isConnected ? (
-        <><Check size={11} style={{ color: iconColor }} /><span style={{ color: labelColor }}>{label}</span></>
-      ) : (
-        <><AlertTriangle size={11} style={{ color: iconColor }} /><span style={{ color: labelColor }}>{label}</span></>
-      )}
-    </button>
-  )
 }
 
 // ─── FileBrowser ──────────────────────────────────────────────────

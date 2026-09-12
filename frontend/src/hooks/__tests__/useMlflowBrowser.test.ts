@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 import { renderHook, act, waitFor } from "@testing-library/react"
 import { useMlflowBrowser } from "../useMlflowBrowser"
 import useSettingsStore from "../../stores/useSettingsStore"
+import type { MlflowDestinationEntry, MlflowDestinationKey } from "../../api/types"
 import {
   getExperiments,
   getRuns,
@@ -50,18 +51,50 @@ const fakeVersions = [
   { version: "2", run_id: "r2", status: "READY", description: "Second version" },
 ]
 
+function entry(key: MlflowDestinationKey, destination: string): MlflowDestinationEntry {
+  return {
+    key,
+    configured: true,
+    destination,
+    config_source: "default",
+    detail: "",
+    probed: false,
+    ok: false,
+    category: "",
+  }
+}
+
+/**
+ * Seed the inventory the hook derives its scope from. The default is the
+ * local folder at `file:///a`; passing another entry list repoints or
+ * re-resolves the destination the same way a settings save would.
+ */
+function setInventory(
+  auto: "" | MlflowDestinationKey = "local",
+  destinations: MlflowDestinationEntry[] = [entry("local", "file:///a")],
+): void {
+  useSettingsStore.setState({
+    mlflow: {
+      status: "ready",
+      installed: true,
+      importable: true,
+      auto,
+      destinations,
+      detail: "",
+    },
+  })
+}
+
 describe("useMlflowBrowser", () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    useSettingsStore.setState((state) => ({
-      mlflow: { ...state.mlflow, mode: "local", destination: "file:///a" },
-    }))
+    setInventory()
   })
 
   // ─── Initial state ────────────────────────────────────────────
 
   it("initial state: all arrays empty, all loading false, all errors empty", () => {
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     expect(result.current.experiments).toEqual([])
     expect(result.current.runs).toEqual([])
@@ -79,12 +112,12 @@ describe("useMlflowBrowser", () => {
   })
 
   it("browseExpId initializes from initialExpId option", () => {
-    const { result } = renderHook(() => useMlflowBrowser({ initialExpId: "42" }))
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local", initialExpId: "42" }))
     expect(result.current.browseExpId).toBe("42")
   })
 
   it("browseExpId defaults to empty string when no initialExpId", () => {
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
     expect(result.current.browseExpId).toBe("")
   })
 
@@ -92,7 +125,7 @@ describe("useMlflowBrowser", () => {
 
   it("refreshExperiments: resolves with data and sets experiments array", async () => {
     mockGetExperiments.mockResolvedValue(fakeExperiments)
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => { result.current.refreshExperiments() })
 
@@ -105,7 +138,7 @@ describe("useMlflowBrowser", () => {
 
   it("refreshExperiments: called twice only makes one API call (fetch guard)", async () => {
     mockGetExperiments.mockResolvedValue(fakeExperiments)
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => {
       result.current.refreshExperiments()
@@ -120,7 +153,7 @@ describe("useMlflowBrowser", () => {
 
   it("refreshExperiments: API error sets errorExperiments message", async () => {
     mockGetExperiments.mockRejectedValue(new Error("Network failure"))
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => { result.current.refreshExperiments() })
 
@@ -134,7 +167,7 @@ describe("useMlflowBrowser", () => {
   it("refreshExperiments: ApiError with detail uses detail as error message", async () => {
     const apiErr = new ApiError("generic", 500, "Detailed error info")
     mockGetExperiments.mockRejectedValue(apiErr)
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => { result.current.refreshExperiments() })
 
@@ -146,7 +179,7 @@ describe("useMlflowBrowser", () => {
   it("refreshExperiments: error resets fetch guard so retry works", async () => {
     mockGetExperiments.mockRejectedValueOnce(new Error("fail"))
     mockGetExperiments.mockResolvedValueOnce(fakeExperiments)
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => { result.current.refreshExperiments() })
     await waitFor(() => {
@@ -161,25 +194,49 @@ describe("useMlflowBrowser", () => {
     expect(mockGetExperiments).toHaveBeenCalledTimes(2)
   })
 
-  it("refetches after a destination change and discards an obsolete completion after switching back", async () => {
+  it("passes the destination to every discovery request", async () => {
+    mockGetExperiments.mockResolvedValue(fakeExperiments)
+    mockGetRuns.mockResolvedValue(fakeRuns)
+    mockGetModels.mockResolvedValue(fakeModels)
+    mockGetModelVersions.mockResolvedValue(fakeVersions)
+    setInventory("local", [entry("server", "http://server-b"), entry("local", "file:///a")])
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "server" }))
+
+    act(() => {
+      result.current.refreshExperiments()
+      result.current.refreshRuns("exp-1")
+      result.current.refreshModels()
+      result.current.refreshVersions("model-a")
+    })
+
+    await waitFor(() => expect(result.current.modelVersions).toEqual(fakeVersions))
+    expect(mockGetExperiments).toHaveBeenCalledWith("server")
+    expect(mockGetRuns).toHaveBeenCalledWith("exp-1", undefined, "server")
+    expect(mockGetModels).toHaveBeenCalledWith("server")
+    expect(mockGetModelVersions).toHaveBeenCalledWith("model-a", "server")
+  })
+
+  it("passes the empty auto destination through unchanged", async () => {
+    mockGetExperiments.mockResolvedValue(fakeExperiments)
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "" }))
+
+    act(() => { result.current.refreshExperiments() })
+
+    await waitFor(() => expect(result.current.experiments).toEqual(fakeExperiments))
+    expect(mockGetExperiments).toHaveBeenCalledWith("")
+  })
+
+  it("refetches after an inventory change and discards an obsolete completion after switching back", async () => {
     let resolveFirst!: (value: typeof fakeExperiments) => void
     const first = new Promise<typeof fakeExperiments>((resolve) => { resolveFirst = resolve })
     const newestExperiments = [{ experiment_id: "3", name: "New experiment at A" }]
     mockGetExperiments.mockReturnValueOnce(first).mockResolvedValueOnce(newestExperiments)
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => { result.current.refreshExperiments() })
-    act(() => {
-      useSettingsStore.setState((state) => ({
-        mlflow: { ...state.mlflow, mode: "server", destination: "http://server-b" },
-      }))
-    })
-    act(() => {
-      useSettingsStore.setState((state) => ({
-        mlflow: { ...state.mlflow, mode: "local", destination: "file:///a" },
-      }))
-      result.current.refreshExperiments()
-    })
+    act(() => { setInventory("local", [entry("local", "file:///b")]) })
+    act(() => { setInventory("local", [entry("local", "file:///a")]) })
+    act(() => { result.current.refreshExperiments() })
 
     await waitFor(() => expect(result.current.experiments).toEqual(newestExperiments))
     await act(async () => { resolveFirst(fakeExperiments) })
@@ -187,14 +244,91 @@ describe("useMlflowBrowser", () => {
     expect(mockGetExperiments).toHaveBeenCalledTimes(2)
   })
 
-  // ─── refreshModels ────────────────────────────────────────────
+  it("refetches after a destination prop change and discards the obsolete completion", async () => {
+    let resolveFirst!: (value: typeof fakeExperiments) => void
+    const first = new Promise<typeof fakeExperiments>((resolve) => { resolveFirst = resolve })
+    const serverExperiments = [{ experiment_id: "3", name: "Experiment at the server" }]
+    mockGetExperiments.mockReturnValueOnce(first).mockResolvedValueOnce(serverExperiments)
+    setInventory("local", [entry("server", "http://server-b"), entry("local", "file:///a")])
+    const { result, rerender } = renderHook(
+      ({ destination }: { destination: string }) => useMlflowBrowser({ destination }),
+      { initialProps: { destination: "local" } },
+    )
 
-  it("clears every picker cache and selection when the destination changes", async () => {
+    act(() => { result.current.refreshExperiments() })
+    rerender({ destination: "server" })
+    act(() => { result.current.refreshExperiments() })
+
+    await waitFor(() => expect(result.current.experiments).toEqual(serverExperiments))
+    await act(async () => { resolveFirst(fakeExperiments) })
+    expect(result.current.experiments).toEqual(serverExperiments)
+    expect(mockGetExperiments).toHaveBeenNthCalledWith(1, "local")
+    expect(mockGetExperiments).toHaveBeenNthCalledWith(2, "server")
+  })
+
+  it("clears every picker cache and selection when the destination prop changes", async () => {
     mockGetExperiments.mockResolvedValue(fakeExperiments)
     mockGetRuns.mockResolvedValue(fakeRuns)
     mockGetModels.mockResolvedValue(fakeModels)
     mockGetModelVersions.mockResolvedValue(fakeVersions)
-    const { result } = renderHook(() => useMlflowBrowser({ initialExpId: "exp-a" }))
+    setInventory("local", [entry("server", "http://server-b"), entry("local", "file:///a")])
+    const { result, rerender } = renderHook(
+      ({ destination }: { destination: string }) =>
+        useMlflowBrowser({ destination, initialExpId: "exp-a" }),
+      { initialProps: { destination: "local" } },
+    )
+
+    act(() => {
+      result.current.refreshExperiments()
+      result.current.refreshRuns("exp-a")
+      result.current.refreshModels()
+      result.current.refreshVersions("model-a")
+    })
+    await waitFor(() => {
+      expect(result.current.experiments).toEqual(fakeExperiments)
+      expect(result.current.runs).toEqual(fakeRuns)
+      expect(result.current.models).toEqual(fakeModels)
+      expect(result.current.modelVersions).toEqual(fakeVersions)
+    })
+
+    rerender({ destination: "server" })
+
+    expect(result.current.experiments).toEqual([])
+    expect(result.current.runs).toEqual([])
+    expect(result.current.models).toEqual([])
+    expect(result.current.modelVersions).toEqual([])
+    expect(result.current.modelVersionsFor).toBe("")
+    expect(result.current.browseExpId).toBe("")
+    expect(result.current.loadingExperiments).toBe(false)
+    expect(result.current.loadingRuns).toBe(false)
+    expect(result.current.loadingModels).toBe(false)
+    expect(result.current.loadingVersions).toBe(false)
+    expect(result.current.errorExperiments).toBe("")
+    expect(result.current.errorRuns).toBe("")
+    expect(result.current.errorModels).toBe("")
+    expect(result.current.errorVersions).toBe("")
+
+    act(() => {
+      result.current.refreshExperiments()
+      result.current.refreshRuns("exp-a")
+      result.current.refreshModels()
+      result.current.refreshVersions("model-a")
+    })
+    await waitFor(() => expect(result.current.modelVersions).toEqual(fakeVersions))
+    for (const fetch of [mockGetExperiments, mockGetRuns, mockGetModels, mockGetModelVersions]) {
+      expect(fetch).toHaveBeenCalledTimes(2)
+    }
+    expect(mockGetModels).toHaveBeenLastCalledWith("server")
+  })
+
+  // ─── refreshModels ────────────────────────────────────────────
+
+  it("clears every picker cache and selection when the inventory changes", async () => {
+    mockGetExperiments.mockResolvedValue(fakeExperiments)
+    mockGetRuns.mockResolvedValue(fakeRuns)
+    mockGetModels.mockResolvedValue(fakeModels)
+    mockGetModelVersions.mockResolvedValue(fakeVersions)
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local", initialExpId: "exp-a" }))
     const refreshAll = () => {
       result.current.refreshExperiments()
       result.current.refreshRuns("exp-a")
@@ -209,11 +343,7 @@ describe("useMlflowBrowser", () => {
       expect(result.current.models).toEqual(fakeModels)
       expect(result.current.modelVersions).toEqual(fakeVersions)
     })
-    act(() => {
-      useSettingsStore.setState((state) => ({
-        mlflow: { ...state.mlflow, mode: "server", destination: "http://server-b" },
-      }))
-    })
+    act(() => { setInventory("local", [entry("local", "file:///b")]) })
     expect(result.current.experiments).toEqual([])
     expect(result.current.runs).toEqual([])
     expect(result.current.models).toEqual([])
@@ -230,7 +360,7 @@ describe("useMlflowBrowser", () => {
 
   it("refreshModels: resolves with data and sets models array", async () => {
     mockGetModels.mockResolvedValue(fakeModels)
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => { result.current.refreshModels() })
 
@@ -243,7 +373,7 @@ describe("useMlflowBrowser", () => {
 
   it("refreshModels: fetch guard prevents duplicate calls", async () => {
     mockGetModels.mockResolvedValue(fakeModels)
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => {
       result.current.refreshModels()
@@ -259,7 +389,7 @@ describe("useMlflowBrowser", () => {
   it("refreshModels: API error resets guard so retry works", async () => {
     mockGetModels.mockRejectedValueOnce(new Error("models fail"))
     mockGetModels.mockResolvedValueOnce(fakeModels)
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => { result.current.refreshModels() })
     await waitFor(() => {
@@ -278,7 +408,7 @@ describe("useMlflowBrowser", () => {
 
   it("refreshRuns: resolves with data and sets runs array", async () => {
     mockGetRuns.mockResolvedValue(fakeRuns)
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => { result.current.refreshRuns("exp-1") })
 
@@ -286,12 +416,12 @@ describe("useMlflowBrowser", () => {
       expect(result.current.loadingRuns).toBe(false)
     })
     expect(result.current.runs).toEqual(fakeRuns)
-    expect(mockGetRuns).toHaveBeenCalledWith("exp-1", undefined)
+    expect(mockGetRuns).toHaveBeenCalledWith("exp-1", undefined, "local")
   })
 
   it("refreshRuns: same expId twice only makes one API call", async () => {
     mockGetRuns.mockResolvedValue(fakeRuns)
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => {
       result.current.refreshRuns("exp-1")
@@ -309,7 +439,7 @@ describe("useMlflowBrowser", () => {
 
   it("refreshRuns: different expId makes new API call", async () => {
     mockGetRuns.mockResolvedValue(fakeRuns)
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => { result.current.refreshRuns("exp-1") })
     await waitFor(() => {
@@ -322,7 +452,7 @@ describe("useMlflowBrowser", () => {
     })
 
     expect(mockGetRuns).toHaveBeenCalledTimes(2)
-    expect(mockGetRuns).toHaveBeenCalledWith("exp-2", undefined)
+    expect(mockGetRuns).toHaveBeenCalledWith("exp-2", undefined, "local")
   })
 
   it("refreshRuns: ignores an older experiment response after a newer selection", async () => {
@@ -330,7 +460,7 @@ describe("useMlflowBrowser", () => {
     const first = new Promise<typeof fakeRuns>((resolve) => { resolveFirst = resolve })
     const newer = [{ ...fakeRuns[0], run_id: "r2" }]
     mockGetRuns.mockReturnValueOnce(first).mockResolvedValueOnce(newer)
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => {
       result.current.refreshRuns("exp-1")
@@ -342,7 +472,7 @@ describe("useMlflowBrowser", () => {
   })
 
   it("refreshRuns: empty expId makes no API call", () => {
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => { result.current.refreshRuns("") })
 
@@ -351,21 +481,21 @@ describe("useMlflowBrowser", () => {
 
   it("refreshRuns: passes runTag option to getRuns", async () => {
     mockGetRuns.mockResolvedValue(fakeRuns)
-    const { result } = renderHook(() => useMlflowBrowser({ runTag: "optimiser" }))
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local", runTag: "optimiser" }))
 
     act(() => { result.current.refreshRuns("exp-1") })
 
     await waitFor(() => {
       expect(result.current.loadingRuns).toBe(false)
     })
-    expect(mockGetRuns).toHaveBeenCalledWith("exp-1", "optimiser")
+    expect(mockGetRuns).toHaveBeenCalledWith("exp-1", "optimiser", "local")
   })
 
   // ─── resetRunsGuard ───────────────────────────────────────────
 
   it("resetRunsGuard: allows re-fetch of same expId", async () => {
     mockGetRuns.mockResolvedValue(fakeRuns)
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => { result.current.refreshRuns("exp-1") })
     await waitFor(() => {
@@ -388,7 +518,7 @@ describe("useMlflowBrowser", () => {
 
   it("refreshVersions: resolves with data and sets modelVersions array", async () => {
     mockGetModelVersions.mockResolvedValue(fakeVersions)
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => { result.current.refreshVersions("model-a") })
 
@@ -397,12 +527,12 @@ describe("useMlflowBrowser", () => {
     })
     expect(result.current.modelVersions).toEqual(fakeVersions)
     expect(result.current.modelVersionsFor).toBe("model-a")
-    expect(mockGetModelVersions).toHaveBeenCalledWith("model-a")
+    expect(mockGetModelVersions).toHaveBeenCalledWith("model-a", "local")
   })
 
   it("refreshVersions: same modelName twice only makes one call", async () => {
     mockGetModelVersions.mockResolvedValue(fakeVersions)
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => { result.current.refreshVersions("model-a") })
     await waitFor(() => {
@@ -416,7 +546,7 @@ describe("useMlflowBrowser", () => {
 
   it("refreshVersions: different modelName makes new API call", async () => {
     mockGetModelVersions.mockResolvedValue(fakeVersions)
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => { result.current.refreshVersions("model-a") })
     await waitFor(() => {
@@ -438,7 +568,7 @@ describe("useMlflowBrowser", () => {
     const first = new Promise<typeof fakeVersions>((resolve) => { resolveFirst = resolve })
     const newer = [{ ...fakeVersions[0], version: "9" }]
     mockGetModelVersions.mockReturnValueOnce(first).mockResolvedValueOnce(newer)
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => {
       result.current.refreshVersions("model-a")
@@ -450,7 +580,7 @@ describe("useMlflowBrowser", () => {
   })
 
   it("refreshVersions: empty modelName makes no API call", () => {
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => { result.current.refreshVersions("") })
 
@@ -460,7 +590,7 @@ describe("useMlflowBrowser", () => {
   it("refreshVersions: error resets guard so retry works", async () => {
     mockGetModelVersions.mockRejectedValueOnce(new Error("versions fail"))
     mockGetModelVersions.mockResolvedValueOnce(fakeVersions)
-    const { result } = renderHook(() => useMlflowBrowser())
+    const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => { result.current.refreshVersions("model-a") })
     await waitFor(() => {
