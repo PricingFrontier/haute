@@ -53,18 +53,20 @@ describe("Toolbar", () => {
     expect(screen.getByText("Haute")).toBeInTheDocument()
   })
 
-  it("renders no MLflow chip", () => {
+  it("renders no MLflow control", () => {
     // The destination is a per-node choice now, so the toolbar carries no
-    // MLflow control — it only still mounts the settings modal for the UI
-    // flag the node selectors set.
+    // MLflow control of its own — it only still mounts the settings modal for
+    // the UI flag the node selectors set. Asserting on rendered text rather
+    // than the retired chip's test id keeps the guard alive without naming a
+    // symbol the codebase no longer has.
     render(<Toolbar {...makeProps()} />)
-    expect(screen.queryByTestId("toolbar-mlflow-chip")).toBeNull()
+    expect(screen.queryByText(/mlflow/i)).toBeNull()
     expect(screen.queryByTestId("mlflow-modal-stub")).toBeNull()
 
     cleanup()
     useUIStore.setState({ mlflowSettingsOpen: true })
     render(<Toolbar {...makeProps()} />)
-    expect(screen.queryByTestId("toolbar-mlflow-chip")).toBeNull()
+    expect(screen.queryByText(/mlflow/i)).toBeNull()
     expect(screen.getByTestId("mlflow-modal-stub")).toBeInTheDocument()
   })
 

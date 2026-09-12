@@ -1,8 +1,8 @@
 /**
  * Smoke tests for ModellingPreview.
  *
- * ModellingPreview uses Zustand stores (useNodeResultsStore, useSettingsStore)
- * and useDragResize, so we mock them to keep tests focused on render logic.
+ * ModellingPreview uses Zustand stores (useNodeResultsStore) and useDragResize,
+ * so we mock them to keep tests focused on render logic.
  */
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
@@ -16,37 +16,6 @@ vi.mock("../../stores/useNodeResultsStore", () => {
     getState: vi.fn(() => ({ trainJobs: {} })),
   })
   return { default: store, __esModule: true }
-})
-
-vi.mock("../../stores/useSettingsStore", () => {
-  const mlflow = {
-    status: "error",
-    mode: "",
-    destination: "",
-    configSource: "",
-    installed: null,
-    importable: null,
-    configured: null,
-    detail: "",
-  }
-  const store = Object.assign(
-    vi.fn(() => mlflow),
-    { getState: vi.fn(() => ({ mlflow })) },
-  )
-  return {
-    default: store,
-    __esModule: true,
-    useMlflowStatus: () => ({
-      mlflowStatus: mlflow.status,
-      mlflowMode: mlflow.mode,
-      mlflowDestination: mlflow.destination,
-      mlflowConfigSource: mlflow.configSource,
-      mlflowInstalled: mlflow.installed,
-      mlflowImportable: mlflow.importable,
-      mlflowConfigured: mlflow.configured,
-      mlflowDetail: mlflow.detail,
-    }),
-  }
 })
 
 // Mock useDragResize to avoid DOM measurement issues (PreviewPanelFrame consumes it transitively)

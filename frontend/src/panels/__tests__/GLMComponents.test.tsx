@@ -28,6 +28,19 @@ import { makeTrainResult as makeCanonicalTrainResult } from "../../test-utils/fa
 vi.mock("../../api/client", () => ({
   trainModel: vi.fn(() => new Promise(() => {})),
   estimateTrainingRam: vi.fn(() => new Promise(() => {})),
+  // The train section mounts the destination selector, whose store slice
+  // fetches the inventory on mount.
+  getMlflowDestinations: vi.fn(() => Promise.resolve({
+    mlflow_installed: true,
+    mlflow_importable: true,
+    auto: "local",
+    destinations: [
+      { key: "databricks", configured: false, destination: "", config_source: "", detail: "", probed: false, ok: false, category: "" },
+      { key: "server", configured: false, destination: "", config_source: "", detail: "", probed: false, ok: false, category: "" },
+      { key: "local", configured: true, destination: "C:/proj/mlruns", config_source: "default", detail: "", probed: false, ok: false, category: "" },
+    ],
+    detail: "",
+  })),
   // GLMTargetConfig narrows errors with `instanceof ApiError`, so the mock
   // must export a real class or the instanceof check throws.
   ApiError: class ApiError extends Error {},
@@ -94,12 +107,10 @@ beforeEach(() => {
   useSettingsStore.setState({
     mlflow: {
       status: "pending",
-      mode: "",
-      destination: "",
-      configSource: "",
       installed: null,
       importable: null,
-      configured: null,
+      auto: "",
+      destinations: [],
       detail: "",
     },
     openSections: {},
