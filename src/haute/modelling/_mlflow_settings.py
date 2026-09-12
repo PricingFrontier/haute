@@ -346,21 +346,32 @@ def _general_pair_hint() -> str:
     return ""
 
 
-def _resolve_databricks() -> TrackingConfig:
+def _bound_databricks_config(config: TrackingConfig) -> TrackingConfig:
+    """Bind MLflow's Databricks credentials, then hand the config to the consumer.
+
+    Every Databricks ``TrackingConfig`` leaves this module through here, so each
+    consumer (deploy included) is bound before its first Databricks credential
+    lookup, while resolving a server or local destination never imports MLflow.
+    """
     from haute._mlflow_utils import bind_mlflow_databricks_credentials
 
-    # Before any Databricks credential lookup, in every consumer (deploy included).
     bind_mlflow_databricks_credentials()
+    return config
+
+
+def _resolve_databricks() -> TrackingConfig:
     env_uri = tracking_uri_from_environment().strip()
     if env_uri.startswith("databricks://"):
         _reject_databricks_sdk_mode()  # only a *configured* Databricks trips this
-        return TrackingConfig("databricks", env_uri, env_uri, "env")
+        return _bound_databricks_config(TrackingConfig("databricks", env_uri, env_uri, "env"))
     host = os.getenv("DATABRICKS_MLFLOW_HOST", "").strip()
     token = os.getenv("DATABRICKS_MLFLOW_TOKEN", "").strip()
     if host and token:
         _reject_databricks_sdk_mode()
         _reject_ambient_databricks_profile()
-        return TrackingConfig("databricks", "databricks", host.rstrip("/"), "env")
+        return _bound_databricks_config(
+            TrackingConfig("databricks", "databricks", host.rstrip("/"), "env")
+        )
     if host or token or env_uri == "databricks":
         missing = [
             n

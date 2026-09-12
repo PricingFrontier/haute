@@ -104,7 +104,10 @@ test.describe("frontend canvas assurance", () => {
 
   test("keeps the toolbar and canvas within the viewport", async ({ page }) => {
     await page.goto("/")
-    await expect(page.getByTestId("toolbar-mlflow-chip")).toBeVisible()
+    // The MLflow destination is a per-node choice, so the toolbar carries no
+    // MLflow control; its settings modal opens from each node's gear.
+    await expect(page.getByTestId("toolbar-centre")).toBeVisible()
+    await expect(page.getByTestId("toolbar-mlflow-chip")).toHaveCount(0)
     for (const width of [1440, 1280, 1024]) {
       await page.setViewportSize({ width, height: 900 })
       await expect.poll(() => page.evaluate(() => (
@@ -112,9 +115,6 @@ test.describe("frontend canvas assurance", () => {
       ))).toBe(true)
       await expect(page.getByTestId("toolbar-centre")).toBeInViewport()
       await expect(page.getByRole("button", { name: "Save", exact: true })).toBeInViewport()
-      await page.getByTestId("toolbar-mlflow-chip").click()
-      await expect(page.getByRole("dialog", { name: "MLflow settings" })).toBeInViewport()
-      await page.getByRole("button", { name: "Close", exact: true }).click()
       expect(await page.evaluate(() => window.scrollX)).toBe(0)
     }
   })

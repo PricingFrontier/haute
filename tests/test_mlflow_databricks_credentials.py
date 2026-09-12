@@ -912,3 +912,37 @@ def test_cold_interpreter_binds_before_the_first_client_request(tmp_path: Path) 
     assert json.loads(line[len("CAPTURED=") :]) == [
         [f"{MLFLOW_HOST}/api/2.0/mlflow/experiments/search", f"Bearer {MLFLOW_TOKEN}"]
     ]
+
+
+def test_local_and_server_resolution_never_import_or_bind_mlflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Binding happens only when a Databricks destination is resolved.
+
+    A stand-in ``mlflow`` module without a spec (as many tests install) would make
+    the binder's package probe raise, and a real import costs seconds, so neither
+    may happen while resolving a server or local destination, or the auto rule
+    when Databricks is not configured.
+    """
+    import sys
+    from unittest.mock import MagicMock, patch
+
+    from haute.modelling._mlflow_settings import (
+        MlflowDestinationUnconfigured,
+        resolve_destination,
+        resolve_tracking_config,
+    )
+
+    monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+    monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://tracking.example.invalid:5000")
+    _mlflow_utils._restore_mlflow_databricks_credentials()
+
+    with patch.dict(sys.modules, {"mlflow": MagicMock(name="mlflow-without-spec")}):
+        assert resolve_destination("server").mode == "server"
+        assert resolve_destination("local").mode == "local"
+        assert resolve_tracking_config().mode == "server"
+        with pytest.raises(MlflowDestinationUnconfigured):
+            resolve_destination("databricks")
+
+    assert _mlflow_utils._databricks_binding_originals is None

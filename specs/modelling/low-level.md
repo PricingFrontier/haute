@@ -536,11 +536,13 @@ Databricks SDK client ever authenticates with the general pair or an ambient
 service principal, and a REST failure propagates to the caller. Providers resolve
 credentials on every request, so a repointed `DATABRICKS_MLFLOW_HOST` or a
 rewritten profile is followed by the very next request on an existing client.
-The binder is called from this module's Databricks resolver — the one place a
-Databricks `TrackingConfig` is minted, which the inventory, the per-key
-resolver, the auto rule, candidate resolution and deploy all pass through — so
-every consumer is bound before its first Databricks credential lookup, cold
-process included. It returns immediately when mlflow is not installed and skips
+The binder runs whenever this module's Databricks resolver mints a Databricks
+`TrackingConfig`, just before returning it — the one place such a config is
+created, which the inventory, the per-key resolver, the auto rule, candidate
+resolution and deploy all pass through — so every consumer is bound before its
+first Databricks credential lookup, cold process included, while resolving a
+server or local destination (or an unconfigured or rejected Databricks entry)
+never imports MLflow. It returns immediately when mlflow is not installed and skips
 binding when importing MLflow fails (such a process cannot make MLflow
 requests), so destination resolution never requires the optional package. The
 binding is process-global; `_restore_mlflow_databricks_credentials()` undoes it

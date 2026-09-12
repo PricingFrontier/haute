@@ -357,12 +357,18 @@ class TestResolveDestination:
             resolve_destination("databricks", project_root)
         assert resolve_tracking_config(project_root).mode == "local"
 
-    def test_pin_is_applied_by_the_resolver(
+    def test_pin_is_applied_when_databricks_resolves(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """The SDK-mode pin comes with binding, which only a resolved Databricks needs."""
         monkeypatch.delenv("MLFLOW_ENABLE_DB_SDK", raising=False)
         with pytest.raises(MlflowDestinationUnconfigured):
             resolve_destination("databricks", project_root)
+        assert "MLFLOW_ENABLE_DB_SDK" not in os.environ
+
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.invalid")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "mlflow-token-000")
+        assert resolve_destination("databricks", project_root).mode == "databricks"
         assert os.environ["MLFLOW_ENABLE_DB_SDK"] == "false"
 
     def test_resolution_never_imports_mlflow(
