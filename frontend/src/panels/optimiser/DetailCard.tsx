@@ -10,6 +10,7 @@
 import { Loader2, Save, Upload } from "lucide-react"
 import { MODEL_COLORS } from "../../theme/colors"
 import { formatNumber } from "../../utils/formatValue"
+import type { MlflowLogAvailability } from "../../utils/mlflowDestinations"
 import { isConstraintMet } from "./optimiserHelpers"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -89,7 +90,9 @@ interface DetailCardProps {
   saving: boolean
   logging: boolean
   terminalActionsDisabled?: boolean
-  mlflowAvailable: boolean
+  /** Whether *this node's* destination can accept a log, and why not. */
+  mlflowAvailability: MlflowLogAvailability
+  onConfigureMlflow: () => void
   actionMsg: string | null
 }
 
@@ -103,7 +106,8 @@ export default function DetailCard({
   saving,
   logging,
   terminalActionsDisabled = false,
-  mlflowAvailable,
+  mlflowAvailability,
+  onConfigureMlflow,
   actionMsg,
 }: DetailCardProps) {
   const point = points[selectedIdx]
@@ -195,12 +199,12 @@ export default function DetailCard({
         </button>
         <button
           onClick={onLogMlflow}
-          disabled={actionsDisabled || !mlflowAvailable}
-          title={mlflowAvailable ? undefined : "MLflow is off — open the MLflow chip in the toolbar to configure tracking"}
+          disabled={actionsDisabled || !mlflowAvailability.available}
+          title={mlflowAvailability.available ? undefined : mlflowAvailability.reason}
           className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors disabled:opacity-60"
           style={{
-            background: actionsDisabled || !mlflowAvailable ? "var(--chrome-hover)" : MODEL_COLORS.accentSoft,
-            color: actionsDisabled || !mlflowAvailable ? "var(--text-muted)" : MODEL_COLORS.accent,
+            background: actionsDisabled || !mlflowAvailability.available ? "var(--chrome-hover)" : MODEL_COLORS.accentSoft,
+            color: actionsDisabled || !mlflowAvailability.available ? "var(--text-muted)" : MODEL_COLORS.accent,
             border: `1px solid ${MODEL_COLORS.accentSoft}`,
           }}
         >
@@ -208,6 +212,24 @@ export default function DetailCard({
           Log to MLflow
         </button>
       </div>
+
+      {/* Why this node cannot log, and the one place that fixes it. */}
+      {!mlflowAvailability.available && (
+        <p
+          data-testid="detail-card-mlflow-reason"
+          className="text-[10px]"
+          style={{ color: "var(--text-muted)" }}
+        >
+          {`${mlflowAvailability.reason} `}
+          <button
+            onClick={onConfigureMlflow}
+            className="underline"
+            style={{ color: "var(--text-accent)" }}
+          >
+            Configure
+          </button>
+        </p>
+      )}
 
       {/* Action feedback */}
       {actionMsg && (

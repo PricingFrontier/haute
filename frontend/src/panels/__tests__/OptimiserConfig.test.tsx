@@ -6,6 +6,7 @@ import { GraphProvider } from "../GraphContext"
 import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import type { SimpleNode, SimpleEdge } from "../editors"
+import type { MlflowDestinationEntry, MlflowDestinationKey } from "../../api/types"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 
 // ── Mock API client ──
@@ -63,6 +64,58 @@ vi.mock("../../hooks/useConstraintHandlers", () => ({
     handleConstraintValueChange: mockHandleConstraintValueChange,
   })),
 }))
+
+// ── MLflow inventory helpers ─────────────────────────────────────
+
+type MlflowSlice = ReturnType<typeof useSettingsStore.getState>["mlflow"]
+
+function mlflowEntry(
+  key: MlflowDestinationKey,
+  over: Partial<MlflowDestinationEntry> = {},
+): MlflowDestinationEntry {
+  return {
+    key,
+    configured: true,
+    destination: "",
+    config_source: "env",
+    detail: "",
+    probed: false,
+    ok: false,
+    category: "",
+    ...over,
+  }
+}
+
+const MLFLOW_DATABRICKS = mlflowEntry("databricks", {
+  destination: "databricks://team",
+  probed: true,
+  ok: true,
+})
+const MLFLOW_SERVER = mlflowEntry("server", {
+  destination: "http://mlflow.example:5000",
+  config_source: "toml",
+  probed: true,
+  ok: true,
+})
+const MLFLOW_LOCAL = mlflowEntry("local", {
+  destination: "C:/proj/mlruns",
+  config_source: "default",
+})
+
+/** Default inventory: local only, so nothing probes and auto is local. */
+function setMlflowInventory(over: Partial<MlflowSlice> = {}): void {
+  useSettingsStore.setState({
+    mlflow: {
+      status: "ready",
+      installed: true,
+      importable: true,
+      auto: "local",
+      destinations: [MLFLOW_LOCAL],
+      detail: "",
+      ...over,
+    },
+  })
+}
 
 // ── Default graph fixture ───────────────────────────────────────────
 // Matches the pre-refactor `makeProps` fixture — a single upstream data-source
@@ -222,6 +275,7 @@ beforeEach(() => {
   useSettingsStore.setState({
     openSections: {},
   })
+  setMlflowInventory()
   mockSolveOptimiser.mockReset()
   // Never-resolving promise so tests don't race with the estimate's async
   // settlement — mirrors the ModellingConfig.test.tsx pattern.
@@ -2166,6 +2220,95 @@ describe("OptimiserConfig", () => {
       expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
       fireEvent.blur(input)
       expect(props.componentProps.onUpdate).toHaveBeenCalledWith("frontier_steps", 20)
+    })
+  })
+
+  // ═════════════════════════════════════════════════════════════════
+  // MLflow section
+  // ═════════════════════════════════════════════════════════════════
+
+  describe("MLflow section", () => {
+    const OPTIMISER_NODE: SimpleNode = {
+      id: "opt_1",
+      data: { label: "My Optimiser", description: "", nodeType: "optimiser", config: {} },
+    }
+
+    /** Render with the optimiser node in the graph and the section expanded. */
+    function renderMlflowSection(overrides: MakePropsOverrides = {}) {
+      const made = makeProps({
+        allNodes: [...DEFAULT_GRAPH_NODES, OPTIMISER_NODE],
+        ...overrides,
+      })
+      renderConfig(made)
+      fireEvent.click(screen.getByRole("button", { name: /MLflow Logging/i }))
+      return made.componentProps
+    }
+
+    /** Text anywhere in the panel EXCEPT inside a tooltip. */
+    function proseText(pattern: RegExp) {
+      return screen.queryByText(pattern, { ignore: "[role='tooltip'],script,style" })
+    }
+
+    function tooltipTextOf(ariaLabel: string): string {
+      const icon = screen.getByLabelText(ariaLabel)
+      const anchor = icon.parentElement!
+      fireEvent.mouseEnter(anchor)
+      return within(anchor).getByRole("tooltip", { hidden: true }).textContent ?? ""
+    }
+
+    it("mounts the destination selector and drops the instruction prose", () => {
+      renderMlflowSection()
+      expect(screen.getByRole("radiogroup", { name: "MLflow destination" })).toBeTruthy()
+      expect(proseText(/nothing is logged automatically/i)).toBeNull()
+      expect(proseText(/toolbar/i)).toBeNull()
+    })
+
+    it("names the Databricks default experiment path when the effective destination is Databricks", () => {
+      setMlflowInventory({
+        auto: "databricks",
+        destinations: [MLFLOW_DATABRICKS, MLFLOW_SERVER, MLFLOW_LOCAL],
+      })
+      renderMlflowSection()
+      expect(tooltipTextOf("About the experiment path")).toBe(
+        "Leave blank to use the default: /Shared/haute/My Optimiser",
+      )
+      expect(screen.getByLabelText("MLflow experiment path")).toHaveAttribute(
+        "placeholder",
+        "/Shared/haute/My Optimiser",
+      )
+    })
+
+    it("names the bare node label when the node picks local under the same inventory", () => {
+      setMlflowInventory({
+        auto: "databricks",
+        destinations: [MLFLOW_DATABRICKS, MLFLOW_SERVER, MLFLOW_LOCAL],
+      })
+      renderMlflowSection({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: {},
+          mlflow_destination: "local",
+        },
+      })
+      expect(tooltipTextOf("About the experiment path")).toBe(
+        "Leave blank to use the default: My Optimiser",
+      )
+      expect(screen.getByLabelText("MLflow experiment path")).toHaveAttribute(
+        "placeholder",
+        "My Optimiser",
+      )
+    })
+
+    it("writes an explicit destination choice to the node config", () => {
+      setMlflowInventory({
+        auto: "databricks",
+        destinations: [MLFLOW_DATABRICKS, MLFLOW_SERVER, MLFLOW_LOCAL],
+      })
+      const props = renderMlflowSection()
+      fireEvent.click(screen.getByRole("radio", { name: /Local folder/ }))
+      expect(props.onUpdate).toHaveBeenCalledWith("mlflow_destination", "local")
     })
   })
 })

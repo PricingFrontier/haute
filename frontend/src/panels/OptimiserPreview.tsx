@@ -19,12 +19,22 @@ import {
 } from "../api/client"
 import { formatNumber } from "../utils/formatValue"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
-import useSettingsStore, { useMlflowStatus } from "../stores/useSettingsStore"
+import { useMlflowDestinations } from "../stores/useSettingsStore"
 import useUIStore from "../stores/useUIStore"
 import { MODEL_COLORS } from "../theme/colors"
 import { bandingLevelOrderForOptimiser } from "../utils/banding"
+import { configField } from "../utils/configField"
+import {
+  mlflowLogAvailability,
+  type MlflowLogAvailability,
+} from "../utils/mlflowDestinations"
 import { NODE_TYPES } from "../utils/nodeTypes"
-import type { ApplyOptimiserResponse, FrontierData, OptimiserSolveResult } from "../api/types"
+import type {
+  ApplyOptimiserResponse,
+  FrontierData,
+  MlflowDestinationKey,
+  OptimiserSolveResult,
+} from "../api/types"
 import type { SimpleEdge, SimpleNode } from "./editors"
 import FrontierChart from "./optimiser/FrontierChart"
 import ConvergenceChart from "./optimiser/ConvergenceChart"
@@ -150,8 +160,21 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
   const storeSelectPoint = useNodeResultsStore((s) => s.selectFrontierPoint)
   const storeUpdateAfterSelect = useNodeResultsStore((s) => s.updateFrontierAfterSelect)
 
-  // MLflow availability
-  const mlflowAvailable = useSettingsStore((s) => s.mlflow.status === "connected")
+  // Where this node logs is its own config: the Export tab, the detail card
+  // and the request itself all follow `mlflow_destination` from the node in
+  // the graph — never the workspace's auto pick when the node names a key.
+  const mlflowInventory = useMlflowDestinations()
+  const mlflowDestination = configField(
+    allNodes.find((node) => node.id === nodeId)?.data.config ?? {},
+    "mlflow_destination",
+    "",
+  )
+  const mlflowAvailability = mlflowLogAvailability(mlflowInventory, mlflowDestination)
+  const setMlflowSettingsOpen = useUIStore((s) => s.setMlflowSettingsOpen)
+  const handleConfigureMlflow = useCallback(
+    () => setMlflowSettingsOpen(true),
+    [setMlflowSettingsOpen],
+  )
 
   // Detail card action state
   const [saving, setSaving] = useState(false)
@@ -304,6 +327,8 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
       const res = await logOptimiserToMlflow({
         job_id: jobId,
         ...(selectedIdx != null && frontier ? { point_index: selectedIdx } : {}),
+        // Read at click time, so a switch back to Auto after the solve sends "".
+        destination: mlflowDestination as "" | MlflowDestinationKey,
       })
       const target = res.experiment_name ? ` to ${res.experiment_name}` : ""
       setActionMsg(res.run_url ? `Logged${target}: ${res.run_url}` : `Logged${target} (run ${res.run_id ?? "ok"})`)
@@ -312,7 +337,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
     } finally {
       setLogging(false)
     }
-  }, [selectedIdx, frontier, jobId])
+  }, [selectedIdx, frontier, jobId, mlflowDestination])
 
   const handleLoadResultDetail = useCallback(async () => {
     abortResultDetailRequest()
@@ -423,7 +448,8 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
             saving={saving}
             logging={logging}
             terminalActionsDisabled={terminalDetailBlocksActions}
-            mlflowAvailable={mlflowAvailable}
+            mlflowAvailability={mlflowAvailability}
+            onConfigureMlflow={handleConfigureMlflow}
             actionMsg={actionMsg}
           />
         )}
@@ -461,7 +487,8 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
             saving={saving}
             logging={logging}
             terminalActionsDisabled={terminalDetailBlocksActions}
-            mlflowAvailable={mlflowAvailable}
+            mlflowAvailability={mlflowAvailability}
+            onConfigureMlflow={handleConfigureMlflow}
             actionMsg={actionMsg}
             resultDetail={resultDetail}
           />
@@ -487,7 +514,8 @@ interface FrontierTabProps {
   saving: boolean
   logging: boolean
   terminalActionsDisabled: boolean
-  mlflowAvailable: boolean
+  mlflowAvailability: MlflowLogAvailability
+  onConfigureMlflow: () => void
   actionMsg: string | null
 }
 
@@ -520,7 +548,8 @@ function FrontierTab({
   saving,
   logging,
   terminalActionsDisabled,
-  mlflowAvailable,
+  mlflowAvailability,
+  onConfigureMlflow,
   actionMsg,
 }: FrontierTabProps) {
   const points = frontier?.points ?? EMPTY_FRONTIER_POINTS
@@ -625,7 +654,8 @@ function FrontierTab({
             saving={saving}
             logging={logging}
             terminalActionsDisabled={terminalActionsDisabled}
-            mlflowAvailable={mlflowAvailable}
+            mlflowAvailability={mlflowAvailability}
+            onConfigureMlflow={onConfigureMlflow}
             actionMsg={actionMsg}
           />
         </div>
@@ -661,16 +691,17 @@ function ExportMlflowSection({
   onLogMlflow,
   logging,
   terminalActionBusy,
-  mlflowAvailable,
+  availability,
+  onConfigure,
 }: {
   onLogMlflow: () => void
   logging: boolean
   terminalActionBusy: boolean
-  mlflowAvailable: boolean
+  /** This node's own destination — never some other remote's state. */
+  availability: MlflowLogAvailability
+  onConfigure: () => void
 }) {
-  const { mlflowStatus, mlflowDetail } = useMlflowStatus()
-  const setMlflowSettingsOpen = useUIStore((s) => s.setMlflowSettingsOpen)
-  const disabled = terminalActionBusy || !mlflowAvailable
+  const disabled = terminalActionBusy || !availability.available
   return (
     <div className="space-y-1">
       <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
@@ -679,25 +710,10 @@ function ExportMlflowSection({
       <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
         Log the optimisation result, convergence history, and metadata to MLflow for tracking and comparison.
       </p>
-      {!mlflowAvailable && (
-        <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-          {mlflowStatus === "loading"
-            ? "Checking MLflow…"
-            : `MLflow is off${mlflowDetail ? ` — ${mlflowDetail}` : ""}. `}
-          {mlflowStatus !== "loading" && (
-            <button
-              onClick={() => setMlflowSettingsOpen(true)}
-              className="underline"
-              style={{ color: "var(--text-accent)" }}
-            >
-              Configure MLflow
-            </button>
-          )}
-        </p>
-      )}
       <button
         onClick={onLogMlflow}
         disabled={disabled}
+        title={availability.available ? undefined : availability.reason}
         className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors mt-1.5 disabled:opacity-60"
         style={{
           background: disabled ? "var(--chrome-hover)" : MODEL_COLORS.accentSoft,
@@ -707,6 +723,26 @@ function ExportMlflowSection({
         {logging ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
         Log to MLflow
       </button>
+      <p
+        data-testid="mlflow-export-destination"
+        className="text-[10px]"
+        style={{ color: "var(--text-muted)" }}
+      >
+        {availability.available ? (
+          `Destination: ${availability.label} — ${availability.destination}`
+        ) : (
+          <>
+            {`${availability.reason} `}
+            <button
+              onClick={onConfigure}
+              className="underline"
+              style={{ color: "var(--text-accent)" }}
+            >
+              Configure MLflow
+            </button>
+          </>
+        )}
+      </p>
     </div>
   )
 }
@@ -719,7 +755,8 @@ function ExportTab({
   saving,
   logging,
   terminalActionsDisabled,
-  mlflowAvailable,
+  mlflowAvailability,
+  onConfigureMlflow,
   actionMsg,
   resultDetail,
 }: {
@@ -730,7 +767,8 @@ function ExportTab({
   saving: boolean
   logging: boolean
   terminalActionsDisabled: boolean
-  mlflowAvailable: boolean
+  mlflowAvailability: MlflowLogAvailability
+  onConfigureMlflow: () => void
   actionMsg: string | null
   resultDetail: ResultDetailState
 }) {
@@ -784,7 +822,8 @@ function ExportTab({
         onLogMlflow={onLogMlflow}
         logging={logging}
         terminalActionBusy={terminalActionBusy}
-        mlflowAvailable={mlflowAvailable}
+        availability={mlflowAvailability}
+        onConfigure={onConfigureMlflow}
       />
 
       {actionMsg && (

@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import OptimiserPreview from "../OptimiserPreview"
 import type { OptimiserPreviewData, FrontierData } from "../OptimiserPreview"
-import type { OptimiserSolveResult } from "../../api/types"
+import type { MlflowDestinationEntry, OptimiserSolveResult } from "../../api/types"
+import type { SimpleNode } from "../editors"
+import type { MlflowInventoryState } from "../../utils/mlflowDestinations"
 
 // ── Mocks ────────────────────────────────────────────────────────
 
@@ -39,33 +41,57 @@ vi.mock("../../stores/useNodeResultsStore", () => ({
     }),
 }))
 
-const mlflowMockState = vi.hoisted(() => ({
-  current: {
-    status: "connected",
-    mode: "local",
-    destination: "C:/proj/mlruns",
-    configSource: "default",
+/**
+ * The inventory the preview reads. `base()` is the default workspace: MLflow
+ * installed, local only, so auto is local and every node can log.
+ */
+const mlflowMockState = vi.hoisted(() => {
+  const base = (): MlflowInventoryState => ({
+    status: "ready",
     installed: true,
     importable: true,
-    configured: true,
+    auto: "local",
+    destinations: [
+      {
+        key: "local",
+        configured: true,
+        destination: "C:/proj/mlruns",
+        config_source: "default",
+        detail: "",
+        probed: false,
+        ok: false,
+        category: "",
+      },
+    ],
     detail: "",
-  },
-}))
+  })
+  return { base, current: base() }
+})
 
 vi.mock("../../stores/useSettingsStore", () => ({
   default: (selector: (s: Record<string, unknown>) => unknown) =>
     selector({ mlflow: mlflowMockState.current }),
-  useMlflowStatus: () => ({
-    mlflowStatus: mlflowMockState.current.status === "pending" ? "loading" : mlflowMockState.current.status,
-    mlflowMode: mlflowMockState.current.mode,
-    mlflowDestination: mlflowMockState.current.destination,
-    mlflowConfigSource: mlflowMockState.current.configSource,
-    mlflowInstalled: mlflowMockState.current.installed,
-    mlflowImportable: mlflowMockState.current.importable,
-    mlflowConfigured: mlflowMockState.current.configured,
-    mlflowDetail: mlflowMockState.current.detail,
-  }),
+  useMlflowDestinations: () => mlflowMockState.current,
 }))
+
+const MLFLOW_SERVER_UNCONFIGURED: MlflowDestinationEntry = {
+  key: "server",
+  configured: false,
+  destination: "",
+  config_source: "",
+  detail: "No MLflow server is configured. Set [mlflow] tracking_uri in haute.toml.",
+  probed: false,
+  ok: false,
+  category: "",
+}
+
+/** An optimiser node carrying `config`, as the preview finds it in the graph. */
+function optimiserNode(config: Record<string, unknown> = {}): SimpleNode {
+  return {
+    id: "opt_1",
+    data: { label: "My Optimiser", description: "", nodeType: "optimiser", config },
+  }
+}
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -137,6 +163,7 @@ describe("OptimiserPreview", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    mlflowMockState.current = mlflowMockState.base()
     mockSelectFrontierPointAPI.mockResolvedValue({
       status: "ok",
       total_objective: 1250000,
@@ -819,9 +846,94 @@ describe("OptimiserPreview", () => {
         expect(mockLogOptimiserToMlflow).toHaveBeenCalledWith({
           job_id: "job_123",
           point_index: 0,
+          destination: "",
         })
       })
       expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
+    })
+
+    it("logs to the node's own destination, re-read at click time", async () => {
+      const data = makeData({ frontier: makeFrontier(), selectedPointIndex: 0 })
+      const view = render(
+        <OptimiserPreview
+          data={data}
+          nodeId="opt_1"
+          allNodes={[optimiserNode({ mlflow_destination: "local" })]}
+          edges={[]}
+        />,
+      )
+
+      fireEvent.click(screen.getByText("Log to MLflow"))
+      await waitFor(() => {
+        expect(mockLogOptimiserToMlflow).toHaveBeenLastCalledWith({
+          job_id: "job_123",
+          point_index: 0,
+          destination: "local",
+        })
+      })
+
+      // "Use auto" on the node afterwards: the next log follows the config.
+      view.rerender(
+        <OptimiserPreview
+          data={data}
+          nodeId="opt_1"
+          allNodes={[optimiserNode({})]}
+          edges={[]}
+        />,
+      )
+      fireEvent.click(screen.getByText("Log to MLflow"))
+      await waitFor(() => {
+        expect(mockLogOptimiserToMlflow).toHaveBeenLastCalledWith({
+          job_id: "job_123",
+          point_index: 0,
+          destination: "",
+        })
+      })
+    })
+
+    it("disables the detail card log action with the node's own reason and offers Configure", async () => {
+      mlflowMockState.current = {
+        ...mlflowMockState.base(),
+        destinations: [MLFLOW_SERVER_UNCONFIGURED, ...mlflowMockState.base().destinations],
+      }
+      const { default: useUIStore } = await import("../../stores/useUIStore")
+      useUIStore.setState({ mlflowSettingsOpen: false })
+
+      render(
+        <OptimiserPreview
+          data={makeData({ frontier: makeFrontier(), selectedPointIndex: 0 })}
+          nodeId="opt_1"
+          allNodes={[optimiserNode({ mlflow_destination: "server" })]}
+          edges={[]}
+        />,
+      )
+
+      const logButton = screen.getByRole("button", { name: /Log to MLflow/i })
+      expect(logButton).toBeDisabled()
+      expect(logButton).toHaveAttribute("title", MLFLOW_SERVER_UNCONFIGURED.detail)
+      const reason = screen.getByTestId("detail-card-mlflow-reason")
+      expect(reason).toHaveTextContent(MLFLOW_SERVER_UNCONFIGURED.detail)
+      expect(screen.queryByText(/toolbar/i)).toBeNull()
+
+      fireEvent.click(within(reason).getByRole("button", { name: "Configure" }))
+      expect(useUIStore.getState().mlflowSettingsOpen).toBe(true)
+    })
+
+    it("keeps the detail card log action enabled when only another remote is unconfigured", () => {
+      mlflowMockState.current = {
+        ...mlflowMockState.base(),
+        destinations: [MLFLOW_SERVER_UNCONFIGURED, ...mlflowMockState.base().destinations],
+      }
+      render(
+        <OptimiserPreview
+          data={makeData({ frontier: makeFrontier(), selectedPointIndex: 0 })}
+          nodeId="opt_1"
+          allNodes={[optimiserNode({ mlflow_destination: "local" })]}
+          edges={[]}
+        />,
+      )
+      expect(screen.getByRole("button", { name: /Log to MLflow/i })).toBeEnabled()
+      expect(screen.queryByTestId("detail-card-mlflow-reason")).toBeNull()
     })
 
     it("clicking a scatter point switches locally without a select API call", () => {
@@ -995,28 +1107,48 @@ describe("OptimiserPreview", () => {
       expect(mlflowElements.length).toBeGreaterThanOrEqual(2)
     })
 
+    it("names the node's destination under the Export tab button", () => {
+      renderPreview({ allNodes: [optimiserNode({ mlflow_destination: "local" })] })
+      fireEvent.click(screen.getByText("Export"))
+      expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
+        "Destination: Local folder — C:/proj/mlruns",
+      )
+    })
+
     it("keeps the MLflow action visible but disabled with the reason when off", async () => {
-      const previous = { ...mlflowMockState.current }
       mlflowMockState.current = {
-        ...previous,
+        ...mlflowMockState.base(),
         status: "error",
-        mode: "",
-        destination: "",
-        configured: false,
+        installed: false,
+        importable: false,
+        auto: "",
+        destinations: [],
         detail: "MLflow package is not installed. Install it with: pip install mlflow",
       }
       const { default: useUIStore } = await import("../../stores/useUIStore")
       useUIStore.setState({ mlflowSettingsOpen: false })
-      try {
-        renderPreview()
-        fireEvent.click(screen.getByText("Export"))
-        expect(screen.getByRole("button", { name: /Log to MLflow/i })).toBeDisabled()
-        expect(screen.getByText(/MLflow is off/)).toBeInTheDocument()
-        fireEvent.click(screen.getByRole("button", { name: /configure mlflow/i }))
-        expect(useUIStore.getState().mlflowSettingsOpen).toBe(true)
-      } finally {
-        mlflowMockState.current = previous
+      renderPreview()
+      fireEvent.click(screen.getByText("Export"))
+      expect(screen.getByRole("button", { name: /Log to MLflow/i })).toBeDisabled()
+      expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
+        /MLflow package is not installed/,
+      )
+      expect(screen.queryByText(/toolbar/i)).toBeNull()
+      fireEvent.click(screen.getByRole("button", { name: /configure mlflow/i }))
+      expect(useUIStore.getState().mlflowSettingsOpen).toBe(true)
+    })
+
+    it("disables the Export tab action for the node's own unconfigured remote", () => {
+      mlflowMockState.current = {
+        ...mlflowMockState.base(),
+        destinations: [MLFLOW_SERVER_UNCONFIGURED, ...mlflowMockState.base().destinations],
       }
+      renderPreview({ allNodes: [optimiserNode({ mlflow_destination: "server" })] })
+      fireEvent.click(screen.getByText("Export"))
+      expect(screen.getByRole("button", { name: /Log to MLflow/i })).toBeDisabled()
+      expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
+        MLFLOW_SERVER_UNCONFIGURED.detail,
+      )
     })
 
     it("shows on-demand result detail loading state", async () => {

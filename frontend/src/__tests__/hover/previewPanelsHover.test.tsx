@@ -353,20 +353,21 @@ vi.mock("../../stores/useNodeResultsStore", () => {
 
 vi.mock("../../stores/useSettingsStore", () => {
   const state = {
-      mlflow: {
-        status: "pending",
-        mode: "",
-        destination: "",
-        configSource: "",
-        installed: null,
-        importable: null,
-        configured: null,
-        detail: "",
-      },
+    mlflow: {
+      status: "pending",
+      installed: null,
+      importable: null,
+      auto: "",
+      destinations: [],
+      detail: "",
+    },
   }
   const hook = (selector?: (s: typeof state) => unknown) =>
     selector ? selector(state) : state
-  return { default: hook }
+  return {
+    default: hook,
+    useMlflowDestinations: () => ({ ...state.mlflow, status: "loading" as const }),
+  }
 })
 
 vi.mock("../../stores/useToastStore", () => {
