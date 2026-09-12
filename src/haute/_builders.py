@@ -1000,6 +1000,10 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
         registered_model=registered_model,
         version=config.get("version", "latest"),
         task=config.get("task", "regression"),
+        # Planning loads from the node's own destination, exactly like the
+        # scorer built for it: a node pointed at Local must never reach the
+        # auto backend just to learn its feature columns.
+        destination=str(config.get("mlflow_destination", "") or ""),
     )
     if scoring_model.feature_names:
         referenced = set(scoring_model.feature_names)

@@ -39,7 +39,13 @@ PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
 
 
 def _write_cached_model(tmp_path: Path, run_id: str, artifact_path: str) -> Path:
-    cached = _artifact_cache_path(tmp_path / ".cache" / "models", run_id, artifact_path)
+    from haute._mlflow_utils import resolve_backend
+
+    # The bundler resolves the auto backend for a node without a destination,
+    # so the pre-populated file must sit in that backend's digest partition.
+    cached = _artifact_cache_path(
+        tmp_path / ".cache" / "models", resolve_backend("").digest, run_id, artifact_path
+    )
     cached.parent.mkdir(parents=True, exist_ok=True)
     cached.write_bytes(b"fake model")
     return cached

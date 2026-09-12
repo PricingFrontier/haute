@@ -720,8 +720,7 @@ to a live MLflow tracking server.
   `clear_model_cache(run_id)` clears every backend partition; eviction
   counts run directories across partitions; concurrent loads on different
   backends stay isolated.
-- **Destinations end to end** (its own test module, added with MLF-D03) —
-  against real local file stores while auto resolves to a remote: a training job logged
+- **`tests/test_mlflow_destinations_e2e.py`** — against real local file stores while auto resolves to a remote: a training job logged
   to Local scores through a MODEL_SCORE node pointed at Local; an optimiser
   artifact logged to Local applies through OPTIMISER_APPLY, the deploy
   scorer's request-time optimiser path, and explanation loading, all
