@@ -89,7 +89,9 @@ def test_mlflow_run_discovery_maximum_cardinality_budget(
         search_runs=search.search_runs,
         list_artifacts=artifacts.list_artifacts,
     )
-    monkeypatch.setattr(mlflow_routes, "_ensure_tracking", lambda: (SimpleNamespace(), client))
+    monkeypatch.setattr(
+        mlflow_routes, "_ensure_tracking", lambda destination="": (SimpleNamespace(), client)
+    )
 
     with structlog.testing.capture_logs() as logs:
         started_at = time.perf_counter()
