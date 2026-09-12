@@ -506,8 +506,17 @@ rule, and candidate resolution all pass through — so every consumer (discovery
 probes, logging, exports, loads) is bound before its first Databricks credential
 lookup, cold process included. The pin makes MLflow resolve `databricks://<profile>`
 host **and** token from the profile alone and plain `databricks` from the
-environment pair; an explicit `MLFLOW_ENABLE_DB_SDK=true` in the environment is
-respected and opts out of profile precedence (SDK-only auth flows). Its Unity
+environment pair, and those providers resolve credentials on every request, so a
+repointed `DATABRICKS_HOST` or a rewritten profile is followed by the very next
+request on an existing client (MLflow's SDK path, by contrast, caches its client
+and would keep serving the previous host under a new identity). haute therefore
+supports exactly these two credential forms: when Databricks is configured and the
+environment explicitly sets `MLFLOW_ENABLE_DB_SDK=true`, the Databricks resolver
+raises `MlflowConfigError` naming the variable — the inventory reports the entry
+unconfigured with that reason and the auto rule fails loudly rather than skipping
+past it — and the value is never silently overridden. With no Databricks
+configuration at all the variable is irrelevant and the entry is simply
+unconfigured. Its Unity
 Catalog registry URI retains the same profile as `databricks-uc://<profile>`.
 All tracking consumers share this registry mapping.
 Credential-bearing tracking URIs are internal connection values only: training

@@ -59,15 +59,13 @@
   before any cache lookup. Neither an absent auto value nor the bare
   category key identifies a backend — only the resolved identity does.
   The Databricks host in the identity is the host MLflow's requests will
-  actually target, which depends on the credential path: under haute's
-  default `MLFLOW_ENABLE_DB_SDK` pin (see
-  [modelling](../modelling/low-level.md)) it comes from MLflow's own
-  `get_databricks_host_creds` provider, and under the user's explicit
-  SDK opt-in it comes from the Databricks SDK's resolved configuration
-  for the selected profile (which the SDK resolves environment-first),
-  so identity and request target agree in both modes and repointing the
-  effective workspace under either mode yields a new identity and cache
-  partition. **One backend per operation:** a
+  actually target: MLflow's own per-request `get_databricks_host_creds`
+  provider under haute's `MLFLOW_ENABLE_DB_SDK` pin (see
+  [modelling](../modelling/low-level.md); the SDK path is rejected, so
+  there is exactly one credential path), so identity and request target
+  agree, and repointing the effective workspace yields a new identity and
+  cache partition that the next request on an existing client also
+  follows. **One backend per operation:** a
   load, download, registry lookup, or bundling step resolves the backend
   exactly once and threads that object through
   (`resolve_mlflow_source(backend=...)`, the bundler's registered-model
