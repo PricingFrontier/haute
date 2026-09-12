@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from haute._mlflow_utils import (
+    ResolvedBackend,
     resolve_mlflow_source,
 )
 from haute._mlflow_utils import (
@@ -50,12 +51,21 @@ def mlflow_mocks(tmp_path):
     Yields a namespace with mock_backend, mock_set_uri, mock_download,
     and a helper to write artifact JSON.
     """
+    mock_res_backend = ResolvedBackend(
+        mode="local",
+        tracking_uri="http://localhost:5000",
+        registry_uri="http://localhost:5000",
+        identity="local:http://localhost:5000|registry=http://localhost:5000",
+        digest="0123456789abcdef",
+    )
     with (
         patch("mlflow.artifacts.download_artifacts") as mock_download,
         patch("mlflow.set_tracking_uri") as mock_set_uri,
-        patch("haute.modelling._mlflow_log.resolve_tracking_backend") as mock_backend,
+        patch(
+            "haute._mlflow_utils.resolve_backend",
+            return_value=mock_res_backend,
+        ) as mock_backend,
     ):
-        mock_backend.return_value = ("http://localhost:5000", "local")
 
         def write_artifact(data: dict) -> str:
             path = tmp_path / "optimiser_result.json"
@@ -148,8 +158,14 @@ class TestLoadMlflowOptimiserArtifactRun:
             patch("mlflow.set_tracking_uri"),
             patch("mlflow.tracking.MlflowClient", side_effect=_client_with_required_env),
             patch(
-                "haute.modelling._mlflow_log.resolve_tracking_backend",
-                return_value=("file:///tmp/mlruns", "local"),
+                "haute._mlflow_utils.resolve_backend",
+                return_value=ResolvedBackend(
+                    mode="local",
+                    tracking_uri="file:///tmp/mlruns",
+                    registry_uri="file:///tmp/mlruns",
+                    identity="local:file:///tmp/mlruns|registry=file:///tmp/mlruns",
+                    digest="0123456789abcdef",
+                ),
             ),
         ):
             resolve_mlflow_source(source_type="run", run_id="run_abc123")
@@ -243,7 +259,7 @@ class TestLoadMlflowOptimiserArtifactRegistered:
             run_id="run_1",
             tracking_uri="http://explicit:5000",
         )
-        mlflow_mocks.backend.assert_not_called()
+        mlflow_mocks.backend.assert_called_once()
 
 
 # ===========================================================================

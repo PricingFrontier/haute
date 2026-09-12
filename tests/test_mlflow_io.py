@@ -55,9 +55,17 @@ def mock_mlflow_env():
             "mlflow.tracking": mock_mlflow_tracking,
         },
     )
+    from haute._mlflow_utils import ResolvedBackend
+
     resolve_patch = patch(
-        "haute.modelling._mlflow_log.resolve_tracking_backend",
-        return_value=("file:///mlruns", "local"),
+        "haute._mlflow_utils.resolve_backend",
+        return_value=ResolvedBackend(
+            mode="local",
+            tracking_uri="file:///mlruns",
+            registry_uri="file:///mlruns",
+            identity="local:mlruns|registry=file:///mlruns",
+            digest="0123456789abcdef",
+        ),
     )
     return mock_mlflow, mock_client_instance, modules_patch, resolve_patch
 
@@ -1760,7 +1768,7 @@ class TestLoadMlflowModelFastCache:
         with (
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("abc123", "", MagicMock(), MagicMock()),
+                return_value=("abc123", "", MagicMock(), MagicMock(), MagicMock()),
             ),
             patch(
                 "haute._mlflow_io._find_model_artifact",
@@ -1811,7 +1819,7 @@ class TestLoadMlflowModelRetry:
         with (
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run1", "", MagicMock(), MagicMock()),
+                return_value=("run1", "", MagicMock(), MagicMock(), MagicMock()),
             ),
             patch(
                 "haute._mlflow_io._resolve_artifact_local",
@@ -1852,7 +1860,7 @@ class TestLoadMlflowModelRetry:
         with (
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run2", "", MagicMock(), MagicMock()),
+                return_value=("run2", "", MagicMock(), MagicMock(), MagicMock()),
             ),
             patch(
                 "haute._mlflow_io._resolve_artifact_local",
@@ -1890,7 +1898,7 @@ class TestLoadMlflowModelPyfunc:
         with (
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run1", "", MagicMock(), MagicMock()),
+                return_value=("run1", "", MagicMock(), MagicMock(), MagicMock()),
             ),
             patch("haute._mlflow_io._load_pyfunc_model", return_value=fake_pyfunc),
         ):
@@ -1922,7 +1930,7 @@ class TestLoadMlflowModelAutoDiscover:
         with (
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run1", "", MagicMock(), mock_client),
+                return_value=("run1", "", MagicMock(), mock_client, MagicMock()),
             ),
             patch(
                 "haute._mlflow_io._find_model_artifact",
@@ -1957,7 +1965,7 @@ class TestLoadMlflowModelAutoDiscover:
         with (
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run1", "", MagicMock(), mock_client),
+                return_value=("run1", "", MagicMock(), mock_client, MagicMock()),
             ),
             patch(
                 "haute._mlflow_io._find_model_artifact",

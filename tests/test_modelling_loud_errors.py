@@ -212,7 +212,7 @@ class TestArtifactLoadCorruptionRaises:
         with (
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run_x", "", MagicMock(), MagicMock()),
+                return_value=("run_x", "", MagicMock(), MagicMock(), MagicMock()),
             ),
             patch(
                 "haute._mlflow_io._resolve_artifact_local",
@@ -267,7 +267,7 @@ class TestArtifactLoadCorruptionRaises:
         with (
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run_y", "", MagicMock(), MagicMock()),
+                return_value=("run_y", "", MagicMock(), MagicMock(), MagicMock()),
             ),
             patch(
                 "haute._mlflow_io._resolve_artifact_local",
@@ -306,7 +306,7 @@ class TestArtifactLoadCorruptionRaises:
         with (
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run_rs", "", MagicMock(), MagicMock()),
+                return_value=("run_rs", "", MagicMock(), MagicMock(), MagicMock()),
             ),
             patch(
                 "haute._mlflow_io._resolve_artifact_local",
@@ -343,7 +343,7 @@ class TestArtifactLoadCorruptionRaises:
         with (
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run_p", "", MagicMock(), MagicMock()),
+                return_value=("run_p", "", MagicMock(), MagicMock(), MagicMock()),
             ),
             patch(
                 "haute._mlflow_io._resolve_artifact_local",

@@ -1113,12 +1113,11 @@ def load_mlflow_model(
                     # (e.g. a concurrent corrupt-retry deleted it).  Fall
                     # through to the full resolve + re-download path below.
 
-    resolved_run_id, resolved_version, mlflow_mod, client = resolve_mlflow_source(
+    resolved_run_id, resolved_version, mlflow_mod, client, _backend = resolve_mlflow_source(
         source_type=source_type,
         run_id=run_id,
         registered_model=registered_model,
         version=version,
-        tracking_uri=tracking_uri,
     )
     resolved_artifact = artifact_path
 

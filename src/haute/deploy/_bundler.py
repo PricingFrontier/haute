@@ -399,7 +399,7 @@ def _resolve_registered_model(
     from haute._mlflow_io import _find_model_artifact
     from haute._mlflow_utils import resolve_mlflow_source
 
-    run_id, resolved_version, _mlflow, client = resolve_mlflow_source(
+    run_id, resolved_version, _mlflow, client, _backend = resolve_mlflow_source(
         source_type="registered",
         registered_model=registered_model,
         version=version,

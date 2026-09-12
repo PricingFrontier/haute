@@ -3,22 +3,40 @@
 Eliminates duplication of:
   - ``resolve_version()``: resolve "latest" to a concrete version number
   - ``search_versions()``: safely quote model name and search
+  - ``ResolvedBackend``: once-per-load resolution of a destination key (or auto)
+    to a concrete tracking URI, registry URI, secret-free identity, and filesystem digest
+  - ``backend_identity()``: secret-free identity derivation per backend
+  - ``resolve_backend()``: destination resolution to a ``ResolvedBackend``
   - ``resolve_mlflow_source()``: import mlflow, create a destination-pinned client,
-    and resolve a source_type/run_id/registered_model to a concrete run_id
+    resolve a source_type/run_id/registered_model to a concrete run_id, and return
+    the ``ResolvedBackend`` alongside the client
+
+Databricks Profile Binding:
+  MLflow 3.15 defaults ``MLFLOW_ENABLE_DB_SDK`` to true and builds a ``WorkspaceClient``,
+  which resolves environment variables before profile files and caches the client across
+  repoints. To make profile selection take precedence over environment variables and ensure
+  requests follow repointed workspaces without cache clearing, haute binds Databricks
+  credentials only through MLflow's per-request profile and host-token providers.
+  ``pin_databricks_profile_binding()`` sets ``MLFLOW_ENABLE_DB_SDK=false``.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from mlflow.entities.model_registry import ModelVersion
     from mlflow.tracking import MlflowClient
+
+    from haute.modelling._mlflow_settings import TrackingConfig
 
 
 _FLUENT_LOCK = threading.RLock()
@@ -138,24 +156,120 @@ def allow_file_store_if_local(tracking_uri: str, backend: str = "") -> None:
         os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
 
 
+@dataclass(frozen=True)
+class ResolvedBackend:
+    mode: str
+    tracking_uri: str  # connection value; may carry env credentials; never logged or persisted
+    registry_uri: str
+    identity: str  # secret-free
+    digest: str  # sha256(identity)[:16], filesystem-safe
+
+
+def backend_identity(config: TrackingConfig) -> str:
+    """Derive the secret-free identity string for a resolved tracking configuration.
+
+    - local: ``local:<canonical absolute folder>``
+    - server: ``server:<redacted endpoint>``
+    - databricks: ``databricks:<effective host>|profile=<profile or empty>``
+    All suffixed with ``|registry=<redacted registry URI>``.
+    """
+    from haute.errors import MlflowConfigError
+    from haute.modelling._mlflow_settings import redact_uri
+
+    if config.mode == "local":
+        canonical = os.path.normcase(os.path.normpath(str(Path(config.destination).resolve())))
+        prefix = f"local:{canonical}"
+    elif config.mode == "server":
+        prefix = f"server:{redact_uri(config.tracking_uri).rstrip('/')}"
+    elif config.mode == "databricks":
+        tracking_uri = config.tracking_uri
+        profile = (
+            tracking_uri[len("databricks://") :] if tracking_uri.startswith("databricks://") else ""
+        )
+        from mlflow.utils.databricks_utils import get_databricks_host_creds
+
+        try:
+            host_creds = get_databricks_host_creds(tracking_uri)
+            host = host_creds.host if host_creds else ""
+        except Exception:
+            if profile:
+                raise MlflowConfigError(
+                    f"Databricks profile {profile!r} could not be loaded "
+                    "from the Databricks CLI configuration."
+                ) from None
+            raise MlflowConfigError(
+                "Databricks host could not be resolved from the environment."
+            ) from None
+
+        if not host:
+            if profile:
+                raise MlflowConfigError(
+                    f"Databricks profile {profile!r} could not be loaded "
+                    "from the Databricks CLI configuration."
+                )
+            raise MlflowConfigError("Databricks host could not be resolved from the environment.")
+
+        prefix = f"databricks:{host.rstrip('/')}|profile={profile}"
+    else:
+        raise MlflowConfigError(
+            f"Unknown MLflow destination mode {config.mode!r}; "
+            "expected databricks, server, or local."
+        )
+
+    registry_part = redact_uri(registry_uri_for_tracking(config.tracking_uri))
+    return f"{prefix}|registry={registry_part}"
+
+
+def resolve_backend(destination: str = "", project_root: Path | None = None) -> ResolvedBackend:
+    """Resolve a destination key (or '' for auto) to a ResolvedBackend.
+
+    Raises:
+        MlflowConfigError: If the destination cannot be resolved or is invalid.
+    """
+    from haute.modelling._mlflow_settings import (
+        resolve_destination,
+        resolve_tracking_config,
+        validate_destination_key,
+    )
+
+    if destination:
+        validate_destination_key(destination)
+        config = resolve_destination(destination, project_root)
+    else:
+        config = resolve_tracking_config(project_root)
+
+    identity = backend_identity(config)
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    registry_uri = registry_uri_for_tracking(config.tracking_uri)
+    return ResolvedBackend(
+        mode=config.mode,
+        tracking_uri=config.tracking_uri,
+        registry_uri=registry_uri,
+        identity=identity,
+        digest=digest,
+    )
+
+
 def resolve_mlflow_source(
     *,
     source_type: str,
     run_id: str = "",
     registered_model: str = "",
     version: str = "",
-    tracking_uri: str = "",
-) -> tuple[str, str, ModuleType, Any]:
+    destination: str = "",
+    backend: ResolvedBackend | None = None,
+) -> tuple[str, str, ModuleType, Any, ResolvedBackend]:
     """Import mlflow, pin a client to the destination, and resolve a model source.
 
     Handles the boilerplate shared across ``_mlflow_io``, ``_optimiser_io``,
     and ``deploy/_bundler``:
 
     1. Import ``mlflow`` (with a friendly :class:`ImportError`).
-    2. Resolve the tracking URI without changing fluent state.
-    3. Create an :class:`~mlflow.tracking.MlflowClient` with explicit tracking
-       and registry URIs.
-    4. Map *source_type* (``"registered"`` or ``"run"``) to a concrete
+    2. Resolve the backend (or use the supplied ``backend`` without re-resolving).
+    3. Ensure file store is allowed if the backend is local.
+    4. Create an :class:`~mlflow.tracking.MlflowClient` with explicit tracking
+       and registry URIs pinned to the backend.
+    5. Map *source_type* (``"registered"`` or ``"run"``) to a concrete
        ``run_id`` and ``version``.
 
     Args:
@@ -164,18 +278,25 @@ def resolve_mlflow_source(
         registered_model: Registered model name (required when
             *source_type* is ``"registered"``).
         version: Model version (``"1"``, ``"latest"``, etc.).
-        tracking_uri: Override tracking URI; auto-detected if empty.
+        destination: Destination key (``"databricks"``, ``"server"``, ``"local"``,
+            or ``""`` for auto). Must be ``""`` if *backend* is provided.
+        backend: Pre-resolved :class:`ResolvedBackend`. If provided,
+            *destination* must be ``""``.
 
     Returns:
-        ``(resolved_run_id, resolved_version, mlflow_module, client)``
-        where *mlflow_module* is the imported ``mlflow`` package and
-        *client* is an :class:`~mlflow.tracking.MlflowClient`.
+        ``(resolved_run_id, resolved_version, mlflow_module, client, backend)``
+        where *mlflow_module* is the imported ``mlflow`` package,
+        *client* is an :class:`~mlflow.tracking.MlflowClient`, and
+        *backend* is the :class:`ResolvedBackend`.
 
     Raises:
         ImportError: If ``mlflow`` is not installed.
         ValueError: If required arguments are missing or *source_type* is
-            invalid.
+            invalid, or both *backend* and *destination* are given.
     """
+    if backend is not None and destination != "":
+        raise ValueError("Cannot specify both 'backend' and a non-empty 'destination'")
+
     try:
         import mlflow
     except ImportError:
@@ -183,15 +304,13 @@ def resolve_mlflow_source(
 
     from mlflow.tracking import MlflowClient
 
-    from haute.modelling._mlflow_log import resolve_tracking_backend
+    if backend is None:
+        backend = resolve_backend(destination)
 
-    backend = ""
-    if not tracking_uri:
-        tracking_uri, backend = resolve_tracking_backend()
-    allow_file_store_if_local(tracking_uri, backend)
+    allow_file_store_if_local(backend.tracking_uri, backend.mode)
     client = MlflowClient(
-        tracking_uri=tracking_uri,
-        registry_uri=registry_uri_for_tracking(tracking_uri),
+        tracking_uri=backend.tracking_uri,
+        registry_uri=backend.registry_uri,
     )
 
     resolved_run_id = run_id
@@ -209,4 +328,4 @@ def resolve_mlflow_source(
     else:
         raise ValueError(f"Invalid sourceType: {source_type!r}. Expected 'run' or 'registered'.")
 
-    return resolved_run_id, resolved_version, mlflow, client
+    return resolved_run_id, resolved_version, mlflow, client, backend

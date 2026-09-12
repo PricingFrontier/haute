@@ -138,12 +138,11 @@ def load_mlflow_optimiser_artifact(
     Returns:
         Parsed artifact dict (same shape as ``load_optimiser_artifact``).
     """
-    resolved_run_id, resolved_version, _mlflow, client = resolve_mlflow_source(
+    resolved_run_id, resolved_version, _mlflow, client, _backend = resolve_mlflow_source(
         source_type=source_type,
         run_id=run_id,
         registered_model=registered_model,
         version=version,
-        tracking_uri=tracking_uri,
     )
 
     info_before = _load_mlflow_cached.cache_info()

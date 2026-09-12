@@ -378,7 +378,7 @@ class TestLoadMlflowOptimiserArtifactDeepCopy:
             patch("haute._optimiser_io.resolve_mlflow_source") as mock_resolve,
             patch("mlflow.artifacts.download_artifacts", return_value=str(artifact_path)),
         ):
-            mock_resolve.return_value = ("run_id_1", "1", MagicMock(), MagicMock())
+            mock_resolve.return_value = ("run_id_1", "1", MagicMock(), MagicMock(), MagicMock())
 
             r1 = load_mlflow_optimiser_artifact(source_type="run", run_id="run_id_1")
             r1["mode"] = "MUTATED"

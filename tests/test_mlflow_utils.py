@@ -6,17 +6,22 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from haute._mlflow_utils import (
+    ResolvedBackend,
     mlflow_fluent_operation,
+    resolve_backend,
+    resolve_mlflow_source,
     resolve_version,
     search_versions,
     set_tracking_uri_preserving_env,
     tracking_uri_from_environment,
 )
+from haute.errors import MlflowConfigError
 
 
 @pytest.mark.parametrize("original_uri", [None, "https://user:secret@example.invalid/mlflow"])
@@ -135,6 +140,8 @@ def test_source_resolution_uses_selected_registry_without_changing_globals(
     from haute._sandbox import set_project_root
     from haute.modelling._mlflow_settings import MlflowSettings, save_mlflow_settings
 
+    for v in ("DATABRICKS_HOST", "DATABRICKS_TOKEN", "MLFLOW_TRACKING_URI"):
+        monkeypatch.delenv(v, raising=False)
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
     monkeypatch.setattr("haute._mlflow_io._disk_cache_root", lambda: tmp_path / "model-cache")
     set_project_root(tmp_path)
@@ -156,8 +163,8 @@ def test_source_resolution_uses_selected_registry_without_changing_globals(
     with mlflow_fluent_operation():
         mlflow.set_tracking_uri(records["a"][0])
         mlflow.set_registry_uri(records["a"][0])
-        save_mlflow_settings(MlflowSettings(mode="local", folder="b"), tmp_path)
-        run_id, _, _, client = resolve_mlflow_source(
+        save_mlflow_settings(MlflowSettings(folder="b"), tmp_path)
+        run_id, _, _, client, _backend = resolve_mlflow_source(
             source_type="registered",
             registered_model="pricing-model",
             version="latest",
@@ -256,3 +263,334 @@ class TestResolveVersion:
         client.search_model_versions.return_value = [v9, v10]
         result = resolve_version(client, "model", "latest")
         assert result == "10"
+
+
+# ---------------------------------------------------------------------------
+# resolve_backend
+# ---------------------------------------------------------------------------
+
+
+class TestResolveBackend:
+    def test_local_identity_is_canonical_folder(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._sandbox import set_project_root
+
+        set_project_root(tmp_path)
+        for v in ("DATABRICKS_HOST", "DATABRICKS_TOKEN", "MLFLOW_TRACKING_URI"):
+            monkeypatch.delenv(v, raising=False)
+        backend = resolve_backend("local")
+        assert backend.mode == "local"
+        assert backend.identity.startswith("local:")
+        assert backend.identity.endswith("|registry=" + (tmp_path / "mlruns").as_uri())
+        assert len(backend.digest) == 16 and all(c in "0123456789abcdef" for c in backend.digest)
+
+    def test_two_local_folders_have_distinct_digests(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._sandbox import set_project_root
+        from haute.modelling._mlflow_settings import MlflowSettings, save_mlflow_settings
+
+        for v in ("DATABRICKS_HOST", "DATABRICKS_TOKEN", "MLFLOW_TRACKING_URI"):
+            monkeypatch.delenv(v, raising=False)
+        set_project_root(tmp_path)
+        save_mlflow_settings(MlflowSettings(folder="folder_a"), tmp_path)
+        backend_a = resolve_backend("local")
+        save_mlflow_settings(MlflowSettings(folder="folder_b"), tmp_path)
+        backend_b = resolve_backend("local")
+        assert backend_a.digest != backend_b.digest
+        assert backend_a.identity != backend_b.identity
+
+    def test_server_identity_redacts_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "https://alice:secret@mlflow.example.com/")
+        backend = resolve_backend("server")
+        assert backend.tracking_uri == "https://alice:secret@mlflow.example.com/"
+        assert "secret" not in backend.identity
+        assert (
+            backend.identity
+            == "server:https://mlflow.example.com|registry=https://mlflow.example.com/"
+        )
+
+    def test_databricks_profile_identity_includes_effective_host(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from unittest.mock import patch
+
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+        creds = MagicMock(host="https://adb-1.example.net")
+        with patch("mlflow.utils.databricks_utils.get_databricks_host_creds", return_value=creds):
+            backend = resolve_backend("databricks")
+        assert (
+            backend.identity
+            == "databricks:https://adb-1.example.net|profile=team|registry=databricks-uc://team"
+        )
+        assert backend.registry_uri == "databricks-uc://team"
+
+    def test_repointed_profile_changes_identity(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import patch
+
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+        with patch(
+            "mlflow.utils.databricks_utils.get_databricks_host_creds",
+            return_value=MagicMock(host="https://adb-1.example.net"),
+        ):
+            backend_1 = resolve_backend("databricks")
+        with patch(
+            "mlflow.utils.databricks_utils.get_databricks_host_creds",
+            return_value=MagicMock(host="https://adb-2.example.net"),
+        ):
+            backend_2 = resolve_backend("databricks")
+        assert backend_1.identity != backend_2.identity
+        assert backend_1.digest != backend_2.digest
+
+    def test_profile_beats_conflicting_environment_credentials_for_identity_and_requests(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from unittest.mock import patch
+
+        import requests
+        from mlflow.tracking import MlflowClient
+
+        cfg = tmp_path / "databrickscfg"
+        cfg.write_text(
+            "[team]\nhost = https://profile-host.example.net\ntoken = profile-token-value\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(cfg))
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+        monkeypatch.setenv("DATABRICKS_HOST", "https://env-host.example.net")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "env-token-value")
+        monkeypatch.delenv("MLFLOW_ENABLE_DB_SDK", raising=False)
+        backend = resolve_backend("databricks")
+        assert backend.identity.startswith(
+            "databricks:https://profile-host.example.net|profile=team"
+        )
+        assert os.environ["MLFLOW_ENABLE_DB_SDK"] == "false"
+
+        captured: dict[str, Any] = {}
+
+        def fake_request(self: Any, method: str, url: str, **kwargs: Any) -> requests.Response:
+            captured["url"] = url
+            captured["headers"] = dict(kwargs.get("headers") or {})
+            resp = requests.Response()
+            resp.status_code = 200
+            resp._content = b'{"experiments": []}'
+            resp.url = url
+            return resp
+
+        with patch("requests.Session.request", new=fake_request):
+            MlflowClient(
+                tracking_uri=backend.tracking_uri, registry_uri=backend.registry_uri
+            ).search_experiments(max_results=1)
+        assert captured["url"].startswith("https://profile-host.example.net/")
+        assert captured["headers"].get("Authorization") == "Bearer profile-token-value"
+        assert "env-token-value" not in repr(captured)
+
+    def test_sdk_mode_is_rejected_before_any_identity_is_minted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+        monkeypatch.setenv("MLFLOW_ENABLE_DB_SDK", "true")
+        with pytest.raises(MlflowConfigError, match="MLFLOW_ENABLE_DB_SDK"):
+            resolve_backend("databricks")
+        assert os.environ["MLFLOW_ENABLE_DB_SDK"] == "true"
+
+    @pytest.mark.parametrize("form", ["profile", "pair"])
+    def test_repointed_workspace_changes_identity_and_request_target_without_cache_clear(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, form: str
+    ) -> None:
+        """Two requests on ONE MlflowClient object, MLflow caches untouched, across a repoint."""
+        from unittest.mock import patch
+
+        import requests
+        from mlflow.tracking import MlflowClient
+
+        monkeypatch.delenv("MLFLOW_ENABLE_DB_SDK", raising=False)
+        captured: list[dict[str, Any]] = []
+
+        def fake_request(self: Any, method: str, url: str, **kwargs: Any) -> requests.Response:
+            captured.append(
+                {
+                    "url": url,
+                    "auth": dict(kwargs.get("headers") or {}).get("Authorization"),
+                }
+            )
+            resp = requests.Response()
+            resp.status_code = 200
+            resp._content = b'{"experiments": []}'
+            resp.url = url
+            return resp
+
+        cfg = tmp_path / "databrickscfg"
+        if form == "pair":
+            monkeypatch.setenv("DATABRICKS_HOST", "https://host-a.example.net")
+            monkeypatch.setenv("DATABRICKS_TOKEN", "token-a")
+            monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks")
+        else:
+            cfg.write_text(
+                "[team]\nhost = https://host-a.example.net\ntoken = token-a\n", encoding="utf-8"
+            )
+            monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(cfg))
+            monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+            monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+            monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+
+        backend_a = resolve_backend("databricks")
+        client = MlflowClient(
+            tracking_uri=backend_a.tracking_uri, registry_uri=backend_a.registry_uri
+        )
+        with patch("requests.Session.request", new=fake_request):
+            client.search_experiments(max_results=1)
+            assert captured[-1]["url"].startswith(
+                backend_a.identity.split("|")[0][len("databricks:") :]
+            )
+            assert captured[-1]["auth"] == "Bearer token-a"
+
+            # Repoint: pair -> set DATABRICKS_HOST/TOKEN = B; profile -> rewrite cfg file
+            if form == "pair":
+                monkeypatch.setenv("DATABRICKS_HOST", "https://host-b.example.net")
+                monkeypatch.setenv("DATABRICKS_TOKEN", "token-b")
+            else:
+                cfg.write_text(
+                    "[team]\nhost = https://host-b.example.net\ntoken = token-b\n", encoding="utf-8"
+                )
+
+            backend_b = resolve_backend("databricks")
+            client.search_experiments(max_results=1)  # same client object
+            assert backend_b.digest != backend_a.digest
+            assert captured[-1]["url"].startswith("https://host-b.example.net/")
+            assert backend_b.identity.startswith("databricks:https://host-b.example.net|")
+            assert captured[-1]["auth"] == "Bearer token-b"
+
+    def test_broken_profile_fails_secret_free(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import patch
+
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://missing")
+        with patch(
+            "mlflow.utils.databricks_utils.get_databricks_host_creds",
+            side_effect=RuntimeError("token dapi-secret"),
+        ):
+            with pytest.raises(MlflowConfigError) as excinfo:
+                resolve_backend("databricks")
+        assert "missing" in str(excinfo.value) and "dapi-secret" not in str(excinfo.value)
+
+    def test_plain_databricks_identity_uses_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import patch
+
+        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "token-val")
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.delenv("MLFLOW_ENABLE_DB_SDK", raising=False)
+        with patch(
+            "mlflow.utils.databricks_utils.get_databricks_host_creds",
+            return_value=MagicMock(host="https://adb.example.net"),
+        ):
+            backend = resolve_backend("databricks")
+        assert (
+            backend.identity == "databricks:https://adb.example.net|profile=|registry=databricks-uc"
+        )
+
+    def test_auto_follows_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from unittest.mock import patch
+
+        from haute._sandbox import set_project_root
+
+        set_project_root(tmp_path)
+        for v in ("DATABRICKS_HOST", "DATABRICKS_TOKEN", "MLFLOW_TRACKING_URI"):
+            monkeypatch.delenv(v, raising=False)
+        backend = resolve_backend("")
+        assert backend.mode == "local"
+
+        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "token-val")
+        monkeypatch.delenv("MLFLOW_ENABLE_DB_SDK", raising=False)
+        with patch(
+            "mlflow.utils.databricks_utils.get_databricks_host_creds",
+            return_value=MagicMock(host="https://adb.example.net"),
+        ):
+            backend_db = resolve_backend("")
+        assert backend_db.mode == "databricks"
+
+    def test_unknown_destination_rejected(self) -> None:
+        with pytest.raises(MlflowConfigError, match="databricks, server, or local"):
+            resolve_backend("managed")
+
+
+# ---------------------------------------------------------------------------
+# resolve_mlflow_source destination-aware
+# ---------------------------------------------------------------------------
+
+
+class TestResolveMlflowSourceDestination:
+    def test_returns_backend_and_pins_client(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from unittest.mock import patch
+
+        from haute._sandbox import set_project_root
+
+        set_project_root(tmp_path)
+        for v in ("DATABRICKS_HOST", "DATABRICKS_TOKEN", "MLFLOW_TRACKING_URI"):
+            monkeypatch.delenv(v, raising=False)
+        with patch("mlflow.tracking.MlflowClient") as client_cls:
+            res = resolve_mlflow_source(source_type="run", run_id="run-123")
+            assert len(res) == 5
+            run_id, version, mod, client, backend = res
+            assert run_id == "run-123"
+            assert backend.mode == "local"
+            assert client_cls.call_args.kwargs["tracking_uri"] == backend.tracking_uri
+            assert client_cls.call_args.kwargs["registry_uri"] == backend.registry_uri
+
+    def test_explicit_destination_overrides_auto(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from unittest.mock import patch
+
+        from haute._sandbox import set_project_root
+
+        set_project_root(tmp_path)
+        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "token-val")
+        monkeypatch.delenv("MLFLOW_ENABLE_DB_SDK", raising=False)
+        with patch("mlflow.tracking.MlflowClient"):
+            _, _, _, _, backend = resolve_mlflow_source(
+                source_type="run", run_id="run-123", destination="local"
+            )
+            assert backend.mode == "local"
+
+    def test_prepared_backend_is_used_without_re_resolution(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from unittest.mock import patch
+
+        prepared = ResolvedBackend(
+            mode="local",
+            tracking_uri="file:///test",
+            registry_uri="file:///test",
+            identity="local:test|registry=file:///test",
+            digest="0123456789abcdef",
+        )
+        with (
+            patch("haute._mlflow_utils.resolve_backend") as mock_res,
+            patch("mlflow.tracking.MlflowClient"),
+        ):
+            _, _, _, _, backend = resolve_mlflow_source(
+                source_type="run", run_id="run-123", backend=prepared
+            )
+            mock_res.assert_not_called()
+            assert backend is prepared
+
+    def test_backend_and_destination_together_is_an_error(self) -> None:
+        prepared = ResolvedBackend(
+            mode="local",
+            tracking_uri="file:///test",
+            registry_uri="file:///test",
+            identity="local:test|registry=file:///test",
+            digest="0123456789abcdef",
+        )
+        with pytest.raises(ValueError, match="destination"):
+            resolve_mlflow_source(
+                source_type="run", run_id="run-123", destination="local", backend=prepared
+            )
