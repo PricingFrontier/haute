@@ -833,6 +833,7 @@ def _score_graph_lazy(
                 _rid = config.get("run_id", "")
                 _rm = config.get("registered_model", "")
                 _ver = config.get("version", "latest")
+                _dest = str(config.get("mlflow_destination", "") or "")
 
                 def optimiser_apply_mlflow_fn(
                     *dfs: _Frame,
@@ -840,6 +841,7 @@ def _score_graph_lazy(
                     _run_id: str = _rid,
                     _reg_model: str = _rm,
                     _opt_ver: str = _ver,
+                    _destination: str = _dest,
                     _version_col: str = _vcol,
                     _optimised_value_col: str = _opt_col,
                     _rb_input: str = _ratebook_input,
@@ -853,6 +855,7 @@ def _score_graph_lazy(
                         run_id=_run_id,
                         registered_model=_reg_model,
                         version=_opt_ver,
+                        destination=_destination,
                     )
                     lf = _select_optimiser_apply_input(
                         dfs,

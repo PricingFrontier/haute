@@ -153,6 +153,7 @@ class TestBuildConfig:
                 "source_type": "registered",
                 "registered_model": "my_opt_model",
                 "version": "3",
+                "mlflow_destination": "local",
             },
             body="",
             param_names=["df"],
@@ -160,6 +161,7 @@ class TestBuildConfig:
         assert config["sourceType"] == "registered"
         assert config["registered_model"] == "my_opt_model"
         assert config["version"] == "3"
+        assert config["mlflow_destination"] == "local"
 
     def test_build_config_ratebook_input(self):
         config = _build_node_config(
@@ -174,6 +176,33 @@ class TestBuildConfig:
             param_names=["scored_quotes", "banded_quotes"],
         )
         assert config["ratebook_input"] == "banded_quotes"
+
+
+class TestApplyFromConfigDestination:
+    def test_apply_from_config_forwards_destination(self):
+        """The node's ``mlflow_destination`` reaches the MLflow artifact loader."""
+        from haute._node_apply import apply_optimiser_apply_from_config
+
+        lf = pl.DataFrame({"x": [1.0]}).lazy()
+        with (
+            patch(
+                "haute._optimiser_io.load_mlflow_optimiser_artifact",
+                return_value=_make_online_artifact(),
+            ) as mock_load,
+            patch("haute._builders._dispatch_apply", return_value=lf) as mock_dispatch,
+        ):
+            apply_optimiser_apply_from_config(
+                lf,
+                config={
+                    "sourceType": "run",
+                    "run_id": "r",
+                    "mlflow_destination": "local",
+                },
+                source_names=["scored"],
+            )
+
+        mock_dispatch.assert_called_once()
+        assert mock_load.call_args.kwargs["destination"] == "local"
 
 
 # ---------------------------------------------------------------------------

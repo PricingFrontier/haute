@@ -2554,6 +2554,76 @@ class TestScoreGraphOptimiserApplyRemap:
         mock_dispatch.assert_called_once()
         assert mock_dispatch.call_args.args[3] == "selected_factor"
 
+    def test_optimiser_apply_mlflow_forwards_destination(self):
+        """The node's ``mlflow_destination`` reaches the request-time loader."""
+        from haute.deploy._scorer import score_graph
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "opt",
+                            "nodeType": "optimiserApply",
+                            "config": {
+                                "sourceType": "run",
+                                "run_id": "run_abc",
+                                "version_column": "__opt_v__",
+                                "optimised_value_column": "selected_factor",
+                                "mlflow_destination": "local",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config(["x", "selected_factor", "__opt_v__"]),
+                        },
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "opt",
+                        "sourceHandle": "src",
+                    },
+                    {"id": "e2", "source": "opt", "target": "out"},
+                ],
+            }
+        )
+
+        mock_dispatch_result = pl.DataFrame(
+            {"x": [1.0], "selected_factor": [1.1], "__opt_v__": ["v1"]}
+        ).lazy()
+
+        with (
+            patch(
+                "haute._optimiser_io.load_mlflow_optimiser_artifact",
+                return_value=MagicMock(),
+            ) as mock_load,
+            patch("haute._builders._dispatch_apply", return_value=mock_dispatch_result),
+        ):
+            score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"x": [1.0]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+            )
+
+        assert mock_load.call_args.kwargs["destination"] == "local"
+
 
 class TestScoreGraphModelScoreRemap:
     """Tests for modelScore remapping in score_graph."""

@@ -6,7 +6,10 @@ containing lambdas, factor tables, and version metadata).
 Supports two resolution paths:
   - **File**: Load directly from a local JSON path.
   - **MLflow**: Download ``optimiser_result.json`` from an MLflow run
-    (by run ID or registered model + version), then load as JSON.
+    (by run ID or registered model + version) on the node's destination
+    (absent = auto), then load as JSON.  The MLflow cache is keyed on the
+    resolved backend identity, so the same run on two destinations never
+    aliases.
 
 Analogous to ``_mlflow_io.py`` for MLflow models and ``_io.py`` for
 external objects.
@@ -83,18 +86,24 @@ _MLFLOW_ARTIFACT_NAME = "optimiser_result.json"
 
 @functools.lru_cache(maxsize=_ARTIFACT_CACHE_MAX_SIZE)
 def _load_mlflow_cached(
+    backend_identity: str,  # noqa: ARG001 — part of cache key, not used in body.
     source_type: str,
     resolved_run_id: str,
     resolved_version: str,  # noqa: ARG001 — part of cache key, not used in body.
     tracking_uri: str,
 ) -> dict[str, Any]:
-    """Memoised MLflow artifact loader keyed on source, run, version and destination.
+    """Memoised MLflow artifact loader keyed on backend, source, run and version.
 
     Does the MLflow download inside the cached body so repeat calls
-    with an identical ``(source_type, run_id, version)`` resolution
-    reuse the cached dict without re-invoking ``download_artifacts``.
-    ``resolved_version`` participates in the cache key but is not used
-    in the body (``run_id`` uniquely identifies the download URI).
+    with an identical ``(backend, source_type, run_id, version)``
+    resolution reuse the cached dict without re-invoking
+    ``download_artifacts``.  ``backend_identity`` is the secret-free
+    identity of the resolved backend: it leads the cache key so the
+    same run ID on two destinations never aliases, and it is never used
+    in the body (``tracking_uri`` carries the connection value, which
+    may hold environment credentials and is therefore never logged).
+    ``resolved_version`` likewise participates in the key but is not
+    used in the body (``run_id`` uniquely identifies the download URI).
 
     Imports :mod:`mlflow` lazily inside the function so a hit served
     from cache never incurs the MLflow import cost, and so modules
@@ -123,9 +132,15 @@ def load_mlflow_optimiser_artifact(
     run_id: str = "",
     registered_model: str = "",
     version: str = "",
-    tracking_uri: str = "",
+    destination: str = "",
 ) -> dict[str, Any]:
     """Download and cache an optimiser artifact from MLflow.
+
+    The destination is resolved to a :class:`~haute._mlflow_utils.ResolvedBackend`
+    exactly once and threaded through the source resolution, so a settings
+    save mid-load cannot split the load across two backends.  An
+    unresolvable destination raises before any cache lookup or download;
+    there is no fallback to another backend.
 
     Args:
         source_type: ``"run"`` or ``"registered"``.
@@ -133,31 +148,37 @@ def load_mlflow_optimiser_artifact(
         registered_model: Registered model name (required when
             *source_type* is ``"registered"``).
         version: Model version (``"1"``, ``"latest"``, etc.).
-        tracking_uri: Override tracking URI; auto-detected if empty.
+        destination: Destination key (``"databricks"``, ``"server"``,
+            ``"local"``, or ``""`` for auto).
 
     Returns:
         Parsed artifact dict (same shape as ``load_optimiser_artifact``).
     """
-    resolved_run_id, resolved_version, _mlflow, client, _backend = resolve_mlflow_source(
+    from haute._mlflow_utils import resolve_backend
+
+    backend = resolve_backend(destination)
+    resolved_run_id, resolved_version, _mlflow, _client, _resolved = resolve_mlflow_source(
         source_type=source_type,
         run_id=run_id,
         registered_model=registered_model,
         version=version,
+        backend=backend,
     )
 
     info_before = _load_mlflow_cached.cache_info()
     artifact = _load_mlflow_cached(
+        backend.identity,
         source_type,
         resolved_run_id,
         resolved_version,
-        client.tracking_uri,
+        backend.tracking_uri,
     )
     info_after = _load_mlflow_cached.cache_info()
 
     if info_after.hits > info_before.hits:
         logger.debug(
             "mlflow_optimiser_cache_hit",
-            key=str((source_type, resolved_run_id, resolved_version)),
+            key=str((backend.identity, source_type, resolved_run_id, resolved_version)),
         )
 
     return copy.deepcopy(artifact)

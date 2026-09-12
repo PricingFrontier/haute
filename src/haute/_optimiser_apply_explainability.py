@@ -89,6 +89,12 @@ def explain_optimiser_apply_from_config(
 
 
 def _load_artifact_from_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Load the node's configured artifact — file, or MLflow on its destination.
+
+    MLflow source types load from the node's ``mlflow_destination``
+    (absent = auto), exactly as the runtime apply and the deploy scorer do,
+    so a trace explains the artifact the apply actually ran against.
+    """
     source_type = str(config.get("sourceType", "") or "")
     if source_type in {"run", "registered"}:
         from haute._optimiser_io import load_mlflow_optimiser_artifact
@@ -98,6 +104,7 @@ def _load_artifact_from_config(config: dict[str, Any]) -> dict[str, Any]:
             run_id=str(config.get("run_id", "") or ""),
             registered_model=str(config.get("registered_model", "") or ""),
             version=str(config.get("version", "latest") or "latest"),
+            destination=str(config.get("mlflow_destination", "") or ""),
         )
     if source_type == "file" and config.get("artifact_path"):
         from haute._optimiser_io import load_optimiser_artifact
