@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import SplitResult, unquote, urlsplit, urlunsplit
 
+from haute._mlflow_utils import tracking_uri_from_environment
 from haute.errors import MlflowConfigError
 
 _MODES = ("databricks", "server", "local")
@@ -315,7 +316,7 @@ def resolve_tracking_config(project_root: Path | None = None) -> TrackingConfig:
     if stored is not None:
         return _config_from_settings(stored, root)
 
-    env_uri = os.getenv("MLFLOW_TRACKING_URI", "").strip()
+    env_uri = tracking_uri_from_environment().strip()
     if env_uri:
         mode, uri = classify_tracking_uri(env_uri)
         if mode == "databricks":
@@ -337,7 +338,9 @@ def _config_from_settings(
     settings: MlflowSettings, root: Path, *, config_source: str = "toml"
 ) -> TrackingConfig:
     if settings.mode == "databricks":
-        return _databricks_config("databricks", config_source=config_source)
+        env_uri = tracking_uri_from_environment().strip()
+        uri = env_uri if env_uri.startswith("databricks://") else "databricks"
+        return _databricks_config(uri, config_source=config_source)
     if settings.mode == "server":
         uri = _server_uri_with_env_credentials(settings.tracking_uri)
         return TrackingConfig("server", uri, redact_uri(uri), config_source)
@@ -354,7 +357,7 @@ def _server_uri_with_env_credentials(stored_uri: str) -> str:
     connecting — so saving the displayed (redacted) configuration never
     silently drops working authentication.
     """
-    env_uri = os.getenv("MLFLOW_TRACKING_URI", "").strip()
+    env_uri = tracking_uri_from_environment().strip()
     if not env_uri:
         return stored_uri
     try:

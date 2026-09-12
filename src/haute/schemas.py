@@ -2535,6 +2535,13 @@ class MlflowLogResponse(BaseModel):
     tracking_uri: str = ""
     error: str | None = None
 
+    @field_validator("tracking_uri", "run_url")
+    @classmethod
+    def redact_tracking_credentials(cls, value: str | None) -> str | None:
+        from haute.modelling._mlflow_settings import redact_uri
+
+        return redact_uri(value) if value is not None else None
+
 
 class LogExperimentResponse(MlflowLogResponse):
     pass

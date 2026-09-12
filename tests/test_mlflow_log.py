@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -11,11 +12,13 @@ import pytest
 from haute.modelling._result_types import ModelCardMetadata, ModelDiagnostics
 
 
-class TestResolveTrackingBackend:
-    @pytest.fixture(autouse=True)
-    def _clean_tracking_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+@pytest.fixture(autouse=True)
+def _clean_tracking_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each test opts into its own environment destination, including real-store tests."""
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
 
+
+class TestResolveTrackingBackend:
     def test_databricks_when_env_vars_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
         monkeypatch.setenv("DATABRICKS_TOKEN", "dapi_test_token")
@@ -273,6 +276,20 @@ class TestBuildRunUrl:
 
 
 class TestRegistryUriFollowsDestination:
+    def test_databricks_registry_retains_profile(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from haute._sandbox import set_project_root
+        from haute.modelling._mlflow_log import configure_mlflow_tracking
+
+        set_project_root(tmp_path)
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team-profile")
+        with patch("mlflow.set_tracking_uri"), patch("mlflow.set_registry_uri") as registry:
+            configure_mlflow_tracking()
+        registry.assert_called_once_with("databricks-uc://team-profile")
+
     def test_leaving_databricks_resets_the_registry_uri(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -303,6 +320,52 @@ class TestRegistryUriFollowsDestination:
 
 
 class TestLocalRegistrationEndToEnd:
+    def test_destination_switch_during_log_keeps_run_at_original_store(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        import mlflow
+        from mlflow.tracking import MlflowClient
+
+        from haute._sandbox import set_project_root
+        from haute.modelling._mlflow_log import log_experiment
+        from haute.modelling._mlflow_settings import MlflowSettings, save_mlflow_settings
+        from haute.routes.mlflow import list_experiments
+
+        set_project_root(tmp_path)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        save_mlflow_settings(MlflowSettings(mode="local", folder="a"), tmp_path)
+        checks = 0
+
+        def interleave() -> None:
+            nonlocal checks
+            checks += 1
+            if checks == 2:
+                save_mlflow_settings(MlflowSettings(mode="local", folder="b"), tmp_path)
+                list_experiments()
+
+        previous_tracking, previous_registry = mlflow.get_tracking_uri(), mlflow.get_registry_uri()
+        try:
+            with patch("haute.modelling._mlflow_log._log_model_card"):
+                result = log_experiment(
+                    experiment_name="review",
+                    run_name="review",
+                    metrics={"metric": 1},
+                    params={"key": "value"},
+                    check_cancelled=interleave,
+                )
+            original = MlflowClient(tracking_uri=(tmp_path / "a").as_uri())
+            assert original.get_run(result.run_id).info.status == "FINISHED"
+            assert original.get_run(result.run_id).data.params == {"key": "value"}
+            assert mlflow.get_tracking_uri() == previous_tracking
+            assert mlflow.get_registry_uri() == previous_registry
+            assert "MLFLOW_TRACKING_URI" not in os.environ
+        finally:
+            mlflow.set_tracking_uri(previous_tracking)
+            mlflow.set_registry_uri(previous_registry)
+
     def test_log_register_discover_load_and_score_locally(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

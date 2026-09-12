@@ -114,7 +114,7 @@ describe("MlflowExportSection", () => {
     })
   })
 
-  it("shows run id, folder, and a copyable mlflow ui command for local", async () => {
+  it("shows a copyable PowerShell command for local", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.assign(navigator, { clipboard: { writeText } })
     mockLogToMlflow.mockResolvedValue({
@@ -132,13 +132,32 @@ describe("MlflowExportSection", () => {
     await waitFor(() => {
       expect(screen.getByText(/run_local_1/)).toBeInTheDocument()
     })
+    fireEvent.change(screen.getByRole("combobox", { name: "Terminal" }), { target: { value: "powershell" } })
     const command = screen.getByText(/mlflow ui --backend-store-uri/)
-    expect(command).toHaveTextContent('mlflow ui --backend-store-uri "file:///C:/proj/mlruns"')
+    expect(command).toHaveTextContent("$env:MLFLOW_ALLOW_FILE_STORE='true'; mlflow ui --backend-store-uri 'file:///C:/proj/mlruns'")
 
     fireEvent.click(screen.getByRole("button", { name: /copy command/i }))
     expect(writeText).toHaveBeenCalledWith(
-      'mlflow ui --backend-store-uri "file:///C:/proj/mlruns"',
+      "$env:MLFLOW_ALLOW_FILE_STORE='true'; mlflow ui --backend-store-uri 'file:///C:/proj/mlruns'",
     )
+  })
+
+  it("copies the bash/zsh command with a safely quoted URI", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true })
+    mockLogToMlflow.mockResolvedValue({
+      status: "ok", backend: "local", experiment_name: "freq", run_id: "run_local_bash",
+      run_url: null, tracking_uri: "file:///tmp/o'hare/mlruns", error: null,
+    })
+    render(<MlflowExportSection {...makeProps()} />)
+    fireEvent.click(screen.getByRole("button", { name: /log run to mlflow/i }))
+    await waitFor(() => expect(screen.getByText(/run_local_bash/)).toBeInTheDocument())
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Terminal" }), { target: { value: "bash" } })
+    const expected = "MLFLOW_ALLOW_FILE_STORE=true mlflow ui --backend-store-uri 'file:///tmp/o'\"'\"'hare/mlruns'"
+    expect(screen.getByText(/mlflow ui --backend-store-uri/)).toHaveTextContent(expected)
+    fireEvent.click(screen.getByRole("button", { name: /copy command/i }))
+    expect(writeText).toHaveBeenCalledWith(expected)
   })
 
   it("keeps remote successes without a run link free of local-viewer instructions", async () => {

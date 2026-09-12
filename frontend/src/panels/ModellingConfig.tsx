@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react"
-import { cancelTrain, estimateTrainingRam, getExperiments, trainModel } from "../api/client"
+import { useCallback, useState } from "react"
+import { cancelTrain, estimateTrainingRam, trainModel } from "../api/client"
 import { runDispersionEstimate } from "../api/dispersion"
 import {
   FAILED_JOB_STATUSES,
@@ -11,6 +11,7 @@ import {
   useStaleConfigEstimate,
   type UseStaleConfigEstimateResult,
 } from "../hooks/useStaleConfigEstimate"
+import { useMlflowBrowser } from "../hooks/useMlflowBrowser"
 import useGraphStore from "../stores/useGraphStore"
 import useNodeResultsStore, { type TrainProgress, type TrainResult } from "../stores/useNodeResultsStore"
 import {
@@ -194,31 +195,10 @@ function TrainPane({
   const mlflowConnected = mlflowStatus === "connected"
   const defaultExperimentName =
     mlflowMode === "databricks" ? `/Shared/haute/${nodeLabel}` : nodeLabel
-  const [experimentOptions, setExperimentOptions] = useState<string[]>([])
-  // Suggestions belong to one tracking destination: key the fetch guard by
-  // it, clear stale options when it changes, and discard in-flight
-  // responses that arrive after a switch.
-  const destinationKey = `${mlflowMode}|${mlflowDestination}`
-  const currentDestinationRef = useRef(destinationKey)
-  currentDestinationRef.current = destinationKey
-  const fetchedForRef = useRef("")
-  useEffect(() => {
-    setExperimentOptions([])
-    fetchedForRef.current = ""
-  }, [destinationKey])
+  const { experiments, refreshExperiments } = useMlflowBrowser()
   const loadExperimentOptions = () => {
-    if (!mlflowConnected || fetchedForRef.current === destinationKey) return
-    fetchedForRef.current = destinationKey
-    const requestedFor = destinationKey
-    getExperiments()
-      .then((experiments) => {
-        if (currentDestinationRef.current !== requestedFor) return
-        setExperimentOptions(experiments.map((e) => e.name))
-      })
-      .catch(() => {
-        // Suggestions only — the field stays free text; retry on next focus.
-        if (fetchedForRef.current === requestedFor) fetchedForRef.current = ""
-      })
+    if (!mlflowConnected) return
+    refreshExperiments()
   }
 
   const toggleGpu = (enabled: boolean) => {
@@ -326,8 +306,8 @@ function TrainPane({
             style={TRAIN_INPUT_STYLE}
           />
           <datalist id="mlflow-experiment-options">
-            {experimentOptions.map((name) => (
-              <option key={name} value={name} />
+            {experiments.map((experiment) => (
+              <option key={experiment.experiment_id} value={experiment.name} />
             ))}
           </datalist>
         </label>

@@ -23,7 +23,11 @@ if TYPE_CHECKING:
     from mlflow.tracking import MlflowClient
 
 from haute._logging import get_logger
-from haute._mlflow_utils import allow_file_store_if_local, search_versions
+from haute._mlflow_utils import (
+    allow_file_store_if_local,
+    registry_uri_for_tracking,
+    search_versions,
+)
 from haute._sandbox import _get_project_root
 from haute.errors import MlflowConfigError
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
@@ -140,7 +144,7 @@ def _run_summaries(
 
 
 def _ensure_tracking() -> tuple[_types.ModuleType, MlflowClient]:
-    """Import mlflow, configure tracking URI, and return ``(mlflow, client)``.
+    """Return ``(mlflow, client)`` with a client pinned to the current destination.
 
     Raises ``HTTPException(503)`` if mlflow is not installed, or
     ``HTTPException(502)`` if the tracking backend cannot be resolved — a
@@ -161,12 +165,11 @@ def _ensure_tracking() -> tuple[_types.ModuleType, MlflowClient]:
 
         tracking_uri, backend = resolve_tracking_backend()
         allow_file_store_if_local(tracking_uri, backend)
-        mlflow.set_tracking_uri(tracking_uri)
         # Pin the registry to the resolved destination explicitly: without
         # this, the client falls back to the process-global registry URI,
         # so ambient state from another destination could answer registry
         # queries.
-        registry_uri = "databricks-uc" if backend == "databricks" else tracking_uri
+        registry_uri = registry_uri_for_tracking(tracking_uri)
         client = MlflowClient(tracking_uri=tracking_uri, registry_uri=registry_uri)
         return mlflow, client
     except HTTPException:
@@ -473,10 +476,10 @@ def mlflow_test_connection(
 @router.get("/experiments", response_model=list[MlflowExperimentSummary])
 def list_experiments() -> list[MlflowExperimentSummary]:
     """List all MLflow experiments."""
-    mlflow, _client = _ensure_tracking()
+    _mlflow, client = _ensure_tracking()
 
     try:
-        experiments = mlflow.search_experiments()
+        experiments = client.search_experiments()
     except Exception as exc:
         raise _discovery_http_error(exc, "mlflow_list_experiments_failed")
 
@@ -508,16 +511,15 @@ def list_runs(
     matching files.  MLflow has no batch artifacts API, so this is O(N) in
     the number of runs.  The ``max_results`` cap bounds the total calls.
     """
-    mlflow, client = _ensure_tracking()
+    _mlflow, client = _ensure_tracking()
     measurement = _RunDiscoveryMeasurement(max_results=max_results, started_at=perf_counter())
 
     search_started_at = perf_counter()
     try:
-        runs = mlflow.search_runs(
+        runs = client.search_runs(
             experiment_ids=[experiment_id],
             filter_string="status = 'FINISHED'",
             max_results=max_results,
-            output_format="list",
         )
     except Exception as exc:
         measurement.record_search(search_started_at, perf_counter())

@@ -355,6 +355,11 @@ capitalised), and "MLflow off" on any error state — with the store's
 `detail` or `destination` as its tooltip. Activating the chip opens
 `MlflowSettingsModal` (local open state in `Toolbar`).
 
+The toolbar wraps complete control groups onto additional rows when the
+viewport cannot contain them on one row. Its height adapts, all actions remain
+reachable, and it never causes document-level horizontal overflow or scrolling
+that displaces the pipeline canvas. Menus and settings dialogs remain unclipped.
+
 The modal fetches `GET /api/mlflow/settings` on mount and renders: a
 current-resolution line built from `resolved` (mode, destination, config
 source) or the `detail` reason when resolution failed; a three-option mode

@@ -22,6 +22,11 @@ from pathlib import Path
 from typing import Any
 
 from haute._logging import get_logger
+from haute._mlflow_utils import (
+    mlflow_fluent_operation,
+    registry_uri_for_tracking,
+    set_tracking_uri_preserving_env,
+)
 from haute.errors import HauteValidationError
 from haute.modelling._result_types import ModelCardMetadata, ModelDiagnostics
 
@@ -92,8 +97,9 @@ def configure_mlflow_tracking() -> tuple[str, str]:
     """Resolve the MLflow backend and configure tracking/registry URIs.
 
     Calls :func:`resolve_tracking_backend`, then sets the tracking URI
-    (and registry URI for Databricks).  Must be called after
-    ``import mlflow``.
+    and matching registry URI while preserving the configured environment.
+    Call inside :func:`mlflow_fluent_operation` so another writer cannot
+    change the destination before the run finishes.
 
     Returns:
         ``(tracking_uri, backend)`` — same pair as
@@ -109,15 +115,8 @@ def configure_mlflow_tracking() -> tuple[str, str]:
         # workflow logs to ./mlruns, so opt in here. setdefault keeps a user
         # who set the variable explicitly in control.
         os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
-    mlflow.set_tracking_uri(tracking_uri)
-    if backend == "databricks":
-        mlflow.set_registry_uri("databricks-uc")
-    else:
-        # Explicitly point the registry at the selected tracking store: the
-        # registry URI is process-global, so a leftover databricks-uc from
-        # an earlier destination must never capture local/server
-        # registrations.
-        mlflow.set_registry_uri(tracking_uri)
+    set_tracking_uri_preserving_env(mlflow, tracking_uri)
+    mlflow.set_registry_uri(registry_uri_for_tracking(tracking_uri))
     return tracking_uri, backend
 
 
@@ -180,6 +179,7 @@ def _log_json_artifact(mlflow: Any, data: Any, prefix: str, artifact_dir: str) -
         os.unlink(f.name)
 
 
+@mlflow_fluent_operation()
 def log_experiment(
     *,
     experiment_name: str,

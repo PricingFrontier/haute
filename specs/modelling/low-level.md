@@ -468,6 +468,23 @@ decides whether `variance_power` needs to be rendered (CatBoost `Tweedie` loss, 
 
 ### Shared MLflow tracking/experiment-name resolution
 
+Destination changes are operation-scoped. Discovery and scoring use clients and
+artifact downloads explicitly pinned to the resolved tracking and registry URIs;
+they never change MLflow's process-global destination. Fluent logging operations
+are serialized for their complete lifetime (including run termination and URL
+construction), restore their previous tracking/registry state on success or
+failure, and preserve the configured environment URI. Saving settings may proceed
+while an existing log finishes at its original destination; subsequent operations
+resolve the new destination.
+
+A selected Databricks mode retains an environment `databricks://<profile>` URI,
+including after an unchanged save. Only plain `databricks` requires the host/token
+environment pair. Its Unity Catalog registry URI retains the same profile as
+`databricks-uc://<profile>`. All tracking consumers share this registry mapping.
+Credential-bearing tracking URIs are internal connection values only: training
+and optimiser logging responses redact userinfo from both tracking URI and run
+URL before returning them to the browser.
+
 `_mlflow_settings.py` owns the tracking-destination domain; `_mlflow_log.py`
 exposes the wrappers this component's routes, the optimiser's routes, and the
 mlflow-model-registry component all call, so experiment-naming and
@@ -484,8 +501,9 @@ which returns a `TrackingConfig` (`mode`, `tracking_uri`, human-readable
    server mode only, must be an `http(s)://` URL with a non-empty host and
    **no embedded credentials** — secrets belong in `.env`, never in the
    checked-in toml; `folder`, local mode only, optional). Mode `databricks`
-   additionally requires `DATABRICKS_HOST` + `DATABRICKS_TOKEN` in the
-   environment; a missing prerequisite raises `MlflowConfigError` naming
+   preserves a `databricks://profile` selection from `MLFLOW_TRACKING_URI`;
+   otherwise it requires `DATABRICKS_HOST` + `DATABRICKS_TOKEN` in the
+   environment. A missing prerequisite raises `MlflowConfigError` naming
    the missing variable or field — never a silent fallback to another
    mode. A `folder`/`tracking_uri` supplied for a mode that does not use
    it is a validation error, not silently ignored. Local mode without
@@ -550,10 +568,14 @@ secret.
 - `configure_mlflow_tracking()` — resolves the tracking backend, calls
   `mlflow.set_tracking_uri`, sets `MLFLOW_ALLOW_FILE_STORE` (setdefault) for
   local mode, and sets the registry URI **explicitly for every backend** —
-  `databricks-uc` for Databricks, the tracking URI itself for server/local.
+  `databricks-uc` (retaining any `://profile`) for Databricks, the tracking URI
+  itself for server/local. The SDK's tracking setter must preserve the original
+  `MLFLOW_TRACKING_URI` environment value so it cannot overwrite configuration.
   The registry URI is process-global, so a leftover `databricks-uc` from an
   earlier destination must never capture local/server registrations. The
-  single place connection setup happens.
+  fluent setup runs inside `mlflow_fluent_operation()` for the entire logging
+  lifecycle. Discovery and artifact downloads use explicitly pinned clients
+  and tracking URIs without changing fluent state.
 - `build_run_url(backend, experiment_name, run_id)` — resolves the numeric
   `experiment_id` via `mlflow.get_experiment_by_name` (run URLs require the
   numeric id, so the name is resolved first) and returns the Databricks

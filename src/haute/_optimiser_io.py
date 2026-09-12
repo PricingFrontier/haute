@@ -86,8 +86,9 @@ def _load_mlflow_cached(
     source_type: str,
     resolved_run_id: str,
     resolved_version: str,  # noqa: ARG001 — part of cache key, not used in body.
+    tracking_uri: str,
 ) -> dict[str, Any]:
-    """Memoised MLflow artifact loader keyed on the resolved triple.
+    """Memoised MLflow artifact loader keyed on source, run, version and destination.
 
     Does the MLflow download inside the cached body so repeat calls
     with an identical ``(source_type, run_id, version)`` resolution
@@ -102,7 +103,8 @@ def _load_mlflow_cached(
     import mlflow as _mlflow
 
     local_path = _mlflow.artifacts.download_artifacts(
-        f"runs:/{resolved_run_id}/{_MLFLOW_ARTIFACT_NAME}"
+        f"runs:/{resolved_run_id}/{_MLFLOW_ARTIFACT_NAME}",
+        tracking_uri=tracking_uri,
     )
     with open(local_path, encoding="utf-8") as f:
         artifact: dict[str, Any] = json.load(f)
@@ -136,7 +138,7 @@ def load_mlflow_optimiser_artifact(
     Returns:
         Parsed artifact dict (same shape as ``load_optimiser_artifact``).
     """
-    resolved_run_id, resolved_version, _mlflow, _client = resolve_mlflow_source(
+    resolved_run_id, resolved_version, _mlflow, client = resolve_mlflow_source(
         source_type=source_type,
         run_id=run_id,
         registered_model=registered_model,
@@ -145,7 +147,12 @@ def load_mlflow_optimiser_artifact(
     )
 
     info_before = _load_mlflow_cached.cache_info()
-    artifact = _load_mlflow_cached(source_type, resolved_run_id, resolved_version)
+    artifact = _load_mlflow_cached(
+        source_type,
+        resolved_run_id,
+        resolved_version,
+        client.tracking_uri,
+    )
     info_after = _load_mlflow_cached.cache_info()
 
     if info_after.hits > info_before.hits:

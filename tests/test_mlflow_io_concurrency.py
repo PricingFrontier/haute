@@ -90,7 +90,13 @@ class _FakeTransport:
         self._mutex = threading.Lock()
         self.artifacts = SimpleNamespace(download_artifacts=self._download)
 
-    def _download(self, artifact_uri: str, dst_path: str) -> str:
+    def _download(
+        self,
+        artifact_uri: str,
+        dst_path: str,
+        *,
+        tracking_uri: str | None = None,
+    ) -> str:
         with self._mutex:
             call_index = self.calls
             self.calls += 1
@@ -114,7 +120,13 @@ class _MappingTransport:
         self.calls: list[str] = []
         self.artifacts = SimpleNamespace(download_artifacts=self._download)
 
-    def _download(self, artifact_uri: str, dst_path: str) -> str:
+    def _download(
+        self,
+        artifact_uri: str,
+        dst_path: str,
+        *,
+        tracking_uri: str | None = None,
+    ) -> str:
         self.calls.append(artifact_uri)
         artifact_path = artifact_uri.rsplit("/", maxsplit=1)[-1]
         if artifact_uri not in self.payloads:

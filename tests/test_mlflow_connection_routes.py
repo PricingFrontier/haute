@@ -28,6 +28,20 @@ pipeline = "rating/main.py"
 """
 
 
+@pytest.mark.parametrize("response_type", ["LogExperimentResponse", "OptimiserMlflowLogResponse"])
+def test_log_response_never_exposes_uri_credentials(response_type: str) -> None:
+    from haute import schemas
+
+    response = getattr(schemas, response_type)(
+        status="ok",
+        backend="server",
+        tracking_uri="https://review:synthetic-secret@mlflow.example.test",
+        run_url="https://review:synthetic-secret@mlflow.example.test/#/experiments/1/runs/2",
+    )
+    assert "synthetic-secret" not in response.model_dump_json()
+    assert response.tracking_uri == "https://mlflow.example.test"
+
+
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for var in ("MLFLOW_TRACKING_URI", "DATABRICKS_HOST", "DATABRICKS_TOKEN"):

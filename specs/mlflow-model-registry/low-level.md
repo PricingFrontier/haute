@@ -327,6 +327,12 @@ No speculative cache, retry fan-out, or concurrent request burst is added.
 
 ### Connection surface (`routes/mlflow.py`)
 
+Discovery clients, registered-source resolution, and artifact downloads are
+pinned to the same destination without mutating global MLflow tracking state.
+Databricks profile selection also applies to the Unity Catalog registry. A
+destination switch during logging must neither redirect an existing run nor
+leave it unterminated; existing logs finish against their captured destination.
+
 Three endpoints own connection visibility and configuration. They consume
 `resolve_tracking_config()` / `load_mlflow_settings()` /
 `save_mlflow_settings()` from `haute.modelling._mlflow_settings`

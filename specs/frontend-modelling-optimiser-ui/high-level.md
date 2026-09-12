@@ -58,6 +58,10 @@ results are supplied by API and result-store layers.
   local-only: a remote success whose run link could not be built keeps
   the run ID and says the link is unavailable rather than issuing
   local-viewer instructions against a remote URI.
+  The local command includes `MLFLOW_ALLOW_FILE_STORE=true`, required by the
+  supported MLflow file-store backend. A labelled terminal choice offers
+  PowerShell and bash/zsh commands with appropriate quoting; copying includes
+  both the opt-in and launch command. Remote successes never offer either.
 - Optimiser config selects input/objective/mode, banding/ratebook factors, constraints, solver
   options and frontier ranges; it can auto-range constraints and submit solves. Starting another
   auto-range request or unmounting best-effort cancels that auto-range job; this panel has no

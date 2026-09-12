@@ -39,12 +39,26 @@ type MlflowExportSectionProps = {
   onMlflowResult?: (result: MlflowResult | null) => void
 }
 
+type TerminalShell = "powershell" | "bash"
+
+function shellQuote(uri: string, shell: TerminalShell) {
+  if (shell === "powershell") return `'${uri.replace(/'/g, "''")}'`
+  return `'${uri.replace(/'/g, "'\"'\"'")}'`
+}
+
+function defaultTerminalShell(): TerminalShell {
+  return typeof navigator !== "undefined" && /win/i.test(navigator.platform)
+    ? "powershell"
+    : "bash"
+}
+
 export function MlflowExportSection({ trainJobId, config, onMlflowResult }: MlflowExportSectionProps) {
   const { mlflowStatus, mlflowMode, mlflowDestination, mlflowDetail } = useMlflowStatus()
   const setMlflowSettingsOpen = useUIStore((s) => s.setMlflowSettingsOpen)
   const [loggingToMlflow, setLoggingToMlflow] = useState(false)
   const [mlflowResult, setMlflowResult] = useState<MlflowResult | null>(null)
   const [copyFeedback, setCopyFeedback] = useState<"" | "copied" | "failed">("")
+  const [terminalShell, setTerminalShell] = useState<TerminalShell>(defaultTerminalShell)
 
   const available = mlflowStatus === "connected"
 
@@ -71,7 +85,9 @@ export function MlflowExportSection({ trainJobId, config, onMlflowResult }: Mlfl
   }, [trainJobId, config, onMlflowResult])
 
   const localCommand = mlflowResult?.tracking_uri
-    ? `mlflow ui --backend-store-uri "${mlflowResult.tracking_uri}"`
+    ? terminalShell === "powershell"
+      ? `$env:MLFLOW_ALLOW_FILE_STORE='true'; mlflow ui --backend-store-uri ${shellQuote(mlflowResult.tracking_uri, terminalShell)}`
+      : `MLFLOW_ALLOW_FILE_STORE=true mlflow ui --backend-store-uri ${shellQuote(mlflowResult.tracking_uri, terminalShell)}`
     : ""
 
   return (
@@ -123,6 +139,22 @@ export function MlflowExportSection({ trainJobId, config, onMlflowResult }: Mlfl
               {mlflowResult.backend === "local" && localCommand ? (
                 <>
                   <div>Browse your runs by starting the MLflow UI from a terminal:</div>
+                  <label className="flex items-center gap-1.5">
+                    <span>Terminal</span>
+                    <select
+                      aria-label="Terminal"
+                      value={terminalShell}
+                      onChange={(event) => {
+                        setTerminalShell(event.target.value as TerminalShell)
+                        setCopyFeedback("")
+                      }}
+                      className="rounded px-1 py-0.5 text-[10px]"
+                      style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }}
+                    >
+                      <option value="powershell">PowerShell</option>
+                      <option value="bash">bash/zsh</option>
+                    </select>
+                  </label>
                   <div className="flex items-center gap-1.5">
                     <code
                       className="flex-1 break-all rounded px-1.5 py-1 font-mono text-[10px]"

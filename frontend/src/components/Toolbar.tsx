@@ -130,7 +130,7 @@ export default function Toolbar({
   )
 
   return (
-    <header role="toolbar" aria-label="Pipeline toolbar" className="h-11 flex items-center px-4 shrink-0" style={{ background: 'var(--chrome)', borderBottom: '1px solid var(--chrome-border)' }}>
+    <header role="toolbar" aria-label="Pipeline toolbar" className="min-h-11 flex flex-wrap items-center gap-y-2 px-4 py-1.5 shrink-0 [&>div]:shrink-0" style={{ background: 'var(--chrome)', borderBottom: '1px solid var(--chrome-border)' }}>
       <div className="flex items-center gap-2.5">
         <h1 className="text-sm font-bold tracking-tight" style={{ color: 'var(--text-primary)' }}>Haute</h1>
         <span className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>v{__APP_VERSION__}</span>
@@ -303,7 +303,7 @@ export default function Toolbar({
         onClick={() => setMlflowSettingsOpen(true)}
         aria-label="MLflow settings"
         title={mlflowDetail || mlflowDestination || "MLflow tracking settings"}
-        className="toolbar-btn ml-2.5 flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px]"
+        className="toolbar-btn ml-2.5 flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-[11px]"
       >
         <span
           className={`h-2 w-2 shrink-0 rounded-full${mlflowStatus === "loading" ? " animate-pulse-dot" : ""}`}
@@ -356,7 +356,7 @@ export default function Toolbar({
       {/* 10px is the toolbar's one spacing value: between adjacent buttons and
           between sections alike.  Only a label and the field it names sit
           closer (4px), so they still read as one control. */}
-      <div className="ml-auto flex items-center gap-2.5">
+      <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2.5">
         {/* Selection actions.  These use ``aria-disabled`` rather than the
             ``disabled`` attribute: a disabled button is removed from the tab
             order AND swallows pointer events, so its title never appears —

@@ -2083,16 +2083,26 @@ class TestLoadPyfuncModel:
     """Tests for _load_pyfunc_model URI construction."""
 
     def test_constructs_correct_uri(self):
-        """Builds correct runs:/ URI and calls pyfunc.load_model."""
+        """Download from the selected destination before loading the local pyfunc."""
         from haute._mlflow_io import _load_pyfunc_model
 
         mock_mlflow = MagicMock()
         fake_model = MagicMock()
         mock_mlflow.pyfunc.load_model.return_value = fake_model
+        mock_mlflow.artifacts.download_artifacts.return_value = "/downloaded/model"
 
-        result = _load_pyfunc_model(mock_mlflow, "run123", "model")
+        result = _load_pyfunc_model(
+            mock_mlflow,
+            "run123",
+            "model",
+            tracking_uri="https://selected.example.test",
+        )
 
-        mock_mlflow.pyfunc.load_model.assert_called_once_with("runs:/run123/model")
+        mock_mlflow.artifacts.download_artifacts.assert_called_once_with(
+            "runs:/run123/model",
+            tracking_uri="https://selected.example.test",
+        )
+        mock_mlflow.pyfunc.load_model.assert_called_once_with("/downloaded/model")
         assert result is fake_model
 
 

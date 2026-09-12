@@ -145,6 +145,12 @@
    no matching finished runs → "no finished runs with a model artifact in
    this experiment yet". Discovery-error details arrive pre-categorised
    from the server and are shown verbatim.
+   MLflow discovery state is scoped to the resolved destination. A mode or
+   destination change clears all experiment/run/model/version arrays, errors,
+   loading state and fetch guards in an already mounted editor. Responses from
+   the previous destination are discarded, including an A-to-B-to-A switch.
+   The next focus fetches the new destination. Train-pane experiment suggestions
+   reuse this same lifecycle rather than keeping a second destination cache.
 6. `EdgeJoinEditor` derives its two role displays exclusively from canonical `base`/`join`
    incoming handles. Role text and its truncation tooltip are
    resolved with the shared `edgeInputName` helper, including API-input frame handles and submodel

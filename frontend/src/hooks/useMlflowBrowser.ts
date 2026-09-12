@@ -6,6 +6,7 @@ import {
   getModelVersions,
   ApiError,
 } from "../api/client"
+import useSettingsStore from "../stores/useSettingsStore"
 
 /**
  * Shared hook for lazy-loading MLflow dropdown data (experiments, runs,
@@ -88,6 +89,9 @@ export function useMlflowBrowser(opts?: { runTag?: string; initialExpId?: string
   const fetchedModels = useRef(false)
   const fetchedRunsFor = useRef("")
   const fetchedVersionsFor = useRef("")
+  const requestGeneration = useRef(0)
+  const runsRequest = useRef(0)
+  const versionsRequest = useRef(0)
 
   // Reset all fetch guards on mount so data is re-fetched after remount
   useEffect(() => {
@@ -97,54 +101,141 @@ export function useMlflowBrowser(opts?: { runTag?: string; initialExpId?: string
     fetchedVersionsFor.current = ""
   }, [])
 
+  // MLflow discovery responses describe the configured destination.  Subscribe
+  // directly so already-mounted consumers clear their lazy caches as soon as
+  // settings change; the generation also rejects an old A response after A→B→A.
+  useEffect(() => {
+    const unsubscribe = useSettingsStore.subscribe((state, previousState) => {
+      if (
+        state.mlflow.mode === previousState.mlflow.mode
+        && state.mlflow.destination === previousState.mlflow.destination
+      ) return
+
+      requestGeneration.current += 1
+      runsRequest.current += 1
+      versionsRequest.current += 1
+      fetchedExperiments.current = false
+      fetchedModels.current = false
+      fetchedRunsFor.current = ""
+      fetchedVersionsFor.current = ""
+      setExperiments([])
+      setRuns([])
+      setModels([])
+      setModelVersions([])
+      setModelVersionsFor("")
+      setLoadingExperiments(false)
+      setLoadingRuns(false)
+      setLoadingModels(false)
+      setLoadingVersions(false)
+      setErrorExperiments("")
+      setErrorRuns("")
+      setErrorModels("")
+      setErrorVersions("")
+      setBrowseExpId("")
+    })
+    return () => {
+      requestGeneration.current += 1
+      runsRequest.current += 1
+      versionsRequest.current += 1
+      unsubscribe()
+    }
+  }, [])
+
   const errorMsg = (e: Error) => e instanceof ApiError ? e.detail || e.message : e.message
 
   const refreshExperiments = useCallback(() => {
     if (fetchedExperiments.current) return
     fetchedExperiments.current = true
+    const generation = requestGeneration.current
     setLoadingExperiments(true)
     setErrorExperiments("")
     getExperiments()
-      .then((data) => { setExperiments(Array.isArray(data) ? data : []); setLoadingExperiments(false) })
-      .catch((e: Error) => { setExperiments([]); setLoadingExperiments(false); setErrorExperiments(errorMsg(e) || "Failed to load experiments"); fetchedExperiments.current = false })
+      .then((data) => {
+        if (generation !== requestGeneration.current) return
+        setExperiments(Array.isArray(data) ? data : [])
+        setLoadingExperiments(false)
+      })
+      .catch((e: Error) => {
+        if (generation !== requestGeneration.current) return
+        setExperiments([])
+        setLoadingExperiments(false)
+        setErrorExperiments(errorMsg(e) || "Failed to load experiments")
+        fetchedExperiments.current = false
+      })
   }, [])
 
   const refreshRuns = useCallback((expId: string) => {
     if (!expId) return
     if (fetchedRunsFor.current === expId) return
     fetchedRunsFor.current = expId
+    const generation = requestGeneration.current
+    const request = ++runsRequest.current
     setLoadingRuns(true)
     setErrorRuns("")
     getRuns(expId, runTag)
-      .then((data) => { setRuns(Array.isArray(data) ? data : []); setLoadingRuns(false) })
-      .catch((e: Error) => { setRuns([]); setLoadingRuns(false); setErrorRuns(errorMsg(e) || "Failed to load runs"); fetchedRunsFor.current = "" })
+      .then((data) => {
+        if (generation !== requestGeneration.current || request !== runsRequest.current) return
+        setRuns(Array.isArray(data) ? data : [])
+        setLoadingRuns(false)
+      })
+      .catch((e: Error) => {
+        if (generation !== requestGeneration.current || request !== runsRequest.current) return
+        setRuns([])
+        setLoadingRuns(false)
+        setErrorRuns(errorMsg(e) || "Failed to load runs")
+        fetchedRunsFor.current = ""
+      })
   }, [runTag])
 
   const refreshModels = useCallback(() => {
     if (fetchedModels.current) return
     fetchedModels.current = true
+    const generation = requestGeneration.current
     setLoadingModels(true)
     setErrorModels("")
     getModels()
-      .then((data) => { setModels(Array.isArray(data) ? data : []); setLoadingModels(false) })
-      .catch((e: Error) => { setModels([]); setLoadingModels(false); setErrorModels(errorMsg(e) || "Failed to load models"); fetchedModels.current = false })
+      .then((data) => {
+        if (generation !== requestGeneration.current) return
+        setModels(Array.isArray(data) ? data : [])
+        setLoadingModels(false)
+      })
+      .catch((e: Error) => {
+        if (generation !== requestGeneration.current) return
+        setModels([])
+        setLoadingModels(false)
+        setErrorModels(errorMsg(e) || "Failed to load models")
+        fetchedModels.current = false
+      })
   }, [])
 
   const refreshVersions = useCallback((modelName: string) => {
     if (!modelName) return
     if (fetchedVersionsFor.current === modelName) return
     fetchedVersionsFor.current = modelName
+    const generation = requestGeneration.current
+    const request = ++versionsRequest.current
     setModelVersions([])
     setModelVersionsFor(modelName)
     setLoadingVersions(true)
     setErrorVersions("")
     getModelVersions(modelName)
-      .then((data) => { setModelVersions(Array.isArray(data) ? data : []); setLoadingVersions(false) })
-      .catch((e: Error) => { setModelVersions([]); setLoadingVersions(false); setErrorVersions(errorMsg(e) || "Failed to load versions"); fetchedVersionsFor.current = "" })
+      .then((data) => {
+        if (generation !== requestGeneration.current || request !== versionsRequest.current) return
+        setModelVersions(Array.isArray(data) ? data : [])
+        setLoadingVersions(false)
+      })
+      .catch((e: Error) => {
+        if (generation !== requestGeneration.current || request !== versionsRequest.current) return
+        setModelVersions([])
+        setLoadingVersions(false)
+        setErrorVersions(errorMsg(e) || "Failed to load versions")
+        fetchedVersionsFor.current = ""
+      })
   }, [])
 
   const resetRunsGuard = useCallback(() => {
     fetchedRunsFor.current = ""
+    runsRequest.current += 1
   }, [])
 
   return {

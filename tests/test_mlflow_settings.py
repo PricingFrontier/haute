@@ -263,6 +263,19 @@ def _write_mlflow_section(project_root: Path, body: str) -> None:
 
 
 class TestResolvePrecedence:
+    def test_unchanged_databricks_save_retains_environment_profile(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute.modelling._mlflow_settings import candidate_tracking_config
+
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team-profile")
+        selection = MlflowSettings(mode="databricks")
+        assert candidate_tracking_config(selection, project_root).tracking_uri == (
+            "databricks://team-profile"
+        )
+        save_mlflow_settings(selection, project_root)
+        assert resolve_tracking_config(project_root).tracking_uri == "databricks://team-profile"
+
     def test_default_is_local_mlruns(self, project_root: Path) -> None:
         config = resolve_tracking_config(project_root)
         assert config.mode == "local"

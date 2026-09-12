@@ -99,6 +99,23 @@ test.describe("frontend canvas assurance", () => {
     resetE2eProject()
   })
 
+  test("keeps the toolbar and canvas within the viewport", async ({ page }) => {
+    await page.goto("/")
+    await expect(page.getByTestId("toolbar-mlflow-chip")).toBeVisible()
+    for (const width of [1440, 1280, 1024]) {
+      await page.setViewportSize({ width, height: 900 })
+      await expect.poll(() => page.evaluate(() => (
+        document.documentElement.scrollWidth <= document.documentElement.clientWidth
+      ))).toBe(true)
+      await expect(page.getByTestId("toolbar-centre")).toBeInViewport()
+      await expect(page.getByRole("button", { name: "Save", exact: true })).toBeInViewport()
+      await page.getByTestId("toolbar-mlflow-chip").click()
+      await expect(page.getByRole("dialog", { name: "MLflow settings" })).toBeInViewport()
+      await page.getByRole("button", { name: "Close", exact: true }).click()
+      expect(await page.evaluate(() => window.scrollX)).toBe(0)
+    }
+  })
+
   test("discovers mixed Banding factors and rebuilds, edits, and reloads a three-factor Rating table by keyboard", async ({
     page,
   }) => {
