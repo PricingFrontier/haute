@@ -25,6 +25,7 @@ from haute._logging import get_logger
 from haute._mlflow_utils import (
     mlflow_fluent_operation,
     registry_uri_for_tracking,
+    runtime_environment_inference,
     set_tracking_uri_preserving_env,
 )
 from haute.errors import HauteValidationError
@@ -562,11 +563,16 @@ def _log_model_with_signature(
             # we still call log_model with the signature kwarg so downstream
             # verifiers see the contract-bearing call site.
             cat_model = None
-        mlflow.catboost.log_model(
-            cb_model=cat_model,
-            artifact_path="model",
-            signature=signature,
-        )
+        # ``name`` is MLflow 3's spelling (``artifact_path`` is deprecated);
+        # ``runs:/<run>/model`` still resolves the logged model. The
+        # environment scope makes the recorded requirements describe this
+        # interpreter, not a uv.lock in the working directory.
+        with runtime_environment_inference():
+            mlflow.catboost.log_model(
+                cb_model=cat_model,
+                name="model",
+                signature=signature,
+            )
         # mlflow 3.x stores logged models as LoggedModel entities outside
         # the run's artifact listing, so Haute's run-artifact discovery
         # (`_find_cbm_artifact`) would no longer see the model. Log the
@@ -582,11 +588,12 @@ def _log_model_with_signature(
     # discovery (_find_rsglm_artifact / _find_model_artifact) walks the
     # top-level artifact list before falling back to the pyfunc model
     # directory, so the file has to be there for scoring to find it.
-    mlflow.pyfunc.log_model(
-        artifact_path="model",
-        loader_module="haute._mlflow_io",
-        signature=signature,
-    )
+    with runtime_environment_inference():
+        mlflow.pyfunc.log_model(
+            name="model",
+            loader_module="haute._mlflow_io",
+            signature=signature,
+        )
     mlflow.log_artifact(str(model_file))
 
 

@@ -17,6 +17,7 @@ from haute._mlflow_utils import (
     resolve_backend,
     resolve_mlflow_source,
     resolve_version,
+    runtime_environment_inference,
     search_versions,
     set_tracking_uri_preserving_env,
     tracking_uri_from_environment,
@@ -589,3 +590,35 @@ class TestResolveMlflowSourceDestination:
             resolve_mlflow_source(
                 source_type="run", run_id="run-123", destination="local", backend=prepared
             )
+
+
+# ---------------------------------------------------------------------------
+# runtime_environment_inference
+# ---------------------------------------------------------------------------
+
+
+class TestRuntimeEnvironmentInference:
+    """MLflow's uv-lock inference is off only while haute logs a model."""
+
+    SWITCHES = ("MLFLOW_UV_AUTO_DETECT", "MLFLOW_LOG_UV_FILES")
+
+    def test_switches_are_off_inside_and_absent_again_after(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for name in self.SWITCHES:
+            monkeypatch.delenv(name, raising=False)
+        with runtime_environment_inference():
+            assert all(os.environ[name] == "false" for name in self.SWITCHES)
+        assert all(name not in os.environ for name in self.SWITCHES)
+
+    def test_previous_values_are_restored_even_when_the_body_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MLFLOW_UV_AUTO_DETECT", "true")
+        monkeypatch.setenv("MLFLOW_LOG_UV_FILES", "1")
+        with pytest.raises(RuntimeError, match="boom"):
+            with runtime_environment_inference():
+                assert all(os.environ[name] == "false" for name in self.SWITCHES)
+                raise RuntimeError("boom")
+        assert os.environ["MLFLOW_UV_AUTO_DETECT"] == "true"
+        assert os.environ["MLFLOW_LOG_UV_FILES"] == "1"

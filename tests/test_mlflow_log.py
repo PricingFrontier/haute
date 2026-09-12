@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import os
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -769,6 +770,9 @@ class TestLogExperiment:
             )
 
         m_catboost_log_model.assert_called_once()
+        # MLflow 3 spelling: the LoggedModel is named, never ``artifact_path``.
+        assert m_catboost_log_model.call_args.kwargs["name"] == "model"
+        assert "artifact_path" not in m_catboost_log_model.call_args.kwargs
         native_model_calls = [
             call
             for call in m_artifact.call_args_list
@@ -1543,3 +1547,123 @@ def test_keywords_haute_passes_to_mlflow_are_still_accepted() -> None:
         f"haute passes literally: {problems}. Those call sites in _mlflow_log.py will raise "
         "TypeError; fix them and keep _MLFLOW_LITERAL_KEYWORDS in step."
     )
+
+
+class TestLoggedModelEnvironment:
+    """The logged model's environment is the interpreter that trained it."""
+
+    def test_non_catboost_flavor_is_logged_as_the_named_model(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("MLFLOW_UV_AUTO_DETECT", raising=False)
+        mock_run = MagicMock()
+        mock_run.info.run_id = "rsglm-run"
+        model_file = tmp_path / "model.rsglm"
+        model_file.write_bytes(b"fake-rsglm")
+        seen: dict[str, Any] = {}
+
+        def _capture(**kwargs: Any) -> None:
+            # The switches must be off *while* MLflow infers the environment.
+            seen["auto_detect"] = os.environ.get("MLFLOW_UV_AUTO_DETECT")
+            seen["log_uv_files"] = os.environ.get("MLFLOW_LOG_UV_FILES")
+            seen["kwargs"] = sorted(kwargs)
+
+        with (
+            patch("mlflow.set_tracking_uri"),
+            patch("mlflow.set_experiment"),
+            patch("mlflow.start_run") as m_run,
+            patch("mlflow.log_params"),
+            patch("mlflow.log_metrics"),
+            patch("mlflow.log_artifact"),
+            patch("mlflow.pyfunc.log_model", side_effect=_capture),
+            patch("haute.modelling._mlflow_log._build_signature_for_log", return_value=None),
+        ):
+            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
+            m_run.return_value.__exit__ = MagicMock(return_value=False)
+            from haute.modelling._mlflow_log import log_experiment
+
+            log_experiment(
+                experiment_name="/test/rsglm",
+                run_name="glm",
+                metrics={"rmse": 0.5},
+                params={"algorithm": "glm"},
+                model_path=str(model_file),
+                metadata=ModelCardMetadata(algorithm="glm", task="regression", features=["age"]),
+            )
+
+        assert seen["kwargs"] == ["loader_module", "name", "signature"]
+        assert seen["auto_detect"] == "false"
+        assert seen["log_uv_files"] == "false"
+        assert "MLFLOW_UV_AUTO_DETECT" not in os.environ
+
+    def test_logged_model_records_the_executing_interpreter_not_a_cwd_lock(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A uv.lock in the working directory never becomes the model's environment.
+
+        MLflow 3.15 would ``uv export`` a lock found in the cwd (and log the
+        lock as an artifact) instead of capturing the imported packages, so a
+        stale or foreign lock would describe an environment that never
+        trained the model. Against a real local file store, the recorded
+        requirements pin the installed CatBoost and carry no lock artefact.
+        """
+        import warnings
+
+        import catboost
+        import pandas as pd
+        from catboost import CatBoostRegressor
+
+        from haute._mlflow_utils import mlflow_fluent_operation
+        from haute._sandbox import set_project_root
+
+        for var in ("MLFLOW_TRACKING_URI", "DATABRICKS_HOST", "DATABRICKS_TOKEN"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.delenv("MLFLOW_UV_AUTO_DETECT", raising=False)
+        monkeypatch.delenv("MLFLOW_LOG_UV_FILES", raising=False)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        set_project_root(tmp_path)
+        # A foreign uv project in the working directory, exactly the trap.
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "foreign"\nversion = "0.1.0"\ndependencies = ["bogus-package"]\n',
+            encoding="utf-8",
+        )
+        (tmp_path / "uv.lock").write_text(
+            'version = 1\n\n[[package]]\nname = "bogus-package"\nversion = "9.9.9"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        frame = pd.DataFrame({"age": [20.0, 30.0, 40.0, 50.0]})
+        model = CatBoostRegressor(iterations=2, depth=1, verbose=0)
+        model.fit(frame, [1.0, 2.0, 3.0, 4.0])
+        model_file = tmp_path / "model.cbm"
+        model.save_model(str(model_file))
+
+        import mlflow
+
+        from haute.modelling._mlflow_log import log_experiment
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = log_experiment(
+                experiment_name="env-exp",
+                run_name="env-run",
+                metrics={"gini": 0.1},
+                params={"depth": 1},
+                model_path=str(model_file),
+                metadata=ModelCardMetadata(
+                    algorithm="catboost", task="regression", features=["age"]
+                ),
+            )
+        assert not [w for w in caught if "artifact_path" in str(w.message)]
+        assert "MLFLOW_UV_AUTO_DETECT" not in os.environ
+
+        with mlflow_fluent_operation():
+            mlflow.set_tracking_uri(result.tracking_uri)
+            model_dir = Path(mlflow.artifacts.download_artifacts(f"runs:/{result.run_id}/model"))
+        requirements = (model_dir / "requirements.txt").read_text(encoding="utf-8").splitlines()
+        assert f"catboost=={catboost.__version__}" in requirements
+        assert not [line for line in requirements if "bogus-package" in line]
+        assert not (model_dir / "uv.lock").exists()

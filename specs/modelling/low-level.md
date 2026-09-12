@@ -727,13 +727,20 @@ event loop responsive. The response's `backend` and `tracking_uri` name the
 destination the run actually went to.
 
 `log_experiment` passes the persisted contract metadata to `_log_model_with_signature`. A `.cbm`
-artifact is loaded and logged through `mlflow.catboost.log_model` at artifact path `model`; a
-`.rsglm` (or other non-CatBoost native file) is represented by an MLflow pyfunc model with the
-same signature. **Every** flavor also logs the native file at the run root: mlflow 3.x stores
-logged models as LoggedModel entities outside the run's artifact listing, so Haute's
-run-artifact discovery (`_find_cbm_artifact` / `_find_rsglm_artifact`) would otherwise never
-see a freshly logged model. Thus both families carry a `ModelSignature`, but only CatBoost
-uses MLflow's native CatBoost flavor.
+artifact is loaded and logged through `mlflow.catboost.log_model` as the LoggedModel named
+`model` (MLflow 3's `name=`, never the deprecated `artifact_path=`; `runs:/<run>/model` still
+resolves it); a `.rsglm` (or other non-CatBoost native file) is represented by an MLflow pyfunc
+model with the same signature. **Every** flavor also logs the native file at the run root:
+mlflow 3.x stores logged models as LoggedModel entities outside the run's artifact listing, so
+Haute's run-artifact discovery (`_find_cbm_artifact` / `_find_rsglm_artifact`) would otherwise
+never see a freshly logged model. Thus both families carry a `ModelSignature`, but only CatBoost
+uses MLflow's native CatBoost flavor. Both log calls run inside
+`runtime_environment_inference()` from `haute._mlflow_utils`, which disables MLflow's
+uv-project auto-detection and uv-file logging for their duration: the model's recorded
+`requirements.txt` therefore describes the interpreter that trained it, never a `uv.lock` that
+happens to sit in the working directory (MLflow 3.15 would otherwise `uv export` that lock and
+report spurious dependency mismatches). Previous values of the two MLflow variables are
+restored afterwards.
 
 `build_signature` classifies canonical Polars dtype descriptors structurally.
 `Date`, bare `Datetime`, and parameterised `Datetime` descriptors for every

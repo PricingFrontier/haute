@@ -148,6 +148,38 @@ def resolve_version(
     return str(sorted_versions[0].version)
 
 
+@contextmanager
+def runtime_environment_inference() -> Iterator[None]:
+    """Make MLflow record the executing interpreter as a logged model's environment.
+
+    MLflow 3.15 looks for ``uv.lock`` + ``pyproject.toml`` in the *working
+    directory* and, when found, ``uv export``s that lock as the model's
+    requirements (and logs the lock itself as an artifact) instead of
+    capturing the packages the model actually imports. A lock in the cwd is
+    not the environment that trained the model whenever the interpreter was
+    not synced to it — a stale lock, a dev install, or a different venv — so
+    the recorded ``requirements.txt`` would describe an environment that
+    never ran and MLflow reports spurious dependency mismatches.
+
+    Inside this context both switches are off, so inference captures the
+    installed versions of the imported packages; the previous values
+    (including absence) are restored on exit. Call it around every
+    ``mlflow.*.log_model`` haute makes without an explicit environment.
+    """
+    switches = ("MLFLOW_UV_AUTO_DETECT", "MLFLOW_LOG_UV_FILES")
+    previous = {name: os.environ.get(name) for name in switches}
+    for name in switches:
+        os.environ[name] = "false"
+    try:
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
 def allow_file_store_if_local(tracking_uri: str, backend: str = "") -> None:
     """Opt into MLflow's local file backend before constructing a client."""
     uri = tracking_uri.lower()
