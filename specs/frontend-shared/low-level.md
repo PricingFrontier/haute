@@ -23,6 +23,7 @@
 | `frontend/src/stores/useToastStore.ts` | Zustand store: toast queue with dedup, capped at 10 entries. |
 | `frontend/src/stores/useUIStore.ts` | Zustand store: modal/panel open flags (git/utility/imports/assistant, mutually exclusive by construction — each setter clears the others), sync banner, node panel width, per-node Explore/modelling selection memory (editor pane, preview pane, and the configured chart/pivot Configure-subview ids), hover highlight, node search open flag. |
 | `frontend/src/theme/colors.ts` | CSS-variable-backed colour token constants (`STRUCTURE_COLORS`, `STATUS_COLORS`, `MODEL_COLORS`, `CHART_COLORS`, `SYNTAX_COLORS`) plus the fixed `NODE_GROUP_COLORS`, `PIVOT_CHART_COLORS`, and `PIVOT_CONDITIONAL_FORMAT_COLORS` visualisation palettes. |
+| `frontend/src/components/MlflowDestinationSelector.tsx` | The per-node MLflow destination control mounted by the modelling Train pane, the optimiser config section and both MLflow-sourced read-node editors: a labelled radio group of the three destinations in fixed order, the selected option following the node's effective destination (its own key, else auto, with an "auto" suffix and a "Use auto" control when a key is stored), a connection light and tooltip per remote from the inventory, greyed unconfigured remotes that open the settings modal instead of being selected, the resolved-destination line, and re-check and settings buttons. It only reads and reports the node value through `value`/`onChange`; its store mutations are limited to the inventory fetch and invalidation. |
 | `frontend/src/utils/mlflowDestinations.ts` | Pure MLflow destination helpers shared by every node surface: the ordered destination keys and labels, `effectiveMlflowDestination` (explicit key else auto), `mlflowDestinationEntry`, `mlflowLight` (green/amber/grey/pending; local has no light), `mlflowLogAvailability` (loading, package missing, or the node's own key unconfigured make logging unavailable; a failed probe does not), and `defaultExperimentName` (`/Shared/haute/<label>` for Databricks, else the label). No store imports, so panels and editors can derive state from an inventory snapshot. |
 | `frontend/src/utils/formatBytes.ts` | Byte count → `B`/`KB`/`MB` string. |
 | `frontend/src/utils/formatTime.ts` | Unix timestamp → `HH:MM` / coarse relative-time label. |
@@ -516,7 +517,7 @@ same Vitest config.
   utility/imports/git/assistant closes the other three) and per-node selection-map
   helpers.
 - **MLflow destination surface**
-  (the selector test module added with MLF-D02,
+  (`frontend/src/components/__tests__/MlflowDestinationSelector.test.tsx`,
   `frontend/src/utils/__tests__/mlflowDestinations.test.ts`,
   `frontend/src/components/__tests__/MlflowSettingsModal.test.tsx`,
   `frontend/src/__tests__/stores/useSettingsStore.test.ts`): the three light
