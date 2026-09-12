@@ -429,10 +429,18 @@ no longer exists (a `404`); no frontend caller references it.
   `local` is never probed (`probed=false`, it always works). A failed probe
   keeps `configured=true`, sets `probed=true, ok=false`, the classified
   `category`, and the non-secret detail — and `auto` still names that
-  destination: nothing redirects on a broken remote. A `[mlflow]` table
-  that cannot be read (for example the retired `mode` key) yields
-  `auto=""`, every entry `configured=false` with that reason, and the reason
-  in the top-level `detail`. No response field ever contains a credential.
+  destination: nothing redirects on a broken remote. Every entry is
+  reported on its own evidence, and the auto rule is reported separately,
+  so one broken entry never hides the usable ones: a `[mlflow]` table that
+  cannot be read (for example the retired `mode` key) marks the
+  toml-backed `server` and `local` entries unconfigured with the parse
+  reason while `databricks` keeps its own verdict; a Databricks
+  configuration rejected for `MLFLOW_ENABLE_DB_SDK=true` marks only that
+  entry, leaving a configured server and Local selectable; in both cases
+  `auto=""` and the failing reason is the top-level `detail` (after any
+  package problem), and operations that rely on auto fail loudly with that
+  reason while an explicit Local or server choice keeps working. No
+  response field ever contains a credential.
 - **`GET /api/mlflow/settings` → `MlflowSettingsResponse`** — the stored
   `[mlflow]` table verbatim (`section_present`, `tracking_uri`, `folder`;
   empty strings when absent) plus `resolved_folder` (the absolute folder
