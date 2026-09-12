@@ -2284,6 +2284,8 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
             detail="MLflow is not installed. Install with: pip install mlflow",
         )
 
+    from haute.errors import MlflowConfigError
+
     try:
         with mlflow_fluent_operation():
             from haute.modelling._mlflow_log import (
@@ -2292,7 +2294,7 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
                 resolve_experiment_name,
             )
 
-            tracking_uri, backend = configure_mlflow_tracking()
+            tracking_uri, backend = configure_mlflow_tracking(body.destination)
 
             node_label = job.get("node_label", "optimiser")
             job_config = job.get("config", {})
@@ -2383,6 +2385,10 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
             )
             _clear_result_data_after_user_action(body.job_id)
             return response
+    except HTTPException:
+        raise
+    except MlflowConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         logger.error("mlflow_log_failed", error=str(exc), job_id=body.job_id, exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)

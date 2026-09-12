@@ -44,23 +44,29 @@ class MLflowLogResult:
     run_url: str | None  # Databricks/server URL to the run, or None for local
 
 
-def resolve_tracking_backend() -> tuple[str, str]:
+def resolve_tracking_backend(destination: str = "") -> tuple[str, str]:
     """Resolve the tracking destination to ``(tracking_uri, backend)``.
 
     Thin wrapper over
+    :func:`haute.modelling._mlflow_settings.resolve_destination` and
     :func:`haute.modelling._mlflow_settings.resolve_tracking_config` —
-    ``[mlflow]`` in ``haute.toml`` first, environment second
-    (``MLFLOW_TRACKING_URI`` classified by form, then
-    ``DATABRICKS_HOST``/``DATABRICKS_TOKEN``), local ``./mlruns`` last.
+    validates *destination* (empty string means auto), resolves the
+    explicit destination or the auto rule (Databricks if configured,
+    else server if configured, else local).
     ``backend`` is ``"databricks"``, ``"server"``, or ``"local"``.
 
     Raises:
-        MlflowConfigError: for a misconfigured explicit selection or an
+        MlflowConfigError: for an unknown or unconfigured destination, or an
             unsupported tracking-URI form — never a silent fallback.
     """
-    from haute.modelling._mlflow_settings import resolve_tracking_config
+    from haute.modelling._mlflow_settings import (
+        resolve_destination,
+        resolve_tracking_config,
+        validate_destination_key,
+    )
 
-    config = resolve_tracking_config()
+    validate_destination_key(destination)
+    config = resolve_destination(destination) if destination else resolve_tracking_config()
     return config.tracking_uri, config.mode
 
 
@@ -70,6 +76,7 @@ def resolve_experiment_name(
     config_value: str | None = None,
     node_label: str,
     backend: str | None = None,
+    destination: str = "",
 ) -> str:
     """Build the MLflow experiment name using a standard fallback chain.
 
@@ -80,26 +87,26 @@ def resolve_experiment_name(
          Databricks, the bare ``{node_label}`` for server and local modes.
 
     If *backend* is not supplied the current backend is detected via
-    :func:`resolve_tracking_backend`.
+    :func:`resolve_tracking_backend` with *destination*.
     """
     if explicit:
         return explicit
     if config_value:
         return config_value
     if backend is None:
-        _, backend = resolve_tracking_backend()
+        _, backend = resolve_tracking_backend(destination)
     if backend == "databricks":
         return f"/Shared/haute/{node_label}"
     return node_label
 
 
-def configure_mlflow_tracking() -> tuple[str, str]:
+def configure_mlflow_tracking(destination: str = "") -> tuple[str, str]:
     """Resolve the MLflow backend and configure tracking/registry URIs.
 
-    Calls :func:`resolve_tracking_backend`, then sets the tracking URI
-    and matching registry URI while preserving the configured environment.
-    Call inside :func:`mlflow_fluent_operation` so another writer cannot
-    change the destination before the run finishes.
+    Calls :func:`resolve_tracking_backend` with *destination*, then sets
+    the tracking URI and matching registry URI while preserving the
+    configured environment. Call inside :func:`mlflow_fluent_operation`
+    so another writer cannot change the destination before the run finishes.
 
     Returns:
         ``(tracking_uri, backend)`` — same pair as
@@ -107,7 +114,7 @@ def configure_mlflow_tracking() -> tuple[str, str]:
     """
     import mlflow
 
-    tracking_uri, backend = resolve_tracking_backend()
+    tracking_uri, backend = resolve_tracking_backend(destination)
     if backend == "local":
         # mlflow 3.14 puts the local filesystem tracking backend into
         # "maintenance mode" and raises MlflowException at FileStore
@@ -192,11 +199,12 @@ def log_experiment(
     model_name: str | None = None,
     artifact_paths: Mapping[str, str | Path] | None = None,
     check_cancelled: Callable[[], None] | None = None,
+    destination: str = "",
 ) -> MLflowLogResult:
     """Log a training experiment to MLflow.
 
-    Auto-detects Databricks (when DATABRICKS_HOST/TOKEN present)
-    vs local file-based MLflow.
+    Resolves destination (or auto rule: Databricks if configured, else
+    server if configured, else local) and logs to the chosen backend.
 
     Returns:
         MLflowLogResult with backend, experiment name, run ID, and URLs.
@@ -206,7 +214,7 @@ def log_experiment(
     diag = diagnostics or ModelDiagnostics()
     meta = metadata or ModelCardMetadata()
 
-    tracking_uri, backend = configure_mlflow_tracking()
+    tracking_uri, backend = configure_mlflow_tracking(destination)
     logger.info("mlflow_logging_started", experiment=experiment_name, backend=backend)
 
     mlflow.set_experiment(experiment_name)

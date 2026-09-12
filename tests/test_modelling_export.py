@@ -677,7 +677,6 @@ class TestExecutedExportMlflowDestinations:
         df.write_parquet(data_path)
         return data_path
 
-    @pytest.mark.xfail(strict=True, reason="Task A4 adds destination to log_experiment")
     def test_executed_export_local_destination_logs_locally_despite_databricks_env(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -716,7 +715,6 @@ class TestExecutedExportMlflowDestinations:
         runs = client.search_runs([exp.experiment_id])
         assert len(runs) >= 1
 
-    @pytest.mark.xfail(strict=True, reason="Task A4 adds destination to log_experiment")
     def test_executed_export_unavailable_server_destination_raises_config_error(
         self,
         monkeypatch: pytest.MonkeyPatch,

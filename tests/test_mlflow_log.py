@@ -15,7 +15,13 @@ from haute.modelling._result_types import ModelCardMetadata, ModelDiagnostics
 @pytest.fixture(autouse=True)
 def _clean_tracking_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each test opts into its own environment destination, including real-store tests."""
-    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+    for var in (
+        "MLFLOW_TRACKING_URI",
+        "DATABRICKS_HOST",
+        "DATABRICKS_TOKEN",
+        "MLFLOW_ENABLE_DB_SDK",
+    ):
+        monkeypatch.delenv(var, raising=False)
 
 
 class TestResolveTrackingBackend:
@@ -69,21 +75,40 @@ class TestResolveTrackingBackend:
         assert uri == "http://localhost:5000"
         assert backend == "server"
 
-    def test_toml_local_mode_overrides_databricks_credentials(
+    def test_explicit_local_wins_over_databricks_credentials(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         from haute._sandbox import set_project_root
 
-        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi_test_token")
-        (tmp_path / "haute.toml").write_text('[mlflow]\nmode = "local"\n', encoding="utf-8")
-        set_project_root(tmp_path)  # conftest restores the original root
+        set_project_root(tmp_path)
+        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "t")
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
 
         from haute.modelling._mlflow_log import resolve_tracking_backend
 
-        uri, backend = resolve_tracking_backend()
-        assert backend == "local"
-        assert uri.startswith("file://")
+        assert resolve_tracking_backend()[1] == "databricks"
+        uri, backend = resolve_tracking_backend("local")
+        assert backend == "local" and uri == (tmp_path / "mlruns").as_uri()
+
+    def test_explicit_unconfigured_destination_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for var in ("DATABRICKS_HOST", "DATABRICKS_TOKEN", "MLFLOW_TRACKING_URI"):
+            monkeypatch.delenv(var, raising=False)
+
+        from haute.errors import MlflowConfigError
+        from haute.modelling._mlflow_log import resolve_tracking_backend
+
+        with pytest.raises(MlflowConfigError, match="MLflow server is not configured"):
+            resolve_tracking_backend("server")
+
+    def test_unknown_destination_raises_before_resolution(self) -> None:
+        from haute.errors import MlflowConfigError
+        from haute.modelling._mlflow_log import resolve_tracking_backend
+
+        with pytest.raises(MlflowConfigError, match="databricks, server, or local"):
+            resolve_tracking_backend("managed")
 
     def test_unsupported_env_scheme_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
@@ -187,6 +212,18 @@ class TestResolveExperimentName:
                 backend="local",
             )
             == "freq"
+        )
+
+    def test_destination_drives_the_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DATABRICKS_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "t")
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+
+        from haute.modelling._mlflow_log import resolve_experiment_name
+
+        assert resolve_experiment_name(node_label="m", destination="local") == "m"
+        assert (
+            resolve_experiment_name(node_label="m", destination="databricks") == "/Shared/haute/m"
         )
 
 
@@ -336,14 +373,14 @@ class TestLocalRegistrationEndToEnd:
         set_project_root(tmp_path)
         monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
-        save_mlflow_settings(MlflowSettings(mode="local", folder="a"), tmp_path)
+        save_mlflow_settings(MlflowSettings(folder="a"), tmp_path)
         checks = 0
 
         def interleave() -> None:
             nonlocal checks
             checks += 1
             if checks == 2:
-                save_mlflow_settings(MlflowSettings(mode="local", folder="b"), tmp_path)
+                save_mlflow_settings(MlflowSettings(folder="b"), tmp_path)
                 list_experiments()
 
         previous_tracking, previous_registry = mlflow.get_tracking_uri(), mlflow.get_registry_uri()
@@ -1380,6 +1417,45 @@ class TestConfigureMlflowTracking:
             assert uri == "databricks"
             m_tracking.assert_called_once_with("databricks")
             m_registry.assert_called_once_with("databricks-uc")
+
+    def test_cold_process_logging_binds_the_selected_profile_not_the_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cold-process logging binds profile credentials over conflicting environment."""
+        import mlflow
+        import requests
+
+        from haute._mlflow_utils import mlflow_fluent_operation
+        from haute.modelling._mlflow_log import configure_mlflow_tracking
+
+        cfg = tmp_path / "databrickscfg"
+        cfg.write_text(
+            "[team]\nhost = https://profile-host.example.net\ntoken = profile-token-value\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(cfg))
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+        monkeypatch.setenv("DATABRICKS_HOST", "https://env-host.example.net")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "env-token-value")
+        monkeypatch.delenv("MLFLOW_ENABLE_DB_SDK", raising=False)
+        captured: dict[str, object] = {}
+
+        def fake_request(self_, method, url, **kwargs):
+            captured["url"] = url
+            captured["auth"] = dict(kwargs.get("headers") or {}).get("Authorization")
+            resp = requests.Response()
+            resp.status_code = 200
+            resp._content = b'{"experiments": []}'
+            resp.url = url
+            return resp
+
+        with patch("requests.Session.request", new=fake_request):
+            with mlflow_fluent_operation():
+                configure_mlflow_tracking("databricks")
+                mlflow.search_experiments(max_results=1)
+
+        assert str(captured["url"]).startswith("https://profile-host.example.net/")
+        assert captured["auth"] == "Bearer profile-token-value"
 
 
 class TestLogJsonArtifact:

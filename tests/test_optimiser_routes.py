@@ -6951,6 +6951,217 @@ class TestOptimiserMlflowLog:
         assert data["run_id"] == "real-solve-run"
         mock_mlflow.log_metrics.assert_called_once()
 
+    @staticmethod
+    def _seed_opt_job(job_store, job_id, config_extra=None):
+        mock_solver = MagicMock()
+        mock_solver.summary.return_value = {
+            "params": {"mode": "online"},
+            "metrics": {"total_objective": 100.0},
+            "artifacts": {},
+        }
+        mock_solve = MagicMock(
+            lambdas={"m": 0.1},
+            total_objective=100.0,
+            total_constraints={},
+            converged=True,
+            iterations=10,
+            cd_iterations=None,
+        )
+        config = {"mode": "online", **(config_extra or {})}
+        seed_job(
+            job_store,
+            job_id,
+            {
+                "status": "completed",
+                "solver": mock_solver,
+                "solve_result": mock_solve,
+                "config": config,
+                "node_label": "opt",
+                "created_at": time.time(),
+                "completed_at": time.time(),
+            },
+        )
+
+    def test_omitted_and_empty_go_to_auto_and_key_goes_to_its_own(
+        self, client, clean_job_store, tmp_path, monkeypatch
+    ):
+        from mlflow.tracking import MlflowClient
+
+        from haute._sandbox import set_project_root
+
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+
+        # 1) omitted destination -> 200, backend == "local", tracking_uri startswith file:
+        self._seed_opt_job(clean_job_store, "opt_dest_omitted", {"mlflow_destination": "server"})
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={"job_id": "opt_dest_omitted", "experiment_name": "opt_exp_test"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["backend"] == "local"
+        assert data["tracking_uri"].startswith("file:")
+
+        # 2) destination "" -> same
+        self._seed_opt_job(clean_job_store, "opt_dest_empty", {"mlflow_destination": "server"})
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={"job_id": "opt_dest_empty", "destination": "", "experiment_name": "opt_exp_test"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["backend"] == "local"
+        assert data["tracking_uri"].startswith("file:")
+
+        # 3) destination "local" -> same
+        self._seed_opt_job(clean_job_store, "opt_dest_local", {"mlflow_destination": "server"})
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={
+                "job_id": "opt_dest_local",
+                "destination": "local",
+                "experiment_name": "opt_exp_test",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["backend"] == "local"
+        assert data["tracking_uri"].startswith("file:")
+
+        # Count runs before unconfigured server attempt
+        client_mlflow = MlflowClient(tracking_uri=(tmp_path / "mlruns").as_uri())
+        exp = client_mlflow.get_experiment_by_name("opt_exp_test")
+        assert exp is not None
+        runs_before = len(client_mlflow.search_runs([exp.experiment_id]))
+
+        # 4) destination "server" (unconfigured) -> 400,
+        # "MLflow server is not configured" in detail,
+        # and the local store gained no new run.
+        self._seed_opt_job(clean_job_store, "opt_dest_server", {"mlflow_destination": "server"})
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={
+                "job_id": "opt_dest_server",
+                "destination": "server",
+                "experiment_name": "opt_exp_test",
+            },
+        )
+        assert resp.status_code == 400, resp.text
+        assert "MLflow server is not configured" in resp.json()["detail"]
+        runs_after = len(client_mlflow.search_runs([exp.experiment_id]))
+        assert runs_after == runs_before
+
+    def test_second_destination_is_distinct(self, client, clean_job_store, tmp_path, monkeypatch):
+        from mlflow.tracking import MlflowClient
+
+        from haute._sandbox import set_project_root
+        from haute.modelling._mlflow_settings import TrackingConfig
+
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+
+        server_runs_dir = tmp_path / "server-runs"
+        server_config = TrackingConfig(
+            "server", server_runs_dir.as_uri(), "http://stub:5000", "toml"
+        )
+        monkeypatch.setattr(
+            "haute.modelling._mlflow_settings._resolve_server",
+            lambda stored=None: server_config,
+        )
+
+        self._seed_opt_job(clean_job_store, "opt_srv_distinct")
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={
+                "job_id": "opt_srv_distinct",
+                "destination": "server",
+                "experiment_name": "opt_srv_exp",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["backend"] == "server"
+        assert data["tracking_uri"] == server_runs_dir.as_uri()
+
+        server_client = MlflowClient(tracking_uri=server_runs_dir.as_uri())
+        exp = server_client.get_experiment_by_name("opt_srv_exp")
+        assert exp is not None
+        assert len(server_client.search_runs([exp.experiment_id])) == 1
+
+        self._seed_opt_job(clean_job_store, "opt_loc_distinct")
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={
+                "job_id": "opt_loc_distinct",
+                "destination": "local",
+                "experiment_name": "opt_loc_exp",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["backend"] == "local"
+        assert data["tracking_uri"] == (tmp_path / "mlruns").as_uri()
+
+        local_client = MlflowClient(tracking_uri=(tmp_path / "mlruns").as_uri())
+        loc_exp = local_client.get_experiment_by_name("opt_loc_exp")
+        assert loc_exp is not None
+        assert len(local_client.search_runs([loc_exp.experiment_id])) == 1
+
+    def test_unknown_destination_is_422_before_any_write(self, client):
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={"job_id": "x", "destination": "managed"},
+        )
+        assert resp.status_code == 422
+
+    def test_auto_fails_loudly_when_databricks_is_rejected_but_local_still_logs(
+        self, client, clean_job_store, tmp_path, monkeypatch
+    ):
+        from mlflow.tracking import MlflowClient
+
+        from haute._sandbox import set_project_root
+
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+        monkeypatch.setenv("MLFLOW_ENABLE_DB_SDK", "true")
+
+        self._seed_opt_job(clean_job_store, "opt_dest_sdk")
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={"job_id": "opt_dest_sdk", "destination": ""},
+        )
+        assert resp.status_code == 400, resp.text
+        assert "MLFLOW_ENABLE_DB_SDK" in resp.json()["detail"]
+
+        self._seed_opt_job(clean_job_store, "opt_dest_sdk_local")
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={
+                "job_id": "opt_dest_sdk_local",
+                "destination": "local",
+                "experiment_name": "opt_sdk_local_exp",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["backend"] == "local"
+
+        client_mlflow = MlflowClient(tracking_uri=(tmp_path / "mlruns").as_uri())
+        exp = client_mlflow.get_experiment_by_name("opt_sdk_local_exp")
+        assert exp is not None
+        assert len(client_mlflow.search_runs([exp.experiment_id])) == 1
+
 
 # ---------------------------------------------------------------------------
 # Phase 1B: Background thread error tests

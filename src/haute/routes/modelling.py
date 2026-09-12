@@ -298,13 +298,19 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
     config = job.get("config", {})
     node_label = job.get("node_label", "model")
 
-    # Build experiment name: user override > config > backend-aware default
-    from haute.modelling._mlflow_log import resolve_experiment_name
+    from haute.errors import MlflowConfigError
+    from haute.modelling._mlflow_log import resolve_experiment_name, resolve_tracking_backend
+
+    try:
+        _tracking_uri, backend = resolve_tracking_backend(body.destination)
+    except MlflowConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     experiment_name = resolve_experiment_name(
         explicit=body.experiment_name,
         config_value=config.get("mlflow_experiment"),
         node_label=node_label,
+        backend=backend,
     )
     model_name = body.model_name or config.get("model_name") or None
 
@@ -424,6 +430,7 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
             model_path=result.model_path or None,
             model_name=model_name,
             artifact_paths=artifact_paths,
+            destination=body.destination,
         )
 
         return LogExperimentResponse(
@@ -434,6 +441,10 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
             run_url=log_result.run_url,
             tracking_uri=log_result.tracking_uri,
         )
+    except HTTPException:
+        raise
+    except MlflowConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         logger.error("mlflow_log_failed", error=str(exc), job_id=body.job_id)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
