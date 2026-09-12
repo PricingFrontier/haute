@@ -806,6 +806,7 @@ export default function ApiInputEditor({
                     <HelpCircle
                       size={11}
                       data-testid="api-input-salt-help"
+                      aria-hidden
                       style={{ color: "var(--text-muted)" }}
                     />
                   </Tooltip>

@@ -1594,11 +1594,11 @@ describe("ModellingConfig", () => {
         return screen.queryByText(pattern, { ignore: "[role='tooltip'],script,style" })
       }
 
+      /** Hover the icon's Tooltip wrapper; read the bubble the icon itself is described by. */
       function tooltipTextOf(ariaLabel: string): string {
         const icon = screen.getByLabelText(ariaLabel)
-        const wrapper = icon.closest<HTMLElement>("[aria-describedby]")!
-        fireEvent.mouseEnter(wrapper)
-        return document.getElementById(wrapper.getAttribute("aria-describedby")!)!.textContent ?? ""
+        fireEvent.mouseEnter(icon.parentElement!)
+        return document.getElementById(icon.getAttribute("aria-describedby")!)!.textContent ?? ""
       }
 
       it("keeps the manual-only note in the heading tooltip, not in the pane", () => {
@@ -1624,6 +1624,9 @@ describe("ModellingConfig", () => {
         expect(help).toContain("Leave blank to use /Shared/haute/model.")
         expect(help).toContain("named group")
         expect(help).toContain("workspace folder path")
+        expect(screen.getByLabelText("About the experiment path")).toHaveAccessibleDescription(
+          /named group/,
+        )
         expect(screen.getByLabelText("MLflow experiment path")).toHaveAttribute(
           "placeholder",
           "/Shared/haute/model",

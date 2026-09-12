@@ -107,7 +107,9 @@ export default function MlflowDestinationSelector({
           // nothing — but they never become the node's choice.
           const blocked = light === "grey"
 
-          const option = (
+          // A render function, so a remote's tooltip describes the radio that
+          // takes focus rather than the label wrapped around it.
+          const option = (describedBy?: string) => (
             <label
               className="flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-[11px]"
               style={{
@@ -125,6 +127,7 @@ export default function MlflowDestinationSelector({
                 checked={selected}
                 disabled={disabled || loading}
                 aria-disabled={blocked ? true : undefined}
+                aria-describedby={describedBy}
                 onClick={(event) => {
                   if (blocked) {
                     // Cancel the radio's activation behaviour: an unconfigured
@@ -162,7 +165,7 @@ export default function MlflowDestinationSelector({
           return (
             <span key={key} data-testid={`mlflow-option-${key}`} className="inline-flex">
               {light === "none" ? (
-                option
+                option()
               ) : (
                 <Tooltip label={remoteTooltip(light, entry, state.detail)}>{option}</Tooltip>
               )}

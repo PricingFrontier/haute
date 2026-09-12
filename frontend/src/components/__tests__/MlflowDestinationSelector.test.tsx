@@ -90,11 +90,15 @@ function radio(name: string): HTMLElement {
   return screen.getByRole("radio", { name })
 }
 
+/**
+ * Hover an option's Tooltip wrapper and read the bubble its radio is described
+ * by, so the text is only found when the radio itself carries the reference.
+ */
 function tooltipOf(key: MlflowDestinationKey): string {
   const option = screen.getByTestId(`mlflow-option-${key}`)
-  const wrapper = option.querySelector<HTMLElement>("[aria-describedby]")!
-  fireEvent.mouseEnter(wrapper)
-  return document.getElementById(wrapper.getAttribute("aria-describedby")!)!.textContent ?? ""
+  const optionRadio = within(option).getByRole("radio")
+  fireEvent.mouseEnter(option.firstElementChild!)
+  return document.getElementById(optionRadio.getAttribute("aria-describedby")!)!.textContent ?? ""
 }
 
 let fetchMlflow: Mock<() => void>
@@ -226,17 +230,22 @@ describe("MlflowDestinationSelector", () => {
     it("green names the resolved destination", () => {
       renderSelector({ value: "" })
       expect(tooltipOf("databricks")).toBe("databricks://team")
+      expect(radio("Databricks")).toHaveAccessibleDescription("databricks://team")
     })
 
     it("amber names the probe detail", () => {
       renderSelector({ value: "" })
       expect(tooltipOf("server")).toBe("Connection refused.")
+      expect(radio("MLflow server")).toHaveAccessibleDescription("Connection refused.")
     })
 
     it("grey names what to configure and that clicking configures it", () => {
       setInventory({ auto: "local", destinations: [DATABRICKS_GREY, SERVER_AMBER, LOCAL] })
       renderSelector({ value: "" })
       expect(tooltipOf("databricks")).toBe(
+        "Not configured: Set MLFLOW_TRACKING_URI=databricks://<profile>. Click to configure.",
+      )
+      expect(radio("Databricks")).toHaveAccessibleDescription(
         "Not configured: Set MLFLOW_TRACKING_URI=databricks://<profile>. Click to configure.",
       )
     })

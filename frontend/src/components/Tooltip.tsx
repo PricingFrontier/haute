@@ -1,4 +1,14 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react"
+import {
+  Fragment,
+  cloneElement,
+  isValidElement,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react"
 import { createPortal } from "react-dom"
 
 interface TooltipProps {
@@ -6,8 +16,12 @@ interface TooltipProps {
   label: string
   /** Preferred side (flips if it would clip; default top). */
   side?: "top" | "bottom"
-  /** The hover target. */
-  children: ReactNode
+  /**
+   * The hover target. A single element child is described by the tooltip
+   * itself; pass a function when the control to describe is nested inside the
+   * child, and place the id it receives on that control's `aria-describedby`.
+   */
+  children: ReactNode | ((describedBy: string) => ReactNode)
   /** Extra classes on the wrapper (e.g. layout). */
   className?: string
 }
@@ -20,18 +34,32 @@ interface Placement {
   top: number
 }
 
+/** `existing` ids plus `id`, space-separated, without duplicates. */
+function withDescribedBy(existing: string | undefined, id: string): string {
+  const ids = (existing ?? "").split(/\s+/).filter(Boolean)
+  return (ids.includes(id) ? ids : [...ids, id]).join(" ")
+}
+
 /**
  * A zero-delay hover and focus tooltip (S38: native `title` delay is too slow
  * for the tiny change icons).
  *
- * The bubble is always rendered, as `role="tooltip"` linked to the anchor
- * through the anchor's `aria-describedby`, but it is portalled into
- * `document.body` with `position: fixed`: panels are scroll containers inside
- * `overflow-hidden` shells, so a bubble nested in the anchor was cut off at the
- * panel's edge. Closed, it carries the Tailwind `hidden` class. It opens on
- * mouse enter or focus and closes on mouse leave, blur, any scroll (captured on
- * the window, so scroll containers count) or a window resize — a fixed bubble
- * would otherwise drift away from its anchor.
+ * The bubble is always rendered as `role="tooltip"`, and its id lands on the
+ * trigger's `aria-describedby` so assistive technology announces it on the
+ * element that actually takes focus: a single element child is cloned with the
+ * id appended to any description it already has, unless its `aria-label` is
+ * already exactly the tooltip text (a description would then be announced
+ * twice); a function child receives the id and places it on its real control (a
+ * native radio inside its `<label>`, say); only text or fragment children leave
+ * it on the hover wrapper.
+ *
+ * The bubble is portalled into `document.body` with `position: fixed`: panels
+ * are scroll containers inside `overflow-hidden` shells, so a bubble nested in
+ * the anchor was cut off at the panel's edge. Closed, it carries the Tailwind
+ * `hidden` class. The wrapper opens it on mouse enter or focus within and closes
+ * it on mouse leave, blur, any scroll (captured on the window, so scroll
+ * containers count) or a window resize — a fixed bubble would otherwise drift
+ * away from its anchor.
  *
  * On opening, a layout effect places it before the first paint from the
  * anchor's viewport rectangle and the bubble's own size: centred on the anchor
@@ -88,17 +116,36 @@ export default function Tooltip({ label, side = "top", children, className }: To
     }
   }, [open])
 
+  let trigger: ReactNode
+  let wrapperDescribedBy: string | undefined
+  if (typeof children === "function") {
+    trigger = children(id)
+  } else if (
+    isValidElement<{ "aria-label"?: string; "aria-describedby"?: string }>(children) &&
+    children.type !== Fragment
+  ) {
+    trigger =
+      children.props["aria-label"] === label
+        ? children
+        : cloneElement(children, {
+            "aria-describedby": withDescribedBy(children.props["aria-describedby"], id),
+          })
+  } else {
+    trigger = children
+    wrapperDescribedBy = id
+  }
+
   return (
     <span
       ref={wrapRef}
       className={`inline-flex ${className ?? ""}`}
-      aria-describedby={id}
+      aria-describedby={wrapperDescribedBy}
       onMouseEnter={show}
       onMouseLeave={hide}
       onFocus={show}
       onBlur={hide}
     >
-      {children}
+      {trigger}
       {createPortal(
         <span
           ref={tipRef}

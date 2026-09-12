@@ -210,6 +210,8 @@ describe("SchemaTableCard", () => {
 
     const info = screen.getByRole("button", { name: /Null and NaN are not values/i })
     expect(info).toHaveAttribute("data-testid", "explore-distinct-info")
+    // Its name already is the tooltip text, so it carries no duplicate description.
+    expect(info).toHaveAccessibleDescription("")
   })
 
   it("renders min and max values instead of examples", () => {
