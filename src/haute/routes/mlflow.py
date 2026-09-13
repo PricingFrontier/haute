@@ -25,6 +25,11 @@ if TYPE_CHECKING:
     from mlflow.utils.rest_utils import MlflowHostCreds
 
 from haute._logging import get_logger
+from haute._mlflow_errors import (
+    MLFLOW_NOT_INSTALLED_DETAIL,
+    MLFLOW_NOT_INSTALLED_STATUS,
+    classify_mlflow_error,
+)
 from haute._mlflow_utils import (
     allow_file_store_if_local,
     registry_uri_for_tracking,
@@ -165,22 +170,16 @@ def _ensure_tracking(destination: str = "") -> tuple[_types.ModuleType, MlflowCl
         import mlflow
     except ImportError:
         raise HTTPException(
-            status_code=503,
-            detail="mlflow is not installed. Install it with: pip install mlflow",
+            status_code=MLFLOW_NOT_INSTALLED_STATUS, detail=MLFLOW_NOT_INSTALLED_DETAIL
         )
 
     try:
         from mlflow.tracking import MlflowClient
 
-        from haute.modelling._mlflow_settings import (
-            resolve_destination,
-            resolve_tracking_config,
-        )
+        from haute.modelling._mlflow_settings import node_destination_key, resolve_destination
 
         root = _get_project_root()
-        config = (
-            resolve_destination(destination, root) if destination else resolve_tracking_config(root)
-        )
+        config = resolve_destination(node_destination_key(destination), root)
         tracking_uri, backend = config.tracking_uri, config.mode
         allow_file_store_if_local(tracking_uri, backend)
         # Pin the registry to the resolved destination explicitly: without
@@ -244,7 +243,7 @@ def _mlflow_availability() -> tuple[bool, bool, str]:
     import importlib.util
 
     if importlib.util.find_spec("mlflow") is None:
-        return False, False, "MLflow package is not installed. Install it with: pip install mlflow"
+        return False, False, MLFLOW_NOT_INSTALLED_DETAIL
     try:
         importlib.import_module("mlflow")
     except ImportError as exc:
@@ -397,48 +396,9 @@ def _search_experiments_probe(tracking_uri: str) -> None:
     verify_rest_response(response, _PROBE_SEARCH_ENDPOINT)
 
 
-def _iter_exception_chain(exc: BaseException) -> list[BaseException]:
-    chain: list[BaseException] = []
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        chain.append(current)
-        current = current.__cause__ or current.__context__
-    return chain
-
-
 def _classify_probe_error(exc: BaseException) -> MlflowProbeCategory:
-    """Map a probe failure to a stable category.
-
-    Uses MLflow's structured ``RestException.error_code`` plus transport
-    exception types, inspected across the whole ``__cause__``/``__context__``
-    chain — MLflow wraps transport failures in ``MlflowException``, so the
-    outer type alone is never trusted.
-    """
-    import requests
-    from mlflow.exceptions import RestException
-
-    connectivity_types = (
-        TimeoutError,
-        ConnectionError,
-        OSError,
-        requests.exceptions.ConnectionError,
-        requests.exceptions.Timeout,
-    )
-    for link in _iter_exception_chain(exc):
-        if isinstance(link, RestException):
-            code = getattr(link, "error_code", "")
-            if code in ("UNAUTHENTICATED", "INVALID_LOGIN", "CUSTOMER_UNAUTHORIZED"):
-                return "authentication"
-            if code == "PERMISSION_DENIED":
-                return "permission"
-            if code in ("RESOURCE_DOES_NOT_EXIST", "ENDPOINT_NOT_FOUND"):
-                return "missing_resource"
-            return "unknown"
-        if isinstance(link, connectivity_types):
-            return "connectivity"
-    return "unknown"
+    """Map a discovery or probe failure to its category (shared MLflow classifier)."""
+    return classify_mlflow_error(exc)
 
 
 def _probe_outcome(tracking_uri: str) -> tuple[bool, MlflowProbeCategory, str]:
@@ -463,22 +423,14 @@ def mlflow_destinations(probe: bool = Query(False)) -> MlflowDestinationsRespons
         DESTINATION_KEYS,
         list_destinations,
         resolve_destination,
-        resolve_tracking_config,
     )
 
     root = _get_project_root()
-    installed, importable, package_detail = _mlflow_availability()
-    # Per-entry truth first: list_destinations never raises for a configuration problem — each
+    installed, importable, detail = _mlflow_availability()
+    # Per-entry truth: list_destinations never raises for a configuration problem — each
     # key reports its own reason (a malformed [mlflow] table lands on the toml-backed server and
     # local entries; a rejected Databricks SDK mode lands on databricks only).
     entries = list_destinations(root)
-    # The auto rule is reported separately so one broken entry never hides the usable ones.
-    try:
-        auto = resolve_tracking_config(root).mode
-        auto_detail = ""
-    except MlflowConfigError as exc:
-        auto, auto_detail = "", str(exc)
-    detail = package_detail or auto_detail
     response_entries = {
         e.key: MlflowDestinationEntry(
             key=e.key,  # type: ignore[arg-type]
@@ -512,7 +464,6 @@ def mlflow_destinations(probe: bool = Query(False)) -> MlflowDestinationsRespons
     return MlflowDestinationsResponse(
         mlflow_installed=installed,
         mlflow_importable=importable,
-        auto=auto,  # type: ignore[arg-type]
         destinations=[response_entries[k] for k in DESTINATION_KEYS],
         detail=detail,
     )
@@ -526,9 +477,8 @@ def mlflow_test_connection(
     from haute.modelling._mlflow_settings import (
         MlflowSettings,
         candidate_tracking_config,
+        node_destination_key,
         resolve_destination,
-        resolve_tracking_config,
-        validate_destination_key,
     )
 
     installed, importable, detail = _mlflow_availability()
@@ -537,10 +487,9 @@ def mlflow_test_connection(
 
     root = _get_project_root()
     try:
-        if body is None or not body.destination:
-            config = resolve_tracking_config(root)
-        elif body.tracking_uri is None and body.folder is None:
-            config = resolve_destination(validate_destination_key(body.destination) or "", root)
+        if body is None or (body.tracking_uri is None and body.folder is None):
+            key = node_destination_key(body.destination if body is not None else "")
+            config = resolve_destination(key, root)
         else:
             config = candidate_tracking_config(
                 body.destination,
@@ -693,8 +642,15 @@ def list_model_versions(
 
     try:
         versions = search_versions(client, model_name)
+        # The registered model's alias map is authoritative on every store;
+        # version search results do not carry aliases on Unity Catalog.
+        alias_map = client.get_registered_model(model_name).aliases or {}
     except Exception as exc:
         raise _discovery_http_error(exc, "mlflow_list_versions_failed")
+
+    aliases_by_version: dict[str, list[str]] = {}
+    for alias_name, alias_version in _alias_items(alias_map):
+        aliases_by_version.setdefault(alias_version, []).append(alias_name)
 
     return [
         MlflowModelVersionSummary(
@@ -706,6 +662,18 @@ def list_model_versions(
             # None on the file store, absent or str on Databricks.
             description=getattr(v, "description", "") or "",
             params=_model_version_run_params(client, v.run_id or ""),
+            aliases=sorted(aliases_by_version.get(str(v.version), [])),
         )
         for v in sorted(versions, key=lambda v: int(v.version), reverse=True)
     ]
+
+
+def _alias_items(alias_map: Any) -> list[tuple[str, str]]:
+    """``(alias, version)`` pairs from a registered model's aliases.
+
+    MLflow exposes a ``{alias: version}`` mapping; some stores return a list of
+    alias objects with ``alias``/``version`` attributes instead.
+    """
+    if isinstance(alias_map, dict):
+        return [(str(name), str(version)) for name, version in alias_map.items()]
+    return [(str(item.alias), str(item.version)) for item in alias_map]

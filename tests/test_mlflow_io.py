@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -2253,3 +2254,67 @@ class TestFlavorSsot:
         assert _flavor_from_artifact("model.cbm") in _SUPPORTED_FLAVORS
         assert _flavor_from_artifact("model.rsglm") in _SUPPORTED_FLAVORS
         assert _flavor_from_artifact("model") in _SUPPORTED_FLAVORS
+
+
+class TestCatBoostTaskFromTheModelFile:
+    """A CatBoost model file records its loss, which fixes the task it scores."""
+
+    @staticmethod
+    def _saved(tmp_path, estimator) -> str:
+        rng = np.random.RandomState(3)
+        features = rng.rand(40, 2)
+        estimator.fit(features, (features[:, 0] > 0.5).astype(int))
+        path = tmp_path / "model.cbm"
+        estimator.save_model(str(path))
+        return str(path)
+
+    def test_a_classifier_cannot_be_scored_as_regression(self, tmp_path):
+        from catboost import CatBoostClassifier
+
+        from haute.errors import ConfigError
+
+        path = self._saved(
+            tmp_path, CatBoostClassifier(iterations=2, verbose=0, allow_writing_files=False)
+        )
+        with pytest.raises(ConfigError, match="trained for classification"):
+            load_local_model(path, task="regression")
+        assert load_local_model(path, task="classification").flavor == "catboost"
+
+    def test_a_regressor_cannot_be_scored_as_classification(self, tmp_path):
+        from catboost import CatBoostRegressor
+
+        from haute.errors import ConfigError
+
+        path = self._saved(
+            tmp_path,
+            CatBoostRegressor(
+                iterations=2, verbose=0, allow_writing_files=False, loss_function="Poisson"
+            ),
+        )
+        with pytest.raises(ConfigError, match=r"trained for regression \(loss Poisson\)"):
+            load_local_model(path, task="classification")
+        assert load_local_model(path, task="regression").flavor == "catboost"
+
+    def test_a_task_mismatch_is_not_retried_as_a_corrupt_download(self, tmp_path):
+        from catboost import CatBoostClassifier
+
+        from haute._mlflow_io import _load_with_bounded_retry
+        from haute.errors import ConfigError
+
+        path = self._saved(
+            tmp_path, CatBoostClassifier(iterations=2, verbose=0, allow_writing_files=False)
+        )
+        with (
+            patch("haute._mlflow_io._resolve_artifact_local", return_value=path) as resolve,
+            pytest.raises(ConfigError),
+        ):
+            _load_with_bounded_retry(
+                mlflow_mod=MagicMock(),
+                backend=MagicMock(),
+                run_id="r",
+                artifact="model.cbm",
+                flavor="catboost",
+                task="regression",
+            )
+        assert resolve.call_count == 1
+        assert Path(path).is_file()

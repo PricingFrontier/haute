@@ -132,7 +132,7 @@ class TestInit:
         assert (tmp_path / ".gitignore").exists()
         assert (tmp_path / "rating" / "main.py").exists()
         assert (tmp_path / "rating" / "config").is_dir()
-        assert (tmp_path / "rating" / "models").is_dir()
+        assert not (tmp_path / "rating" / "models").exists()
         assert (tmp_path / "rating" / "outputs").is_dir()
         assert (tmp_path / "pyproject.toml").exists()
 

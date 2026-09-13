@@ -115,6 +115,7 @@ const MODELLING_PANES = [
   { key: "params", label: "Params" },
   { key: "split", label: "Split" },
   { key: "train", label: "Train" },
+  { key: "export", label: "Export" },
 ] as const satisfies readonly { key: ModellingPane; label: string }[]
 
 // ─── Instance sub-panel (kept inline — it references multiple node-level concerns) ──

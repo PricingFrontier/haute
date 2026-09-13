@@ -242,7 +242,6 @@ def test_training_facade_is_declaration_only_and_helper_imports_stay_stable() ->
     facade = importlib.import_module("haute.routes._train_service")
     expected = {
         "TrainService",
-        "TrainingArtifactPublicationError",
         "_VramCheck",
         "_assert_json_finite",
         "_check_gpu_vram",
@@ -252,7 +251,7 @@ def test_training_facade_is_declaration_only_and_helper_imports_stay_stable() ->
         "_find_modelling_node",
         "_friendly_error",
         "_known_training_worker_failure",
-        "_publish_training_artifacts",
+        "_validate_training_artifacts",
         "_run_dispersion_process_job",
         "_run_training_process_job",
         "_seeded_training_sample",
@@ -270,10 +269,7 @@ def test_training_facade_is_declaration_only_and_helper_imports_stay_stable() ->
     assert facade._validate_glm_family_link.__module__ == ("haute.routes._training_evaluation")
     assert facade._evaluation_preview_payload.__module__ == ("haute.routes._training_evaluation")
     assert facade._run_training_process_job.__module__ == "haute.routes._training_worker"
-    assert facade._publish_training_artifacts.__module__ == "haute.routes._training_artifacts"
-    assert facade.TrainingArtifactPublicationError.__module__ == (
-        "haute.routes._training_artifacts"
-    )
+    assert facade._validate_training_artifacts.__module__ == "haute.routes._training_artifacts"
 
 
 def test_training_domain_imports_are_acyclic_and_leaves_do_not_own_job_state() -> None:

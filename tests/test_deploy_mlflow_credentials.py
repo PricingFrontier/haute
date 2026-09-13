@@ -61,6 +61,7 @@ class DeployCalls:
     session_request: MagicMock
     set_tracking_uri: MagicMock
     set_registry_uri: MagicMock
+    get_experiment_by_name: MagicMock
     set_experiment: MagicMock
     start_run: MagicMock
     log_dict: MagicMock
@@ -80,6 +81,7 @@ def calls() -> Iterator[DeployCalls]:
         patch("requests.Session.request") as session_request,
         patch("mlflow.set_tracking_uri") as set_tracking_uri,
         patch("mlflow.set_registry_uri") as set_registry_uri,
+        patch("mlflow.get_experiment_by_name") as get_experiment_by_name,
         patch("mlflow.set_experiment") as set_experiment,
         patch("mlflow.start_run") as start_run,
         patch("mlflow.log_dict") as log_dict,
@@ -97,6 +99,7 @@ def calls() -> Iterator[DeployCalls]:
             session_request=session_request,
             set_tracking_uri=set_tracking_uri,
             set_registry_uri=set_registry_uri,
+            get_experiment_by_name=get_experiment_by_name,
             set_experiment=set_experiment,
             start_run=start_run,
             log_dict=log_dict,

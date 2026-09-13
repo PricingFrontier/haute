@@ -358,11 +358,18 @@ go through the same shared `configure_mlflow_tracking(destination)` / `resolve_e
 without calling `log_experiment()` itself, since the optimiser's artifact shape (solver params, frontier CSV,
 `optimiser_result.json`) doesn't fit `log_experiment()`'s model-diagnostics-shaped signature.
 `OptimiserMlflowLogRequest.destination` (`""|"databricks"|"server"|"local"`, default `""` =
-auto) is authoritative for where the run goes: the job's training-time `mlflow_destination`
+the local folder) is authoritative for where the run goes: the job's training-time `mlflow_destination`
 snapshot is never consulted, an unknown value is a `422` before any work, and an unconfigured
 destination fails with `400` carrying the prerequisite-naming `MlflowConfigError` detail and
-writes nothing; the experiment-name default follows the resolved backend. The OPTIMISER node
-config gains the optional `mlflow_destination` field (absent = auto), declared on the
+writes nothing; the experiment-name default follows the resolved backend. `experiment_name` is
+equally authoritative — the frontend sends the node's current `mlflow_experiment`, and a blank
+value uses the backend default rather than the job's solve-time snapshot. Failures share the
+modelling log route's outcomes (`routes/_mlflow_log_errors.py`): a missing MLflow package is the
+shared `503` checked before any work, a classified remote failure is a `502` with an
+`mlflow_<category>` code and write-specific message, anything unclassified is the generic `500`,
+and only the category and error type are logged. The OPTIMISER node
+config gains the optional `mlflow_destination` field (absent = the local folder; `databricks`
+or `server` when chosen), declared on the
 `OptimiserConfig` TypedDict and `OPTIMISER_CONFIG_KEYS`, classified as node config for the
 execution cache, and rejected by `validate_node_config` for unknown values; solving never logs
 automatically.
@@ -455,10 +462,12 @@ source_names)` is the sole public entry point:
 
 1. Loads the artifact the `OPTIMISER_APPLY` node was configured with (`_load_artifact_from_config`
    — file or MLflow, delegating to `_optimiser_io.py` with the node's `mlflow_destination`, absent
-   = auto, exactly as the runtime apply in `_node_apply.py` and the deploy scorer's request-time
+   = the local folder, exactly as the runtime apply in `_node_apply.py` and the deploy scorer's request-time
    loader do), reading `mode` from it (defaulting to
    `"online"` if absent, but rejecting an explicitly present-but-blank `mode` as a
-   misconfiguration). The OPTIMISER_APPLY node config's optional `mlflow_destination`
+   misconfiguration). A registered source may name an `alias` instead of a `version`
+   (see [mlflow-model-registry](../mlflow-model-registry/low-level.md#registered-model-aliases)).
+   The OPTIMISER_APPLY node config's optional `mlflow_destination`
    (MLflow source types only) is declared on the `OptimiserApplyConfig` TypedDict and
    `OPTIMISER_APPLY_CONFIG_KEYS` (round-tripping through save, parse, and the codegen sidecar),
    classified as an artifact input for the execution cache, and rejected by `validate_node_config`
@@ -786,12 +795,12 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   rejection, and exact save/apply dtype mismatch errors.
 - **`tests/test_optimiser_io.py`** — `load_optimiser_artifact`/`load_mlflow_optimiser_artifact`
   caching behaviour (content-hash cache hit/miss for file loads across the two MLflow source
-  types), version resolution, the `destination` argument forwarded to `resolve_backend` for auto
-  and explicit keys, and the same run on two backend identities producing two distinct cache
+  types), version resolution, the `destination` argument forwarded to `resolve_backend` for the
+  empty and explicit keys, and the same run on two backend identities producing two distinct cache
   entries. `tests/test_optimiser_apply.py`, the deploy scorer tests, and
   `tests/test_optimiser_apply_trace_enrichment.py` pin that every config-driven caller forwards
   `mlflow_destination`; `tests/test_mlflow_destinations_e2e.py` (mlflow-model-registry) proves the
-  Local-while-auto-is-remote apply, deployed scoring, and generated-script paths end to end.
+  local-folder-while-Databricks-is-configured apply, deployed scoring, and generated-script paths end to end.
 - **`tests/test_optimiser_golden.py`** — golden-snapshot pinning: the `/solve/status` route
   response against `tests/fixtures/ui_contracts/solve_optimiser_response.json`, and
   `_build_artifact_payload` against `tests/fixtures/golden/optimiser_artifact_online.json` /

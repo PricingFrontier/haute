@@ -28,6 +28,15 @@ def _stub_optional_catboost_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr("haute.modelling._metrics.compute_pdp", lambda *a, **kw: [])
 
 
+_RANDOM_EVALUATION: dict[str, object] = {
+    "schema_version": 1,
+    "strategy": "random",
+    "seed": 42,
+    "test": {"size": 0.2},
+    "validation": {"method": "none"},
+}
+
+
 def _fast_training_params(**overrides: object) -> dict[str, object]:
     """Cheap-but-real CatBoost settings for TrainingJob coverage paths."""
     params: dict[str, object] = {"iterations": 3, "depth": 2}
@@ -1251,51 +1260,6 @@ class TestSaveArtifactsCoverage:
 
 
 class TestLogToMlflowCoverage:
-    def test_log_to_mlflow_calls_log_experiment(self, tmp_path):
-        from haute.modelling._training_job import TrainingJob, TrainResult
-
-        job = TrainingJob(
-            name="mlflow_test",
-            data=pl.DataFrame({"y": [1]}),
-            target="y",
-            mlflow_experiment="/test/experiment",
-            model_name="test_model",
-            output_dir=str(tmp_path),
-        )
-
-        result = TrainResult(
-            metrics={"rmse": 0.5},
-            feature_importance=[{"feature": "x1", "importance": 1.0}],
-            model_path=str(tmp_path / "model.cbm"),
-            train_rows=100,
-            validation_rows=20,
-            features=["x1"],
-            cat_features=[],
-            holdout_rows=0,
-            holdout_metrics={},
-            diagnostics_set="validation",
-            shap_summary=[],
-            feature_importance_loss=[],
-            double_lift=[],
-            loss_history=[],
-            ave_per_feature=[],
-            residuals_histogram=[],
-            residuals_stats={},
-            actual_vs_predicted=[],
-            lorenz_curve=[],
-            lorenz_curve_perfect=[],
-            pdp_data=[],
-            glm_coefficients=[],
-            glm_relativities=[],
-            glm_fit_statistics={},
-            glm_regularization_path=None,
-        )
-
-        with patch("haute.modelling._mlflow_log.log_experiment") as mock_log:
-            job._log_to_mlflow(result)
-
-        mock_log.assert_called_once()
-
     def test_log_to_mlflow_no_experiment_returns_early(self):
         from haute.modelling._training_job import TrainingJob, TrainResult
 
@@ -1318,6 +1282,7 @@ class TestLogToMlflowCoverage:
             data=pl.DataFrame({"y": [1]}),
             target="y",
             mlflow_experiment="/test",
+            evaluation=_RANDOM_EVALUATION,
         )
 
         result = MagicMock(spec=TrainResult)
@@ -1853,64 +1818,6 @@ class TestTrainingJobGLMPaths:
 
 
 # ---------------------------------------------------------------------------
-# TrainingJob._log_to_mlflow with actual experiment
-# ---------------------------------------------------------------------------
-
-
-class TestLogToMlflowFull:
-    def test_log_to_mlflow_constructs_diagnostics_and_metadata(self, tmp_path):
-        """Verify _log_to_mlflow constructs ModelDiagnostics and calls log_experiment."""
-        from haute.modelling._training_job import TrainingJob, TrainResult
-
-        job = TrainingJob(
-            name="mlflow_full",
-            data=pl.DataFrame({"y": [1]}),
-            target="y",
-            mlflow_experiment="/test/exp",
-            model_name="my_model",
-            output_dir=str(tmp_path),
-        )
-
-        result = TrainResult(
-            metrics={"rmse": 0.5},
-            feature_importance=[],
-            model_path=str(tmp_path / "model.cbm"),
-            train_rows=100,
-            validation_rows=20,
-            features=["x1"],
-            cat_features=[],
-            holdout_rows=10,
-            holdout_metrics={"rmse": 0.6},
-            diagnostics_set="holdout",
-            shap_summary=[],
-            feature_importance_loss=[],
-            double_lift=[],
-            loss_history=[],
-            ave_per_feature=[],
-            residuals_histogram=[],
-            residuals_stats={},
-            actual_vs_predicted=[],
-            lorenz_curve=[],
-            lorenz_curve_perfect=[],
-            pdp_data=[],
-            glm_coefficients=[],
-            glm_relativities=[],
-            glm_fit_statistics={},
-            glm_regularization_path=None,
-        )
-
-        with patch("haute.modelling._mlflow_log.log_experiment") as mock_log:
-            job._log_to_mlflow(result)
-
-        mock_log.assert_called_once()
-        call_kwargs = mock_log.call_args[1]
-        assert call_kwargs["experiment_name"] == "/test/exp"
-        assert call_kwargs["run_name"] == "mlflow_full"
-        assert call_kwargs["metrics"] == {"rmse": 0.5}
-        assert call_kwargs["model_name"] == "my_model"
-
-
-# ---------------------------------------------------------------------------
 # CatBoostAlgorithm.fit — eval_df builds eval_pool automatically
 # ---------------------------------------------------------------------------
 
@@ -2232,8 +2139,9 @@ class TestMlflowExperimentTrigger:
     def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_optional_catboost_diagnostics(monkeypatch)
 
-    def test_mlflow_experiment_triggers_log(self, tmp_path):
-        """When mlflow_experiment is set, _log_to_mlflow is called during run()."""
+    def test_mlflow_experiment_logs_a_contracted_candidate_run(self, tmp_path):
+        """A scripted run with mlflow_experiment logs one candidate built from the
+        files it just wrote, identified by the job's own training identity."""
         from haute.modelling._training_job import TrainingJob
 
         rng = np.random.RandomState(42)
@@ -2245,13 +2153,41 @@ class TestMlflowExperimentTrigger:
             target="y",
             params=_fast_training_params(),
             mlflow_experiment="/test/exp",
+            mlflow_destination="local",
+            evaluation=_RANDOM_EVALUATION,
             output_dir=str(tmp_path),
         )
 
         with patch("haute.modelling._mlflow_log.log_experiment") as mock_log:
-            job.run()
+            result = job.run()
 
         mock_log.assert_called_once()
+        kwargs = mock_log.call_args.kwargs
+        assert kwargs["experiment_name"] == "/test/exp"
+        assert kwargs["destination"] == "local"
+        candidate = kwargs["candidate"]
+        assert candidate.run_name.startswith("mlflow_trigger · ")
+        assert candidate.tags["haute.training_identity_sha256"] == job.training_identity_sha256
+        assert candidate.artifacts.model == Path(result.model_path)
+        candidate.artifacts.require_files()
+        assert set(candidate.artifacts.evidence) == {
+            "evaluation_plan",
+            "evaluation_results",
+            "evaluation_report",
+        }
+        assert all(name.startswith("final_test_") for name in candidate.metrics)
+
+    def test_mlflow_experiment_requires_an_evaluation_contract(self):
+        from haute.errors import HauteValidationError
+        from haute.modelling._training_job import TrainingJob
+
+        with pytest.raises(HauteValidationError, match="requires an explicit evaluation"):
+            TrainingJob(
+                name="no_eval",
+                data=pl.DataFrame({"y": [1.0]}),
+                target="y",
+                mlflow_experiment="/test/exp",
+            )
 
 
 # ---------------------------------------------------------------------------

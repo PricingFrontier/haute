@@ -732,6 +732,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
             node_config=("output_column", "task"),
             user_code=("code",),
             artifacts=(
+                "alias",
                 "artifact_path",
                 "feature_contract_path",
                 "mlflow_destination",
@@ -795,7 +796,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
                 "metrics",
                 "mlflow_destination",
                 "mlflow_experiment",
-                "model_name",
+                "model_export_path",
                 "monotone_constraints",
                 "name",
                 "offset",
@@ -830,7 +831,6 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
                 "mlflow_destination",
                 "mlflow_experiment",
                 "mode",
-                "model_name",
                 "objective",
                 "quote_id",
                 "record_history",
@@ -863,6 +863,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
             ),
             source_selection=("ratebook_input",),
             artifacts=(
+                "alias",
                 "artifact_path",
                 "mlflow_destination",
                 "registered_model",

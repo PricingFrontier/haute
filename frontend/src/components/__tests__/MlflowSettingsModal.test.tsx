@@ -84,7 +84,6 @@ function setInventory(over: Partial<MlflowSlice> = {}): void {
       status: "ready",
       installed: true,
       importable: true,
-      auto: "databricks",
       destinations: [DATABRICKS_PROFILE, SERVER, LOCAL],
       detail: "",
       ...over,

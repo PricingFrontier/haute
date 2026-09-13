@@ -540,7 +540,7 @@ def handle_init(config: InitConfig) -> None:
     (rating_dir / "main.py").write_text(starter_pipeline(name), encoding="utf-8")
 
     # -- rating/ placeholder directories (used once the pipeline grows) --------
-    for sub in ("config", "data", "models", "outputs"):
+    for sub in ("config", "data", "outputs"):
         (rating_dir / sub).mkdir(exist_ok=True)
 
     # -- haute.toml - project + deploy + safety + CI config --------------------

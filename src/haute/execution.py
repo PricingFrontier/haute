@@ -13,6 +13,7 @@ import atexit
 import shutil
 import tempfile
 import threading
+import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -1042,6 +1043,38 @@ def _mlflow_backend_signature(config: Mapping[str, object]) -> object:
         return {"unresolved": str(exc)}
 
 
+def _mlflow_registered_version_signature(config: Mapping[str, object]) -> object:
+    """The concrete version a registered-model source targets right now.
+
+    An alias, ``"latest"`` or an empty version resolves through the registry,
+    and its target moves while the node config stays identical; keying on the
+    reference text would replay predictions from the version it left. A
+    concrete version is immutable and needs no lookup. A failed lookup returns
+    an ``{"unresolved": <exception type>, "attempt": <random id>}`` marker —
+    never the message, which can carry a server URL. The random id makes every
+    failed lookup a distinct identity, so an entry written after one failure
+    (for example when the registry recovers before the model load) is never
+    served during a later failure; execution itself reports the failure.
+    """
+    version = str(config.get("version", "") or "")
+    alias = str(config.get("alias", "") or "")
+    if not alias and version not in ("", "latest"):
+        return version
+    from haute._mlflow_utils import resolve_mlflow_source
+
+    try:
+        _run_id, resolved_version, _mlflow, _client, _backend = resolve_mlflow_source(
+            source_type="registered",
+            registered_model=str(config.get("registered_model", "") or ""),
+            version=version,
+            destination=str(config.get("mlflow_destination", "") or ""),
+            alias=alias,
+        )
+    except Exception as exc:
+        return {"unresolved": type(exc).__name__, "attempt": uuid.uuid4().hex}
+    return resolved_version
+
+
 def _runtime_input_fingerprint_entry(
     graph: PipelineGraph,
     node: GraphNode,
@@ -1052,8 +1085,9 @@ def _runtime_input_fingerprint_entry(
     MLflow-sourced ``MODEL_SCORE`` or ``OPTIMISER_APPLY`` node records the
     *resolved* backend identity, because its stored config (``run_id``,
     ``version``, ``sourceType``, ``mlflow_destination``) stays identical when
-    the server URL, the local folder, or the auto destination changes
-    underneath it.
+    the server URL, the local folder, or the node's destination changes
+    underneath it. A registered source also records the version its alias or
+    ``latest`` reference currently targets.
     """
     config = node.data.config
     files: dict[str, object] = {
@@ -1071,6 +1105,8 @@ def _runtime_input_fingerprint_entry(
         NodeType.OPTIMISER_APPLY,
     ) and config.get("sourceType") in ("run", "registered"):
         files["mlflow_backend"] = _mlflow_backend_signature(config)
+        if config.get("sourceType") == "registered":
+            files["registered_version"] = _mlflow_registered_version_signature(config)
     return checked_cache_identity_record(
         CacheIdentityRecord.RUNTIME_INPUT_ENTRY,
         {

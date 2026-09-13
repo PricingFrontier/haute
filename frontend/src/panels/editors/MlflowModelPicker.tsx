@@ -1,8 +1,13 @@
 import { SELECT_STYLE } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
-import type { MlflowBrowserState, Run } from "../../hooks/useMlflowBrowser"
+import type { MlflowBrowserState, ModelVersion, Run } from "../../hooks/useMlflowBrowser"
 import { configField } from "../../utils/configField"
 import { CommittedTextField } from "../../components/form"
+import {
+  registeredSelectionUpdate,
+  registeredSelectionValue,
+  resolveLoadedVersion,
+} from "../../utils/mlflowModelMetadata"
 
 // ─── Registered Model Picker ─────────────────────────────────────
 
@@ -10,6 +15,12 @@ export interface RegisteredModelPickerProps {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   mlflow: MlflowBrowserState
+  /**
+   * Extra config keys merged into onUpdate when a version or alias is chosen.
+   * Receives the loaded version the choice resolves to ("latest" is the newest,
+   * an alias the version it targets), or undefined when versions are not loaded.
+   */
+  onVersionSelected?: (version: ModelVersion | undefined) => Record<string, unknown>
 }
 
 /**
@@ -20,6 +31,7 @@ export function RegisteredModelPicker({
   config,
   onUpdate,
   mlflow,
+  onVersionSelected,
 }: RegisteredModelPickerProps) {
   const {
     models,
@@ -34,6 +46,14 @@ export function RegisteredModelPicker({
 
   const selectedModel = configField(config, "registered_model", "")
   const selectedModelVersions = modelVersionsFor === selectedModel ? modelVersions : []
+  const selectedAlias = configField(config, "alias", "")
+  const selectionValue = registeredSelectionValue(
+    configField(config, "version", "latest"),
+    selectedAlias,
+  )
+  const aliasOptions = selectedModelVersions.flatMap((v) =>
+    (v.aliases ?? []).map((alias) => ({ alias, version: v.version })),
+  )
 
   return (
     <div className="flex flex-col gap-2">
@@ -50,7 +70,7 @@ export function RegisteredModelPicker({
           value={selectedModel}
           onFocus={refreshModels}
           onChange={(e) =>
-            onUpdate({ registered_model: e.target.value, version: "latest" })
+            onUpdate({ registered_model: e.target.value, version: "latest", alias: undefined })
           }
         >
           <option value="">
@@ -73,8 +93,8 @@ export function RegisteredModelPicker({
         )}
         {!errorModels && !loadingModels && models.length === 0 && (
           <p className="mt-0.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
-            No registered models yet — train a model and log it with a model
-            name to register one.
+            No registered models yet — haute logs training runs; your promotion
+            process registers them.
           </p>
         )}
       </div>
@@ -89,11 +109,27 @@ export function RegisteredModelPicker({
           <select
             className="mt-1 w-full text-xs px-2.5 py-1.5 rounded-lg focus:outline-none focus:ring-2"
             style={SELECT_STYLE}
-            value={configField(config, "version", "latest")}
+            value={selectionValue}
             onFocus={() => refreshVersions(selectedModel)}
-            onChange={(e) => onUpdate("version", e.target.value)}
+            onChange={(e) => {
+              const update = registeredSelectionUpdate(e.target.value)
+              const resolved = resolveLoadedVersion(
+                selectedModelVersions,
+                update.version ?? "",
+                update.alias ?? "",
+              )
+              onUpdate({ ...update, ...(onVersionSelected ? onVersionSelected(resolved) : {}) })
+            }}
           >
             <option value="latest">latest</option>
+            {selectedAlias && !aliasOptions.some((a) => a.alias === selectedAlias) && (
+              <option value={selectionValue}>@{selectedAlias}</option>
+            )}
+            {aliasOptions.map(({ alias, version }) => (
+              <option key={`alias:${alias}`} value={`alias:${alias}`}>
+                @{alias} → v{version}
+              </option>
+            ))}
             {selectedModelVersions.map((v) => (
               <option key={v.version} value={v.version}>
                 v{v.version} — {v.status}

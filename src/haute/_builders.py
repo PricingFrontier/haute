@@ -999,10 +999,11 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
         artifact_path=config.get("artifact_path", ""),
         registered_model=registered_model,
         version=config.get("version", "latest"),
+        alias=str(config.get("alias", "") or ""),
         task=config.get("task", "regression"),
         # Planning loads from the node's own destination, exactly like the
-        # scorer built for it: a node pointed at Local must never reach the
-        # auto backend just to learn its feature columns.
+        # scorer built for it: planning must never reach another backend just
+        # to learn its feature columns.
         destination=str(config.get("mlflow_destination", "") or ""),
     )
     if scoring_model.feature_names:
@@ -1081,6 +1082,7 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         categorical_levels=declared_categorical_levels,
         reuse_loaded_model=ctx.reuse_loaded_model,
         mlflow_destination=str(config.get("mlflow_destination", "") or ""),
+        alias=str(config.get("alias", "") or ""),
     )
 
     return ctx.func_name, scorer.score, False

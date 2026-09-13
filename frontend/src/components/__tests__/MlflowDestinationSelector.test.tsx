@@ -69,7 +69,6 @@ function setInventory(over: Partial<MlflowSlice> = {}): void {
       status: "ready",
       installed: true,
       importable: true,
-      auto: "databricks",
       destinations: [DATABRICKS_GREEN, SERVER_AMBER, LOCAL],
       detail: "",
       ...over,
@@ -127,15 +126,10 @@ describe("MlflowDestinationSelector", () => {
     radios.forEach((el) => expect(el).toHaveClass("sr-only"))
   })
 
-  it("selects the effective destination, so the same node value follows auto", () => {
-    renderSelector({ value: "" })
-    expect(radio("Databricks")).toBeChecked()
-    expect(radio("Local folder")).not.toBeChecked()
-
-    cleanup()
-    setInventory({ auto: "local" })
+  it("selects the local folder when the node names no destination, even with working remotes", () => {
     renderSelector({ value: "" })
     expect(radio("Local folder")).toBeChecked()
+    expect(radio("Databricks")).not.toBeChecked()
 
     cleanup()
     renderSelector({ value: "server" })
@@ -143,25 +137,16 @@ describe("MlflowDestinationSelector", () => {
     expect(radio("Local folder")).not.toBeChecked()
   })
 
-  it("labels no option 'auto' and offers no 'Use auto' when the node stores nothing", () => {
-    renderSelector({ value: "" })
+  it("has no automatic choice: no 'auto' label and no 'Use auto' control", () => {
+    renderSelector({ value: "databricks" })
 
     const group = screen.getByRole("radiogroup", { name: "MLflow destination" })
-    expect(within(group).queryByText("auto")).toBeNull()
-    expect(screen.queryByRole("button", { name: "Use auto" })).toBeNull()
-  })
-
-  it("renders 'Use auto' which clears the stored choice when the node stores one", () => {
-    const { onChange } = renderSelector({ value: "local" })
-
-    const group = screen.getByRole("radiogroup", { name: "MLflow destination" })
-    expect(within(group).queryByText("auto")).toBeNull()
-    fireEvent.click(screen.getByRole("button", { name: "Use auto" }))
-    expect(onChange).toHaveBeenCalledWith("")
+    expect(within(group).queryByText(/auto/i)).toBeNull()
+    expect(screen.queryByRole("button", { name: /auto/i })).toBeNull()
   })
 
   it("calls onChange with the key of a configured option that is clicked", () => {
-    const { onChange } = renderSelector({ value: "" })
+    const { onChange } = renderSelector({ value: "databricks" })
 
     fireEvent.click(radio("MLflow server"))
     expect(onChange).toHaveBeenCalledWith("server")
@@ -170,29 +155,15 @@ describe("MlflowDestinationSelector", () => {
     expect(onChange).toHaveBeenCalledWith("local")
   })
 
-  it("pins the destination auto currently resolves to when its checked option is clicked", () => {
-    // A checked radio emits no change event, so without an explicit pin a
-    // local-only project could never move a node from Auto to Local.
-    setInventory({ auto: "local", destinations: [DATABRICKS_GREY, SERVER_AMBER, LOCAL] })
+  it("does not re-emit the current choice when its checked option is clicked again", () => {
     const { onChange } = renderSelector({ value: "" })
-
-    const local = radio("Local folder")
-    expect(local).toBeChecked()
-    fireEvent.click(local)
-    expect(onChange).toHaveBeenCalledTimes(1)
-    expect(onChange).toHaveBeenCalledWith("local")
-  })
-
-  it("does not re-emit an explicit choice when its checked option is clicked again", () => {
-    setInventory({ auto: "databricks" })
-    const { onChange } = renderSelector({ value: "local" })
 
     fireEvent.click(radio("Local folder"))
     expect(onChange).not.toHaveBeenCalled()
   })
 
   it("greys an unconfigured remote: aria-disabled, no onChange, opens the settings modal", () => {
-    setInventory({ auto: "local", destinations: [DATABRICKS_GREY, SERVER_AMBER, LOCAL] })
+    setInventory({ destinations: [DATABRICKS_GREY, SERVER_AMBER, LOCAL] })
     const { onChange } = renderSelector({ value: "" })
 
     const databricks = radio("Databricks")
@@ -213,13 +184,13 @@ describe("MlflowDestinationSelector", () => {
     expect(screen.queryByTestId("mlflow-light-local")).toBeNull()
 
     cleanup()
-    setInventory({ auto: "local", destinations: [DATABRICKS_GREY, SERVER_GREY, LOCAL] })
+    setInventory({ destinations: [DATABRICKS_GREY, SERVER_GREY, LOCAL] })
     renderSelector({ value: "" })
     expect(screen.getByTestId("mlflow-light-databricks")).toHaveAttribute("data-light", "grey")
     expect(screen.getByTestId("mlflow-light-server")).toHaveAttribute("data-light", "grey")
 
     cleanup()
-    setInventory({ status: "pending", auto: "", destinations: [] })
+    setInventory({ status: "pending", destinations: [] })
     renderSelector({ value: "" })
     expect(screen.getByTestId("mlflow-light-databricks")).toHaveAttribute("data-light", "pending")
     expect(screen.getByTestId("mlflow-light-server")).toHaveAttribute("data-light", "pending")
@@ -240,7 +211,7 @@ describe("MlflowDestinationSelector", () => {
     })
 
     it("grey names what to configure and that clicking configures it", () => {
-      setInventory({ auto: "local", destinations: [DATABRICKS_GREY, SERVER_AMBER, LOCAL] })
+      setInventory({ destinations: [DATABRICKS_GREY, SERVER_AMBER, LOCAL] })
       renderSelector({ value: "" })
       expect(tooltipOf("databricks")).toBe(
         "Not configured: Set MLFLOW_TRACKING_URI=databricks://<profile>. Click to configure.",
@@ -251,7 +222,7 @@ describe("MlflowDestinationSelector", () => {
     })
 
     it("pending says the connection is being checked", () => {
-      setInventory({ status: "pending", auto: "", destinations: [] })
+      setInventory({ status: "pending", destinations: [] })
       renderSelector({ value: "" })
       expect(tooltipOf("databricks")).toBe("Checking connection…")
       expect(tooltipOf("server")).toBe("Checking connection…")
@@ -260,20 +231,20 @@ describe("MlflowDestinationSelector", () => {
 
   describe("resolved destination line", () => {
     it("names the effective entry's label and destination", () => {
-      renderSelector({ value: "" })
+      renderSelector({ value: "databricks" })
       expect(screen.getByTestId("mlflow-destination-resolved")).toHaveTextContent(
         "Databricks — databricks://team",
       )
 
       cleanup()
-      renderSelector({ value: "local" })
+      renderSelector({ value: "" })
       expect(screen.getByTestId("mlflow-destination-resolved")).toHaveTextContent(
         "Local folder — C:/proj/mlruns",
       )
     })
 
     it("names the entry's own detail when the effective destination is unconfigured", () => {
-      setInventory({ auto: "local", destinations: [DATABRICKS_GREY, SERVER_GREY, LOCAL] })
+      setInventory({ destinations: [DATABRICKS_GREY, SERVER_GREY, LOCAL] })
       renderSelector({ value: "server" })
 
       expect(screen.getByTestId("mlflow-destination-resolved")).toHaveTextContent(
@@ -286,7 +257,6 @@ describe("MlflowDestinationSelector", () => {
         status: "error",
         installed: false,
         importable: false,
-        auto: "",
         destinations: [],
         detail: "MLflow is not installed.",
       })
@@ -312,28 +282,27 @@ describe("MlflowDestinationSelector", () => {
     expect(invalidateMlflow).toHaveBeenCalledTimes(1)
 
     cleanup()
-    setInventory({ status: "pending", auto: "", destinations: [] })
+    setInventory({ status: "pending", destinations: [] })
     renderSelector({ value: "" })
     expect(screen.getByRole("button", { name: "Re-check MLflow connections" })).toBeDisabled()
   })
 
   it("disables the radios and says so while the inventory is loading", () => {
-    setInventory({ status: "pending", auto: "", destinations: [] })
+    setInventory({ status: "pending", destinations: [] })
     renderSelector({ value: "" })
 
     screen.getAllByRole("radio").forEach((el) => expect(el).toBeDisabled())
     expect(screen.getByTestId("mlflow-destination-resolved")).toHaveTextContent("Checking MLflow…")
   })
 
-  it("disables the radios and the clear control when the caller disables the control", () => {
-    renderSelector({ value: "local", disabled: true })
+  it("disables the radios when the caller disables the control", () => {
+    renderSelector({ value: "server", disabled: true })
 
     screen.getAllByRole("radio").forEach((el) => expect(el).toBeDisabled())
-    expect(screen.getByRole("button", { name: "Use auto" })).toBeDisabled()
   })
 
   it("fetches the inventory on mount only while the store is pending", () => {
-    setInventory({ status: "pending", auto: "", destinations: [] })
+    setInventory({ status: "pending", destinations: [] })
     renderSelector({ value: "" })
     expect(fetchMlflow).toHaveBeenCalledTimes(1)
 

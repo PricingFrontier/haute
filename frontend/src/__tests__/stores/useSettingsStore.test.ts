@@ -57,7 +57,6 @@ const SERVER_AMBER = entry("server", {
 const OK_LOCAL: MlflowDestinationsResponse = {
   mlflow_installed: true,
   mlflow_importable: true,
-  auto: "local",
   destinations: [entry("databricks"), entry("server"), LOCAL_ENTRY],
   detail: "",
 }
@@ -65,7 +64,6 @@ const OK_LOCAL: MlflowDestinationsResponse = {
 const OK_SERVER: MlflowDestinationsResponse = {
   mlflow_installed: true,
   mlflow_importable: true,
-  auto: "server",
   destinations: [
     entry("databricks"),
     entry("server", {
@@ -89,7 +87,6 @@ function resetStore() {
       status: "pending",
       installed: null,
       importable: null,
-      auto: "",
       destinations: [],
       detail: "",
     },
@@ -195,12 +192,11 @@ describe("useSettingsStore", () => {
       expect(mockInventory).toHaveBeenCalledWith(true)
     })
 
-    it("successful inventory sets ready with auto and destinations", async () => {
+    it("successful inventory sets ready with its destinations", async () => {
       const mockInventory = vi.mocked(getMlflowDestinations)
       mockInventory.mockResolvedValue({
         mlflow_installed: true,
         mlflow_importable: true,
-        auto: "databricks",
         destinations: [
           entry("databricks", {
             configured: true,
@@ -222,7 +218,7 @@ describe("useSettingsStore", () => {
       })
 
       const { mlflow } = useSettingsStore.getState()
-      expect(mlflow.auto).toBe("databricks")
+      expect("auto" in mlflow).toBe(false)
       expect(mlflow.destinations.map((d) => d.key)).toEqual(["databricks", "server", "local"])
       expect(mlflow.destinations[0].destination).toBe("databricks://team")
       expect(mlflow.installed).toBe(true)
@@ -242,7 +238,6 @@ describe("useSettingsStore", () => {
       const { mlflow } = useSettingsStore.getState()
       expect(mlflow.installed).toBeNull()
       expect(mlflow.importable).toBeNull()
-      expect(mlflow.auto).toBe("")
       expect(mlflow.destinations).toEqual([])
       expect(mlflow.detail).toBe("Network error")
     })
@@ -267,7 +262,6 @@ describe("useSettingsStore", () => {
       mockInventory.mockResolvedValue({
         mlflow_installed: false,
         mlflow_importable: false,
-        auto: "",
         destinations: [],
         detail: "MLflow is not installed (pip install mlflow)",
       })
@@ -288,7 +282,6 @@ describe("useSettingsStore", () => {
       mockInventory.mockResolvedValue({
         mlflow_installed: true,
         mlflow_importable: false,
-        auto: "",
         destinations: [],
         detail: "MLflow is installed but cannot be imported",
       })
@@ -309,7 +302,6 @@ describe("useSettingsStore", () => {
       mockInventory.mockResolvedValue({
         mlflow_installed: true,
         mlflow_importable: true,
-        auto: "",
         destinations: [
           entry("databricks", {
             detail: "Set DATABRICKS_MLFLOW_HOST and DATABRICKS_MLFLOW_TOKEN, or MLFLOW_TRACKING_URI=databricks://<profile>",
@@ -328,7 +320,6 @@ describe("useSettingsStore", () => {
         expect(useSettingsStore.getState().mlflow.status).toBe("ready")
       })
       const { mlflow } = useSettingsStore.getState()
-      expect(mlflow.auto).toBe("")
       expect(mlflow.destinations[0].detail).toContain("DATABRICKS_MLFLOW_TOKEN")
       expect(mlflow.detail).toContain("mode")
     })
@@ -347,13 +338,13 @@ describe("useSettingsStore", () => {
       await vi.waitFor(() => {
         expect(useSettingsStore.getState().mlflow.status).toBe("ready")
       })
-      expect(useSettingsStore.getState().mlflow.auto).toBe("local")
+      expect(useSettingsStore.getState().mlflow.destinations[1].configured).toBe(false)
 
       mockInventory.mockResolvedValue(OK_SERVER)
       useSettingsStore.getState().invalidateMlflow()
 
       await vi.waitFor(() => {
-        expect(useSettingsStore.getState().mlflow.auto).toBe("server")
+        expect(useSettingsStore.getState().mlflow.destinations[1].configured).toBe(true)
       })
       const { mlflow } = useSettingsStore.getState()
       expect(mlflow.status).toBe("ready")
@@ -377,7 +368,7 @@ describe("useSettingsStore", () => {
       resolveFirst!(OK_LOCAL)
 
       await vi.waitFor(() => {
-        expect(useSettingsStore.getState().mlflow.auto).toBe("server")
+        expect(useSettingsStore.getState().mlflow.destinations[1].configured).toBe(true)
       })
       expect(mockInventory).toHaveBeenCalledTimes(2)
     })
@@ -659,7 +650,6 @@ describe("useSettingsStore", () => {
           setTimeout(() => resolve({
             mlflow_installed: true,
             mlflow_importable: true,
-            auto: "server",
             destinations: [entry("databricks"), SERVER_AMBER, LOCAL_ENTRY],
             detail: "",
           }), 6_000)

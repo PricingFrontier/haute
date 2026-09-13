@@ -23,8 +23,8 @@ from haute.modelling._mlflow_settings import (
     classify_tracking_uri,
     list_destinations,
     load_mlflow_settings,
+    node_destination_key,
     resolve_destination,
-    resolve_tracking_config,
     save_mlflow_settings,
     validate_destination_key,
 )
@@ -232,7 +232,7 @@ class TestLoadSaveSettings:
 
 class TestValidateDestinationKey:
     @pytest.mark.parametrize("value", ["", "databricks", "server", "local"])
-    def test_accepts_known_keys_and_auto(self, value: str) -> None:
+    def test_accepts_known_keys_and_empty(self, value: str) -> None:
         assert validate_destination_key(value) == value
 
     @pytest.mark.parametrize("value", ["Databricks", "file", "managed", "auto"])
@@ -299,7 +299,6 @@ class TestResolveDestination:
         assert "DATABRICKS_MLFLOW_HOST" in message and "DATABRICKS_MLFLOW_TOKEN" in message
         assert "DATABRICKS_HOST/DATABRICKS_TOKEN are set but are never used for MLflow" in message
         assert "dapi-general" not in message
-        assert resolve_tracking_config(project_root).mode == "local"
 
     def test_pair_form_rejects_ambient_databricks_config_profile(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
@@ -317,8 +316,6 @@ class TestResolveDestination:
         assert "tracking_uri" in by_key["server"].detail
         assert by_key["local"].configured is True
         assert Path(by_key["local"].destination) == project_root / "mlruns"
-        with pytest.raises(MlflowConfigError, match="DATABRICKS_CONFIG_PROFILE"):
-            resolve_tracking_config(project_root)
 
     def test_profile_uri_ignores_ambient_databricks_config_profile(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
@@ -343,11 +340,9 @@ class TestResolveDestination:
         with pytest.raises(MlflowConfigError, match="MLFLOW_ENABLE_DB_SDK") as excinfo:
             resolve_destination("databricks", project_root)
         assert not isinstance(excinfo.value, MlflowDestinationUnconfigured)
-        # The inventory reports it and the auto rule fails loudly instead of skipping past it.
+        # The inventory reports it on the Databricks entry.
         entry = next(e for e in list_destinations(project_root) if e.key == "databricks")
         assert entry.configured is False and "MLFLOW_ENABLE_DB_SDK" in entry.detail
-        with pytest.raises(MlflowConfigError, match="MLFLOW_ENABLE_DB_SDK"):
-            resolve_tracking_config(project_root)
 
     def test_sdk_mode_without_any_databricks_configuration_is_just_unconfigured(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
@@ -355,7 +350,6 @@ class TestResolveDestination:
         monkeypatch.setenv("MLFLOW_ENABLE_DB_SDK", "true")
         with pytest.raises(MlflowDestinationUnconfigured):
             resolve_destination("databricks", project_root)
-        assert resolve_tracking_config(project_root).mode == "local"
 
     def test_pin_is_applied_when_databricks_resolves(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
@@ -497,44 +491,41 @@ class TestResolveDestination:
             resolve_destination("", project_root)
 
 
-class TestAutoRule:
-    def test_default_is_local(self, project_root: Path) -> None:
-        assert resolve_tracking_config(project_root).mode == "local"
+class TestNodeDestinationKey:
+    """A node without a destination uses the local folder; nothing is chosen for it."""
 
-    def test_server_beats_local(self, project_root: Path) -> None:
-        _write_mlflow(project_root, 'tracking_uri = "http://localhost:5000"\n')
-        assert resolve_tracking_config(project_root).mode == "server"
+    def test_empty_is_the_local_folder(self, project_root: Path) -> None:
+        assert node_destination_key("") == "local"
+        assert resolve_destination(node_destination_key(""), project_root).mode == "local"
 
-    def test_databricks_beats_server(
+    @pytest.mark.parametrize("key", ["databricks", "server", "local"])
+    def test_a_named_key_is_kept(self, key: str) -> None:
+        assert node_destination_key(key) == key
+
+    def test_configured_remotes_are_never_chosen_for_a_node(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _write_mlflow(project_root, 'tracking_uri = "http://localhost:5000"\n')
-        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
-        assert resolve_tracking_config(project_root).mode == "databricks"
-
-    def test_host_token_pair_selects_databricks(
-        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
         monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
         monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "t")
-        assert resolve_tracking_config(project_root).mode == "databricks"
+        assert resolve_destination(node_destination_key(""), project_root).mode == "local"
+        assert resolve_destination("server", project_root).mode == "server"
+        assert resolve_destination("databricks", project_root).mode == "databricks"
 
-    def test_partial_host_token_is_not_databricks(
-        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
-        assert resolve_tracking_config(project_root).mode == "local"
+    def test_unknown_key_is_rejected(self) -> None:
+        with pytest.raises(MlflowConfigError, match="databricks, server, or local"):
+            node_destination_key("auto")
 
-    def test_unsupported_env_scheme_fails_auto_loudly(
+    def test_unsupported_env_scheme_fails_the_local_folder_loudly(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
         with pytest.raises(MlflowConfigError, match="sqlite"):
-            resolve_tracking_config(project_root)
+            resolve_destination(node_destination_key(""), project_root)
 
 
 class TestListDestinations:
-    def test_reports_all_three_entries_in_auto_order(self, project_root: Path) -> None:
+    def test_reports_all_three_entries_in_display_order(self, project_root: Path) -> None:
         entries = list_destinations(project_root)
         assert [e.key for e in entries] == ["databricks", "server", "local"]
         by_key = {e.key: e for e in entries}

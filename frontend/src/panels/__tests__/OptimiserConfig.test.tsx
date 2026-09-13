@@ -109,7 +109,6 @@ function setMlflowInventory(over: Partial<MlflowSlice> = {}): void {
       status: "ready",
       installed: true,
       importable: true,
-      auto: "local",
       destinations: [MLFLOW_LOCAL],
       detail: "",
       ...over,
@@ -2263,12 +2262,19 @@ describe("OptimiserConfig", () => {
       expect(proseText(/toolbar/i)).toBeNull()
     })
 
-    it("names the Databricks default experiment path when the effective destination is Databricks", () => {
+    it("names the Databricks default experiment path when the node chooses Databricks", () => {
       setMlflowInventory({
-        auto: "databricks",
         destinations: [MLFLOW_DATABRICKS, MLFLOW_SERVER, MLFLOW_LOCAL],
       })
-      renderMlflowSection()
+      renderMlflowSection({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: {},
+          mlflow_destination: "databricks",
+        },
+      })
       const help = tooltipTextOf("About the experiment path")
       expect(help).toContain("Leave blank to use /Shared/haute/My Optimiser.")
       expect(help).toContain("named group")
@@ -2282,9 +2288,8 @@ describe("OptimiserConfig", () => {
       )
     })
 
-    it("names the bare node label when the node picks local under the same inventory", () => {
+    it("names the bare node label when the node names no destination under the same inventory", () => {
       setMlflowInventory({
-        auto: "databricks",
         destinations: [MLFLOW_DATABRICKS, MLFLOW_SERVER, MLFLOW_LOCAL],
       })
       renderMlflowSection({
@@ -2293,7 +2298,6 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: {},
-          mlflow_destination: "local",
         },
       })
       const help = tooltipTextOf("About the experiment path")
@@ -2308,12 +2312,11 @@ describe("OptimiserConfig", () => {
 
     it("writes an explicit destination choice to the node config", () => {
       setMlflowInventory({
-        auto: "databricks",
         destinations: [MLFLOW_DATABRICKS, MLFLOW_SERVER, MLFLOW_LOCAL],
       })
       const props = renderMlflowSection()
-      fireEvent.click(screen.getByRole("radio", { name: /Local folder/ }))
-      expect(props.onUpdate).toHaveBeenCalledWith("mlflow_destination", "local")
+      fireEvent.click(screen.getByRole("radio", { name: /MLflow server/ }))
+      expect(props.onUpdate).toHaveBeenCalledWith("mlflow_destination", "server")
     })
   })
 })

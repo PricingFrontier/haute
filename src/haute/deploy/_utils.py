@@ -30,6 +30,15 @@ def get_haute_version() -> str:
         return "0.0.0-dev"
 
 
+def model_source_line(node_id: str, source: dict[str, Any]) -> str:
+    """One deploy-output line naming the registered model version a node bundles."""
+    alias = f" @{source['alias']}" if source.get("alias") else ""
+    return (
+        f"Model {node_id}: {source['registered_model']}{alias} -> version "
+        f"{source['version']} (run {source['run_id']})"
+    )
+
+
 def build_manifest(resolved: ResolvedDeploy) -> dict[str, Any]:
     """Build the deployment manifest dict.
 
@@ -53,6 +62,7 @@ def build_manifest(resolved: ResolvedDeploy) -> dict[str, Any]:
         "execution_policy": resolved.execution_policy,
         "artifacts": {name: path.as_posix() for name, path in resolved.artifacts.items()},
         "snapshot_provenance": resolved.snapshot_provenance,
+        "model_sources": resolved.model_sources,
         "pruned_graph": resolved.pruned_graph.model_dump(),
         "nodes_deployed": len(resolved.pruned_graph.nodes),
         "nodes_skipped": len(resolved.removed_node_ids),

@@ -1,5 +1,4 @@
-import { useCallback, useState } from "react"
-import { Info } from "lucide-react"
+import { useCallback, useMemo, useState } from "react"
 import { cancelTrain, estimateTrainingRam, trainModel } from "../api/client"
 import { runDispersionEstimate } from "../api/dispersion"
 import {
@@ -7,10 +6,6 @@ import {
   type DispersionParam,
   type TrainEstimate,
 } from "../api/types"
-import { CommittedTextField } from "../components/form"
-import MlflowDestinationSelector from "../components/MlflowDestinationSelector"
-import Tooltip from "../components/Tooltip"
-import { useMlflowBrowser } from "../hooks/useMlflowBrowser"
 import {
   useStaleConfigEstimate,
   type UseStaleConfigEstimateResult,
@@ -21,15 +16,10 @@ import {
   captureDocumentExecutionFence,
   isDocumentExecutionFenceCurrent,
 } from "../stores/useDocumentStatusStore"
-import useSettingsStore, { useMlflowDestinations } from "../stores/useSettingsStore"
+import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
 import { type ModellingPane } from "../stores/useUIStore"
 import { configField } from "../utils/configField"
-import {
-  defaultExperimentName,
-  effectiveMlflowDestination,
-  mlflowLogAvailability,
-} from "../utils/mlflowDestinations"
 import {
   executionErrorDetailMessage,
   executionJobStatusFromReason,
@@ -44,6 +34,7 @@ import {
 import type { OnUpdateConfig } from "./editors"
 import { useGraph } from "./useGraph"
 import { CommonFeatureConfig } from "./modelling/CommonFeatureConfig"
+import { ExportPane } from "./modelling/ExportPane"
 import { GLMFactorConfig } from "./modelling/GLMFactorConfig"
 import { GLMRegularizationConfig } from "./modelling/GLMRegularizationConfig"
 import { GLMTargetConfig } from "./modelling/GLMTargetConfig"
@@ -56,7 +47,11 @@ import {
   parseHyperparameters,
   parseTuningSearchSpace,
 } from "./modelling/hyperparameters"
+import { trainingIdentityConfig } from "../utils/modellingExportConfig"
+import { trainingLineage } from "../utils/trainedJobHandles"
+import { useTrainedJobRestore } from "./modelling/useTrainedJobRestore"
 import { SplitAndMetricsConfig } from "./modelling/SplitAndMetricsConfig"
+import { MODELLING_INPUT_STYLE } from "./modelling/styles"
 import { TargetAndTaskConfig } from "./modelling/TargetAndTaskConfig"
 import { TrainingActionsAndResults } from "./modelling/TrainingActionsAndResults"
 import type { ReactElement } from "react"
@@ -85,12 +80,6 @@ const DEFAULT_EVALUATION: Record<string, unknown> = {
   seed: 42,
   validation: { method: "single", size: 0.2 },
 }
-
-const TRAIN_INPUT_STYLE = {
-  background: "var(--bg-input)",
-  border: "1px solid var(--border)",
-  color: "var(--text-primary)",
-} as const
 
 function errorMessage(error: unknown) {
   return executionErrorDetailMessage(error) ?? String(error)
@@ -170,33 +159,6 @@ type TrainPaneProps = {
   onTrain: () => void
   onCancel: () => void
   tuningEnabled: boolean
-  nodeLabel: string
-}
-
-/**
- * The manual-only note. It used to sit in the pane as always-visible prose;
- * it is help, not state, so it now lives behind the section's Info icon and
- * nowhere else.
- */
-const MLFLOW_MANUAL_HELP =
-  "Used only when you press “Log run to MLflow” after training completes. " +
-  "Nothing is logged automatically."
-
-const MLFLOW_MODEL_NAME_HELP =
-  "Optional. Also registers the trained model in the MLflow model registry under this name, " +
-  "adding a new version each time you log, so a Model Score node can load it by name and " +
-  "version. On Databricks use a Unity Catalog name: catalog.schema.model. Leave blank to log " +
-  "the run without registering it."
-
-/** The offset-field help pattern: a hover-only Info icon beside a label. */
-function MlflowHelpIcon({ label, ariaLabel }: { label: string; ariaLabel: string }) {
-  return (
-    <Tooltip label={label}>
-      <span className="inline-flex cursor-help" aria-label={ariaLabel}>
-        <Info size={11} style={{ color: "var(--text-muted)" }} />
-      </span>
-    </Tooltip>
-  )
 }
 
 function TrainPane({
@@ -213,31 +175,9 @@ function TrainPane({
   onTrain,
   onCancel,
   tuningEnabled,
-  nodeLabel,
 }: TrainPaneProps) {
   const rowLimit = typeof config.row_limit === "number" ? config.row_limit : null
   const [validationRevealed, setValidationRevealed] = useState(false)
-
-  // Where this node logs is its own config, so every derived value below —
-  // the default experiment path, whether logging is possible, and which
-  // destination the datalist browses — follows `mlflow_destination`.
-  const mlflowDestination = configField(config, "mlflow_destination", "")
-  const mlflowInventory = useMlflowDestinations()
-  const mlflowAvailability = mlflowLogAvailability(mlflowInventory, mlflowDestination)
-  const effectiveDestination = effectiveMlflowDestination(mlflowDestination, mlflowInventory.auto)
-  const experimentDefault = defaultExperimentName(nodeLabel, effectiveDestination)
-
-  // Experiment suggestions belong to one backend, and the shared browser hook
-  // owns that lifecycle: it scopes every request to this node's destination
-  // and drops arrays, guards and in-flight responses whenever the effective
-  // destination changes.
-  const { experiments, refreshExperiments } = useMlflowBrowser({
-    destination: mlflowDestination,
-  })
-  const loadExperimentOptions = () => {
-    if (!mlflowAvailability.available) return
-    refreshExperiments()
-  }
 
   const toggleGpu = (enabled: boolean) => {
     const { task_type: _taskType, ...nonGpuParams } = params
@@ -289,7 +229,7 @@ function TrainPane({
           }}
           placeholder="All rows"
           className="w-32 rounded px-2 py-1 text-xs font-mono"
-          style={TRAIN_INPUT_STYLE}
+          style={MODELLING_INPUT_STYLE}
         />
         {rowLimit !== null && rowLimit > 0 && (
           <span className="text-[10px] font-mono" style={{ color: "var(--text-muted)" }}>
@@ -297,67 +237,6 @@ function TrainPane({
           </span>
         )}
       </div>
-      <section className="space-y-2" aria-labelledby="mlflow-logging-heading">
-        <div className="flex items-center gap-1">
-          <h3
-            id="mlflow-logging-heading"
-            className="text-[11px] font-bold uppercase tracking-[0.08em]"
-            style={{ color: "var(--text-muted)" }}
-          >
-            MLflow logging
-          </h3>
-          <MlflowHelpIcon label={MLFLOW_MANUAL_HELP} ariaLabel="About MLflow logging" />
-        </div>
-        <MlflowDestinationSelector
-          value={mlflowDestination}
-          onChange={(value) => onUpdate("mlflow_destination", value)}
-        />
-        <label className="block text-[11px]" style={{ color: "var(--text-muted)" }}>
-          <span className="inline-flex items-center gap-1">
-            Experiment path
-            <MlflowHelpIcon
-              label={
-                "The MLflow experiment this run is logged into: a named group that collects " +
-                "related runs so you can compare them. On Databricks it is a workspace folder " +
-                "path; on an MLflow server or local folder it is a plain name. " +
-                `Leave blank to use ${experimentDefault}.`
-              }
-              ariaLabel="About the experiment path"
-            />
-          </span>
-          <CommittedTextField
-            type="text"
-            aria-label="MLflow experiment path"
-            value={configField(config, "mlflow_experiment", "")}
-            onCommit={(value) => onUpdate("mlflow_experiment", value)}
-            placeholder={experimentDefault}
-            list="mlflow-experiment-options"
-            onFocus={loadExperimentOptions}
-            className="mt-0.5 w-full rounded-lg px-2.5 py-1.5 text-xs font-mono"
-            style={TRAIN_INPUT_STYLE}
-          />
-          <datalist id="mlflow-experiment-options">
-            {experiments.map((experiment) => (
-              <option key={experiment.experiment_id} value={experiment.name} />
-            ))}
-          </datalist>
-        </label>
-        <label className="block text-[11px]" style={{ color: "var(--text-muted)" }}>
-          <span className="inline-flex items-center gap-1">
-            Model name
-            <MlflowHelpIcon label={MLFLOW_MODEL_NAME_HELP} ariaLabel="About the model name" />
-          </span>
-          <CommittedTextField
-            type="text"
-            aria-label="MLflow model name"
-            value={configField(config, "model_name", "")}
-            onCommit={(value) => onUpdate("model_name", value)}
-            placeholder="MLflow model name"
-            className="mt-0.5 w-full rounded-lg px-2.5 py-1.5 text-xs font-mono"
-            style={TRAIN_INPUT_STYLE}
-          />
-        </label>
-      </section>
       <TrainingActionsAndResults
         validationMessages={validationRevealed ? validationMessages : []}
         training={Boolean(trainJob)}
@@ -477,6 +356,9 @@ export default function ModellingConfig({
   const hasTrainingConfigurationIssues = validationIssues.length > 0
   const validationMessages = validationIssues.map((issue) => issue.message)
 
+  // Export settings do not change the trained model, so the stale check and
+  // the RAM estimate follow the config without them.
+  const trainingIdentity = useMemo(() => trainingIdentityConfig(config), [config])
   const graph = useCallback(
     () => buildGraph(allNodes, edges, submodels, preamble),
     [allNodes, edges, submodels, preamble],
@@ -489,12 +371,15 @@ export default function ModellingConfig({
   )
   const estimate = useStaleConfigEstimate<TrainEstimate>(
     nodeId,
-    config,
+    trainingIdentity,
     cachedResult,
     estimateEndpoint,
     { source: activeSource, structuralVersion },
     { toastLabel: "RAM estimate failed" },
   )
+  // A completed result is remembered per document so a browser reload can put
+  // it back from the server; a result the server no longer holds is reported.
+  const trainedResultExpired = useTrainedJobRestore(nodeId, cachedResult, Boolean(trainJob), graph)
   const onEvaluationChange = useCallback(
     (nextEvaluation: Record<string, unknown>) => (
       onUpdate("evaluation", nextEvaluation)
@@ -515,9 +400,13 @@ export default function ModellingConfig({
     const documentFence = captureDocumentExecutionFence()
     if (!isDocumentExecutionFenceCurrent(documentFence)) return
     setSubmitting(true)
+    // The lineage is taken from the exact payload submitted, before awaiting, so
+    // an edit made while the request is pending never relabels this job.
+    const submittedGraph = graph()
+    const lineage = trainingLineage(submittedGraph)
     try {
       const result = await trainModel({
-        graph: graph(),
+        graph: submittedGraph,
         node_id: nodeId,
         source: useSettingsStore.getState().activeSource,
         streamingChunkSize: useSettingsStore.getState().streamingChunkSize,
@@ -531,6 +420,7 @@ export default function ModellingConfig({
           estimate.configHash,
           activeSource,
           structuralVersion,
+          lineage,
         )
       } else {
         completeTrainJob(nodeId, result as unknown as TrainResult)
@@ -627,7 +517,22 @@ export default function ModellingConfig({
       onTrain={onTrain}
       onCancel={onCancel}
       tuningEnabled={tuning !== null}
+    />
+  )
+  const exportPane = (
+    <ExportPane
+      algorithm={algorithm}
+      config={config}
+      onUpdate={onUpdate}
       nodeLabel={allNodes.find((node) => node.id === nodeId)?.data.label ?? "model"}
+      trainedJobId={
+        cachedResult && cachedResult.result.status !== "error" && cachedResult.jobId
+          ? cachedResult.jobId
+          : null
+      }
+      training={Boolean(trainJob)}
+      trainedResultStale={estimate.isStale}
+      trainedResultExpired={trainedResultExpired}
     />
   )
 
@@ -661,6 +566,8 @@ export default function ModellingConfig({
       paneBody = splitPane
     } else if (activePane === "train") {
       paneBody = trainPane
+    } else if (activePane === "export") {
+      paneBody = exportPane
     }
   } else if (activePane === "target") {
     paneBody = <GLMTargetConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} onEstimateDispersion={onEstimateDispersion} />
@@ -672,6 +579,8 @@ export default function ModellingConfig({
     paneBody = splitPane
   } else if (activePane === "train") {
     paneBody = trainPane
+  } else if (activePane === "export") {
+    paneBody = exportPane
   }
 
   return (

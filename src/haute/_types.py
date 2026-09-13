@@ -256,7 +256,8 @@ class ModelScoreConfig(TypedDict, total=False):
     artifact_path: str  # e.g. "model.cbm"
     # registered model selection
     registered_model: str  # e.g. "catalog.schema.model" or "my-model"
-    version: str  # "1", "2", etc. or "latest"
+    version: str  # "1", "2", etc. or "latest"; absent when alias is set
+    alias: str  # a registered model alias, e.g. "champion"; excludes version
     # common
     task: str  # "regression" | "classification"
     output_column: str  # prediction column name, default "prediction"
@@ -265,7 +266,7 @@ class ModelScoreConfig(TypedDict, total=False):
     code: str  # optional post-processing code
     instanceOf: str
     inputMapping: dict[str, str]
-    mlflow_destination: str  # "" | "databricks" | "server" | "local"; absent = auto
+    mlflow_destination: str  # "databricks" | "server"; absent = the local folder
 
 
 class BandingFactor(TypedDict, total=False):
@@ -574,8 +575,8 @@ class ModellingConfig(TypedDict, total=False):
     tuning: dict[str, Any]
     metrics: list[str]
     mlflow_experiment: str
-    model_name: str
     output_dir: str
+    model_export_path: str  # Export pane file path; absent/"" = frontend default
     row_limit: int
     # GLM-specific (RustyStats)
     terms: dict[str, Any]
@@ -641,7 +642,6 @@ class OptimiserConfig(TypedDict, total=False):
 
     # MLflow
     mlflow_experiment: str
-    model_name: str
     mlflow_destination: str  # "" | "databricks" | "server" | "local"; absent = auto
 
 
@@ -656,12 +656,13 @@ class OptimiserApplyConfig(TypedDict, total=False):
     # MLflow source fields
     sourceType: str  # "file" | "run" | "registered"
     registered_model: str  # registered model name (when sourceType="registered")
-    version: str  # model version or "latest" (when sourceType="registered")
+    version: str  # model version or "latest" (when sourceType="registered"); absent with alias
+    alias: str  # registered model alias (when sourceType="registered"); excludes version
     experiment_id: str  # MLflow experiment ID (when sourceType="run")
     experiment_name: str  # UI-only: display name for panel re-open
     run_id: str  # MLflow run ID (when sourceType="run")
     run_name: str  # UI-only: display name for panel re-open
-    mlflow_destination: str  # "" | "databricks" | "server" | "local"; absent = auto
+    mlflow_destination: str  # "databricks" | "server"; absent = the local folder
 
 
 class ScenarioExpanderConfig(TypedDict, total=False):
@@ -763,6 +764,7 @@ MODEL_SCORE_CONFIG_KEYS: tuple[str, ...] = (
     "run_name",
     "registered_model",
     "version",
+    "alias",
     "task",
     "output_column",
     "categorical_levels",
@@ -783,10 +785,10 @@ MODELLING_CONFIG_KEYS: tuple[str, ...] = (
     "tuning",
     "metrics",
     "mlflow_experiment",
-    "model_name",
     "output_dir",
     "categorical_levels",
     "mlflow_destination",
+    "model_export_path",
 )
 
 OPTIMISER_CONFIG_KEYS: tuple[str, ...] = (
@@ -813,7 +815,6 @@ OPTIMISER_CONFIG_KEYS: tuple[str, ...] = (
     "data_input",
     "banding_source",
     "mlflow_experiment",
-    "model_name",
     "mlflow_destination",
 )
 
@@ -826,6 +827,7 @@ OPTIMISER_APPLY_CONFIG_KEYS: tuple[str, ...] = (
     "sourceType",
     "registered_model",
     "version",
+    "alias",
     "experiment_id",
     "experiment_name",
     "run_id",

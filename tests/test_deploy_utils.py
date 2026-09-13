@@ -150,6 +150,7 @@ _EXPECTED_KEYS = {
     "output_schema",
     "artifacts",
     "snapshot_provenance",
+    "model_sources",
     "pruned_graph",
     "nodes_deployed",
     "nodes_skipped",

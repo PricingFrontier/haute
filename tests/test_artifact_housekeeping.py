@@ -548,7 +548,7 @@ def test_server_lifespan_cleans_partial_interactive_startup(
     )
     monkeypatch.setattr(server.asyncio, "create_task", create_task)
     server._watcher_task = None
-    server._optimiser_reaper_task = None
+    server._artifact_reaper_task = None
 
     async def exercise_lifespan() -> None:
         with pytest.raises(RuntimeError, match=f"task {fail_on_task} failed"):
@@ -560,4 +560,4 @@ def test_server_lifespan_cleans_partial_interactive_startup(
     assert lifecycle == ["started", "stopped"]
     assert all(task.cancelled for task in created)
     assert server._watcher_task is None
-    assert server._optimiser_reaper_task is None
+    assert server._artifact_reaper_task is None

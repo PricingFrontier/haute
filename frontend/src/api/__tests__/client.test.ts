@@ -584,7 +584,7 @@ describe("request() core via loadPipeline", () => {
     expect(url).toBe("/api/mlflow/experiments?destination=local")
   })
 
-  it("getRuns omits the destination param for the auto destination", async () => {
+  it("getRuns omits the destination param for the local folder", async () => {
     mockFetch.mockReturnValue(jsonResponse([]))
 
     await getRuns("1", "optimiser", "")

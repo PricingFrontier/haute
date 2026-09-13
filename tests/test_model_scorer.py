@@ -884,6 +884,7 @@ class TestScoreFromConfig:
             version="latest",
             task="regression",
             destination="",
+            alias="",
         )
 
     # ---------------------------------------------------------------

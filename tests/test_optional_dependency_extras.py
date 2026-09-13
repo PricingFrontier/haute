@@ -35,17 +35,8 @@ def test_server_import_succeeds_with_optional_extras_installed() -> None:
 
 
 def test_mlflow_destinations_report_installed_with_inventory(client, monkeypatch) -> None:
-    from haute.modelling._mlflow_settings import DestinationEntry, TrackingConfig
+    from haute.modelling._mlflow_settings import DestinationEntry
 
-    monkeypatch.setattr(
-        "haute.modelling._mlflow_settings.resolve_tracking_config",
-        lambda project_root=None: TrackingConfig(
-            mode="local",
-            tracking_uri="file:///mlruns",
-            destination="/proj/mlruns",
-            config_source="default",
-        ),
-    )
     monkeypatch.setattr(
         "haute.modelling._mlflow_settings.list_destinations",
         lambda project_root=None: [
@@ -61,7 +52,7 @@ def test_mlflow_destinations_report_installed_with_inventory(client, monkeypatch
     body = resp.json()
     assert body["mlflow_installed"] is True
     assert body["mlflow_importable"] is True
-    assert body["auto"] == "local"
+    assert "auto" not in body
     assert body["detail"] == ""
     assert [e["key"] for e in body["destinations"]] == ["databricks", "server", "local"]
     assert body["destinations"][2] == {
@@ -138,7 +129,12 @@ def test_mlflow_model_versions_route_succeeds_with_installed_dependency_and_mock
 ) -> None:
     monkeypatch.setattr(
         "haute.routes.mlflow._ensure_tracking",
-        lambda destination="": (SimpleNamespace(), SimpleNamespace()),
+        lambda destination="": (
+            SimpleNamespace(),
+            SimpleNamespace(
+                get_registered_model=lambda _name: SimpleNamespace(aliases={"champion": "2"})
+            ),
+        ),
     )
     monkeypatch.setattr(
         "haute.routes.mlflow.search_versions",
@@ -171,6 +167,7 @@ def test_mlflow_model_versions_route_succeeds_with_installed_dependency_and_mock
             "creation_timestamp": 2_000,
             "description": "second",
             "params": {},
+            "aliases": ["champion"],
         },
         {
             "version": "1",
@@ -179,6 +176,7 @@ def test_mlflow_model_versions_route_succeeds_with_installed_dependency_and_mock
             "creation_timestamp": 1_000,
             "description": "first",
             "params": {},
+            "aliases": [],
         },
     ]
 

@@ -19,7 +19,7 @@ import {
  * Used by ModelScoreEditor, OptimiserApplyEditor and the modelling Train
  * pane to avoid duplicating identical state management and fetch logic.
  *
- * Every request carries the caller's `destination` (`""` = auto), so the
+ * Every request carries the caller's `destination` (`""` = local folder), so the
  * pickers list only that backend's content. Everything the hook holds is
  * stamped with the scope it was fetched under — the effective destination key
  * plus the destination string the inventory resolves it to, and a generation
@@ -32,7 +32,7 @@ import {
  *
  * @param opts.runTag      - Optional artifact filter passed to `getRuns` (e.g. "optimiser")
  * @param opts.initialExpId - Pre-selected experiment id to initialize browseExpId
- * @param opts.destination - The node's stored `mlflow_destination` (`""` = auto)
+ * @param opts.destination - The node's stored `mlflow_destination` (`""` = local folder)
  */
 
 export type Experiment = { experiment_id: string; name: string }
@@ -50,12 +50,13 @@ export type ModelVersion = {
   status: string
   description: string
   params?: Record<string, string>
+  aliases?: string[]
 }
 
 export interface MlflowBrowserOptions {
   runTag?: string
   initialExpId?: string
-  /** The node's stored `mlflow_destination`: `""` (auto) or a destination key. */
+  /** The node's stored `mlflow_destination`: `""` (local folder) or a destination key. */
   destination: string
 }
 
@@ -112,11 +113,11 @@ export function useMlflowBrowser(opts: MlflowBrowserOptions): MlflowBrowserState
   const initialExpId = opts.initialExpId ?? ""
   const destination = opts.destination
 
-  // The backend this node browses: its own key when it has one, else whatever
-  // auto resolves to, and the destination string that key currently points at
-  // (so a repointed server counts as a different backend).
+  // The backend this node browses: the remote it names, else the local folder,
+  // and the destination string that key currently points at (so a repointed
+  // server counts as a different backend).
   const inventory = useMlflowDestinations()
-  const effectiveKey = effectiveMlflowDestination(destination, inventory.auto)
+  const effectiveKey = effectiveMlflowDestination(destination)
   const entry = mlflowDestinationEntry(inventory.destinations, effectiveKey)
   const scopeKey = `${effectiveKey}|${entry?.destination ?? ""}`
 

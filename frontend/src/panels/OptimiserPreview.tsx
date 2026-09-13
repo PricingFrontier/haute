@@ -17,6 +17,7 @@ import {
   logOptimiserToMlflow,
   selectFrontierPoint as selectFrontierPointApi,
 } from "../api/client"
+import { apiErrorMessage } from "../api/errors"
 import { formatNumber } from "../utils/formatValue"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { useMlflowDestinations } from "../stores/useSettingsStore"
@@ -82,11 +83,7 @@ type RatesDetailState =
 const EMPTY_FRONTIER_POINTS: Record<string, unknown>[] = []
 
 function errorDetail(error: unknown): string {
-  if (error && typeof error === "object" && "detail" in error) {
-    const detail = (error as { detail?: unknown }).detail
-    if (typeof detail === "string" && detail.trim()) return detail
-  }
-  return error instanceof Error ? error.message : String(error)
+  return apiErrorMessage(error, "The request failed.")
 }
 
 function HeaderPointStepper({
@@ -162,13 +159,11 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
 
   // Where this node logs is its own config: the Export tab, the detail card
   // and the request itself all follow `mlflow_destination` from the node in
-  // the graph — never the workspace's auto pick when the node names a key.
+  // the graph — the remote it names, else the local folder.
   const mlflowInventory = useMlflowDestinations()
-  const mlflowDestination = configField(
-    allNodes.find((node) => node.id === nodeId)?.data.config ?? {},
-    "mlflow_destination",
-    "",
-  )
+  const nodeConfig = allNodes.find((node) => node.id === nodeId)?.data.config ?? {}
+  const mlflowDestination = configField(nodeConfig, "mlflow_destination", "")
+  const mlflowExperiment = configField(nodeConfig, "mlflow_experiment", "")
   const mlflowAvailability = mlflowLogAvailability(mlflowInventory, mlflowDestination)
   const setMlflowSettingsOpen = useUIStore((s) => s.setMlflowSettingsOpen)
   const handleConfigureMlflow = useCallback(
@@ -327,8 +322,10 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
       const res = await logOptimiserToMlflow({
         job_id: jobId,
         ...(selectedIdx != null && frontier ? { point_index: selectedIdx } : {}),
-        // Read at click time, so a switch back to Auto after the solve sends "".
+        // Read at click time, so a switch back to Local folder after the solve sends "".
         destination: mlflowDestination as "" | MlflowDestinationKey,
+        // The node's current experiment; blank logs to the default it shows.
+        experiment_name: mlflowExperiment || null,
       })
       const target = res.experiment_name ? ` to ${res.experiment_name}` : ""
       setActionMsg(res.run_url ? `Logged${target}: ${res.run_url}` : `Logged${target} (run ${res.run_id ?? "ok"})`)
@@ -337,7 +334,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
     } finally {
       setLogging(false)
     }
-  }, [selectedIdx, frontier, jobId, mlflowDestination])
+  }, [selectedIdx, frontier, jobId, mlflowDestination, mlflowExperiment])
 
   const handleLoadResultDetail = useCallback(async () => {
     abortResultDetailRequest()

@@ -70,7 +70,6 @@ function entry(key: MlflowDestinationKey, destination: string): MlflowDestinatio
  * re-resolves the destination the same way a settings save would.
  */
 function setInventory(
-  auto: "" | MlflowDestinationKey = "local",
   destinations: MlflowDestinationEntry[] = [entry("local", "file:///a")],
 ): void {
   useSettingsStore.setState({
@@ -78,7 +77,6 @@ function setInventory(
       status: "ready",
       installed: true,
       importable: true,
-      auto,
       destinations,
       detail: "",
     },
@@ -199,7 +197,7 @@ describe("useMlflowBrowser", () => {
     mockGetRuns.mockResolvedValue(fakeRuns)
     mockGetModels.mockResolvedValue(fakeModels)
     mockGetModelVersions.mockResolvedValue(fakeVersions)
-    setInventory("local", [entry("server", "http://server-b"), entry("local", "file:///a")])
+    setInventory([entry("server", "http://server-b"), entry("local", "file:///a")])
     const { result } = renderHook(() => useMlflowBrowser({ destination: "server" }))
 
     act(() => {
@@ -216,7 +214,7 @@ describe("useMlflowBrowser", () => {
     expect(mockGetModelVersions).toHaveBeenCalledWith("model-a", "server")
   })
 
-  it("passes the empty auto destination through unchanged", async () => {
+  it("passes the empty (local folder) destination through unchanged", async () => {
     mockGetExperiments.mockResolvedValue(fakeExperiments)
     const { result } = renderHook(() => useMlflowBrowser({ destination: "" }))
 
@@ -234,8 +232,8 @@ describe("useMlflowBrowser", () => {
     const { result } = renderHook(() => useMlflowBrowser({ destination: "local" }))
 
     act(() => { result.current.refreshExperiments() })
-    act(() => { setInventory("local", [entry("local", "file:///b")]) })
-    act(() => { setInventory("local", [entry("local", "file:///a")]) })
+    act(() => { setInventory([entry("local", "file:///b")]) })
+    act(() => { setInventory([entry("local", "file:///a")]) })
     act(() => { result.current.refreshExperiments() })
 
     await waitFor(() => expect(result.current.experiments).toEqual(newestExperiments))
@@ -249,7 +247,7 @@ describe("useMlflowBrowser", () => {
     const first = new Promise<typeof fakeExperiments>((resolve) => { resolveFirst = resolve })
     const serverExperiments = [{ experiment_id: "3", name: "Experiment at the server" }]
     mockGetExperiments.mockReturnValueOnce(first).mockResolvedValueOnce(serverExperiments)
-    setInventory("local", [entry("server", "http://server-b"), entry("local", "file:///a")])
+    setInventory([entry("server", "http://server-b"), entry("local", "file:///a")])
     const { result, rerender } = renderHook(
       ({ destination }: { destination: string }) => useMlflowBrowser({ destination }),
       { initialProps: { destination: "local" } },
@@ -271,7 +269,7 @@ describe("useMlflowBrowser", () => {
     mockGetRuns.mockResolvedValue(fakeRuns)
     mockGetModels.mockResolvedValue(fakeModels)
     mockGetModelVersions.mockResolvedValue(fakeVersions)
-    setInventory("local", [entry("server", "http://server-b"), entry("local", "file:///a")])
+    setInventory([entry("server", "http://server-b"), entry("local", "file:///a")])
     const { result, rerender } = renderHook(
       ({ destination }: { destination: string }) =>
         useMlflowBrowser({ destination, initialExpId: "exp-a" }),
@@ -343,7 +341,7 @@ describe("useMlflowBrowser", () => {
       expect(result.current.models).toEqual(fakeModels)
       expect(result.current.modelVersions).toEqual(fakeVersions)
     })
-    act(() => { setInventory("local", [entry("local", "file:///b")]) })
+    act(() => { setInventory([entry("local", "file:///b")]) })
     expect(result.current.experiments).toEqual([])
     expect(result.current.runs).toEqual([])
     expect(result.current.models).toEqual([])

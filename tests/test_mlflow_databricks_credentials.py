@@ -33,6 +33,7 @@ import pytest
 import requests
 
 from haute import _mlflow_utils
+from haute._mlflow_errors import MlflowRemoteError
 from haute._mlflow_utils import (
     _BOUND_SYMBOLS,
     _restore_mlflow_databricks_credentials,
@@ -131,10 +132,11 @@ class FakeDatabricks:
 
     def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
         """``requests.Session.request`` stand-in: the caller's own headers and body."""
-        options = repr({k: v for k, v in kwargs.items() if k not in {"data", "headers"}})
-        return self._record_and_respond(
-            method, url, kwargs.get("headers") or {}, kwargs.get("data"), options
-        )
+        options = repr({k: v for k, v in kwargs.items() if k not in {"data", "json", "headers"}})
+        data = kwargs.get("data")
+        if data is None and kwargs.get("json") is not None:
+            data = json.dumps(kwargs["json"])
+        return self._record_and_respond(method, url, kwargs.get("headers") or {}, data, options)
 
     def send(self, prepared: requests.PreparedRequest, **kwargs: Any) -> requests.Response:
         """``requests.Session.send`` stand-in: headers and body after auth hooks ran."""
@@ -250,6 +252,109 @@ def test_unity_catalog_registry_requests_reach_only_the_mlflow_host_with_the_mlf
         ("GET", f"{MLFLOW_HOST}/api/2.0/mlflow/unity-catalog/registered-models/search")
     ]
     databricks.assert_bound_to_mlflow_pair()
+
+
+# ---------------------------------------------------------------------------
+# Experiment workspace folders
+# ---------------------------------------------------------------------------
+
+_GET_EXPERIMENT_BY_NAME = ("GET", "/api/2.0/mlflow/experiments/get-by-name")
+_CREATE_EXPERIMENT = ("POST", "/api/2.0/mlflow/experiments/create")
+_GET_EXPERIMENT = ("GET", "/api/2.0/mlflow/experiments/get")
+_WORKSPACE_MKDIRS = ("POST", "/api/2.0/workspace/mkdirs")
+_NEW_EXPERIMENT_NAME = "/Shared/haute/Model_Training_14"
+
+
+def _experiment_payload() -> dict[str, Any]:
+    return {
+        "experiment": {
+            "experiment_id": EXPERIMENT_ID,
+            "name": _NEW_EXPERIMENT_NAME,
+            "artifact_location": f"dbfs:/databricks/mlflow-tracking/{EXPERIMENT_ID}",
+            "lifecycle_stage": "active",
+        }
+    }
+
+
+def _set_bound_databricks_experiment() -> Any:
+    import mlflow
+
+    mlflow.set_tracking_uri(resolve_backend("databricks").tracking_uri)
+    return _mlflow_utils.set_experiment_creating_workspace_folder(mlflow, _NEW_EXPERIMENT_NAME)
+
+
+def test_new_experiment_creates_its_missing_workspace_folder_first(
+    databricks: FakeDatabricks,
+) -> None:
+    databricks.respond_json(
+        *_GET_EXPERIMENT_BY_NAME,
+        {"error_code": "RESOURCE_DOES_NOT_EXIST", "message": "Node not found"},
+        status=404,
+    )
+    databricks.respond_json(*_WORKSPACE_MKDIRS, {})
+    databricks.respond_json(*_CREATE_EXPERIMENT, {"experiment_id": EXPERIMENT_ID})
+    databricks.respond_json(*_GET_EXPERIMENT, _experiment_payload())
+
+    experiment = _set_bound_databricks_experiment()
+
+    assert experiment.experiment_id == EXPERIMENT_ID
+    endpoints = [(r.method, urlsplit(r.url).path) for r in databricks.requests]
+    assert _WORKSPACE_MKDIRS in endpoints
+    assert endpoints.index(_WORKSPACE_MKDIRS) < endpoints.index(_CREATE_EXPERIMENT)
+    mkdirs = next(r for r in databricks.requests if urlsplit(r.url).path == _WORKSPACE_MKDIRS[1])
+    assert json.loads(mkdirs.body or b"{}") == {"path": "/Shared/haute"}
+    databricks.assert_bound_to_mlflow_pair()
+
+
+def test_existing_experiment_does_not_touch_workspace_folders(
+    databricks: FakeDatabricks,
+) -> None:
+    databricks.respond_json(*_GET_EXPERIMENT_BY_NAME, _experiment_payload())
+
+    experiment = _set_bound_databricks_experiment()
+
+    assert experiment.experiment_id == EXPERIMENT_ID
+    assert _WORKSPACE_MKDIRS not in [(r.method, urlsplit(r.url).path) for r in databricks.requests]
+    databricks.assert_bound_to_mlflow_pair()
+
+
+def test_uncreatable_workspace_folder_names_the_folder_and_creates_no_experiment(
+    databricks: FakeDatabricks,
+) -> None:
+    databricks.respond_json(
+        *_GET_EXPERIMENT_BY_NAME,
+        {"error_code": "RESOURCE_DOES_NOT_EXIST", "message": "Node not found"},
+        status=404,
+    )
+    databricks.respond_json(
+        *_WORKSPACE_MKDIRS,
+        {"error_code": "PERMISSION_DENIED", "message": "User cannot write to /Shared"},
+        status=403,
+    )
+
+    with pytest.raises(MlflowRemoteError, match="denied permission.*/Shared/haute") as raised:
+        _set_bound_databricks_experiment()
+
+    assert raised.value.category == "permission"
+    assert "Model_Training_14" in str(raised.value)
+    assert _CREATE_EXPERIMENT not in [(r.method, urlsplit(r.url).path) for r in databricks.requests]
+    databricks.assert_bound_to_mlflow_pair()
+
+
+def test_local_experiments_never_call_the_workspace_api(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import mlflow
+
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    mlflow.set_tracking_uri((tmp_path / "mlruns").as_uri())
+    http_request = MagicMock(name="http_request")
+    monkeypatch.setattr("mlflow.utils.rest_utils.http_request", http_request)
+
+    experiment = _mlflow_utils.set_experiment_creating_workspace_folder(mlflow, "pricing/frequency")
+
+    assert experiment.name == "pricing/frequency"
+    http_request.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -921,8 +1026,7 @@ def test_local_and_server_resolution_never_import_or_bind_mlflow(
 
     A stand-in ``mlflow`` module without a spec (as many tests install) would make
     the binder's package probe raise, and a real import costs seconds, so neither
-    may happen while resolving a server or local destination, or the auto rule
-    when Databricks is not configured.
+    may happen while resolving a server or local destination.
     """
     import sys
     from unittest.mock import MagicMock, patch
@@ -930,7 +1034,6 @@ def test_local_and_server_resolution_never_import_or_bind_mlflow(
     from haute.modelling._mlflow_settings import (
         MlflowDestinationUnconfigured,
         resolve_destination,
-        resolve_tracking_config,
     )
 
     monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
@@ -941,7 +1044,6 @@ def test_local_and_server_resolution_never_import_or_bind_mlflow(
     with patch.dict(sys.modules, {"mlflow": MagicMock(name="mlflow-without-spec")}):
         assert resolve_destination("server").mode == "server"
         assert resolve_destination("local").mode == "local"
-        assert resolve_tracking_config().mode == "server"
         with pytest.raises(MlflowDestinationUnconfigured):
             resolve_destination("databricks")
 

@@ -495,6 +495,18 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/ModelCacheClearResponse"},
         },
     },
+    "/api/modelling/save": {
+        "POST": {
+            "request_ref": "#/components/schemas/SaveModelRequest",
+            "success_schema": {"$ref": "#/components/schemas/SaveModelResponse"},
+        },
+    },
+    "/api/modelling/save/destination": {
+        "POST": {
+            "request_ref": "#/components/schemas/ModelSaveDestinationRequest",
+            "success_schema": {"$ref": "#/components/schemas/ModelSaveDestinationResponse"},
+        },
+    },
     "/api/modelling/train": {
         "POST": {
             "request_ref": "#/components/schemas/TrainRequest",

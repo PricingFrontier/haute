@@ -12,7 +12,7 @@
  */
 import { create } from "zustand"
 import { getMlflowDestinations } from "../api/client"
-import type { FileListItem, MlflowDestinationEntry, MlflowDestinationKey } from "../api/types"
+import type { FileListItem, MlflowDestinationEntry } from "../api/types"
 import type { MlflowInventoryState } from "../utils/mlflowDestinations"
 import { portableKey } from "../utils/portableKey"
 
@@ -50,7 +50,6 @@ function mlflowPending(): SettingsState["mlflow"] {
     status: "pending",
     installed: null,
     importable: null,
-    auto: "",
     destinations: [],
     detail: "",
   }
@@ -79,8 +78,6 @@ interface SettingsState {
     status: "pending" | "ready" | "error"
     installed: boolean | null
     importable: boolean | null
-    /** The backend's auto rule result; `""` when nothing resolves. */
-    auto: "" | MlflowDestinationKey
     /** The three wire entries, in backend order. */
     destinations: MlflowDestinationEntry[]
     detail: string
@@ -159,7 +156,6 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
             status: usable ? "ready" : "error",
             installed: data.mlflow_installed,
             importable: data.mlflow_importable,
-            auto: data.auto,
             destinations: data.destinations,
             detail: data.detail,
           },
@@ -259,7 +255,6 @@ export function useMlflowDestinations(): MlflowInventoryState {
     status: mlflow.status === "pending" ? "loading" as const : mlflow.status,
     installed: mlflow.installed,
     importable: mlflow.importable,
-    auto: mlflow.auto,
     destinations: mlflow.destinations,
     detail: mlflow.detail,
   }

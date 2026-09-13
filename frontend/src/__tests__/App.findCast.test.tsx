@@ -191,7 +191,6 @@ vi.mock("../api/client", () => ({
   getMlflowDestinations: vi.fn(() => Promise.resolve({
     mlflow_installed: true,
     mlflow_importable: true,
-    auto: "local",
     destinations: [
       { key: "databricks", configured: false, destination: "", config_source: "", detail: "", probed: false, ok: false, category: "" },
       { key: "server", configured: false, destination: "", config_source: "", detail: "", probed: false, ok: false, category: "" },
@@ -249,7 +248,6 @@ describe("App — lastSelectedId referencing deleted node resolves cleanly (#38)
         status: "pending",
         installed: null,
         importable: null,
-        auto: "",
         destinations: [],
         detail: "",
       },

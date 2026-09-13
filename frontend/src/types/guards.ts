@@ -118,6 +118,8 @@ import type {
   MlflowTestConnectionResponse,
   MlflowExperiment,
   MlflowLogResponse,
+  ModelSaveDestinationResponse,
+  SaveModelResponse,
   MlflowModel,
   MlflowModelVersion,
   MlflowRun,
@@ -2319,7 +2321,6 @@ export function parseExplorePivotMembersResponse(value: unknown): ExplorePivotMe
 }
 
 const MLFLOW_DESTINATION_KEYS = ["databricks", "server", "local"] as const
-const MLFLOW_AUTO_DESTINATIONS = ["", "databricks", "server", "local"] as const
 const MLFLOW_CONFIG_SOURCES = ["", "toml", "env", "default"] as const
 const MLFLOW_TEST_CATEGORIES = [
   "",
@@ -2357,7 +2358,6 @@ export function parseMlflowDestinationsResponse(value: unknown): MlflowDestinati
   return {
     mlflow_installed: expectBoolean(p, obj.mlflow_installed, "field `mlflow_installed`"),
     mlflow_importable: expectBoolean(p, obj.mlflow_importable, "field `mlflow_importable`"),
-    auto: expectStringLiteral(p, obj.auto, "field `auto`", MLFLOW_AUTO_DESTINATIONS),
     destinations: parseArray(
       p,
       obj.destinations,
@@ -2405,6 +2405,37 @@ export function parseMlflowLogResponse(value: unknown): MlflowLogResponse {
     run_url: optionalNullableString("parseMlflowLogResponse", obj, "run_url"),
     tracking_uri: optionalString("parseMlflowLogResponse", obj, "tracking_uri"),
     error: optionalNullableString("parseMlflowLogResponse", obj, "error"),
+    ...(obj.operation_id === undefined
+      ? {}
+      : { operation_id: optionalNullableString("parseMlflowLogResponse", obj, "operation_id") }),
+    ...(obj.logged_at === undefined
+      ? {}
+      : { logged_at: optionalNullableString("parseMlflowLogResponse", obj, "logged_at") }),
+  }
+}
+
+export function parseModelSaveDestinationResponse(value: unknown): ModelSaveDestinationResponse {
+  const obj = expectPlainObject("parseModelSaveDestinationResponse", value)
+  return {
+    path: expectString("parseModelSaveDestinationResponse", obj.path, "field `path`"),
+    suffix_mismatch: expectBoolean(
+      "parseModelSaveDestinationResponse",
+      obj.suffix_mismatch,
+      "field `suffix_mismatch`",
+    ),
+  }
+}
+
+export function parseSaveModelResponse(value: unknown): SaveModelResponse {
+  const obj = expectPlainObject("parseSaveModelResponse", value)
+  return {
+    status: expectStringLiteral("parseSaveModelResponse", obj.status, "field `status`", ["ok"]),
+    path: expectString("parseSaveModelResponse", obj.path, "field `path`"),
+    feature_contract_path: expectString(
+      "parseSaveModelResponse",
+      obj.feature_contract_path,
+      "field `feature_contract_path`",
+    ),
   }
 }
 
@@ -2881,6 +2912,12 @@ export function parseMlflowModelVersions(value: unknown): MlflowModelVersion[] {
       description: expectString("parseMlflowModelVersions", obj.description, `${field}.description`),
       ...(obj.params === undefined ? {} : { params: parseStringRecord("parseMlflowModelVersions", obj.params, `${field}.params`) }),
       ...(obj.creation_timestamp === undefined ? {} : { creation_timestamp: expectNullableNumber("parseMlflowModelVersions", obj.creation_timestamp, `${field}.creation_timestamp`) }),
+      ...(obj.aliases === undefined
+        ? {}
+        : {
+          aliases: parseArray("parseMlflowModelVersions", obj.aliases, `${field}.aliases`, (alias, aliasField) =>
+            expectString("parseMlflowModelVersions", alias, aliasField)),
+        }),
     }
   })
 }

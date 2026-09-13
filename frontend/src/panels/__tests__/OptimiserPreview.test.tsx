@@ -50,7 +50,6 @@ const mlflowMockState = vi.hoisted(() => {
     status: "ready",
     installed: true,
     importable: true,
-    auto: "local",
     destinations: [
       {
         key: "local",
@@ -847,6 +846,7 @@ describe("OptimiserPreview", () => {
           job_id: "job_123",
           point_index: 0,
           destination: "",
+          experiment_name: null,
         })
       })
       expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
@@ -869,6 +869,7 @@ describe("OptimiserPreview", () => {
           job_id: "job_123",
           point_index: 0,
           destination: "local",
+          experiment_name: null,
         })
       })
 
@@ -887,8 +888,44 @@ describe("OptimiserPreview", () => {
           job_id: "job_123",
           point_index: 0,
           destination: "",
+          experiment_name: null,
         })
       })
+    })
+
+    it("logs to the node's current experiment and shows the server's message on failure", async () => {
+      const { ApiError } = await vi.importActual<typeof import("../../api/client")>("../../api/client")
+      mockLogOptimiserToMlflow.mockRejectedValueOnce(
+        new ApiError("HTTP 502", 502, undefined, undefined, {
+          error_code: "mlflow_connectivity",
+          message: "Could not reach the MLflow tracking server, so the run was not logged.",
+        }),
+      )
+      const data = makeData({ frontier: makeFrontier(), selectedPointIndex: 0 })
+      render(
+        <OptimiserPreview
+          data={data}
+          nodeId="opt_1"
+          allNodes={[optimiserNode({ mlflow_experiment: "/Shared/pricing/opt" })]}
+          edges={[]}
+        />,
+      )
+
+      fireEvent.click(screen.getByText("Log to MLflow"))
+      await waitFor(() => {
+        expect(mockLogOptimiserToMlflow).toHaveBeenLastCalledWith({
+          job_id: "job_123",
+          point_index: 0,
+          destination: "",
+          experiment_name: "/Shared/pricing/opt",
+        })
+      })
+      expect(
+        await screen.findByText(
+          "MLflow log failed: Could not reach the MLflow tracking server, so the run was not logged.",
+        ),
+      ).toBeInTheDocument()
+      expect(screen.queryByText(/ApiError|HTTP 502/)).toBeNull()
     })
 
     it("disables the detail card log action with the node's own reason and offers Configure", async () => {
@@ -1121,7 +1158,6 @@ describe("OptimiserPreview", () => {
         status: "error",
         installed: false,
         importable: false,
-        auto: "",
         destinations: [],
         detail: "MLflow package is not installed. Install it with: pip install mlflow",
       }

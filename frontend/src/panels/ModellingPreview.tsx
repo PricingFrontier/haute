@@ -70,7 +70,6 @@ export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
   useEffect(() => setTab("summary"), [nodeId, result])
 
   const trainProgress: TrainProgress | null = useNodeResultsStore((s) => s.trainJobs[nodeId]?.progress ?? null)
-  const modellingNode = useGraphStore((s) => s.nodes.find(node => node.id === nodeId))
 
   const availableTabs = TAB_KEYS.filter(t => {
     switch (t) {
@@ -95,7 +94,6 @@ export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
     .map(([k, v]) => `${k}: ${typeof v === "number" && Number.isFinite(v) ? v.toFixed(4) : String(v)}`)
     .join(" | ")
   const tabs = availableTabs.map((key) => ({ key, label: TAB_LABELS[key] }))
-  const config = modellingNode ? nodeData(modellingNode).config ?? {} : {}
   const introduction = activeTab === "summary" ? null : VIEW_INTRODUCTIONS[activeTab]
 
   const useBestAsFixedParameters = (params: Record<string, unknown>) => {
@@ -174,8 +172,6 @@ export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
         {activeTab === "summary" && (
           <SummaryTab
             result={result}
-            jobId={data.jobId}
-            config={config}
             onUseBestParameters={useBestAsFixedParameters}
             elapsedSeconds={trainProgress?.elapsed_seconds}
           />

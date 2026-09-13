@@ -3,7 +3,7 @@
 Eliminates duplication of:
   - ``resolve_version()``: resolve "latest" to a concrete version number
   - ``search_versions()``: safely quote model name and search
-  - ``ResolvedBackend``: once-per-load resolution of a destination key (or auto)
+  - ``ResolvedBackend``: once-per-load resolution of a destination key ("" = local)
     to a concrete tracking URI, registry URI, secret-free identity, and filesystem digest
   - ``backend_identity()``: secret-free identity derivation per backend
   - ``resolve_backend()``: destination resolution to a ``ResolvedBackend``
@@ -251,6 +251,83 @@ def set_tracking_uri_preserving_env(mlflow: Any, tracking_uri: str) -> None:
             _tracking_environment_snapshot = previous_snapshot
 
 
+_WORKSPACE_MKDIRS_ENDPOINT = "/api/2.0/workspace/mkdirs"
+
+
+def set_experiment_creating_workspace_folder(mlflow: Any, experiment_name: str) -> Any:
+    """``mlflow.set_experiment``, first creating a new Databricks experiment's folder.
+
+    A Databricks experiment is a workspace object, and creating one fails with
+    ``NOT_FOUND: Parent directory does not exist`` when its folder is missing — as
+    ``/Shared/haute`` is in a fresh workspace. When the fluent tracking URI is
+    Databricks and the experiment does not exist yet, the parent folder (and its
+    ancestors) is created first through the Workspace API, with the same credentials
+    MLflow's own requests use. Other backends, and existing experiments, go straight
+    to ``set_experiment``.
+
+    Raises:
+        MlflowRemoteError: MLflow refused to create the folder (permission, a
+            missing parent, or an unclassified refusal); the message names the
+            folder and experiment so the user can create it or pick another path.
+        MlflowException: authentication and connectivity failures propagate
+            unchanged, for the caller to classify with its own copy.
+    """
+    tracking_uri = mlflow.get_tracking_uri()
+    folder = experiment_name.rpartition("/")[0]
+    if (
+        (tracking_uri == "databricks" or tracking_uri.startswith("databricks://"))
+        and experiment_name.startswith("/")
+        and folder
+        and mlflow.get_experiment_by_name(experiment_name) is None
+    ):
+        _create_databricks_workspace_folder(tracking_uri, folder, experiment_name)
+    return mlflow.set_experiment(experiment_name)
+
+
+def _create_databricks_workspace_folder(
+    tracking_uri: str, folder: str, experiment_name: str
+) -> None:
+    from mlflow.exceptions import MlflowException
+    from mlflow.utils.databricks_utils import get_databricks_host_creds
+    from mlflow.utils.rest_utils import http_request, verify_rest_response
+
+    from haute._mlflow_errors import MlflowRemoteError, classify_mlflow_error
+
+    try:
+        response = http_request(
+            get_databricks_host_creds(tracking_uri),
+            _WORKSPACE_MKDIRS_ENDPOINT,
+            "POST",
+            json={"path": folder},
+        )
+        verify_rest_response(response, _WORKSPACE_MKDIRS_ENDPOINT)
+    except MlflowException as exc:
+        from haute._logging import get_logger
+
+        category = classify_mlflow_error(exc)
+        # Category and type only: MLflow's text can echo hosts and tokens.
+        get_logger(component="mlflow_utils").warning(
+            "databricks_experiment_folder_create_failed",
+            folder=folder,
+            experiment=experiment_name,
+            category=category,
+            error_type=type(exc).__name__,
+        )
+        if category in ("authentication", "connectivity"):
+            raise
+        refusal = (
+            "MLflow denied permission to create"
+            if category == "permission"
+            else ("Could not create")
+        )
+        raise MlflowRemoteError(
+            category,
+            f"{refusal} the Databricks workspace folder {folder} for the MLflow experiment "
+            f"{experiment_name}. Create the folder in the workspace, or choose an experiment "
+            "path in a folder you can write to.",
+        ) from exc
+
+
 def _restore_env(name: str, value: str | None) -> None:
     if value is None:
         os.environ.pop(name, None)
@@ -305,12 +382,41 @@ def resolve_version(
     client: Any,
     model_name: str,
     version: str,
+    alias: str = "",
 ) -> str:
-    """Resolve ``"latest"`` or empty version to a concrete version number.
+    """Resolve an alias, ``"latest"`` or an empty version to a concrete version number.
+
+    An alias resolves through the registry every time, so moving the alias moves
+    what this returns. A concrete version together with an alias is ambiguous and
+    rejected; ``"latest"``/``""`` beside an alias is the loaders' default and
+    defers to the alias.
 
     Raises:
-        ValueError: if no versions are found for the model.
+        ValueError: if both a concrete version and an alias are given, the model has
+            no such alias, or no versions are found for the model.
     """
+    if alias:
+        if version and version != "latest":
+            raise ValueError(
+                f"Registered model '{model_name}' was given both version {version} and "
+                f"alias '{alias}'; choose one."
+            )
+        from mlflow.exceptions import MlflowException
+
+        try:
+            model_version = client.get_model_version_by_alias(model_name, alias)
+        except MlflowException as exc:
+            if getattr(exc, "error_code", "") in (
+                "INVALID_PARAMETER_VALUE",
+                "RESOURCE_DOES_NOT_EXIST",
+            ):
+                raise ValueError(
+                    f"Registered model '{model_name}' has no alias '{alias}'. Choose an "
+                    "existing alias or a version."
+                ) from exc
+            raise
+        # int on the file store, str on Databricks — callers expect str.
+        return str(model_version.version)
     if version and version != "latest":
         return version
 
@@ -427,22 +533,14 @@ def backend_identity(config: TrackingConfig) -> str:
 
 
 def resolve_backend(destination: str = "", project_root: Path | None = None) -> ResolvedBackend:
-    """Resolve a destination key (or '' for auto) to a ResolvedBackend.
+    """Resolve a destination key ('' for the local folder) to a ResolvedBackend.
 
     Raises:
         MlflowConfigError: If the destination cannot be resolved or is invalid.
     """
-    from haute.modelling._mlflow_settings import (
-        resolve_destination,
-        resolve_tracking_config,
-        validate_destination_key,
-    )
+    from haute.modelling._mlflow_settings import node_destination_key, resolve_destination
 
-    if destination:
-        validate_destination_key(destination)
-        config = resolve_destination(destination, project_root)
-    else:
-        config = resolve_tracking_config(project_root)
+    config = resolve_destination(node_destination_key(destination), project_root)
 
     identity = backend_identity(config)
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
@@ -464,6 +562,7 @@ def resolve_mlflow_source(
     version: str = "",
     destination: str = "",
     backend: ResolvedBackend | None = None,
+    alias: str = "",
 ) -> tuple[str, str, ModuleType, Any, ResolvedBackend]:
     """Import mlflow, pin a client to the destination, and resolve a model source.
 
@@ -485,9 +584,11 @@ def resolve_mlflow_source(
             *source_type* is ``"registered"``).
         version: Model version (``"1"``, ``"latest"``, etc.).
         destination: Destination key (``"databricks"``, ``"server"``, ``"local"``,
-            or ``""`` for auto). Must be ``""`` if *backend* is provided.
+            or ``""`` for local). Must be ``""`` if *backend* is provided.
         backend: Pre-resolved :class:`ResolvedBackend`. If provided,
             *destination* must be ``""``.
+        alias: Registered model alias; resolves to the version it currently
+            targets (see :func:`resolve_version`).
 
     Returns:
         ``(resolved_run_id, resolved_version, mlflow_module, client, backend)``
@@ -525,7 +626,7 @@ def resolve_mlflow_source(
     if source_type == "registered":
         if not registered_model:
             raise ValueError("registered_model is required when sourceType is 'registered'")
-        resolved_version = resolve_version(client, registered_model, version)
+        resolved_version = resolve_version(client, registered_model, version, alias)
         mv = client.get_model_version(registered_model, resolved_version)
         resolved_run_id = mv.run_id or ""
     elif source_type == "run":

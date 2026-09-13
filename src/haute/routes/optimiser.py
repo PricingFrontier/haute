@@ -22,7 +22,10 @@ from haute._execution_context import (
 )
 from haute._file_ops import atomic_write_text
 from haute._logging import get_logger
-from haute._mlflow_utils import mlflow_fluent_operation
+from haute._mlflow_utils import (
+    mlflow_fluent_operation,
+    set_experiment_creating_workspace_folder,
+)
 from haute._polars_utils import (
     DEFAULT_STREAMING_CHUNK_SIZE,
     streaming_collect,
@@ -44,6 +47,7 @@ from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, validate_safe_path
 from haute.routes._job_lifecycle import JobLifecycle, TerminalReason, require_job_status
 from haute.routes._job_store import JobSnapshot, RunningJobFields, get_job_store
 from haute.routes._memory_messages import memory_limit_user_message
+from haute.routes._mlflow_log_errors import mlflow_log_http_exception, require_mlflow_installed
 from haute.routes._optimiser_limits import (
     FrontierComputeBudgetExceededError,
     enforce_frontier_compute_budget,
@@ -2236,6 +2240,7 @@ def save_result(body: OptimiserSaveRequest) -> OptimiserSaveResponse:
 @router.post("/mlflow/log", response_model=OptimiserMlflowLogResponse)
 def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
     """Log optimisation results to MLflow."""
+    require_mlflow_installed()
     job: Mapping[str, Any] = _store.require_completed_job(body.job_id)
 
     selected_frontier_point = _selected_or_requested_frontier_point(job, body.point_index)
@@ -2276,15 +2281,7 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
                 ),
             )
 
-    try:
-        import mlflow
-    except ImportError:
-        raise HTTPException(
-            status_code=400,
-            detail="MLflow is not installed. Install with: pip install mlflow",
-        )
-
-    from haute.errors import MlflowConfigError
+    import mlflow
 
     try:
         with mlflow_fluent_operation():
@@ -2297,7 +2294,6 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
             tracking_uri, backend = configure_mlflow_tracking(body.destination)
 
             node_label = job.get("node_label", "optimiser")
-            job_config = job.get("config", {})
             # Invariant from the setup at the top of this function:
             #   ``selected_frontier_point is None`` IFF ``selected_result is None``
             # When that's the case, ``solver`` is non-None — the ``else`` branch
@@ -2314,13 +2310,14 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
                     selected_frontier_point,
                 )
 
+            # The request carries the node's current setting; the job's
+            # solve-time config snapshot is never a fallback.
             experiment_name = resolve_experiment_name(
                 explicit=body.experiment_name,
-                config_value=job_config.get("mlflow_experiment"),
                 node_label=node_label,
                 backend=backend,
             )
-            mlflow.set_experiment(experiment_name)
+            set_experiment_creating_workspace_folder(mlflow, experiment_name)
 
             with mlflow.start_run(run_name=node_label) as run:
                 mlflow.log_params(summary["params"])
@@ -2387,8 +2384,5 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
             return response
     except HTTPException:
         raise
-    except MlflowConfigError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
-        logger.error("mlflow_log_failed", error=str(exc), job_id=body.job_id, exc_info=True)
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+        raise mlflow_log_http_exception(exc, job_id=body.job_id) from None

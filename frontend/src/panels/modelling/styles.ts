@@ -8,3 +8,10 @@ export function toggleButtonStyle(selected: boolean): React.CSSProperties {
     border: `1px solid ${selected ? MODEL_COLORS.accentBorder : "transparent"}`,
   }
 }
+
+/** Themed surface for the modelling editor's text and number inputs. */
+export const MODELLING_INPUT_STYLE = {
+  background: "var(--bg-input)",
+  border: "1px solid var(--border)",
+  color: "var(--text-primary)",
+} as const

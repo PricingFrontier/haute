@@ -14,10 +14,11 @@ from haute._mlflow_utils import (
     mlflow_fluent_operation,
     registry_uri_for_tracking,
     search_versions,
+    set_experiment_creating_workspace_folder,
     set_tracking_uri_preserving_env,
 )
 from haute.deploy._config import ResolvedDeploy
-from haute.deploy._utils import build_manifest
+from haute.deploy._utils import build_manifest, model_source_line
 from haute.errors import DeployError
 
 logger = get_logger(component="deploy.mlflow")
@@ -118,13 +119,16 @@ def deploy_to_mlflow(
         for artifact_name, artifact_path in resolved.artifacts.items():
             artifacts[artifact_name] = str(artifact_path)
 
+        for node_id, source in resolved.model_sources.items():
+            _log(model_source_line(node_id, source))
+
         # 4. Build MLflow model signature
         signature = _build_signature(resolved)
 
         # 5. Set experiment - append endpoint suffix for staging isolation
         experiment_name = build_experiment_name(config)
         _log(f"Setting experiment: {experiment_name}")
-        mlflow.set_experiment(experiment_name)
+        set_experiment_creating_workspace_folder(mlflow, experiment_name)
 
         # 6. Log the model
         _log("Logging model to MLflow (this may take a minute)...")

@@ -41,6 +41,8 @@ import {
   parseMlflowSettingsResponse,
   parseMlflowTestConnectionResponse,
   parseMlflowLogResponse,
+  parseModelSaveDestinationResponse,
+  parseSaveModelResponse,
   parseMlflowModels,
   parseMlflowModelVersions,
   parseMlflowRuns,
@@ -1844,10 +1846,14 @@ describe("API response guards", () => {
     )
     const estimate = parseTrainEstimateResponse(loadUiContractFixture("train_estimate_response"))
     const log = parseMlflowLogResponse(loadUiContractFixture("mlflow_log_response"))
+    const saved = parseSaveModelResponse(loadUiContractFixture("model_save_response"))
+    const destination = parseModelSaveDestinationResponse(
+      loadUiContractFixture("model_save_destination_response"),
+    )
 
     expect(mlflow.mlflow_installed).toBe(true)
     expect(mlflow.mlflow_importable).toBe(true)
-    expect(mlflow.auto).toBe("databricks")
+    expect("auto" in mlflow).toBe(false)
     expect(mlflow.destinations.map((entry) => entry.key)).toEqual([
       "databricks",
       "server",
@@ -1863,6 +1869,19 @@ describe("API response guards", () => {
     expect(mlflow.detail).toBe("")
     expect(estimate.estimated_mb).toBe(12.5)
     expect(log.run_id).toBe("run-123")
+    expect(saved).toEqual({
+      status: "ok",
+      path: "models/frequency.cbm",
+      feature_contract_path: "models/frequency.feature_contract.json",
+    })
+    expect(destination).toEqual({ path: "models/frequency.cbm", suffix_mismatch: false })
+    expect(() => parseModelSaveDestinationResponse({ ...destination, suffix_mismatch: "no" })).toThrow(
+      /parseModelSaveDestinationResponse/,
+    )
+    expect(() => parseSaveModelResponse({ ...saved, status: "error" })).toThrow(/parseSaveModelResponse/)
+    expect(() => parseSaveModelResponse({ ...saved, feature_contract_path: null })).toThrow(
+      /parseSaveModelResponse/,
+    )
   })
 
   it("parses a strict bounded evaluation preview and defaults an omitted preview to null", () => {
@@ -2213,7 +2232,7 @@ describe("API response guards", () => {
     expect(() =>
       parseMlflowDestinationsResponse({
         ...fixture,
-        auto: "managed",
+        destinations: "none",
       }),
     ).toThrow(/parseMlflowDestinationsResponse/i)
 
@@ -2608,6 +2627,14 @@ describe("API response guards", () => {
     expect(parseMlflowRuns([{ run_id: "run-1", run_name: "baseline", metrics: { auc: 0.9 }, artifacts: ["model"] }])[0]?.metrics.auc).toBe(0.9)
     expect(parseMlflowModels([{ name: "pricing", latest_versions: [{ version: "1", status: "READY", run_id: "run-1" }] }])[0]?.latest_versions).toHaveLength(1)
     expect(parseMlflowModelVersions([{ version: "1", run_id: "run-1", status: "READY", description: "baseline" }])[0]?.description).toBe("baseline")
+    expect(
+      parseMlflowModelVersions([
+        { version: "1", run_id: "run-1", status: "READY", description: "", aliases: ["champion"] },
+      ])[0]?.aliases,
+    ).toEqual(["champion"])
+    expect(() =>
+      parseMlflowModelVersions([{ version: "1", run_id: "r", status: "READY", description: "", aliases: [1] }]),
+    ).toThrow(/aliases/)
     expect(parseFileListResponse({ items: [{ name: "data", path: "/data", type: "directory" }] }).items?.[0]?.type).toBe("directory")
     expect(parseFileListResponse({ items: [{ name: "data", path: "/data", type: "directory", size: null }] }).items?.[0]?.size).toBeNull()
     expect(parseGitGraphResponse({

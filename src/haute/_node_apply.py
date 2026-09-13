@@ -298,6 +298,7 @@ def apply_optimiser_apply_from_config(
             run_id=run_id,
             registered_model=registered_model,
             version=cfg.get("version", "latest"),
+            alias=str(cfg.get("alias", "") or ""),
             destination=str(cfg.get("mlflow_destination", "") or ""),
         )
     else:

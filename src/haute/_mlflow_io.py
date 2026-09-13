@@ -487,8 +487,24 @@ class ScoringModel:
 # ---------------------------------------------------------------------------
 
 
+# CatBoost losses that train a classifier; every other loss trains a regressor.
+_CATBOOST_CLASSIFICATION_LOSSES = frozenset(
+    {"Logloss", "CrossEntropy", "MultiClass", "MultiClassOneVsAll"}
+)
+
+
 def _load_catboost_model(path: str, task: str) -> CatBoostRegressor | CatBoostClassifier:
-    """Load a CatBoost model from a local file path."""
+    """Load a CatBoost model from a local file path as the *task* it will score.
+
+    The model file records the loss it was trained with, which fixes its task.
+    Loading a classifier as a regressor (or the reverse) predicts plausible but
+    wrong numbers, so a *task* that contradicts the recorded loss is rejected.
+
+    Raises:
+        ConfigError: the model was trained for the other task.
+    """
+    from haute.errors import ConfigError
+
     if task == "classification":
         from catboost import CatBoostClassifier
 
@@ -498,6 +514,19 @@ def _load_catboost_model(path: str, task: str) -> CatBoostRegressor | CatBoostCl
 
         model = CatBoostRegressor()
     model.load_model(path)
+    params = model.get_all_params()
+    recorded_loss = params.get("loss_function") if isinstance(params, dict) else None
+    # A model file without a recorded loss keeps the node's explicit task.
+    loss = recorded_loss.partition(":")[0] if isinstance(recorded_loss, str) else ""
+    if loss:
+        trained_task = "classification" if loss in _CATBOOST_CLASSIFICATION_LOSSES else "regression"
+        if trained_task != task:
+            raise ConfigError(
+                f"This CatBoost model was trained for {trained_task} (loss {loss}) but the "
+                f"node scores it as {task}. Set the node's task to {trained_task}.",
+                trained_task=trained_task,
+                task=task,
+            )
     return model
 
 
@@ -992,6 +1021,8 @@ def _load_with_bounded_retry(
     import random
     import time
 
+    from haute.errors import ConfigError
+
     last_err: BaseException | None = None
     for attempt in range(1, _LOAD_MAX_ATTEMPTS + 1):
         local_path: str | None = None
@@ -1001,13 +1032,15 @@ def _load_with_bounded_retry(
                 raw = _load_catboost_model(local_path, task)
                 return _wrap_catboost(raw)
             return _load_rustystats_model(local_path)
-        except (AttributeError, TypeError, KeyError):
+        except (AttributeError, TypeError, KeyError, ConfigError):
             # Programmer error — a missing attribute, wrong type, or
             # unknown dict key is a bug in our dispatch code (or a
             # breaking change in catboost / rustystats), not a corrupt
-            # artifact.  Wrapping these as "persistently corrupt" would
-            # send on-call down the wrong path.  Re-raise so the real
-            # stack trace surfaces.
+            # artifact; a ConfigError (the node scores the model as the
+            # wrong task) is a readable model that re-downloading cannot
+            # fix.  Wrapping these as "persistently corrupt" would send
+            # on-call down the wrong path.  Re-raise so the real error
+            # surfaces.
             raise
         except Exception as err:
             last_err = err
@@ -1051,6 +1084,7 @@ def load_mlflow_model(
     version: str = "",
     task: str = "regression",
     destination: str = "",
+    alias: str = "",
 ) -> ScoringModel:
     """Load a model from MLflow, auto-detecting CatBoost vs pyfunc.
 
@@ -1074,10 +1108,12 @@ def load_mlflow_model(
         registered_model: Registered model name (required when *source_type* is
             ``"registered"``).
         version: Model version string (``"1"``, ``"2"``, or ``"latest"``).
+        alias: Registered model alias; resolved to its current version on every
+            load, so the cache follows the alias when it moves.
         task: ``"regression"`` or ``"classification"`` — determines which
             CatBoost class to use for loading (ignored for pyfunc).
         destination: Destination key (``"databricks"``, ``"server"``,
-            ``"local"``) or ``""`` for the auto rule.
+            ``"local"``) or ``""`` for the local folder.
 
     Returns:
         A ``ScoringModel`` wrapping the loaded model with a uniform interface.
@@ -1205,6 +1241,7 @@ def load_mlflow_model(
         registered_model=registered_model,
         version=version,
         backend=backend,
+        alias=alias,
     )
     resolved_artifact = artifact_path
 

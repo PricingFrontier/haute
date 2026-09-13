@@ -33,7 +33,6 @@ vi.mock("../../api/client", () => ({
   getMlflowDestinations: vi.fn(() => Promise.resolve({
     mlflow_installed: true,
     mlflow_importable: true,
-    auto: "local",
     destinations: [
       { key: "databricks", configured: false, destination: "", config_source: "", detail: "", probed: false, ok: false, category: "" },
       { key: "server", configured: false, destination: "", config_source: "", detail: "", probed: false, ok: false, category: "" },
@@ -109,7 +108,6 @@ beforeEach(() => {
       status: "pending",
       installed: null,
       importable: null,
-      auto: "",
       destinations: [],
       detail: "",
     },
@@ -967,7 +965,7 @@ describe("SummaryTab (GLM extensions)", () => {
     const result = makeTrainResult({
       glm_fit_statistics: { aic: 5432.1, bic: 5478.9, deviance: 4200.3, null_deviance: 5100.0 },
     })
-    render(<SummaryTab result={result} jobId="j1" config={{}} />)
+    render(<SummaryTab result={result} />)
     expect(screen.getByText("Fit statistics")).toBeTruthy()
     expect(screen.getByText("aic")).toBeTruthy()
     expect(screen.getByText("5432.1000")).toBeTruthy()
@@ -977,7 +975,7 @@ describe("SummaryTab (GLM extensions)", () => {
 
   it("hides fit statistics when not present", () => {
     const result = makeTrainResult()
-    render(<SummaryTab result={result} jobId="j1" config={{}} />)
+    render(<SummaryTab result={result} />)
     expect(screen.queryByText("Fit statistics")).toBeNull()
   })
 
@@ -985,7 +983,7 @@ describe("SummaryTab (GLM extensions)", () => {
     const result = makeTrainResult({
       glm_regularization_path: { selected_alpha: 0.001234, n_nonzero: 12 },
     })
-    render(<SummaryTab result={result} jobId="j1" config={{}} />)
+    render(<SummaryTab result={result} />)
     expect(screen.getByText("Regularization")).toBeTruthy()
     expect(screen.getByText("Alpha")).toBeTruthy()
     expect(screen.getByText("0.001234")).toBeTruthy()
@@ -995,7 +993,7 @@ describe("SummaryTab (GLM extensions)", () => {
 
   it("hides regularization when no path info", () => {
     const result = makeTrainResult()
-    render(<SummaryTab result={result} jobId="j1" config={{}} />)
+    render(<SummaryTab result={result} />)
     // "Regularization" appears as a header in GLMRegularizationConfig but not in SummaryTab
     expect(screen.queryByText("Alpha")).toBeNull()
     expect(screen.queryByText("Non-zero coefficients")).toBeNull()

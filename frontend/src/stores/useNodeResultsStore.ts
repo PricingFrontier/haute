@@ -34,6 +34,7 @@ import type {
 } from "../api/types"
 import type { ColumnInfo } from "../types/node"
 import { TERMINAL_JOB_STATUSES } from "../api/types"
+import { clearTrainedJobHandle, writeTrainedJobHandle } from "../utils/trainedJobHandles"
 
 export const MAX_CACHED_PREVIEWS = 24
 export const MAX_CACHED_SOLVE_RESULTS = 8
@@ -202,7 +203,7 @@ interface ActiveSolveJob {
   documentFence?: DocumentExecutionFence
 }
 
-interface CachedTrainResult {
+export interface CachedTrainResult {
   result: TrainResult
   terminalStatus?: TrainProgress | null
   jobId: string
@@ -222,6 +223,12 @@ interface ActiveTrainJob {
   source: string
   structuralVersion: number
   documentFence?: DocumentExecutionFence
+  /**
+   * `trainingLineage` of the graph payload the training request submitted,
+   * remembered with a completed result so a reload can tell whether the graph
+   * changed since. A job started without one is never remembered.
+   */
+  lineage?: string
   /** The only two samples retained for the browser-derived ETA. */
   estimateSamples?: TrainEstimateSample[]
   estimatedRemainingSeconds?: number | null
@@ -303,6 +310,35 @@ function omitRecordKey<T>(record: Record<string, T>, key: string): Record<string
 function jobFenceIsCurrent(job: { documentFence?: DocumentExecutionFence }): boolean {
   return job.documentFence === undefined ||
     isDocumentExecutionFenceCurrent(job.documentFence)
+}
+
+/**
+ * Remember or forget a node's completed training job in browser storage.
+ *
+ * Runs at the store's completion boundary, so a job that finishes while the
+ * node's editor is closed is still restorable after a reload. A completed job
+ * started through `startTrainJob` is remembered under its document; an error,
+ * or a direct completion with no job, forgets the node's handle.
+ */
+function rememberTrainOutcome(
+  nodeId: string,
+  job: ActiveTrainJob | undefined,
+  result: TrainResult | null,
+): void {
+  const sourceFile = job
+    ? job.documentFence?.sourceFile
+    : captureDocumentExecutionFence().sourceFile
+  if (!sourceFile) return
+  if (!job || !job.lineage || result === null || result.status === "error") {
+    clearTrainedJobHandle(sourceFile, nodeId)
+    return
+  }
+  writeTrainedJobHandle(sourceFile, nodeId, {
+    jobId: job.jobId,
+    configHash: job.configHash,
+    source: job.source,
+    lineage: job.lineage,
+  })
 }
 
 // ─── Config hashing ──────────────────────────────────────────────
@@ -778,9 +814,14 @@ interface NodeResultsState {
   updateFrontierAfterSelect: (nodeId: string, pointIndex: number, selectResult: FrontierSelectResponse) => void
 
   // ── Training actions ──
-  startTrainJob: (nodeId: string, jobId: string, nodeLabel: string, configHash: string, source: string, structuralVersion: number) => void
+  startTrainJob: (nodeId: string, jobId: string, nodeLabel: string, configHash: string, source: string, structuralVersion: number, lineage?: string) => void
   updateTrainProgress: (nodeId: string, progress: TrainProgress) => void
   completeTrainJob: (nodeId: string, result: TrainResult, terminalStatus?: TrainProgress) => void
+  /**
+   * Put back a completed result the server still holds (after a browser reload).
+   * Never replaces a result or a running job the node already has.
+   */
+  restoreTrainResult: (nodeId: string, cached: CachedTrainResult) => void
   failTrainJob: (nodeId: string, error: string, terminalStatus?: TrainProgress) => void
 
   // ── Explore actions ──
@@ -1156,7 +1197,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
 
   // ── Training ──
 
-  startTrainJob: (nodeId, jobId, nodeLabel, configHash, source, structuralVersion) =>
+  startTrainJob: (nodeId, jobId, nodeLabel, configHash, source, structuralVersion, lineage) =>
     set((s) => {
       const nextJob = {
         jobId,
@@ -1168,6 +1209,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         source,
         structuralVersion,
         documentFence: captureDocumentExecutionFence(),
+        lineage,
         estimateSamples: [],
         estimatedRemainingSeconds: null,
       }
@@ -1196,7 +1238,9 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
     }),
 
-  completeTrainJob: (nodeId, result, terminalStatus) =>
+  completeTrainJob: (nodeId, result, terminalStatus) => {
+    const completingJob = get().trainJobs[nodeId]
+    const fenceCurrent = completingJob === undefined || jobFenceIsCurrent(completingJob)
     set((s) => {
       const job = s.trainJobs[nodeId]
       if (job && !jobFenceIsCurrent(job)) {
@@ -1237,9 +1281,30 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         trainJobs: job ? remainingJobs : s.trainJobs,
         trainResults: bounded.records,
       }
+    })
+    if (fenceCurrent) rememberTrainOutcome(nodeId, completingJob, result)
+  },
+
+  restoreTrainResult: (nodeId, cached) =>
+    set((s) => {
+      if (s.trainResults[nodeId] || s.trainJobs[nodeId] || cached.result.status === "error") return s
+      touchCachedResult(trainResultRecency, nodeId)
+      const bounded = trimCacheByRecency(
+        { ...s.trainResults, [nodeId]: cached },
+        trainResultRecency,
+        MAX_CACHED_TRAIN_RESULTS,
+        s.pinnedPreviewNodeId,
+      )
+      for (const evictedNodeId of bounded.evicted) {
+        delete _modellingPreviewCache[evictedNodeId]
+      }
+      if (bounded.records[nodeId]) cacheModellingPreview(nodeId, bounded.records[nodeId], undefined)
+      return { trainResults: bounded.records }
     }),
 
-  failTrainJob: (nodeId, error, terminalStatus) =>
+  failTrainJob: (nodeId, error, terminalStatus) => {
+    const failingJob = get().trainJobs[nodeId]
+    const fenceCurrent = failingJob !== undefined && jobFenceIsCurrent(failingJob)
     set((s) => {
       const job = s.trainJobs[nodeId]
       if (!job) return s
@@ -1273,7 +1338,9 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         trainJobs: remainingJobs,
         trainResults: bounded.records,
       }
-    }),
+    })
+    if (fenceCurrent) rememberTrainOutcome(nodeId, failingJob, null)
+  },
 
   // ── Explore ──
 

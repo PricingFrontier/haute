@@ -133,6 +133,7 @@ def load_mlflow_optimiser_artifact(
     registered_model: str = "",
     version: str = "",
     destination: str = "",
+    alias: str = "",
 ) -> dict[str, Any]:
     """Download and cache an optimiser artifact from MLflow.
 
@@ -149,7 +150,8 @@ def load_mlflow_optimiser_artifact(
             *source_type* is ``"registered"``).
         version: Model version (``"1"``, ``"latest"``, etc.).
         destination: Destination key (``"databricks"``, ``"server"``,
-            ``"local"``, or ``""`` for auto).
+            ``"local"``, or ``""`` for the local folder).
+        alias: Registered model alias, resolved to its current version.
 
     Returns:
         Parsed artifact dict (same shape as ``load_optimiser_artifact``).
@@ -163,6 +165,7 @@ def load_mlflow_optimiser_artifact(
         registered_model=registered_model,
         version=version,
         backend=backend,
+        alias=alias,
     )
 
     info_before = _load_mlflow_cached.cache_info()

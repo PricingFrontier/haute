@@ -545,11 +545,11 @@ class TestBundler:
 
         with patch(
             "haute.deploy._bundler._resolve_registered_model",
-            return_value=("resolved_run_123", "model.cbm"),
+            return_value=("resolved_run_123", "model.cbm", "3"),
         ) as mock_resolve:
             artifacts = collect_artifacts(graph, [], tmp_path)
 
-        mock_resolve.assert_called_once_with("my-prod-model", "3", backend=ANY)
+        mock_resolve.assert_called_once_with("my-prod-model", "3", backend=ANY, alias="")
         assert len(artifacts) == 1
         name = next(iter(artifacts))
         assert name == "ms_reg__model.cbm"
@@ -583,11 +583,11 @@ class TestBundler:
 
         with patch(
             "haute.deploy._bundler._resolve_registered_model",
-            return_value=("run_latest", "model.cbm"),
+            return_value=("run_latest", "model.cbm", "3"),
         ) as mock_resolve:
             artifacts = collect_artifacts(graph, [], tmp_path)
 
-        mock_resolve.assert_called_once_with("my-model", "latest", backend=ANY)
+        mock_resolve.assert_called_once_with("my-model", "latest", backend=ANY, alias="")
         assert len(artifacts) == 1
 
     def test_registered_model_empty_version(self, tmp_path, monkeypatch):
@@ -618,11 +618,11 @@ class TestBundler:
 
         with patch(
             "haute.deploy._bundler._resolve_registered_model",
-            return_value=("run_empty_ver", "model.cbm"),
+            return_value=("run_empty_ver", "model.cbm", "3"),
         ) as mock_resolve:
             artifacts = collect_artifacts(graph, [], tmp_path)
 
-        mock_resolve.assert_called_once_with("my-model", "", backend=ANY)
+        mock_resolve.assert_called_once_with("my-model", "", backend=ANY, alias="")
         assert len(artifacts) == 1
 
     def test_registered_model_skipped_without_model_name(self):
@@ -720,7 +720,7 @@ class TestBundler:
 
         with patch(
             "haute.deploy._bundler._resolve_registered_model",
-            return_value=("run_resolved", "registered.cbm"),
+            return_value=("run_resolved", "registered.cbm", "3"),
         ):
             artifacts = collect_artifacts(graph, [], tmp_path)
 
@@ -825,9 +825,9 @@ class TestBundler:
         seen: dict[str, ResolvedBackend] = {}
         real_download = bundler_mod._download_model_artifact
 
-        def spy_resolve_registered(registered_model, version, *, backend):
+        def spy_resolve_registered(registered_model, version, *, backend, alias=""):
             seen["registered"] = backend
-            return "resolved_run", "model.cbm"
+            return "resolved_run", "model.cbm", "1"
 
         def spy_download(run_id, artifact_path, pipeline_dir, *, backend):
             seen["download"] = backend
@@ -889,7 +889,9 @@ class TestBundler:
             ),
             patch("haute._mlflow_utils.resolve_backend") as mock_resolve_backend,
         ):
-            run_id, artifact_path = _resolve_registered_model("my-model", "2", backend=backend)
+            run_id, artifact_path, _version = _resolve_registered_model(
+                "my-model", "2", backend=backend
+            )
 
         assert (run_id, artifact_path) == ("run_x", "model.cbm")
         assert mock_source.call_args.kwargs["backend"] is backend
@@ -959,7 +961,7 @@ class TestResolveRegisteredModel:
         mock_client.get_model_version.return_value = mock_mv
 
         with self._mock_context(mock_client, resolve_version_rv="2"):
-            run_id, artifact_path = _resolve_registered_model(
+            run_id, artifact_path, _version = _resolve_registered_model(
                 "my-model", "2", backend=_fake_backend()
             )
 
@@ -976,7 +978,7 @@ class TestResolveRegisteredModel:
         mock_client.get_model_version.return_value = mock_mv
 
         with self._mock_context(mock_client, resolve_version_rv="5"):
-            run_id, artifact_path = _resolve_registered_model(
+            run_id, artifact_path, _version = _resolve_registered_model(
                 "my-model", "latest", backend=_fake_backend()
             )
 
@@ -992,7 +994,7 @@ class TestResolveRegisteredModel:
         mock_client.get_model_version.return_value = mock_mv
 
         with self._mock_context(mock_client, resolve_version_rv="3"):
-            run_id, artifact_path = _resolve_registered_model(
+            run_id, artifact_path, _version = _resolve_registered_model(
                 "my-model", "", backend=_fake_backend()
             )
 
@@ -1065,7 +1067,7 @@ class TestResolveRegisteredModel:
             resolve_version_rv="1",
             find_artifact_rv=("model", "pyfunc"),
         ):
-            run_id, artifact_path = _resolve_registered_model(
+            run_id, artifact_path, _version = _resolve_registered_model(
                 "pyfunc-model", "1", backend=_fake_backend()
             )
 
@@ -1085,7 +1087,7 @@ class TestResolveRegisteredModel:
             resolve_version_rv="1",
             find_artifact_rv=("model.rsglm", "rustystats"),
         ):
-            run_id, artifact_path = _resolve_registered_model(
+            run_id, artifact_path, _version = _resolve_registered_model(
                 "glm-model", "1", backend=_fake_backend()
             )
 

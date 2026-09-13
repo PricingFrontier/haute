@@ -803,6 +803,24 @@ class JobStore:
             raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
         return job
 
+    def detach_artifact_handle(self, job_id: str, key: str) -> bool:
+        """Release one owned artifact handle from a job and clean it up.
+
+        Returns ``False`` when the job or handle is already gone. The job record
+        itself is kept; only its ownership of that artifact ends.
+        """
+        with self._write_locked_with_artifact_cleanup() as artifact_cleanups:
+            old = self._jobs.get(job_id)
+            if old is None:
+                return False
+            handles = dict(old.get("artifact_handles") or {})
+            handle = handles.pop(key, None)
+            if handle is None:
+                return False
+            self._jobs[job_id] = {**old, "artifact_handles": handles}
+            artifact_cleanups.append((job_id, (dict(handle),)))
+            return True
+
     def delete_job(self, job_id: str) -> None:
         """Remove a job and clean up any owned artifacts."""
         with self._write_locked_with_artifact_cleanup() as artifact_cleanups:

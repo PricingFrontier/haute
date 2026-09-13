@@ -138,7 +138,7 @@ def test_server_lifespan_applies_unavailable_qos_before_worker_pool(
     monkeypatch.setattr(server, "shutdown_interactive_worker_pool", lambda: None)
     monkeypatch.setattr(server.asyncio, "create_task", lambda coroutine: FakeTask(coroutine))
     monkeypatch.setattr(server, "_watcher_task", None)
-    monkeypatch.setattr(server, "_optimiser_reaper_task", None)
+    monkeypatch.setattr(server, "_artifact_reaper_task", None)
 
     async def exercise() -> None:
         async with server._lifespan(server.app):

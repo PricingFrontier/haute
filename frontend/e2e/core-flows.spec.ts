@@ -71,7 +71,7 @@ test.describe("core browser flows", () => {
     await expect(nodeProperties.getByText(/\(raw_rows\)/i)).toBeVisible()
   })
 
-  test("runs a real modelling training job and keeps results when switching panels", async ({ page }) => {
+  test("runs a real modelling training job, keeps results when switching panels, and saves the model to a file", async ({ page }) => {
     test.slow()
 
     await page.goto("/")
@@ -103,6 +103,16 @@ test.describe("core browser flows", () => {
       page.getByText(/Model trained — results in preview panel below/i),
     ).toBeVisible()
     await expect(page.getByText("Model Info")).toBeVisible()
+    await expect(page.getByText("Experiment tracking")).toHaveCount(0)
+
+    await modellingPanes.getByRole("tab", { name: "Export", exact: true }).click()
+    const modelFilePath = page.getByLabel("Filename or path *")
+    await modelFilePath.fill("browser_model")
+    await modelFilePath.press("Enter")
+    await expect(page.getByText("Destination: models/browser_model.cbm")).toBeVisible()
+    await page.getByRole("button", { name: "Save model to file" }).click()
+    await expect(page.getByText("Saved model to models/browser_model.cbm")).toBeVisible()
+    await expect(page.getByText("Feature contract: models/browser_model.feature_contract.json")).toBeVisible()
   })
 
   test("persists node edits through save and reload", async ({ page }) => {

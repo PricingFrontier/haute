@@ -53,6 +53,8 @@ import {
   loadSubmodel,
   logOptimiserToMlflow,
   logToMlflow,
+  resolveModelSaveDestination,
+  saveTrainedModel,
   listFiles,
   outputAssembleDryRun,
   previewNode,
@@ -663,6 +665,29 @@ describe("client runtime contracts", () => {
     expect(applyResult.preview_truncated).toBe(false)
   })
 
+  it("posts trained model saves and destination previews to the modelling save routes", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("model_save_destination_response")))
+    const destination = await resolveModelSaveDestination({ output_path: "frequency", algorithm: "catboost" })
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/modelling/save/destination")
+    expect(mockFetch.mock.calls[0][1]?.method).toBe("POST")
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
+      output_path: "frequency",
+      algorithm: "catboost",
+    })
+    expect(destination.path).toBe("models/frequency.cbm")
+
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("model_save_response")))
+    const saved = await saveTrainedModel({ job_id: "job-1", output_path: "frequency", overwrite: true })
+    expect(mockFetch.mock.calls[1][0]).toBe("/api/modelling/save")
+    expect(mockFetch.mock.calls[1][1]?.method).toBe("POST")
+    expect(JSON.parse(String(mockFetch.mock.calls[1][1]?.body))).toEqual({
+      job_id: "job-1",
+      output_path: "frequency",
+      overwrite: true,
+    })
+    expect(saved.feature_contract_path).toBe("models/frequency.feature_contract.json")
+  })
+
   it("sends explicit frontier point indexes on terminal optimiser actions", async () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_apply_response")))
     await applyOptimiser({ job_id: "opt-job-1", point_index: 3 })
@@ -806,7 +831,7 @@ describe("next-wave client runtime contracts", () => {
     },
     {
       name: "getMlflowDestinations",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_destinations_response"), auto: "managed" },
+      response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_destinations_response"), destinations: "none" },
       call: () => getMlflowDestinations(true),
       error: /parseMlflowDestinationsResponse/i,
     },
@@ -833,6 +858,18 @@ describe("next-wave client runtime contracts", () => {
       response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_log_response"), run_id: 42 },
       call: () => logToMlflow({ job_id: "job-1", destination: "" }),
       error: /parseMlflowLogResponse/i,
+    },
+    {
+      name: "saveTrainedModel",
+      response: { ...loadUiContractFixture<Record<string, unknown>>("model_save_response"), path: 42 },
+      call: () => saveTrainedModel({ job_id: "job-1", output_path: "frequency", overwrite: false }),
+      error: /parseSaveModelResponse/i,
+    },
+    {
+      name: "resolveModelSaveDestination",
+      response: { ...loadUiContractFixture<Record<string, unknown>>("model_save_destination_response"), suffix_mismatch: 1 },
+      call: () => resolveModelSaveDestination({ output_path: "frequency", algorithm: "catboost" }),
+      error: /parseModelSaveDestinationResponse/i,
     },
     {
       name: "solveOptimiser",

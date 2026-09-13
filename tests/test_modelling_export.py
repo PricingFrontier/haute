@@ -285,18 +285,13 @@ class TestMLflow:
         script = generate_training_script(config, "d.parquet")
         assert "mlflow_experiment='/Shared/test'" in script
 
-    def test_model_name_included(self):
-        config = {**MINIMAL_CONFIG, "model_name": "my_model"}
-        script = generate_training_script(config, "d.parquet")
-        assert "model_name='my_model'" in script
-
     def test_mlflow_excluded_when_absent(self):
         script = generate_training_script(MINIMAL_CONFIG, "d.parquet")
         assert "mlflow_experiment" not in script
         assert "model_name" not in script
 
     def test_mlflow_excluded_when_none(self):
-        config = {**MINIMAL_CONFIG, "mlflow_experiment": None, "model_name": None}
+        config = {**MINIMAL_CONFIG, "mlflow_experiment": None}
         script = generate_training_script(config, "d.parquet")
         assert "mlflow_experiment" not in script
         assert "model_name" not in script
@@ -617,7 +612,6 @@ class TestFullConfig:
             "monotone_constraints": {"age": 1, "risk": -1},
             "feature_weights": {"age": 2.0},
             "mlflow_experiment": "/Shared/severity",
-            "model_name": "severity_prod",
             "output_dir": "artifacts",
         }
         script = generate_training_script(config, "output/severity.parquet")
@@ -634,7 +628,6 @@ class TestFullConfig:
         assert "variance_power=1.5" in script
         assert "offset='log_exposure'" in script
         assert "mlflow_experiment='/Shared/severity'" in script
-        assert "model_name='severity_prod'" in script
         assert "output_dir='artifacts'" in script
 
 
@@ -642,13 +635,13 @@ class TestMlflowDestinationExport:
     def test_mlflow_destination_rendered_when_set(self):
         config = {
             **MINIMAL_CONFIG,
-            "mlflow_destination": "local",
+            "mlflow_destination": "server",
         }
         script = generate_training_script(config, "d.parquet")
-        assert "mlflow_destination='local'" in script
+        assert "mlflow_destination='server'" in script
         compile(script, "<test>", "exec")
 
-    def test_mlflow_destination_omitted_for_auto(self):
+    def test_mlflow_destination_omitted_for_the_local_folder(self):
         config_empty = {
             **MINIMAL_CONFIG,
             "mlflow_destination": "",
@@ -677,7 +670,7 @@ class TestExecutedExportMlflowDestinations:
         df.write_parquet(data_path)
         return data_path
 
-    def test_executed_export_local_destination_logs_locally_despite_databricks_env(
+    def test_executed_export_without_destination_logs_locally_despite_databricks_env(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
@@ -698,10 +691,9 @@ class TestExecutedExportMlflowDestinations:
             "params": {"iterations": 2},
             "output_dir": str(output_dir),
             "mlflow_experiment": "/Shared/test_local",
-            "mlflow_destination": "local",
         }
         script = generate_training_script(config, str(tiny_training_data))
-        assert "mlflow_destination='local'" in script
+        assert "mlflow_destination" not in script
 
         namespace: dict[str, Any] = {"__name__": "__main__"}
         exec(compile(script, "<exported_training_script>", "exec"), namespace)
@@ -715,7 +707,7 @@ class TestExecutedExportMlflowDestinations:
         runs = client.search_runs([exp.experiment_id])
         assert len(runs) >= 1
 
-    def test_executed_export_auto_follows_the_execution_environment(
+    def test_executed_export_local_folder_follows_the_execution_environment(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
@@ -737,7 +729,7 @@ class TestExecutedExportMlflowDestinations:
         exec_root.mkdir()
         (exec_root / "haute.toml").write_text('[mlflow]\nfolder = "store_b"\n', encoding="utf-8")
 
-        # Generation environment: auto resolves to the local store_a folder here.
+        # Generation environment: the local folder is store_a here.
         monkeypatch.chdir(gen_root)
         set_project_root(gen_root)
 
@@ -750,7 +742,7 @@ class TestExecutedExportMlflowDestinations:
         script = generate_training_script(config, str(tiny_training_data))
         assert "mlflow_destination" not in script
 
-        # Execution environment: auto must re-resolve here, to store_b.
+        # Execution environment: the local folder resolves here, to store_b.
         monkeypatch.chdir(exec_root)
         set_project_root(exec_root)
 
@@ -829,10 +821,10 @@ class TestExecutedExportMlflowDestinations:
             **MINIMAL_CONFIG,
             "params": {"iterations": 2},
             "output_dir": str(output_dir),
-            "mlflow_destination": "local",
+            "mlflow_destination": "server",
         }
         script = generate_training_script(config, str(tiny_training_data))
-        assert "mlflow_destination='local'" in script
+        assert "mlflow_destination='server'" in script
         assert "mlflow_experiment" not in script
 
         namespace: dict[str, Any] = {"__name__": "__main__"}

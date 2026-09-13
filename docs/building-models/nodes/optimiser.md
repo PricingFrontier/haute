@@ -24,7 +24,6 @@ You've generated candidate prices with the Scenario Expander. Now you want to fi
 | `chunk_size` | Optional row slice size for chunked Parquet-to-grid ingestion. Use only when scored rows are already grouped by quote and ordered by scenario index. |
 | `record_history` | Whether to save iteration-by-iteration convergence history |
 | `mlflow_experiment` | MLflow experiment name for logging results |
-| `model_name` | Model registry name for saving artifacts |
 
 A typical constraint configuration:
 

@@ -2,9 +2,9 @@
  * MlflowExportSection — manual "Log run to MLflow" with truthful
  * availability: a line naming the NODE's destination, disabled-with-reason
  * plus a Configure MLflow link when that destination cannot accept a log,
- * `destination` always on the request, and per-backend success surfaces
- * (Databricks/server links; run ID + copyable `mlflow ui` command for
- * local). Per specs/frontend-modelling-optimiser-ui.
+ * `destination` always on the request, and a success surface of just the run
+ * ID (plus the run link a Databricks/server backend returns). Per
+ * specs/frontend-modelling-optimiser-ui.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
@@ -13,11 +13,12 @@ import useSettingsStore from "../../../stores/useSettingsStore"
 import useUIStore from "../../../stores/useUIStore"
 import type { MlflowDestinationEntry, MlflowDestinationKey } from "../../../api/types"
 
-vi.mock("../../../api/client", () => ({
+vi.mock("../../../api/client", async (importOriginal) => ({
+  ApiError: (await importOriginal<typeof import("../../../api/client")>()).ApiError,
   logToMlflow: vi.fn(),
 }))
 
-import { logToMlflow } from "../../../api/client"
+import { ApiError, logToMlflow } from "../../../api/client"
 const mockLogToMlflow = vi.mocked(logToMlflow)
 
 type MlflowSlice = ReturnType<typeof useSettingsStore.getState>["mlflow"]
@@ -60,7 +61,6 @@ function setInventory(over: Partial<MlflowSlice> = {}): void {
       status: "ready",
       installed: true,
       importable: true,
-      auto: "databricks",
       destinations: [DATABRICKS, SERVER_UNCONFIGURED, LOCAL],
       detail: "",
       ...over,
@@ -91,26 +91,36 @@ describe("MlflowExportSection", () => {
 
   // ── Destination line ───────────────────────────────────────────
 
-  it("renders the log action with the auto destination beneath it", () => {
+  it("renders the log action with the local folder beneath it when the node names no destination", () => {
     render(<MlflowExportSection {...makeProps()} />)
     expect(logButton()).toBeEnabled()
-    expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
-      "Destination: Databricks — https://adb.example.net",
-    )
-  })
-
-  it("names the node's own destination, not the auto one", () => {
-    render(<MlflowExportSection {...makeProps({ config: { mlflow_destination: "local" } })} />)
     expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
       "Destination: Local folder — C:/proj/mlruns",
     )
     expect(screen.queryByText(/adb\.example\.net/)).toBeNull()
   })
 
+  it("disables the action without an exportable job while still naming the destination", () => {
+    render(<MlflowExportSection {...makeProps({ trainJobId: null })} />)
+    expect(logButton()).toBeDisabled()
+    fireEvent.click(logButton())
+    expect(mockLogToMlflow).not.toHaveBeenCalled()
+    expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
+      "Destination: Local folder — C:/proj/mlruns",
+    )
+    expect(screen.queryByRole("button", { name: "Configure MLflow" })).toBeNull()
+  })
+
+  it("names the remote the node chose", () => {
+    render(<MlflowExportSection {...makeProps({ config: { mlflow_destination: "databricks" } })} />)
+    expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
+      "Destination: Databricks — https://adb.example.net",
+    )
+  })
+
   it("disables with the reason when the node's own destination is unconfigured", () => {
-    // Auto resolves to a configured local folder, but this node asked for the
-    // server — which is not configured, so logging cannot silently divert.
-    setInventory({ auto: "local" })
+    // The local folder is configured, but this node asked for the server —
+    // which is not, so logging cannot silently divert.
     render(<MlflowExportSection {...makeProps({ config: { mlflow_destination: "server" } })} />)
     expect(logButton()).toBeDisabled()
     expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
@@ -118,8 +128,7 @@ describe("MlflowExportSection", () => {
     )
   })
 
-  it("stays enabled when another remote is unconfigured but auto resolves", () => {
-    setInventory({ auto: "local" })
+  it("stays enabled on the local folder when a remote is unconfigured", () => {
     render(<MlflowExportSection {...makeProps({ config: { mlflow_destination: "" } })} />)
     expect(logButton()).toBeEnabled()
     expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
@@ -132,7 +141,6 @@ describe("MlflowExportSection", () => {
       status: "error",
       installed: false,
       importable: false,
-      auto: "",
       destinations: [],
       detail: "MLflow package is not installed. Install it with: pip install mlflow",
     })
@@ -145,7 +153,7 @@ describe("MlflowExportSection", () => {
   })
 
   it("offers no Configure link while the inventory is still loading", () => {
-    setInventory({ status: "pending", installed: null, importable: null, auto: "", destinations: [] })
+    setInventory({ status: "pending", installed: null, importable: null, destinations: [] })
     render(<MlflowExportSection {...makeProps()} />)
     expect(logButton()).toBeDisabled()
     expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent("Checking MLflow…")
@@ -153,7 +161,6 @@ describe("MlflowExportSection", () => {
   })
 
   it("never mentions the toolbar", () => {
-    setInventory({ auto: "local" })
     render(<MlflowExportSection {...makeProps({ config: { mlflow_destination: "server" } })} />)
     expect(screen.queryByText(/toolbar/i)).toBeNull()
   })
@@ -162,16 +169,26 @@ describe("MlflowExportSection", () => {
 
   it("sends the node's explicit destination with the log request", async () => {
     mockLogToMlflow.mockResolvedValue({ status: "ok", backend: "local", experiment_name: "freq", run_id: "r1", run_url: null, tracking_uri: "file:///C:/proj/mlruns", error: null })
-    render(<MlflowExportSection {...makeProps({ config: { mlflow_destination: "local" } })} />)
+    render(<MlflowExportSection {...makeProps({ config: { mlflow_destination: "databricks" } })} />)
     fireEvent.click(logButton())
     await waitFor(() =>
       expect(mockLogToMlflow).toHaveBeenCalledWith(
-        expect.objectContaining({ job_id: "job_123", destination: "local" }),
+        expect.objectContaining({ job_id: "job_123", destination: "databricks" }),
       ),
     )
   })
 
-  it("sends an empty destination for auto", async () => {
+  it("never sends a registry name: haute logs candidate runs only", async () => {
+    mockLogToMlflow.mockResolvedValue({ status: "ok", backend: "local", experiment_name: "freq", run_id: "r1", run_url: null, tracking_uri: "file:///C:/proj/mlruns", error: null })
+    render(<MlflowExportSection {...makeProps({ config: { mlflow_experiment: "freq" } })} />)
+    fireEvent.click(logButton())
+    await waitFor(() => expect(mockLogToMlflow).toHaveBeenCalledTimes(1))
+    expect(Object.keys(mockLogToMlflow.mock.calls[0][0]).sort()).toEqual(
+      ["destination", "experiment_name", "job_id", "operation_id"],
+    )
+  })
+
+  it("sends an empty destination for the local folder", async () => {
     mockLogToMlflow.mockResolvedValue({ status: "ok", backend: "databricks", experiment_name: "e", run_id: null, run_url: null, tracking_uri: "", error: null })
     render(<MlflowExportSection {...makeProps()} />)
     fireEvent.click(logButton())
@@ -182,19 +199,19 @@ describe("MlflowExportSection", () => {
     )
   })
 
-  it("follows a config flip back to auto after the first log", async () => {
+  it("follows a config flip back to the local folder after the first log", async () => {
     mockLogToMlflow.mockResolvedValue({ status: "ok", backend: "local", experiment_name: "freq", run_id: "r1", run_url: null, tracking_uri: "file:///C:/proj/mlruns", error: null })
     const { rerender } = render(
-      <MlflowExportSection {...makeProps({ config: { mlflow_destination: "local" } })} />,
+      <MlflowExportSection {...makeProps({ config: { mlflow_destination: "databricks" } })} />,
     )
     fireEvent.click(logButton())
     await waitFor(() =>
       expect(mockLogToMlflow).toHaveBeenLastCalledWith(
-        expect.objectContaining({ destination: "local" }),
+        expect.objectContaining({ destination: "databricks" }),
       ),
     )
 
-    rerender(<MlflowExportSection {...makeProps({ config: { mlflow_destination: "" } })} />)
+    rerender(<MlflowExportSection {...makeProps({ config: {} })} />)
     fireEvent.click(logButton())
     await waitFor(() =>
       expect(mockLogToMlflow).toHaveBeenLastCalledWith(
@@ -210,9 +227,40 @@ describe("MlflowExportSection", () => {
     await waitFor(() => expect(mockLogToMlflow).toHaveBeenCalledOnce())
   })
 
-  // ── Success surfaces (unchanged) ───────────────────────────────
+  // ── Success surface: the run ID, plus the run link a remote returns ──
 
-  it("shows the Databricks run link on success", async () => {
+  function expectOnlyTheRunId(runId: string) {
+    const success = screen.getByTestId("mlflow-log-success")
+    expect(success.firstChild).toHaveTextContent(`Run ID: ${runId}`)
+    expect(screen.queryByText(/Logged to/)).toBeNull()
+    expect(screen.queryByText(/Score this run/)).toBeNull()
+    expect(screen.queryByText(/mlflow ui/)).toBeNull()
+    expect(screen.queryByText(/run link unavailable/i)).toBeNull()
+    expect(screen.queryByRole("combobox", { name: "Terminal" })).toBeNull()
+    expect(screen.queryByRole("button", { name: /copy/i })).toBeNull()
+  }
+
+  it("shows just the run ID for a local log", async () => {
+    mockLogToMlflow.mockResolvedValue({
+      status: "ok",
+      backend: "local",
+      experiment_name: "freq",
+      run_id: "d9d8727d5b2942c89330bbc32202c19b",
+      run_url: null,
+      tracking_uri: "file:///C:/proj/mlruns",
+      error: null,
+    })
+    render(<MlflowExportSection {...makeProps()} />)
+    fireEvent.click(logButton())
+
+    await screen.findByTestId("mlflow-log-success")
+    expectOnlyTheRunId("d9d8727d5b2942c89330bbc32202c19b")
+    expect(screen.getByTestId("mlflow-log-success")).toHaveTextContent(
+      /^Run ID: d9d8727d5b2942c89330bbc32202c19b$/,
+    )
+  })
+
+  it("shows the run ID and the Databricks run link", async () => {
     mockLogToMlflow.mockResolvedValue({
       status: "ok",
       backend: "databricks",
@@ -224,13 +272,15 @@ describe("MlflowExportSection", () => {
     })
     render(<MlflowExportSection {...makeProps()} />)
     fireEvent.click(logButton())
-    await waitFor(() => {
-      expect(screen.getByText(/Logged to pricing_model/)).toBeInTheDocument()
-      expect(screen.getByText("Open in Databricks")).toBeInTheDocument()
-    })
+
+    expect(await screen.findByRole("link", { name: "Open in Databricks" })).toHaveAttribute(
+      "href",
+      "https://example.com/run/abc",
+    )
+    expectOnlyTheRunId("run_abc")
   })
 
-  it("shows a generic run link for a server backend", async () => {
+  it("shows the run ID and a generic run link for a server backend", async () => {
     mockLogToMlflow.mockResolvedValue({
       status: "ok",
       backend: "server",
@@ -242,58 +292,12 @@ describe("MlflowExportSection", () => {
     })
     render(<MlflowExportSection {...makeProps()} />)
     fireEvent.click(logButton())
-    await waitFor(() => {
-      expect(screen.getByText("Open run")).toBeInTheDocument()
-    })
+
+    expect(await screen.findByRole("link", { name: "Open run" })).toBeInTheDocument()
+    expectOnlyTheRunId("run_abc")
   })
 
-  it("shows a copyable PowerShell command for local", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.assign(navigator, { clipboard: { writeText } })
-    mockLogToMlflow.mockResolvedValue({
-      status: "ok",
-      backend: "local",
-      experiment_name: "freq",
-      run_id: "run_local_1",
-      run_url: null,
-      tracking_uri: "file:///C:/proj/mlruns",
-      error: null,
-    })
-    render(<MlflowExportSection {...makeProps()} />)
-    fireEvent.click(logButton())
-
-    await waitFor(() => {
-      expect(screen.getByText(/run_local_1/)).toBeInTheDocument()
-    })
-    fireEvent.change(screen.getByRole("combobox", { name: "Terminal" }), { target: { value: "powershell" } })
-    const command = screen.getByText(/mlflow ui --backend-store-uri/)
-    expect(command).toHaveTextContent("$env:MLFLOW_ALLOW_FILE_STORE='true'; mlflow ui --backend-store-uri 'file:///C:/proj/mlruns'")
-
-    fireEvent.click(screen.getByRole("button", { name: /copy command/i }))
-    expect(writeText).toHaveBeenCalledWith(
-      "$env:MLFLOW_ALLOW_FILE_STORE='true'; mlflow ui --backend-store-uri 'file:///C:/proj/mlruns'",
-    )
-  })
-
-  it("copies the bash/zsh command with a safely quoted URI", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true })
-    mockLogToMlflow.mockResolvedValue({
-      status: "ok", backend: "local", experiment_name: "freq", run_id: "run_local_bash",
-      run_url: null, tracking_uri: "file:///tmp/o'hare/mlruns", error: null,
-    })
-    render(<MlflowExportSection {...makeProps()} />)
-    fireEvent.click(logButton())
-    await waitFor(() => expect(screen.getByText(/run_local_bash/)).toBeInTheDocument())
-
-    fireEvent.change(screen.getByRole("combobox", { name: "Terminal" }), { target: { value: "bash" } })
-    const expected = "MLFLOW_ALLOW_FILE_STORE=true mlflow ui --backend-store-uri 'file:///tmp/o'\"'\"'hare/mlruns'"
-    expect(screen.getByText(/mlflow ui --backend-store-uri/)).toHaveTextContent(expected)
-    fireEvent.click(screen.getByRole("button", { name: /copy command/i }))
-    expect(writeText).toHaveBeenCalledWith(expected)
-  })
-
-  it("keeps remote successes without a run link free of local-viewer instructions", async () => {
+  it("shows just the run ID for a remote log without a run link", async () => {
     mockLogToMlflow.mockResolvedValue({
       status: "ok",
       backend: "server",
@@ -306,82 +310,9 @@ describe("MlflowExportSection", () => {
     render(<MlflowExportSection {...makeProps()} />)
     fireEvent.click(logButton())
 
-    await waitFor(() => {
-      expect(screen.getByText(/run_remote_1/)).toBeInTheDocument()
-    })
-    expect(screen.queryByText(/mlflow ui --backend-store-uri/)).toBeNull()
-    expect(screen.getByText(/run link unavailable/i)).toBeInTheDocument()
-  })
-
-  it("reports a copy failure when the clipboard is unavailable", async () => {
-    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true })
-    mockLogToMlflow.mockResolvedValue({
-      status: "ok",
-      backend: "local",
-      experiment_name: "freq",
-      run_id: "run_local_2",
-      run_url: null,
-      tracking_uri: "file:///C:/proj/mlruns",
-      error: null,
-    })
-    render(<MlflowExportSection {...makeProps()} />)
-    fireEvent.click(logButton())
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: /copy command/i })).toBeInTheDocument()
-    })
-
-    fireEvent.click(screen.getByRole("button", { name: /copy command/i }))
-    await waitFor(() => {
-      expect(screen.getByText(/copy failed/i)).toBeInTheDocument()
-    })
-  })
-
-  it("reports a copy failure when the clipboard write rejects", async () => {
-    const writeText = vi.fn().mockRejectedValue(new Error("denied"))
-    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true })
-    mockLogToMlflow.mockResolvedValue({
-      status: "ok",
-      backend: "local",
-      experiment_name: "freq",
-      run_id: "run_local_3",
-      run_url: null,
-      tracking_uri: "file:///C:/proj/mlruns",
-      error: null,
-    })
-    render(<MlflowExportSection {...makeProps()} />)
-    fireEvent.click(logButton())
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: /copy command/i })).toBeInTheDocument()
-    })
-
-    fireEvent.click(screen.getByRole("button", { name: /copy command/i }))
-    await waitFor(() => {
-      expect(screen.getByText(/copy failed/i)).toBeInTheDocument()
-    })
-  })
-
-  it("confirms a successful copy", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true })
-    mockLogToMlflow.mockResolvedValue({
-      status: "ok",
-      backend: "local",
-      experiment_name: "freq",
-      run_id: "run_local_4",
-      run_url: null,
-      tracking_uri: "file:///C:/proj/mlruns",
-      error: null,
-    })
-    render(<MlflowExportSection {...makeProps()} />)
-    fireEvent.click(logButton())
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: /copy command/i })).toBeInTheDocument()
-    })
-
-    fireEvent.click(screen.getByRole("button", { name: /copy command/i }))
-    await waitFor(() => {
-      expect(screen.getByText(/^copied$/i)).toBeInTheDocument()
-    })
+    await screen.findByTestId("mlflow-log-success")
+    expectOnlyTheRunId("run_remote_1")
+    expect(screen.queryByRole("link")).toBeNull()
   })
 
   it("shows error result on failure", async () => {
@@ -400,6 +331,73 @@ describe("MlflowExportSection", () => {
     await waitFor(() => {
       expect(screen.getByText(/Network error/)).toBeInTheDocument()
     })
+  })
+
+  it("shows the server's message for a rejected log, never the HTTP status", async () => {
+    mockLogToMlflow.mockRejectedValue(
+      new ApiError("HTTP 400", 400, "Set [mlflow] tracking_uri in haute.toml.", undefined,
+        "Set [mlflow] tracking_uri in haute.toml."),
+    )
+    render(<MlflowExportSection {...makeProps()} />)
+    fireEvent.click(logButton())
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Set [mlflow] tracking_uri in haute.toml.",
+    )
+    expect(screen.queryByText(/ApiError|HTTP 400/)).toBeNull()
+    expect(screen.queryByRole("button", { name: /test connection/i })).toBeNull()
+  })
+
+  it("offers MLflow settings when the tracking server cannot be reached", async () => {
+    mockLogToMlflow.mockRejectedValue(
+      new ApiError("HTTP 502", 502, undefined, undefined, {
+        error_code: "mlflow_connectivity",
+        message: "Could not reach the MLflow tracking server, so the run was not logged.",
+      }),
+    )
+    render(<MlflowExportSection {...makeProps()} />)
+    fireEvent.click(logButton())
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not reach the MLflow tracking server, so the run was not logged.",
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Test connection in MLflow settings" }))
+    expect(useUIStore.getState().mlflowSettingsOpen).toBe(true)
+  })
+
+  it("retries a lost response with the same operation so no duplicate run is created", async () => {
+    const onLogAttempted = vi.fn()
+    mockLogToMlflow.mockRejectedValueOnce(new TypeError("Failed to fetch"))
+    render(<MlflowExportSection {...makeProps({ onLogAttempted })} />)
+    fireEvent.click(logButton())
+    const retry = await screen.findByRole("button", { name: "Retry" })
+    const firstOperation = mockLogToMlflow.mock.calls[0][0].operation_id
+    expect(onLogAttempted).toHaveBeenCalledTimes(1)
+
+    mockLogToMlflow.mockResolvedValueOnce({ status: "ok", backend: "local", experiment_name: "freq", run_id: "r1", run_url: null, tracking_uri: "file:///C:/proj/mlruns", error: null })
+    fireEvent.click(retry)
+    await waitFor(() => expect(mockLogToMlflow).toHaveBeenCalledTimes(2))
+    expect(mockLogToMlflow.mock.calls[1][0].operation_id).toBe(firstOperation)
+    expect(onLogAttempted).toHaveBeenCalledTimes(2)
+  })
+
+  it("offers no retry when the server refused the log", async () => {
+    mockLogToMlflow.mockRejectedValue(new ApiError("HTTP 400", 400, "Unknown destination.", undefined, "Unknown destination."))
+    render(<MlflowExportSection {...makeProps()} />)
+    fireEvent.click(logButton())
+    expect(await screen.findByRole("alert")).toHaveTextContent("Unknown destination.")
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull()
+  })
+
+  it("offers no settings link for a permission refusal", async () => {
+    mockLogToMlflow.mockRejectedValue(
+      new ApiError("HTTP 502", 502, undefined, undefined, {
+        error_code: "mlflow_permission",
+        message: "MLflow denied permission to log the run.",
+      }),
+    )
+    render(<MlflowExportSection {...makeProps()} />)
+    fireEvent.click(logButton())
+    expect(await screen.findByRole("alert")).toHaveTextContent("MLflow denied permission")
+    expect(screen.queryByRole("button", { name: /test connection/i })).toBeNull()
   })
 
   it("calls onMlflowResult callback with result", async () => {

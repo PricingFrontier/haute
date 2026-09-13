@@ -191,7 +191,7 @@ class TestListExperiments:
         from haute.errors import MlflowConfigError
 
         with patch(
-            "haute.modelling._mlflow_settings.resolve_tracking_config",
+            "haute.modelling._mlflow_settings.resolve_destination",
             side_effect=MlflowConfigError(
                 "Databricks tracking is selected but DATABRICKS_MLFLOW_TOKEN is not set "
                 "in the environment (.env)."
@@ -977,7 +977,7 @@ class TestEnsureTrackingDirect:
         with (
             patch.dict(sys.modules, {"mlflow": mlflow_mod, "mlflow.tracking": tracking_mod}),
             patch(
-                "haute.modelling._mlflow_settings.resolve_tracking_config",
+                "haute.modelling._mlflow_settings.resolve_destination",
                 side_effect=RuntimeError("tracking backend misconfigured"),
             ),
         ):
@@ -996,7 +996,7 @@ class TestEnsureTrackingDirect:
         with (
             patch.dict(sys.modules, {"mlflow": mlflow_mod, "mlflow.tracking": tracking_mod}),
             patch(
-                "haute.modelling._mlflow_settings.resolve_tracking_config",
+                "haute.modelling._mlflow_settings.resolve_destination",
                 return_value=TrackingConfig("local", "sqlite:///mlruns", "sqlite:///mlruns", "env"),
             ),
         ):
@@ -1021,7 +1021,7 @@ class TestEnsureTrackingDirect:
         with (
             patch.dict(sys.modules, {"mlflow": mlflow_mod, "mlflow.tracking": tracking_mod}),
             patch(
-                "haute.modelling._mlflow_settings.resolve_tracking_config",
+                "haute.modelling._mlflow_settings.resolve_destination",
                 return_value=TrackingConfig("local", "file:///tmp/mlruns", "/tmp/mlruns", "env"),
             ),
         ):
@@ -1044,7 +1044,7 @@ class TestEnsureTrackingDirect:
         with (
             patch.dict(sys.modules, {"mlflow": mlflow_mod, "mlflow.tracking": tracking_mod}),
             patch(
-                "haute.modelling._mlflow_settings.resolve_tracking_config",
+                "haute.modelling._mlflow_settings.resolve_destination",
                 return_value=TrackingConfig(
                     "databricks", "databricks://team-profile", "databricks://team-profile", "env"
                 ),

@@ -20,11 +20,11 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { CheckCircle2, Loader2, TriangleAlert } from "lucide-react"
 import ModalShell from "./ModalShell"
 import {
-  ApiError,
   getMlflowSettings,
   putMlflowSettings,
   testMlflowConnection,
 } from "../api/client"
+import { apiErrorMessage } from "../api/errors"
 import type {
   MlflowSettingsResponse,
   MlflowTestConnectionResponse,
@@ -122,7 +122,7 @@ export default function MlflowSettingsModal({ onClose }: { onClose: () => void }
       })
       .catch((e: unknown) => {
         if (cancelled) return
-        setLoadError(e instanceof Error ? e.message : "Failed to load MLflow settings")
+        setLoadError(apiErrorMessage(e, "Failed to load MLflow settings"))
       })
     return () => {
       cancelled = true
@@ -161,7 +161,7 @@ export default function MlflowSettingsModal({ onClose }: { onClose: () => void }
             [key]: {
               ok: false,
               category: "unknown",
-              detail: e instanceof Error ? e.message : "Connection test failed",
+              detail: apiErrorMessage(e, "Connection test failed"),
             },
           }))
         }
@@ -188,13 +188,7 @@ export default function MlflowSettingsModal({ onClose }: { onClose: () => void }
       setSaved(true)
       invalidateMlflow()
     } catch (e: unknown) {
-      setSaveError(
-        e instanceof ApiError && e.detail
-          ? e.detail
-          : e instanceof Error
-            ? e.message
-            : "Saving MLflow settings failed",
-      )
+      setSaveError(apiErrorMessage(e, "Saving MLflow settings failed"))
     } finally {
       setSaving(false)
     }

@@ -131,13 +131,12 @@ function mlflowEntry(
 }
 
 /** A ready inventory, so the mounted selector never fetches one itself. */
-function setMlflowInventory(auto: "" | MlflowDestinationKey = "local"): void {
+function setMlflowInventory(): void {
   useSettingsStore.setState({
     mlflow: {
       status: "ready",
       installed: true,
       importable: true,
-      auto,
       destinations: [mlflowEntry("server"), mlflowEntry("local")],
       detail: "",
     },
@@ -973,7 +972,7 @@ describe("OptimiserApplyEditor", () => {
     render(<OptimiserApplyEditor {...props} />)
     const versionSelect = screen.getByDisplayValue("latest")
     fireEvent.change(versionSelect, { target: { value: "5" } })
-    expect(props.onUpdate).toHaveBeenCalledWith("version", "5")
+    expect(props.onUpdate).toHaveBeenCalledWith({ version: "5", alias: undefined })
   })
 
   it("shows description text below artifact path input", () => {

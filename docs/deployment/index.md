@@ -91,7 +91,6 @@ my-project/
   rating/config/
   rating/data/
   rating/main.py
-  rating/models/
   rating/outputs/
   rating/utility/
   rating/utility/__init__.py

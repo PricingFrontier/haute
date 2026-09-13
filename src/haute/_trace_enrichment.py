@@ -640,6 +640,7 @@ def enrich_model_score(
             "run_id": config.get("run_id", ""),
             "registered_model": config.get("registered_model", ""),
             "version": config.get("version", ""),
+            "alias": config.get("alias", ""),
             "task": config.get("task", "regression"),
         }
 

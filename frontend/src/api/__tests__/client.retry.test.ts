@@ -61,7 +61,6 @@ function mlflowDestinationsResponse(available: boolean) {
   return {
     mlflow_installed: available,
     mlflow_importable: available,
-    auto: available ? "local" : "",
     destinations: available
       ? [
         {
@@ -225,7 +224,6 @@ describe("retry: idempotent GET on 5xx", () => {
       expect(result).toEqual({
         mlflow_installed: true,
         mlflow_importable: true,
-        auto: "local",
         destinations: [
           {
             key: "local",
@@ -258,7 +256,6 @@ describe("retry: idempotent GET on 5xx", () => {
       expect(result).toEqual({
         mlflow_installed: false,
         mlflow_importable: false,
-        auto: "",
         destinations: [],
         detail: "",
       })

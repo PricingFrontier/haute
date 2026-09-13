@@ -42,22 +42,19 @@ results are supplied by API and result-store layers.
   short explanation; AvE and PDP are expanded in those introductions.
 - The completed summary uses responsive, themed cards with final-test performance
   first, separately labelled diagnostics, model information, and optional GLM fit
-  statistics/regularisation. Metric values are prominent and model paths remain
-  readable in full. No reserved final test is stated explicitly without presenting
-  development diagnostics as held-out performance. Candidate selection and tuning
+  statistics/regularisation. Metric values are prominent. No reserved final test is stated
+  explicitly without presenting development diagnostics as held-out performance. Candidate selection and tuning
   retain their complete evidence in separately headed cards; warnings remain visible
-  above the summary. The MLflow log action ("Log run to MLflow") stays
+  above the summary. The summary carries no export action or model path: saving the
+  trained model to a file and logging it to MLflow belong to the modelling editor's
+  **Export** pane.
+- The MLflow log action ("Log run to MLflow") stays
   visible in every backend state: enabled with the resolved destination
   named beneath it when tracking is connected, and disabled with the
   actionable reason plus a "Configure MLflow" link (opening the shared
-  MLflow settings dialog) when it is not. Success shows an "Open in
-  Databricks" / "Open run" link for databricks/server backends; a local
-  log shows the run ID plus a copyable `mlflow ui --backend-store-uri`
-  command (with explicit copied/failed feedback — a failed clipboard
-  write never passes silently) instead of a dead end. The command is
-  local-only: a remote success whose run link could not be built keeps
-  the run ID and says the link is unavailable rather than issuing
-  local-viewer instructions against a remote URI.
+  MLflow settings dialog) when it is not. Success shows just the run ID,
+  with an "Open in Databricks" / "Open run" link underneath when a
+  databricks/server backend returns a run link.
   The local command includes `MLFLOW_ALLOW_FILE_STORE=true`, required by the
   supported MLflow file-store backend. A labelled terminal choice offers
   PowerShell and bash/zsh commands with appropriate quoting; copying includes
@@ -76,7 +73,7 @@ results are supplied by API and result-store layers.
   and a "Configure MLflow" link when tracking is unavailable — and the frontier detail card
   keeps its log button visible but disabled with an explanatory tooltip. The optimiser
   config's collapsible MLflow section opens with the same manual-logging explainer the
-  modelling Train pane uses. The data preview
+  modelling Export pane uses. The data preview
   groups and charts bounded scenario samples and can calculate statistics.
 - Modelling and optimiser action areas render actionable memory-pressure and
   rejected-strategy diagnostics with profile, blocking node/operator, cost,
@@ -137,7 +134,7 @@ result contracts rather than silently charting incorrect values.
 ## Modelling config panes
 
 With a supported algorithm (`catboost` or `glm`) selected, the modelling node
-panel presents five panes — **Target**, **Features**, **Params**, **Split**, **Train** — through the
+panel presents six panes — **Target**, **Features**, **Params**, **Split**, **Train**, **Export** — through the
 same shared equal-width pane-tab strip the Explore editor uses, hosted by the node panel
 ([frontend-node-editors](../frontend-node-editors/low-level.md#modelling-config-panes))
 and extended with the accessible active-training indicator by
@@ -215,18 +212,39 @@ strip; it never falls through to CatBoost. Pane ownership:
   bounds, plus group counts or date ranges. The pane uses only **development data**,
   **validation**, and **final test** terminology.
 - **Train** — the GPU toggle (CatBoost only, still stored as the GPU task-type parameter), row
-  limit beside the RAM/VRAM estimate it modulates, MLflow experiment/model-name logging fields
-  (headed by an explainer that logging is manual — nothing is logged automatically — plus a
-  one-line resolved-destination status, or the off-reason with a "Configure MLflow" link; the
-  experiment field's placeholder is the real computed default — `/Shared/haute/{node label}`
-  for Databricks, the bare node label otherwise — and offers existing experiment names
-  through a lazily fetched datalist while connected; the suggestions are keyed to the
-  resolved tracking destination, so a destination switch clears them, refetches on the next
-  focus, and discards any in-flight response from the previous destination),
+  limit beside the RAM/VRAM estimate it modulates,
   staleness banner, Train/Cancel actions, click-time validation banner, live progress, completion
   badge and error card. Its checkbox and text/number controls use the same visible themed borders,
   backgrounds, typography and spacing as the rest of the modelling editor; labels never collapse
-  into input placeholders. The setup panes and their tabs never expose missing-field warnings:
+  into input placeholders.
+- **Export** — everything that publishes the last trained model, in two sections. **MLflow
+  logging** holds the destination selector and experiment path fields (headed by an
+  explainer that logging is manual — nothing is logged automatically; the experiment field's
+  placeholder is the real computed default — `/Shared/haute/{node label}` for Databricks, the
+  bare node label otherwise — and offers existing experiment names through a lazily fetched
+  datalist while connected; the suggestions are keyed to the resolved tracking destination, so a
+  destination switch clears them, refetches on the next focus, and discards any in-flight
+  response from the previous destination), followed by the "Log run to MLflow" action with its
+  one-line resolved-destination status, or the off-reason with a "Configure MLflow" link. There is
+  no registry field: haute logs candidate runs, and registering or promoting a model happens
+  outside haute.
+  **Model file** writes a copy of the trained model and its feature contract into the project
+  and behaves like a file Data Output with a `models/` folder in place of `outputs/`. A
+  required "Filename or path" picker (typed or browsed, persisted as `model_export_path`, no
+  default) says filenames save in the project's `models/` folder, paths are relative to the
+  project root, and the model's extension (`.cbm` for CatBoost, `.rsglm` for GLM) is added if
+  omitted. Once a path is set, the server-resolved "Destination: {path}" is shown before
+  saving, with an alert when the path's extension does not match the model format (which
+  keeps **Save model to file** disabled) or when the destination cannot be resolved. Saving
+  never silently replaces a file: an existing destination shows the server's message with a
+  **Replace existing file** confirmation that retries with overwrite. Success names both
+  written project-relative paths; a failure shows the server's detail. Both actions act on the node's last completed training result. Without one they stay visible but
+  disabled beneath a note to train the model first; while a training job for the node runs they
+  are disabled beneath a note that export resumes when it completes; and when the training
+  configuration has changed since that result, a warning says exports use the last trained
+  model. The export fields (`mlflow_destination`, `mlflow_experiment`,
+  `model_export_path`) are not part of the training identity: editing them neither marks the
+  trained result stale nor requests a new RAM estimate. The setup panes and their tabs never expose missing-field warnings:
   Target is labelled only `Target`, and Features/Params are equally free of attention badges.
   Train remains enabled while idle. With tuning enabled the action reads **Tune &
   Train**. Before the first invalid Train or Re-train attempt, the validation banner is absent.
@@ -282,7 +300,7 @@ written; the generic section store and any inert in-memory entries need no migra
 
 **Regression evidence.** Suites in
 `frontend/src/panels/__tests__/ModellingConfig.test.tsx` and under
-`frontend/src/panels/modelling/__tests__/` prove: five panes with the ownership above for both
+`frontend/src/panels/modelling/__tests__/` prove: six panes with the ownership above for both
 algorithms and the unsupported-algorithm diagnostic; CatBoost's unified all-loss picker,
 loss-derived task/default metrics, and visible disabled incompatible metrics; the common searched/dtype-labelled
 feature-card browser for CatBoost and GLM, including current-state per-card toggles and
@@ -294,7 +312,10 @@ bodies, arbitrary params JSON round trips, valid fixed/search-space autosave, co
 draft presentation, invalid/non-object/reserved-key draft persistence without Apply/Revert or
 inline warnings, selected-strategy click-time validation, and GPU task-type merge; plain setup-tab
 labels, click-time-only aggregate validation beneath Train, authoritative bounded live-history
-rendering including truncation; and time-remaining
+rendering including truncation; Export-pane ownership of the MLflow fields and both export
+actions, their no-model/training/stale notes, the save-model request path default and result
+display, export-field edits leaving the trained result current, and a Summary with no export
+card; and time-remaining
 show/hide/reset behaviour for valid, insufficient, duplicate/stalled, non-monotonic, terminal, and
 new-job samples. `frontend/src/panels/__tests__/NodePanel.test.tsx`,
 `frontend/src/stores/__tests__/useUIStore.test.ts`, and

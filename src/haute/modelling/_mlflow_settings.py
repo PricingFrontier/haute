@@ -7,8 +7,10 @@ folder) round trip, standard ``MLFLOW_TRACKING_URI`` form classification,
 per-destination resolution via ``resolve_destination()``, the destination
 inventory via ``list_destinations()``, candidate draft resolution for
 connection testing via ``candidate_tracking_config()``, and
-``resolve_tracking_config()`` — the auto rule (Databricks if configured, else
-MLflow server if configured, else Local).
+``node_destination_key()`` — a node without a chosen destination uses the local
+folder. There is no automatic choice: Databricks or an MLflow server is used
+only when a node names it, and a remote that is not working is reported, never
+replaced by another destination.
 
 Destinations are keyed:
 - ``"databricks"`` — Databricks workspace tracking backend.
@@ -77,12 +79,17 @@ class DestinationEntry:
 
 
 def validate_destination_key(value: str) -> str:
-    """Return *value* when it is a destination key or ``""`` (auto); else raise."""
+    """Return *value* when it is a destination key or ``""`` (local); else raise."""
     if value == "" or value in DESTINATION_KEYS:
         return value
     raise MlflowConfigError(
         f"Unknown MLflow destination {value!r}; expected databricks, server, or local."
     )
+
+
+def node_destination_key(value: str) -> str:
+    """The destination a node or request uses: the one it names, else the local folder."""
+    return validate_destination_key(value) or "local"
 
 
 def _project_root_default() -> Path:
@@ -417,7 +424,7 @@ def resolve_destination(key: str, project_root: Path | None = None) -> TrackingC
     if key not in DESTINATION_KEYS:
         validate_destination_key(key)
         raise MlflowConfigError(
-            "A destination key is required; '' (auto) is resolved by resolve_tracking_config()."
+            "A destination key is required; node_destination_key() maps '' to local."
         )
     root = project_root if project_root is not None else _project_root_default()
     if key == "databricks":
@@ -438,16 +445,6 @@ def list_destinations(project_root: Path | None = None) -> list[DestinationEntry
             continue
         entries.append(DestinationEntry(key, True, config.destination, config.config_source))
     return entries
-
-
-def resolve_tracking_config(project_root: Path | None = None) -> TrackingConfig:
-    """The auto rule: databricks if configured, else server if configured, else local."""
-    for key in DESTINATION_KEYS:
-        try:
-            return resolve_destination(key, project_root)
-        except MlflowDestinationUnconfigured:
-            continue
-    raise MlflowConfigError("No MLflow destination could be resolved.")
 
 
 def _server_uri_with_env_credentials(stored_uri: str) -> str:

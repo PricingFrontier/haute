@@ -107,14 +107,18 @@ def test_model_score_runtime_fingerprint_follows_backend_identity(workspace: Pat
         assert _fingerprint(graph) == folder_a, node_type
 
 
-def test_auto_switch_changes_runtime_fingerprint(
+def test_configuring_databricks_never_retargets_a_node_without_a_destination(
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The auto rule re-resolving from local to Databricks misses the cache."""
+    """A node without a destination stays on the local folder when Databricks
+    credentials appear; only a node that chooses Databricks changes backend."""
     graph = _graph("modelScore", dict(_MODEL_SCORE_RUN_CONFIG))
+    chosen = _graph(
+        "modelScore", dict(_MODEL_SCORE_RUN_CONFIG) | {"mlflow_destination": "databricks"}
+    )
 
-    local_auto = _fingerprint(graph)
+    local_before = _fingerprint(graph)
 
     monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
     monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi-not-a-real-token")
@@ -122,10 +126,12 @@ def test_auto_switch_changes_runtime_fingerprint(
         "mlflow.utils.databricks_utils.get_databricks_host_creds",
         return_value=MagicMock(host="https://adb.example.net"),
     ):
-        databricks_auto = _fingerprint(graph)
-        files = _entry_files(graph)
+        local_after = _fingerprint(graph)
+        databricks = _fingerprint(chosen)
+        files = _entry_files(chosen)
 
-    assert local_auto != databricks_auto
+    assert local_before == local_after
+    assert databricks != local_after
     assert "dapi-not-a-real-token" not in str(files["mlflow_backend"])
 
 

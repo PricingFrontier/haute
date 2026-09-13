@@ -41,6 +41,7 @@ from haute.modelling._evaluation import (
 )
 from haute.modelling._evaluation import file_sha256 as evaluation_file_sha256
 from haute.modelling._metrics import compute_metrics
+from haute.modelling._model_export import MODEL_FILE_SUFFIXES
 from haute.modelling._split import (
     PARTITION_HOLDOUT,
     PARTITION_TRAIN,
@@ -67,8 +68,6 @@ from haute.modelling._tuning import (
 )
 
 logger = get_logger(component="training_job")
-
-_MODEL_EXT_MAP: dict[str, str] = {"catboost": ".cbm", "glm": ".rsglm"}
 
 # The failure classes a target/metric/dtype mismatch produces inside pure
 # metric computation. The metric-stage wrap deliberately trades
@@ -409,9 +408,7 @@ class TrainingJob:
     mlflow_experiment : str | None
         MLflow experiment path. If set and mlflow is importable, logs the run.
     mlflow_destination : str
-        MLflow tracking destination key ("" | "databricks" | "server" | "local"; absent = auto).
-    model_name : str | None
-        Optional MLflow registered model name.
+        MLflow tracking destination key ("databricks" | "server"; "" = the local folder).
     output_dir : str
         Directory to save the model file.
     """
@@ -434,7 +431,6 @@ class TrainingJob:
         metrics: list[str] | None = None,
         mlflow_experiment: str | None = None,
         mlflow_destination: str = "",
-        model_name: str | None = None,
         output_dir: str = "outputs",
         loss_function: str | None = None,
         variance_power: float | None = None,
@@ -466,7 +462,6 @@ class TrainingJob:
         )
         self.mlflow_experiment = mlflow_experiment
         self.mlflow_destination = mlflow_destination
-        self.model_name = model_name
         self.output_dir = output_dir
         self.loss_function = loss_function
         self.variance_power = variance_power
@@ -482,6 +477,11 @@ class TrainingJob:
             self.evaluation = evaluation
         else:
             self.evaluation = EvaluationConfig.from_plain_data(evaluation)
+        if mlflow_experiment and self.evaluation is None:
+            raise HauteValidationError(
+                "mlflow_experiment requires an explicit evaluation contract: MLflow "
+                "candidate runs publish the evaluation plan and results"
+            )
         if tuning is None:
             self.tuning = None
         elif self.evaluation is None:
@@ -792,7 +792,6 @@ class TrainingJob:
             metrics=list(self.metrics),
             mlflow_experiment=mlflow_experiment,
             mlflow_destination=self.mlflow_destination,
-            model_name=self.model_name,
             output_dir=output_dir,
             loss_function=self.loss_function,
             variance_power=self.variance_power,
@@ -2291,7 +2290,7 @@ class TrainingJob:
         """
         from haute.modelling._feature_contract import build_contract, save_contract
 
-        ext = _MODEL_EXT_MAP.get(self.algorithm, ".model")
+        ext = MODEL_FILE_SUFFIXES.get(self.algorithm, ".model")
         output_dir = Path(self.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         model_path = output_dir / f"{self.name}{ext}"
@@ -2516,25 +2515,56 @@ class TrainingJob:
             categorical_features=cat_features,
         )
 
+    @property
+    def training_identity_sha256(self) -> str:
+        """Digest of the parsed inputs that determine what this job trains."""
+        from haute.modelling._candidate_run import training_identity_sha256
+
+        return training_identity_sha256(
+            {
+                "target": self.target,
+                "weight": self.weight,
+                "exclude": list(self.exclude),
+                "feature_columns": list(self.feature_columns),
+                "fold_column": self.fold_column,
+                "id_columns": list(self.id_columns),
+                "algorithm": self.algorithm,
+                "task": self.task,
+                "params": self.params,
+                "evaluation": self.evaluation,
+                "tuning": self.tuning,
+                "metrics": list(self.metrics),
+                "loss_function": self.loss_function,
+                "variance_power": self.variance_power,
+                "offset": self.offset,
+                "monotone_constraints": self.monotone_constraints,
+                "feature_weights": self.feature_weights,
+                "categorical_levels": self._declared_categorical_levels,
+            }
+        )
+
     def _log_to_mlflow(
         self,
         result: TrainResult,
         *,
         check_cancelled: Callable[[], None] | None = None,
     ) -> None:
-        """Log training run to MLflow (conditional import).
+        """Log this scripted run to MLflow as a contracted candidate run."""
+        import uuid
 
-        Delegates to the standalone ``log_experiment()`` function so the
-        same logic is reused by the "Log to MLflow" button in the UI.
-        """
-        from haute.modelling._mlflow_log import log_experiment
-        from haute.modelling._result_types import (
-            ModelCardMetadata,
-            ModelDiagnostics,
+        from haute._sandbox import _get_project_root
+        from haute.modelling._candidate_run import (
+            CandidateArtifacts,
+            build_candidate_run,
+            capture_provenance,
         )
+        from haute.modelling._mlflow_log import log_experiment
+        from haute.modelling._result_types import ModelDiagnostics
 
         if not self.mlflow_experiment:
             return
+        if result.evaluation is None:
+            raise HauteValidationError("MLflow logging requires an evaluated training run")
 
         diagnostics = ModelDiagnostics(
             feature_importance=result.feature_importance,
@@ -2554,78 +2584,58 @@ class TrainingJob:
             lorenz_curve_perfect=result.lorenz_curve_perfect,
             pdp_data=result.pdp_data,
             final_test_metrics=result.final_test_metrics,
-            selection_metrics=(
-                dict(result.evaluation.get("selection_metrics", {}))
-                if result.evaluation is not None
-                else {}
-            ),
+            selection_metrics=dict(result.evaluation.get("selection_metrics", {})),
             evaluation=result.evaluation,
             tuning=result.tuning,
             diagnostics_set=result.diagnostics_set,
         )
-        # Populate the feature-contract metadata so ``log_experiment``
-        # can attach an MLflow ``ModelSignature`` to the logged model.
-        feature_types = self._feature_dtypes_for_contract(result.features)
-        metadata = ModelCardMetadata(
-            algorithm=self.algorithm,
-            task=self.task,
-            development_rows=result.development_rows,
-            final_test_rows=result.final_test_rows,
-            features=result.features,
-            evaluation_config=(
-                self.evaluation.to_plain_data() if self.evaluation is not None else {}
-            ),
-            best_iteration=result.best_iteration,
-            feature_types=feature_types,
-            categorical_features=list(result.cat_features),
-            target_name=self.target,
-            target_type=self._target_dtype_for_contract(),
-            offset_name=self.offset or "",
-            offset_type=(self._contract_offset_dtype or "Float64") if self.offset else "",
-        )
-
+        model_path = Path(result.model_path)
+        evidence = {
+            "evaluation_plan": Path(result.evaluation["plan_path"]),
+            "evaluation_results": Path(result.evaluation["results_path"]),
+            "evaluation_report": Path(result.evaluation["report_path"]),
+        }
+        if result.tuning is not None:
+            evidence.update(
+                {
+                    "tuning_plan": Path(result.tuning["plan_path"]),
+                    "tuning_trials": Path(result.tuning["trials_path"]),
+                    "tuning_report": Path(result.tuning["report_path"]),
+                }
+            )
         final_params = (
             dict(result.tuning["final_params"]) if result.tuning is not None else self.params
         )
-        artifact_paths: dict[str, str] = {}
-        if result.evaluation is not None:
-            artifact_paths.update(
-                {
-                    "evaluation_plan": result.evaluation["plan_path"],
-                    "evaluation_results": result.evaluation["results_path"],
-                    "evaluation_report": result.evaluation["report_path"],
-                }
-            )
-        if result.tuning is not None:
-            artifact_paths.update(
-                {
-                    "tuning_plan": result.tuning["plan_path"],
-                    "tuning_trials": result.tuning["trials_path"],
-                    "tuning_report": result.tuning["report_path"],
-                }
-            )
+        assert self.evaluation is not None  # result.evaluation implies the contract
+        candidate = build_candidate_run(
+            provenance=capture_provenance(
+                job_id=uuid.uuid4().hex,
+                node_label=self.name,
+                training_identity_sha256=self.training_identity_sha256,
+                project_root=_get_project_root(),
+            ),
+            algorithm=self.algorithm,
+            weight=self.weight or "",
+            evaluation_strategy=self.evaluation.strategy,
+            validation_method=self.evaluation.validation["method"],
+            evaluation_config=self.evaluation.to_plain_data(),
+            evaluation_plan_sha256=str(result.evaluation["plan_sha256"]),
+            final_params=final_params,
+            final_test_metrics=result.final_test_metrics,
+            development_metrics={} if result.final_test_metrics else result.metrics,
+            diagnostics=diagnostics,
+            development_rows=result.development_rows,
+            final_test_rows=result.final_test_rows,
+            best_iteration=result.best_iteration,
+            artifacts=CandidateArtifacts(
+                model=model_path,
+                feature_contract=model_path.parent / model_contract_filename(model_path.stem),
+                evidence=evidence,
+            ),
+        )
         log_experiment(
             experiment_name=self.mlflow_experiment,
-            run_name=self.name,
+            candidate=candidate,
             destination=self.mlflow_destination,
-            metrics=result.final_test_metrics or result.metrics,
-            params={
-                "algorithm": self.algorithm,
-                "task": self.task,
-                "target": self.target,
-                "weight": self.weight or "",
-                "evaluation_strategy": (
-                    self.evaluation.strategy if self.evaluation is not None else ""
-                ),
-                "validation_method": (
-                    self.evaluation.validation["method"] if self.evaluation is not None else ""
-                ),
-                **{f"param_{k}": v for k, v in final_params.items()},
-            },
-            diagnostics=diagnostics,
-            metadata=metadata,
-            model_path=result.model_path or None,
-            model_name=self.model_name,
-            artifact_paths=artifact_paths,
             check_cancelled=check_cancelled,
         )

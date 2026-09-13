@@ -38,7 +38,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from haute._file_ops import Writer, atomic_write_bytes, atomic_write_text
+from haute._file_ops import Writer, atomic_copy_files, atomic_write_bytes, atomic_write_text
 
 # ---------------------------------------------------------------------------
 # F2: atomic_write_bytes
@@ -706,3 +706,63 @@ class TestWriterEdgeCases:
             w.write_text("fresh")
 
         assert target.read_text(encoding="utf-8") == "fresh"
+
+
+class TestAtomicCopyFiles:
+    """Tests for ``atomic_copy_files`` (stage-all-then-replace-all copy)."""
+
+    def test_copies_two_pairs_and_replaces_existing_targets(self, tmp_path: Path) -> None:
+        src_a = tmp_path / "a_src.bin"
+        src_b = tmp_path / "b_src.bin"
+        src_a.write_bytes(b"payload-a")
+        src_b.write_bytes(b"payload-b")
+
+        dst_a = tmp_path / "a_dst.bin"
+        dst_b = tmp_path / "b_dst.bin"
+        dst_a.write_bytes(b"stale-a")  # pre-existing target must be replaced
+
+        atomic_copy_files([(src_a, dst_a), (src_b, dst_b)])
+
+        assert dst_a.read_bytes() == b"payload-a"
+        assert dst_b.read_bytes() == b"payload-b"
+        # Sources untouched.
+        assert src_a.read_bytes() == b"payload-a"
+        assert src_b.read_bytes() == b"payload-b"
+        assert not tuple(tmp_path.glob("*.tmp"))
+
+    def test_a_copy_that_fails_part_way_leaves_no_staged_file(self, tmp_path: Path) -> None:
+        src = tmp_path / "src.bin"
+        src.write_bytes(b"payload")
+        dst = tmp_path / "dst.bin"
+        dst.write_bytes(b"original")
+
+        def partial_copy(source: Path, target: Path) -> None:
+            Path(target).write_bytes(b"pay")
+            raise OSError("disk full")
+
+        with (
+            patch("haute._file_ops.shutil.copyfile", side_effect=partial_copy),
+            pytest.raises(OSError, match="disk full"),
+        ):
+            atomic_copy_files([(src, dst)])
+
+        assert dst.read_bytes() == b"original"
+        assert sorted(path.name for path in tmp_path.iterdir()) == ["dst.bin", "src.bin"]
+
+    def test_missing_second_source_leaves_first_target_untouched(self, tmp_path: Path) -> None:
+        src_a = tmp_path / "a_src.bin"
+        src_a.write_bytes(b"payload-a")
+        missing_src = tmp_path / "does_not_exist.bin"
+
+        dst_a = tmp_path / "a_dst.bin"
+        dst_a.write_bytes(b"original-a")
+        dst_b = tmp_path / "b_dst.bin"
+
+        with pytest.raises(OSError):
+            atomic_copy_files([(src_a, dst_a), (missing_src, dst_b)])
+
+        # First target keeps its old bytes -- nothing was replaced because
+        # staging happens for every pair before any replace occurs.
+        assert dst_a.read_bytes() == b"original-a"
+        assert not dst_b.exists()
+        assert not tuple(tmp_path.glob("*.tmp"))

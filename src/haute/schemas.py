@@ -2241,6 +2241,41 @@ class TrainResponse(BaseModel):
         return self
 
 
+class MlflowExportReceipt(BaseModel):
+    """A completed log of a training job to MLflow."""
+
+    operation_id: str
+    destination: Literal["", "databricks", "server", "local"]
+    backend: str
+    experiment_name: str
+    run_id: str
+    run_url: str | None = None
+    tracking_uri: str = ""
+    logged_at: str
+
+    @field_validator("tracking_uri", "run_url")
+    @classmethod
+    def redact_tracking_credentials(cls, value: str | None) -> str | None:
+        from haute.modelling._mlflow_settings import redact_uri
+
+        return redact_uri(value) if value is not None else None
+
+
+class ModelFileExportReceipt(BaseModel):
+    """A completed save of a training job's model to a project file."""
+
+    path: str
+    feature_contract_path: str
+    saved_at: str
+
+
+class TrainExportReceipts(BaseModel):
+    """Where a completed training result has been exported, oldest first."""
+
+    mlflow: list[MlflowExportReceipt] = Field(default_factory=list)
+    model_files: list[ModelFileExportReceipt] = Field(default_factory=list)
+
+
 class TrainStatusResponse(BaseModel):
     status: JobStatus
     progress: float = 0.0
@@ -2277,6 +2312,7 @@ class TrainStatusResponse(BaseModel):
     completed_fits: int | None = Field(default=None, strict=True, ge=0)
     total_fits: int | None = Field(default=None, strict=True, ge=1, le=201)
     best_objective: float | None = None
+    export_receipts: TrainExportReceipts = Field(default_factory=TrainExportReceipts)
 
     @field_validator("best_objective", mode="before")
     @classmethod
@@ -2516,8 +2552,34 @@ class ExportScriptResponse(BaseModel):
 class LogExperimentRequest(BaseModel):
     job_id: str
     experiment_name: str | None = None
-    model_name: str | None = None
     destination: Literal["", "databricks", "server", "local"] = ""
+    # One user action. A retry with the same ID returns the recorded outcome
+    # instead of creating a second run.
+    operation_id: str | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$"
+    )
+
+
+class ModelSaveDestinationRequest(BaseModel):
+    output_path: str = Field(min_length=1)
+    algorithm: Literal["catboost", "glm"]
+
+
+class ModelSaveDestinationResponse(BaseModel):
+    path: str
+    suffix_mismatch: bool
+
+
+class SaveModelRequest(BaseModel):
+    job_id: str
+    output_path: str = Field(min_length=1)
+    overwrite: bool = False
+
+
+class SaveModelResponse(BaseModel):
+    status: Literal["ok"]
+    path: str
+    feature_contract_path: str
 
 
 class MlflowLogResponse(BaseModel):
@@ -2545,7 +2607,8 @@ class MlflowLogResponse(BaseModel):
 
 
 class LogExperimentResponse(MlflowLogResponse):
-    pass
+    operation_id: str | None = None
+    logged_at: str | None = None
 
 
 class ModelCacheClearResponse(BaseModel):
@@ -2584,7 +2647,6 @@ class MlflowDestinationEntry(BaseModel):
 class MlflowDestinationsResponse(BaseModel):
     mlflow_installed: bool
     mlflow_importable: bool
-    auto: Literal["", "databricks", "server", "local"] = ""
     destinations: list[MlflowDestinationEntry] = Field(default_factory=list)
     detail: str = ""
 
@@ -2647,6 +2709,8 @@ class MlflowModelVersionSummary(BaseModel):
     creation_timestamp: int | None = None
     description: str = ""
     params: dict[str, str] = Field(default_factory=dict)
+    # Registered model aliases that currently target this version.
+    aliases: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -2930,7 +2994,6 @@ class OptimiserMlflowLogRequest(BaseModel):
     job_id: str
     point_index: int | None = Field(default=None, ge=0)
     experiment_name: str | None = None
-    model_name: str | None = None
     destination: Literal["", "databricks", "server", "local"] = ""
 
 

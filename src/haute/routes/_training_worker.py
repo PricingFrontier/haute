@@ -582,6 +582,7 @@ def _run_training_process_job(
         return WorkerResultManifest(
             metadata={
                 "response": response,
+                "training_identity_sha256": job.training_identity_sha256,
                 "execution_metrics": execution_context.metrics_payload(
                     status="completed",
                     terminal_reason="completed",

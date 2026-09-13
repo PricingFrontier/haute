@@ -70,6 +70,10 @@ import type {
   MlflowTestConnectionResponse,
   MlflowExperiment,
   MlflowLogResponse,
+  ModelSaveDestinationRequest,
+  ModelSaveDestinationResponse,
+  SaveModelRequest,
+  SaveModelResponse,
   MlflowModel,
   MlflowModelVersion,
   MlflowRun,
@@ -153,6 +157,8 @@ import {
   parseMlflowTestConnectionResponse,
   parseMlflowExperiments,
   parseMlflowLogResponse,
+  parseModelSaveDestinationResponse,
+  parseSaveModelResponse,
   parseMlflowModels,
   parseMlflowModelVersions,
   parseMlflowRuns,
@@ -1307,14 +1313,33 @@ export function logToMlflow(
   payload: {
     job_id: string
     experiment_name?: string | null
-    model_name?: string | null
-    /** `""` logs to the auto destination. */
+    /** `""` logs to the local folder. */
     destination: "" | MlflowDestinationKey
+    /** One user action; a retry with the same ID returns the recorded run. */
+    operation_id?: string
   },
   options?: { signal?: AbortSignal },
 ): Promise<MlflowLogResponse> {
   return post<unknown>("/api/modelling/mlflow/log", payload, { timeout: 600_000, ...options })
     .then(parseMlflowLogResponse)
+}
+
+/** Resolves where "Save model to file" would write, without writing. */
+export function resolveModelSaveDestination(
+  payload: ModelSaveDestinationRequest,
+  options?: { signal?: AbortSignal },
+): Promise<ModelSaveDestinationResponse> {
+  return post<unknown>("/api/modelling/save/destination", payload, { timeout: 30_000, ...options })
+    .then(parseModelSaveDestinationResponse)
+}
+
+/** Copies a completed training job's model and feature contract to a project file. */
+export function saveTrainedModel(
+  payload: SaveModelRequest,
+  options?: { signal?: AbortSignal },
+): Promise<SaveModelResponse> {
+  return post<unknown>("/api/modelling/save", payload, { timeout: 600_000, ...options })
+    .then(parseSaveModelResponse)
 }
 
 // ---------------------------------------------------------------------------
@@ -1590,8 +1615,8 @@ export function testMlflowConnection(
     .then(parseMlflowTestConnectionResponse)
 }
 
-// Discovery is destination-scoped: `""` means the auto destination and is
-// sent as an absent query param so the backend applies its own auto rule.
+// Discovery is destination-scoped: `""` means the local folder and is sent as
+// an absent query param, which the backend also reads as the local folder.
 function destinationQuery(destination: string): string {
   return destination === "" ? "" : `destination=${encodeURIComponent(destination)}`
 }

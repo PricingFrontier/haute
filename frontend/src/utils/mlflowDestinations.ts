@@ -3,15 +3,16 @@
  *
  * The workspace offers up to three tracking destinations (Databricks, an
  * MLflow server, a local folder) and the backend reports what each one
- * resolves to plus which one `auto` picks. Each node stores its own choice in
- * config (`mlflow_destination`, absent = auto), so every surface needs the
- * same small vocabulary: which destination a node effectively uses, what its
- * connection light says, and whether logging can proceed.
+ * resolves to. A node uses the local folder unless its config names a remote
+ * (`mlflow_destination` is `databricks` or `server`; choosing Local folder
+ * removes the key), so every surface needs the same small vocabulary: which
+ * destination a node uses, what its connection light says, and whether
+ * logging can proceed.
  *
  * These helpers are pure and import no store, so components, hooks and the
  * store's own selector can all share them. They never rewrite a node's stored
- * value: an unrecognised stored key is *read* as auto here and left untouched
- * in the config.
+ * value: an unrecognised stored value is *read* as the local folder here and
+ * left untouched in the config.
  */
 import type { MlflowDestinationEntry, MlflowDestinationKey } from "../api/types"
 
@@ -36,7 +37,6 @@ export interface MlflowInventoryState {
   status: "loading" | "ready" | "error"
   installed: boolean | null
   importable: boolean | null
-  auto: "" | MlflowDestinationKey
   destinations: MlflowDestinationEntry[]
   detail: string
 }
@@ -49,14 +49,22 @@ export function isMlflowDestinationKey(value: unknown): value is MlflowDestinati
 }
 
 /**
- * The destination a node actually uses: its own valid key, else `auto`.
- * An unknown stored value reads as auto — the config keeps whatever it holds.
+ * The destination a node actually uses: the remote it names, else the local
+ * folder. Any other stored value reads as local — the config keeps it.
  */
-export function effectiveMlflowDestination(
-  nodeValue: unknown,
-  auto: "" | MlflowDestinationKey,
-): "" | MlflowDestinationKey {
-  return isMlflowDestinationKey(nodeValue) ? nodeValue : auto
+export function effectiveMlflowDestination(nodeValue: unknown): MlflowDestinationKey {
+  return nodeValue === "databricks" || nodeValue === "server" ? nodeValue : "local"
+}
+
+/**
+ * The `mlflow_destination` config value for a chosen destination: the remote's
+ * key, or `undefined` for the local folder so the key is removed and local has
+ * exactly one stored representation (no key).
+ */
+export function mlflowDestinationConfigValue(
+  key: MlflowDestinationKey,
+): "databricks" | "server" | undefined {
+  return key === "local" ? undefined : key
 }
 
 export function mlflowDestinationEntry(
@@ -86,7 +94,7 @@ export function mlflowLight(
 
 export interface MlflowLogAvailability {
   available: boolean
-  key: "" | MlflowDestinationKey
+  key: MlflowDestinationKey
   label: string
   destination: string
   reason: string
@@ -104,8 +112,8 @@ export function mlflowLogAvailability(
   state: MlflowInventoryState,
   nodeValue: unknown,
 ): MlflowLogAvailability {
-  const key = effectiveMlflowDestination(nodeValue, state.auto)
-  const label = key === "" ? "" : MLFLOW_DESTINATION_LABELS[key]
+  const key = effectiveMlflowDestination(nodeValue)
+  const label = MLFLOW_DESTINATION_LABELS[key]
   const entry = mlflowDestinationEntry(state.destinations, key)
 
   if (state.status === "loading") {
@@ -117,8 +125,8 @@ export function mlflowLogAvailability(
     return { available: false, key, label, destination: "", reason: state.detail }
   }
   if (!entry) {
-    // No entry for the effective destination — auto resolved to nothing, and
-    // the inventory's own detail says why.
+    // The inventory lists every destination, so a missing entry means the
+    // response itself was incomplete; its detail is the only reason there is.
     return { available: false, key, label, destination: "", reason: state.detail }
   }
   if (!entry.configured) {
@@ -128,9 +136,6 @@ export function mlflowLogAvailability(
 }
 
 /** The experiment path used when a node leaves the field blank. */
-export function defaultExperimentName(
-  nodeLabel: string,
-  key: "" | MlflowDestinationKey,
-): string {
+export function defaultExperimentName(nodeLabel: string, key: MlflowDestinationKey): string {
   return key === "databricks" ? `/Shared/haute/${nodeLabel}` : nodeLabel
 }

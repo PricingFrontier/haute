@@ -83,6 +83,72 @@ describe("RegisteredModelPicker", () => {
     expect(screen.queryByText("Version")).not.toBeInTheDocument()
   })
 
+  describe("registered aliases", () => {
+    const versions = [
+      { version: "3", run_id: "r3", status: "READY", description: "", aliases: ["champion"] },
+      { version: "2", run_id: "r2", status: "READY", description: "", aliases: [] },
+    ]
+
+    it("lists each alias with the version it targets beside latest and the versions", () => {
+      const mlflow = makeMlflow({ modelVersionsFor: "freq", modelVersions: versions })
+      render(<RegisteredModelPicker config={{ registered_model: "freq" }} onUpdate={vi.fn()} mlflow={mlflow} />)
+      const versionSelect = screen.getAllByRole("combobox")[1]
+      const labels = Array.from(versionSelect.querySelectorAll("option")).map((o) => o.textContent)
+      expect(labels).toEqual(["latest", "@champion → v3", "v3 — READY", "v2 — READY"])
+    })
+
+    it("stores an alias instead of a version, and a version instead of an alias", () => {
+      const onUpdate = vi.fn()
+      const mlflow = makeMlflow({ modelVersionsFor: "freq", modelVersions: versions })
+      const { rerender } = render(
+        <RegisteredModelPicker config={{ registered_model: "freq", version: "2" }} onUpdate={onUpdate} mlflow={mlflow} />,
+      )
+      fireEvent.change(screen.getAllByRole("combobox")[1], { target: { value: "alias:champion" } })
+      expect(onUpdate).toHaveBeenLastCalledWith({ alias: "champion", version: undefined })
+
+      rerender(
+        <RegisteredModelPicker config={{ registered_model: "freq", alias: "champion" }} onUpdate={onUpdate} mlflow={mlflow} />,
+      )
+      expect(screen.getAllByRole("combobox")[1]).toHaveValue("alias:champion")
+      fireEvent.change(screen.getAllByRole("combobox")[1], { target: { value: "2" } })
+      expect(onUpdate).toHaveBeenLastCalledWith({ version: "2", alias: undefined })
+    })
+
+    it("passes the version an alias targets to onVersionSelected", () => {
+      const onVersionSelected = vi.fn(() => ({}))
+      const mlflow = makeMlflow({ modelVersionsFor: "freq", modelVersions: versions })
+      render(
+        <RegisteredModelPicker
+          config={{ registered_model: "freq" }}
+          onUpdate={vi.fn()}
+          mlflow={mlflow}
+          onVersionSelected={onVersionSelected}
+        />,
+      )
+      fireEvent.change(screen.getAllByRole("combobox")[1], { target: { value: "alias:champion" } })
+      expect(onVersionSelected).toHaveBeenCalledWith(versions[0])
+    })
+
+    it("keeps showing a stored alias before the versions are loaded", () => {
+      render(
+        <RegisteredModelPicker config={{ registered_model: "freq", alias: "champion" }} onUpdate={vi.fn()} mlflow={makeMlflow()} />,
+      )
+      expect(screen.getAllByRole("combobox")[1]).toHaveValue("alias:champion")
+      expect(screen.getByText("@champion")).toBeInTheDocument()
+    })
+
+    it("clears a stored alias when another model is chosen", () => {
+      const onUpdate = vi.fn()
+      const mlflow = makeMlflow({ models: [{ name: "sev", latest_versions: [] }] })
+      render(
+        <RegisteredModelPicker config={{ registered_model: "freq", alias: "champion" }} onUpdate={onUpdate} mlflow={mlflow} />,
+      )
+      fireEvent.change(screen.getAllByRole("combobox")[0], { target: { value: "sev" } })
+      expect(onUpdate).toHaveBeenCalledWith({ registered_model: "sev", version: "latest", alias: undefined })
+      expect(Object.keys(onUpdate.mock.calls[0][0])).toContain("alias")
+    })
+  })
+
   it("shows error message when errorModels is set", () => {
     render(<RegisteredModelPicker config={{}} onUpdate={vi.fn()} mlflow={makeMlflow({ errorModels: "Network error" })} />)
     expect(screen.getByText("Network error")).toBeInTheDocument()

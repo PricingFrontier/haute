@@ -233,9 +233,9 @@ class TestTwoLocalFolders:
             "the warm cache served folder A's model after the toml pointed at folder B"
         )
 
-    def test_warm_cache_follows_auto_switch(self, workspace, monkeypatch):
+    def test_warm_cache_follows_a_node_choosing_databricks(self, workspace, monkeypatch):
         _configure_local(workspace.root, workspace.a)
-        backend_a = resolve_backend("local")
+        backend_a = resolve_backend("")
         # The remote workspace's store is a local folder so the test stays offline.
         backend_c = _fake_backend(
             workspace.c.as_uri(),
@@ -247,23 +247,27 @@ class TestTwoLocalFolders:
         real_resolve_backend = resolve_backend
 
         def resolve_with_databricks(destination: str = "", project_root: Path | None = None):
-            if destination == "" and os.environ.get("DATABRICKS_MLFLOW_HOST"):
+            if destination == "databricks":
                 return backend_c
             return real_resolve_backend(destination, project_root)
 
         with _patched_loaders(downloader):
-            auto_local = _load()
+            unchosen = _load()
             monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb-1.example.net")
             monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "synthetic-token")
             with patch(
                 "haute._mlflow_utils.resolve_backend",
                 side_effect=resolve_with_databricks,
             ):
-                auto_remote = _load()
+                still_local = _load()
+                chosen = _load("databricks")
 
-        assert auto_local.raw_model == "model:folder-a"
-        assert auto_remote.raw_model == "model:workspace-c", (
-            "the warm local entry was served after the auto rule moved to Databricks"
+        assert unchosen.raw_model == "model:folder-a"
+        assert still_local.raw_model == "model:folder-a", (
+            "configuring Databricks retargeted a node that never chose it"
+        )
+        assert chosen.raw_model == "model:workspace-c", (
+            "the warm local entry was served after the node chose Databricks"
         )
         assert downloader.tracking_uris() == [backend_a.tracking_uri, backend_c.tracking_uri]
 

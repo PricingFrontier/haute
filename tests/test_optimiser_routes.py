@@ -6879,7 +6879,7 @@ class TestOptimiserMlflowLog:
         assert "no solve result" in resp.json()["detail"].lower()
 
     def test_mlflow_log_import_error(self, client, clean_job_store):
-        """If mlflow is not installed, return 400."""
+        """If mlflow is not installed, return the shared 503 every MLflow route uses."""
         mock_solver = MagicMock()
         mock_solve = MagicMock(lambdas={}, total_objective=0, total_constraints={}, converged=True)
         seed_job(
@@ -6904,8 +6904,10 @@ class TestOptimiserMlflowLog:
                     "experiment_name": "/test",
                 },
             )
-        assert resp.status_code == 400
-        assert "mlflow" in resp.json()["detail"].lower()
+        assert resp.status_code == 503
+        assert (
+            resp.json()["detail"] == "MLflow is not installed. Install it with: pip install mlflow"
+        )
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_mlflow_log_after_real_solve(self, client, scored_data):
@@ -7127,7 +7129,7 @@ class TestOptimiserMlflowLog:
         )
         assert resp.status_code == 422
 
-    def test_auto_fails_loudly_when_databricks_is_rejected_but_local_still_logs(
+    def test_chosen_databricks_fails_loudly_when_rejected_but_unchosen_logs_locally(
         self, client, clean_job_store, tmp_path, monkeypatch
     ):
         from mlflow.tracking import MlflowClient
@@ -7143,7 +7145,7 @@ class TestOptimiserMlflowLog:
         self._seed_opt_job(clean_job_store, "opt_dest_sdk")
         resp = client.post(
             "/api/optimiser/mlflow/log",
-            json={"job_id": "opt_dest_sdk", "destination": ""},
+            json={"job_id": "opt_dest_sdk", "destination": "databricks"},
         )
         assert resp.status_code == 400, resp.text
         assert "MLFLOW_ENABLE_DB_SDK" in resp.json()["detail"]
@@ -7153,7 +7155,7 @@ class TestOptimiserMlflowLog:
             "/api/optimiser/mlflow/log",
             json={
                 "job_id": "opt_dest_sdk_local",
-                "destination": "local",
+                "destination": "",
                 "experiment_name": "opt_sdk_local_exp",
             },
         )
@@ -15613,7 +15615,7 @@ class TestMlflowLogExceptionPath:
                 "haute.modelling._mlflow_log.configure_mlflow_tracking",
                 return_value=("http://localhost:5000", "local"),
             ),
-            patch("haute.routes.optimiser.logger.error") as log_error,
+            patch("haute.routes._mlflow_log_errors.logger.error") as log_error,
         ):
             resp = client.post(
                 "/api/optimiser/mlflow/log",
@@ -15622,9 +15624,12 @@ class TestMlflowLogExceptionPath:
         assert resp.status_code == 500
         log_error.assert_called_once()
         assert log_error.call_args.args == ("mlflow_log_failed",)
-        assert log_error.call_args.kwargs["error"] == "summary boom"
-        assert log_error.call_args.kwargs["job_id"] == "mlf_err"
-        assert log_error.call_args.kwargs["exc_info"] is True
+        # Category and type only: the raw text never reaches the log.
+        assert log_error.call_args.kwargs == {
+            "category": "unknown",
+            "error_type": "RuntimeError",
+            "job_id": "mlf_err",
+        }
         job = clean_job_store.require_job("mlf_err")
         assert "solver" in job
         assert "solve_result" in job

@@ -5,10 +5,9 @@ from haute.routes._training_artifacts import (
     _EVALUATION_ARTIFACT_PATHS,
     _TRAINING_ARTIFACT_KINDS,
     _TUNING_ARTIFACT_PATHS,
-    TrainingArtifactPublicationError,
     _max_training_artifact_bytes,
-    _publish_training_artifacts,
     _validate_evaluation_artifact_contents,
+    _validate_training_artifacts,
     _validate_tuning_artifact_contents,
 )
 from haute.routes._training_evaluation import (
@@ -64,7 +63,6 @@ from haute.routes._training_worker import (
 
 __all__ = [
     "TrainService",
-    "TrainingArtifactPublicationError",
     "_DISPERSION_ESTIMATE_ROW_CAP",
     "_DISPERSION_JOB_TYPE",
     "_DISPERSION_PARAM_FAMILIES",
@@ -97,7 +95,7 @@ __all__ = [
     "_max_train_loss_history",
     "_max_training_artifact_bytes",
     "_memory_limit_http_exception",
-    "_publish_training_artifacts",
+    "_validate_training_artifacts",
     "_remove_gated_temp_parquet",
     "_run_dispersion_process_job",
     "_run_training_process_job",

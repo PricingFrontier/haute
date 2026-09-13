@@ -87,7 +87,7 @@ class TestDestinations:
         assert resp.status_code == 200
         body = resp.json()
         assert body["mlflow_installed"] is True and body["mlflow_importable"] is True
-        assert body["auto"] == "local"
+        assert "auto" not in body
         assert [d["key"] for d in body["destinations"]] == ["databricks", "server", "local"]
         databricks, server, local = body["destinations"]
         assert databricks["configured"] is False
@@ -113,9 +113,8 @@ class TestDestinations:
         databricks, server, local = body["destinations"]
         assert server["probed"] is True and server["ok"] is True and server["category"] == ""
         assert databricks["probed"] is False and local["probed"] is False
-        assert body["auto"] == "server"
 
-    def test_failed_probe_keeps_auto_and_reports_reason(
+    def test_failed_probe_reports_the_reason_on_its_entry(
         self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
@@ -130,7 +129,6 @@ class TestDestinations:
         assert databricks["probed"] is True and databricks["ok"] is False
         assert databricks["category"] == "connectivity"
         assert "dapi-secret" not in str(body)
-        assert body["auto"] == "databricks"
 
     def test_probes_run_concurrently_within_one_budget(
         self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
@@ -153,9 +151,7 @@ class TestDestinations:
         assert time.perf_counter() - started < 1.0
         assert all(d["ok"] for d in body["destinations"][:2])
 
-    def test_malformed_toml_marks_toml_backed_entries_and_fails_auto(
-        self, client, project_root: Path
-    ) -> None:
+    def test_malformed_toml_marks_toml_backed_entries(self, client, project_root: Path) -> None:
         _write_mlflow_section(project_root, 'mode = "local"\n')
         body = client.get("/api/mlflow/destinations?probe=true").json()
         databricks, server, local = body["destinations"]
@@ -163,9 +159,9 @@ class TestDestinations:
         assert databricks["detail"] == _DATABRICKS_UNCONFIGURED_DETAIL
         assert server["configured"] is False and "mode" in server["detail"]
         assert local["configured"] is False and "mode" in local["detail"]
-        assert body["auto"] == "" and "mode" in body["detail"]
+        assert body["detail"] == ""
 
-    def test_rejected_databricks_sdk_mode_keeps_other_entries_and_fails_auto(
+    def test_rejected_databricks_sdk_mode_keeps_other_entries(
         self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _write_mlflow_section(project_root, 'tracking_uri = "http://localhost:5000"\n')
@@ -179,10 +175,10 @@ class TestDestinations:
         assert server["configured"] is True and server["probed"] is True and server["ok"] is True
         assert local["configured"] is True
         probe.assert_called_once_with("http://localhost:5000")
-        assert body["auto"] == "" and "MLFLOW_ENABLE_DB_SDK" in body["detail"]
-        # An explicit Local still works while auto fails loudly:
-        assert client.get("/api/mlflow/experiments?destination=local").status_code == 200
-        resp = client.get("/api/mlflow/experiments")
+        # A node without a destination browses the local folder; only a node that
+        # chose Databricks sees the rejected configuration.
+        assert client.get("/api/mlflow/experiments").status_code == 200
+        resp = client.get("/api/mlflow/experiments?destination=databricks")
         assert resp.status_code == 502 and "MLFLOW_ENABLE_DB_SDK" in resp.json()["detail"]
 
     def test_inventory_is_reported_without_the_mlflow_package(
@@ -206,7 +202,6 @@ class TestDestinations:
             body = client.get("/api/mlflow/destinations?probe=true").json()
         assert body["mlflow_installed"] is False and "pip install mlflow" in body["detail"]
         assert [d["configured"] for d in body["destinations"]] == [True, False, True]
-        assert body["auto"] == "databricks"
         probe.assert_not_called()
 
     def test_missing_package_reports_configuration_and_never_probes(
@@ -323,7 +318,7 @@ class TestSettings:
 
 
 class TestTestConnection:
-    def test_auto_when_body_absent(self, client, project_root: Path) -> None:
+    def test_local_folder_when_body_absent(self, client, project_root: Path) -> None:
         with patch("haute.routes.mlflow._search_experiments_probe") as probe:
             body = client.post("/api/mlflow/test-connection").json()
         assert body == {"ok": True, "category": "", "detail": ""}

@@ -5,6 +5,10 @@ import { RegisteredModelPicker, ExperimentRunPicker } from "./MlflowModelPicker"
 import { useMlflowBrowser } from "../../hooks/useMlflowBrowser"
 import { configField } from "../../utils/configField"
 import MlflowDestinationSelector from "../../components/MlflowDestinationSelector"
+import {
+  effectiveMlflowDestination,
+  mlflowDestinationConfigValue,
+} from "../../utils/mlflowDestinations"
 import type { MlflowDestinationKey } from "../../api/types"
 import { optimiserSelectionMode } from "../../utils/mlflowOptimiser"
 import { readJson } from "../../api/client"
@@ -66,10 +70,10 @@ export default function OptimiserApplyEditor({
   // optimiser mode it was derived from — and says so until the next pick.
   const [selectionCleared, setSelectionCleared] = useState(false)
 
-  const handleDestinationChange = (next: "" | MlflowDestinationKey) => {
-    if (next === mlflowDestination) return
+  const handleDestinationChange = (next: MlflowDestinationKey) => {
+    if (next === effectiveMlflowDestination(mlflowDestination)) return
     onUpdate({
-      mlflow_destination: next,
+      mlflow_destination: mlflowDestinationConfigValue(next),
       run_id: "",
       run_name: "",
       experiment_id: "",
@@ -77,6 +81,7 @@ export default function OptimiserApplyEditor({
       artifact_path: "",
       registered_model: "",
       version: "latest",
+      alias: undefined,
       optimiser_mode: "",
     })
     setSelectionCleared(true)

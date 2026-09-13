@@ -31,8 +31,9 @@ test-connection probe — credentials stay in `.env` (Databricks MLflow uses its
 own `DATABRICKS_MLFLOW_HOST`/`DATABRICKS_MLFLOW_TOKEN` pair, never the
 data-access pair) or the selected Databricks profile and never pass through this
 surface. Which destination a node uses is
-that node's own choice (`mlflow_destination`, absent = auto), never a
-workspace-wide selection.
+that node's own choice (`mlflow_destination`, absent = the local folder), never a
+workspace-wide selection: configuring Databricks or a server never retargets a node
+that did not choose it.
 
 ## Scope
 
@@ -65,7 +66,7 @@ In scope:
   node's configuration UI.
 - The MLflow connection surface: `GET /api/mlflow/destinations` (the three
   destinations with `configured`, human-readable destination, config source,
-  actionable detail, the auto-rule result, and optional concurrent bounded
+  actionable detail, and optional concurrent bounded
   probes of the configured remotes), `GET`/`PUT /api/mlflow/settings` (the
   `[mlflow]` inventory table of `haute.toml` — `tracking_uri` and `folder` —
   written via a layout-preserving tomlkit round trip), and

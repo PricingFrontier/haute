@@ -137,26 +137,44 @@
    `ModelScoreEditor` and `OptimiserApplyEditor` (for its MLflow source
    types) mount the shared `MlflowDestinationSelector`
    ([frontend-shared](../frontend-shared/low-level.md)) above the source
-   picker, bound to the node's `mlflow_destination` (absent = auto); there is
+   picker, bound to the node's `mlflow_destination` (absent = the local
+   folder; Local folder is stored by removing the key); there is
    no status badge. Choosing a different destination clears the picked run
    or model (`run_id`, `run_name`, `experiment_id`, `experiment_name`,
-   `artifact_path`, `registered_model`, `version` reset to `"latest"`, and
-   for optimiser apply `optimiser_mode`) in the same config update and shows
+   `artifact_path`, `registered_model`, `version` reset to `"latest"`, `alias`
+   removed, and for optimiser apply `optimiser_mode`) in the same config update and shows
    an inline note that identifiers are not portable across backends until
    the next pick. `ModelScoreEditor` explains
    the selected model source in one plain-language line under the toggle
    ("registered model — a named, versioned model in the registry" versus
    "pick one specific training run"), and the shared pickers render honest
-   empty states instead of bare dropdowns: no registered models → "train a
-   model and log it with a model name to register one"; an experiment with
+   empty states instead of bare dropdowns: no registered models → "haute logs
+   training runs; your promotion process registers them"; an experiment with
    no matching finished runs → "no finished runs with a model artifact in
    this experiment yet". Discovery-error details arrive pre-categorised
-   from the server and are shown verbatim.
+   from the server and are shown verbatim. `ModelScoreEditor` reads the task a
+   training run recorded (`recordedModelTask` in `utils/mlflowModelMetadata.ts`:
+   the `task` param when it is `regression` or `classification`) from the
+   selected run, or from the loaded version the stored version choice resolves
+   to (`resolveLoadedVersion`: an alias is the version whose `aliases` include it,
+   `latest` is the newest version). `RegisteredModelPicker`'s Version select
+   lists `latest`, then each loaded alias as `@<alias> → v<version>`, then the
+   versions (a stored alias not among the loaded ones still shows as
+   `@<alias>`); choosing an alias writes `{alias, version: undefined}` and
+   choosing a version or `latest` writes `{version, alias: undefined}`
+   (`registeredSelectionUpdate`), and choosing another model resets
+   `version` to `latest` and removes `alias`. Picking a run,
+   or a version through `RegisteredModelPicker`'s `onVersionSelected`, writes
+   that task in the same config update. While the selection has a recorded
+   task, Task renders read-only ("Task recorded by the training run.") and a
+   stored task that differs shows an alert naming both with a "Use <task>"
+   button that writes the recorded one; a model without a recorded task (or
+   whose run or versions are not loaded) keeps the explicit Task select.
    MLflow discovery state is scoped to the node's effective destination:
-   `useMlflowBrowser({destination})` passes the node's value (`""` = auto) to
+   `useMlflowBrowser({destination})` passes the node's value (`""` = the local folder) to
    every experiments/runs/models/versions request, so the pickers list only
    that backend's content. A change of the effective destination — the node's
-   value, the inventory's auto result, or the resolved destination string of
+   value or the resolved destination string of
    the effective entry — clears all experiment/run/model/version arrays,
    errors, loading state and fetch guards in an already mounted editor.
    Responses from the previous destination are discarded, including an
@@ -745,15 +763,15 @@ cover new/edit/save/reload shapes; there are no migration-specific fixtures.
 The behaviour and non-goals are defined by
 [the modelling/optimiser UI contract](../frontend-modelling-optimiser-ui/high-level.md#modelling-config-panes).
 
-`frontend/src/panels/NodePanel.tsx` renders a five-pane modelling strip (Target, Features, Params,
-Split, Train) with the shared preview tab control and per-node UI-store selection memory. It is
+`frontend/src/panels/NodePanel.tsx` renders a six-pane modelling strip (Target, Features, Params,
+Split, Train, Export) with the shared preview tab control and per-node UI-store selection memory. It is
 shown only when the modelling node has a supported
 `catboost` or `glm` algorithm; an unset algorithm leaves the gateway as the only editor content.
 A non-empty unsupported value also suppresses the strip and is handed to the modelling editor's
 explicit diagnostic rather than treated as CatBoost.
 
 `NodePanel` reads the remembered pane and selects only the Boolean presence of
-`trainJobs[node.id]`. Its tab descriptors leave Target/Features/Params/Split as plain labels and
+`trainJobs[node.id]`. Its tab descriptors leave Target/Features/Params/Split/Export as plain labels and
 add only the active indicator on Train. Configuration completeness is deliberately not derived or
 displayed by the node panel; `ModellingConfig` owns click-time validation beneath its Train
 button. There is no child-to-parent registration or effect, so node changes cannot flash a

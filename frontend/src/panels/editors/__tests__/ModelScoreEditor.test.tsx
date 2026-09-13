@@ -9,9 +9,22 @@ import type { MlflowDestinationEntry, MlflowDestinationKey } from "../../../api/
 
 const mockMlflow = {
   experiments: [] as { experiment_id: string; name: string }[],
-  runs: [] as { run_id: string; run_name: string; metrics: Record<string, number>; artifacts: string[] }[],
+  runs: [] as {
+    run_id: string
+    run_name: string
+    metrics: Record<string, number>
+    params?: Record<string, string>
+    artifacts: string[]
+  }[],
   models: [] as { name: string; latest_versions: { version: string; status: string; run_id: string }[] }[],
-  modelVersions: [] as { version: string; run_id: string; status: string; description: string }[],
+  modelVersions: [] as {
+    version: string
+    run_id: string
+    status: string
+    description: string
+    params?: Record<string, string>
+    aliases?: string[]
+  }[],
   modelVersionsFor: "",
   loadingExperiments: false,
   loadingRuns: false,
@@ -138,13 +151,12 @@ function mlflowEntry(
 }
 
 /** A ready inventory, so the mounted selector never fetches one itself. */
-function setMlflowInventory(auto: "" | MlflowDestinationKey = "local"): void {
+function setMlflowInventory(): void {
   useSettingsStore.setState({
     mlflow: {
       status: "ready",
       installed: true,
       importable: true,
-      auto,
       destinations: [mlflowEntry("server"), mlflowEntry("local")],
       detail: "",
     },
@@ -176,7 +188,7 @@ describe("ModelScoreEditor", () => {
   it("shows an empty-state hint when no registered models exist", () => {
     render(<ModelScoreEditor {...defaultProps()} />)
     expect(
-      screen.getByText(/No registered models yet — train a model and log it with a model name/i),
+      screen.getByText(/No registered models yet — haute logs training runs; your promotion process/i),
     ).toBeInTheDocument()
   })
 
@@ -266,7 +278,7 @@ describe("ModelScoreEditor", () => {
     render(<ModelScoreEditor {...props} />)
     const versionSelect = screen.getByDisplayValue("latest")
     fireEvent.change(versionSelect, { target: { value: "3" } })
-    expect(props.onUpdate).toHaveBeenCalledWith("version", "3")
+    expect(props.onUpdate).toHaveBeenCalledWith({ version: "3" })
   })
 
   // 7. Run mode: shows experiment dropdown
@@ -556,5 +568,97 @@ describe("ModelScoreEditor", () => {
     const options = screen.getAllByRole("option")
     const values = options.map((o) => o.getAttribute("value"))
     expect(values).toContain("unlisted-model")
+  })
+
+  describe("task recorded by the training run", () => {
+    it("takes the task from the chosen run and shows it read-only", () => {
+      mockMlflow.browseExpId = "exp-1"
+      mockMlflow.runs = [
+        {
+          run_id: "run-cls",
+          run_name: "conversion",
+          metrics: {},
+          params: { task: "classification" },
+          artifacts: ["model.cbm"],
+        },
+      ]
+      const props = defaultProps()
+      props.config = { sourceType: "run" }
+      const { rerender } = render(<ModelScoreEditor {...props} />)
+      fireEvent.change(screen.getByDisplayValue("Select a run..."), {
+        target: { value: "run-cls" },
+      })
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        run_id: "run-cls",
+        run_name: "conversion",
+        artifact_path: "model.cbm",
+        task: "classification",
+      })
+
+      rerender(
+        <ModelScoreEditor
+          {...props}
+          config={{ sourceType: "run", run_id: "run-cls", task: "classification" }}
+        />,
+      )
+      expect(screen.getByTestId("model-score-recorded-task")).toHaveTextContent("Classification")
+      expect(screen.queryByDisplayValue("Regression")).toBeNull()
+      expect(screen.getByText("Task recorded by the training run.")).toBeInTheDocument()
+      expect(screen.queryByRole("alert")).toBeNull()
+    })
+
+    it("takes the task from the version the choice resolves to", () => {
+      mockMlflow.modelVersionsFor = "freq"
+      mockMlflow.modelVersions = [
+        { version: "2", run_id: "r2", status: "READY", description: "", params: { task: "regression" } },
+        { version: "1", run_id: "r1", status: "READY", description: "", params: { task: "classification" } },
+      ]
+      const props = defaultProps()
+      props.config = { registered_model: "freq", version: "2" }
+      render(<ModelScoreEditor {...props} />)
+      fireEvent.change(screen.getByDisplayValue("v2 — READY"), { target: { value: "1" } })
+      expect(props.onUpdate).toHaveBeenCalledWith({ version: "1", task: "classification" })
+      fireEvent.change(screen.getByDisplayValue("v2 — READY"), { target: { value: "latest" } })
+      expect(props.onUpdate).toHaveBeenCalledWith({ version: "latest", task: "regression" })
+    })
+
+    it("takes the task from the version a stored alias targets", () => {
+      mockMlflow.modelVersionsFor = "freq"
+      mockMlflow.modelVersions = [
+        { version: "2", run_id: "r2", status: "READY", description: "", params: { task: "regression" }, aliases: [] },
+        { version: "1", run_id: "r1", status: "READY", description: "", params: { task: "classification" }, aliases: ["champion"] },
+      ]
+      const props = defaultProps()
+      props.config = { registered_model: "freq", alias: "champion", task: "classification" }
+      render(<ModelScoreEditor {...props} />)
+      expect(screen.getByTestId("model-score-recorded-task")).toHaveTextContent("Classification")
+    })
+
+    it("offers the recorded task when the stored task conflicts", () => {
+      mockMlflow.browseExpId = "exp-1"
+      mockMlflow.runs = [
+        { run_id: "run-cls", run_name: "c", metrics: {}, params: { task: "classification" }, artifacts: [] },
+      ]
+      const props = defaultProps()
+      props.config = { sourceType: "run", run_id: "run-cls", task: "regression" }
+      render(<ModelScoreEditor {...props} />)
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "This node scores as regression, but the model was trained for classification.",
+      )
+      fireEvent.click(screen.getByRole("button", { name: "Use classification" }))
+      expect(props.onUpdate).toHaveBeenCalledWith("task", "classification")
+    })
+
+    it("keeps the explicit task choice for a model without a recorded task", () => {
+      mockMlflow.browseExpId = "exp-1"
+      mockMlflow.runs = [
+        { run_id: "run-foreign", run_name: "f", metrics: {}, params: {}, artifacts: ["model"] },
+      ]
+      const props = defaultProps()
+      props.config = { sourceType: "run", run_id: "run-foreign", task: "classification" }
+      render(<ModelScoreEditor {...props} />)
+      expect(screen.getByDisplayValue("Classification")).toBeInTheDocument()
+      expect(screen.queryByTestId("model-score-recorded-task")).toBeNull()
+    })
   })
 })

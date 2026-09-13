@@ -1,7 +1,8 @@
 /**
  * Tests for the pure MLflow destination helpers: key validation, the
- * effective (node value vs auto) destination, inventory lookup, light state,
- * log availability, and the default experiment name.
+ * effective destination (the remote a node names, else the local folder), the
+ * stored config value, inventory lookup, light state, log availability, and
+ * the default experiment name.
  *
  * The oracle throughout is a mocked inventory shaped exactly like the wire
  * `MlflowDestinationsResponse.destinations`, so a backend field rename shows
@@ -16,6 +17,7 @@ import {
   defaultExperimentName,
   effectiveMlflowDestination,
   isMlflowDestinationKey,
+  mlflowDestinationConfigValue,
   mlflowDestinationEntry,
   mlflowLight,
   mlflowLogAvailability,
@@ -72,7 +74,6 @@ function inventory(over: Partial<MlflowInventoryState> = {}): MlflowInventorySta
     status: "ready",
     installed: true,
     importable: true,
-    auto: "databricks",
     destinations: [DATABRICKS_OK, SERVER_AMBER, LOCAL_OK],
     detail: "",
     ...over,
@@ -102,7 +103,7 @@ describe("isMlflowDestinationKey", () => {
     expect(isMlflowDestinationKey("local")).toBe(true)
   })
 
-  it("rejects the empty string (auto is not a key)", () => {
+  it("rejects the empty string (no stored choice is not a key)", () => {
     expect(isMlflowDestinationKey("")).toBe(false)
   })
 
@@ -117,25 +118,31 @@ describe("isMlflowDestinationKey", () => {
 })
 
 describe("effectiveMlflowDestination", () => {
-  it("uses an explicit valid node value over auto", () => {
-    expect(effectiveMlflowDestination("local", "databricks")).toBe("local")
+  it("uses the remote a node names", () => {
+    expect(effectiveMlflowDestination("databricks")).toBe("databricks")
+    expect(effectiveMlflowDestination("server")).toBe("server")
   })
 
-  it("falls back to auto for the absent (auto) node value", () => {
-    expect(effectiveMlflowDestination("", "server")).toBe("server")
-    expect(effectiveMlflowDestination(undefined, "server")).toBe("server")
+  it("uses the local folder when the node names no destination", () => {
+    expect(effectiveMlflowDestination("")).toBe("local")
+    expect(effectiveMlflowDestination(undefined)).toBe("local")
+    expect(effectiveMlflowDestination(null)).toBe("local")
   })
 
-  it("treats an unknown stored value as auto without mutating the config", () => {
+  it("reads any other stored value as the local folder without mutating the config", () => {
     const stored = "azure"
-    expect(effectiveMlflowDestination(stored, "local")).toBe("local")
+    expect(effectiveMlflowDestination(stored)).toBe("local")
+    expect(effectiveMlflowDestination("local")).toBe("local")
     // The helper never rewrites the caller's value; it only reads it.
     expect(stored).toBe("azure")
   })
+})
 
-  it("returns the empty auto when nothing resolves", () => {
-    expect(effectiveMlflowDestination("", "")).toBe("")
-    expect(effectiveMlflowDestination(null, "")).toBe("")
+describe("mlflowDestinationConfigValue", () => {
+  it("stores a chosen remote and removes the key for the local folder", () => {
+    expect(mlflowDestinationConfigValue("databricks")).toBe("databricks")
+    expect(mlflowDestinationConfigValue("server")).toBe("server")
+    expect(mlflowDestinationConfigValue("local")).toBeUndefined()
   })
 })
 
@@ -144,7 +151,7 @@ describe("mlflowDestinationEntry", () => {
     expect(mlflowDestinationEntry(inventory().destinations, "server")).toBe(SERVER_AMBER)
   })
 
-  it("returns undefined for the auto key and for an absent entry", () => {
+  it("returns undefined for the empty key and for an absent entry", () => {
     expect(mlflowDestinationEntry(inventory().destinations, "")).toBeUndefined()
     expect(mlflowDestinationEntry([DATABRICKS_OK], "local")).toBeUndefined()
   })
@@ -194,10 +201,9 @@ describe("defaultExperimentName", () => {
     expect(defaultExperimentName("GLM Frequency", "databricks")).toBe("/Shared/haute/GLM Frequency")
   })
 
-  it("uses the bare node label for server, local, and auto", () => {
+  it("uses the bare node label for server and local", () => {
     expect(defaultExperimentName("GLM Frequency", "server")).toBe("GLM Frequency")
     expect(defaultExperimentName("GLM Frequency", "local")).toBe("GLM Frequency")
-    expect(defaultExperimentName("GLM Frequency", "")).toBe("GLM Frequency")
   })
 })
 
@@ -213,7 +219,6 @@ describe("mlflowLogAvailability", () => {
       status: "error",
       installed: false,
       importable: false,
-      auto: "",
       destinations: [],
       detail: "MLflow is not installed (pip install mlflow)",
     })
@@ -227,7 +232,6 @@ describe("mlflowLogAvailability", () => {
       status: "error",
       installed: true,
       importable: false,
-      auto: "",
       destinations: [],
       detail: "MLflow is installed but cannot be imported",
     })
@@ -241,7 +245,6 @@ describe("mlflowLogAvailability", () => {
       status: "error",
       installed: null,
       importable: null,
-      auto: "",
       destinations: [],
       detail: "MLflow inventory check timed out after 15s",
     })
@@ -252,7 +255,6 @@ describe("mlflowLogAvailability", () => {
 
   it("reports the entry reason when the effective destination is unconfigured", () => {
     const state = inventory({
-      auto: "local",
       destinations: [DATABRICKS_OK, SERVER_UNCONFIGURED, LOCAL_OK],
     })
     const result = mlflowLogAvailability(state, "server")
@@ -262,16 +264,15 @@ describe("mlflowLogAvailability", () => {
     expect(result.reason).toBe(SERVER_UNCONFIGURED.detail)
   })
 
-  it("reports the store reason when auto resolves to nothing", () => {
+  it("reports the store reason when the inventory has no entry for the destination", () => {
     const state = inventory({
-      auto: "",
       destinations: [SERVER_UNCONFIGURED],
       detail: "[mlflow] mode is no longer a supported key",
     })
     const result = mlflowLogAvailability(state, "")
     expect(result.available).toBe(false)
-    expect(result.key).toBe("")
-    expect(result.label).toBe("")
+    expect(result.key).toBe("local")
+    expect(result.label).toBe("Local folder")
     expect(result.reason).toBe("[mlflow] mode is no longer a supported key")
   })
 
@@ -297,13 +298,13 @@ describe("mlflowLogAvailability", () => {
     })
   })
 
-  it("resolves the auto destination when the node stores no value", () => {
-    const result = mlflowLogAvailability(inventory({ auto: "databricks" }), "")
+  it("resolves the local folder when the node stores no value, even with a working remote", () => {
+    const result = mlflowLogAvailability(inventory(), "")
     expect(result).toEqual({
       available: true,
-      key: "databricks",
-      label: "Databricks",
-      destination: "databricks://team",
+      key: "local",
+      label: "Local folder",
+      destination: "C:/proj/mlruns",
       reason: "",
     })
   })

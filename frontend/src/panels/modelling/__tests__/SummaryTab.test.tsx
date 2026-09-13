@@ -46,16 +46,23 @@ function makeTuningReport(overrides: Partial<TuningReport> = {}): TuningReport {
 }
 
 describe("SummaryTab", () => {
+  it("offers no export action or model path: those live in the Export pane", () => {
+    render(<SummaryTab result={makeTrainResult({ model_path: "/models/test.cbm" })} />)
+
+    expect(screen.queryByText("Experiment tracking")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /log run to mlflow/i })).not.toBeInTheDocument()
+    expect(screen.queryByText("Model path")).not.toBeInTheDocument()
+    expect(screen.queryByText("/models/test.cbm")).not.toBeInTheDocument()
+  })
+
   it("renders canonical model and evaluation information", () => {
     const result = makeTrainResult({
-      model_path: "/models/test.cbm",
       development_rows: 8000,
       final_test_rows: 2000,
     })
 
-    render(<SummaryTab result={result} jobId="j1" config={{}} />)
+    render(<SummaryTab result={result} />)
 
-    expect(screen.getByText("/models/test.cbm")).toBeInTheDocument()
     expect(screen.getAllByText("Development rows").length).toBeGreaterThan(0)
     expect(screen.getByText("8,000")).toBeInTheDocument()
     expect(screen.getByText("Final test rows")).toBeInTheDocument()
@@ -70,7 +77,7 @@ describe("SummaryTab", () => {
       diagnostics_set: "development",
     })
 
-    render(<SummaryTab result={result} jobId="j1" config={{}} />)
+    render(<SummaryTab result={result} />)
 
     const finalMetrics = screen.getByRole("region", { name: "Final-test metrics" })
     const diagnostics = screen.getByRole("region", { name: "Development diagnostics" })
@@ -95,29 +102,25 @@ describe("SummaryTab", () => {
       diagnostics_set: "development",
     })
 
-    render(<SummaryTab result={result} jobId="j1" config={{}} />)
+    render(<SummaryTab result={result} />)
 
     expect(screen.queryByText("Final-test metrics")).not.toBeInTheDocument()
     expect(screen.getByText("Development diagnostics")).toBeInTheDocument()
     expect(screen.getByText("No final test was reserved for this run.")).toBeInTheDocument()
   })
 
-  it("keeps zero-valued GLM regularization and a full model path available", () => {
-    const modelPath = "/models/" + "nested/".repeat(50) + "model.cbm"
+  it("keeps zero-valued GLM regularization available", () => {
     const result = makeTrainResult({
-      model_path: modelPath,
       glm_regularization_path: { selected_alpha: 0, n_nonzero: 0 },
     })
 
-    render(<SummaryTab result={result} jobId="j1" config={{}} />)
+    render(<SummaryTab result={result} />)
 
     const regularization = screen.getByRole("region", { name: "Regularization" })
     expect(within(regularization).getByText("Alpha")).toBeInTheDocument()
     expect(within(regularization).getByText("0.000000")).toBeInTheDocument()
     expect(within(regularization).getByText("Non-zero coefficients")).toBeInTheDocument()
     expect(within(regularization).getByText("0")).toBeInTheDocument()
-    const modelInfo = screen.getByRole("region", { name: "Model Info" })
-    expect(within(modelInfo).getByTitle(modelPath)).toHaveTextContent(modelPath)
   })
 
   it("shows warning and optional diagnostic failures", () => {
@@ -132,7 +135,7 @@ describe("SummaryTab", () => {
       ],
     })
 
-    render(<SummaryTab result={result} jobId="j1" config={{}} />)
+    render(<SummaryTab result={result} />)
 
     expect(screen.getByText("Downsampled to 50k rows")).toBeInTheDocument()
     const notice = screen.getByRole("alert", { name: "Diagnostic issues" })
@@ -147,7 +150,7 @@ describe("SummaryTab", () => {
       glm_fit_statistics: { deviance: 1234.56 },
     })
 
-    render(<SummaryTab result={result} jobId="j1" config={{}} />)
+    render(<SummaryTab result={result} />)
 
     expect(screen.getByText("Best iteration")).toBeInTheDocument()
     expect(screen.getByText("750")).toBeInTheDocument()
@@ -193,7 +196,7 @@ describe("SummaryTab", () => {
       },
     })
 
-    render(<SummaryTab result={result} jobId="j1" config={{}} />)
+    render(<SummaryTab result={result} />)
 
     expect(screen.getAllByText("2-fold cross-validation").length).toBeGreaterThan(0)
     const aggregate = screen.getByRole("table", { name: "Selection aggregate metrics" })
@@ -214,9 +217,6 @@ describe("SummaryTab", () => {
     render(
       <SummaryTab
         result={result}
-        jobId="j1"
-       
-        config={{}}
         onUseBestParameters={onUseBestParameters}
         elapsedSeconds={12.5}
       />,

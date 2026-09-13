@@ -12,7 +12,7 @@ import {
   captureDocumentExecutionFence,
   isDocumentExecutionFenceCurrent,
 } from "../stores/useDocumentStatusStore"
-import useSettingsStore, { useMlflowDestinations } from "../stores/useSettingsStore"
+import useSettingsStore from "../stores/useSettingsStore"
 import useGraphStore from "../stores/useGraphStore"
 import {
   executionErrorDetailMessage,
@@ -24,6 +24,7 @@ import { configField, safeParseFloat, safeParseInt } from "../utils/configField"
 import {
   defaultExperimentName,
   effectiveMlflowDestination,
+  mlflowDestinationConfigValue,
 } from "../utils/mlflowDestinations"
 import { CommittedTextField } from "../components/form"
 import MlflowDestinationSelector from "../components/MlflowDestinationSelector"
@@ -142,10 +143,9 @@ export default function OptimiserConfig({
   // Where this node logs is its own config, so the default experiment path
   // follows the node's effective destination rather than the workspace's.
   const mlflowDestination = configField(config, "mlflow_destination", "")
-  const mlflowInventory = useMlflowDestinations()
   const mlflowExperimentDefault = defaultExperimentName(
     allNodes.find((node) => node.id === nodeId)?.data.label ?? "optimiser",
-    effectiveMlflowDestination(mlflowDestination, mlflowInventory.auto),
+    effectiveMlflowDestination(mlflowDestination),
   )
 
   const mode = configField(config, "mode", "online")
@@ -725,7 +725,7 @@ export default function OptimiserConfig({
           <div className="mt-1.5 space-y-2">
             <MlflowDestinationSelector
               value={mlflowDestination}
-              onChange={(value) => onUpdate("mlflow_destination", value)}
+              onChange={(value) => onUpdate("mlflow_destination", mlflowDestinationConfigValue(value))}
               idPrefix="optimiser-mlflow-destination"
             />
             <div>

@@ -3,10 +3,12 @@
  *
  * Where a node logs (or browses) is a *node* decision, so this control lives
  * on the node rather than on the toolbar. It reads the node's stored value
- * (`""` = auto, else a destination key) and reports changes through
- * `onChange`; it never reads or writes node config itself, and it never
- * rewrites an unconfigured or unrecognised stored value — the only store
- * mutations it makes are the inventory's own `fetchMlflow`/`invalidateMlflow`.
+ * (`databricks` or `server`, anything else = the local folder) and reports the
+ * chosen destination through `onChange`; callers store it with
+ * `mlflowDestinationConfigValue`, which removes the key for Local folder. It
+ * never reads or writes node config itself, and it never rewrites an
+ * unconfigured or unrecognised stored value — the only store mutations it
+ * makes are the inventory's own `fetchMlflow`/`invalidateMlflow`.
  *
  * Per `specs/frontend-shared/low-level.md` ("MLflow destination selector").
  */
@@ -28,9 +30,9 @@ import {
 } from "../utils/mlflowDestinations"
 
 export interface MlflowDestinationSelectorProps {
-  /** The node's stored `mlflow_destination`: `""` (auto) or a key. */
+  /** The node's stored `mlflow_destination`; absent or `""` is the local folder. */
   value: string
-  onChange: (value: "" | MlflowDestinationKey) => void
+  onChange: (value: MlflowDestinationKey) => void
   disabled?: boolean
   /** Radio-group `name`, so two mounted selectors stay independent. */
   idPrefix?: string
@@ -82,7 +84,7 @@ export default function MlflowDestinationSelector({
     if (loading) fetchMlflow()
   }, [loading, fetchMlflow])
 
-  const effective = effectiveMlflowDestination(value, state.auto)
+  const effective = effectiveMlflowDestination(value)
   const availability = mlflowLogAvailability(state, value)
   const resolved = availability.available
     ? `${availability.label} — ${availability.destination}`
@@ -134,13 +136,7 @@ export default function MlflowDestinationSelector({
                     // destination is offered as a fix, never selected.
                     event.preventDefault()
                     setMlflowSettingsOpen(true)
-                    return
                   }
-                  // A radio that is already checked fires no change event, so
-                  // clicking the option auto currently resolves to must still
-                  // pin it: the node then names that destination explicitly and
-                  // stops following the auto rule.
-                  if (selected && value === "" && !disabled && !loading) onChange(key)
                 }}
                 onChange={() => {
                   // Also reached by keyboard navigation, which no click can
@@ -182,17 +178,6 @@ export default function MlflowDestinationSelector({
         >
           {resolved}
         </p>
-        {value !== "" && (
-          <button
-            type="button"
-            className="shrink-0 rounded px-1 py-0.5 text-[10px] underline"
-            style={{ color: "var(--text-muted)" }}
-            disabled={disabled}
-            onClick={() => onChange("")}
-          >
-            Use auto
-          </button>
-        )}
         <button
           type="button"
           aria-label="Re-check MLflow connections"

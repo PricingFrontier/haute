@@ -2,18 +2,18 @@
 
 Every test here runs against **real local file stores** — no tracking server,
 no network, no real credentials.  The shape each test pins is the one the
-package exists for: a node that names ``mlflow_destination`` reads from and
-writes to *that* destination even while the workspace auto rule resolves
-somewhere else entirely, and an explicit destination that is unavailable
-fails loudly instead of quietly consulting another backend.
+package exists for: a node without ``mlflow_destination`` reads from and writes
+to the local folder even while a remote destination is fully configured, a
+node that names a destination uses *that* one, and a named destination that is
+unavailable fails loudly instead of quietly consulting another backend.
 
-Auto is made remote by declaring ``DATABRICKS_MLFLOW_HOST`` /
+Databricks is configured by declaring ``DATABRICKS_MLFLOW_HOST`` /
 ``DATABRICKS_MLFLOW_TOKEN`` for a deliberately unroutable ``.invalid`` host with
 a placeholder token, and
 by patching ``mlflow.utils.databricks_utils.get_databricks_host_creds`` so the
 secret-free backend identity can be minted without a single outbound request.
 Anything that tried to *use* that backend would fail; the tests additionally
-forbid Databricks resolution outright while a local-destination load runs, so
+forbid Databricks resolution outright while a local-folder load runs, so
 "never consulted another backend" is asserted rather than assumed.
 
 Fixture pattern follows ``tests/test_mlflow_log_button_roundtrip.py`` (real
@@ -42,6 +42,7 @@ import pytest
 
 from tests.conftest import make_edge, make_file_input_config, make_graph, make_output_config
 from tests.job_store_support import seed_job
+from tests.training_artifacts_support import publish_trained_job
 
 # These integration tests need the real core MLflow package. Keep the guard for
 # deliberately partial test environments.
@@ -102,8 +103,8 @@ def project(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Path]:
     yield tmp_path
 
 
-def _make_auto_databricks(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Configure the auto rule to resolve to Databricks without any network.
+def _configure_databricks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Configure a resolvable Databricks destination without any network.
 
     ``backend_identity`` mints the secret-free identity from the very call
     MLflow's own stores use, so that one call is stubbed; nothing else about
@@ -124,7 +125,7 @@ def _databricks_resolution_forbidden() -> Iterator[None]:
     def _forbidden() -> Any:
         raise AssertionError(
             "the Databricks destination was resolved while an explicitly "
-            "local-destination operation was running"
+            "local-folder operation was running"
         )
 
     with patch(
@@ -134,12 +135,13 @@ def _databricks_resolution_forbidden() -> Iterator[None]:
         yield
 
 
-def _assert_auto_is_databricks() -> None:
+def _assert_databricks_configured_but_not_chosen() -> None:
     from haute._mlflow_utils import resolve_backend
 
-    backend = resolve_backend("")
-    assert backend.mode == "databricks", f"auto resolved to {backend.mode!r}, expected databricks"
-    assert backend.identity.startswith(f"databricks:{DATABRICKS_MLFLOW_HOST}|profile=")
+    databricks = resolve_backend("databricks")
+    assert databricks.identity.startswith(f"databricks:{DATABRICKS_MLFLOW_HOST}|profile=")
+    unchosen = resolve_backend("")
+    assert unchosen.mode == "local", f"a node without a destination resolved {unchosen.mode!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -221,27 +223,31 @@ def _completed_result(model_path: str) -> TrainResponse:
     )
 
 
+@pytest.fixture(autouse=True)
+def _job_owned_training_artifacts(training_artifact_root: Path) -> Path:
+    return training_artifact_root
+
+
 @contextmanager
 def _seeded_training_job(job_id: str, model_path: Path) -> Iterator[None]:
+    from haute.routes import _training_artifacts
     from haute.routes.modelling import _store
 
-    seed_job(
+    publish_trained_job(
         _store,
         job_id,
-        {
-            "status": "completed",
-            "result": _completed_result(str(model_path)),
-            # The snapshot deliberately names a *different* destination: the
-            # log request is authoritative and must never consult it.
-            "config": {
-                "algorithm": "catboost",
-                "task": "regression",
-                "target": TARGET,
-                "mlflow_destination": "databricks",
-            },
-            "node_label": "freq",
-            "created_at": time.time(),
+        root=_training_artifacts.training_artifact_root(),
+        model_file=model_path,
+        result=_completed_result(str(model_path)),
+        # The snapshot deliberately names a *different* destination: the
+        # log request is authoritative and must never consult it.
+        config={
+            "algorithm": "catboost",
+            "task": "regression",
+            "target": TARGET,
+            "mlflow_destination": "databricks",
         },
+        node_label="freq",
     )
     try:
         yield
@@ -407,19 +413,19 @@ def _model_score_graph(data_path: Path, run_id: str, destination: str | None) ->
 
 
 # ---------------------------------------------------------------------------
-# 1. Train + log to Local, then score from Local, while auto is Databricks
+# 1. Train + log to Local, then score from Local, while Databricks is configured
 # ---------------------------------------------------------------------------
 
 
 class TestModelScoreFromExplicitLocal:
-    def test_train_log_local_then_score_from_local_while_auto_is_remote(
+    def test_train_log_local_then_score_from_local_while_databricks_is_configured(
         self,
         client: Any,
         project: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        _make_auto_databricks(monkeypatch)
-        _assert_auto_is_databricks()
+        _configure_databricks(monkeypatch)
+        _assert_databricks_configured_but_not_chosen()
 
         model_path, native_model = _train_catboost(project)
         run_id = _log_model_to_local(client, "e2e_model_local", model_path, "e2e_model")
@@ -433,7 +439,7 @@ class TestModelScoreFromExplicitLocal:
         data_path = project / "score.parquet"
         score_df.write_parquet(data_path)
 
-        graph = _model_score_graph(data_path, run_id, "local")
+        graph = _model_score_graph(data_path, run_id, None)
         with _databricks_resolution_forbidden():
             results = execute_graph(graph, target_node_id="score")
 
@@ -446,8 +452,8 @@ class TestModelScoreFromExplicitLocal:
         actual = np.asarray([row["prediction"] for row in node.preview])
         np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=0.0)
 
-        # The auto rule still points at Databricks after the local load.
-        _assert_auto_is_databricks()
+        # Databricks is still configured, and still not chosen, after the local load.
+        _assert_databricks_configured_but_not_chosen()
 
 
 # ---------------------------------------------------------------------------
@@ -456,7 +462,7 @@ class TestModelScoreFromExplicitLocal:
 
 
 class TestOptimiserApplyFromExplicitLocal:
-    def test_optimiser_log_local_then_apply_from_local_while_auto_is_remote(
+    def test_optimiser_log_local_then_apply_from_local_while_databricks_is_configured(
         self,
         client: Any,
         clean_job_store: Any,
@@ -465,8 +471,8 @@ class TestOptimiserApplyFromExplicitLocal:
     ) -> None:
         from haute._node_apply import apply_optimiser_apply_from_config
 
-        _make_auto_databricks(monkeypatch)
-        _assert_auto_is_databricks()
+        _configure_databricks(monkeypatch)
+        _assert_databricks_configured_but_not_chosen()
 
         _seed_optimiser_job(clean_job_store, "e2e_opt_local")
         run_id = _log_optimiser_to_local(client, "e2e_opt_local", "e2e_optimiser")
@@ -478,7 +484,7 @@ class TestOptimiserApplyFromExplicitLocal:
         with _databricks_resolution_forbidden():
             applied = apply_optimiser_apply_from_config(
                 _scored_frame().lazy(),
-                config=_optimiser_apply_config(run_id, "local"),
+                config=_optimiser_apply_config(run_id, None),
                 source_names=["scored"],
             ).collect()
 
@@ -488,16 +494,16 @@ class TestOptimiserApplyFromExplicitLocal:
         assert applied["optimal_scenario_value"].to_list() == pytest.approx([1.1, 1.1])
         assert applied["optimal_objective"].to_list() == pytest.approx([110.0, 55.0])
 
-        _assert_auto_is_databricks()
+        _assert_databricks_configured_but_not_chosen()
 
 
 # ---------------------------------------------------------------------------
-# 3. Deployed optimiser scoring loads from Local while auto is Databricks
+# 3. Deployed optimiser scoring loads from Local while Databricks is configured
 # ---------------------------------------------------------------------------
 
 
 class TestDeployedOptimiserApplyFromExplicitLocal:
-    def test_deployed_optimiser_scoring_uses_local_when_auto_is_remote(
+    def test_deployed_optimiser_scoring_uses_local_while_databricks_is_configured(
         self,
         client: Any,
         clean_job_store: Any,
@@ -506,8 +512,8 @@ class TestDeployedOptimiserApplyFromExplicitLocal:
     ) -> None:
         from haute.deploy._scorer import score_graph
 
-        _make_auto_databricks(monkeypatch)
-        _assert_auto_is_databricks()
+        _configure_databricks(monkeypatch)
+        _assert_databricks_configured_but_not_chosen()
 
         _seed_optimiser_job(clean_job_store, "e2e_opt_deploy")
         run_id = _log_optimiser_to_local(client, "e2e_opt_deploy", "e2e_deploy")
@@ -539,7 +545,7 @@ class TestDeployedOptimiserApplyFromExplicitLocal:
                         "data": {
                             "label": "opt",
                             "nodeType": "optimiserApply",
-                            "config": _optimiser_apply_config(run_id, "local"),
+                            "config": _optimiser_apply_config(run_id, None),
                         },
                     },
                     {
@@ -571,7 +577,7 @@ class TestDeployedOptimiserApplyFromExplicitLocal:
         assert scored["optimal_scenario_value"].to_list() == pytest.approx([1.1, 1.1])
         assert scored["optimal_objective"].to_list() == pytest.approx([110.0, 55.0])
 
-        _assert_auto_is_databricks()
+        _assert_databricks_configured_but_not_chosen()
 
 
 # ---------------------------------------------------------------------------
@@ -585,8 +591,8 @@ class TestUnavailableExplicitDestination:
         project: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        _make_auto_databricks(monkeypatch)
-        _assert_auto_is_databricks()
+        _configure_databricks(monkeypatch)
+        _assert_databricks_configured_but_not_chosen()
 
         score_df = pl.DataFrame({"x": [0.1, 0.4], "c": ["red", "blue"]})
         data_path = project / "score.parquet"
@@ -632,7 +638,7 @@ import polars as pl
 from haute.modelling import _mlflow_settings
 from haute.modelling._mlflow_settings import TrackingConfig
 
-# The auto rule must resolve to a *second*, non-local backend.  Offline, the
+# The server destination must be a *second*, non-local backend.  Offline, the
 # only way to hold two live backends at once is to back the "server"
 # destination with a file store, exactly as Task A4's tests do in-process.
 _SERVER = TrackingConfig("server", {server_uri!r}, "http://stub.invalid:5000", "toml")
@@ -843,56 +849,56 @@ class TestGeneratedScriptDestinations:
                 }
             )
 
-        # --- Explicit "local": store A wins even though auto is store B -----
-        explicit_root = project / "explicit"
-        explicit_root.mkdir()
+        # --- Destination absent: the local store A is used although B is configured
+        local_root = project / "local"
+        local_root.mkdir()
         with patch(
             "haute.modelling._mlflow_settings._resolve_server",
             server_config_factory,
         ):
             _materialise_pipeline(
-                explicit_root,
-                _build_graph("local"),
-                input_df,
-                local_folder=local_store,
-            )
-        explicit_out = _run_generated_pipeline(explicit_root, server_store)
-        expected_local = _expected_optimiser_rows(local_model, str(local_artifact["version"]))
-        assert explicit_out.sort("quote_id")["quote_id"].to_list() == expected_local["quote_id"]
-        assert (
-            explicit_out.sort("quote_id")["__optimiser_version__"].to_list()
-            == (expected_local["__optimiser_version__"])
-        )
-        assert explicit_out.sort("quote_id")["optimal_scenario_value"].to_list() == pytest.approx(
-            expected_local["optimal_scenario_value"]
-        )
-        assert explicit_out.sort("quote_id")["optimal_objective"].to_list() == pytest.approx(
-            expected_local["optimal_objective"]
-        )
-
-        # --- Destination absent: the auto (server-backed) store is used -----
-        auto_root = project / "auto"
-        auto_root.mkdir()
-        with patch(
-            "haute.modelling._mlflow_settings._resolve_server",
-            server_config_factory,
-        ):
-            _materialise_pipeline(
-                auto_root,
+                local_root,
                 _build_graph(None),
                 input_df,
                 local_folder=local_store,
             )
         assert "mlflow_destination" not in json.loads(
-            (auto_root / "config" / "model_scoring" / "scorer.json").read_text(encoding="utf-8")
+            (local_root / "config" / "model_scoring" / "scorer.json").read_text(encoding="utf-8")
         )
-        auto_out = _run_generated_pipeline(auto_root, server_store)
+        local_out = _run_generated_pipeline(local_root, server_store)
+        expected_local = _expected_optimiser_rows(local_model, str(local_artifact["version"]))
+        assert local_out.sort("quote_id")["quote_id"].to_list() == expected_local["quote_id"]
+        assert (
+            local_out.sort("quote_id")["__optimiser_version__"].to_list()
+            == (expected_local["__optimiser_version__"])
+        )
+        assert local_out.sort("quote_id")["optimal_scenario_value"].to_list() == pytest.approx(
+            expected_local["optimal_scenario_value"]
+        )
+        assert local_out.sort("quote_id")["optimal_objective"].to_list() == pytest.approx(
+            expected_local["optimal_objective"]
+        )
+
+        # --- Explicit "server": store B is used ------------------------------
+        server_root = project / "server"
+        server_root.mkdir()
+        with patch(
+            "haute.modelling._mlflow_settings._resolve_server",
+            server_config_factory,
+        ):
+            _materialise_pipeline(
+                server_root,
+                _build_graph("server"),
+                input_df,
+                local_folder=local_store,
+            )
+        server_out = _run_generated_pipeline(server_root, server_store)
         expected_server = _expected_optimiser_rows(server_model, "server_side_version")
         assert (
-            auto_out.sort("quote_id")["__optimiser_version__"].to_list()
+            server_out.sort("quote_id")["__optimiser_version__"].to_list()
             == (expected_server["__optimiser_version__"])
         )
-        assert auto_out.sort("quote_id")["optimal_objective"].to_list() == pytest.approx(
+        assert server_out.sort("quote_id")["optimal_objective"].to_list() == pytest.approx(
             expected_server["optimal_objective"]
         )
         assert expected_server["optimal_objective"] != pytest.approx(

@@ -344,6 +344,16 @@ def _widen_sandbox_root(
     set_project_root(original)
 
 
+@pytest.fixture()
+def training_artifact_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Keep job-owned training artifact directories in this test's scratch space."""
+    from haute.routes import _training_artifacts
+
+    root = (tmp_path / "training-artifacts").resolve()
+    monkeypatch.setattr(_training_artifacts, "training_artifact_root", lambda: root)
+    return root
+
+
 @pytest.fixture(autouse=True)
 def _restore_project_root():
     """Restore the sandbox project root after every test.

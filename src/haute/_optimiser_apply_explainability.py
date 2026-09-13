@@ -104,6 +104,7 @@ def _load_artifact_from_config(config: dict[str, Any]) -> dict[str, Any]:
             run_id=str(config.get("run_id", "") or ""),
             registered_model=str(config.get("registered_model", "") or ""),
             version=str(config.get("version", "latest") or "latest"),
+            alias=str(config.get("alias", "") or ""),
             destination=str(config.get("mlflow_destination", "") or ""),
         )
     if source_type == "file" and config.get("artifact_path"):

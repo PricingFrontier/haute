@@ -568,6 +568,7 @@ def explain_model_score_from_config(
         artifact_path=config.get("artifact_path", ""),
         registered_model=config.get("registered_model", ""),
         version=config.get("version", "latest"),
+        alias=str(config.get("alias", "") or ""),
         task=config.get("task", "regression"),
         destination=str(config.get("mlflow_destination", "") or ""),
     )

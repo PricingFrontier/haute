@@ -37,7 +37,7 @@ def generate_training_script(config: dict[str, Any], data_path: str) -> str:
     ----------
     config : dict
         Modelling node configuration containing algorithm, target, weight,
-        exclude, params, evaluation, tuning, metrics, mlflow_experiment, model_name,
+        exclude, params, evaluation, tuning, metrics, mlflow_experiment,
         loss_function, variance_power, offset, monotone_constraints,
         feature_weights, etc.
     data_path : str
@@ -105,8 +105,6 @@ def generate_training_script(config: dict[str, Any], data_path: str) -> str:
         parts.append(f"    mlflow_experiment={kwargs['mlflow_experiment']!r},")
     if kwargs["mlflow_destination"]:
         parts.append(f"    mlflow_destination={kwargs['mlflow_destination']!r},")
-    if kwargs["model_name"]:
-        parts.append(f"    model_name={kwargs['model_name']!r},")
 
     parts.append(f"    output_dir={kwargs['output_dir']!r},")
     parts.append(")")

@@ -506,7 +506,7 @@ class TestResolveBackend:
             backend.identity == "databricks:https://adb.example.net|profile=|registry=databricks-uc"
         )
 
-    def test_auto_follows_environment(
+    def test_no_destination_is_local_whatever_the_environment_configures(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from unittest.mock import patch
@@ -532,8 +532,8 @@ class TestResolveBackend:
             "mlflow.utils.databricks_utils.get_databricks_host_creds",
             return_value=MagicMock(host="https://adb.example.net"),
         ):
-            backend_db = resolve_backend("")
-        assert backend_db.mode == "databricks"
+            assert resolve_backend("").mode == "local"
+            assert resolve_backend("databricks").mode == "databricks"
 
     def test_unknown_destination_rejected(self) -> None:
         with pytest.raises(MlflowConfigError, match="databricks, server, or local"):
@@ -571,7 +571,7 @@ class TestResolveMlflowSourceDestination:
             assert client_cls.call_args.kwargs["tracking_uri"] == backend.tracking_uri
             assert client_cls.call_args.kwargs["registry_uri"] == backend.registry_uri
 
-    def test_explicit_destination_overrides_auto(
+    def test_no_destination_resolves_local_even_with_databricks_configured(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from unittest.mock import patch
@@ -583,9 +583,7 @@ class TestResolveMlflowSourceDestination:
         monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "token-val")
         monkeypatch.delenv("MLFLOW_ENABLE_DB_SDK", raising=False)
         with patch("mlflow.tracking.MlflowClient"):
-            _, _, _, _, backend = resolve_mlflow_source(
-                source_type="run", run_id="run-123", destination="local"
-            )
+            _, _, _, _, backend = resolve_mlflow_source(source_type="run", run_id="run-123")
             assert backend.mode == "local"
 
     def test_prepared_backend_is_used_without_re_resolution(

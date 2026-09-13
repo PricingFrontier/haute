@@ -168,7 +168,6 @@ class TestBuildTrainingJobKwargs:
             "fold_column",
             "id_columns",
             "mlflow_experiment",
-            "model_name",
             "variance_power",
             "offset",
             "monotone_constraints",
@@ -185,27 +184,28 @@ class TestBuildTrainingJobKwargs:
                 "target": "y",
                 "loss_function": "RMSE",
                 "evaluation": MINIMAL_EVALUATION,
-                "mlflow_destination": "local",
+                "mlflow_destination": "server",
             },
             data="d.parquet",
         )
-        assert kwargs["mlflow_destination"] == "local"
+        assert kwargs["mlflow_destination"] == "server"
 
-    def test_mlflow_destination_absent_is_auto(self):
+    def test_mlflow_destination_absent_is_the_local_folder(self):
         kwargs = build_training_job_kwargs(
             {"target": "y", "loss_function": "RMSE", "evaluation": MINIMAL_EVALUATION},
             data="d.parquet",
         )
         assert kwargs["mlflow_destination"] == ""
 
-    def test_mlflow_destination_unknown_is_rejected(self):
-        with pytest.raises(TrainingConfigError, match="databricks, server, or local"):
+    @pytest.mark.parametrize("destination", ["invalid", "local"])
+    def test_mlflow_destination_unknown_is_rejected(self, destination: str):
+        with pytest.raises(TrainingConfigError, match="databricks or server"):
             build_training_job_kwargs(
                 {
                     "target": "y",
                     "loss_function": "RMSE",
                     "evaluation": MINIMAL_EVALUATION,
-                    "mlflow_destination": "invalid",
+                    "mlflow_destination": destination,
                 },
                 data="d.parquet",
             )
@@ -224,6 +224,7 @@ class TestBuildTrainingJobKwargs:
             target="y",
             mlflow_experiment="/Shared/test",
             mlflow_destination="local",
+            evaluation=MINIMAL_EVALUATION,
             output_dir=str(tmp_path),
         )
         assert job.mlflow_destination == "local"
@@ -239,8 +240,19 @@ class TestBuildTrainingJobKwargs:
             holdout_rows=0,
             holdout_metrics={},
             diagnostics_set="train",
+            evaluation={
+                "plan_path": str(tmp_path / "plan.json"),
+                "results_path": str(tmp_path / "results.json"),
+                "report_path": str(tmp_path / "report.json"),
+                "plan_sha256": "b" * 64,
+                "selection_metrics": {},
+            },
         )
-        with patch("haute.modelling._mlflow_log.log_experiment") as mock_log:
+        with (
+            patch("haute.modelling._candidate_run.capture_provenance"),
+            patch("haute.modelling._candidate_run.build_candidate_run"),
+            patch("haute.modelling._mlflow_log.log_experiment") as mock_log,
+        ):
             job._log_to_mlflow(result)
         mock_log.assert_called_once()
         assert mock_log.call_args.kwargs.get("destination") == "local"
@@ -281,7 +293,6 @@ class TestBuildTrainingJobKwargs:
             "evaluation": MINIMAL_EVALUATION,
             "metrics": ["rmse"],
             "mlflow_experiment": "/Shared/x",
-            "model_name": "freq_prod",
             "output_dir": "outputs",
             "loss_function": "Poisson",
             "variance_power": None,
@@ -349,7 +360,6 @@ class TestBuildTrainingJobKwargs:
             "offset": "",
             "fold_column": "",
             "mlflow_experiment": "",
-            "model_name": "",
             "loss_function": "RMSE",
             "evaluation": MINIMAL_EVALUATION,
         }
@@ -358,7 +368,7 @@ class TestBuildTrainingJobKwargs:
         assert kwargs["offset"] is None
         assert kwargs["fold_column"] is None
         assert kwargs["mlflow_experiment"] is None
-        assert kwargs["model_name"] is None
+        assert "model_name" not in kwargs
 
     def test_glm_kwargs_params_carry_merged_config(self):
         config = {
