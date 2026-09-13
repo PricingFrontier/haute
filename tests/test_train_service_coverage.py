@@ -2322,9 +2322,8 @@ class TestProtocolLaunchCleanup:
 
 class TestTrainServiceLifecycles:
     def test_a_training_job_can_be_started_again_after_a_failed_and_after_a_cancelled_run(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, training_artifact_root: Path
     ) -> None:
-        from haute.modelling._training_job import model_contract_filename
         from haute.routes._job_store import JobStore
         from haute.routes._training_lifecycle import _TRAINING_JOB_TYPE
         from haute.schemas import TrainRequest
@@ -2404,8 +2403,13 @@ class TestTrainServiceLifecycles:
                 raise RuntimeError("injected worker failure")
 
         current_model_bytes = b"generation-1-model"
-        model_path = output_dir / "quoted.cbm"
-        contract_path = output_dir / model_contract_filename("quoted")
+
+        def published(job) -> Path:
+            handle = job["artifact_handles"]["training_artifacts"]
+            return Path(handle["directory"]) / "output"
+
+        def owned_directories() -> list[Path]:
+            return sorted(training_artifact_root.glob("train_*"))
 
         class VersionedTrainingJob(_SuccessfulTrainingJob):
             def run(self, progress, on_iteration, **kwargs):
@@ -2413,7 +2417,9 @@ class TestTrainServiceLifecycles:
                 # Stamp each generation's bytes into the job's model file so a
                 # later run is distinguishable; the path is re-derived from the
                 # fixture root, which also proves the worker stayed inside it.
-                staged = tmp_path / Path(result.model_path).relative_to(tmp_path)
+                staged = training_artifact_root / Path(result.model_path).relative_to(
+                    training_artifact_root
+                )
                 staged.write_bytes(current_model_bytes)
                 return result
 
@@ -2442,10 +2448,8 @@ class TestTrainServiceLifecycles:
         job1 = store.require_job(resp1.job_id)
         assert job1["status"] == "error"
         assert job1["terminal_reason"] == "error"
-        assert not model_path.exists()
-        assert not contract_path.exists()
-        assert not any(output_dir.glob("*.json"))
-        assert not list(tmp_path.rglob(".haute-training-*"))
+        assert "artifact_handles" not in job1
+        assert owned_directories() == []
         assert not (tmp_path / f"prep_{resp1.job_id}.parquet").exists()
 
         # 2. Start the SAME node's training again with a healthy worker
@@ -2460,13 +2464,13 @@ class TestTrainServiceLifecycles:
 
         job2 = store.require_job(resp2.job_id)
         assert job2["status"] == "completed"
-        assert model_path.is_file()
-        assert model_path.read_bytes() == b"generation-1-model"
-        assert contract_path.is_file()
-        assert (output_dir / "quoted.evaluation-plan.json").is_file()
-        assert (output_dir / "quoted.evaluation-results.json").is_file()
-        assert (output_dir / "quoted.evaluation-report.json").is_file()
-        assert not list(tmp_path.rglob(".haute-training-*"))
+        job2_output = published(job2)
+        assert (job2_output / "quoted.cbm").read_bytes() == b"generation-1-model"
+        assert (job2_output / "quoted.feature_contract.json").is_file()
+        assert (job2_output / "quoted.evaluation-plan.json").is_file()
+        assert (job2_output / "quoted.evaluation-results.json").is_file()
+        assert (job2_output / "quoted.evaluation-report.json").is_file()
+        assert owned_directories() == [job2_output.parent]
         assert not (tmp_path / f"prep_{resp2.job_id}.parquet").exists()
 
         # 3. Start a third run and CANCEL it before publication
@@ -2482,10 +2486,10 @@ class TestTrainServiceLifecycles:
 
         job3 = store.require_job(resp3.job_id)
         assert job3["status"] == "cancelled"
-        # Completed run's artifacts are still intact
-        assert model_path.read_bytes() == b"generation-1-model"
-        assert contract_path.is_file()
-        assert not list(tmp_path.rglob(".haute-training-*"))
+        # The cancelled run leaves nothing; the completed run's artifacts are intact.
+        assert "artifact_handles" not in job3
+        assert (job2_output / "quoted.cbm").read_bytes() == b"generation-1-model"
+        assert owned_directories() == [job2_output.parent]
         assert not (tmp_path / f"prep_{resp3.job_id}.parquet").exists()
 
         # 4. Start a fourth run after the cancellation: completes, publishes new generation
@@ -2501,8 +2505,11 @@ class TestTrainServiceLifecycles:
 
         job4 = store.require_job(resp4.job_id)
         assert job4["status"] == "completed"
-        # New generation published!
-        assert model_path.read_bytes() == b"generation-2-model"
-        assert not list(tmp_path.rglob(".haute-training-*"))
+        # The new generation is published in its own directory and supersedes
+        # the earlier run of the same node, whose files are released.
+        assert (published(job4) / "quoted.cbm").read_bytes() == b"generation-2-model"
+        assert owned_directories() == [published(job4).parent]
+        assert "training_artifacts" not in store.require_job(resp2.job_id)["artifact_handles"]
+        assert not any(output_dir.iterdir()), "canvas training never writes the node's output_dir"
         assert not (tmp_path / f"prep_{resp4.job_id}.parquet").exists()
         assert_registry_free(resp4.job_id)

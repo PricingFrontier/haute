@@ -28,6 +28,18 @@ import { makeTrainResult as makeCanonicalTrainResult } from "../../test-utils/fa
 vi.mock("../../api/client", () => ({
   trainModel: vi.fn(() => new Promise(() => {})),
   estimateTrainingRam: vi.fn(() => new Promise(() => {})),
+  // The train section mounts the destination selector, whose store slice
+  // fetches the inventory on mount.
+  getMlflowDestinations: vi.fn(() => Promise.resolve({
+    mlflow_installed: true,
+    mlflow_importable: true,
+    destinations: [
+      { key: "databricks", configured: false, destination: "", config_source: "", detail: "", probed: false, ok: false, category: "" },
+      { key: "server", configured: false, destination: "", config_source: "", detail: "", probed: false, ok: false, category: "" },
+      { key: "local", configured: true, destination: "C:/proj/mlruns", config_source: "default", detail: "", probed: false, ok: false, category: "" },
+    ],
+    detail: "",
+  })),
   // GLMTargetConfig narrows errors with `instanceof ApiError`, so the mock
   // must export a real class or the instanceof check throws.
   ApiError: class ApiError extends Error {},
@@ -94,11 +106,9 @@ beforeEach(() => {
   useSettingsStore.setState({
     mlflow: {
       status: "pending",
-      backend: "",
-      host: "",
       installed: null,
       importable: null,
-      trackingConfigured: null,
+      destinations: [],
       detail: "",
     },
     openSections: {},
@@ -955,7 +965,7 @@ describe("SummaryTab (GLM extensions)", () => {
     const result = makeTrainResult({
       glm_fit_statistics: { aic: 5432.1, bic: 5478.9, deviance: 4200.3, null_deviance: 5100.0 },
     })
-    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
+    render(<SummaryTab result={result} />)
     expect(screen.getByText("Fit statistics")).toBeTruthy()
     expect(screen.getByText("aic")).toBeTruthy()
     expect(screen.getByText("5432.1000")).toBeTruthy()
@@ -965,7 +975,7 @@ describe("SummaryTab (GLM extensions)", () => {
 
   it("hides fit statistics when not present", () => {
     const result = makeTrainResult()
-    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
+    render(<SummaryTab result={result} />)
     expect(screen.queryByText("Fit statistics")).toBeNull()
   })
 
@@ -973,7 +983,7 @@ describe("SummaryTab (GLM extensions)", () => {
     const result = makeTrainResult({
       glm_regularization_path: { selected_alpha: 0.001234, n_nonzero: 12 },
     })
-    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
+    render(<SummaryTab result={result} />)
     expect(screen.getByText("Regularization")).toBeTruthy()
     expect(screen.getByText("Alpha")).toBeTruthy()
     expect(screen.getByText("0.001234")).toBeTruthy()
@@ -983,7 +993,7 @@ describe("SummaryTab (GLM extensions)", () => {
 
   it("hides regularization when no path info", () => {
     const result = makeTrainResult()
-    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
+    render(<SummaryTab result={result} />)
     // "Regularization" appears as a header in GLMRegularizationConfig but not in SummaryTab
     expect(screen.queryByText("Alpha")).toBeNull()
     expect(screen.queryByText("Non-zero coefficients")).toBeNull()

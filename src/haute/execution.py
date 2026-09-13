@@ -13,6 +13,7 @@ import atexit
 import shutil
 import tempfile
 import threading
+import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -1023,10 +1024,71 @@ def _snapshot_source_signature(
         return None
 
 
+def _mlflow_backend_signature(config: Mapping[str, object]) -> object:
+    """Secret-free identity of the backend an MLflow-sourced node reads from.
+
+    Returns ``resolve_backend(<node destination>).identity`` — never the
+    tracking URI, which may carry environment credentials — or an
+    ``{"unresolved": <reason>}`` marker when the destination's prerequisites
+    are missing, so a warm entry minted from a resolvable state can never be
+    served once configuration is removed. Execution itself still raises.
+    """
+    from haute._mlflow_utils import resolve_backend
+    from haute.errors import MlflowConfigError
+
+    destination = str(config.get("mlflow_destination", "") or "")
+    try:
+        return resolve_backend(destination).identity
+    except MlflowConfigError as exc:
+        return {"unresolved": str(exc)}
+
+
+def _mlflow_registered_version_signature(config: Mapping[str, object]) -> object:
+    """The concrete version a registered-model source targets right now.
+
+    An alias, ``"latest"`` or an empty version resolves through the registry,
+    and its target moves while the node config stays identical; keying on the
+    reference text would replay predictions from the version it left. A
+    concrete version is immutable and needs no lookup. A failed lookup returns
+    an ``{"unresolved": <exception type>, "attempt": <random id>}`` marker —
+    never the message, which can carry a server URL. The random id makes every
+    failed lookup a distinct identity, so an entry written after one failure
+    (for example when the registry recovers before the model load) is never
+    served during a later failure; execution itself reports the failure.
+    """
+    version = str(config.get("version", "") or "")
+    alias = str(config.get("alias", "") or "")
+    if not alias and version not in ("", "latest"):
+        return version
+    from haute._mlflow_utils import resolve_mlflow_source
+
+    try:
+        _run_id, resolved_version, _mlflow, _client, _backend = resolve_mlflow_source(
+            source_type="registered",
+            registered_model=str(config.get("registered_model", "") or ""),
+            version=version,
+            destination=str(config.get("mlflow_destination", "") or ""),
+            alias=alias,
+        )
+    except Exception as exc:
+        return {"unresolved": type(exc).__name__, "attempt": uuid.uuid4().hex}
+    return resolved_version
+
+
 def _runtime_input_fingerprint_entry(
     graph: PipelineGraph,
     node: GraphNode,
 ) -> Mapping[str, object]:
+    """Identity material for one node's runtime inputs.
+
+    Beyond the signed files and the node's runtime-input config fields, an
+    MLflow-sourced ``MODEL_SCORE`` or ``OPTIMISER_APPLY`` node records the
+    *resolved* backend identity, because its stored config (``run_id``,
+    ``version``, ``sourceType``, ``mlflow_destination``) stays identical when
+    the server URL, the local folder, or the node's destination changes
+    underneath it. A registered source also records the version its alias or
+    ``latest`` reference currently targets.
+    """
     config = node.data.config
     files: dict[str, object] = {
         path_field: _runtime_file_fingerprint(node, path_field, path)
@@ -1038,6 +1100,13 @@ def _runtime_input_fingerprint_entry(
         # and reaches automatic preparation instead of serving a stale
         # generation from a warm entry.
         files["source_signature"] = _snapshot_source_signature(graph, config)
+    if node.data.nodeType in (
+        NodeType.MODEL_SCORE,
+        NodeType.OPTIMISER_APPLY,
+    ) and config.get("sourceType") in ("run", "registered"):
+        files["mlflow_backend"] = _mlflow_backend_signature(config)
+        if config.get("sourceType") == "registered":
+            files["registered_version"] = _mlflow_registered_version_signature(config)
     return checked_cache_identity_record(
         CacheIdentityRecord.RUNTIME_INPUT_ENTRY,
         {

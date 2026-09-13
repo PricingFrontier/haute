@@ -1,16 +1,30 @@
-"""Validate and atomically publish artifacts produced by training workers."""
+"""Validate, own and release the artifact sets produced by training workers.
+
+Each canvas training job writes into its own marked directory under
+:func:`training_artifact_root`. Publication validates that set in place, and the
+completed job record owns the directory through an artifact handle, so exports
+always read the exact bytes their job trained and nothing is ever replaced.
+"""
 
 from __future__ import annotations
 
 import json
-import os
 import shutil
-import sys
-import time
-from collections.abc import Mapping
+import tempfile
+import threading
+from collections import Counter
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from fastapi import HTTPException
+
+from haute._artifact_housekeeping import (
+    create_owned_artifact_directory,
+    reap_stale_artifact_directories,
+)
 from haute._env import int_env
 from haute._logging import get_logger
 from haute._worker_protocol import (
@@ -28,8 +42,13 @@ from haute.schemas import (
 
 logger = get_logger(component="server.modelling.train")
 
-_WINDOWS_ARTIFACT_REPLACE_RETRIES = 3
-_WINDOWS_ARTIFACT_REPLACE_RETRY_DELAY_SECONDS = 0.1
+_TRAINING_ARTIFACT_ROOT_NAME = "haute/artifacts/v1/modelling_training"
+_TRAINING_ARTIFACT_DIR_PREFIX = "train_"
+_TRAINING_ARTIFACT_OWNER = "modelling_training"
+_TRAINING_ARTIFACT_HANDLE_VERSION = 1
+TRAINING_ARTIFACTS_HANDLE_KEY = "training_artifacts"
+TRAINING_ARTIFACTS_HANDLE_KIND = "modelling_training_artifacts"
+_STAGED_OUTPUT_DIRNAME = "output"
 
 
 _DEFAULT_BORDER_COUNT = 128  # CatBoost border count for VRAM estimation
@@ -66,43 +85,8 @@ def _max_training_artifact_bytes() -> int:
 _TRAINING_DOWNSAMPLE_SEED = 42
 
 
-class TrainingArtifactPublicationError(RuntimeError):
-    """A Windows contention error prevented a training artifact replacement."""
-
-    def __init__(self, source: Path, destination: Path, attempts: int) -> None:
-        self.source = source
-        self.destination = destination
-        self.attempts = attempts
-        super().__init__(
-            "Could not publish training artifact after "
-            f"{attempts} attempts: {source} -> {destination}"
-        )
-
-
-def _is_windows_artifact_contention(exc: OSError) -> bool:
-    return isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {5, 32}
-
-
-def _replace_training_artifact(source: Path, destination: Path) -> None:
-    """Replace an artifact, retrying only transient Windows file contention."""
-    attempts = 0
-    while True:
-        attempts += 1
-        try:
-            os.replace(source, destination)
-            return
-        except OSError as exc:
-            retryable = sys.platform == "win32" and _is_windows_artifact_contention(exc)
-            if not retryable:
-                raise
-            if attempts > _WINDOWS_ARTIFACT_REPLACE_RETRIES:
-                error = TrainingArtifactPublicationError(source, destination, attempts)
-                raise error from exc
-            time.sleep(_WINDOWS_ARTIFACT_REPLACE_RETRY_DELAY_SECONDS)
-
-
 def _validate_evaluation_artifact_contents(
-    staged_and_final: Mapping[str, tuple[Path, Path]],
+    artifact_paths: Mapping[str, Path],
     *,
     response_fit_count: int,
 ) -> dict[str, Any]:
@@ -115,9 +99,9 @@ def _validate_evaluation_artifact_contents(
     )
 
     try:
-        plan_path = staged_and_final["evaluation_plan"][0]
-        results_path = staged_and_final["evaluation_results"][0]
-        report_path = staged_and_final["evaluation_report"][0]
+        plan_path = artifact_paths["evaluation_plan"]
+        results_path = artifact_paths["evaluation_results"]
+        report_path = artifact_paths["evaluation_report"]
         plan = EvaluationPlan.from_plain_data(json.loads(plan_path.read_bytes()))
         plan_sha256 = file_sha256(plan_path)
         results = load_evaluation_results(results_path, plan_sha256=plan_sha256)
@@ -152,7 +136,7 @@ def _validate_evaluation_artifact_contents(
 
 
 def _validate_tuning_artifact_contents(
-    staged_and_final: Mapping[str, tuple[Path, Path]],
+    artifact_paths: Mapping[str, Path],
     *,
     evaluation_plan_sha256: str,
 ) -> dict[str, Any]:
@@ -166,9 +150,9 @@ def _validate_tuning_artifact_contents(
     )
 
     try:
-        plan_path = staged_and_final["tuning_plan"][0]
-        trials_path = staged_and_final["tuning_trials"][0]
-        report_path = staged_and_final["tuning_report"][0]
+        plan_path = artifact_paths["tuning_plan"]
+        trials_path = artifact_paths["tuning_trials"]
+        report_path = artifact_paths["tuning_report"]
         plan = load_tuning_plan(plan_path)
         if plan.evaluation_plan_sha256 != evaluation_plan_sha256:
             raise ValueError("tuning plan does not link to the evaluation plan")
@@ -193,17 +177,19 @@ def _validate_tuning_artifact_contents(
         raise WorkerProtocolError(f"Training tuning artifact set is malformed: {exc}") from exc
 
 
-def _publish_training_artifacts(
+def _validate_training_artifacts(
     manifest: WorkerResultManifest,
     *,
     artifact_root: Path,
-    output_root: Path,
-    job_id: str,
     expected_model_name: str,
     expected_evaluation: EvaluationReportPayload,
     expected_tuning: TuningReportPayload | None = None,
 ) -> dict[str, Path]:
-    """Atomically publish one complete evaluation run and optional tuning set."""
+    """Validate one complete evaluation run and optional tuning set in place.
+
+    Returns each artifact kind's absolute path inside *artifact_root*; no file is
+    moved, so the validated directory is the published, immutable set.
+    """
     by_kind: dict[str, WorkerArtifactManifest] = {}
     for artifact in manifest.artifacts:
         if artifact.kind in by_kind:
@@ -227,8 +213,7 @@ def _publish_training_artifacts(
         raise WorkerProtocolError("Training response and tuning artifact set disagree")
 
     root = artifact_root.resolve()
-    destination_root = output_root.resolve()
-    staged_and_final: dict[str, tuple[Path, Path]] = {}
+    artifact_paths: dict[str, Path] = {}
     ordered_kinds = (
         "model",
         "feature_contract",
@@ -249,8 +234,11 @@ def _publish_training_artifacts(
                 f"Training artifact {selected_artifact.relative_path!r} is not in the staged output"
             )
         staged = (root / relative).resolve()
-        final = (destination_root / relative.name).resolve()
-        staged_and_final[kind] = (staged, final)
+        if staged.parent != root / _STAGED_OUTPUT_DIRNAME:
+            raise WorkerProtocolError(
+                f"Training artifact {selected_artifact.relative_path!r} escapes the staged output"
+            )
+        artifact_paths[kind] = staged
 
     from haute.modelling._training_job import (
         evaluation_artifact_filenames,
@@ -258,8 +246,8 @@ def _publish_training_artifacts(
         tuning_artifact_filenames,
     )
 
-    model_staged, _model_final = staged_and_final["model"]
-    contract_staged, _contract_final = staged_and_final["feature_contract"]
+    model_staged = artifact_paths["model"]
+    contract_staged = artifact_paths["feature_contract"]
     if model_staged.stem != expected_model_name:
         raise WorkerProtocolError("Training model filename does not match the requested name")
     if contract_staged.name != model_contract_filename(model_staged.stem):
@@ -271,8 +259,7 @@ def _publish_training_artifacts(
         "evaluation_report": evaluation_names["report"],
     }
     for kind, expected_name in expected_evaluation_names.items():
-        staged, _final = staged_and_final[kind]
-        if staged.name != expected_name:
+        if artifact_paths[kind].name != expected_name:
             raise WorkerProtocolError(
                 f"Training {kind} filename does not match the requested model name"
             )
@@ -286,7 +273,7 @@ def _publish_training_artifacts(
                 f"Training evaluation response path does not match the staged {kind} manifest"
             )
     artifact_evaluation_response = _validate_evaluation_artifact_contents(
-        staged_and_final,
+        artifact_paths,
         response_fit_count=expected_evaluation_response["fit_count"],
     )
     if expected_evaluation_response != artifact_evaluation_response:
@@ -303,8 +290,7 @@ def _publish_training_artifacts(
             "tuning_report": tuning_names["report"],
         }
         for kind, expected_name in expected_tuning_names.items():
-            staged, _final = staged_and_final[kind]
-            if staged.name != expected_name:
+            if artifact_paths[kind].name != expected_name:
                 raise WorkerProtocolError(
                     f"Training {kind} filename does not match the requested model name"
                 )
@@ -318,7 +304,7 @@ def _publish_training_artifacts(
                     f"Training tuning response path does not match the staged {kind} manifest"
                 )
         artifact_tuning_response = _validate_tuning_artifact_contents(
-            staged_and_final,
+            artifact_paths,
             evaluation_plan_sha256=artifact_evaluation_response["plan_sha256"],
         )
         if expected_tuning_response != artifact_tuning_response:
@@ -326,66 +312,178 @@ def _publish_training_artifacts(
                 "Training tuning response does not match the staged artifact contents"
             )
 
-    obsolete_names: list[str] = []
-    if not has_tuning_artifacts:
-        obsolete_names.extend(tuning_names.values())
-    obsolete_finals = tuple((destination_root / filename).resolve() for filename in obsolete_names)
-    destination_root.mkdir(parents=True, exist_ok=True)
+    return artifact_paths
 
-    backups: dict[Path, Path] = {}
-    published: list[Path] = []
-    try:
-        managed_finals = [
-            *(final for _staged, final in staged_and_final.values()),
-            *obsolete_finals,
-        ]
-        for final in managed_finals:
-            if final.exists() or final.is_symlink():
-                backup = final.with_name(f".{final.name}.{job_id}.haute-backup")
-                if backup.exists() or backup.is_symlink():
-                    raise FileExistsError(f"Training artifact backup already exists: {backup}")
-                _replace_training_artifact(final, backup)
-                backups[final] = backup
-        for staged, final in staged_and_final.values():
-            _replace_training_artifact(staged, final)
-            published.append(final)
-    except BaseException as exc:
-        rollback_errors: list[BaseException] = []
-        for final in reversed(published):
-            try:
-                if final.exists() or final.is_symlink():
-                    final.unlink()
-            except BaseException as rollback_exc:
-                rollback_errors.append(rollback_exc)
-        for final, backup in reversed(tuple(backups.items())):
-            try:
-                if backup.exists() or backup.is_symlink():
-                    _replace_training_artifact(backup, final)
-            except BaseException as rollback_exc:
-                rollback_errors.append(rollback_exc)
-        for rollback_error in rollback_errors:
-            exc.add_note(f"Artifact rollback failed: {rollback_error}")
-        raise
 
-    for backup in backups.values():
-        try:
-            backup.unlink()
-        except OSError as exc:
-            logger.warning(
-                "training_artifact_post_commit_cleanup_failed",
-                path=str(backup),
-                cleanup_kind="backup",
-                error=str(exc),
-                error_type=type(exc).__name__,
-            )
+# ---------------------------------------------------------------------------
+# Job-owned artifact directories
+# ---------------------------------------------------------------------------
+
+
+def training_artifact_root() -> Path:
+    """The server-owned root that holds one marked directory per training job."""
+    return (Path(tempfile.gettempdir()) / _TRAINING_ARTIFACT_ROOT_NAME).resolve()
+
+
+def create_training_artifact_directory() -> Path:
+    """Create a marked, job-owned directory for one training run's artifacts."""
+    return create_owned_artifact_directory(
+        training_artifact_root(), _TRAINING_ARTIFACT_DIR_PREFIX, _TRAINING_ARTIFACT_OWNER
+    )
+
+
+def training_artifacts_handle(
+    artifact_root: Path,
+    artifact_paths: Mapping[str, Path],
+) -> dict[str, Any]:
+    """The job-record handle that transfers ownership of a validated artifact set."""
+    root = artifact_root.resolve()
+    return {
+        "kind": TRAINING_ARTIFACTS_HANDLE_KIND,
+        "version": _TRAINING_ARTIFACT_HANDLE_VERSION,
+        "directory": str(root),
+        "files": {kind: path.name for kind, path in sorted(artifact_paths.items())},
+    }
+
+
+@dataclass(frozen=True)
+class TrainingArtifactSet:
+    """The immutable files one completed training job published."""
+
+    directory: Path
+    model: Path
+    feature_contract: Path
+    evaluation_plan: Path
+    evaluation_results: Path
+    evaluation_report: Path
+    tuning_plan: Path | None = None
+    tuning_trials: Path | None = None
+    tuning_report: Path | None = None
+
+    def evidence_paths(self) -> dict[str, Path]:
+        """Evaluation and (when tuned) tuning artifacts keyed by kind."""
+        paths = {
+            "evaluation_plan": self.evaluation_plan,
+            "evaluation_results": self.evaluation_results,
+            "evaluation_report": self.evaluation_report,
+        }
+        if self.tuning_plan is not None:
+            paths["tuning_plan"] = self.tuning_plan
+        if self.tuning_trials is not None:
+            paths["tuning_trials"] = self.tuning_trials
+        if self.tuning_report is not None:
+            paths["tuning_report"] = self.tuning_report
+        return paths
+
+    def all_paths(self) -> tuple[Path, ...]:
+        return (self.model, self.feature_contract, *self.evidence_paths().values())
+
+
+def _validated_handle_directory(handle: Mapping[str, Any]) -> Path:
+    if handle.get("kind") != TRAINING_ARTIFACTS_HANDLE_KIND:
+        raise ValueError("Invalid training artifact handle.")
+    if handle.get("version") != _TRAINING_ARTIFACT_HANDLE_VERSION:
+        raise ValueError("Unsupported training artifact handle.")
+    raw_directory = handle.get("directory")
+    if not isinstance(raw_directory, str) or not raw_directory or "\x00" in raw_directory:
+        raise ValueError("Training artifact handle has no valid directory.")
+    directory_input = Path(raw_directory)
+    if not directory_input.is_absolute():
+        raise ValueError("Training artifact handle must use an absolute directory.")
+    directory = directory_input.resolve(strict=directory_input.exists())
+    if directory.parent != training_artifact_root() or not directory.name.startswith(
+        _TRAINING_ARTIFACT_DIR_PREFIX
+    ):
+        raise ValueError("Training artifact directory is outside the training artifact root.")
+    return directory
+
+
+def training_artifact_set_from_handle(handle: Mapping[str, Any]) -> TrainingArtifactSet:
+    """Validate a handle and return its artifact paths (which may no longer exist)."""
+    directory = _validated_handle_directory(handle)
+    files = handle.get("files")
+    if not isinstance(files, Mapping):
+        raise ValueError("Training artifact handle has no file list.")
+    kinds = set(files)
+    if kinds not in (set(_EVALUATED_TRAINING_ARTIFACT_KINDS), set(_TRAINING_ARTIFACT_KINDS)):
+        raise ValueError("Training artifact handle does not describe a complete artifact set.")
+    output = directory / _STAGED_OUTPUT_DIRNAME
+    paths: dict[str, Path] = {}
+    for kind, name in files.items():
+        if not isinstance(name, str) or not name or Path(name).name != name:
+            raise ValueError(f"Training artifact handle has an invalid {kind} file name.")
+        paths[kind] = output / name
+    return TrainingArtifactSet(directory=directory, **paths)
+
+
+def cleanup_training_artifacts(handle: dict[str, Any]) -> None:
+    """Remove a job's artifact directory once the job no longer owns it."""
+    directory = _validated_handle_directory(handle)
+    if directory.exists():
+        shutil.rmtree(directory)
+
+
+def reap_stale_training_artifacts(stale_after_seconds: int) -> dict[str, int]:
+    """Reap stale marked training directories left by a previous server process."""
+    report = reap_stale_artifact_directories(
+        training_artifact_root(), _TRAINING_ARTIFACT_OWNER, stale_after_seconds
+    )
+    logger.info("training_artifact_reap_completed", report=report)
+    return report
+
+
+_HOLDS_LOCK = threading.Lock()
+_ARTIFACT_HOLDS: Counter[str] = Counter()
+
+
+@contextmanager
+def hold_training_artifacts(job_id: str) -> Iterator[None]:
+    """Keep supersede pruning away from a job's artifacts while an export reads them."""
+    with _HOLDS_LOCK:
+        _ARTIFACT_HOLDS[job_id] += 1
     try:
-        shutil.rmtree(root)
-    except OSError as exc:
-        logger.warning(
-            "training_artifact_post_commit_cleanup_failed",
-            path=str(root),
-            cleanup_kind="staging_root",
-            error=str(exc),
-            error_type=type(exc).__name__,
-        )
-    return {kind: final for kind, (_staged, final) in staged_and_final.items()}
+        yield
+    finally:
+        with _HOLDS_LOCK:
+            _ARTIFACT_HOLDS[job_id] -= 1
+            if _ARTIFACT_HOLDS[job_id] <= 0:
+                del _ARTIFACT_HOLDS[job_id]
+
+
+def release_training_artifacts_unless_held(job_id: str, release: Callable[[], object]) -> bool:
+    """Run *release* for a superseded job unless an export currently holds its artifacts.
+
+    The check and the release share the hold lock, so an export either acquires its
+    hold first (and the release is skipped) or starts afterwards and finds the handle
+    already detached.
+    """
+    with _HOLDS_LOCK:
+        if _ARTIFACT_HOLDS.get(job_id, 0) > 0:
+            return False
+        release()
+        return True
+
+
+_UNAVAILABLE_DETAIL = {
+    "error_code": "training_artifacts_unavailable",
+    "message": (
+        "This training result's model files are no longer available (the node was retrained, "
+        "the result expired, or the server restarted). Train the model again to export it."
+    ),
+}
+
+
+def require_training_artifacts(job: Mapping[str, Any]) -> TrainingArtifactSet:
+    """Return a completed job's complete artifact set, or fail with ``410``."""
+    handles = job.get("artifact_handles")
+    handle = handles.get(TRAINING_ARTIFACTS_HANDLE_KEY) if isinstance(handles, Mapping) else None
+    if not isinstance(handle, Mapping):
+        raise HTTPException(status_code=410, detail=_UNAVAILABLE_DETAIL)
+    try:
+        artifacts = training_artifact_set_from_handle(handle)
+    except ValueError as exc:
+        logger.warning("training_artifact_handle_invalid", error=str(exc))
+        raise HTTPException(status_code=410, detail=_UNAVAILABLE_DETAIL) from None
+    if not all(path.is_file() for path in artifacts.all_paths()):
+        raise HTTPException(status_code=410, detail=_UNAVAILABLE_DETAIL)
+    return artifacts

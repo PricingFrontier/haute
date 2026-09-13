@@ -17,13 +17,25 @@ import {
   logOptimiserToMlflow,
   selectFrontierPoint as selectFrontierPointApi,
 } from "../api/client"
+import { apiErrorMessage } from "../api/errors"
 import { formatNumber } from "../utils/formatValue"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
-import useSettingsStore from "../stores/useSettingsStore"
+import { useMlflowDestinations } from "../stores/useSettingsStore"
+import useUIStore from "../stores/useUIStore"
 import { MODEL_COLORS } from "../theme/colors"
 import { bandingLevelOrderForOptimiser } from "../utils/banding"
+import { configField } from "../utils/configField"
+import {
+  mlflowLogAvailability,
+  type MlflowLogAvailability,
+} from "../utils/mlflowDestinations"
 import { NODE_TYPES } from "../utils/nodeTypes"
-import type { ApplyOptimiserResponse, FrontierData, OptimiserSolveResult } from "../api/types"
+import type {
+  ApplyOptimiserResponse,
+  FrontierData,
+  MlflowDestinationKey,
+  OptimiserSolveResult,
+} from "../api/types"
 import type { SimpleEdge, SimpleNode } from "./editors"
 import FrontierChart from "./optimiser/FrontierChart"
 import ConvergenceChart from "./optimiser/ConvergenceChart"
@@ -71,11 +83,7 @@ type RatesDetailState =
 const EMPTY_FRONTIER_POINTS: Record<string, unknown>[] = []
 
 function errorDetail(error: unknown): string {
-  if (error && typeof error === "object" && "detail" in error) {
-    const detail = (error as { detail?: unknown }).detail
-    if (typeof detail === "string" && detail.trim()) return detail
-  }
-  return error instanceof Error ? error.message : String(error)
+  return apiErrorMessage(error, "The request failed.")
 }
 
 function HeaderPointStepper({
@@ -149,8 +157,19 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
   const storeSelectPoint = useNodeResultsStore((s) => s.selectFrontierPoint)
   const storeUpdateAfterSelect = useNodeResultsStore((s) => s.updateFrontierAfterSelect)
 
-  // MLflow availability
-  const mlflowAvailable = useSettingsStore((s) => s.mlflow.status === "connected")
+  // Where this node logs is its own config: the Export tab, the detail card
+  // and the request itself all follow `mlflow_destination` from the node in
+  // the graph — the remote it names, else the local folder.
+  const mlflowInventory = useMlflowDestinations()
+  const nodeConfig = allNodes.find((node) => node.id === nodeId)?.data.config ?? {}
+  const mlflowDestination = configField(nodeConfig, "mlflow_destination", "")
+  const mlflowExperiment = configField(nodeConfig, "mlflow_experiment", "")
+  const mlflowAvailability = mlflowLogAvailability(mlflowInventory, mlflowDestination)
+  const setMlflowSettingsOpen = useUIStore((s) => s.setMlflowSettingsOpen)
+  const handleConfigureMlflow = useCallback(
+    () => setMlflowSettingsOpen(true),
+    [setMlflowSettingsOpen],
+  )
 
   // Detail card action state
   const [saving, setSaving] = useState(false)
@@ -303,6 +322,10 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
       const res = await logOptimiserToMlflow({
         job_id: jobId,
         ...(selectedIdx != null && frontier ? { point_index: selectedIdx } : {}),
+        // Read at click time, so a switch back to Local folder after the solve sends "".
+        destination: mlflowDestination as "" | MlflowDestinationKey,
+        // The node's current experiment; blank logs to the default it shows.
+        experiment_name: mlflowExperiment || null,
       })
       const target = res.experiment_name ? ` to ${res.experiment_name}` : ""
       setActionMsg(res.run_url ? `Logged${target}: ${res.run_url}` : `Logged${target} (run ${res.run_id ?? "ok"})`)
@@ -311,7 +334,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
     } finally {
       setLogging(false)
     }
-  }, [selectedIdx, frontier, jobId])
+  }, [selectedIdx, frontier, jobId, mlflowDestination, mlflowExperiment])
 
   const handleLoadResultDetail = useCallback(async () => {
     abortResultDetailRequest()
@@ -422,7 +445,8 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
             saving={saving}
             logging={logging}
             terminalActionsDisabled={terminalDetailBlocksActions}
-            mlflowAvailable={mlflowAvailable}
+            mlflowAvailability={mlflowAvailability}
+            onConfigureMlflow={handleConfigureMlflow}
             actionMsg={actionMsg}
           />
         )}
@@ -460,7 +484,8 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
             saving={saving}
             logging={logging}
             terminalActionsDisabled={terminalDetailBlocksActions}
-            mlflowAvailable={mlflowAvailable}
+            mlflowAvailability={mlflowAvailability}
+            onConfigureMlflow={handleConfigureMlflow}
             actionMsg={actionMsg}
             resultDetail={resultDetail}
           />
@@ -486,7 +511,8 @@ interface FrontierTabProps {
   saving: boolean
   logging: boolean
   terminalActionsDisabled: boolean
-  mlflowAvailable: boolean
+  mlflowAvailability: MlflowLogAvailability
+  onConfigureMlflow: () => void
   actionMsg: string | null
 }
 
@@ -519,7 +545,8 @@ function FrontierTab({
   saving,
   logging,
   terminalActionsDisabled,
-  mlflowAvailable,
+  mlflowAvailability,
+  onConfigureMlflow,
   actionMsg,
 }: FrontierTabProps) {
   const points = frontier?.points ?? EMPTY_FRONTIER_POINTS
@@ -624,7 +651,8 @@ function FrontierTab({
             saving={saving}
             logging={logging}
             terminalActionsDisabled={terminalActionsDisabled}
-            mlflowAvailable={mlflowAvailable}
+            mlflowAvailability={mlflowAvailability}
+            onConfigureMlflow={onConfigureMlflow}
             actionMsg={actionMsg}
           />
         </div>
@@ -656,6 +684,66 @@ function RatebookRatesPending({ detail }: { detail: RatesDetailState }) {
   )
 }
 
+function ExportMlflowSection({
+  onLogMlflow,
+  logging,
+  terminalActionBusy,
+  availability,
+  onConfigure,
+}: {
+  onLogMlflow: () => void
+  logging: boolean
+  terminalActionBusy: boolean
+  /** This node's own destination — never some other remote's state. */
+  availability: MlflowLogAvailability
+  onConfigure: () => void
+}) {
+  const disabled = terminalActionBusy || !availability.available
+  return (
+    <div className="space-y-1">
+      <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+        Log to MLflow
+      </label>
+      <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
+        Log the optimisation result, convergence history, and metadata to MLflow for tracking and comparison.
+      </p>
+      <button
+        onClick={onLogMlflow}
+        disabled={disabled}
+        title={availability.available ? undefined : availability.reason}
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors mt-1.5 disabled:opacity-60"
+        style={{
+          background: disabled ? "var(--chrome-hover)" : MODEL_COLORS.accentSoft,
+          color: disabled ? "var(--text-muted)" : MODEL_COLORS.accent,
+        }}
+      >
+        {logging ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
+        Log to MLflow
+      </button>
+      <p
+        data-testid="mlflow-export-destination"
+        className="text-[10px]"
+        style={{ color: "var(--text-muted)" }}
+      >
+        {availability.available ? (
+          `Destination: ${availability.label} — ${availability.destination}`
+        ) : (
+          <>
+            {`${availability.reason} `}
+            <button
+              onClick={onConfigure}
+              className="underline"
+              style={{ color: "var(--text-accent)" }}
+            >
+              Configure MLflow
+            </button>
+          </>
+        )}
+      </p>
+    </div>
+  )
+}
+
 function ExportTab({
   result,
   onSave,
@@ -664,7 +752,8 @@ function ExportTab({
   saving,
   logging,
   terminalActionsDisabled,
-  mlflowAvailable,
+  mlflowAvailability,
+  onConfigureMlflow,
   actionMsg,
   resultDetail,
 }: {
@@ -675,7 +764,8 @@ function ExportTab({
   saving: boolean
   logging: boolean
   terminalActionsDisabled: boolean
-  mlflowAvailable: boolean
+  mlflowAvailability: MlflowLogAvailability
+  onConfigureMlflow: () => void
   actionMsg: string | null
   resultDetail: ResultDetailState
 }) {
@@ -725,28 +815,13 @@ function ExportTab({
         </button>
       </div>
 
-      {mlflowAvailable && (
-        <div className="space-y-1">
-          <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
-            Log to MLflow
-          </label>
-          <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
-            Log the optimisation result, convergence history, and metadata to MLflow for tracking and comparison.
-          </p>
-          <button
-            onClick={onLogMlflow}
-            disabled={terminalActionBusy}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors mt-1.5"
-            style={{
-              background: terminalActionBusy ? "var(--chrome-hover)" : MODEL_COLORS.accentSoft,
-              color: terminalActionBusy ? "var(--text-muted)" : MODEL_COLORS.accent,
-            }}
-          >
-            {logging ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
-            Log to MLflow
-          </button>
-        </div>
-      )}
+      <ExportMlflowSection
+        onLogMlflow={onLogMlflow}
+        logging={logging}
+        terminalActionBusy={terminalActionBusy}
+        availability={mlflowAvailability}
+        onConfigure={onConfigureMlflow}
+      />
 
       {actionMsg && (
         <div className="text-xs px-2 py-1.5 rounded" style={{ background: "var(--bg-input)", color: "var(--text-secondary)" }}>

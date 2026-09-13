@@ -562,22 +562,22 @@ def _assert_config_equivalence(
         )
 
     elif node_type == NodeType.MODEL_SCORE:
-        for key in ("sourceType", "task", "output_column"):
+        for key in ("sourceType", "task", "output_column", "mlflow_destination"):
             assert parsed.get(key) == orig.get(key), f"[{node_id}] modelScore {key} mismatch"
         _assert_code_roundtrip(node_id, orig, parsed, all_node_ids)
 
     elif node_type == NodeType.MODELLING:
-        for key in ("name", "target", "algorithm", "task"):
+        for key in ("name", "target", "algorithm", "task", "mlflow_destination"):
             if orig.get(key):
                 assert parsed.get(key) == orig.get(key), f"[{node_id}] modelling {key} mismatch"
 
     elif node_type == NodeType.OPTIMISER:
-        for key in ("mode", "objective"):
+        for key in ("mode", "objective", "mlflow_destination"):
             if orig.get(key):
                 assert parsed.get(key) == orig.get(key), f"[{node_id}] optimiser {key} mismatch"
 
     elif node_type == NodeType.OPTIMISER_APPLY:
-        for key in ("sourceType", "artifact_path", "version_column"):
+        for key in ("sourceType", "artifact_path", "version_column", "mlflow_destination"):
             if orig.get(key):
                 assert parsed.get(key) == orig.get(key), (
                     f"[{node_id}] optimiserApply {key} mismatch"
@@ -1531,6 +1531,7 @@ class TestExcludedTypeRoundTrips:
                             "output_column": "prediction",
                             "run_id": "abc123",
                             "artifact_path": "models/model.cbm",
+                            "mlflow_destination": "server",
                         },
                     ),
                 ),
@@ -1540,6 +1541,8 @@ class TestExcludedTypeRoundTrips:
         )
         parsed = _parse_roundtrip(graph, tmp_path)
         _assert_structural_equivalence(graph, parsed)
+        scorer = {n.id: n for n in parsed.nodes}["scorer"]
+        assert scorer.data.config.get("mlflow_destination") == "server"
 
     def test_model_score_with_post_code(self, tmp_path: Path) -> None:
         """modelScore post-processing code round-trips without scoring scaffold."""
@@ -1667,6 +1670,7 @@ class TestExcludedTypeRoundTrips:
                                 "metric": "gini",
                                 "search_space": {"depth": [4, 6, 8]},
                             },
+                            "mlflow_destination": "server",
                         },
                     ),
                 ),
@@ -1676,6 +1680,8 @@ class TestExcludedTypeRoundTrips:
         )
         parsed = _parse_roundtrip(graph, tmp_path)
         _assert_structural_equivalence(graph, parsed)
+        train = {n.id: n for n in parsed.nodes}["train"]
+        assert train.data.config.get("mlflow_destination") == "server"
 
     def test_optimiser(self, tmp_path: Path) -> None:
         """optimiser round-trips with minimal config."""
@@ -1690,6 +1696,7 @@ class TestExcludedTypeRoundTrips:
                         config={
                             "mode": "online",
                             "objective": "profit",
+                            "mlflow_destination": "server",
                         },
                     ),
                 ),
@@ -1699,6 +1706,8 @@ class TestExcludedTypeRoundTrips:
         )
         parsed = _parse_roundtrip(graph, tmp_path)
         _assert_structural_equivalence(graph, parsed)
+        opt = {n.id: n for n in parsed.nodes}["opt"]
+        assert opt.data.config.get("mlflow_destination") == "server"
 
     def test_optimiser_apply(self, tmp_path: Path) -> None:
         """optimiserApply round-trips."""
@@ -1714,6 +1723,7 @@ class TestExcludedTypeRoundTrips:
                             "sourceType": "file",
                             "artifact_path": "artifacts/opt.json",
                             "version_column": "__opt_v__",
+                            "mlflow_destination": "server",
                         },
                     ),
                 ),
@@ -1723,6 +1733,8 @@ class TestExcludedTypeRoundTrips:
         )
         parsed = _parse_roundtrip(graph, tmp_path)
         _assert_structural_equivalence(graph, parsed)
+        apply_node = {n.id: n for n in parsed.nodes}["apply"]
+        assert apply_node.data.config.get("mlflow_destination") == "server"
 
     def test_scenario_expander(self, tmp_path: Path) -> None:
         """scenarioExpander round-trips."""

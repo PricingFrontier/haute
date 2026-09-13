@@ -51,6 +51,12 @@ Out of scope, owned elsewhere:
   own, by design — see [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/high-level.md).
 - Scoring a trained model against new data at serve time — see
   [mlflow-model-registry](../mlflow-model-registry/high-level.md).
+- The MLflow destinations/settings/test-connection HTTP surface (including
+  persistence of the `[mlflow]` inventory table of `haute.toml`) — see
+  [mlflow-model-registry](../mlflow-model-registry/high-level.md); this component
+  owns the destination inventory, the per-key resolver, the local-folder default for a
+  node that names no destination, and the resolution helpers those endpoints and the
+  logging path share.
 - Pipeline graph compilation and lazy execution — see
   [execution-engine](../execution-engine/high-level.md).
 - Background job storage, lifecycle state machine, and cancellation plumbing — see
@@ -115,9 +121,18 @@ compatibility facade and route own no duplicate state or worker implementation.
   live training.
 - `POST /api/modelling/mlflow/log` logs an already-completed job's results to MLflow
   after the fact (the "Log to MLflow" button), reusing the persisted feature contract
-  so the logged model's signature matches what was actually trained. Databricks
-  registry publication uses the logged `runs:/…/model` URI and is best-effort:
-  a registry error is logged without discarding the successful run.
+  so the logged model's signature matches what was actually trained. Haute never
+  registers or promotes a trained model: a logged run is a candidate, and registering it
+  (for example after comparing it with the current champion and moving an alias) is an
+  external process. Model Score consumes the result through a registered version or
+  alias, or scores a logged run directly.
+- `POST /api/modelling/save` writes a copy of an already-completed job's trained model and
+  its feature contract to a file in the project (the Export pane's "Save model to file"
+  button), so a model can be kept without MLflow. Its destination rules match a file Data
+  Output with `models/` in place of `outputs/`, and it refuses to replace an existing file
+  unless the request confirms overwrite. `POST /api/modelling/save/destination` resolves the
+  same destination for display without writing. Neither retrains, reads node config, or
+  touches the training output being copied.
 - `POST /api/modelling/train/cancel/{job_id}` is idempotent. If cancellation wins the
   terminal race, it marks the run cancelled and trips the same token used by upstream
   preparation and the spawned fit worker; if another terminal transition won first,
@@ -559,16 +574,15 @@ browser without a server or JS bundle.
   execution context, callbacks, dataframes, or cancellation registry. The parent remains
   authoritative for cancellation, timeout, admission ownership, status, and public
   error mapping.
-- A model becomes visible at its configured final path only after the parent validates
-  staged size/digest evidence and publishes the model plus per-model feature contract.
+- A canvas training run's model becomes available only after the parent validates staged
+  size/digest evidence for the complete set in the job's own server-owned artifact directory.
 Every run publishes the model, feature contract, and three evaluation JSON
-artifacts as one set; a tuned run adds its three tuning JSON artifacts to the
-same transaction. Replacing a tuned model with an ordinary run removes the
-prior tuning companions inside that rollback-capable transaction, so stale
-selection evidence can never appear to describe the newly deployed model.
-Cancellation, crash, malformed result, or pre-commit publication failure preserves the
-prior set and removes prepared/staged files. A post-commit backup or staging cleanup
-error is logged without relabelling the already durable model as failed. Dispersion
+artifacts as one set; a tuned run adds its three tuning JSON artifacts. Each job owns its
+directory, so a later run never replaces an earlier job's files: exports read exactly the
+bytes their job trained. Completing a newer run for the same node releases the older job's
+directory (unless an export holds it), job eviction and restart reaping remove the rest, and an
+export of a job whose artifacts are gone fails with `410` rather than reading other bytes.
+Cancellation, crash, malformed result, or validation failure removes the directory. Dispersion
   publishes bounded scalar metadata and no artifact.
 - Unknown evaluation versions or fields, legacy public `split`/`cross_validation`,
   malformed strategy keys, inexact/Boolean fold counts, non-finite fractions, and structurally

@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 
 from tests.job_store_support import seed_job
 from tests.optimiser_fixtures import run_frontier_and_wait
+from tests.training_artifacts_support import publish_trained_job
 
 # -- Shared constants and helpers ------------------------------------------
 
@@ -58,6 +59,35 @@ def _completed_modelling_result() -> object:
                 "validation_fit_count": 0,
             },
         },
+    )
+
+
+def _publish_modelling_job(job_id: str, tmp_path: Path, root: Path) -> None:
+    """Publish a completed training job that owns a model and complete contract."""
+    from haute.modelling._feature_contract import build_contract, save_contract
+    from haute.routes.modelling import _store
+
+    model_path = tmp_path / job_id / "model.cbm"
+    model_path.parent.mkdir(parents=True)
+    model_path.write_bytes(b"model")
+    save_contract(
+        build_contract(
+            features=["x"],
+            feature_types={"x": "Float64"},
+            categorical_features=[],
+            target_name="y",
+            target_type="Float64",
+            task="regression",
+        ),
+        model_path.with_name("model.feature_contract.json"),
+    )
+    publish_trained_job(
+        _store,
+        job_id,
+        root=root,
+        model_file=model_path,
+        result=_completed_modelling_result(),
+        config={},
     )
 
 
@@ -242,13 +272,12 @@ def _databricks_client_patch(attr_chain: str, error_msg: str):
     return patch("haute.routes.databricks._get_databricks_client", return_value=mock_ws)
 
 
-def _mlflow_tracking_patch(attr: str, error_msg: str, on_client: bool = False):
+def _mlflow_tracking_patch(attr: str, error_msg: str):
     """Return a context-manager that patches _ensure_tracking so that the
-    mlflow client (or registry client) raises on *attr*."""
+    destination-pinned MLflow client raises on *attr*."""
     mock_mlflow = MagicMock()
     mock_client = MagicMock()
-    target = mock_client if on_client else mock_mlflow
-    getattr(target, attr).side_effect = RuntimeError(error_msg)
+    getattr(mock_client, attr).side_effect = RuntimeError(error_msg)
     return patch(
         "haute.routes.mlflow._ensure_tracking",
         return_value=(mock_mlflow, mock_client),
@@ -361,7 +390,7 @@ _SIMPLE_SAFE_DETAIL_CASES: list[tuple] = [
         "get",
         "/api/mlflow/models",
         None,
-        lambda err: _mlflow_tracking_patch("search_registered_models", err, on_client=True),
+        lambda err: _mlflow_tracking_patch("search_registered_models", err),
         "PermissionDenied: access token for service-account@corp expired",
         502,
         ["service-account@corp"],
@@ -647,21 +676,12 @@ class TestOptimiserRoutesSafeDetail:
 class TestModellingRoutesSafeDetail:
     """Modelling mlflow log must not leak details."""
 
-    def test_mlflow_log_500_no_leak(self, client: TestClient) -> None:
+    def test_mlflow_log_500_no_leak(
+        self, client: TestClient, tmp_path: Path, training_artifact_root: Path
+    ) -> None:
         from haute.routes.modelling import _store
 
-        seed_job(
-            _store,
-            "test_err",
-            {
-                "status": "completed",
-                "result": _completed_modelling_result(),
-                "config": {},
-                "node_label": "model",
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
-        )
+        _publish_modelling_job("test_err", tmp_path, training_artifact_root)
         try:
             with patch(
                 "haute.modelling._mlflow_log.log_experiment",
@@ -707,16 +727,6 @@ _LOG_ON_ERROR_CASES: list[tuple] = [
         500,
         id="json-cache-build-log",
     ),
-    pytest.param(
-        "get",
-        "/api/mlflow/experiments",
-        None,
-        lambda err: _mlflow_tracking_patch("search_experiments", err),
-        "haute.routes.mlflow",
-        "secret-mlflow-err",
-        502,
-        id="mlflow-experiments-log",
-    ),
 ]
 
 
@@ -756,6 +766,29 @@ class TestLogOnError:
         assert resp.status_code == expected_status
         mock_logger.error.assert_called()
         assert error_msg in str(mock_logger.error.call_args)
+
+    def test_mlflow_discovery_failure_is_logged_by_type_never_by_text(
+        self, client: TestClient
+    ) -> None:
+        """MLflow discovery is the deliberate exception to logging the real message.
+
+        Tracking errors can echo bearer tokens or credential-bearing URIs, so
+        the server-side record keeps the category and the exception type
+        (enough to diagnose) and never the text; see
+        ``tests/test_mlflow_routes.py::TestFailureLogsCarryNoExceptionText``.
+        """
+        mock_logger = MagicMock()
+        with (
+            _mlflow_tracking_patch("search_experiments", "secret-mlflow-err"),
+            patch("haute.routes.mlflow.logger", mock_logger),
+        ):
+            resp = client.get("/api/mlflow/experiments")
+
+        assert resp.status_code == 502
+        mock_logger.error.assert_called_once()
+        assert mock_logger.error.call_args.kwargs["error_type"] == "RuntimeError"
+        assert "secret-mlflow-err" not in str(mock_logger.error.call_args)
+        assert "secret-mlflow-err" not in resp.text
 
     # -- Pipeline routes need the pipeline_graph fixture --
 
@@ -969,22 +1002,12 @@ class TestNodeFailureLogLevel:
 # =====================================================================
 
 
-class TestMlflowMissingStatusInconsistency:
-    """Document that optimiser and mlflow routes disagree on HTTP status
-    when MLflow is not installed.
+class TestMlflowMissingStatus:
+    """Every MLflow route reports a missing MLflow package with the same 503."""
 
-    - ``routes/optimiser.py`` mlflow_log raises ``400`` (Bad Request)
-    - ``routes/mlflow.py`` _ensure_tracking raises ``503`` (Service Unavailable)
+    _DETAIL = "MLflow is not installed. Install it with: pip install mlflow"
 
-    503 is semantically correct (a dependency is unavailable), while 400
-    implies the client sent a bad request.  This test documents the
-    inconsistency so it is caught if someone "fixes" only one side.
-
-    When harmonising, update BOTH routes to the same status code and
-    update both assertions below.
-    """
-
-    def test_optimiser_mlflow_log_returns_400_when_mlflow_missing(
+    def test_optimiser_mlflow_log_returns_503_when_mlflow_missing(
         self,
         client: TestClient,
     ) -> None:
@@ -1010,13 +1033,19 @@ class TestMlflowMissingStatusInconsistency:
                     "/api/optimiser/mlflow/log",
                     json={"job_id": "inc_test"},
                 )
-            assert resp.status_code == 400, (
-                "optimiser mlflow_log changed its missing-mlflow status code -- "
-                "update this test AND harmonise with routes/mlflow.py"
-            )
-            assert "not installed" in resp.json()["detail"].lower()
+            assert resp.status_code == 503
+            assert resp.json()["detail"] == self._DETAIL
         finally:
             _store.clear_all()
+
+    def test_modelling_mlflow_log_returns_503_when_mlflow_missing(
+        self,
+        client: TestClient,
+    ) -> None:
+        with patch.dict("sys.modules", {"mlflow": None}):
+            resp = client.post("/api/modelling/mlflow/log", json={"job_id": "any"})
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == self._DETAIL
 
     def test_mlflow_routes_return_503_when_mlflow_missing(
         self,
@@ -1024,11 +1053,8 @@ class TestMlflowMissingStatusInconsistency:
     ) -> None:
         with patch.dict("sys.modules", {"mlflow": None}):
             resp = client.get("/api/mlflow/experiments")
-        assert resp.status_code == 503, (
-            "mlflow routes changed their missing-mlflow status code -- "
-            "update this test AND harmonise with routes/optimiser.py"
-        )
-        assert "not installed" in resp.json()["detail"].lower()
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == self._DETAIL
 
 
 # =====================================================================
@@ -1301,22 +1327,13 @@ class TestSensitiveInfoLeakage:
         finally:
             _store.clear_all()
 
-    def test_modelling_mlflow_log_postgres_uri_no_leak(self, client: TestClient) -> None:
+    def test_modelling_mlflow_log_postgres_uri_no_leak(
+        self, client: TestClient, tmp_path: Path, training_artifact_root: Path
+    ) -> None:
         """POST /api/modelling/mlflow/log -- postgres connection string must not leak."""
         from haute.routes.modelling import _store
 
-        seed_job(
-            _store,
-            "test_pg_leak",
-            {
-                "status": "completed",
-                "result": _completed_modelling_result(),
-                "config": {},
-                "node_label": "model",
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
-        )
+        _publish_modelling_job("test_pg_leak", tmp_path, training_artifact_root)
         try:
             with patch(
                 "haute.modelling._mlflow_log.log_experiment",

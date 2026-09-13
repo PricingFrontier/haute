@@ -9,7 +9,6 @@ import { useEffect, useState } from "react"
 import type { TrainProgress, TrainResult } from "../stores/useNodeResultsStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useGraphStore from "../stores/useGraphStore"
-import useSettingsStore from "../stores/useSettingsStore"
 import { MODEL_COLORS } from "../theme/colors"
 import { nodeData } from "../types/node"
 import { NODE_TYPES } from "../utils/nodeTypes"
@@ -71,9 +70,6 @@ export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
   useEffect(() => setTab("summary"), [nodeId, result])
 
   const trainProgress: TrainProgress | null = useNodeResultsStore((s) => s.trainJobs[nodeId]?.progress ?? null)
-  const modellingNode = useGraphStore((s) => s.nodes.find(node => node.id === nodeId))
-  const mlflow = useSettingsStore((s) => s.mlflow)
-  const mlflowBackend = mlflow.status === "connected" ? { installed: true, backend: mlflow.backend, host: mlflow.host } : null
 
   const availableTabs = TAB_KEYS.filter(t => {
     switch (t) {
@@ -98,7 +94,6 @@ export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
     .map(([k, v]) => `${k}: ${typeof v === "number" && Number.isFinite(v) ? v.toFixed(4) : String(v)}`)
     .join(" | ")
   const tabs = availableTabs.map((key) => ({ key, label: TAB_LABELS[key] }))
-  const config = modellingNode ? nodeData(modellingNode).config ?? {} : {}
   const introduction = activeTab === "summary" ? null : VIEW_INTRODUCTIONS[activeTab]
 
   const useBestAsFixedParameters = (params: Record<string, unknown>) => {
@@ -177,9 +172,6 @@ export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
         {activeTab === "summary" && (
           <SummaryTab
             result={result}
-            jobId={data.jobId}
-            mlflowBackend={mlflowBackend}
-            config={config}
             onUseBestParameters={useBestAsFixedParameters}
             elapsedSeconds={trainProgress?.elapsed_seconds}
           />

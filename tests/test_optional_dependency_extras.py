@@ -34,22 +34,36 @@ def test_server_import_succeeds_with_optional_extras_installed() -> None:
     assert "/api/databricks/warehouses" in route_paths
 
 
-def test_modelling_mlflow_check_reports_installed_with_backend(client, monkeypatch) -> None:
+def test_mlflow_destinations_report_installed_with_inventory(client, monkeypatch) -> None:
+    from haute.modelling._mlflow_settings import DestinationEntry
+
     monkeypatch.setattr(
-        "haute.modelling._mlflow_log.resolve_tracking_backend",
-        lambda: ("sqlite:///mlruns", "local"),
+        "haute.modelling._mlflow_settings.list_destinations",
+        lambda project_root=None: [
+            DestinationEntry("databricks", False, detail="Databricks is not configured."),
+            DestinationEntry("server", False, detail="MLflow server is not configured."),
+            DestinationEntry("local", True, "/proj/mlruns", "default"),
+        ],
     )
 
-    resp = client.get("/api/modelling/mlflow/check")
+    resp = client.get("/api/mlflow/destinations")
 
     assert resp.status_code == 200
-    assert resp.json() == {
-        "mlflow_installed": True,
-        "mlflow_importable": True,
-        "tracking_configured": True,
-        "backend": "local",
-        "databricks_host": "",
+    body = resp.json()
+    assert body["mlflow_installed"] is True
+    assert body["mlflow_importable"] is True
+    assert "auto" not in body
+    assert body["detail"] == ""
+    assert [e["key"] for e in body["destinations"]] == ["databricks", "server", "local"]
+    assert body["destinations"][2] == {
+        "key": "local",
+        "configured": True,
+        "destination": "/proj/mlruns",
+        "config_source": "default",
         "detail": "",
+        "probed": False,
+        "ok": False,
+        "category": "",
     }
 
 
@@ -57,15 +71,18 @@ def test_mlflow_experiments_route_succeeds_with_installed_dependency_and_mocked_
     client,
     monkeypatch,
 ) -> None:
-    fake_mlflow = SimpleNamespace(
-        search_experiments=lambda: [
-            SimpleNamespace(experiment_id="42", name="pricing/dev"),
-        ]
+    from mlflow.store.entities.paged_list import PagedList
+
+    fake_mlflow = SimpleNamespace()
+    fake_client = SimpleNamespace(
+        search_experiments=lambda: PagedList(
+            [SimpleNamespace(experiment_id="42", name="pricing/dev")],
+            None,
+        )
     )
-    fake_client = SimpleNamespace()
     monkeypatch.setattr(
         "haute.routes.mlflow._ensure_tracking",
-        lambda: (fake_mlflow, fake_client),
+        lambda destination="": (fake_mlflow, fake_client),
     )
 
     resp = client.get("/api/mlflow/experiments")
@@ -90,7 +107,7 @@ def test_mlflow_models_route_succeeds_with_installed_dependency_and_mocked_backe
     )
     monkeypatch.setattr(
         "haute.routes.mlflow._ensure_tracking",
-        lambda: (SimpleNamespace(), fake_client),
+        lambda destination="": (SimpleNamespace(), fake_client),
     )
 
     resp = client.get("/api/mlflow/models")
@@ -112,7 +129,12 @@ def test_mlflow_model_versions_route_succeeds_with_installed_dependency_and_mock
 ) -> None:
     monkeypatch.setattr(
         "haute.routes.mlflow._ensure_tracking",
-        lambda: (SimpleNamespace(), SimpleNamespace()),
+        lambda destination="": (
+            SimpleNamespace(),
+            SimpleNamespace(
+                get_registered_model=lambda _name: SimpleNamespace(aliases={"champion": "2"})
+            ),
+        ),
     )
     monkeypatch.setattr(
         "haute.routes.mlflow.search_versions",
@@ -145,6 +167,7 @@ def test_mlflow_model_versions_route_succeeds_with_installed_dependency_and_mock
             "creation_timestamp": 2_000,
             "description": "second",
             "params": {},
+            "aliases": ["champion"],
         },
         {
             "version": "1",
@@ -153,6 +176,7 @@ def test_mlflow_model_versions_route_succeeds_with_installed_dependency_and_mock
             "creation_timestamp": 1_000,
             "description": "first",
             "params": {},
+            "aliases": [],
         },
     ]
 

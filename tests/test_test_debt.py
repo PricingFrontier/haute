@@ -151,14 +151,12 @@ _EXPECTED_DEBT_IDS = {
     "b999233846eb7ace",
     "02519ef042dc229b",
     "b1fdda1913c30cea",
-    "c1d2feb4a8261f67",
     "a8ba935e2e69547b",
     "1c1a7efd1b6b5496",
     "bc580591bd05253a",
     "ea75218e22580bb4",
     "6f5878234dddd567",
     "df615adf6facd8fc",
-    "46fd8404c50daff6",
     "c60a5a978c60725a",
     "4ae118442dafce1e",
     "8a0f7160d9044069",
@@ -203,6 +201,12 @@ _EXPECTED_DEBT_IDS = {
     # install skipping cleanly while the dev-group CI legs (mlflow
     # installed) execute every test.
     "e278858fa0b5e3b7",
+    # MLF-D03 — tests/test_mlflow_destinations_e2e.py proves per-node destination
+    # isolation against REAL local file stores (logging, scoring, optimiser
+    # apply, deploy scoring, generated scripts). Same module-level
+    # importorskip convention as test_mlflow_log_button_roundtrip.py so the
+    # core-only CI leg (no mlflow) skips cleanly while the dev-group legs run it.
+    "752af62493a1e027",
     # 4b.8 — tests/test_mlflow_log_button_roundtrip.py proves the "Log to
     # MLflow" button's signature/artifact round-trip against a REAL local
     # file-store MLflow (a wrong signature only fails at genuine pyfunc
@@ -245,6 +249,14 @@ _EXPECTED_DEBT_IDS = {
     # See tests/test_config_io_gaps.py::TestConfigPathEscapeGuard
     # ::test_escape_guard_triggers_on_resolved_outside.
     "1e4116d06849b611",
+    # Windows symlink privilege — the MLflow settings write-containment guard
+    # test symlinks haute.toml at an external victim file to prove a save
+    # refuses to follow it, but symlink creation needs a privilege Windows
+    # withholds by default (WinError 1314). Skipped when symlink creation
+    # raises, mirroring the other symlink-guard tests; Linux CI runs it.
+    # See tests/test_mlflow_settings.py::TestLoadSaveSettings
+    # ::test_save_refuses_symlinked_haute_toml_escaping_the_project.
+    "0d633b8caaa866db",
     # Windows symlink privilege — the file-browser short-path regression test
     # builds a symlinked project dir so ``Path.cwd()`` differs from its
     # ``resolve()`` (the cross-platform stand-in for a Windows 8.3 short cwd),

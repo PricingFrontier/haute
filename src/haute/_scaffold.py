@@ -22,15 +22,24 @@ TARGETS: dict[str, _TargetConfig] = {
     "databricks": {
         "label": "Databricks",
         "env_body": """
-# General credentials — data warehouse + MLflow tracking
+# Data access credentials — SQL warehouse reads and writes, workspace browsing
 DATABRICKS_HOST=https://adb-1234567890123456.12.azuredatabricks.net
 DATABRICKS_TOKEN=your_databricks_token_here
+
+# MLflow credentials — experiment tracking, the model registry, loading logged
+# models, and deploy's model registration. MLflow never uses the data access
+# pair above; copy its values here if one token's scopes cover both.
+# (Alternatively set MLFLOW_TRACKING_URI=databricks://<profile> to use a profile.)
+DATABRICKS_MLFLOW_HOST=https://adb-1234567890123456.12.azuredatabricks.net
+DATABRICKS_MLFLOW_TOKEN=your_databricks_mlflow_token_here
 
 # Production serving endpoint credentials
 DATABRICKS_RATING_HOST=https://adb-1234567890123456.12.azuredatabricks.net
 DATABRICKS_RATING_TOKEN=your_databricks_token_here
 """,
         "secrets": [
+            "DATABRICKS_MLFLOW_HOST",
+            "DATABRICKS_MLFLOW_TOKEN",
             "DATABRICKS_RATING_HOST",
             "DATABRICKS_RATING_TOKEN",
         ],

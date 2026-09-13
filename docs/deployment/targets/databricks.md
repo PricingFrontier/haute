@@ -89,15 +89,17 @@ The token looks like: `dapi_your_token_here`
 
 Since deployment runs in CI (not on your laptop), your credentials need to be stored as **encrypted secrets** in your CI provider. This is a one-time setup.
 
-The two values you need are:
+The four values you need are:
 
 | Secret name | Value |
 |---|---|
+| `DATABRICKS_MLFLOW_HOST` | The workspace URL that hosts your MLflow experiments and Unity Catalog models |
+| `DATABRICKS_MLFLOW_TOKEN` | A personal access token whose scopes cover MLflow and the model registry |
 | `DATABRICKS_RATING_HOST` | Your workspace URL from Step 1 |
-| `DATABRICKS_RATING_TOKEN` | Your personal access token from Step 2 |
+| `DATABRICKS_RATING_TOKEN` | A personal access token whose scopes cover Model Serving |
 
-!!! note "Why the `RATING` in the name?"
-    The deploy pipeline uses these `DATABRICKS_RATING_*` names for the production serving credentials, keeping them separate from the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair the editor uses for data access and MLflow. The values can be the same workspace URL and token - only the names differ, and the deploy will fail with a clear error if the `RATING` names are missing.
+!!! note "Why separate MLflow and `RATING` credentials?"
+    Databricks token scopes can be narrow, so three credential spaces stay separate. The deploy logs and registers the model through MLflow with the `DATABRICKS_MLFLOW_*` pair, then creates or updates the serving endpoint with the `DATABRICKS_RATING_*` pair. The general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair is for data access in the editor and is never used by MLflow or by the deploy. The values can be the same workspace URL and token when one token's scopes cover everything - only the names differ, and the deploy fails with a clear error naming any missing variable before it contacts Databricks.
 
 How to add them depends on your CI provider:
 
@@ -353,7 +355,7 @@ Or in the Databricks UI: click **Serving** in the left sidebar and look for your
 
 ### Token expired
 
-Tokens have a lifetime (default 90 days). If your deploy suddenly fails with an authentication error, generate a new token (Step 2) and update the `DATABRICKS_RATING_TOKEN` secret in your CI provider.
+Tokens have a lifetime (default 90 days). If your deploy suddenly fails with an authentication error, generate a new token (Step 2) and update the `DATABRICKS_MLFLOW_TOKEN` or `DATABRICKS_RATING_TOKEN` secret in your CI provider (the error names which step failed: model registration uses the MLflow token, the serving endpoint the rating token).
 
 ### Slow first request (cold start)
 
@@ -371,7 +373,7 @@ Before your first deploy, confirm:
 
 - [ ] You have your Databricks workspace URL
 - [ ] You have a Personal Access Token
-- [ ] Both are added as CI secrets (`DATABRICKS_RATING_HOST`, `DATABRICKS_RATING_TOKEN`)
+- [ ] All four are added as CI secrets (`DATABRICKS_MLFLOW_HOST`, `DATABRICKS_MLFLOW_TOKEN`, `DATABRICKS_RATING_HOST`, `DATABRICKS_RATING_TOKEN`)
 - [ ] Unity Catalog is enabled with a catalog and schema
 - [ ] `haute.toml` has the correct `experiment_name`, `catalog`, and `schema`
 - [ ] Model Serving is available in your workspace

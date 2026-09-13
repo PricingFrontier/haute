@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 import pytest
 
 from haute.modelling._export import generate_training_script
@@ -282,18 +285,13 @@ class TestMLflow:
         script = generate_training_script(config, "d.parquet")
         assert "mlflow_experiment='/Shared/test'" in script
 
-    def test_model_name_included(self):
-        config = {**MINIMAL_CONFIG, "model_name": "my_model"}
-        script = generate_training_script(config, "d.parquet")
-        assert "model_name='my_model'" in script
-
     def test_mlflow_excluded_when_absent(self):
         script = generate_training_script(MINIMAL_CONFIG, "d.parquet")
         assert "mlflow_experiment" not in script
         assert "model_name" not in script
 
     def test_mlflow_excluded_when_none(self):
-        config = {**MINIMAL_CONFIG, "mlflow_experiment": None, "model_name": None}
+        config = {**MINIMAL_CONFIG, "mlflow_experiment": None}
         script = generate_training_script(config, "d.parquet")
         assert "mlflow_experiment" not in script
         assert "model_name" not in script
@@ -614,7 +612,6 @@ class TestFullConfig:
             "monotone_constraints": {"age": 1, "risk": -1},
             "feature_weights": {"age": 2.0},
             "mlflow_experiment": "/Shared/severity",
-            "model_name": "severity_prod",
             "output_dir": "artifacts",
         }
         script = generate_training_script(config, "output/severity.parquet")
@@ -631,5 +628,206 @@ class TestFullConfig:
         assert "variance_power=1.5" in script
         assert "offset='log_exposure'" in script
         assert "mlflow_experiment='/Shared/severity'" in script
-        assert "model_name='severity_prod'" in script
         assert "output_dir='artifacts'" in script
+
+
+class TestMlflowDestinationExport:
+    def test_mlflow_destination_rendered_when_set(self):
+        config = {
+            **MINIMAL_CONFIG,
+            "mlflow_destination": "server",
+        }
+        script = generate_training_script(config, "d.parquet")
+        assert "mlflow_destination='server'" in script
+        compile(script, "<test>", "exec")
+
+    def test_mlflow_destination_omitted_for_the_local_folder(self):
+        config_empty = {
+            **MINIMAL_CONFIG,
+            "mlflow_destination": "",
+        }
+        script_empty = generate_training_script(config_empty, "d.parquet")
+        assert "mlflow_destination" not in script_empty
+        compile(script_empty, "<test>", "exec")
+
+        script_absent = generate_training_script(MINIMAL_CONFIG, "d.parquet")
+        assert "mlflow_destination" not in script_absent
+        compile(script_absent, "<test>", "exec")
+
+
+class TestExecutedExportMlflowDestinations:
+    @pytest.fixture
+    def tiny_training_data(self, tmp_path: Path) -> Path:
+        import polars as pl
+
+        df = pl.DataFrame(
+            {
+                "ClaimCount": [1.0, 2.0, 1.5, 3.0, 2.5, 4.0, 1.0, 2.0],
+                "feature_a": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+            }
+        )
+        data_path = tmp_path / "data.parquet"
+        df.write_parquet(data_path)
+        return data_path
+
+    def test_executed_export_without_destination_logs_locally_despite_databricks_env(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        tiny_training_data: Path,
+    ) -> None:
+        from haute._sandbox import set_project_root
+
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb-fake.example.com")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi-fake-token")
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+
+        output_dir = tmp_path / "outputs"
+        config = {
+            **MINIMAL_CONFIG,
+            "params": {"iterations": 2},
+            "output_dir": str(output_dir),
+            "mlflow_experiment": "/Shared/test_local",
+        }
+        script = generate_training_script(config, str(tiny_training_data))
+        assert "mlflow_destination" not in script
+
+        namespace: dict[str, Any] = {"__name__": "__main__"}
+        exec(compile(script, "<exported_training_script>", "exec"), namespace)
+
+        assert (tmp_path / "mlruns").exists()
+        import mlflow
+
+        client = mlflow.tracking.MlflowClient(tracking_uri=(tmp_path / "mlruns").as_uri())
+        exp = client.get_experiment_by_name("/Shared/test_local")
+        assert exp is not None
+        runs = client.search_runs([exp.experiment_id])
+        assert len(runs) >= 1
+
+    def test_executed_export_local_folder_follows_the_execution_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        tiny_training_data: Path,
+    ) -> None:
+        from haute._sandbox import set_project_root
+
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+
+        gen_root = tmp_path / "gen"
+        gen_root.mkdir()
+        (gen_root / "haute.toml").write_text('[mlflow]\nfolder = "store_a"\n', encoding="utf-8")
+        exec_root = tmp_path / "exec"
+        exec_root.mkdir()
+        (exec_root / "haute.toml").write_text('[mlflow]\nfolder = "store_b"\n', encoding="utf-8")
+
+        # Generation environment: the local folder is store_a here.
+        monkeypatch.chdir(gen_root)
+        set_project_root(gen_root)
+
+        config = {
+            **MINIMAL_CONFIG,
+            "params": {"iterations": 2},
+            "output_dir": str(exec_root / "outputs"),
+            "mlflow_experiment": "/Shared/test_auto",
+        }
+        script = generate_training_script(config, str(tiny_training_data))
+        assert "mlflow_destination" not in script
+
+        # Execution environment: the local folder resolves here, to store_b.
+        monkeypatch.chdir(exec_root)
+        set_project_root(exec_root)
+
+        namespace: dict[str, Any] = {"__name__": "__main__"}
+        exec(compile(script, "<exported_training_script>", "exec"), namespace)
+
+        import mlflow
+
+        store_b = exec_root / "store_b"
+        assert store_b.exists()
+        client = mlflow.tracking.MlflowClient(tracking_uri=store_b.as_uri())
+        exp = client.get_experiment_by_name("/Shared/test_auto")
+        assert exp is not None
+        assert len(client.search_runs([exp.experiment_id])) == 1
+
+        # The generation environment's store was never touched.
+        assert not (gen_root / "store_a").exists()
+
+    def test_executed_export_unavailable_server_destination_raises_config_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        tiny_training_data: Path,
+    ) -> None:
+        from haute._sandbox import set_project_root
+        from haute.errors import MlflowConfigError
+
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+
+        output_dir = tmp_path / "outputs"
+        config = {
+            **MINIMAL_CONFIG,
+            "params": {"iterations": 2},
+            "output_dir": str(output_dir),
+            "mlflow_experiment": "/Shared/test_server",
+            "mlflow_destination": "server",
+        }
+        script = generate_training_script(config, str(tiny_training_data))
+        assert "mlflow_destination='server'" in script
+
+        namespace: dict[str, Any] = {"__name__": "<not_main>"}
+        exec(compile(script, "<exported_training_script>", "exec"), namespace)
+        job = namespace["job"]
+
+        with pytest.raises(MlflowConfigError):
+            job.run()
+
+        assert not (tmp_path / "mlruns").exists()
+
+    def test_executed_export_destination_without_experiment_logs_nothing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        tiny_training_data: Path,
+    ) -> None:
+        from haute._sandbox import set_project_root
+
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+
+        output_dir = tmp_path / "outputs"
+        config = {
+            **MINIMAL_CONFIG,
+            "params": {"iterations": 2},
+            "output_dir": str(output_dir),
+            "mlflow_destination": "server",
+        }
+        script = generate_training_script(config, str(tiny_training_data))
+        assert "mlflow_destination='server'" in script
+        assert "mlflow_experiment" not in script
+
+        namespace: dict[str, Any] = {"__name__": "__main__"}
+        exec(compile(script, "<exported_training_script>", "exec"), namespace)
+
+        assert not (tmp_path / "mlruns").exists()

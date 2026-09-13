@@ -345,6 +345,13 @@ def build_training_job_kwargs(
         configured_metrics=metrics,
     )
 
+    destination = config.get("mlflow_destination") or ""
+    if destination not in ("", "databricks", "server"):
+        raise TrainingConfigError(
+            "Modelling config has an invalid mlflow_destination; expected databricks or "
+            "server. Remove the field to use the local MLflow folder."
+        )
+
     return {
         "name": config.get("name", default_name),
         "data": data,
@@ -361,7 +368,6 @@ def build_training_job_kwargs(
         "tuning": tuning,
         "metrics": metrics,
         "mlflow_experiment": config.get("mlflow_experiment") or None,
-        "model_name": config.get("model_name") or None,
         "output_dir": config.get("output_dir", "outputs"),
         "loss_function": config.get("loss_function") or None,
         "variance_power": variance_power,
@@ -369,4 +375,5 @@ def build_training_job_kwargs(
         "monotone_constraints": _effective_monotone_constraints(config),
         "feature_weights": config.get("feature_weights") or None,
         "categorical_levels": config.get("categorical_levels") or None,
+        "mlflow_destination": destination,
     }

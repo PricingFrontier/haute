@@ -2,6 +2,21 @@
 
 Thread-safe LRU cache for models loaded from MLflow.
 Supports CatBoost (native ``.cbm``) and any MLflow pyfunc model.
+
+Every load resolves its destination to a :class:`~haute._mlflow_utils.ResolvedBackend`
+exactly once, before any cache lookup, and threads that object through
+download, load, and lock selection. The backend is part of every cache
+identity, so the same run ID and artifact path on two destinations — or on
+two endpoints of one category — never alias:
+
+- disk cache: ``.cache/models/<backend digest>/<run_id>/<sha256 of
+  artifact_path>/artifact<suffix>``;
+- in-memory cache key: the backend's secret-free identity is the last element;
+- artifact I/O locks: keyed on ``(backend digest, run_id, artifact_path)``.
+
+The backend's ``tracking_uri`` is a connection value that may carry
+environment credentials, so it never reaches a log line, a cache path, or a
+lock key — only ``mode`` and ``digest`` are logged.
 """
 
 from __future__ import annotations
@@ -22,7 +37,12 @@ import polars as pl
 
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
-from haute._mlflow_utils import resolve_mlflow_source
+from haute._mlflow_utils import (
+    ResolvedBackend,
+    mlflow_fluent_operation,
+    resolve_mlflow_source,
+    set_tracking_uri_preserving_env,
+)
 from haute._model_flavors import _SUPPORTED_FLAVORS, ModelFlavor
 
 if TYPE_CHECKING:
@@ -226,14 +246,18 @@ def _disk_cache_root() -> Path:
 # loser's ``shutil.move`` lands on the cache file the winner is actively
 # reading (on Windows the rename falls back to an in-place copy over the
 # open file); the corrupt-retry path can likewise ``unlink`` a file
-# mid-read.  One lock per on-disk artifact identity fixes all three:
-# the first caller downloads/loads, same-artifact callers wait and then
-# reuse the cached result, and distinct artifacts proceed concurrently.
+# mid-read.  One lock per on-disk artifact identity — which includes the
+# resolved backend's digest — fixes all three: the first caller
+# downloads/loads, same-artifact callers wait and then reuse the cached
+# result, and distinct artifacts (including the same run on a different
+# backend) proceed concurrently.
 #
 # ``WeakValueDictionary`` + guard mirrors the per-key materialization
 # lock in ``_dataframe_execution_cache``: entries evaporate once no
 # caller holds the lock, so the table never grows unboundedly.
-_artifact_io_locks: WeakValueDictionary[tuple[str, str], threading.RLock] = WeakValueDictionary()
+_artifact_io_locks: WeakValueDictionary[tuple[str, str, str], threading.RLock] = (
+    WeakValueDictionary()
+)
 _artifact_io_locks_guard = threading.Lock()
 _disk_cache_active_runs: Counter[str] = Counter()
 _disk_cache_active_runs_guard = threading.Lock()
@@ -266,17 +290,39 @@ def _validate_artifact_path(artifact_path: str) -> None:
         raise ValueError(f"Invalid artifact_path: {artifact_path!r}")
 
 
-def _artifact_cache_path(cache_root: Path, run_id: str, artifact_path: str) -> Path:
-    """Return the safe disk-cache path for a run artifact."""
+def _validate_backend_digest(backend_digest: str) -> None:
+    """Reject anything that is not a ``ResolvedBackend`` filesystem digest.
+
+    The digest is the only part of a backend identity that reaches the
+    filesystem, so it is pinned to the shape :func:`resolve_backend` mints
+    (16 lowercase hex characters) before it is used as a directory name.
+    """
+    if len(backend_digest) != 16 or any(c not in "0123456789abcdef" for c in backend_digest):
+        raise ValueError(f"Invalid backend digest: {backend_digest!r}")
+
+
+def _artifact_cache_path(
+    cache_root: Path,
+    backend_digest: str,
+    run_id: str,
+    artifact_path: str,
+) -> Path:
+    """Return the safe disk-cache path for a run artifact on one backend.
+
+    ``<cache_root>/<backend digest>/<run_id>/<sha256 of artifact_path>/artifact<suffix>``
+    — the backend partition means two destinations never share a cached
+    file even for identical run IDs and artifact paths.
+    """
     from pathlib import PurePosixPath
 
+    _validate_backend_digest(backend_digest)
     _validate_disk_cache_run_id(run_id)
     _validate_artifact_path(artifact_path)
     digest = sha256(artifact_path.encode("utf-8")).hexdigest()
     suffix = PurePosixPath(artifact_path).suffix
     file_name = f"artifact{suffix}" if suffix else "artifact"
     cache_root_abs = cache_root.resolve()
-    candidate = (cache_root / run_id / digest / file_name).resolve()
+    candidate = (cache_root / backend_digest / run_id / digest / file_name).resolve()
     if not candidate.is_relative_to(cache_root_abs):
         raise ValueError(
             f"Invalid artifact cache identity: run_id={run_id!r}, artifact_path={artifact_path!r}"
@@ -303,17 +349,19 @@ def _active_disk_cache_runs() -> frozenset[str]:
         return frozenset(_disk_cache_active_runs)
 
 
-def _artifact_io_lock(run_id: str, artifact_path: str) -> threading.RLock:
-    """Return the per-(run, artifact-path) lock for *run_id*/*artifact_path*.
+def _artifact_io_lock(backend_digest: str, run_id: str, artifact_path: str) -> threading.RLock:
+    """Return the per-(backend, run, artifact-path) lock for one cached file.
 
-    Keyed on the artifact's full MLflow path — the disk-cache identity used
-    by :func:`_artifact_cache_path` — so every code path that could
-    touch the same cached file (downloader, loader, corrupt-retry
-    deleter, deploy bundler) is mutually exclusive without serializing
-    artifacts that merely share a basename.  Reentrant so the load path can re-enter
-    through ``_resolve_artifact_local`` while already holding the lock.
+    Keyed on the full disk-cache identity used by
+    :func:`_artifact_cache_path` — the resolved backend's digest plus the
+    artifact's full MLflow path — so every code path that could touch the
+    same cached file (downloader, loader, corrupt-retry deleter, deploy
+    bundler) is mutually exclusive without serializing artifacts that
+    merely share a basename, or the same run on two backends.  Reentrant so
+    the load path can re-enter through ``_resolve_artifact_local`` while
+    already holding the lock.
     """
-    key = (run_id, artifact_path)
+    key = (backend_digest, run_id, artifact_path)
     with _artifact_io_locks_guard:
         return _artifact_io_locks.setdefault(key, threading.RLock())
 
@@ -326,6 +374,7 @@ def _model_cache_key(
     artifact_path: str,
     task: str,
     artifact_fingerprint: str,
+    backend_identity: str,
 ) -> tuple[str, ...]:
     """Build the in-process model cache key.
 
@@ -338,12 +387,26 @@ def _model_cache_key(
     only where no local artifact file exists to fingerprint (pyfunc
     models loaded through MLflow by URI — a documented residual).
 
+    ``backend_identity`` is the resolved backend's secret-free identity and
+    is always the LAST element, so the same run ID and artifact path on two
+    destinations — or on two endpoints of the same category — never alias.
+    It is a required keyword for the same reason as the fingerprint: no
+    call site can silently drop the backend from the key.
+
     ``run_id`` stays in slot 1: targeted ``clear_model_cache(run_id=...)``
     eviction matches on ``key[1]``.
     """
     if version:
-        return (source_type, run_id, version, artifact_path, task, artifact_fingerprint)
-    return (source_type, run_id, artifact_path, task, artifact_fingerprint)
+        return (
+            source_type,
+            run_id,
+            version,
+            artifact_path,
+            task,
+            artifact_fingerprint,
+            backend_identity,
+        )
+    return (source_type, run_id, artifact_path, task, artifact_fingerprint, backend_identity)
 
 
 def _local_artifact_fingerprint(artifact_path: str, local_path: str) -> str:
@@ -424,8 +487,24 @@ class ScoringModel:
 # ---------------------------------------------------------------------------
 
 
+# CatBoost losses that train a classifier; every other loss trains a regressor.
+_CATBOOST_CLASSIFICATION_LOSSES = frozenset(
+    {"Logloss", "CrossEntropy", "MultiClass", "MultiClassOneVsAll"}
+)
+
+
 def _load_catboost_model(path: str, task: str) -> CatBoostRegressor | CatBoostClassifier:
-    """Load a CatBoost model from a local file path."""
+    """Load a CatBoost model from a local file path as the *task* it will score.
+
+    The model file records the loss it was trained with, which fixes its task.
+    Loading a classifier as a regressor (or the reverse) predicts plausible but
+    wrong numbers, so a *task* that contradicts the recorded loss is rejected.
+
+    Raises:
+        ConfigError: the model was trained for the other task.
+    """
+    from haute.errors import ConfigError
+
     if task == "classification":
         from catboost import CatBoostClassifier
 
@@ -435,6 +514,19 @@ def _load_catboost_model(path: str, task: str) -> CatBoostRegressor | CatBoostCl
 
         model = CatBoostRegressor()
     model.load_model(path)
+    params = model.get_all_params()
+    recorded_loss = params.get("loss_function") if isinstance(params, dict) else None
+    # A model file without a recorded loss keeps the node's explicit task.
+    loss = recorded_loss.partition(":")[0] if isinstance(recorded_loss, str) else ""
+    if loss:
+        trained_task = "classification" if loss in _CATBOOST_CLASSIFICATION_LOSSES else "regression"
+        if trained_task != task:
+            raise ConfigError(
+                f"This CatBoost model was trained for {trained_task} (loss {loss}) but the "
+                f"node scores it as {task}. Set the node's task to {trained_task}.",
+                trained_task=trained_task,
+                task=task,
+            )
     return model
 
 
@@ -521,10 +613,26 @@ def load_local_model(path: str, task: str = "regression") -> ScoringModel:
 # ---------------------------------------------------------------------------
 
 
-def _load_pyfunc_model(mlflow_module: Any, run_id: str, artifact_path: str) -> Any:
-    """Load a model via MLflow pyfunc flavor."""
+def _load_pyfunc_model(
+    mlflow_module: Any,
+    run_id: str,
+    artifact_path: str,
+    *,
+    backend: ResolvedBackend,
+) -> Any:
+    """Load a model via MLflow pyfunc flavor from the resolved backend."""
     model_uri = f"runs:/{run_id}/{artifact_path}"
-    return mlflow_module.pyfunc.load_model(model_uri)
+    # MLflow 3's nested logged-model repository still constructs a client from
+    # global state, even when download_artifacts receives tracking_uri. Share
+    # the fluent lock with logging so this lookup cannot redirect an active run.
+    with mlflow_fluent_operation():
+        set_tracking_uri_preserving_env(mlflow_module, backend.tracking_uri)
+        mlflow_module.set_registry_uri(backend.registry_uri)
+        local_path = mlflow_module.artifacts.download_artifacts(
+            model_uri,
+            tracking_uri=backend.tracking_uri,
+        )
+    return mlflow_module.pyfunc.load_model(local_path)
 
 
 def _wrap_pyfunc(model: Any) -> ScoringModel:
@@ -655,15 +763,23 @@ def _find_model_artifact(client: MlflowClient, run_id: str) -> tuple[str, str]:
 def _evict_disk_cache(cache_root: Path) -> None:
     """Remove oldest run directories when disk cache exceeds the limit.
 
-    Keeps at most ``_DISK_CACHE_MAX_DIRS`` run directories under
-    *cache_root*, deleting the ones with the oldest modification time.
+    Keeps at most ``_DISK_CACHE_MAX_DIRS`` run directories across *every*
+    backend-digest partition under *cache_root* (a run cached on two
+    backends is two directories), deleting the ones with the oldest
+    modification time.
     """
     import shutil
 
     if not cache_root.is_dir():
         return
 
-    cache_dirs = [d for d in cache_root.iterdir() if d.is_dir()]
+    cache_dirs = [
+        run_dir
+        for backend_dir in cache_root.iterdir()
+        if backend_dir.is_dir()
+        for run_dir in backend_dir.iterdir()
+        if run_dir.is_dir()
+    ]
     tombstones = [d for d in cache_dirs if d.name.startswith(_DISK_CACHE_EVICTION_PREFIX)]
     for tombstone in tombstones:
         shutil.rmtree(tombstone, ignore_errors=True)
@@ -702,14 +818,17 @@ def _evict_disk_cache(cache_root: Path) -> None:
 
 def _resolve_artifact_local(
     mlflow: Any,
+    backend: ResolvedBackend,
     run_id: str,
     artifact_path: str,
 ) -> str:
     """Return a local path to the model artifact, downloading only if needed.
 
-    Saves downloaded artifacts under ``.cache/models/<run_id>/`` so they
-    survive server restarts without re-downloading from remote tracking
-    servers (saves ~30 s+ for Databricks-hosted artifacts).
+    Saves downloaded artifacts under
+    ``.cache/models/<backend digest>/<run_id>/`` so they survive server
+    restarts without re-downloading from remote tracking servers (saves
+    ~30 s+ for Databricks-hosted artifacts) while never serving one
+    backend's bytes for another's run.
 
     Downloads to a temp file first then renames atomically, so a partial
     download (network interruption, timeout) never leaves a corrupt file
@@ -721,11 +840,12 @@ def _resolve_artifact_local(
     never land on a file another thread is concurrently writing.
     """
     with _disk_cache_run_in_use(run_id):
-        return _resolve_artifact_local_in_use(mlflow, run_id, artifact_path)
+        return _resolve_artifact_local_in_use(mlflow, backend, run_id, artifact_path)
 
 
 def _resolve_artifact_local_in_use(
     mlflow: Any,
+    backend: ResolvedBackend,
     run_id: str,
     artifact_path: str,
 ) -> str:
@@ -734,7 +854,7 @@ def _resolve_artifact_local_in_use(
     import tempfile
 
     cache_root = _disk_cache_root()
-    local_path = _artifact_cache_path(cache_root, run_id, artifact_path)
+    local_path = _artifact_cache_path(cache_root, backend.digest, run_id, artifact_path)
     cache_dir = local_path.parent
 
     if local_path.is_file():
@@ -744,7 +864,7 @@ def _resolve_artifact_local_in_use(
         )
         return str(local_path)
 
-    with _artifact_io_lock(run_id, artifact_path):
+    with _artifact_io_lock(backend.digest, run_id, artifact_path):
         # Re-check under the lock: a concurrent caller may have completed
         # the download while this thread was waiting to acquire.
         if local_path.is_file():
@@ -761,6 +881,8 @@ def _resolve_artifact_local_in_use(
             "mlflow_artifact_downloading",
             run_id=run_id,
             artifact=artifact_path,
+            backend_mode=backend.mode,
+            backend_digest=backend.digest,
         )
         tmp_dir = None
         try:
@@ -768,6 +890,7 @@ def _resolve_artifact_local_in_use(
             downloaded = mlflow.artifacts.download_artifacts(
                 f"runs:/{run_id}/{artifact_path}",
                 dst_path=str(tmp_dir),
+                tracking_uri=backend.tracking_uri,
             )
             downloaded_path = Path(downloaded)
             if not downloaded_path.is_file():
@@ -805,10 +928,10 @@ def clear_model_cache(run_id: str | None = None) -> int:
     """Delete cached model artifacts, returning the number of files removed.
 
     If *run_id* is given, only that run's cache is cleared — in-memory
-    entries whose cache key's ``run_id`` slot matches are evicted, the
-    on-disk directory for that run is removed, and observability
-    counters are left untouched (a targeted clear is not a
-    measurement-window boundary).
+    entries whose cache key's ``run_id`` slot matches are evicted (on every
+    backend), that run's on-disk directory is removed under every
+    backend-digest partition, and observability counters are left untouched
+    (a targeted clear is not a measurement-window boundary).
 
     If *run_id* is ``None``, everything goes: all in-memory entries, the
     entire ``.cache/models`` tree, AND the observability counters
@@ -827,10 +950,15 @@ def clear_model_cache(run_id: str | None = None) -> int:
     removed = 0
     if cache_root.exists():
         if run_id:
-            target = cache_root / run_id
-            if target.exists():
-                removed = sum(1 for _ in target.rglob("*") if _.is_file())
-                shutil.rmtree(target, ignore_errors=True)
+            # Run directories live under a backend-digest partition, so a
+            # targeted clear walks ``cache_root/*/<run_id>``.
+            for backend_dir in cache_root.iterdir():
+                if not backend_dir.is_dir():
+                    continue
+                target = backend_dir / run_id
+                if target.exists():
+                    removed += sum(1 for _ in target.rglob("*") if _.is_file())
+                    shutil.rmtree(target, ignore_errors=True)
         else:
             for d in cache_root.iterdir():
                 if d.is_dir():
@@ -846,7 +974,8 @@ def clear_model_cache(run_id: str | None = None) -> int:
         _reset_model_cache_stats()
     else:
         # Cache keys are ``(source_type, resolved_run_id, [version,]
-        # artifact, task, artifact_fingerprint)`` — run_id is always slot 1.
+        # artifact, task, artifact_fingerprint, backend_identity)`` —
+        # run_id is always slot 1, so the match is backend-agnostic.
         # Evict every entry whose run_id slot matches (may be multiple,
         # different task / version per run) and let the cascade handle
         # feature-validation-cache invalidation.  Counters are left
@@ -874,6 +1003,7 @@ _LOAD_BACKOFF_JITTER_S = 0.1
 def _load_with_bounded_retry(
     *,
     mlflow_mod: Any,
+    backend: ResolvedBackend,
     run_id: str,
     artifact: str,
     flavor: str,
@@ -891,22 +1021,26 @@ def _load_with_bounded_retry(
     import random
     import time
 
+    from haute.errors import ConfigError
+
     last_err: BaseException | None = None
     for attempt in range(1, _LOAD_MAX_ATTEMPTS + 1):
         local_path: str | None = None
         try:
-            local_path = _resolve_artifact_local(mlflow_mod, run_id, artifact)
+            local_path = _resolve_artifact_local(mlflow_mod, backend, run_id, artifact)
             if flavor == "catboost":
                 raw = _load_catboost_model(local_path, task)
                 return _wrap_catboost(raw)
             return _load_rustystats_model(local_path)
-        except (AttributeError, TypeError, KeyError):
+        except (AttributeError, TypeError, KeyError, ConfigError):
             # Programmer error — a missing attribute, wrong type, or
             # unknown dict key is a bug in our dispatch code (or a
             # breaking change in catboost / rustystats), not a corrupt
-            # artifact.  Wrapping these as "persistently corrupt" would
-            # send on-call down the wrong path.  Re-raise so the real
-            # stack trace surfaces.
+            # artifact; a ConfigError (the node scores the model as the
+            # wrong task) is a readable model that re-downloading cannot
+            # fix.  Wrapping these as "persistently corrupt" would send
+            # on-call down the wrong path.  Re-raise so the real error
+            # surfaces.
             raise
         except Exception as err:
             last_err = err
@@ -949,7 +1083,8 @@ def load_mlflow_model(
     registered_model: str = "",
     version: str = "",
     task: str = "regression",
-    tracking_uri: str = "",
+    destination: str = "",
+    alias: str = "",
 ) -> ScoringModel:
     """Load a model from MLflow, auto-detecting CatBoost vs pyfunc.
 
@@ -958,9 +1093,11 @@ def load_mlflow_model(
     MLflow's pyfunc flavor.
 
     Cached by ``(source_type, identifier, version/artifact, task,
-    artifact_fingerprint)`` — the fingerprint is the byte identity of the
-    local model artifact, so re-logging a run or retraining a
-    ``version="latest"`` model in place invalidates the in-process entry.
+    artifact_fingerprint, backend_identity)`` — the fingerprint is the byte
+    identity of the local model artifact, so re-logging a run or retraining
+    a ``version="latest"`` model in place invalidates the in-process entry,
+    and the backend identity means the same run on another destination is a
+    different entry rather than a stale hit.
 
     Args:
         source_type: ``"run"`` to load from a specific run, or ``"registered"``
@@ -971,13 +1108,23 @@ def load_mlflow_model(
         registered_model: Registered model name (required when *source_type* is
             ``"registered"``).
         version: Model version string (``"1"``, ``"2"``, or ``"latest"``).
+        alias: Registered model alias; resolved to its current version on every
+            load, so the cache follows the alias when it moves.
         task: ``"regression"`` or ``"classification"`` — determines which
             CatBoost class to use for loading (ignored for pyfunc).
-        tracking_uri: Override tracking URI; auto-detected if empty.
+        destination: Destination key (``"databricks"``, ``"server"``,
+            ``"local"``) or ``""`` for the local folder.
 
     Returns:
         A ``ScoringModel`` wrapping the loaded model with a uniform interface.
+
+    Raises:
+        MlflowConfigError: If *destination* cannot be resolved — raised
+            before any cache lookup, so a warm entry is never served for a
+            destination whose prerequisites are gone.
     """
+    from haute._mlflow_utils import resolve_backend
+
     valid_tasks = ("regression", "classification")
     if task not in valid_tasks:
         raise ValueError(f"Invalid task {task!r}. Expected one of: {', '.join(valid_tasks)}")
@@ -985,6 +1132,12 @@ def load_mlflow_model(
         # This is a POSIX-style identifier within an MLflow run, not a local
         # project path. Validate it before any cache lookup or network access.
         _validate_artifact_path(artifact_path)
+
+    # Resolve the destination exactly once, before any cache lookup: every
+    # cache path, key, and lock below is keyed on this backend, and the full
+    # path reuses the same object so a settings save mid-load cannot split
+    # one load across two backends.
+    backend = resolve_backend(destination)
 
     # Fast-path cache check using the raw inputs — avoids calling
     # resolve_mlflow_source() (which hits the MLflow tracking server)
@@ -1007,6 +1160,7 @@ def load_mlflow_model(
                 artifact_path=artifact_path,
                 task=task,
                 artifact_fingerprint="",
+                backend_identity=backend.identity,
             )
             cached = _model_cache.get(fast_key)
             if cached is not None:
@@ -1020,6 +1174,7 @@ def load_mlflow_model(
             with _disk_cache_run_in_use(run_id):
                 local_path = _artifact_cache_path(
                     _disk_cache_root(),
+                    backend.digest,
                     run_id,
                     artifact_path,
                 )
@@ -1033,6 +1188,7 @@ def load_mlflow_model(
                         artifact_fingerprint=_local_artifact_fingerprint(
                             artifact_path, str(local_path)
                         ),
+                        backend_identity=backend.identity,
                     )
                     cached = _model_cache.get(fast_key)
                     if cached is not None:
@@ -1042,7 +1198,7 @@ def load_mlflow_model(
                             flavor=flavor,
                         )
                         return cached
-                    with _artifact_io_lock(run_id, artifact_path):
+                    with _artifact_io_lock(backend.digest, run_id, artifact_path):
                         # Single-flight: a concurrent caller may have loaded
                         # this exact model while we waited for the lock.
                         cached = _model_cache.get(fast_key)
@@ -1069,18 +1225,23 @@ def load_mlflow_model(
                                 task=task,
                                 flavor=flavor,
                                 path=str(local_path),
+                                backend_mode=backend.mode,
+                                backend_digest=backend.digest,
                             )
                             return scoring_model
                     # The file vanished while this thread waited for the lock
                     # (e.g. a concurrent corrupt-retry deleted it).  Fall
                     # through to the full resolve + re-download path below.
 
-    resolved_run_id, resolved_version, mlflow_mod, client = resolve_mlflow_source(
+    # The already-resolved backend is threaded in, so this load resolves the
+    # destination exactly once no matter which path it takes.
+    resolved_run_id, resolved_version, mlflow_mod, client, _resolved = resolve_mlflow_source(
         source_type=source_type,
         run_id=run_id,
         registered_model=registered_model,
         version=version,
-        tracking_uri=tracking_uri,
+        backend=backend,
+        alias=alias,
     )
     resolved_artifact = artifact_path
 
@@ -1104,6 +1265,7 @@ def load_mlflow_model(
         with _disk_cache_run_in_use(resolved_run_id):
             local_artifact_path = _resolve_artifact_local(
                 mlflow_mod,
+                backend,
                 resolved_run_id,
                 resolved_artifact,
             )
@@ -1116,6 +1278,7 @@ def load_mlflow_model(
         artifact_path=resolved_artifact,
         task=task,
         artifact_fingerprint=artifact_fp,
+        backend_identity=backend.identity,
     )
 
     cached = _model_cache.get(cache_key)
@@ -1132,7 +1295,7 @@ def load_mlflow_model(
     # in-memory entry via the re-check below.  This also makes the
     # corrupt-retry's delete + re-download mutually exclusive with any
     # concurrent load of the same cached file.
-    with _artifact_io_lock(resolved_run_id, resolved_artifact):
+    with _artifact_io_lock(backend.digest, resolved_run_id, resolved_artifact):
         cached = _model_cache.get(cache_key)
         if cached is not None:
             _record_cache_hit(
@@ -1161,6 +1324,7 @@ def load_mlflow_model(
             with _disk_cache_run_in_use(resolved_run_id):
                 scoring_model = _load_with_bounded_retry(
                     mlflow_mod=mlflow_mod,
+                    backend=backend,
                     run_id=resolved_run_id,
                     artifact=resolved_artifact,
                     flavor=flavor,
@@ -1180,9 +1344,15 @@ def load_mlflow_model(
                     artifact_fingerprint=_local_artifact_fingerprint(
                         resolved_artifact, local_artifact_path
                     ),
+                    backend_identity=backend.identity,
                 )
         else:
-            raw_model = _load_pyfunc_model(mlflow_mod, resolved_run_id, resolved_artifact)
+            raw_model = _load_pyfunc_model(
+                mlflow_mod,
+                resolved_run_id,
+                resolved_artifact,
+                backend=backend,
+            )
             scoring_model = _wrap_pyfunc(raw_model)
 
         _model_cache.put(cache_key, scoring_model)
@@ -1194,6 +1364,8 @@ def load_mlflow_model(
         artifact=resolved_artifact,
         task=task,
         flavor=flavor,
+        backend_mode=backend.mode,
+        backend_digest=backend.digest,
     )
     return scoring_model
 

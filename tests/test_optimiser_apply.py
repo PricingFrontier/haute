@@ -153,6 +153,7 @@ class TestBuildConfig:
                 "source_type": "registered",
                 "registered_model": "my_opt_model",
                 "version": "3",
+                "mlflow_destination": "local",
             },
             body="",
             param_names=["df"],
@@ -160,6 +161,7 @@ class TestBuildConfig:
         assert config["sourceType"] == "registered"
         assert config["registered_model"] == "my_opt_model"
         assert config["version"] == "3"
+        assert config["mlflow_destination"] == "local"
 
     def test_build_config_ratebook_input(self):
         config = _build_node_config(
@@ -174,6 +176,117 @@ class TestBuildConfig:
             param_names=["scored_quotes", "banded_quotes"],
         )
         assert config["ratebook_input"] == "banded_quotes"
+
+
+class TestApplyFromConfigDestination:
+    def test_apply_from_config_forwards_destination(self):
+        """The node's ``mlflow_destination`` reaches the MLflow artifact loader."""
+        from haute._node_apply import apply_optimiser_apply_from_config
+
+        lf = pl.DataFrame({"x": [1.0]}).lazy()
+        with (
+            patch(
+                "haute._optimiser_io.load_mlflow_optimiser_artifact",
+                return_value=_make_online_artifact(),
+            ) as mock_load,
+            patch("haute._builders._dispatch_apply", return_value=lf) as mock_dispatch,
+        ):
+            apply_optimiser_apply_from_config(
+                lf,
+                config={
+                    "sourceType": "run",
+                    "run_id": "r",
+                    "mlflow_destination": "local",
+                },
+                source_names=["scored"],
+            )
+
+        mock_dispatch.assert_called_once()
+        assert mock_load.call_args.kwargs["destination"] == "local"
+
+
+class TestOptimiserApplyDestinationPersistence:
+    """The destination is sidecar state; codegen never emits it as a kwarg."""
+
+    APPLY_SIDECAR = "config/apply_optimisation/apply_opt.json"
+
+    def _graph(self, extra_config: dict | None = None):
+        from tests.conftest import make_edge, make_file_input_config, make_graph
+
+        config = {"sourceType": "run", "run_id": "abc123"}
+        config.update(extra_config or {})
+        return make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataInput",
+                            "config": make_file_input_config("data.parquet"),
+                        },
+                    },
+                    {
+                        "id": "apply",
+                        "data": {
+                            "label": "apply_opt",
+                            "nodeType": "optimiserApply",
+                            "config": config,
+                        },
+                    },
+                ],
+                "edges": [make_edge("source", "apply").model_dump()],
+            }
+        )
+
+    def _write_sidecars(self, graph, base_dir: Path) -> dict[str, str]:
+        from haute._config_io import collect_node_configs
+
+        configs = collect_node_configs(graph)
+        for rel_path, content in configs.items():
+            cfg_file = base_dir / rel_path
+            cfg_file.parent.mkdir(parents=True, exist_ok=True)
+            cfg_file.write_text(content, encoding="utf-8")
+        return configs
+
+    def test_mlflow_destination_persists_in_sidecar_not_decorator(self, tmp_path):
+        from haute.codegen import graph_to_code
+        from haute.parser import parse_pipeline_source
+
+        graph = self._graph({"mlflow_destination": "local"})
+        code = graph_to_code(graph)
+
+        assert f'config="{self.APPLY_SIDECAR}"' in code
+        assert "mlflow_destination" not in code
+
+        present_dir = tmp_path / "present"
+        present_dir.mkdir()
+        configs = self._write_sidecars(graph, present_dir)
+        sidecar = json.loads(configs[self.APPLY_SIDECAR])
+        assert sidecar["mlflow_destination"] == "local"
+
+        parsed = parse_pipeline_source(code, _base_dir=present_dir)
+        apply_node = {n.data.label: n for n in parsed.nodes}["apply_opt"]
+        assert apply_node.data.nodeType == "optimiserApply"
+        assert apply_node.data.config.get("mlflow_destination") == "local"
+
+    def test_absent_mlflow_destination_appears_on_neither_side(self, tmp_path):
+        from haute.codegen import graph_to_code
+        from haute.parser import parse_pipeline_source
+
+        graph = self._graph()
+        code = graph_to_code(graph)
+        assert "mlflow_destination" not in code
+
+        absent_dir = tmp_path / "absent"
+        absent_dir.mkdir()
+        configs = self._write_sidecars(graph, absent_dir)
+        sidecar = json.loads(configs[self.APPLY_SIDECAR])
+        assert "mlflow_destination" not in sidecar
+
+        parsed = parse_pipeline_source(code, _base_dir=absent_dir)
+        apply_node = {n.data.label: n for n in parsed.nodes}["apply_opt"]
+        assert "mlflow_destination" not in apply_node.data.config
 
 
 # ---------------------------------------------------------------------------

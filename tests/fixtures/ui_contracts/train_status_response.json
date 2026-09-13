@@ -193,5 +193,9 @@
   "fold_count": null,
   "completed_fits": null,
   "total_fits": null,
-  "best_objective": null
+  "best_objective": null,
+  "export_receipts": {
+    "mlflow": [],
+    "model_files": []
+  }
 }

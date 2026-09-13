@@ -825,10 +825,11 @@ tests = [
   "tests/test_train_config_builder.py::TestExplicitObjectiveRequired::test_catboost_empty_loss_fails_loud",
   "tests/test_training_worker_protocol.py::test_train_service_publishes_complete_evaluation_run",
   "tests/test_train_service_coverage.py::TestTrainServiceLifecycles::test_a_training_job_can_be_started_again_after_a_failed_and_after_a_cancelled_run",
-  "tests/test_training_worker_protocol.py::test_cancel_before_publication_preserves_durable_artifacts",
+  "tests/test_training_worker_protocol.py::test_cancel_before_publication_removes_the_job_artifact_directory",
   "tests/test_training_worker_protocol.py::test_train_service_publication_wins_late_cancel_and_records_elapsed",
   "tests/test_training_worker_protocol.py::test_training_entrypoint_stages_complete_evaluation_and_public_response",
-  "tests/test_training_worker_protocol.py::test_windows_publication_retries_transient_contention_and_publishes_complete_generation",
+  "tests/test_training_worker_protocol.py::test_completed_job_owns_its_artifact_directory_after_parent_cleanup",
+  "tests/test_training_worker_protocol.py::test_newer_run_for_the_same_node_releases_superseded_artifacts",
   "tests/test_training_worker_protocol.py::test_train_service_rejects_evaluation_response_artifact_mismatch",
   "tests/test_modelling.py::TestCatBoostAlgorithm::test_fit_predict",
   "tests/test_modelling.py::TestTrainingJob::test_basic_training",
@@ -853,9 +854,9 @@ tests = [
   "tests/test_modelling_export.py::TestByteStableExportForExistingConfigs::test_clean_catboost_script_is_byte_stable",
   "frontend/src/panels/__tests__/PreviewPanelTabs.test.tsx::moves focus and activation with arrows, wrapping and skipping disabled tabs",
   "frontend/src/panels/__tests__/ModellingPreview.test.tsx::shows Loss tab when loss_history has data",
-  "frontend/e2e/core-flows.spec.ts::runs a real modelling training job and keeps results when switching panels",
+  "frontend/e2e/core-flows.spec.ts::runs a real modelling training job, keeps results when switching panels, and saves the model to a file",
 ]
-invariant = "Configure, train, cancel, retry, persist, load and score run through the real lifecycle and a real CatBoost fit; a failed or cancelled run leaves the node startable again and its durable artifacts intact; empty input, target/weight validation, partition boundaries, non-finite metrics, stale model or cache identity and artifact mismatch each have their typed outcome; and the modelling panels switch without losing results."
+invariant = "Configure, train, cancel, retry, persist, load and score run through the real lifecycle and a real CatBoost fit; a failed or cancelled run leaves the node startable again, owns no artifacts, and leaves the last completed run's job-owned artifacts intact until a newer run of the node supersedes them; empty input, target/weight validation, partition boundaries, non-finite metrics, stale model or cache identity and artifact mismatch each have their typed outcome; and the modelling panels switch without losing results."
 
 [scenarios.evidence]
 commit = "090a5003"

@@ -76,7 +76,7 @@ without validating required positional arguments.
 project name from `pyproject.toml` (creating/patching it via `_ensure_haute_dependency`, which does
 a structural TOML edit rather than string templating so existing content survives), creates the
 `rating/` package tree (including `rating/utility/__init__.py` and
-`rating/utility/features.py`) and empty config/data/models/outputs placeholders, writes `haute.toml` via `haute._scaffold.haute_toml`,
+`rating/utility/features.py`) and empty config/data/outputs placeholders (no `rating/models/`: saved model files go to the project-root `models/` folder the modelling Export pane writes), writes `haute.toml` via `haute._scaffold.haute_toml`,
 writes `.env.example`, writes starter tests, writes CI workflow files for the chosen provider
 (pruning a *different* provider's stale files first on `--force`), installs a pre-commit hook into
 `.githooks/` and — if inside a git repo — `.git/hooks/`, and appends `.gitignore` guard entries via

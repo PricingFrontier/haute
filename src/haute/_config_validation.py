@@ -99,9 +99,13 @@ VALID_KEYS: dict[NodeType, frozenset[str]] = {
 }
 
 
-_REMOVED_CONFIG_KEYS: dict[NodeType, frozenset[str]] = {
+_REMOVED_INPUT_IDENTITY_KEYS: dict[NodeType, frozenset[str]] = {
     NodeType.EDGE_JOIN: frozenset({"baseInput", "joinInput"}),
     NodeType.OPTIMISER: frozenset({"scored_input", "factors_input"}),
+}
+_REMOVED_REGISTRY_KEYS: dict[NodeType, frozenset[str]] = {
+    NodeType.MODELLING: frozenset({"model_name"}),
+    NodeType.OPTIMISER: frozenset({"model_name"}),
 }
 
 
@@ -109,20 +113,27 @@ def reject_removed_config_keys(
     node_type: NodeType | str,
     config: dict[str, Any],
 ) -> None:
-    """Reject retired input-identity fields instead of silently migrating them."""
+    """Reject retired config fields instead of silently migrating or ignoring them."""
     nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
-    removed = sorted(_REMOVED_CONFIG_KEYS.get(nt, frozenset()).intersection(config))
-    if not removed:
-        return
-
-    if nt == NodeType.EDGE_JOIN:
-        guidance = "use incoming target ports 'base' and 'join'"
-    else:
-        guidance = "use data_input and banding_source with exact connected input names"
-    raise ConfigError(
-        f"{nt.value} config contains removed input identity fields; {guidance}.",
-        removed_config_keys=removed,
+    removed_identity = sorted(
+        _REMOVED_INPUT_IDENTITY_KEYS.get(nt, frozenset()).intersection(config)
     )
+    if removed_identity:
+        if nt == NodeType.EDGE_JOIN:
+            guidance = "use incoming target ports 'base' and 'join'"
+        else:
+            guidance = "use data_input and banding_source with exact connected input names"
+        raise ConfigError(
+            f"{nt.value} config contains removed input identity fields; {guidance}.",
+            removed_config_keys=removed_identity,
+        )
+    removed_registry = sorted(_REMOVED_REGISTRY_KEYS.get(nt, frozenset()).intersection(config))
+    if removed_registry:
+        raise ConfigError(
+            f"{nt.value} config contains the removed model_name field. Haute no longer "
+            "registers models: remove the field and register or promote runs outside haute.",
+            removed_config_keys=removed_registry,
+        )
 
 
 @overload
@@ -320,6 +331,49 @@ def warn_unrecognized_config_keys(
     return bad
 
 
+_MLFLOW_DESTINATION_NODE_TYPES = frozenset(
+    {
+        NodeType.MODELLING,
+        NodeType.OPTIMISER,
+        NodeType.MODEL_SCORE,
+        NodeType.OPTIMISER_APPLY,
+    }
+)
+
+
+def validate_mlflow_destination(node_type: NodeType, config: Mapping[str, Any]) -> None:
+    """A node names a remote MLflow destination, or has none and uses the local folder."""
+    value = config.get("mlflow_destination", "")
+    if value in ("", None):
+        return
+    if not isinstance(value, str) or value not in ("databricks", "server"):
+        raise ConfigError(
+            f"{node_type.value} config has an invalid mlflow_destination; expected databricks "
+            "or server. Remove the field to use the local MLflow folder.",
+            mlflow_destination=value if isinstance(value, str) else type(value).__name__,
+        )
+
+
+def validate_registered_model_alias(node_type: NodeType, config: Mapping[str, Any]) -> None:
+    """A registered source names a version or an alias, never both."""
+    alias = config.get("alias")
+    if alias in (None, ""):
+        return
+    if not isinstance(alias, str) or not alias.strip() or alias != alias.strip():
+        raise ConfigError(
+            f"{node_type.value} config has an invalid alias; expected a registered model "
+            "alias name such as champion.",
+            alias=alias if isinstance(alias, str) else type(alias).__name__,
+        )
+    if config.get("version") not in (None, ""):
+        raise ConfigError(
+            f"{node_type.value} config names both a version and an alias; choose one. "
+            "Remove version to follow the alias, or remove alias to pin the version.",
+            alias=alias,
+            version=config.get("version"),
+        )
+
+
 def validate_node_config(
     node_type: NodeType | str, config: dict[str, Any], *, require_complete: bool = True
 ) -> dict[str, Any]:
@@ -334,6 +388,10 @@ def validate_node_config(
     """
     nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
     reject_removed_config_keys(nt, config)
+    if nt in _MLFLOW_DESTINATION_NODE_TYPES:
+        validate_mlflow_destination(nt, config)
+    if nt in (NodeType.MODEL_SCORE, NodeType.OPTIMISER_APPLY):
+        validate_registered_model_alias(nt, config)
     if nt == NodeType.DATA_INPUT:
         from haute._polars_io_registry import validate_data_input_config
 

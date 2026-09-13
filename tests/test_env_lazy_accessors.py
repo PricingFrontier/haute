@@ -474,23 +474,74 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
         "DATABRICKS_RATING_TOKEN",
         "os.environ.get",
     ),
+    # Tracking-destination resolution: each read happens per resolve call so
+    # the selected backend always reflects the current environment.
     (
-        "src/haute/modelling/_mlflow_log.py",
-        "<module>.build_run_url",
+        "src/haute/_mlflow_utils.py",
+        "<module>.tracking_uri_from_environment",
+        "MLFLOW_TRACKING_URI",
+        "os.environ.get",
+    ),
+    (
+        "src/haute/_mlflow_utils.py",
+        "<module>.set_tracking_uri_preserving_env",
+        "MLFLOW_TRACKING_URI",
+        "os.environ.get",
+    ),
+    # Per-destination resolution (MLF-D01): the Databricks resolver reads the
+    # dedicated MLflow host/token pair per call, and the SDK-mode guard reads the
+    # MLflow flag per call so an operator's explicit setting is honoured (and
+    # rejected loudly) at every resolution, never cached from process start.
+    (
+        "src/haute/modelling/_mlflow_settings.py",
+        "<module>._resolve_databricks",
+        "DATABRICKS_MLFLOW_HOST",
+        "os.getenv",
+    ),
+    (
+        "src/haute/modelling/_mlflow_settings.py",
+        "<module>._resolve_databricks",
+        "DATABRICKS_MLFLOW_TOKEN",
+        "os.getenv",
+    ),
+    (
+        "src/haute/modelling/_mlflow_settings.py",
+        "<module>._reject_databricks_sdk_mode",
+        "MLFLOW_ENABLE_DB_SDK",
+        "os.environ.get",
+    ),
+    # Read per resolution so a profile variable set after start still rejects the pair form.
+    (
+        "src/haute/modelling/_mlflow_settings.py",
+        "<module>._reject_ambient_databricks_profile",
+        "DATABRICKS_CONFIG_PROFILE",
+        "os.environ.get",
+    ),
+    # Presence-only reads per resolution, so the unconfigured detail tracks the current .env.
+    (
+        "src/haute/modelling/_mlflow_settings.py",
+        "<module>._general_pair_hint",
         "DATABRICKS_HOST",
         "os.getenv",
     ),
     (
-        "src/haute/modelling/_mlflow_log.py",
-        "<module>.resolve_tracking_backend",
-        "DATABRICKS_HOST",
-        "os.getenv",
-    ),
-    (
-        "src/haute/modelling/_mlflow_log.py",
-        "<module>.resolve_tracking_backend",
+        "src/haute/modelling/_mlflow_settings.py",
+        "<module>._general_pair_hint",
         "DATABRICKS_TOKEN",
         "os.getenv",
+    ),
+    # MLflow's bound credential provider reads the pair per request, so a repoint needs no reset.
+    (
+        "src/haute/_mlflow_utils.py",
+        "<module>._binding_replacements.MlflowPairConfigProvider.get_config",
+        "DATABRICKS_MLFLOW_HOST",
+        "os.environ.get",
+    ),
+    (
+        "src/haute/_mlflow_utils.py",
+        "<module>._binding_replacements.MlflowPairConfigProvider.get_config",
+        "DATABRICKS_MLFLOW_TOKEN",
+        "os.environ.get",
     ),
     # Hosted durable storage: deployment identity and credential locations,
     # each read per call so a container can be reconfigured without a rebuild.
@@ -536,7 +587,6 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
         "HAUTE_GIT_ALLOWED_HOSTS",
         "os.environ.get",
     ),
-    ("src/haute/routes/modelling.py", "<module>.mlflow_check", "DATABRICKS_HOST", "os.getenv"),
     # String, boolean, mapping, or custom validation semantics.
     (
         "src/haute/_execution_admission.py",

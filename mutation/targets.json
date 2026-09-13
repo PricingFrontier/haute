@@ -53,9 +53,9 @@
     {
       "name": "executor",
       "config": "mutation/cosmic-ray.executor.toml",
-      "max_pending_per_shard": 80,
+      "max_pending_per_shard": 20,
       "max_survival_rate": 15.0,
-      "rationale": "The graph executor runs live Polars pipelines across preview, projection, materialisation, caching, sandboxed code, and transactional outputs. The maintained witnesses cover resource defaults, prepared-output immutability, path confinement, preamble safety, preview budgets, cache completeness, graph execution, model scoring, tracing, and output publication. Syntax-only postponed annotations and keyword markers are excluded; executable decisions remain under the unchanged 15% ceiling."
+      "rationale": "The graph executor runs live Polars pipelines across preview, projection, materialisation, caching, sandboxed code, and transactional outputs. The maintained witnesses cover resource defaults, prepared-output immutability, path confinement, preamble safety, preview budgets, cache completeness, graph execution, model scoring, tracing, and output publication. Syntax-only postponed annotations and keyword markers are excluded; executable decisions remain under the unchanged 15% ceiling. Its 695-test command measures about 20 seconds in pytest and 22 to 33 seconds end to end on a Linux workstation, identical on main, and exceeded the former 30-second ceiling on the hosted runner, so it runs under the 90-second ceiling with at most 20 mutants per shard, bounding the test portion of a worst-case shard to 30 minutes."
     },
     {
       "name": "parser-conservation",

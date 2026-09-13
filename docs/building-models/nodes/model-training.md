@@ -4,14 +4,16 @@ You want to train a machine learning model from your pipeline data. The Model Tr
 node supports CatBoost (a gradient-boosted tree algorithm) and GLM (generalised linear
 model, via RustyStats). Every run records reproducible evaluation evidence and saves a
 native model plus its feature contract. A completed result can then be logged to MLflow
-and picked up by a [Model Score](model-score.md) node.
+as a candidate run and scored by a [Model Score](model-score.md) node.
 
 !!! note "What is MLflow?"
     [MLflow](https://mlflow.org) is an open-source platform for tracking experiments and storing models. If you're new to MLflow, the key concepts are: an **experiment** groups related training runs, a **run** is a single training attempt with its metrics and parameters, and the **model registry** stores production-ready models by name and version.
 
 This node accepts a single input and produces no downstream data—it is a terminal
-node. Training writes the model and its evaluation artifacts to `output_dir`; MLflow
-logging is an explicit post-training action.
+node. Training in the editor keeps the model and its evaluation artifacts with that
+training result; logging it to MLflow and saving it to a project file are explicit
+post-training actions in the node's **Export** pane. An exported training script writes
+them to `output_dir`.
 
 | Config | Description |
 |---|---|
@@ -25,16 +27,17 @@ logging is an explicit post-training action.
 | `evaluation` | **Required.** Version-1 development/validation/final-test workflow (see below) |
 | `tuning` | Optional bounded CatBoost search over the evaluation validation fits |
 | `metrics` | Evaluation metrics: `"gini"`, `"rmse"`, `"mae"`, `"mse"`, `"r2"`, `"auc"`, `"logloss"`, `"poisson_deviance"`, `"tweedie_deviance"` |
-| `mlflow_experiment` | MLflow experiment name for tracking training runs |
-| `model_name` | Name for the model registry (makes the model available to [Model Score](model-score.md) nodes) |
-| `output_dir` | Folder where trained model files are saved (e.g. `models/frequency`) |
+| `mlflow_experiment` | MLflow experiment the Export pane logs to (blank uses the default shown in the field) |
+| `mlflow_destination` | `"databricks"` or `"server"` to log to that MLflow destination; leave it out to use the project's local MLflow folder |
+| `output_dir` | Folder an exported training script saves trained model files to (e.g. `models/frequency`) |
+| `model_export_path` | Filename or path the Export pane's **Save model to file** action writes the trained model to (e.g. `frequency` saves `models/frequency.cbm`); the feature contract is written beside it |
 | `row_limit` | Limit the number of rows used for training (randomly sampled) |
 
 !!! tip "Choosing a metric"
     For frequency models (Poisson), use `poisson_deviance`. For severity models (Gamma/Tweedie), use `tweedie_deviance`. For general regression, `rmse` or `gini` are common choices. For classification, use `auc` or `logloss`.
 
-!!! tip "`name` vs `model_name`"
-    `name` is a display label for the node on the canvas. `model_name` is the name under which the trained model is registered in MLflow  - this is what you reference in a [Model Score](model-score.md) node downstream.
+!!! note "Registering and promoting models"
+    Haute logs candidate runs but never registers a trained model. Registering a run in the MLflow model registry, and promoting it (for example after comparing it with the current champion and moving an alias), is a separate process outside Haute. A [Model Score](model-score.md) node can then load the registered version or alias, or score a logged run directly.
 
 ## Feature selection and validation
 
@@ -270,8 +273,42 @@ The Summary view keeps model-selection evidence distinct from final performance:
   final tree count, and exact total fit count.
 
 The model, feature contract, evaluation plan/results/report, and optional tuning
-plan/trials/report are published as one transactional generation. MLflow logging
+plan/trials/report are published together as that training result's own files, so a
+later training run never changes what an earlier result exports. MLflow logging
 attaches the same evidence and selected final parameters to one final run.
+
+## Exporting a trained model
+
+The **Export** pane acts on the node's last completed training result:
+
+- **MLflow logging** chooses the destination and experiment path, then **Log run to
+  MLflow** logs the run. Nothing is logged automatically. The destination is the
+  project's local MLflow folder unless you choose Databricks or an MLflow server; a node
+  keeps its choice even when other destinations are configured later. If a chosen remote
+  cannot be reached or rejects its credentials, the pane shows why with a link to test
+  the connection in MLflow settings, and nothing is logged anywhere else instead.
+- **Model file** writes a copy of the trained model and its feature contract to a file
+  in the project with **Save model to file**, the same way a Data Output writes a file.
+  A bare filename saves in the project's `models/` folder, paths are relative to the
+  project root, and the model's extension (`.cbm` for CatBoost, `.rsglm` for GLM) is added
+  if you leave it off. The pane shows the destination before you save, and asks before
+  replacing a file that already exists.
+
+A logged run follows Haute's candidate-run contract so a separate promotion process can
+find and compare it: tags such as `haute.node_id`, `haute.trained_at` and
+`haute.evaluation_plan_sha256`, metrics named by evaluation set (`final_test_gini`,
+`development_gini`, `selection_gini_mean`), and the model, feature contract and evaluation
+evidence as artifacts.
+
+Both actions stay disabled until the model has been trained and while a new training run
+is in progress. If you change training settings after training, the pane warns that
+exports still use the last trained model.
+
+The pane remembers where the result was last logged and saved, including after you reload the
+page while the server still holds the training result. Logging a result that is already logged
+asks first and creates a new run; if a log fails because the response never arrived, **Retry**
+repeats the same log rather than risking a duplicate run. After a server restart the pane says the
+result is no longer available and asks you to train again.
 
 **See also:**
 

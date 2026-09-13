@@ -10,9 +10,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from haute._logging import get_logger
-from haute._mlflow_utils import search_versions
+from haute._mlflow_utils import (
+    mlflow_fluent_operation,
+    registry_uri_for_tracking,
+    search_versions,
+    set_experiment_creating_workspace_folder,
+    set_tracking_uri_preserving_env,
+)
 from haute.deploy._config import ResolvedDeploy
-from haute.deploy._utils import build_manifest
+from haute.deploy._utils import build_manifest, model_source_line
 from haute.errors import DeployError
 
 logger = get_logger(component="deploy.mlflow")
@@ -52,6 +58,7 @@ def build_experiment_name(config: DeployConfig) -> str:
     return name
 
 
+@mlflow_fluent_operation()
 def deploy_to_mlflow(
     resolved: ResolvedDeploy,
     progress: Callable[[str], None] | None = None,
@@ -82,11 +89,14 @@ def deploy_to_mlflow(
     model_name = config.model_name
     logger.info("deploy_started", model_name=model_name, target="mlflow")
 
-    # Point MLflow at the Databricks workspace (uses DATABRICKS_RATING_HOST/TOKEN env vars)
+    # MLflow credentials first, before any request: the MLflow pair or a selected
+    # profile (never the data-access pair). The connectivity pre-check and the
+    # serving endpoint use the rating pair.
+    tracking_uri, registry_uri = _resolve_mlflow_databricks()
     _log("Connecting to Databricks MLflow...")
     _check_databricks_connectivity(_log)
-    mlflow.set_tracking_uri("databricks")
-    mlflow.set_registry_uri("databricks-uc")
+    set_tracking_uri_preserving_env(mlflow, tracking_uri)
+    mlflow.set_registry_uri(registry_uri)
 
     # Use Unity Catalog three-level namespace: catalog.schema.model_name
     uc_model_name = build_uc_model_name(config)
@@ -109,13 +119,16 @@ def deploy_to_mlflow(
         for artifact_name, artifact_path in resolved.artifacts.items():
             artifacts[artifact_name] = str(artifact_path)
 
+        for node_id, source in resolved.model_sources.items():
+            _log(model_source_line(node_id, source))
+
         # 4. Build MLflow model signature
         signature = _build_signature(resolved)
 
         # 5. Set experiment - append endpoint suffix for staging isolation
         experiment_name = build_experiment_name(config)
         _log(f"Setting experiment: {experiment_name}")
-        mlflow.set_experiment(experiment_name)
+        set_experiment_creating_workspace_folder(mlflow, experiment_name)
 
         # 6. Log the model
         _log("Logging model to MLflow (this may take a minute)...")
@@ -191,13 +204,12 @@ def get_deploy_status(
     Returns:
         Dict with keys: model_name, latest_version, latest_stage, status.
     """
+    tracking_uri, registry_uri = _resolve_mlflow_databricks()
+
     import mlflow
 
-    mlflow.set_tracking_uri("databricks")
-    mlflow.set_registry_uri("databricks-uc")
-
     uc_model_name = f"{catalog}.{schema}.{model_name}"
-    client = mlflow.tracking.MlflowClient()
+    client = mlflow.tracking.MlflowClient(tracking_uri=tracking_uri, registry_uri=registry_uri)
     versions = search_versions(client, uc_model_name)
 
     if not versions:
@@ -372,6 +384,24 @@ def _create_or_update_serving_endpoint(
         )
 
     return f"{host}/serving-endpoints/{endpoint_name}/invocations"
+
+
+def _resolve_mlflow_databricks() -> tuple[str, str]:
+    """``(tracking_uri, registry_uri)`` for deploy's MLflow calls, or ``DeployError``.
+
+    Resolves the Databricks MLflow destination (which binds MLflow's credentials and
+    rejects ``MLFLOW_ENABLE_DB_SDK=true`` or a conflicting ``DATABRICKS_CONFIG_PROFILE``)
+    before any MLflow or HTTP request, so a misconfiguration fails fast with its
+    non-secret reason.
+    """
+    from haute.errors import MlflowConfigError
+    from haute.modelling._mlflow_settings import resolve_destination
+
+    try:
+        config = resolve_destination("databricks")
+    except MlflowConfigError as exc:
+        raise DeployError(f"Databricks MLflow is not ready for deploy: {exc}") from None
+    return config.tracking_uri, registry_uri_for_tracking(config.tracking_uri)
 
 
 def _check_databricks_connectivity(

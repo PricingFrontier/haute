@@ -1,20 +1,41 @@
-"""Modelling endpoints: train, status, export."""
+"""Modelling endpoints: train, status, export, save."""
 
 from __future__ import annotations
 
+import os
+import threading
 import time
-from collections.abc import Mapping
-from pathlib import Path
+import uuid
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
+from haute._file_ops import atomic_copy_files
 from haute._logging import get_logger
+from haute._path_resolution import RuntimePathError
+from haute._sandbox import _get_project_root
+from haute.errors import HauteValidationError
+from haute.modelling._model_export import (
+    MODEL_FILE_SUFFIXES,
+    resolve_model_export_destination,
+)
 from haute.modelling._train_config import TrainingConfigError
+from haute.routes._export_receipts import (
+    export_receipts,
+    mlflow_receipt_for_operation,
+    receipt_timestamp,
+    record_receipt,
+    single_flight_mlflow_log,
+)
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._job_lifecycle import require_job_status
 from haute.routes._job_store import get_job_store
+from haute.routes._mlflow_log_errors import mlflow_log_http_exception, require_mlflow_installed
+from haute.routes._runtime_path_errors import runtime_path_http_exception
 from haute.routes._train_service import (
     TrainService,
     _assert_json_finite,
@@ -23,6 +44,10 @@ from haute.routes._train_service import (
     _default_train_timeout,
     _find_modelling_node,
     _VramCheck,
+)
+from haute.routes._training_artifacts import (
+    hold_training_artifacts,
+    require_training_artifacts,
 )
 from haute.routes.pipeline import _prepare_runtime_graph
 from haute.schemas import (
@@ -34,10 +59,16 @@ from haute.schemas import (
     ExportScriptResponse,
     LogExperimentRequest,
     LogExperimentResponse,
-    MlflowCheckResponse,
+    MlflowExportReceipt,
     ModelCacheClearResponse,
+    ModelFileExportReceipt,
+    ModelSaveDestinationRequest,
+    ModelSaveDestinationResponse,
+    SaveModelRequest,
+    SaveModelResponse,
     TrainEstimateRequest,
     TrainEstimateResponse,
+    TrainExportReceipts,
     TrainRequest,
     TrainResponse,
     TrainStatusResponse,
@@ -123,6 +154,20 @@ async def train_status(job_id: str) -> TrainStatusResponse:
         error_code=job.get("error_code"),
         http_status_code=job.get("http_status_code"),
         error_detail=job.get("error_detail"),
+        export_receipts=TrainExportReceipts.model_validate(export_receipts(job)),
+    )
+
+
+def _log_response_from_receipt(receipt: Mapping[str, Any]) -> LogExperimentResponse:
+    return LogExperimentResponse(
+        status="ok",
+        backend=receipt["backend"],
+        experiment_name=receipt["experiment_name"],
+        run_id=receipt["run_id"],
+        run_url=receipt.get("run_url"),
+        tracking_uri=receipt.get("tracking_uri", ""),
+        operation_id=receipt["operation_id"],
+        logged_at=receipt["logged_at"],
     )
 
 
@@ -282,213 +327,255 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
     )
 
 
-@router.get("/mlflow/check", response_model=MlflowCheckResponse)
-async def mlflow_check() -> MlflowCheckResponse:
-    """Check whether MLflow is installed and detect the tracking backend."""
-    import importlib
-    import importlib.util
-
-    if importlib.util.find_spec("mlflow") is None:
-        return MlflowCheckResponse(
-            mlflow_installed=False,
-            mlflow_importable=False,
-            tracking_configured=False,
-            detail="MLflow package is not installed",
-        )
-
-    try:
-        importlib.import_module("mlflow")
-    except ImportError as exc:
-        logger.warning("mlflow_check_package_import_failed", error=str(exc))
-        return MlflowCheckResponse(
-            mlflow_installed=True,
-            mlflow_importable=False,
-            tracking_configured=False,
-            detail=f"MLflow package import failed: {exc}",
-        )
-
-    import os
-
-    from haute.modelling._mlflow_log import resolve_tracking_backend
-
-    try:
-        _uri, backend = resolve_tracking_backend()
-    except Exception as exc:
-        logger.warning("mlflow_check_backend_resolution_failed", error=str(exc))
-        return MlflowCheckResponse(
-            mlflow_installed=True,
-            mlflow_importable=True,
-            tracking_configured=False,
-            detail=str(exc),
-        )
-
-    databricks_host = os.getenv("DATABRICKS_HOST", "") if backend == "databricks" else ""
-
-    return MlflowCheckResponse(
-        mlflow_installed=True,
-        mlflow_importable=True,
-        tracking_configured=True,
-        backend=backend,
-        databricks_host=databricks_host,
-    )
-
-
 @router.post("/mlflow/log", response_model=LogExperimentResponse)
 async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
-    """Log a completed training job's results to MLflow."""
-    job = _store.require_completed_job(body.job_id)
-
-    result: TrainResponse | None = job.get("result")
-    if result is None:
-        raise HTTPException(status_code=400, detail="Job has no result data")
-    if result.evaluation is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Completed training result has no evaluation report",
-        )
-
-    config = job.get("config", {})
-    node_label = job.get("node_label", "model")
-
-    # Build experiment name: user override > config > backend-aware default
-    from haute.modelling._mlflow_log import resolve_experiment_name
-
-    experiment_name = resolve_experiment_name(
-        explicit=body.experiment_name,
-        config_value=config.get("mlflow_experiment"),
-        node_label=node_label,
+    """Log a completed training job to MLflow as a contracted candidate run."""
+    from haute.errors import MlflowConfigError
+    from haute.modelling._candidate_run import (
+        CandidateArtifacts,
+        CandidateProvenance,
+        build_candidate_run,
     )
-    model_name = body.model_name or config.get("model_name") or None
+    from haute.modelling._mlflow_log import (
+        log_experiment,
+        resolve_experiment_name,
+        resolve_tracking_backend,
+    )
+    from haute.modelling._result_types import ModelDiagnostics
 
+    require_mlflow_installed()
+    recorded = mlflow_receipt_for_operation(
+        _store.require_completed_job(body.job_id), body.operation_id
+    )
+    if recorded is not None:
+        return _log_response_from_receipt(recorded)
+    with hold_training_artifacts(body.job_id), single_flight_mlflow_log(body.job_id):
+        job = _store.require_completed_job(body.job_id)
+        # A concurrent request for this operation may have finished while this
+        # one waited to start.
+        recorded = mlflow_receipt_for_operation(job, body.operation_id)
+        if recorded is not None:
+            return _log_response_from_receipt(recorded)
+        result: TrainResponse | None = job.get("result")
+        if result is None or result.evaluation is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Completed training result has no evaluation report",
+            )
+        artifacts = require_training_artifacts(job)
+        config = job.get("config", {})
+        node_label = job.get("node_label", "model")
+
+        try:
+            _tracking_uri, backend = resolve_tracking_backend(body.destination)
+        except MlflowConfigError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        # The request carries the node's current Export setting; the job's
+        # training-time config snapshot is never a fallback.
+        experiment_name = resolve_experiment_name(
+            explicit=body.experiment_name,
+            node_label=node_label,
+            backend=backend,
+        )
+
+        try:
+            diagnostics = ModelDiagnostics(
+                feature_importance=result.feature_importance,
+                shap_summary=result.shap_summary,
+                feature_importance_loss=result.feature_importance_loss,
+                double_lift=result.double_lift,
+                loss_history=result.loss_history,
+                ave_per_feature=result.ave_per_feature,
+                residuals_histogram=result.residuals_histogram,
+                residuals_stats=result.residuals_stats,
+                actual_vs_predicted=result.actual_vs_predicted,
+                lorenz_curve=result.lorenz_curve,
+                lorenz_curve_perfect=result.lorenz_curve_perfect,
+                pdp_data=result.pdp_data,
+                final_test_metrics=result.final_test_metrics,
+                selection_metrics={
+                    name: summary.model_dump(mode="json")
+                    for name, summary in result.evaluation.selection_metrics.items()
+                },
+                evaluation=result.evaluation.model_dump(mode="json"),
+                tuning=(
+                    result.tuning.model_dump(mode="json") if result.tuning is not None else None
+                ),
+                diagnostics_set=result.diagnostics_set,
+                glm_coefficients=result.glm_coefficients,
+                glm_relativities=result.glm_relativities,
+                glm_fit_statistics=result.glm_fit_statistics,
+                glm_regularization_path=result.glm_regularization_path,
+            )
+            final_params = (
+                result.tuning.final_params
+                if result.tuning is not None
+                else config.get("params", {})
+            )
+            candidate = build_candidate_run(
+                provenance=CandidateProvenance.from_plain_data(job["provenance"]),
+                algorithm=str(config.get("algorithm", "catboost")),
+                weight=str(config.get("weight") or ""),
+                evaluation_strategy=result.evaluation.strategy,
+                validation_method=result.evaluation.validation_method,
+                evaluation_config=config.get("evaluation", {}),
+                evaluation_plan_sha256=result.evaluation.plan_sha256,
+                final_params=final_params,
+                final_test_metrics=result.final_test_metrics,
+                development_metrics=(
+                    result.diagnostic_metrics if result.diagnostics_set == "development" else {}
+                ),
+                diagnostics=diagnostics,
+                development_rows=result.development_rows,
+                final_test_rows=result.final_test_rows,
+                best_iteration=result.best_iteration,
+                artifacts=CandidateArtifacts(
+                    model=artifacts.model,
+                    feature_contract=artifacts.feature_contract,
+                    evidence=artifacts.evidence_paths(),
+                ),
+            )
+            log_result = await run_in_threadpool(
+                log_experiment,
+                experiment_name=experiment_name,
+                candidate=candidate,
+                destination=body.destination,
+            )
+
+            receipt = MlflowExportReceipt(
+                operation_id=body.operation_id or uuid.uuid4().hex,
+                destination=body.destination,
+                backend=log_result.backend,
+                experiment_name=log_result.experiment_name,
+                run_id=log_result.run_id,
+                run_url=log_result.run_url,
+                tracking_uri=log_result.tracking_uri,
+                logged_at=receipt_timestamp(),
+            )
+            record_receipt(_store, body.job_id, "mlflow", receipt.model_dump(mode="json"))
+            return _log_response_from_receipt(receipt.model_dump(mode="json"))
+        except HTTPException:
+            raise
+        except HauteValidationError as exc:
+            # Haute's own artifact checks (an unloadable model, an incomplete
+            # contract) fail before any run is created and say how to fix it.
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        except Exception as exc:
+            raise mlflow_log_http_exception(exc, job_id=body.job_id) from None
+
+
+@router.post("/save/destination", response_model=ModelSaveDestinationResponse)
+def model_save_destination(body: ModelSaveDestinationRequest) -> ModelSaveDestinationResponse:
+    """Resolve where "Save model to file" would write, without writing."""
     try:
-        from haute.modelling._mlflow_log import log_experiment
-        from haute.modelling._result_types import (
-            ModelCardMetadata,
-            ModelDiagnostics,
+        destination = resolve_model_export_destination(
+            body.output_path,
+            model_suffix=MODEL_FILE_SUFFIXES[body.algorithm],
+            project_root=_get_project_root(),
         )
+    except RuntimePathError as exc:
+        raise runtime_path_http_exception(exc) from None
+    return ModelSaveDestinationResponse(
+        path=destination.display_path,
+        suffix_mismatch=destination.suffix_mismatch,
+    )
 
-        diagnostics = ModelDiagnostics(
-            feature_importance=result.feature_importance,
-            shap_summary=result.shap_summary,
-            feature_importance_loss=result.feature_importance_loss,
-            double_lift=result.double_lift,
-            loss_history=result.loss_history,
-            ave_per_feature=result.ave_per_feature,
-            residuals_histogram=result.residuals_histogram,
-            residuals_stats=result.residuals_stats,
-            actual_vs_predicted=result.actual_vs_predicted,
-            lorenz_curve=result.lorenz_curve,
-            lorenz_curve_perfect=result.lorenz_curve_perfect,
-            pdp_data=result.pdp_data,
-            final_test_metrics=result.final_test_metrics,
-            selection_metrics={
-                name: summary.model_dump(mode="json")
-                for name, summary in result.evaluation.selection_metrics.items()
-            },
-            evaluation=result.evaluation.model_dump(mode="json"),
-            tuning=(result.tuning.model_dump(mode="json") if result.tuning is not None else None),
-            diagnostics_set=result.diagnostics_set,
-            # GLM diagnostics must reach MLflow too — dropping them meant a
-            # GLM logged via this button lost its coefficients, relativities,
-            # fit statistics, and regularization path (CODE_REVIEW 4b.8).
-            glm_coefficients=result.glm_coefficients,
-            glm_relativities=result.glm_relativities,
-            glm_fit_statistics=result.glm_fit_statistics,
-            glm_regularization_path=result.glm_regularization_path,
-        )
 
-        # Signature metadata comes from the model's persisted feature
-        # contract — ``TrainingJob._save_artifacts`` writes it next to the
-        # model file on every real run (per-model name, remediation 4b.9).
-        # Guessing here (the old behaviour defaulted every feature to
-        # Float64) logged a signature that contradicted what the model
-        # consumes at scoring time, so a logged-then-reloaded model could
-        # not score (CODE_REVIEW 4b.8).  A model file without a contract is
-        # an error, not a reason to fabricate one.
-        features = result.features
-        feature_types: dict[str, str] = {}
-        categorical_features = list(result.cat_features)
-        target_name = str(config.get("target", "") or "")
-        target_type = ""
-        offset_name = str(config.get("offset", "") or "")
-        model_file = Path(result.model_path) if result.model_path else None
-        if model_file is not None and model_file.exists():
-            from haute.modelling._feature_contract import load_contract_cached
-            from haute.modelling._training_job import model_contract_filename
+_model_destination_locks_guard = threading.Lock()
+_model_destination_locks: dict[str, threading.Lock] = {}
 
-            contract = load_contract_cached(
-                model_file.parent / model_contract_filename(model_file.stem)
+
+@contextmanager
+def _model_destination_lock(contract_path: Path) -> Iterator[None]:
+    """Serialise saves that publish to the same feature contract path.
+
+    The contract path follows from the model file's stem, so every save that
+    could write either file of a pair shares it. Holding it across the
+    existence check and the publication means two saves can never both pass
+    ``overwrite=False`` or leave a model from one job beside another's contract.
+    """
+    key = os.path.normcase(os.path.abspath(contract_path))
+    with _model_destination_locks_guard:
+        lock = _model_destination_locks.setdefault(key, threading.Lock())
+    with lock:
+        yield
+
+
+@router.post("/save", response_model=SaveModelResponse)
+def save_model(body: SaveModelRequest) -> SaveModelResponse:
+    """Save a completed training job's model and feature contract to a project file."""
+    from haute.modelling._training_job import model_contract_filename
+
+    with hold_training_artifacts(body.job_id):
+        job = _store.require_completed_job(body.job_id)
+        artifacts = require_training_artifacts(job)
+        source_model = artifacts.model
+
+        try:
+            destination = resolve_model_export_destination(
+                body.output_path,
+                model_suffix=source_model.suffix,
+                project_root=_get_project_root(),
             )
-            features = list(contract.features)
-            feature_types = dict(contract.feature_types)
-            categorical_features = list(contract.categorical_features)
-            target_name = contract.target_name
-            target_type = contract.target_type
-            offset_name = contract.offset_column or ""
+        except RuntimePathError as exc:
+            raise runtime_path_http_exception(exc) from None
+        if destination.suffix_mismatch:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Model file path must end with {source_model.suffix}, "
+                    "the trained model's format."
+                ),
+            )
 
-        metadata = ModelCardMetadata(
-            algorithm=config.get("algorithm", "catboost"),
-            task=config.get("task", "regression"),
-            development_rows=result.development_rows,
-            final_test_rows=result.final_test_rows,
-            features=features,
-            evaluation_config=config.get("evaluation", {}),
-            best_iteration=result.best_iteration,
-            feature_types=feature_types,
-            categorical_features=categorical_features,
-            target_name=target_name,
-            target_type=target_type,
-            offset_name=offset_name,
-            offset_type="Float64" if offset_name else "",
+        contract_name = model_contract_filename(destination.path.stem)
+        destination_contract = destination.path.with_name(contract_name)
+        contract_display_path = str(
+            PurePosixPath(destination.display_path).with_name(contract_name)
         )
-
-        final_params = (
-            result.tuning.final_params if result.tuning is not None else config.get("params", {})
-        )
-        artifact_paths = {
-            "evaluation_plan": result.evaluation.plan_path,
-            "evaluation_results": result.evaluation.results_path,
-            "evaluation_report": result.evaluation.report_path,
-        }
-        if result.tuning is not None:
-            artifact_paths.update(
-                {
-                    "tuning_plan": result.tuning.plan_path,
-                    "tuning_trials": result.tuning.trials_path,
-                    "tuning_report": result.tuning.report_path,
+        with _model_destination_lock(destination_contract):
+            if not body.overwrite and (destination.path.exists() or destination_contract.exists()):
+                # A structured detail: the Export pane dispatches on the code, not the status.
+                exists_detail = {
+                    "error_code": "model_file_exists",
+                    "message": f"Model file already exists: {destination.display_path}",
                 }
-            )
-        log_result = await run_in_threadpool(
-            log_experiment,
-            experiment_name=experiment_name,
-            run_name=node_label,
-            metrics=result.final_test_metrics or result.diagnostic_metrics,
-            params={
-                "algorithm": config.get("algorithm", "catboost"),
-                "task": config.get("task", "regression"),
-                "target": config.get("target", ""),
-                "weight": config.get("weight", ""),
-                "evaluation_strategy": config.get("evaluation", {}).get("strategy", ""),
-                **{f"param_{key}": value for key, value in final_params.items()},
-            },
-            diagnostics=diagnostics,
-            metadata=metadata,
-            model_path=result.model_path or None,
-            model_name=model_name,
-            artifact_paths=artifact_paths,
-        )
+                raise HTTPException(status_code=409, detail=exists_detail)
 
-        return LogExperimentResponse(
-            status="ok",
-            backend=log_result.backend,
-            experiment_name=log_result.experiment_name,
-            run_id=log_result.run_id,
-            run_url=log_result.run_url,
-            tracking_uri=log_result.tracking_uri,
-        )
-    except Exception as exc:
-        logger.error("mlflow_log_failed", error=str(exc), job_id=body.job_id)
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+            try:
+                destination.path.parent.mkdir(parents=True, exist_ok=True)
+                atomic_copy_files(
+                    [
+                        (artifacts.feature_contract, destination_contract),
+                        (source_model, destination.path),
+                    ]
+                )
+            except OSError as exc:
+                logger.error("model_save_failed", error=str(exc), job_id=body.job_id, exc_info=True)
+                raise HTTPException(
+                    status_code=500,
+                    detail="Filesystem error saving the model. Check the server logs for details.",
+                ) from None
+            except Exception as exc:
+                logger.error("model_save_failed", error=str(exc), job_id=body.job_id, exc_info=True)
+                raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
+    logger.info("model_saved", path=str(destination.path), job_id=body.job_id)
+    record_receipt(
+        _store,
+        body.job_id,
+        "model_files",
+        ModelFileExportReceipt(
+            path=destination.display_path,
+            feature_contract_path=contract_display_path,
+            saved_at=receipt_timestamp(),
+        ).model_dump(mode="json"),
+    )
+    return SaveModelResponse(
+        status="ok",
+        path=destination.display_path,
+        feature_contract_path=contract_display_path,
+    )
 
 
 @router.post("/export", response_model=ExportScriptResponse)

@@ -70,12 +70,24 @@ __all__ = [
 def _is_codegen_infra_error(exc: BaseException) -> bool:
     """Whether *exc* is an environmental/infra failure safe to treat as opaque.
 
-    Only an ``OSError`` (missing artifact file, refused connection) or an
-    exception raised from the ``mlflow`` package (server unreachable) counts.
-    Everything else — ``TypeError``/``KeyError``/``ValueError`` bugs, any
-    ``HauteError`` — is a real defect that must fail the save loudly.
+    Only an ``OSError`` (missing artifact file, refused connection), an
+    exception raised from the ``mlflow`` package (server unreachable), or the
+    ``MlflowDestinationUnconfigured`` marker (the node's explicit destination
+    is merely not configured on this machine) counts. Everything else —
+    ``TypeError``/``KeyError``/``ValueError`` bugs, any other ``HauteError``
+    including every other ``MlflowConfigError`` (unknown key, rejected SDK
+    mode) — is a real defect that must fail the save loudly.
     """
+    from haute.modelling._mlflow_settings import MlflowDestinationUnconfigured
+
     if isinstance(exc, OSError):
+        return True
+    if isinstance(exc, MlflowDestinationUnconfigured):
+        # The node names a destination this environment has not configured
+        # (no server URL, no Databricks credentials). That is the authoring
+        # machine's state, not a defect in the node: the executor resolves
+        # the same destination at run time and fails loudly there, so the
+        # save must not demand the remote just to document feature columns.
         return True
     return type(exc).__module__.split(".", 1)[0] == "mlflow"
 
@@ -127,10 +139,20 @@ def _format_contract_kwarg(
         return _format_contract_source(declared, parent_name_by_id=parent_name_by_id)
     try:
         tup = get_column_contract(node.data.nodeType, config)
-    except ConfigError:
+    except ConfigError as exc:
         # Misconfiguration is a user bug, not an environmental one — let
-        # it propagate so save fails at the source of the mistake.
-        raise
+        # it propagate so save fails at the source of the mistake. The one
+        # exception is a merely unconfigured explicit MLflow destination,
+        # which is environmental and rescues like an unreachable server.
+        if not _is_codegen_infra_error(exc):
+            raise
+        logger.warning(
+            "contract_emit_opaque_on_error",
+            node=node.data.label,
+            node_type=str(node.data.nodeType),
+            error=str(exc),
+        )
+        return f'contract="{OPAQUE_CONTRACT_SENTINEL}"'
     except Exception as exc:
         if not _is_codegen_infra_error(exc):
             # A genuine contract-computation bug (TypeError, KeyError, a

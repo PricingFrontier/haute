@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
+import useSettingsStore from "../../../stores/useSettingsStore"
+import type { MlflowDestinationEntry, MlflowDestinationKey } from "../../../api/types"
 
 // ---------------------------------------------------------------------------
 // Mocks — must be declared before importing the component under test
@@ -7,9 +9,22 @@ import { render, screen, fireEvent, cleanup } from "@testing-library/react"
 
 const mockMlflow = {
   experiments: [] as { experiment_id: string; name: string }[],
-  runs: [] as { run_id: string; run_name: string; metrics: Record<string, number>; artifacts: string[] }[],
+  runs: [] as {
+    run_id: string
+    run_name: string
+    metrics: Record<string, number>
+    params?: Record<string, string>
+    artifacts: string[]
+  }[],
   models: [] as { name: string; latest_versions: { version: string; status: string; run_id: string }[] }[],
-  modelVersions: [] as { version: string; run_id: string; status: string; description: string }[],
+  modelVersions: [] as {
+    version: string
+    run_id: string
+    status: string
+    description: string
+    params?: Record<string, string>
+    aliases?: string[]
+  }[],
   modelVersionsFor: "",
   loadingExperiments: false,
   loadingRuns: false,
@@ -33,6 +48,21 @@ vi.mock("../../../hooks/useMlflowBrowser", () => ({
   useMlflowBrowser: vi.fn(() => mockMlflow),
 }))
 
+// Discovery is mocked at the client so one test can run the REAL browser hook
+// and prove the editor browses its own destination; everything else in the
+// client stays real.
+const discovery = vi.hoisted(() => ({
+  getExperiments: vi.fn(),
+  getRuns: vi.fn(),
+  getModels: vi.fn(),
+  getModelVersions: vi.fn(),
+}))
+
+vi.mock("../../../api/client", async () => ({
+  ...(await vi.importActual<Record<string, unknown>>("../../../api/client")),
+  ...discovery,
+}))
+
 vi.mock("../../../utils/configField", () => ({
   configField: (config: Record<string, unknown>, key: string, defaultVal: unknown) =>
     config[key] !== undefined ? config[key] : defaultVal,
@@ -45,7 +75,6 @@ vi.mock("../_shared", async () => {
     InputSourcesBar: ({ inputSources }: { inputSources: unknown[] }) => (
       <div data-testid="input-sources">{inputSources.length}</div>
     ),
-    MlflowStatusBadge: () => <div data-testid="mlflow-badge" />,
   }
 })
 
@@ -66,6 +95,7 @@ vi.mock("../CodeEditor", () => ({
 }))
 
 import ModelScoreEditor from "../ModelScoreEditor"
+import { useMlflowBrowser } from "../../../hooks/useMlflowBrowser"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -100,6 +130,37 @@ function resetMlflow() {
   mockMlflow.refreshModels.mockClear()
   mockMlflow.refreshVersions.mockClear()
   mockMlflow.resetRunsGuard.mockClear()
+  vi.mocked(useMlflowBrowser).mockImplementation(() => mockMlflow)
+}
+
+function mlflowEntry(
+  key: MlflowDestinationKey,
+  over: Partial<MlflowDestinationEntry> = {},
+): MlflowDestinationEntry {
+  return {
+    key,
+    configured: true,
+    destination: key === "local" ? "C:/proj/mlruns" : "http://mlflow.example:5000",
+    config_source: key === "local" ? "default" : "toml",
+    detail: "",
+    probed: key !== "local",
+    ok: key !== "local",
+    category: "",
+    ...over,
+  }
+}
+
+/** A ready inventory, so the mounted selector never fetches one itself. */
+function setMlflowInventory(): void {
+  useSettingsStore.setState({
+    mlflow: {
+      status: "ready",
+      installed: true,
+      importable: true,
+      destinations: [mlflowEntry("server"), mlflowEntry("local")],
+      detail: "",
+    },
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -107,10 +168,54 @@ function resetMlflow() {
 // ---------------------------------------------------------------------------
 
 describe("ModelScoreEditor", () => {
-  beforeEach(resetMlflow)
+  beforeEach(() => {
+    resetMlflow()
+    setMlflowInventory()
+    for (const fetcher of Object.values(discovery)) fetcher.mockReset()
+  })
   afterEach(cleanup)
 
   // 1. Renders with default registered source type
+  it("explains the selected model source in plain language", () => {
+    const { unmount } = render(<ModelScoreEditor {...defaultProps()} />)
+    expect(screen.getByText(/named, versioned model in the registry/i)).toBeInTheDocument()
+    unmount()
+
+    render(<ModelScoreEditor {...defaultProps()} config={{ sourceType: "run" }} />)
+    expect(screen.getByText(/pick one specific training run/i)).toBeInTheDocument()
+  })
+
+  it("shows an empty-state hint when no registered models exist", () => {
+    render(<ModelScoreEditor {...defaultProps()} />)
+    expect(
+      screen.getByText(/No registered models yet — haute logs training runs; your promotion process/i),
+    ).toBeInTheDocument()
+  })
+
+  it("hides the empty-state hint when models exist", () => {
+    mockMlflow.models = [
+      { name: "motor-pricing", latest_versions: [] },
+    ]
+    try {
+      render(<ModelScoreEditor {...defaultProps()} />)
+      expect(screen.queryByText(/No registered models yet/i)).toBeNull()
+    } finally {
+      mockMlflow.models = []
+    }
+  })
+
+  it("shows an empty-runs hint once an experiment is chosen and no runs match", () => {
+    mockMlflow.browseExpId = "1"
+    try {
+      render(<ModelScoreEditor {...defaultProps()} config={{ sourceType: "run" }} />)
+      expect(
+        screen.getByText(/No finished runs with a model artifact in this experiment yet/i),
+      ).toBeInTheDocument()
+    } finally {
+      mockMlflow.browseExpId = ""
+    }
+  })
+
   it("renders with default registered source type selected", () => {
     render(<ModelScoreEditor {...defaultProps()} />)
     const registeredBtn = screen.getByText("Registered Model")
@@ -173,7 +278,7 @@ describe("ModelScoreEditor", () => {
     render(<ModelScoreEditor {...props} />)
     const versionSelect = screen.getByDisplayValue("latest")
     fireEvent.change(versionSelect, { target: { value: "3" } })
-    expect(props.onUpdate).toHaveBeenCalledWith("version", "3")
+    expect(props.onUpdate).toHaveBeenCalledWith({ version: "3" })
   })
 
   // 7. Run mode: shows experiment dropdown
@@ -318,9 +423,106 @@ describe("ModelScoreEditor", () => {
     expect(screen.queryByText("Version")).not.toBeInTheDocument()
   })
 
-  it("shows MlflowStatusBadge", () => {
+  it("mounts the destination selector instead of a status badge", () => {
     render(<ModelScoreEditor {...defaultProps()} />)
-    expect(screen.getByTestId("mlflow-badge")).toBeInTheDocument()
+    expect(screen.getByRole("radiogroup", { name: "MLflow destination" })).toBeInTheDocument()
+    expect(screen.queryByTestId("mlflow-badge")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /mlflow status/i })).not.toBeInTheDocument()
+  })
+
+  it("browses the node's own destination", () => {
+    const props = defaultProps()
+    props.config = { mlflow_destination: "server" }
+    render(<ModelScoreEditor {...props} />)
+    expect(vi.mocked(useMlflowBrowser)).toHaveBeenCalledWith({
+      destination: "server",
+      initialExpId: "",
+    })
+    expect(screen.getByRole("radio", { name: /MLflow server/ })).toBeChecked()
+  })
+
+  it("lists only the chosen destination's registered models", async () => {
+    const actual = await vi.importActual<typeof import("../../../hooks/useMlflowBrowser")>(
+      "../../../hooks/useMlflowBrowser",
+    )
+    vi.mocked(useMlflowBrowser).mockImplementation(actual.useMlflowBrowser)
+    discovery.getModels.mockResolvedValue([
+      { name: "local-model", latest_versions: [] },
+    ])
+    const props = defaultProps()
+    props.config = { mlflow_destination: "local" }
+    render(<ModelScoreEditor {...props} />)
+
+    fireEvent.focus(screen.getByDisplayValue("Select a model..."))
+
+    await waitFor(() => {
+      expect(discovery.getModels).toHaveBeenCalledWith("local")
+    })
+    expect(await screen.findByRole("option", { name: "local-model" })).toBeInTheDocument()
+  })
+
+  it("clears the selection and explains why when the destination changes", () => {
+    const props = defaultProps()
+    props.config = {
+      mlflow_destination: "local",
+      sourceType: "run",
+      run_id: "run-abc",
+      run_name: "best-run",
+      experiment_id: "exp-1",
+      experiment_name: "Experiment A",
+      artifact_path: "model.cbm",
+      registered_model: "old-model",
+      version: "3",
+    }
+    render(<ModelScoreEditor {...props} />)
+
+    fireEvent.click(screen.getByRole("radio", { name: /MLflow server/ }))
+
+    expect(props.onUpdate).toHaveBeenCalledWith({
+      mlflow_destination: "server",
+      run_id: "",
+      run_name: "",
+      experiment_id: "",
+      experiment_name: "",
+      artifact_path: "",
+      registered_model: "",
+      version: "latest",
+    })
+    expect(screen.getByTestId("mlflow-selection-cleared")).toHaveTextContent(
+      "Selection cleared — run and model identifiers are not portable across destinations.",
+    )
+  })
+
+  it("leaves the config alone when the chosen destination is already selected", () => {
+    const props = defaultProps()
+    props.config = { mlflow_destination: "server" }
+    render(<ModelScoreEditor {...props} />)
+
+    fireEvent.click(screen.getByRole("radio", { name: /MLflow server/ }))
+
+    expect(props.onUpdate).not.toHaveBeenCalled()
+    expect(screen.queryByTestId("mlflow-selection-cleared")).not.toBeInTheDocument()
+  })
+
+  it("drops the cleared-selection note at the next pick", () => {
+    mockMlflow.models = [
+      { name: "model-a", latest_versions: [{ version: "1", status: "READY", run_id: "r1" }] },
+    ]
+    const props = defaultProps()
+    props.config = { mlflow_destination: "local" }
+    render(<ModelScoreEditor {...props} />)
+    fireEvent.click(screen.getByRole("radio", { name: /MLflow server/ }))
+    expect(screen.getByTestId("mlflow-selection-cleared")).toBeInTheDocument()
+
+    fireEvent.change(screen.getByDisplayValue("Select a model..."), {
+      target: { value: "model-a" },
+    })
+
+    expect(screen.queryByTestId("mlflow-selection-cleared")).not.toBeInTheDocument()
+    expect(props.onUpdate).toHaveBeenLastCalledWith({
+      registered_model: "model-a",
+      version: "latest",
+    })
   })
 
   it("shows loading text in model dropdown when loadingModels is true", () => {
@@ -366,5 +568,97 @@ describe("ModelScoreEditor", () => {
     const options = screen.getAllByRole("option")
     const values = options.map((o) => o.getAttribute("value"))
     expect(values).toContain("unlisted-model")
+  })
+
+  describe("task recorded by the training run", () => {
+    it("takes the task from the chosen run and shows it read-only", () => {
+      mockMlflow.browseExpId = "exp-1"
+      mockMlflow.runs = [
+        {
+          run_id: "run-cls",
+          run_name: "conversion",
+          metrics: {},
+          params: { task: "classification" },
+          artifacts: ["model.cbm"],
+        },
+      ]
+      const props = defaultProps()
+      props.config = { sourceType: "run" }
+      const { rerender } = render(<ModelScoreEditor {...props} />)
+      fireEvent.change(screen.getByDisplayValue("Select a run..."), {
+        target: { value: "run-cls" },
+      })
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        run_id: "run-cls",
+        run_name: "conversion",
+        artifact_path: "model.cbm",
+        task: "classification",
+      })
+
+      rerender(
+        <ModelScoreEditor
+          {...props}
+          config={{ sourceType: "run", run_id: "run-cls", task: "classification" }}
+        />,
+      )
+      expect(screen.getByTestId("model-score-recorded-task")).toHaveTextContent("Classification")
+      expect(screen.queryByDisplayValue("Regression")).toBeNull()
+      expect(screen.getByText("Task recorded by the training run.")).toBeInTheDocument()
+      expect(screen.queryByRole("alert")).toBeNull()
+    })
+
+    it("takes the task from the version the choice resolves to", () => {
+      mockMlflow.modelVersionsFor = "freq"
+      mockMlflow.modelVersions = [
+        { version: "2", run_id: "r2", status: "READY", description: "", params: { task: "regression" } },
+        { version: "1", run_id: "r1", status: "READY", description: "", params: { task: "classification" } },
+      ]
+      const props = defaultProps()
+      props.config = { registered_model: "freq", version: "2" }
+      render(<ModelScoreEditor {...props} />)
+      fireEvent.change(screen.getByDisplayValue("v2 — READY"), { target: { value: "1" } })
+      expect(props.onUpdate).toHaveBeenCalledWith({ version: "1", task: "classification" })
+      fireEvent.change(screen.getByDisplayValue("v2 — READY"), { target: { value: "latest" } })
+      expect(props.onUpdate).toHaveBeenCalledWith({ version: "latest", task: "regression" })
+    })
+
+    it("takes the task from the version a stored alias targets", () => {
+      mockMlflow.modelVersionsFor = "freq"
+      mockMlflow.modelVersions = [
+        { version: "2", run_id: "r2", status: "READY", description: "", params: { task: "regression" }, aliases: [] },
+        { version: "1", run_id: "r1", status: "READY", description: "", params: { task: "classification" }, aliases: ["champion"] },
+      ]
+      const props = defaultProps()
+      props.config = { registered_model: "freq", alias: "champion", task: "classification" }
+      render(<ModelScoreEditor {...props} />)
+      expect(screen.getByTestId("model-score-recorded-task")).toHaveTextContent("Classification")
+    })
+
+    it("offers the recorded task when the stored task conflicts", () => {
+      mockMlflow.browseExpId = "exp-1"
+      mockMlflow.runs = [
+        { run_id: "run-cls", run_name: "c", metrics: {}, params: { task: "classification" }, artifacts: [] },
+      ]
+      const props = defaultProps()
+      props.config = { sourceType: "run", run_id: "run-cls", task: "regression" }
+      render(<ModelScoreEditor {...props} />)
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "This node scores as regression, but the model was trained for classification.",
+      )
+      fireEvent.click(screen.getByRole("button", { name: "Use classification" }))
+      expect(props.onUpdate).toHaveBeenCalledWith("task", "classification")
+    })
+
+    it("keeps the explicit task choice for a model without a recorded task", () => {
+      mockMlflow.browseExpId = "exp-1"
+      mockMlflow.runs = [
+        { run_id: "run-foreign", run_name: "f", metrics: {}, params: {}, artifacts: ["model"] },
+      ]
+      const props = defaultProps()
+      props.config = { sourceType: "run", run_id: "run-foreign", task: "classification" }
+      render(<ModelScoreEditor {...props} />)
+      expect(screen.getByDisplayValue("Classification")).toBeInTheDocument()
+      expect(screen.queryByTestId("model-score-recorded-task")).toBeNull()
+    })
   })
 })

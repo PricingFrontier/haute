@@ -624,6 +624,12 @@ def test_training_mlflow_log_receives_cancellation_checkpoint(tmp_path: Path) ->
         data=pl.DataFrame({"y": [1.0]}),
         target="y",
         mlflow_experiment="/experiments/cancel",
+        evaluation={
+            "schema_version": 1,
+            "strategy": "random",
+            "seed": 1,
+            "validation": {"method": "single", "size": 0.2},
+        },
         output_dir=str(tmp_path),
     )
     result = TrainResult(
@@ -634,12 +640,26 @@ def test_training_mlflow_log_receives_cancellation_checkpoint(tmp_path: Path) ->
         validation_rows=0,
         features=["x"],
         cat_features=[],
+        evaluation={
+            "plan_path": str(tmp_path / "plan.json"),
+            "results_path": str(tmp_path / "results.json"),
+            "report_path": str(tmp_path / "report.json"),
+            "plan_sha256": "b" * 64,
+            "selection_metrics": {},
+        },
+    )
+    job.evaluation = SimpleNamespace(
+        strategy="random", validation={"method": "single"}, to_plain_data=lambda: {}
     )
 
     def check_cancelled() -> None:
         return None
 
-    with patch("haute.modelling._mlflow_log.log_experiment") as log:
+    with (
+        patch("haute.modelling._candidate_run.capture_provenance"),
+        patch("haute.modelling._candidate_run.build_candidate_run"),
+        patch("haute.modelling._mlflow_log.log_experiment") as log,
+    ):
         job._log_to_mlflow(result, check_cancelled=check_cancelled)
 
     assert log.call_args.kwargs["check_cancelled"] is check_cancelled

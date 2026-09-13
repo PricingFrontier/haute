@@ -255,7 +255,8 @@ def apply_optimiser_apply_from_config(
     """Apply a saved optimiser artifact to the selected input frame.
 
     The generated-code twin of the executor's ``_build_optimiser_apply``.
-    Loads the artifact (file or MLflow) named by *config*, selects the
+    Loads the artifact (file or MLflow — the latter from the node's
+    ``mlflow_destination``, absent = auto) named by *config*, selects the
     ratebook input (via ``ratebook_input`` matched against *source_names*),
     and dispatches to the online / ratebook apply.  When no source is
     configured the node is a passthrough (first frame), mirroring the
@@ -297,6 +298,8 @@ def apply_optimiser_apply_from_config(
             run_id=run_id,
             registered_model=registered_model,
             version=cfg.get("version", "latest"),
+            alias=str(cfg.get("alias", "") or ""),
+            destination=str(cfg.get("mlflow_destination", "") or ""),
         )
     else:
         from haute._optimiser_io import load_optimiser_artifact

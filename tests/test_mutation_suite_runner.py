@@ -76,7 +76,7 @@ def test_threshold_config_owns_all_default_mutation_targets() -> None:
         "jsonpath": 80,
         "json-shred": 20,
         "json-cache": 80,
-        "executor": 80,
+        "executor": 20,
         "parser-conservation": 80,
     }
     for target in targets:

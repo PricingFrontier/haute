@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
+import useSettingsStore from "../../../stores/useSettingsStore"
+import type { MlflowDestinationEntry, MlflowDestinationKey } from "../../../api/types"
 
 // ---------------------------------------------------------------------------
 // Mocks — must be declared before importing the component under test
@@ -57,7 +59,6 @@ vi.mock("../_shared", async () => {
     InputSourcesBar: ({ inputSources }: { inputSources: unknown[] }) => (
       <div data-testid="input-sources">{inputSources.length}</div>
     ),
-    MlflowStatusBadge: () => <div data-testid="mlflow-badge" />,
     CodeEditor: ({
       defaultValue,
       onChange,
@@ -75,6 +76,7 @@ vi.mock("../_shared", async () => {
 })
 
 import OptimiserApplyEditor from "../OptimiserApplyEditor"
+import { useMlflowBrowser } from "../../../hooks/useMlflowBrowser"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -111,6 +113,36 @@ function resetMlflow() {
   mockMlflow.resetRunsGuard.mockClear()
 }
 
+function mlflowEntry(
+  key: MlflowDestinationKey,
+  over: Partial<MlflowDestinationEntry> = {},
+): MlflowDestinationEntry {
+  return {
+    key,
+    configured: true,
+    destination: key === "local" ? "C:/proj/mlruns" : "http://mlflow.example:5000",
+    config_source: key === "local" ? "default" : "toml",
+    detail: "",
+    probed: key !== "local",
+    ok: key !== "local",
+    category: "",
+    ...over,
+  }
+}
+
+/** A ready inventory, so the mounted selector never fetches one itself. */
+function setMlflowInventory(): void {
+  useSettingsStore.setState({
+    mlflow: {
+      status: "ready",
+      installed: true,
+      importable: true,
+      destinations: [mlflowEntry("server"), mlflowEntry("local")],
+      detail: "",
+    },
+  })
+}
+
 // Mock global fetch for artifact metadata loading
 const originalFetch = globalThis.fetch
 
@@ -129,6 +161,7 @@ function mockFetchResponse(data: unknown, ok = true, statusText = "OK") {
 describe("OptimiserApplyEditor", () => {
   beforeEach(() => {
     resetMlflow()
+    setMlflowInventory()
     globalThis.fetch = vi.fn()
   })
 
@@ -273,14 +306,14 @@ describe("OptimiserApplyEditor", () => {
     })
   })
 
-  // 10. Registered mode: shows model dropdown and MlflowStatusBadge
+  // 10. Registered mode: shows model dropdown and the destination selector
   it("shows model dropdown in registered mode", () => {
     const props = defaultProps()
     props.config = { sourceType: "registered" }
     render(<OptimiserApplyEditor {...props} />)
     expect(screen.getByText("Model Name")).toBeInTheDocument()
     expect(screen.getByText("Select a model...")).toBeInTheDocument()
-    expect(screen.getByTestId("mlflow-badge")).toBeInTheDocument()
+    expect(screen.getByRole("radiogroup", { name: "MLflow destination" })).toBeInTheDocument()
   })
 
   // 11. Registered mode: model selection calls onUpdate
@@ -374,25 +407,106 @@ describe("OptimiserApplyEditor", () => {
     expect(props.onUpdate).toHaveBeenCalledWith("optimised_value_column", "selected_factor")
   })
 
-  // 16. MlflowStatusBadge hidden in file mode
-  it("MlflowStatusBadge is hidden in file mode", () => {
+  // 16. The destination selector is hidden in file mode
+  it("destination selector is hidden in file mode", () => {
     render(<OptimiserApplyEditor {...defaultProps()} />)
+    expect(screen.queryByRole("radiogroup", { name: "MLflow destination" })).not.toBeInTheDocument()
     expect(screen.queryByTestId("mlflow-badge")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /mlflow status/i })).not.toBeInTheDocument()
   })
 
-  // 17. MlflowStatusBadge shown in registered mode
-  it("MlflowStatusBadge is shown in registered mode", () => {
+  // 17. The destination selector replaces the status badge outside file mode
+  it("destination selector is shown in registered mode", () => {
     const props = defaultProps()
     props.config = { sourceType: "registered" }
     render(<OptimiserApplyEditor {...props} />)
-    expect(screen.getByTestId("mlflow-badge")).toBeInTheDocument()
+    expect(screen.getByRole("radiogroup", { name: "MLflow destination" })).toBeInTheDocument()
+    expect(screen.queryByTestId("mlflow-badge")).not.toBeInTheDocument()
   })
 
-  it("MlflowStatusBadge is shown in run mode", () => {
+  it("destination selector is shown in run mode", () => {
     const props = defaultProps()
     props.config = { sourceType: "run" }
     render(<OptimiserApplyEditor {...props} />)
-    expect(screen.getByTestId("mlflow-badge")).toBeInTheDocument()
+    expect(screen.getByRole("radiogroup", { name: "MLflow destination" })).toBeInTheDocument()
+  })
+
+  it("browses the node's own destination", () => {
+    const props = defaultProps()
+    props.config = { sourceType: "registered", mlflow_destination: "server" }
+    render(<OptimiserApplyEditor {...props} />)
+    expect(vi.mocked(useMlflowBrowser)).toHaveBeenCalledWith({
+      destination: "server",
+      runTag: "optimiser",
+      initialExpId: "",
+    })
+    expect(screen.getByRole("radio", { name: /MLflow server/ })).toBeChecked()
+  })
+
+  it("clears the selection and the optimiser mode when the destination changes", () => {
+    const props = defaultProps()
+    props.config = {
+      sourceType: "run",
+      mlflow_destination: "local",
+      run_id: "run-abc",
+      run_name: "best-run",
+      experiment_id: "exp-1",
+      experiment_name: "Optimiser Exp",
+      artifact_path: "artifacts/opt.json",
+      registered_model: "old-model",
+      version: "3",
+      optimiser_mode: "ratebook",
+    }
+    render(<OptimiserApplyEditor {...props} />)
+
+    fireEvent.click(screen.getByRole("radio", { name: /MLflow server/ }))
+
+    expect(props.onUpdate).toHaveBeenCalledWith({
+      mlflow_destination: "server",
+      run_id: "",
+      run_name: "",
+      experiment_id: "",
+      experiment_name: "",
+      artifact_path: "",
+      registered_model: "",
+      version: "latest",
+      optimiser_mode: "",
+    })
+    expect(screen.getByTestId("mlflow-selection-cleared")).toHaveTextContent(
+      "Selection cleared — run and model identifiers are not portable across destinations.",
+    )
+  })
+
+  it("leaves the config alone when the chosen destination is already selected", () => {
+    const props = defaultProps()
+    props.config = { sourceType: "registered", mlflow_destination: "server" }
+    render(<OptimiserApplyEditor {...props} />)
+
+    fireEvent.click(screen.getByRole("radio", { name: /MLflow server/ }))
+
+    expect(props.onUpdate).not.toHaveBeenCalled()
+    expect(screen.queryByTestId("mlflow-selection-cleared")).not.toBeInTheDocument()
+  })
+
+  it("drops the cleared-selection note at the next pick", () => {
+    mockMlflow.models = [
+      { name: "opt-model", latest_versions: [{ version: "1", status: "READY", run_id: "r1" }] },
+    ]
+    const props = defaultProps()
+    props.config = { sourceType: "registered", mlflow_destination: "local" }
+    render(<OptimiserApplyEditor {...props} />)
+    fireEvent.click(screen.getByRole("radio", { name: /MLflow server/ }))
+    expect(screen.getByTestId("mlflow-selection-cleared")).toBeInTheDocument()
+
+    fireEvent.change(screen.getByDisplayValue("Select a model..."), {
+      target: { value: "opt-model" },
+    })
+
+    expect(screen.queryByTestId("mlflow-selection-cleared")).not.toBeInTheDocument()
+    expect(props.onUpdate).toHaveBeenLastCalledWith({
+      registered_model: "opt-model",
+      version: "latest",
+    })
   })
 
   // 18. Empty artifact_path clears meta and error
@@ -858,7 +972,7 @@ describe("OptimiserApplyEditor", () => {
     render(<OptimiserApplyEditor {...props} />)
     const versionSelect = screen.getByDisplayValue("latest")
     fireEvent.change(versionSelect, { target: { value: "5" } })
-    expect(props.onUpdate).toHaveBeenCalledWith("version", "5")
+    expect(props.onUpdate).toHaveBeenCalledWith({ version: "5", alias: undefined })
   })
 
   it("shows description text below artifact path input", () => {

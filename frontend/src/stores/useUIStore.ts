@@ -12,7 +12,7 @@ import { create } from "zustand"
 export type RatingStepEditorSection = "tables" | "combined"
 export type ExplorePane = "code" | "overview" | "pivots" | "charts" | "export"
 export type ExplorePreviewPane = "preview" | "overview" | "pivots" | "charts"
-export type ModellingPane = "target" | "features" | "params" | "split" | "train"
+export type ModellingPane = "target" | "features" | "params" | "split" | "train" | "export"
 
 function setNodeIdEntry<T>(map: Record<string, T>, nodeId: string, value: T): Record<string, T> {
   return { ...map, [nodeId]: value }
@@ -32,6 +32,11 @@ interface UIState {
   setGitOpen: (open: boolean) => void
   shortcutsOpen: boolean
   setShortcutsOpen: (open: boolean | ((prev: boolean) => boolean)) => void
+  /** MLflow tracking-settings dialog — an overlay like shortcuts, outside
+   *  the panel exclusivity group; openable from the toolbar chip and every
+   *  MLflow surface. */
+  mlflowSettingsOpen: boolean
+  setMlflowSettingsOpen: (open: boolean) => void
   submodelDialog: { nodeIds: string[] } | null
   setSubmodelDialog: (dialog: { nodeIds: string[] } | null) => void
   renameDialog: { nodeId: string; currentLabel: string } | null
@@ -83,6 +88,8 @@ const useUIStore = create<UIState>()((set) => ({
   setAssistantOpen: (open) => set({ assistantOpen: open, utilityOpen: false, importsOpen: false, gitOpen: false }),
   gitOpen: false,
   setGitOpen: (open) => set({ gitOpen: open, utilityOpen: false, importsOpen: false, assistantOpen: false }),
+  mlflowSettingsOpen: false,
+  setMlflowSettingsOpen: (open) => set({ mlflowSettingsOpen: open }),
   shortcutsOpen: false,
   setShortcutsOpen: (open) => {
     if (typeof open === "function") {

@@ -355,6 +355,8 @@ describe("Explore summary cards", () => {
 
     const info = screen.getByRole("button", { name: /Null and NaN are not values/i })
     expect(info).toHaveAttribute("data-testid", "explore-distinct-info")
+    // Its name already is the tooltip text, so it carries no duplicate description.
+    expect(info).toHaveAccessibleDescription("")
   })
 
   it("renders an empty numeric summary state when there are no numeric fields", () => {

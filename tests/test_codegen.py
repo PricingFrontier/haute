@@ -3931,6 +3931,34 @@ class TestFormatContractKwargFailLoud:
         monkeypatch.setattr(codegen_mod, "get_column_contract", _raise)
         assert codegen_mod._format_contract_kwarg(self._node()) == 'contract="opaque"'
 
+    def test_unconfigured_explicit_destination_rescues_to_opaque(self, monkeypatch):
+        """A node naming a destination this machine has not configured stays opaque.
+
+        The authoring environment lacking the server URL or Databricks
+        credentials is environmental, like an unreachable server: the executor
+        resolves the same destination at run time and fails loudly there.
+        """
+        import haute.codegen as codegen_mod
+        from haute.modelling._mlflow_settings import MlflowDestinationUnconfigured
+
+        def _raise(node_type, config):
+            raise MlflowDestinationUnconfigured("MLflow server is not configured")
+
+        monkeypatch.setattr(codegen_mod, "get_column_contract", _raise)
+        assert codegen_mod._format_contract_kwarg(self._node()) == 'contract="opaque"'
+
+    def test_other_mlflow_config_error_propagates(self, monkeypatch):
+        """Any other MLflow configuration error (unknown key, rejected SDK mode) fails the save."""
+        import haute.codegen as codegen_mod
+        from haute.errors import MlflowConfigError
+
+        def _raise(node_type, config):
+            raise MlflowConfigError("Unknown MLflow destination 'managed'")
+
+        monkeypatch.setattr(codegen_mod, "get_column_contract", _raise)
+        with pytest.raises(MlflowConfigError):
+            codegen_mod._format_contract_kwarg(self._node())
+
     def test_mlflow_error_rescues_to_opaque(self, monkeypatch):
         """An exception raised from the ``mlflow`` package stays opaque."""
         import haute.codegen as codegen_mod

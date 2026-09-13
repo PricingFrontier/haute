@@ -24,7 +24,12 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // production bundle is 1,338.4 KiB; 1,349 KiB retains the same ~10 KiB
 // aggregate headroom. Startup and vendor caps stay unchanged, and the repair
 // dialog is explicitly prohibited from startup modulepreloads below.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1349
+// The modelling Export pane (model file save, MLflow export receipts, registered
+// aliases, reload restore with training lineage) is almost entirely lazy panel
+// code; only the small training-handle persistence rides the startup results
+// store. The complete production bundle is 1,350.2 KiB; 1,361 KiB retains the
+// same ~10 KiB aggregate headroom with the startup and vendor caps unchanged.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1361
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

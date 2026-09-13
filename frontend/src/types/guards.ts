@@ -112,9 +112,14 @@ import type {
   FileListItem,
   JsonCacheProgressResponse,
   JsonCacheStatusResponse,
-  MlflowCheckResponse,
+  MlflowDestinationEntry,
+  MlflowDestinationsResponse,
+  MlflowSettingsResponse,
+  MlflowTestConnectionResponse,
   MlflowExperiment,
   MlflowLogResponse,
+  ModelSaveDestinationResponse,
+  SaveModelResponse,
   MlflowModel,
   MlflowModelVersion,
   MlflowRun,
@@ -2315,25 +2320,78 @@ export function parseExplorePivotMembersResponse(value: unknown): ExplorePivotMe
   }
 }
 
-export function parseMlflowCheckResponse(value: unknown): MlflowCheckResponse {
-  const obj = expectPlainObject("parseMlflowCheckResponse", value)
-  const mlflowInstalled = expectBoolean("parseMlflowCheckResponse", obj.mlflow_installed, "field `mlflow_installed`")
-  const mlflowImportable = expectBoolean(
-    "parseMlflowCheckResponse",
-    obj.mlflow_importable,
-    "field `mlflow_importable`",
-  )
+const MLFLOW_DESTINATION_KEYS = ["databricks", "server", "local"] as const
+const MLFLOW_CONFIG_SOURCES = ["", "toml", "env", "default"] as const
+const MLFLOW_TEST_CATEGORIES = [
+  "",
+  "authentication",
+  "permission",
+  "missing_resource",
+  "connectivity",
+  "configuration",
+  "unknown",
+] as const
+
+function parseMlflowDestinationEntry(value: unknown, field: string): MlflowDestinationEntry {
+  const p = "parseMlflowDestinationsResponse"
+  const obj = expectPlainObject(p, value, field)
   return {
-    mlflow_installed: mlflowInstalled,
-    mlflow_importable: mlflowImportable,
-    tracking_configured: expectBoolean(
-      "parseMlflowCheckResponse",
-      obj.tracking_configured,
-      "field `tracking_configured`",
+    key: expectStringLiteral(p, obj.key, `${field}.key`, MLFLOW_DESTINATION_KEYS),
+    configured: expectBoolean(p, obj.configured, `${field}.configured`),
+    destination: expectString(p, obj.destination, `${field}.destination`),
+    config_source: expectStringLiteral(
+      p,
+      obj.config_source,
+      `${field}.config_source`,
+      MLFLOW_CONFIG_SOURCES,
     ),
-    backend: optionalString("parseMlflowCheckResponse", obj, "backend"),
-    databricks_host: optionalString("parseMlflowCheckResponse", obj, "databricks_host"),
-    detail: optionalString("parseMlflowCheckResponse", obj, "detail"),
+    detail: expectString(p, obj.detail, `${field}.detail`),
+    probed: expectBoolean(p, obj.probed, `${field}.probed`),
+    ok: expectBoolean(p, obj.ok, `${field}.ok`),
+    category: expectStringLiteral(p, obj.category, `${field}.category`, MLFLOW_TEST_CATEGORIES),
+  }
+}
+
+export function parseMlflowDestinationsResponse(value: unknown): MlflowDestinationsResponse {
+  const p = "parseMlflowDestinationsResponse"
+  const obj = expectPlainObject(p, value)
+  return {
+    mlflow_installed: expectBoolean(p, obj.mlflow_installed, "field `mlflow_installed`"),
+    mlflow_importable: expectBoolean(p, obj.mlflow_importable, "field `mlflow_importable`"),
+    destinations: parseArray(
+      p,
+      obj.destinations,
+      "field `destinations`",
+      parseMlflowDestinationEntry,
+    ),
+    detail: expectString(p, obj.detail, "field `detail`"),
+  }
+}
+
+export function parseMlflowSettingsResponse(value: unknown): MlflowSettingsResponse {
+  const p = "parseMlflowSettingsResponse"
+  const obj = expectPlainObject(p, value)
+  return {
+    section_present: expectBoolean(p, obj.section_present, "field `section_present`"),
+    tracking_uri: expectString(p, obj.tracking_uri, "field `tracking_uri`"),
+    folder: expectString(p, obj.folder, "field `folder`"),
+    resolved_folder: expectString(p, obj.resolved_folder, "field `resolved_folder`"),
+    detail: expectString(p, obj.detail, "field `detail`"),
+  }
+}
+
+export function parseMlflowTestConnectionResponse(value: unknown): MlflowTestConnectionResponse {
+  const obj = expectPlainObject("parseMlflowTestConnectionResponse", value)
+  const category = optionalString("parseMlflowTestConnectionResponse", obj, "category")
+  if (!(MLFLOW_TEST_CATEGORIES as readonly string[]).includes(category)) {
+    throw new Error(
+      `parseMlflowTestConnectionResponse: unexpected category \`${category}\``,
+    )
+  }
+  return {
+    ok: expectBoolean("parseMlflowTestConnectionResponse", obj.ok, "field `ok`"),
+    category: category as MlflowTestConnectionResponse["category"],
+    detail: optionalString("parseMlflowTestConnectionResponse", obj, "detail"),
   }
 }
 
@@ -2347,6 +2405,37 @@ export function parseMlflowLogResponse(value: unknown): MlflowLogResponse {
     run_url: optionalNullableString("parseMlflowLogResponse", obj, "run_url"),
     tracking_uri: optionalString("parseMlflowLogResponse", obj, "tracking_uri"),
     error: optionalNullableString("parseMlflowLogResponse", obj, "error"),
+    ...(obj.operation_id === undefined
+      ? {}
+      : { operation_id: optionalNullableString("parseMlflowLogResponse", obj, "operation_id") }),
+    ...(obj.logged_at === undefined
+      ? {}
+      : { logged_at: optionalNullableString("parseMlflowLogResponse", obj, "logged_at") }),
+  }
+}
+
+export function parseModelSaveDestinationResponse(value: unknown): ModelSaveDestinationResponse {
+  const obj = expectPlainObject("parseModelSaveDestinationResponse", value)
+  return {
+    path: expectString("parseModelSaveDestinationResponse", obj.path, "field `path`"),
+    suffix_mismatch: expectBoolean(
+      "parseModelSaveDestinationResponse",
+      obj.suffix_mismatch,
+      "field `suffix_mismatch`",
+    ),
+  }
+}
+
+export function parseSaveModelResponse(value: unknown): SaveModelResponse {
+  const obj = expectPlainObject("parseSaveModelResponse", value)
+  return {
+    status: expectStringLiteral("parseSaveModelResponse", obj.status, "field `status`", ["ok"]),
+    path: expectString("parseSaveModelResponse", obj.path, "field `path`"),
+    feature_contract_path: expectString(
+      "parseSaveModelResponse",
+      obj.feature_contract_path,
+      "field `feature_contract_path`",
+    ),
   }
 }
 
@@ -2823,6 +2912,12 @@ export function parseMlflowModelVersions(value: unknown): MlflowModelVersion[] {
       description: expectString("parseMlflowModelVersions", obj.description, `${field}.description`),
       ...(obj.params === undefined ? {} : { params: parseStringRecord("parseMlflowModelVersions", obj.params, `${field}.params`) }),
       ...(obj.creation_timestamp === undefined ? {} : { creation_timestamp: expectNullableNumber("parseMlflowModelVersions", obj.creation_timestamp, `${field}.creation_timestamp`) }),
+      ...(obj.aliases === undefined
+        ? {}
+        : {
+          aliases: parseArray("parseMlflowModelVersions", obj.aliases, `${field}.aliases`, (alias, aliasField) =>
+            expectString("parseMlflowModelVersions", alias, aliasField)),
+        }),
     }
   })
 }

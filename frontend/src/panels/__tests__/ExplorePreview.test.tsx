@@ -20,7 +20,14 @@ const mockGetExploreCacheSnapshot = vi.fn()
 const mockCancelExplore = vi.fn()
 
 vi.mock("../../api/client", () => ({
-  checkMlflow: vi.fn(() => Promise.resolve({ mlflow_installed: false })),
+  // Imported by useSettingsStore; never called from this panel.
+  getMlflowDestinations: vi.fn(() => Promise.resolve({
+    mlflow_installed: true,
+    mlflow_importable: true,
+    auto: "local",
+    destinations: [],
+    detail: "",
+  })),
   runExplore: (...args: unknown[]) => mockRunExplore(...args),
   getExploreStatus: (...args: unknown[]) => mockGetExploreStatus(...args),
   getExploreCacheSnapshot: (...args: unknown[]) => mockGetExploreCacheSnapshot(...args),

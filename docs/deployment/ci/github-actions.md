@@ -117,8 +117,10 @@ Your CI/CD workflows need credentials stored securely in GitHub.
 
 | Secret name | Value |
 |---|---|
+| `DATABRICKS_MLFLOW_HOST` | The workspace URL for MLflow and the model registry |
+| `DATABRICKS_MLFLOW_TOKEN` | A personal access token scoped for MLflow and the model registry |
 | `DATABRICKS_RATING_HOST` | Your workspace URL (e.g. `https://adb-xxx.12.azuredatabricks.net`) |
-| `DATABRICKS_RATING_TOKEN` | Your personal access token (starts with `dapi`) |
+| `DATABRICKS_RATING_TOKEN` | Your personal access token (starts with `dapi`) scoped for Model Serving |
 
 **For Docker/Container targets:**
 

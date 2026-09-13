@@ -928,6 +928,7 @@ describe("NodePanel", () => {
       "Params",
       "Split",
       "Train",
+      "Export",
     ])
     expect(modellingConfigProps.at(-1)?.activePane).toBe("target")
 

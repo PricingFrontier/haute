@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -56,6 +57,7 @@ from haute.execution import (
     execute_lazy_graph,
 )
 from haute.modelling._algorithms import ALGORITHM_REGISTRY, resolve_loss_function
+from haute.modelling._candidate_run import capture_provenance
 from haute.modelling._evaluation import (
     EvaluationConfig,
     generate_evaluation_plan,
@@ -82,13 +84,24 @@ from haute.routes._job_lifecycle import (
     TerminalReason,
     bind_running_execution_metrics_publisher,
 )
-from haute.routes._job_store import JobSnapshot, JobStore, RunningJobFields
+from haute.routes._job_store import (
+    JobSnapshot,
+    JobStore,
+    RunningJobFields,
+    register_artifact_cleaner,
+)
 from haute.routes._training_artifacts import (
     _EVALUATION_ARTIFACT_PATHS,
     _TRAINING_ARTIFACT_KINDS,
     _TUNING_ARTIFACT_PATHS,
+    TRAINING_ARTIFACTS_HANDLE_KEY,
+    TRAINING_ARTIFACTS_HANDLE_KIND,
     _max_training_artifact_bytes,
-    _publish_training_artifacts,
+    _validate_training_artifacts,
+    cleanup_training_artifacts,
+    create_training_artifact_directory,
+    release_training_artifacts_unless_held,
+    training_artifacts_handle,
 )
 from haute.routes._training_evaluation import (
     _DISPERSION_ESTIMATE_ROW_CAP,
@@ -146,7 +159,9 @@ class _TrainingRunningJob(RunningJobFields):
     job_type: Literal["training"]
     progress: float
     config: dict[str, Any]
+    node_id: str
     node_label: str
+    pipeline_source: str
     start_time: float
     timeout: int | float
 
@@ -183,8 +198,8 @@ def _worker_timing(job: Mapping[str, Any], *, job_id: str) -> tuple[float, float
     return float(raw_start), float(raw_timeout)
 
 
-_WINDOWS_ARTIFACT_REPLACE_RETRIES = 3
-_WINDOWS_ARTIFACT_REPLACE_RETRY_DELAY_SECONDS = 0.1
+# The job store owns cleanup of each completed job's artifact directory.
+register_artifact_cleaner(TRAINING_ARTIFACTS_HANDLE_KIND, cleanup_training_artifacts)
 
 
 class TrainService:
@@ -245,7 +260,9 @@ class TrainService:
                 "progress": 0.0,
                 "message": "Preparing training data...",
                 "config": dict(config),
+                "node_id": body.node_id,
                 "node_label": node.data.label,
+                "pipeline_source": str(body.graph.source_file or ""),
                 "start_time": start_time,
                 "timeout": config.get("timeout", _default_train_timeout()),
             }
@@ -527,19 +544,10 @@ class TrainService:
             )
             execution_context.checkpoint(label="training_preparation_complete")
             feature_selection = self._store.require_job(job_id).get("feature_selection")
-            launch_config = config
-            if "output_dir" not in launch_config:
-                from haute.executor import _pipeline_dir
-
-                pipeline_dir = _pipeline_dir(body.graph)
-                launch_config = {
-                    **launch_config,
-                    "output_dir": str(pipeline_dir / "outputs") if pipeline_dir else "outputs",
-                }
             self._launch_background(
                 job_id,
                 node_id,
-                launch_config,
+                config,
                 train_params,
                 tmp_parquet,
                 ram_warning,
@@ -985,6 +993,41 @@ class TrainService:
             execution_context=execution_context,
         )
 
+    def _release_superseded_training_artifacts(self, completed: JobSnapshot) -> None:
+        """Release earlier completed runs' artifacts for the same pipeline node.
+
+        Their records stay (status and results remain readable); exporting them
+        reports that the files are gone. A job an export currently holds keeps its
+        directory until eviction.
+        """
+        node_id = completed.get("node_id")
+        pipeline_source = completed.get("pipeline_source")
+        completed_at = completed.get("completed_at")
+        if not isinstance(node_id, str) or not isinstance(completed_at, int | float):
+            return
+        for other_id, other in self._store.list_jobs().items():
+            if (
+                other.get("job_type") != _TRAINING_JOB_TYPE
+                or other.get("status") != "completed"
+                or other.get("node_id") != node_id
+                or other.get("pipeline_source") != pipeline_source
+                or TRAINING_ARTIFACTS_HANDLE_KEY not in (other.get("artifact_handles") or {})
+            ):
+                continue
+            other_completed_at = other.get("completed_at")
+            if not isinstance(other_completed_at, int | float):
+                continue
+            if other_completed_at >= completed_at:
+                continue
+            release_training_artifacts_unless_held(
+                other_id,
+                partial(
+                    self._store.detach_artifact_handle,
+                    other_id,
+                    TRAINING_ARTIFACTS_HANDLE_KEY,
+                ),
+            )
+
     def _parent_worker_cleanup(
         self,
         job_id: str,
@@ -1020,7 +1063,12 @@ class TrainService:
                     "artifact_root",
                     lambda: (
                         shutil.rmtree(artifact_root)
-                        if artifact_root is not None and artifact_root.exists()
+                        if artifact_root is not None
+                        and artifact_root.exists()
+                        and not (
+                            artifact_publication_committed is not None
+                            and artifact_publication_committed()
+                        )
                         else None
                     ),
                 ),
@@ -1551,14 +1599,13 @@ class TrainService:
                 default_name=node_id,
             )
             job_kwargs["params"] = train_params
-            output_root = Path(str(job_kwargs.pop("output_dir"))).expanduser().resolve()
-            output_root.mkdir(parents=True, exist_ok=True)
-            artifact_root = Path(
-                tempfile.mkdtemp(
-                    prefix=f".haute-training-{job_id}-",
-                    dir=output_root,
-                )
+            job_kwargs["mlflow_experiment"] = (
+                None  # GUI logging is manual: the post-training button logs.
             )
+            # Canvas training artifacts are job-owned server state; the node's
+            # output_dir only applies to scripted TrainingJob runs.
+            job_kwargs.pop("output_dir")
+            artifact_root = create_training_artifact_directory()
         except Exception:
             launch_cleanup()
             raise
@@ -1737,6 +1784,9 @@ class TrainService:
             execution_metrics = result.metadata.get("execution_metrics")
             if not isinstance(execution_metrics, dict):
                 raise WorkerProtocolError("Training execution metrics must be an object")
+            identity = result.metadata.get("training_identity_sha256")
+            if not isinstance(identity, str) or len(identity) != 64:
+                raise WorkerProtocolError("Training identity digest must be a SHA-256 hex string")
             response_fields = dict(raw_response)
             response_fields.update(
                 {
@@ -1786,16 +1836,13 @@ class TrainService:
             # cancellation that wins first suppresses publication; one that
             # arrives afterwards observes the paired completed record.
             def publish_completion_fields() -> Mapping[str, Any]:
-                published = _publish_training_artifacts(
+                published = _validate_training_artifacts(
                     result,
                     artifact_root=artifact_root,
-                    output_root=output_root,
-                    job_id=job_id,
                     expected_model_name=str(job_kwargs["name"]),
                     expected_evaluation=staged_evaluation,
                     expected_tuning=staged_response.tuning,
                 )
-                artifact_publication_committed.set()
                 response_fields["model_path"] = str(published["model"])
                 evaluation_fields = staged_evaluation.model_dump(
                     mode="json",
@@ -1828,19 +1875,37 @@ class TrainService:
                         "total_fits": response.tuning.total_fit_count,
                         "best_objective": response.tuning.winner_objective,
                     }
+                handle = training_artifacts_handle(artifact_root, published)
+                # Ownership passes to the job record in this critical section;
+                # parent cleanup must no longer remove the directory.
+                artifact_publication_committed.set()
                 return {
                     "result": response,
+                    "provenance": provenance.to_plain_data(),
+                    "artifact_handles": {TRAINING_ARTIFACTS_HANDLE_KEY: handle},
                     "execution_metrics": execution_metrics,
                     "progress": 1.0,
                     "elapsed_seconds": time.monotonic() - start_time,
                     **completed_progress_fields,
                 }
 
-            self._lifecycle.publish_completion(
+            # Git state is read outside the store lock the publication holds.
+            stored = self._store.require_job(job_id)
+            provenance = capture_provenance(
+                job_id=job_id,
+                node_label=str(stored.get("node_label", "")),
+                training_identity_sha256=identity,
+                project_root=_get_project_root(),
+                node_id=stored.get("node_id"),
+                pipeline_source=stored.get("pipeline_source") or None,
+            )
+            completed = self._lifecycle.publish_completion(
                 job_id,
                 publish=publish_completion_fields,
                 message="Training completed",
             )
+            if completed is not None:
+                self._release_superseded_training_artifacts(completed)
             # The supervisor will make its normal terminal write after this
             # callback; it is intentionally a no-op because the committed
             # result is already durable alongside its artifacts.

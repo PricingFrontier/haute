@@ -1,7 +1,8 @@
-import { render } from "@testing-library/react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { cleanup, render } from "@testing-library/react"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { ExploreCacheReport } from "../../../api/types"
+import useDocumentStatusStore from "../../../stores/useDocumentStatusStore"
 import useNodeResultsStore, {
   explorePivotResultKey,
   resetNodeResultsDerivedCaches,
@@ -77,7 +78,10 @@ function Consumer({
 }
 
 describe("useAutoUpdateExplorePivots claim serialisation", () => {
+  afterEach(cleanup)
+
   beforeEach(() => {
+    useDocumentStatusStore.getState().reset()
     resetNodeResultsDerivedCaches()
     useNodeResultsStore.setState({
       pivotResults: {},

@@ -7,6 +7,7 @@ import BranchIndicator from "./BranchIndicator"
 import useSettingsStore, { MAX_STREAMING_CHUNK_SIZE, MIN_STREAMING_CHUNK_SIZE } from "../stores/useSettingsStore"
 import useUIStore from "../stores/useUIStore"
 import useClickOutside from "../hooks/useClickOutside"
+import MlflowSettingsModal from "./MlflowSettingsModal"
 
 declare const __APP_VERSION__: string
 
@@ -95,6 +96,10 @@ export default function Toolbar({
   useClickOutside(sourceRef, closeSource, sourceOpen)
   const wsConfig = WS_STATUS_CONFIG[wsStatus]
 
+  const mlflowSettingsOpen = useUIStore((s) => s.mlflowSettingsOpen)
+  const setMlflowSettingsOpen = useUIStore((s) => s.setMlflowSettingsOpen)
+  const closeMlflowSettings = useCallback(() => setMlflowSettingsOpen(false), [setMlflowSettingsOpen])
+
   const timingItems: BreakdownItem[] = useMemo(
     () => (timings ?? []).map((t) => ({ node_id: t.node_id, label: t.label, value: t.timing_ms })),
     [timings],
@@ -106,7 +111,7 @@ export default function Toolbar({
   )
 
   return (
-    <header role="toolbar" aria-label="Pipeline toolbar" className="h-11 flex items-center px-4 shrink-0" style={{ background: 'var(--chrome)', borderBottom: '1px solid var(--chrome-border)' }}>
+    <header role="toolbar" aria-label="Pipeline toolbar" className="min-h-11 flex flex-wrap items-center gap-y-2 px-4 py-1.5 shrink-0 [&>div]:shrink-0" style={{ background: 'var(--chrome)', borderBottom: '1px solid var(--chrome-border)' }}>
       <div className="flex items-center gap-2.5">
         <h1 className="text-sm font-bold tracking-tight" style={{ color: 'var(--text-primary)' }}>Haute</h1>
         <span className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>v{__APP_VERSION__}</span>
@@ -317,7 +322,7 @@ export default function Toolbar({
       {/* 10px is the toolbar's one spacing value: between adjacent buttons and
           between sections alike.  Only a label and the field it names sit
           closer (4px), so they still read as one control. */}
-      <div className="ml-auto flex items-center gap-2.5">
+      <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2.5">
         {/* Selection actions.  These use ``aria-disabled`` rather than the
             ``disabled`` attribute: a disabled button is removed from the tab
             order AND swallows pointer events, so its title never appears —
@@ -463,6 +468,7 @@ export default function Toolbar({
           Commit
         </button>
       </div>
+      {mlflowSettingsOpen && <MlflowSettingsModal onClose={closeMlflowSettings} />}
     </header>
   )
 }

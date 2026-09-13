@@ -1,8 +1,8 @@
 /**
  * Smoke tests for ModellingPreview.
  *
- * ModellingPreview uses Zustand stores (useNodeResultsStore, useSettingsStore)
- * and useDragResize, so we mock them to keep tests focused on render logic.
+ * ModellingPreview uses Zustand stores (useNodeResultsStore) and useDragResize,
+ * so we mock them to keep tests focused on render logic.
  */
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
@@ -15,14 +15,6 @@ vi.mock("../../stores/useNodeResultsStore", () => {
   const store = Object.assign(vi.fn(() => null), {
     getState: vi.fn(() => ({ trainJobs: {} })),
   })
-  return { default: store, __esModule: true }
-})
-
-vi.mock("../../stores/useSettingsStore", () => {
-  const store = Object.assign(
-    vi.fn(() => ({ status: "disconnected", backend: "", host: "" })),
-    { getState: vi.fn(() => ({ mlflow: { status: "disconnected", backend: "", host: "" } })) },
-  )
   return { default: store, __esModule: true }
 })
 

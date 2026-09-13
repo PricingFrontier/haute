@@ -14,7 +14,8 @@ connected inputs and applies to the one named by `ratebook_input`.
 | `ratebook_input` | The exact input name of the connected edge a ratebook artifact is applied to. **Required** for ratebook artifacts, even with one connected input. Ignored for online artifacts. |
 | `artifact_path` | Path to the saved optimiser artifact. Required when sourceType is `"file"`. |
 | `registered_model` | Model registry name. Required when sourceType is `"registered"`. |
-| `version` | Version or `"latest"`. Required when sourceType is `"registered"`. |
+| `version` | Version or `"latest"`. Use either `version` or `alias` when sourceType is `"registered"`. |
+| `alias` | A registered model alias such as `"champion"`; applies whichever version it targets. |
 | `experiment_id` | MLflow experiment ID. Required when sourceType is `"run"`. |
 | `run_id` | MLflow run ID. Required when sourceType is `"run"`. |
 | `version_column` | Column name for version tracking. Defaults to `"__optimiser_version__"`. |

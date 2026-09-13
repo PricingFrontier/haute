@@ -625,6 +625,10 @@ class TestPreviewNodeResponseInheritance:
 # ──────────────────────────────────────────────────────────────────────
 
 
+def _without_receipt_fields(dumped: dict[str, object]) -> dict[str, object]:
+    return {key: value for key, value in dumped.items() if key not in {"operation_id", "logged_at"}}
+
+
 class TestMlflowLogResponseSharedBase:
     """D13: LogExperimentResponse and OptimiserMlflowLogResponse share a base."""
 
@@ -638,12 +642,19 @@ class TestMlflowLogResponseSharedBase:
         assert issubclass(LogExperimentResponse, MlflowLogResponse)
         assert issubclass(OptimiserMlflowLogResponse, MlflowLogResponse)
 
-    def test_identical_fields(self) -> None:
-        from haute.schemas import LogExperimentResponse, OptimiserMlflowLogResponse
+    def test_shared_fields_come_from_the_base(self) -> None:
+        from haute.schemas import (
+            LogExperimentResponse,
+            MlflowLogResponse,
+            OptimiserMlflowLogResponse,
+        )
 
-        log_fields = set(LogExperimentResponse.model_fields.keys())
+        base_fields = set(MlflowLogResponse.model_fields.keys())
         opt_fields = set(OptimiserMlflowLogResponse.model_fields.keys())
-        assert log_fields == opt_fields
+        log_fields = set(LogExperimentResponse.model_fields.keys())
+        assert opt_fields == base_fields
+        # A training-result log also repeats its export receipt identity.
+        assert log_fields - base_fields == {"operation_id", "logged_at"}
 
     def test_identical_serialization(self) -> None:
         from haute.schemas import LogExperimentResponse, OptimiserMlflowLogResponse
@@ -658,7 +669,7 @@ class TestMlflowLogResponseSharedBase:
         }
         log_resp = LogExperimentResponse(**kwargs)
         opt_resp = OptimiserMlflowLogResponse(**kwargs)
-        assert log_resp.model_dump() == opt_resp.model_dump()
+        assert _without_receipt_fields(log_resp.model_dump()) == opt_resp.model_dump()
 
     def test_error_case_serialization(self) -> None:
         from haute.schemas import LogExperimentResponse, OptimiserMlflowLogResponse
@@ -669,7 +680,7 @@ class TestMlflowLogResponseSharedBase:
         }
         log_resp = LogExperimentResponse(**kwargs)
         opt_resp = OptimiserMlflowLogResponse(**kwargs)
-        assert log_resp.model_dump() == opt_resp.model_dump()
+        assert _without_receipt_fields(log_resp.model_dump()) == opt_resp.model_dump()
         assert log_resp.error == "MLflow server unreachable"
 
     def test_defaults(self) -> None:
@@ -706,4 +717,6 @@ class TestMlflowLogResponseSharedBase:
         base = MlflowLogResponse(**kwargs)
         child1 = LogExperimentResponse(**kwargs)
         child2 = OptimiserMlflowLogResponse(**kwargs)
-        assert base.model_dump() == child1.model_dump() == child2.model_dump()
+        assert (
+            base.model_dump() == _without_receipt_fields(child1.model_dump()) == child2.model_dump()
+        )

@@ -33,6 +33,7 @@ def _examples():
         node.data.config.update(deepcopy(_SHARED_COLUMN_CONFIG))
     by_type[NodeType.MODEL_SCORE].data.config.update(
         {
+            "mlflow_destination": "server",
             "experiment_id": "experiment-17",
             "experiment_name": "Pricing experiments",
             "registered_model": "catalog.models.pricing",
@@ -45,14 +46,15 @@ def _examples():
     )
     by_type[NodeType.MODELLING].data.config.update(
         {
+            "mlflow_destination": "server",
             "weight": "_exposure",
             "exclude": ["_identifier"],
             "params": {"iterations": 17, "depth": 3},
             "evaluation": {"method": "holdout", "test_size": 0.25},
             "tuning": {"enabled": True, "n_trials": 3},
             "mlflow_experiment": "Pricing",
-            "model_name": "Frequency",
             "output_dir": "models/output",
+            "model_export_path": "output/frequency.cbm",
             "row_limit": 1234,
             "terms": {"_age": {"type": "linear"}},
             "family": "poisson",
@@ -77,6 +79,7 @@ def _examples():
     scenario = by_type[NodeType.SCENARIO_EXPANDER]
     optimiser.data.config.update(
         {
+            "mlflow_destination": "databricks",
             "frontier_enabled": True,
             "frontier_ranges": {"_premium": {"min": 10.0, "max": 20.0}},
             "frontier_steps": 7,
@@ -90,12 +93,12 @@ def _examples():
             "data_input": _sanitize_func_name(scenario.data.label),
             "banding_source": _sanitize_func_name(band.data.label),
             "mlflow_experiment": "Optimisation",
-            "model_name": "Ratebook",
         }
     )
     graph.edges.append(GraphEdge(id="banding_to_optimiser", source=band.id, target=optimiser.id))
     by_type[NodeType.OPTIMISER_APPLY].data.config.update(
         {
+            "mlflow_destination": "databricks",
             "optimiser_mode": "ratebook",
             "ratebook_input": _sanitize_func_name(optimiser.data.label),
             "registered_model": "catalog.models.ratebook",
@@ -277,6 +280,13 @@ def _examples():
         node = next(node for node in variant.nodes if node.data.nodeType == node_type)
         node.data.config = {**config, "contract": "opaque", **deepcopy(_SHARED_COLUMN_CONFIG)}
         yield f"{node_type.value}-variant-{index}", variant
+    # A registered source names a version or an alias, never both.
+    for node_type in (NodeType.MODEL_SCORE, NodeType.OPTIMISER_APPLY):
+        variant = graph.model_copy(deep=True)
+        node = next(node for node in variant.nodes if node.data.nodeType == node_type)
+        node.data.config.pop("version", None)
+        node.data.config["alias"] = "champion"
+        yield f"{node_type.value}-alias", variant
 
 
 # These fields represent graph relationships rather than independent settings.

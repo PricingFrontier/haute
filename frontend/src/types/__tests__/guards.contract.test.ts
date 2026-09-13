@@ -37,8 +37,12 @@ import {
   parseJsonCacheSchemaInferenceResponse,
   parseFileListResponse,
   parseMlflowExperiments,
-  parseMlflowCheckResponse,
+  parseMlflowDestinationsResponse,
+  parseMlflowSettingsResponse,
+  parseMlflowTestConnectionResponse,
   parseMlflowLogResponse,
+  parseModelSaveDestinationResponse,
+  parseSaveModelResponse,
   parseMlflowModels,
   parseMlflowModelVersions,
   parseMlflowRuns,
@@ -1837,16 +1841,47 @@ describe("API response guards", () => {
   })
 
   it("parses modelling preflight payloads", () => {
-    const mlflow = parseMlflowCheckResponse(loadUiContractFixture("mlflow_check_response"))
+    const mlflow = parseMlflowDestinationsResponse(
+      loadUiContractFixture("mlflow_destinations_response"),
+    )
     const estimate = parseTrainEstimateResponse(loadUiContractFixture("train_estimate_response"))
     const log = parseMlflowLogResponse(loadUiContractFixture("mlflow_log_response"))
+    const saved = parseSaveModelResponse(loadUiContractFixture("model_save_response"))
+    const destination = parseModelSaveDestinationResponse(
+      loadUiContractFixture("model_save_destination_response"),
+    )
 
     expect(mlflow.mlflow_installed).toBe(true)
     expect(mlflow.mlflow_importable).toBe(true)
-    expect(mlflow.tracking_configured).toBe(true)
+    expect("auto" in mlflow).toBe(false)
+    expect(mlflow.destinations.map((entry) => entry.key)).toEqual([
+      "databricks",
+      "server",
+      "local",
+    ])
+    expect(mlflow.destinations[0]?.category).toBe("authentication")
+    expect(mlflow.destinations[0]?.configured).toBe(true)
+    expect(mlflow.destinations[0]?.probed).toBe(true)
+    expect(mlflow.destinations[0]?.ok).toBe(false)
+    expect(mlflow.destinations[0]?.destination).toBe("databricks://team")
+    expect(mlflow.destinations[0]?.config_source).toBe("env")
+    expect(mlflow.destinations[2]?.probed).toBe(false)
     expect(mlflow.detail).toBe("")
     expect(estimate.estimated_mb).toBe(12.5)
     expect(log.run_id).toBe("run-123")
+    expect(saved).toEqual({
+      status: "ok",
+      path: "models/frequency.cbm",
+      feature_contract_path: "models/frequency.feature_contract.json",
+    })
+    expect(destination).toEqual({ path: "models/frequency.cbm", suffix_mismatch: false })
+    expect(() => parseModelSaveDestinationResponse({ ...destination, suffix_mismatch: "no" })).toThrow(
+      /parseModelSaveDestinationResponse/,
+    )
+    expect(() => parseSaveModelResponse({ ...saved, status: "error" })).toThrow(/parseSaveModelResponse/)
+    expect(() => parseSaveModelResponse({ ...saved, feature_contract_path: null })).toThrow(
+      /parseSaveModelResponse/,
+    )
   })
 
   it("parses a strict bounded evaluation preview and defaults an omitted preview to null", () => {
@@ -2144,22 +2179,82 @@ describe("API response guards", () => {
     ).toThrow(/nodes/i)
   })
 
-  it("rejects malformed mlflow check payloads", () => {
-    const fixture = loadUiContractFixture<Record<string, unknown>>("mlflow_check_response")
+  it("parses mlflow settings and test-connection payloads", () => {
+    const settings = parseMlflowSettingsResponse(loadUiContractFixture("mlflow_settings_response"))
+    expect(settings.section_present).toBe(true)
+    expect(settings.tracking_uri).toBe("http://localhost:5000")
+    expect(settings.folder).toBe("team-runs")
+    expect(settings.resolved_folder).toBe("C:/proj/team-runs")
+    expect(settings.detail).toBe("")
+
+    const probe = parseMlflowTestConnectionResponse(
+      loadUiContractFixture("mlflow_test_connection_response"),
+    )
+    expect(probe.ok).toBe(false)
+    expect(probe.category).toBe("connectivity")
+  })
+
+  it("rejects malformed mlflow settings and test-connection payloads", () => {
+    const settings = loadUiContractFixture<Record<string, unknown>>("mlflow_settings_response")
+    expect(() =>
+      parseMlflowSettingsResponse({ ...settings, section_present: "yes" }),
+    ).toThrow(/section_present/i)
+    expect(() =>
+      parseMlflowSettingsResponse({ ...settings, resolved_folder: 42 }),
+    ).toThrow(/resolved_folder/i)
+
+    const probe = loadUiContractFixture<Record<string, unknown>>(
+      "mlflow_test_connection_response",
+    )
+    expect(() => parseMlflowTestConnectionResponse({ ...probe, ok: "no" })).toThrow(/`ok`/i)
+    expect(() =>
+      parseMlflowTestConnectionResponse({ ...probe, category: "offline" }),
+    ).toThrow(/category/i)
+  })
+
+  it("rejects malformed mlflow destinations payloads", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>(
+      "mlflow_destinations_response",
+    )
+    const entries = fixture.destinations as Array<Record<string, unknown>>
+    const withFirstEntry = (patch: Record<string, unknown>) => ({
+      ...fixture,
+      destinations: [{ ...entries[0], ...patch }, ...entries.slice(1)],
+    })
 
     expect(() =>
-      parseMlflowCheckResponse({
+      parseMlflowDestinationsResponse({
         ...fixture,
         mlflow_installed: "yes",
       }),
     ).toThrow(/mlflow_installed/i)
 
     expect(() =>
-      parseMlflowCheckResponse({
+      parseMlflowDestinationsResponse({
         ...fixture,
-        tracking_configured: "yes",
+        destinations: "none",
       }),
-    ).toThrow(/tracking_configured/i)
+    ).toThrow(/parseMlflowDestinationsResponse/i)
+
+    expect(() => parseMlflowDestinationsResponse(withFirstEntry({ key: "file" }))).toThrow(
+      /key/i,
+    )
+
+    expect(() => parseMlflowDestinationsResponse(withFirstEntry({ probed: "yes" }))).toThrow(
+      /probed/i,
+    )
+
+    expect(() => parseMlflowDestinationsResponse(withFirstEntry({ configured: "yes" }))).toThrow(
+      /configured/i,
+    )
+
+    expect(() =>
+      parseMlflowDestinationsResponse(withFirstEntry({ config_source: "registry" })),
+    ).toThrow(/config_source/i)
+
+    expect(() =>
+      parseMlflowDestinationsResponse(withFirstEntry({ category: "offline" })),
+    ).toThrow(/category/i)
   })
 
   it("rejects malformed utility write payloads", () => {
@@ -2532,6 +2627,14 @@ describe("API response guards", () => {
     expect(parseMlflowRuns([{ run_id: "run-1", run_name: "baseline", metrics: { auc: 0.9 }, artifacts: ["model"] }])[0]?.metrics.auc).toBe(0.9)
     expect(parseMlflowModels([{ name: "pricing", latest_versions: [{ version: "1", status: "READY", run_id: "run-1" }] }])[0]?.latest_versions).toHaveLength(1)
     expect(parseMlflowModelVersions([{ version: "1", run_id: "run-1", status: "READY", description: "baseline" }])[0]?.description).toBe("baseline")
+    expect(
+      parseMlflowModelVersions([
+        { version: "1", run_id: "run-1", status: "READY", description: "", aliases: ["champion"] },
+      ])[0]?.aliases,
+    ).toEqual(["champion"])
+    expect(() =>
+      parseMlflowModelVersions([{ version: "1", run_id: "r", status: "READY", description: "", aliases: [1] }]),
+    ).toThrow(/aliases/)
     expect(parseFileListResponse({ items: [{ name: "data", path: "/data", type: "directory" }] }).items?.[0]?.type).toBe("directory")
     expect(parseFileListResponse({ items: [{ name: "data", path: "/data", type: "directory", size: null }] }).items?.[0]?.size).toBeNull()
     expect(parseGitGraphResponse({

@@ -185,64 +185,6 @@ class TestMLflowSignatureLogged:
     a signature that agrees with the training feature contract.
     """
 
-    def test_log_experiment_includes_signature_artifact(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """After ``log_experiment`` completes, the run has a non-None
-        ``ModelSignature`` attached that matches the training schema.
-
-        We assert via the mocked mlflow.pyfunc.log_model / mlflow.sklearn.log_model
-        / mlflow.catboost.log_model calls that a *signature* argument was
-        passed, with inputs matching the training feature order.
-        """
-        pytest.importorskip("mlflow", reason="core mlflow dependency is unavailable")
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-
-        mock_run = MagicMock()
-        mock_run.info.run_id = "run_sig_1"
-
-        model_file = tmp_path / "model.cbm"
-        model_file.write_bytes(b"fake cbm bytes")
-
-        signature_calls: list[Any] = []
-
-        def _capture_signature(*args: Any, **kwargs: Any) -> None:
-            if "signature" in kwargs:
-                signature_calls.append(kwargs["signature"])
-
-        with (
-            patch("mlflow.set_tracking_uri"),
-            patch("mlflow.set_experiment"),
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params"),
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_artifact"),
-            patch("mlflow.register_model"),
-            patch("mlflow.catboost.log_model", side_effect=_capture_signature),
-            patch("mlflow.pyfunc.log_model", side_effect=_capture_signature),
-        ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
-
-            from haute.modelling._mlflow_log import log_experiment
-
-            log_experiment(
-                experiment_name="/test/sig",
-                run_name="sig-run",
-                metrics={"rmse": 0.5},
-                params={"algorithm": "catboost", "task": "regression"},
-                model_path=str(model_file),
-            )
-
-        # At least one of the model-logging functions must have been called
-        # with a signature kwarg; otherwise scoring callers cannot detect
-        # feature-order drift via the logged metadata.
-        assert signature_calls, (
-            "log_experiment did not pass a `signature` to mlflow.*.log_model — "
-            "deploy-time scorers cannot verify the training feature contract."
-        )
-
     def test_training_attaches_signature_matching_contract(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -260,6 +202,8 @@ class TestMLflowSignatureLogged:
         pytest.importorskip("mlflow", reason="core mlflow dependency is unavailable")
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
         monkeypatch.setattr(
             "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
             lambda *a, **kw: [],
@@ -294,12 +238,12 @@ class TestMLflowSignatureLogged:
 
         with (
             patch("mlflow.set_tracking_uri"),
+            patch("mlflow.set_registry_uri"),
             patch("mlflow.set_experiment"),
             patch("mlflow.start_run") as m_run,
             patch("mlflow.log_params"),
             patch("mlflow.log_metrics"),
             patch("mlflow.log_artifact"),
-            patch("mlflow.register_model"),
             patch("mlflow.catboost.log_model", side_effect=_capture),
             patch("mlflow.pyfunc.log_model", side_effect=_capture),
         ):
@@ -313,6 +257,12 @@ class TestMLflowSignatureLogged:
                 weight="Exposure",
                 params={"iterations": 1, "depth": 1, "verbose": 0},
                 mlflow_experiment="/Shared/haute/sig_model",
+                evaluation={
+                    "schema_version": 1,
+                    "strategy": "random",
+                    "seed": 7,
+                    "validation": {"method": "single", "size": 0.2},
+                },
                 output_dir=str(tmp_path),
             )
             result = job.run()

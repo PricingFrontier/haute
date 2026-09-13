@@ -218,3 +218,65 @@ class TestTrain:
         assert "0.9877" in result.output
         assert "4" in result.output  # 4 features
         assert "2 categorical" in result.output
+
+
+def test_haute_train_logs_an_exported_script_with_an_experiment(
+    runner: CliRunner, tmp_path: Path, monkeypatch
+) -> None:
+    """MLF-E09: an exported script logs because it names ``mlflow_experiment``.
+
+    ``haute train`` imports the script and runs its ``job`` without executing the
+    ``__main__`` block, so logging must come from the ``TrainingJob`` argument —
+    a logging call in ``__main__`` would silently never run here.
+    """
+    import polars as pl
+    from mlflow.tracking import MlflowClient
+
+    from haute._sandbox import set_project_root
+    from haute.modelling._export import generate_training_script
+
+    for name in ("MLFLOW_TRACKING_URI", "DATABRICKS_MLFLOW_HOST", "DATABRICKS_MLFLOW_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
+    data = tmp_path / "data.parquet"
+    pl.DataFrame(
+        {
+            "y": [1.0, 2.0, 1.5, 3.0, 2.5, 4.0, 1.0, 2.0],
+            "x": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+        }
+    ).write_parquet(data)
+    script = tmp_path / "train_freq.py"
+    script.write_text(
+        generate_training_script(
+            {
+                "name": "freq",
+                "target": "y",
+                "algorithm": "catboost",
+                "task": "regression",
+                "loss_function": "RMSE",
+                "params": {"iterations": 2},
+                "evaluation": {
+                    "schema_version": 1,
+                    "strategy": "random",
+                    "seed": 1,
+                    "validation": {"method": "none"},
+                },
+                "mlflow_experiment": "scripted",
+                "output_dir": str(tmp_path / "outputs"),
+            },
+            str(data),
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(cli, ["train", str(script)])
+
+    assert result.exit_code == 0, result.output
+    client = MlflowClient(tracking_uri=(tmp_path / "mlruns").as_uri())
+    experiment = client.get_experiment_by_name("scripted")
+    assert experiment is not None
+    [run] = client.search_runs([experiment.experiment_id])
+    assert run.data.tags["haute.contract_version"] == "1"
+    assert run.data.tags["haute.node_label"] == "freq"

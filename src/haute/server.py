@@ -71,6 +71,7 @@ from haute.routes._optimiser_service import (
     _artifact_stale_seconds,
     reap_stale_optimiser_artifacts,
 )
+from haute.routes._training_artifacts import reap_stale_training_artifacts
 from haute.routes.assistant import router as assistant_router
 from haute.routes.databricks import router as databricks_router
 from haute.routes.explore import router as explore_router
@@ -112,7 +113,7 @@ def static_build_ready(static_dir: Path) -> bool:
 logger = get_logger(component="server")
 
 _watcher_task: asyncio.Task | None = None
-_optimiser_reaper_task: asyncio.Task[None] | None = None
+_artifact_reaper_task: asyncio.Task[None] | None = None
 _WATCHER_RESTART_DELAY_SECONDS = 0.1
 _WATCHER_FLUSH_MAX_RETRIES = 3
 _WATCHER_FLUSH_RETRY_BASE_SECONDS = 0.1
@@ -391,15 +392,16 @@ def _clear_bytecache() -> None:
         shutil.rmtree(pycache, ignore_errors=True)
 
 
-async def _reap_stale_optimiser_artifacts_in_background(stale_after_seconds: int) -> None:
-    """Reap optimiser artifacts off the event loop and surface failures."""
+async def _reap_stale_job_artifacts_in_background(stale_after_seconds: int) -> None:
+    """Reap optimiser and training artifacts off the event loop and surface failures."""
     try:
         await asyncio.to_thread(reap_stale_optimiser_artifacts, stale_after_seconds)
+        await asyncio.to_thread(reap_stale_training_artifacts, stale_after_seconds)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         logger.error(
-            "optimiser_artifact_reaper_failed",
+            "job_artifact_reaper_failed",
             error=str(exc),
             exc_info=True,
         )
@@ -424,14 +426,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # callback that is allowed to (re)build this index — see
     # ``haute.routes._helpers`` for the full contract.
     _ensure_pipeline_index()
-    global _watcher_task, _optimiser_reaper_task
+    global _watcher_task, _artifact_reaper_task
     _watcher_task = None
-    _optimiser_reaper_task = None
+    _artifact_reaper_task = None
     try:
         start_interactive_worker_pool()
         _watcher_task = asyncio.create_task(_watcher_forever())
-        _optimiser_reaper_task = asyncio.create_task(
-            _reap_stale_optimiser_artifacts_in_background(stale_after_seconds)
+        _artifact_reaper_task = asyncio.create_task(
+            _reap_stale_job_artifacts_in_background(stale_after_seconds)
         )
         yield
     finally:
@@ -443,9 +445,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                         await _watcher_task
             finally:
                 _watcher_task = None
-                if _optimiser_reaper_task:
-                    reaper_task = _optimiser_reaper_task
-                    _optimiser_reaper_task = None
+                if _artifact_reaper_task:
+                    reaper_task = _artifact_reaper_task
+                    _artifact_reaper_task = None
                     await reaper_task
         finally:
             shutdown_interactive_worker_pool()

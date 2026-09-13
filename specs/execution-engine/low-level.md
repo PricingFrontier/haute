@@ -879,6 +879,30 @@ present a structural or schema result as execution evidence.
   Selecting `run` or `registered` is a configuration commitment: a missing `run_id`
   or `registered_model` is a loud `ConfigError` in both contract planning and the
   runtime builder, never an identity passthrough.
+- **MLflow-sourced read nodes carry their own destination.** The `MODEL_SCORE`
+  builder passes the node's `mlflow_destination` (absent or `""` = the local folder;
+  `"databricks"|"server"` when chosen) into `ModelScorer`, and the
+  `OPTIMISER_APPLY` builder's shared `apply_optimiser_apply_from_config` passes it
+  into `load_mlflow_optimiser_artifact`, so a node without a destination loads from
+  Local even when the environment configures a remote. Generated scripts read the
+  same field from the node's config sidecar (`score_from_config`, the optimiser-apply
+  config), and `validate_node_config` rejects any other value with `ConfigError`.
+  The field is classified as an artifact input in the execution cache, and the
+  runtime-input fingerprint entry of an MLflow-sourced `MODEL_SCORE` or
+  `OPTIMISER_APPLY` node additionally records the *resolved* backend identity
+  (`resolve_backend(mlflow_destination).identity`, secret-free; or an
+  "unresolved" marker with the configuration reason when resolution fails), so
+  a changed server URL or local folder, a repointed profile, or a node's changed
+  destination misses the dataframe and preview caches instead of
+  replaying predictions loaded from another backend, and removed prerequisites
+  can never be served from a warm entry. A `registered` source also records
+  `registered_version`: the concrete version its alias, `latest` or empty
+  version resolves to through the registry at fingerprint time (a concrete
+  version is recorded as given), so moving an alias or registering a newer
+  version misses both caches; a failed lookup records an "unresolved" marker
+  naming only the exception type plus a random attempt id, so every failed
+  lookup is a distinct identity and an entry cached after one failure is never
+  served during another, and execution reports the failure.
 - **`_compile_preamble` single-flight cache.** Keyed on `(preamble text, cwd,
   pipeline_dir, execution_fingerprint)`; a `_PreambleCell` per key is created under a
   tiny `_preamble_cells_guard` lock (never held during exec, so a hot cache hit never

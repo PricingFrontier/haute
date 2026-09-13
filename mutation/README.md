@@ -81,7 +81,9 @@ verified end to end against real targets (unsharded == sharded survival on
 Every target explicitly declares a positive-integer `max_pending_per_shard` in
 [`targets.json`](targets.json). The planner counts executable (pending) mutants
 only and creates `max(1, ceil(pending / cap))` shards for each target. Current
-caps are 80 for every target except `json-shred`, which is capped at 20. The
+caps are 80 for every target except `json-shred` and `executor`, which are capped
+at 20 so that their 90-second per-mutant ceiling bounds a worst-case shard's test
+portion to 30 minutes. The
 JSON/cache/runtime command currently collects 687 tests, including the complete
 inference cache, strict structural filter, shared-prefix, and byte-range limit
 contracts. Native-filter witnesses check fast-path acceptance as well as schema
@@ -116,7 +118,10 @@ uv run python scripts/run_mutation_suite.py \
 
 Timeouts are target-specific upper bounds for one witness-suite invocation.
 Most targets use 30 seconds. `json-shred` uses 90 seconds for its maintained
-557-test streaming, publication, recovery, and lifecycle command.
+557-test streaming, publication, recovery, and lifecycle command. `executor` also
+uses 90 seconds: its 695-test graph-execution command measures about 20 seconds in
+pytest and 22 to 33 seconds end to end on a Linux workstation (the same on `main`),
+and it exceeded the former 30-second ceiling on the hosted runner.
 `json-cache` uses 60 seconds for its 74-test cold-cache route command, measured
 at 32.2 seconds in pytest and 41.1 seconds end to end on the Windows development
 baseline. The exact command is measured again during every plan; the extra

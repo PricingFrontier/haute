@@ -83,6 +83,20 @@ def _isolate_repository_source_cache(
 
 
 @pytest.fixture(autouse=True)
+def _restore_mlflow_databricks_binding() -> Iterator[None]:
+    """Undo the process-global MLflow Databricks credential binding after each test.
+
+    Any Databricks destination resolution binds MLflow's credential provider and
+    artifact repository globals for the rest of the process; restoring them keeps
+    every test independent of execution order.
+    """
+    yield
+    from haute._mlflow_utils import _restore_mlflow_databricks_credentials
+
+    _restore_mlflow_databricks_credentials()
+
+
+@pytest.fixture(autouse=True)
 def _patient_preparation_join(monkeypatch: pytest.MonkeyPatch) -> None:
     """Wait longer for a preparation thread than a production shutdown does.
 
@@ -328,6 +342,16 @@ def _widen_sandbox_root(
     set_project_root(widened_root)
     yield
     set_project_root(original)
+
+
+@pytest.fixture()
+def training_artifact_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Keep job-owned training artifact directories in this test's scratch space."""
+    from haute.routes import _training_artifacts
+
+    root = (tmp_path / "training-artifacts").resolve()
+    monkeypatch.setattr(_training_artifacts, "training_artifact_root", lambda: root)
+    return root
 
 
 @pytest.fixture(autouse=True)

@@ -171,6 +171,11 @@ _VALID_TOML_SCHEMA: dict[str, set[str] | dict[str, set[str]]] = {
         "gcp-run": {"project", "region", "service"},
     },
     "test_quotes": {"dir"},
+    # Owned by the MLflow settings endpoint (routes/mlflow.py), not deploy;
+    # listed so whole-file validation accepts the file that endpoint writes.
+    # The table is a destination inventory: the retired single-mode ``mode``
+    # key is an unknown key like any other.
+    "mlflow": {"tracking_uri", "folder"},
     "safety": {
         "_self": {"impact_dataset"},
         "approval": {"min_approvers"},
@@ -497,6 +502,7 @@ class ResolvedDeploy:
     execution_policy: dict[str, Any] = field(default_factory=dict)
     removed_node_ids: list[str] = field(default_factory=list)
     snapshot_provenance: dict[str, dict[str, Any]] = field(default_factory=dict)
+    model_sources: dict[str, dict[str, Any]] = field(default_factory=dict)
     _resources: ExitStack = field(default_factory=ExitStack, repr=False, compare=False)
     _closed: bool = field(default=False, init=False, repr=False, compare=False)
 
@@ -616,6 +622,7 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
     pipeline_dir = config.pipeline_file.parent
     resources = ExitStack()
     snapshot_provenance: dict[str, dict[str, Any]] = {}
+    model_sources: dict[str, dict[str, Any]] = {}
     try:
         # Validate every local runtime path before any bundle copy, schema
         # read, or sample load.  Reuse execution's maintained enumeration so
@@ -652,6 +659,7 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
             project_root=project_root,
             resources=resources,
             snapshot_provenance=snapshot_provenance,
+            model_sources=model_sources,
         )
 
         # Infer schemas. The output-schema dry-run scores with the exact bundled
@@ -727,5 +735,6 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
         execution_policy=execution_policy,
         removed_node_ids=removed_ids,
         snapshot_provenance=snapshot_provenance,
+        model_sources=model_sources,
         _resources=resources,
     )

@@ -37,6 +37,41 @@ class TestModelScoreColumnDetectionLoud:
     reference missing) must raise ``ConfigError`` on the spot.
     """
 
+    @pytest.mark.parametrize(
+        ("config_value", "expected"),
+        [("local", "local"), ("", ""), (None, "")],
+        ids=["explicit-local", "empty-auto", "absent-auto"],
+    )
+    def test_column_planning_loads_from_the_node_destination(
+        self, config_value: str | None, expected: str
+    ) -> None:
+        """Planning must read feature names from the node's own destination.
+
+        The scorer built for the node loads from ``mlflow_destination``; if
+        the column planner loaded from the auto backend instead, a node
+        pointed at Local would reach a remote workspace just to learn its
+        feature columns, and an unavailable explicit destination would be
+        silently bypassed during planning.
+        """
+        from haute._builders import _model_score_columns
+
+        config: dict[str, Any] = {
+            "sourceType": "run",
+            "run_id": "run-1",
+            "artifact_path": "model.cbm",
+            "output_column": "pred",
+        }
+        if config_value is not None:
+            config["mlflow_destination"] = config_value
+        model = MagicMock(spec=ScoringModel)
+        model.feature_names = ["a", "b"]
+        with patch("haute._mlflow_io.load_mlflow_model", return_value=model) as mock_load:
+            produced, referenced = _model_score_columns(config)
+
+        assert produced == {"pred"}
+        assert referenced == {"a", "b"}
+        assert mock_load.call_args.kwargs["destination"] == expected
+
     def test_missing_run_id_raises_config_error(self) -> None:
         from haute._builders import _model_score_columns
 
@@ -212,7 +247,7 @@ class TestArtifactLoadCorruptionRaises:
         with (
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run_x", "", MagicMock(), MagicMock()),
+                return_value=("run_x", "", MagicMock(), MagicMock(), MagicMock()),
             ),
             patch(
                 "haute._mlflow_io._resolve_artifact_local",
@@ -267,7 +302,7 @@ class TestArtifactLoadCorruptionRaises:
         with (
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run_y", "", MagicMock(), MagicMock()),
+                return_value=("run_y", "", MagicMock(), MagicMock(), MagicMock()),
             ),
             patch(
                 "haute._mlflow_io._resolve_artifact_local",
@@ -306,7 +341,7 @@ class TestArtifactLoadCorruptionRaises:
         with (
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run_rs", "", MagicMock(), MagicMock()),
+                return_value=("run_rs", "", MagicMock(), MagicMock(), MagicMock()),
             ),
             patch(
                 "haute._mlflow_io._resolve_artifact_local",
@@ -343,7 +378,7 @@ class TestArtifactLoadCorruptionRaises:
         with (
             patch(
                 "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run_p", "", MagicMock(), MagicMock()),
+                return_value=("run_p", "", MagicMock(), MagicMock(), MagicMock()),
             ),
             patch(
                 "haute._mlflow_io._resolve_artifact_local",

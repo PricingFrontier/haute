@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useMemo } from "react"
-import { ChevronDown, ChevronRight, Plus, Layers } from "lucide-react"
+import { ChevronDown, ChevronRight, Info, Plus, Layers } from "lucide-react"
 import type { SimpleNode, SimpleEdge, OnUpdateConfig } from "./editors"
 import { solveOptimiser, estimateOptimiserSolve } from "../api/client"
 import { useDataInputColumns } from "../hooks/useDataInputColumns"
@@ -21,7 +21,14 @@ import {
   executionTerminalReasonFromError,
 } from "../utils/executionDiagnostics"
 import { configField, safeParseFloat, safeParseInt } from "../utils/configField"
+import {
+  defaultExperimentName,
+  effectiveMlflowDestination,
+  mlflowDestinationConfigValue,
+} from "../utils/mlflowDestinations"
 import { CommittedTextField } from "../components/form"
+import MlflowDestinationSelector from "../components/MlflowDestinationSelector"
+import Tooltip from "../components/Tooltip"
 import { withAlpha } from "../utils/color"
 import { classifyBandingNode } from "../utils/banding"
 import { buildGraph } from "../utils/buildGraph"
@@ -132,6 +139,14 @@ export default function OptimiserConfig({
   const advancedOpen = useSettingsStore((s) => s.isSectionOpen("optimiser.advanced"))
   const mlflowOpen = useSettingsStore((s) => s.isSectionOpen("optimiser.mlflow"))
   const toggleAdvanced = useSettingsStore((s) => s.toggleSection)
+
+  // Where this node logs is its own config, so the default experiment path
+  // follows the node's effective destination rather than the workspace's.
+  const mlflowDestination = configField(config, "mlflow_destination", "")
+  const mlflowExperimentDefault = defaultExperimentName(
+    allNodes.find((node) => node.id === nodeId)?.data.label ?? "optimiser",
+    effectiveMlflowDestination(mlflowDestination),
+  )
 
   const mode = configField(config, "mode", "online")
   const factorColumns = configField<string[][]>(config, "factor_columns", [])
@@ -708,11 +723,33 @@ export default function OptimiserConfig({
         </button>
         {mlflowOpen && (
           <div className="mt-1.5 space-y-2">
+            <MlflowDestinationSelector
+              value={mlflowDestination}
+              onChange={(value) => onUpdate("mlflow_destination", mlflowDestinationConfigValue(value))}
+              idPrefix="optimiser-mlflow-destination"
+            />
             <div>
-              <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Experiment path</label>
+              <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                <span className="inline-flex items-center gap-1">
+                  Experiment path
+                  <Tooltip
+                    label={
+                      "The MLflow experiment this optimisation result is logged into: a named " +
+                      "group that collects related runs so you can compare them. On Databricks " +
+                      "it is a workspace folder path; on an MLflow server or local folder it is " +
+                      `a plain name. Leave blank to use ${mlflowExperimentDefault}.`
+                    }
+                  >
+                    <span className="inline-flex cursor-help" aria-label="About the experiment path">
+                      <Info size={11} style={{ color: "var(--text-muted)" }} />
+                    </span>
+                  </Tooltip>
+                </span>
+              </label>
               <CommittedTextField
                 type="text"
-                placeholder="Leave blank for default"
+                aria-label="MLflow experiment path"
+                placeholder={mlflowExperimentDefault}
                 value={configField(config, "mlflow_experiment", "")}
                 onCommit={(v) => onUpdate("mlflow_experiment", v)}
                 className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs font-mono"

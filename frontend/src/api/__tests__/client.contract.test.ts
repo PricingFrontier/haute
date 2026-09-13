@@ -7,7 +7,9 @@ import {
   cancelExplore,
   cancelExplorePivot,
   cancelOptimiserFrontierAutoRange,
-  checkMlflow,
+  getMlflowDestinations,
+  getMlflowSettings,
+  testMlflowConnection,
   createSubmodel,
   createUtilityFile,
   deleteUtilityFile,
@@ -51,6 +53,8 @@ import {
   loadSubmodel,
   logOptimiserToMlflow,
   logToMlflow,
+  resolveModelSaveDestination,
+  saveTrainedModel,
   listFiles,
   outputAssembleDryRun,
   previewNode,
@@ -661,6 +665,29 @@ describe("client runtime contracts", () => {
     expect(applyResult.preview_truncated).toBe(false)
   })
 
+  it("posts trained model saves and destination previews to the modelling save routes", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("model_save_destination_response")))
+    const destination = await resolveModelSaveDestination({ output_path: "frequency", algorithm: "catboost" })
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/modelling/save/destination")
+    expect(mockFetch.mock.calls[0][1]?.method).toBe("POST")
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
+      output_path: "frequency",
+      algorithm: "catboost",
+    })
+    expect(destination.path).toBe("models/frequency.cbm")
+
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("model_save_response")))
+    const saved = await saveTrainedModel({ job_id: "job-1", output_path: "frequency", overwrite: true })
+    expect(mockFetch.mock.calls[1][0]).toBe("/api/modelling/save")
+    expect(mockFetch.mock.calls[1][1]?.method).toBe("POST")
+    expect(JSON.parse(String(mockFetch.mock.calls[1][1]?.body))).toEqual({
+      job_id: "job-1",
+      output_path: "frequency",
+      overwrite: true,
+    })
+    expect(saved.feature_contract_path).toBe("models/frequency.feature_contract.json")
+  })
+
   it("sends explicit frontier point indexes on terminal optimiser actions", async () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_apply_response")))
     await applyOptimiser({ job_id: "opt-job-1", point_index: 3 })
@@ -678,7 +705,7 @@ describe("client runtime contracts", () => {
     })
 
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("mlflow_log_response")))
-    await logOptimiserToMlflow({ job_id: "opt-job-1", point_index: 3 })
+    await logOptimiserToMlflow({ job_id: "opt-job-1", point_index: 3, destination: "" })
     expect(JSON.parse(String(mockFetch.mock.calls[2][1]?.body))).toMatchObject({
       job_id: "opt-job-1",
       point_index: 3,
@@ -803,10 +830,22 @@ describe("next-wave client runtime contracts", () => {
       error: /parseDissolveSubmodelResponse/i,
     },
     {
-      name: "checkMlflow",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_check_response"), mlflow_installed: "yes" },
-      call: () => checkMlflow(),
-      error: /parseMlflowCheckResponse/i,
+      name: "getMlflowDestinations",
+      response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_destinations_response"), destinations: "none" },
+      call: () => getMlflowDestinations(true),
+      error: /parseMlflowDestinationsResponse/i,
+    },
+    {
+      name: "getMlflowSettings",
+      response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_settings_response"), section_present: "yes" },
+      call: () => getMlflowSettings(),
+      error: /parseMlflowSettingsResponse/i,
+    },
+    {
+      name: "testMlflowConnection",
+      response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_test_connection_response"), ok: "no" },
+      call: () => testMlflowConnection(),
+      error: /parseMlflowTestConnectionResponse/i,
     },
     {
       name: "estimateTrainingRam",
@@ -817,8 +856,20 @@ describe("next-wave client runtime contracts", () => {
     {
       name: "logToMlflow",
       response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_log_response"), run_id: 42 },
-      call: () => logToMlflow({ job_id: "job-1" }),
+      call: () => logToMlflow({ job_id: "job-1", destination: "" }),
       error: /parseMlflowLogResponse/i,
+    },
+    {
+      name: "saveTrainedModel",
+      response: { ...loadUiContractFixture<Record<string, unknown>>("model_save_response"), path: 42 },
+      call: () => saveTrainedModel({ job_id: "job-1", output_path: "frequency", overwrite: false }),
+      error: /parseSaveModelResponse/i,
+    },
+    {
+      name: "resolveModelSaveDestination",
+      response: { ...loadUiContractFixture<Record<string, unknown>>("model_save_destination_response"), suffix_mismatch: 1 },
+      call: () => resolveModelSaveDestination({ output_path: "frequency", algorithm: "catboost" }),
+      error: /parseModelSaveDestinationResponse/i,
     },
     {
       name: "solveOptimiser",
@@ -847,7 +898,7 @@ describe("next-wave client runtime contracts", () => {
     {
       name: "logOptimiserToMlflow",
       response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_log_response"), tracking_uri: 42 },
-      call: () => logOptimiserToMlflow({ job_id: "opt-job-1" }),
+      call: () => logOptimiserToMlflow({ job_id: "opt-job-1", destination: "" }),
       error: /parseMlflowLogResponse/i,
     },
     {
@@ -966,10 +1017,10 @@ describe("shared client trust-boundary endpoints", () => {
     { name: "outputAssembleDryRun", body: { status: "ok", document: [], row_count: 0, error: null }, call: () => outputAssembleDryRun({ graph: dummyGraph, nodeId: "out", outputMapping: [] }), url: "/api/output-assemble/dry-run", method: "POST", malformed: { status: "ok", document: [], row_count: "1" } },
     { name: "deleteJsonCache", body: { cached: false, data_path: "cache/data" }, call: () => deleteJsonCache("/data/input.json"), url: "/api/json-cache?path=%2Fdata%2Finput.json", method: "DELETE", malformed: { cached: false } },
     { name: "inferJsonCacheSchema", body: { tables: [{ name: "drivers" }] }, call: () => inferJsonCacheSchema({ path: "/data/input.json" }), url: "/api/json-cache/infer", method: "POST", malformed: { tables: ["bad"] } },
-    { name: "getExperiments", body: [{ experiment_id: "1", name: "pricing" }], call: () => getExperiments(), url: "/api/mlflow/experiments", malformed: [{ experiment_id: "1" }] },
-    { name: "getRuns", body: [{ run_id: "r", run_name: "baseline", metrics: { auc: 0.9 }, artifacts: [] }], call: () => getRuns("exp", "model"), url: "/api/mlflow/runs?experiment_id=exp&artifact_filter=model", malformed: [{ run_id: "r", run_name: "baseline", metrics: {}, artifacts: [1] }] },
-    { name: "getModels", body: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY", run_id: "r" }] }], call: () => getModels(), url: "/api/mlflow/models", malformed: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY" }] }] },
-    { name: "getModelVersions", body: [{ version: "1", run_id: "r", status: "READY", description: "baseline" }], call: () => getModelVersions("pricing model"), url: "/api/mlflow/model-versions?model_name=pricing%20model", malformed: [{ version: "1", run_id: "r", status: "READY" }] },
+    { name: "getExperiments", body: [{ experiment_id: "1", name: "pricing" }], call: () => getExperiments(""), url: "/api/mlflow/experiments", malformed: [{ experiment_id: "1" }] },
+    { name: "getRuns", body: [{ run_id: "r", run_name: "baseline", metrics: { auc: 0.9 }, artifacts: [] }], call: () => getRuns("exp", "model", ""), url: "/api/mlflow/runs?experiment_id=exp&artifact_filter=model", malformed: [{ run_id: "r", run_name: "baseline", metrics: {}, artifacts: [1] }] },
+    { name: "getModels", body: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY", run_id: "r" }] }], call: () => getModels(""), url: "/api/mlflow/models", malformed: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY" }] }] },
+    { name: "getModelVersions", body: [{ version: "1", run_id: "r", status: "READY", description: "baseline" }], call: () => getModelVersions("pricing model", ""), url: "/api/mlflow/model-versions?model_name=pricing%20model", malformed: [{ version: "1", run_id: "r", status: "READY" }] },
     { name: "listFiles", body: { items: [{ name: "data", path: "/data", type: "directory" }] }, call: () => listFiles("/data", ".json"), url: "/api/files?dir=%2Fdata&extensions=.json", malformed: { items: [{ name: "data", path: "/data", type: "other" }] } },
     { name: "getGitGraph", body: validGitGraph, call: () => getGitGraph(5), url: "/api/git/graph?limit=5", malformed: { ...validGitGraph, branches: [{ ...validGitGraph.branches[0], entries: [{ ...validGitGraph.branches[0].entries[0], parents: [1] }] }] } },
   ]

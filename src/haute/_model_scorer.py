@@ -1236,6 +1236,8 @@ class ModelScorer:
         Registered model name (used when *source_type* is ``"registered"``).
     version : str
         Model version string (``"1"``, ``"2"``, or ``"latest"``).
+    alias : str
+        Registered model alias; when set it decides the version.
     task : Task
         ``"regression"`` or ``"classification"``.
     output_col : str
@@ -1256,6 +1258,11 @@ class ModelScorer:
     reuse_loaded_model : bool
         When true, pin the loaded model on this scorer instance. Intended for
         short-lived streaming jobs that reuse one scorer across many chunks.
+    mlflow_destination : str
+        Destination key the node was configured against (``"databricks"``,
+        ``"server"``, ``"local"``); ``""`` means the local folder. The model is
+        loaded from this destination even when the environment's other
+        destination points elsewhere.
     """
 
     def __init__(
@@ -1276,10 +1283,13 @@ class ModelScorer:
         feature_contract_path: str | None = None,
         categorical_levels: _CategoricalLevels = None,
         reuse_loaded_model: bool = False,
+        mlflow_destination: str = "",
+        alias: str = "",
     ) -> None:
         from haute.modelling._feature_contract import normalise_categorical_levels
 
         self.source_type = source_type
+        self.alias = alias
         self.run_id = run_id
         self.artifact_path = artifact_path
         self.registered_model = registered_model
@@ -1302,6 +1312,7 @@ class ModelScorer:
             else None
         )
         self.reuse_loaded_model = reuse_loaded_model
+        self.mlflow_destination = mlflow_destination
         self._scoring_model: Any | None = None
         self._scoring_model_lock = threading.Lock()
 
@@ -1316,6 +1327,8 @@ class ModelScorer:
             registered_model=self.registered_model,
             version=self.version,
             task=self.task,
+            destination=self.mlflow_destination,
+            alias=self.alias,
         )
 
     def _load_scoring_model(self) -> Any:
@@ -1476,6 +1489,8 @@ def score_from_config(
         source=_scenario_ctx.get(),
         feature_contract_path=cfg.get("feature_contract_path") or None,
         categorical_levels=cfg.get("categorical_levels") or None,
+        mlflow_destination=cfg.get("mlflow_destination", ""),
+        alias=cfg.get("alias", ""),
     )
     return scorer.score(*dfs)
 

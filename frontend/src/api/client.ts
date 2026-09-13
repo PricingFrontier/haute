@@ -62,9 +62,18 @@ import type {
   JsonCacheBuildResponse,
   JsonCacheProgressResponse,
   JsonCacheStatusResponse,
-  MlflowCheckResponse,
+  MlflowDestinationKey,
+  MlflowDestinationsResponse,
+  MlflowSettingsResponse,
+  MlflowSettingsUpdateRequest,
+  MlflowTestConnectionRequest,
+  MlflowTestConnectionResponse,
   MlflowExperiment,
   MlflowLogResponse,
+  ModelSaveDestinationRequest,
+  ModelSaveDestinationResponse,
+  SaveModelRequest,
+  SaveModelResponse,
   MlflowModel,
   MlflowModelVersion,
   MlflowRun,
@@ -143,9 +152,13 @@ import {
   parseJsonCacheProgressResponse,
   parseJsonCacheSchemaInferenceResponse,
   parseJsonCacheStatusResponse,
-  parseMlflowCheckResponse,
+  parseMlflowDestinationsResponse,
+  parseMlflowSettingsResponse,
+  parseMlflowTestConnectionResponse,
   parseMlflowExperiments,
   parseMlflowLogResponse,
+  parseModelSaveDestinationResponse,
+  parseSaveModelResponse,
   parseMlflowModels,
   parseMlflowModelVersions,
   parseMlflowRuns,
@@ -1242,11 +1255,6 @@ export function fetchExplorePivotMembers(
 // Modelling endpoints
 // ---------------------------------------------------------------------------
 
-export function checkMlflow(
-  options?: { signal?: AbortSignal },
-): Promise<MlflowCheckResponse> {
-  return request<unknown>("/api/modelling/mlflow/check", options).then(parseMlflowCheckResponse)
-}
 
 export function getTrainStatus<T extends TrainStatusResponse = TrainStatusResponse>(
   jobId: string,
@@ -1302,11 +1310,36 @@ export function estimateTrainingRam(
 }
 
 export function logToMlflow(
-  payload: { job_id: string; experiment_name?: string | null; model_name?: string | null },
+  payload: {
+    job_id: string
+    experiment_name?: string | null
+    /** `""` logs to the local folder. */
+    destination: "" | MlflowDestinationKey
+    /** One user action; a retry with the same ID returns the recorded run. */
+    operation_id?: string
+  },
   options?: { signal?: AbortSignal },
 ): Promise<MlflowLogResponse> {
   return post<unknown>("/api/modelling/mlflow/log", payload, { timeout: 600_000, ...options })
     .then(parseMlflowLogResponse)
+}
+
+/** Resolves where "Save model to file" would write, without writing. */
+export function resolveModelSaveDestination(
+  payload: ModelSaveDestinationRequest,
+  options?: { signal?: AbortSignal },
+): Promise<ModelSaveDestinationResponse> {
+  return post<unknown>("/api/modelling/save/destination", payload, { timeout: 30_000, ...options })
+    .then(parseModelSaveDestinationResponse)
+}
+
+/** Copies a completed training job's model and feature contract to a project file. */
+export function saveTrainedModel(
+  payload: SaveModelRequest,
+  options?: { signal?: AbortSignal },
+): Promise<SaveModelResponse> {
+  return post<unknown>("/api/modelling/save", payload, { timeout: 600_000, ...options })
+    .then(parseSaveModelResponse)
 }
 
 // ---------------------------------------------------------------------------
@@ -1545,36 +1578,89 @@ export function inferJsonCacheSchema(
 }
 
 // ---------------------------------------------------------------------------
-// MLflow endpoints (used by ModelScoreEditor + OptimiserApplyEditor)
+// MLflow endpoints (connection surface + discovery for the model editors)
 // ---------------------------------------------------------------------------
 
+export function getMlflowDestinations(
+  probe: boolean,
+  options?: { signal?: AbortSignal },
+): Promise<MlflowDestinationsResponse> {
+  return request<unknown>(`/api/mlflow/destinations?probe=${probe ? "true" : "false"}`, options)
+    .then(parseMlflowDestinationsResponse)
+}
+
+export function getMlflowSettings(
+  options?: { signal?: AbortSignal },
+): Promise<MlflowSettingsResponse> {
+  return request<unknown>("/api/mlflow/settings", options).then(parseMlflowSettingsResponse)
+}
+
+export function putMlflowSettings(
+  payload: MlflowSettingsUpdateRequest,
+  options?: { signal?: AbortSignal },
+): Promise<MlflowSettingsResponse> {
+  return request<unknown>("/api/mlflow/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    ...options,
+  }).then(parseMlflowSettingsResponse)
+}
+
+export function testMlflowConnection(
+  payload: MlflowTestConnectionRequest = { destination: "" },
+  options?: { signal?: AbortSignal },
+): Promise<MlflowTestConnectionResponse> {
+  return post<unknown>("/api/mlflow/test-connection", payload, options ?? {})
+    .then(parseMlflowTestConnectionResponse)
+}
+
+// Discovery is destination-scoped: `""` means the local folder and is sent as
+// an absent query param, which the backend also reads as the local folder.
+function destinationQuery(destination: string): string {
+  return destination === "" ? "" : `destination=${encodeURIComponent(destination)}`
+}
+
 export function getExperiments(
+  destination: string,
   options?: { signal?: AbortSignal },
 ): Promise<MlflowExperiment[]> {
-  return request<unknown>("/api/mlflow/experiments", options).then(parseMlflowExperiments)
+  const query = destinationQuery(destination)
+  return request<unknown>(`/api/mlflow/experiments${query === "" ? "" : `?${query}`}`, options)
+    .then(parseMlflowExperiments)
 }
 
 export function getRuns(
   experimentId: string,
-  artifactFilter?: string,
+  artifactFilter: string | undefined,
+  destination: string,
   options?: { signal?: AbortSignal },
 ): Promise<MlflowRun[]> {
   const params = new URLSearchParams({ experiment_id: experimentId })
   if (artifactFilter) params.set("artifact_filter", artifactFilter)
+  if (destination !== "") params.set("destination", destination)
   return request<unknown>(`/api/mlflow/runs?${params.toString()}`, options).then(parseMlflowRuns)
 }
 
 export function getModels(
+  destination: string,
   options?: { signal?: AbortSignal },
 ): Promise<MlflowModel[]> {
-  return request<unknown>("/api/mlflow/models", options).then(parseMlflowModels)
+  const query = destinationQuery(destination)
+  return request<unknown>(`/api/mlflow/models${query === "" ? "" : `?${query}`}`, options)
+    .then(parseMlflowModels)
 }
 
 export function getModelVersions(
   modelName: string,
+  destination: string,
   options?: { signal?: AbortSignal },
 ): Promise<MlflowModelVersion[]> {
-  return request<unknown>(`/api/mlflow/model-versions?model_name=${encodeURIComponent(modelName)}`, options).then(parseMlflowModelVersions)
+  const query = destinationQuery(destination)
+  return request<unknown>(
+    `/api/mlflow/model-versions?model_name=${encodeURIComponent(modelName)}${query === "" ? "" : `&${query}`}`,
+    options,
+  ).then(parseMlflowModelVersions)
 }
 
 // ---------------------------------------------------------------------------

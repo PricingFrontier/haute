@@ -116,6 +116,7 @@ class _CapturingTrainingJob:
     """
 
     captured: ClassVar[list[dict[str, Any]]] = []
+    training_identity_sha256 = "a" * 64
 
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
@@ -236,6 +237,7 @@ class TestCatBoostParamRouting:
         frequency_data,
         capturing_job,
         inline_training_worker,
+        training_artifact_root,
     ):
         """Pin the exact params CatBoost training receives: config GLM keys must
         not leak into ``params`` while ``offset`` still arrives as its own kwarg."""
@@ -286,7 +288,7 @@ class TestCatBoostParamRouting:
             },
             "metrics": ["rmse"],
             "mlflow_experiment": None,
-            "model_name": None,
+            "mlflow_destination": "",
             "output_dir": kwargs["output_dir"],
             "loss_function": "RMSE",
             "variance_power": None,
@@ -298,7 +300,9 @@ class TestCatBoostParamRouting:
         }
         staged_output = Path(kwargs["output_dir"])
         assert staged_output.name == "output"
-        assert staged_output.parent.name.startswith(".haute-training-")
+        # Canvas training writes into a job-owned directory, never the node's output_dir.
+        assert staged_output.parent.parent == training_artifact_root
+        assert staged_output.parent.name.startswith("train_")
 
     def test_glm_receives_merged_glm_config_in_params(
         self,

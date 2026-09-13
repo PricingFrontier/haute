@@ -5,20 +5,16 @@
  * used for model or parameter selection.
  */
 import { useId, type ReactNode } from "react"
-import { Activity, ChartNoAxesCombined, Database, FlaskConical, SlidersHorizontal, Target, type LucideIcon } from "lucide-react"
+import { Activity, ChartNoAxesCombined, Database, SlidersHorizontal, Target, type LucideIcon } from "lucide-react"
 import type {
   EvaluationMetricSummary,
   TuningReport,
 } from "../../api/types"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { MODEL_COLORS } from "../../theme/colors"
-import { MlflowExportSection } from "./MlflowExportSection"
 
 interface SummaryTabProps {
   result: TrainResult
-  jobId: string
-  mlflowBackend: { installed: boolean; backend: string; host: string } | null
-  config: Record<string, unknown>
   onUseBestParameters?: (params: Record<string, unknown>) => void
   elapsedSeconds?: number | null
 }
@@ -182,9 +178,6 @@ function SelectionMetricsTable({
 
 export function SummaryTab({
   result,
-  jobId,
-  mlflowBackend,
-  config,
   onUseBestParameters,
   elapsedSeconds,
 }: SummaryTabProps) {
@@ -356,12 +349,6 @@ export function SummaryTab({
               </div>
             ))}
           </dl>
-          <div className="pt-2" style={{ borderTop: "1px solid var(--border)" }}>
-            <div className="text-[11px]" style={{ color: "var(--text-muted)" }}>Model path</div>
-            <div className="mt-1 break-all font-mono text-[11px] select-text" title={result.model_path} style={{ color: "var(--text-primary)" }}>
-              {result.model_path}
-            </div>
-          </div>
         </SummaryCard>
 
         {result.glm_regularization_path &&
@@ -551,17 +538,6 @@ export function SummaryTab({
         </SummaryCard>
       )}
 
-      {mlflowBackend?.installed && jobId && (
-        <SummaryCard title="Experiment tracking" icon={FlaskConical} description="Log this trained model and its results to MLflow.">
-          <div className="max-w-sm">
-            <MlflowExportSection
-              trainJobId={jobId}
-              mlflowBackend={mlflowBackend}
-              config={config}
-            />
-          </div>
-        </SummaryCard>
-      )}
     </div>
   )
 }

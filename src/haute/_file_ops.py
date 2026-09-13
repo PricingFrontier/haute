@@ -38,9 +38,10 @@ mkdir that masks configuration bugs.
 from __future__ import annotations
 
 import os
+import shutil
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import TracebackType
 
@@ -95,6 +96,67 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
         except BaseException as cleanup_exc:
             exc.add_note(f"atomic-write staging cleanup failed: {cleanup_exc}")
         raise
+
+
+def atomic_copy_files(pairs: Sequence[tuple[Path, Path]]) -> None:
+    """Copy each (source, target) pair transactionally: all targets change or none do.
+
+    Every source is first staged with ``shutil.copyfile`` to a unique sibling
+    temp file of its target, so a copy failure changes nothing. Each existing
+    target is then moved to a unique sibling backup before its staged copy
+    replaces it (both renames use the Windows sharing-violation retry of
+    ``atomic_write_bytes``). If any step fails, every newly published target is
+    removed, every backup is restored, and every remaining staged copy is
+    deleted before the error is re-raised. Backups are deleted only after every
+    replacement succeeded; a backup that cannot be deleted then is logged and
+    left as a hidden sibling, because the copy has already committed. As with
+    ``atomic_write_bytes``, the parent directory of each target must already exist.
+    """
+    staged: list[tuple[Path, Path]] = []
+    backups: list[tuple[Path, Path]] = []
+    published: list[Path] = []
+    try:
+        for source, target in pairs:
+            tmp = _temp_path_for(target)
+            # Registered before copying: a copy that writes part of the file
+            # and then fails still leaves a staged file to clean up.
+            staged.append((tmp, target))
+            shutil.copyfile(source, tmp)
+        for tmp, target in staged:
+            if target.exists() or target.is_symlink():
+                backup = target.with_name(f".{target.name}.{uuid.uuid4().hex}.backup")
+                _replace_with_windows_contention_retry(target, backup)
+                backups.append((backup, target))
+            _replace_with_windows_contention_retry(tmp, target)
+            published.append(target)
+    except BaseException as exc:
+        for target in reversed(published):
+            try:
+                target.unlink(missing_ok=True)
+            except BaseException as cleanup_exc:
+                exc.add_note(f"atomic-copy rollback could not remove {target}: {cleanup_exc}")
+        for backup, target in reversed(backups):
+            try:
+                _replace_with_windows_contention_retry(backup, target)
+            except BaseException as cleanup_exc:
+                exc.add_note(f"atomic-copy rollback could not restore {target}: {cleanup_exc}")
+        for tmp, _target in staged:
+            try:
+                tmp.unlink(missing_ok=True)
+            except BaseException as cleanup_exc:
+                exc.add_note(f"atomic-copy staging cleanup failed: {cleanup_exc}")
+        raise
+    for backup, _target in backups:
+        try:
+            backup.unlink()
+        except OSError as exc:
+            from haute._logging import get_logger
+
+            get_logger(component="file_ops").warning(
+                "atomic_copy_backup_cleanup_failed",
+                path=str(backup),
+                error_type=type(exc).__name__,
+            )
 
 
 def atomic_write_text(path: Path, data: str, encoding: str = "utf-8") -> None:

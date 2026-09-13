@@ -1,9 +1,9 @@
 """MLflow experiment logging and shared tracking helpers.
 
 Shared helpers (used by training, optimiser, and model-loading routes):
-- ``resolve_tracking_backend()`` — detect Databricks vs local MLflow.
+- ``resolve_tracking_backend()`` — resolve a destination key ("" = local) to a tracking URI.
 - ``configure_mlflow_tracking()`` — set tracking/registry URIs.
-- ``resolve_experiment_name()`` — standard fallback chain for experiment names.
+- ``resolve_experiment_name()`` — the requested experiment, else the backend default.
 - ``build_run_url()`` — build a Databricks run URL from experiment name + run ID.
 
 Training-specific:
@@ -13,16 +13,23 @@ Training-specific:
 from __future__ import annotations
 
 import json
-import math
 import os
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from haute._logging import get_logger
+from haute._mlflow_utils import (
+    mlflow_fluent_operation,
+    registry_uri_for_tracking,
+    runtime_environment_inference,
+    set_experiment_creating_workspace_folder,
+    set_tracking_uri_preserving_env,
+)
 from haute.errors import HauteValidationError
+from haute.modelling._candidate_run import CandidateRun
 from haute.modelling._result_types import ModelCardMetadata, ModelDiagnostics
 
 logger = get_logger(component="mlflow_log")
@@ -32,65 +39,65 @@ logger = get_logger(component="mlflow_log")
 class MLflowLogResult:
     """Result of logging an experiment to MLflow."""
 
-    backend: str  # "databricks" or "local"
+    backend: str  # "databricks", "server", or "local"
     experiment_name: str
     run_id: str
     tracking_uri: str
-    run_url: str | None  # Databricks URL to the run, or None for local
+    run_url: str | None  # Databricks/server URL to the run, or None for local
 
 
-def resolve_tracking_backend() -> tuple[str, str]:
-    """Detect whether to use Databricks MLflow or local file-based MLflow.
+def resolve_tracking_backend(destination: str = "") -> tuple[str, str]:
+    """Resolve the tracking destination to ``(tracking_uri, backend)``.
 
-    Returns:
-        (tracking_uri, backend_label) — e.g. ("databricks", "databricks")
-        or ("file:///path/to/mlruns", "local").
+    Thin wrapper over
+    :func:`haute.modelling._mlflow_settings.resolve_destination`: an empty
+    *destination* is the local folder, and Databricks or a server is used only
+    when named. ``backend`` is ``"databricks"``, ``"server"``, or ``"local"``.
+
+    Raises:
+        MlflowConfigError: for an unknown or unconfigured destination, or an
+            unsupported tracking-URI form — never a silent fallback.
     """
-    host = os.getenv("DATABRICKS_HOST", "")
-    token = os.getenv("DATABRICKS_TOKEN", "")
+    from haute.modelling._mlflow_settings import node_destination_key, resolve_destination
 
-    if host and token:
-        return "databricks", "databricks"
-
-    mlruns_dir = Path.cwd() / "mlruns"
-    return mlruns_dir.as_uri(), "local"
+    config = resolve_destination(node_destination_key(destination))
+    return config.tracking_uri, config.mode
 
 
 def resolve_experiment_name(
     *,
     explicit: str | None = None,
-    config_value: str | None = None,
     node_label: str,
     backend: str | None = None,
+    destination: str = "",
 ) -> str:
-    """Build the MLflow experiment name using a standard fallback chain.
+    """Return the MLflow experiment a log request targets.
 
-    Resolution order (highest wins):
-      1. *explicit* — user override from the UI request body.
-      2. *config_value* — ``mlflow_experiment`` from the node config.
-      3. Backend-aware default — ``/Shared/haute/{node_label}`` for
-         Databricks, ``{node_label}`` for local.
+    *explicit* is the experiment the request names — the node's current
+    Export setting. When it is blank the backend-aware default applies:
+    ``/Shared/haute/{node_label}`` for Databricks, the bare ``{node_label}``
+    for server and local modes. A training-time snapshot of the setting is
+    never consulted, so clearing the field logs to the default it shows.
 
     If *backend* is not supplied the current backend is detected via
-    :func:`resolve_tracking_backend`.
+    :func:`resolve_tracking_backend` with *destination*.
     """
     if explicit:
         return explicit
-    if config_value:
-        return config_value
     if backend is None:
-        _, backend = resolve_tracking_backend()
+        _, backend = resolve_tracking_backend(destination)
     if backend == "databricks":
         return f"/Shared/haute/{node_label}"
     return node_label
 
 
-def configure_mlflow_tracking() -> tuple[str, str]:
+def configure_mlflow_tracking(destination: str = "") -> tuple[str, str]:
     """Resolve the MLflow backend and configure tracking/registry URIs.
 
-    Calls :func:`resolve_tracking_backend`, then sets the tracking URI
-    (and registry URI for Databricks).  Must be called after
-    ``import mlflow``.
+    Calls :func:`resolve_tracking_backend` with *destination*, then sets
+    the tracking URI and matching registry URI while preserving the
+    configured environment. Call inside :func:`mlflow_fluent_operation`
+    so another writer cannot change the destination before the run finishes.
 
     Returns:
         ``(tracking_uri, backend)`` — same pair as
@@ -98,7 +105,7 @@ def configure_mlflow_tracking() -> tuple[str, str]:
     """
     import mlflow
 
-    tracking_uri, backend = resolve_tracking_backend()
+    tracking_uri, backend = resolve_tracking_backend(destination)
     if backend == "local":
         # mlflow 3.14 puts the local filesystem tracking backend into
         # "maintenance mode" and raises MlflowException at FileStore
@@ -106,9 +113,8 @@ def configure_mlflow_tracking() -> tuple[str, str]:
         # workflow logs to ./mlruns, so opt in here. setdefault keeps a user
         # who set the variable explicitly in control.
         os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
-    mlflow.set_tracking_uri(tracking_uri)
-    if backend == "databricks":
-        mlflow.set_registry_uri("databricks-uc")
+    set_tracking_uri_preserving_env(mlflow, tracking_uri)
+    mlflow.set_registry_uri(registry_uri_for_tracking(tracking_uri))
     return tracking_uri, backend
 
 
@@ -117,18 +123,37 @@ def build_run_url(
     experiment_name: str,
     run_id: str,
 ) -> str | None:
-    """Build a Databricks run URL, or return ``None`` for local backends.
+    """Build a Databricks/server run URL, or return ``None`` for local mode.
 
     Uses ``mlflow.get_experiment_by_name`` to resolve the experiment ID
-    (Databricks URLs require the numeric ID, not the name).
+    (run URLs require the numeric ID, not the name). Databricks URLs point
+    at the workspace host; server URLs point at the configured tracking
+    server's own UI.
     """
-    if backend != "databricks":
+    if backend not in ("databricks", "server"):
         return None
 
     import mlflow
 
-    host = os.getenv("DATABRICKS_HOST", "").rstrip("/")
-    if not host:
+    if backend == "databricks":
+        # The host MLflow's requests actually target: the MLflow pair or the
+        # selected profile, never the data-access DATABRICKS_HOST.
+        from mlflow.utils.databricks_utils import get_databricks_host_creds
+
+        try:
+            base = (get_databricks_host_creds(mlflow.get_tracking_uri()).host or "").rstrip("/")
+        except Exception:
+            logger.debug("run_url_host_unavailable", exc_info=True)
+            return None
+        path = "#mlflow/experiments"
+    else:
+        from haute.modelling._mlflow_settings import redact_uri
+
+        # A credential-bearing env tracking URI must not leak into the
+        # displayed run link.
+        base = redact_uri(mlflow.get_tracking_uri()).rstrip("/")
+        path = "#/experiments"
+    if not base:
         return None
     try:
         exp = mlflow.get_experiment_by_name(experiment_name)
@@ -138,10 +163,122 @@ def build_run_url(
                 experiment_name=experiment_name,
             )
             return None
-        return f"{host}/#mlflow/experiments/{exp.experiment_id}/runs/{run_id}"
+        return f"{base}/{path}/{exp.experiment_id}/runs/{run_id}"
     except Exception:
         logger.debug("run_url_build_failed", exc_info=True)
         return None
+
+
+_DIAGNOSTIC_ARTIFACTS: tuple[tuple[str, str, str], ...] = (
+    ("shap_summary", "shap_summary", "shap"),
+    ("feature_importance_loss", "importance_loss", "importance"),
+    ("double_lift", "double_lift", "diagnostics"),
+    ("loss_history", "loss_history", "diagnostics"),
+    ("feature_importance", "importance_prediction", "importance"),
+    ("ave_per_feature", "ave_per_feature", "diagnostics"),
+    ("residuals_histogram", "residuals_histogram", "diagnostics"),
+    ("residuals_stats", "residuals_stats", "diagnostics"),
+    ("actual_vs_predicted", "actual_vs_predicted", "diagnostics"),
+    ("lorenz_curve", "lorenz_curve", "diagnostics"),
+    ("lorenz_curve_perfect", "lorenz_curve_perfect", "diagnostics"),
+    ("pdp_data", "pdp_data", "diagnostics"),
+    ("glm_coefficients", "glm_coefficients", "glm"),
+    ("glm_relativities", "glm_relativities", "glm"),
+    ("glm_fit_statistics", "glm_fit_statistics", "glm"),
+    ("glm_regularization_path", "glm_regularization_path", "glm"),
+)
+
+
+@mlflow_fluent_operation()
+def log_experiment(
+    *,
+    experiment_name: str,
+    candidate: CandidateRun,
+    destination: str = "",
+    check_cancelled: Callable[[], None] | None = None,
+) -> MLflowLogResult:
+    """Log a candidate training run to MLflow.
+
+    Every artifact is verified before any tracking call, so a run is only
+    created for a complete candidate. Registration never happens here: a
+    separate promotion process registers candidates.
+
+    Returns:
+        MLflowLogResult with backend, experiment name, run ID, and URLs.
+    """
+    import mlflow
+
+    candidate.artifacts.require_files()
+
+    def _check_cancelled() -> None:
+        if check_cancelled is not None:
+            check_cancelled()
+
+    tracking_uri, backend = configure_mlflow_tracking(destination)
+    logger.info("mlflow_logging_started", experiment=experiment_name, backend=backend)
+
+    set_experiment_creating_workspace_folder(mlflow, experiment_name)
+    _check_cancelled()
+
+    diag = candidate.diagnostics
+    with mlflow.start_run(run_name=candidate.run_name, tags=dict(candidate.tags)) as run:
+        _check_cancelled()
+        # Truncate params to 500 chars (MLflow limit) and batch in groups of 100
+        truncated_params = {k: str(v)[:500] for k, v in candidate.params.items()}
+        param_items = list(truncated_params.items())
+        for i in range(0, len(param_items), 100):
+            _check_cancelled()
+            mlflow.log_params(dict(param_items[i : i + 100]))
+        mlflow.log_metrics(dict(candidate.metrics))
+        _check_cancelled()
+
+        # The model carries a ModelSignature from the feature contract, so a
+        # scorer can detect train-vs-score drift from the MLflow artifact alone.
+        _log_model_with_signature(
+            mlflow,
+            model_path=candidate.artifacts.model,
+            metadata=candidate.metadata,
+        )
+        mlflow.log_artifact(str(candidate.artifacts.feature_contract))
+        _check_cancelled()
+
+        for field_name, prefix, artifact_dir in _DIAGNOSTIC_ARTIFACTS:
+            value = getattr(diag, field_name)
+            if value:
+                _log_json_artifact(mlflow, value, prefix, artifact_dir)
+
+        for artifact_kind, path in candidate.artifacts.evidence.items():
+            _check_cancelled()
+            artifact_dir = "tuning" if artifact_kind.startswith("tuning_") else "evaluation"
+            mlflow.log_artifact(str(path), artifact_dir)
+
+        _check_cancelled()
+        try:
+            _log_model_card(
+                mlflow,
+                name=candidate.run_name,
+                metrics=dict(candidate.metrics),
+                params=dict(candidate.params),
+                diagnostics=diag,
+                metadata=candidate.metadata,
+            )
+        except Exception as exc:
+            logger.warning("model_card_generation_failed", error_type=type(exc).__name__)
+            mlflow.set_tag("haute.model_card", "unavailable")
+
+        run_id = run.info.run_id
+        _check_cancelled()
+
+    run_url = build_run_url(backend, experiment_name, run_id)
+
+    logger.info("mlflow_logging_completed", run_id=run_id, backend=backend)
+    return MLflowLogResult(
+        backend=backend,
+        experiment_name=experiment_name,
+        run_id=run_id,
+        tracking_uri=tracking_uri,
+        run_url=run_url,
+    )
 
 
 def _log_json_artifact(mlflow: Any, data: Any, prefix: str, artifact_dir: str) -> None:
@@ -160,463 +297,76 @@ def _log_json_artifact(mlflow: Any, data: Any, prefix: str, artifact_dir: str) -
         os.unlink(f.name)
 
 
-def log_experiment(
-    *,
-    experiment_name: str,
-    run_name: str,
-    metrics: dict[str, float],
-    params: dict[str, Any],
-    diagnostics: ModelDiagnostics | None = None,
-    metadata: ModelCardMetadata | None = None,
-    model_path: str | None = None,
-    model_name: str | None = None,
-    artifact_paths: Mapping[str, str | Path] | None = None,
-    check_cancelled: Callable[[], None] | None = None,
-) -> MLflowLogResult:
-    """Log a training experiment to MLflow.
-
-    Auto-detects Databricks (when DATABRICKS_HOST/TOKEN present)
-    vs local file-based MLflow.
-
-    Returns:
-        MLflowLogResult with backend, experiment name, run ID, and URLs.
-    """
-    import mlflow
-
-    diag = diagnostics or ModelDiagnostics()
-    meta = metadata or ModelCardMetadata()
-
-    tracking_uri, backend = configure_mlflow_tracking()
-    logger.info("mlflow_logging_started", experiment=experiment_name, backend=backend)
-
-    mlflow.set_experiment(experiment_name)
-
-    def _check_cancelled() -> None:
-        if check_cancelled is not None:
-            check_cancelled()
-
-    _check_cancelled()
-
-    # Enhanced params: add training metadata
-    enhanced_params = dict(params)
-    development_rows = meta.development_rows or meta.train_rows + meta.validation_rows
-    final_test_rows = meta.final_test_rows or meta.holdout_rows
-    if development_rows:
-        enhanced_params["development_rows"] = development_rows
-    if final_test_rows:
-        enhanced_params["final_test_rows"] = final_test_rows
-    if meta.features:
-        enhanced_params["n_features"] = len(meta.features)
-    if meta.best_iteration is not None:
-        enhanced_params["best_iteration"] = meta.best_iteration
-    if diag.tuning is not None:
-        tuning = diag.tuning
-        for field in (
-            "metric",
-            "direction",
-            "winner_trial_index",
-            "trial_count",
-            "total_fit_count",
-            "final_tree_count",
-        ):
-            if field not in tuning:
-                raise HauteValidationError(f"tuning summary is missing {field}")
-            enhanced_params[f"tuning_{field}"] = tuning[field]
-
-    with mlflow.start_run(run_name=run_name) as run:
-        _check_cancelled()
-        # Truncate params to 500 chars (MLflow limit) and batch in groups of 100
-        truncated_params = {k: str(v)[:500] for k, v in enhanced_params.items()}
-        param_items = list(truncated_params.items())
-        for i in range(0, len(param_items), 100):
-            _check_cancelled()
-            mlflow.log_params(dict(param_items[i : i + 100]))
-        mlflow.log_metrics(metrics)
-        _check_cancelled()
-
-        # Log the trained model with a ModelSignature so downstream
-        # scorers can detect train-vs-score feature drift from the MLflow
-        # artifact alone. Native flavors that wrap the model file (e.g.
-        # CatBoost) keep the artifact inside the MLflow model dir; flavors
-        # logged via pyfunc upload the native file separately so run
-        # discovery (_find_rsglm_artifact, etc.) can still locate it.
-        if model_path and Path(model_path).exists():
-            _check_cancelled()
-            _log_model_with_signature(
-                mlflow,
-                model_path=model_path,
-                algorithm=meta.algorithm,
-                task=meta.task,
-                features=meta.features,
-                feature_types=meta.feature_types,
-                categorical_features=meta.categorical_features,
-                target_name=meta.target_name,
-                target_type=meta.target_type,
-                offset_name=meta.offset_name,
-                offset_type=meta.offset_type,
-            )
-            _check_cancelled()
-
-        # Log SHAP summary
-        if diag.shap_summary:
-            _log_json_artifact(mlflow, diag.shap_summary, "shap_summary", "shap")
-
-        # Log LossFunctionChange importance
-        if diag.feature_importance_loss:
-            _log_json_artifact(
-                mlflow,
-                diag.feature_importance_loss,
-                "importance_loss",
-                "importance",
-            )
-
-        # Log double lift
-        if diag.double_lift:
-            _log_json_artifact(mlflow, diag.double_lift, "double_lift", "diagnostics")
-
-        # Log loss history
-        if diag.loss_history:
-            _log_json_artifact(
-                mlflow,
-                diag.loss_history,
-                "loss_history",
-                "diagnostics",
-            )
-
-        # Log PredictionValuesChange importance
-        if diag.feature_importance:
-            _log_json_artifact(
-                mlflow,
-                diag.feature_importance,
-                "importance_prediction",
-                "importance",
-            )
-
-        # Log AvE per feature
-        if diag.ave_per_feature:
-            _log_json_artifact(
-                mlflow,
-                diag.ave_per_feature,
-                "ave_per_feature",
-                "diagnostics",
-            )
-
-        # Log residuals
-        if diag.residuals_histogram:
-            _log_json_artifact(
-                mlflow,
-                diag.residuals_histogram,
-                "residuals_histogram",
-                "diagnostics",
-            )
-        if diag.residuals_stats:
-            _log_json_artifact(
-                mlflow,
-                diag.residuals_stats,
-                "residuals_stats",
-                "diagnostics",
-            )
-
-        # Log actual vs predicted
-        if diag.actual_vs_predicted:
-            _log_json_artifact(
-                mlflow,
-                diag.actual_vs_predicted,
-                "actual_vs_predicted",
-                "diagnostics",
-            )
-
-        # Log Lorenz curves
-        if diag.lorenz_curve:
-            _log_json_artifact(
-                mlflow,
-                diag.lorenz_curve,
-                "lorenz_curve",
-                "diagnostics",
-            )
-        if diag.lorenz_curve_perfect:
-            _log_json_artifact(
-                mlflow,
-                diag.lorenz_curve_perfect,
-                "lorenz_curve_perfect",
-                "diagnostics",
-            )
-
-        # Log PDP
-        if diag.pdp_data:
-            _log_json_artifact(mlflow, diag.pdp_data, "pdp_data", "diagnostics")
-
-        # Log GLM-specific diagnostics
-        if diag.glm_coefficients:
-            _log_json_artifact(
-                mlflow,
-                diag.glm_coefficients,
-                "glm_coefficients",
-                "glm",
-            )
-        if diag.glm_relativities:
-            _log_json_artifact(
-                mlflow,
-                diag.glm_relativities,
-                "glm_relativities",
-                "glm",
-            )
-        if diag.glm_fit_statistics:
-            _log_json_artifact(
-                mlflow,
-                diag.glm_fit_statistics,
-                "glm_fit_statistics",
-                "glm",
-            )
-            # Also log key GLM stats as top-level metrics
-            for key in ("aic", "bic", "deviance", "null_deviance"):
-                if key in diag.glm_fit_statistics:
-                    mlflow.log_metric(key, diag.glm_fit_statistics[key])
-        if diag.glm_regularization_path:
-            _log_json_artifact(
-                mlflow,
-                diag.glm_regularization_path,
-                "glm_regularization_path",
-                "glm",
-            )
-
-        # Log untouched final-test estimates under unambiguous metric names.
-        final_test_metrics = diag.final_test_metrics or diag.holdout_metrics
-        if final_test_metrics:
-            for k, v in final_test_metrics.items():
-                _check_cancelled()
-                mlflow.log_metric(f"final_test_{k}", v)
-
-        for name, summary in diag.selection_metrics.items():
-            if not isinstance(summary, Mapping):
-                continue
-            for statistic in ("mean", "stddev", "min", "max"):
-                value = summary.get(statistic)
-                if isinstance(value, int | float):
-                    _check_cancelled()
-                    mlflow.log_metric(
-                        f"selection_{name}_{statistic}",
-                        float(value),
-                    )
-
-        if diag.tuning is not None:
-            tuning = diag.tuning
-            metric_name = str(tuning["metric"])
-            for label, field in (
-                ("baseline", "baseline_objective"),
-                ("winner", "winner_objective"),
-                ("improvement", "improvement"),
-            ):
-                value = tuning.get(field)
-                if (
-                    isinstance(value, bool)
-                    or not isinstance(value, int | float)
-                    or not math.isfinite(float(value))
-                ):
-                    raise HauteValidationError(f"tuning summary {field} must be finite")
-                _check_cancelled()
-                mlflow.log_metric(
-                    f"tuning_{label}_{metric_name}",
-                    float(value),
-                )
-
-        if artifact_paths:
-            for artifact_kind, raw_path in artifact_paths.items():
-                _check_cancelled()
-                path = Path(raw_path)
-                if not path.is_file():
-                    raise FileNotFoundError(
-                        f"MLflow {artifact_kind} artifact does not exist: {path}"
-                    )
-                artifact_dir = "tuning" if artifact_kind.startswith("tuning_") else "evaluation"
-                mlflow.log_artifact(str(path), artifact_dir)
-
-        # Generate and log model card (best-effort — never fails the run)
-        try:
-            _check_cancelled()
-            _log_model_card(
-                mlflow,
-                name=run_name,
-                metrics=metrics,
-                params=params,
-                diagnostics=diag,
-                metadata=meta,
-            )
-        except Exception:
-            logger.warning("model_card_generation_failed", exc_info=True)
-
-        # Register model (Databricks UC only)
-        if model_name and model_path and backend == "databricks":
-            _check_cancelled()
-            try:
-                mlflow.register_model(f"runs:/{run.info.run_id}/model", model_name)
-            except Exception:
-                logger.warning("mlflow_model_registration_failed", exc_info=True)
-
-        run_id = run.info.run_id
-        _check_cancelled()
-
-    run_url = build_run_url(backend, experiment_name, run_id)
-
-    logger.info("mlflow_logging_completed", run_id=run_id, backend=backend)
-    return MLflowLogResult(
-        backend=backend,
-        experiment_name=experiment_name,
-        run_id=run_id,
-        tracking_uri=tracking_uri,
-        run_url=run_url,
-    )
-
-
 def _log_model_with_signature(
     mlflow: Any,
     *,
-    model_path: str,
-    algorithm: str,
-    task: str,
-    features: list[str],
-    feature_types: dict[str, str],
-    categorical_features: list[str],
-    target_name: str,
-    target_type: str,
-    offset_name: str = "",
-    offset_type: str = "",
+    model_path: Path,
+    metadata: ModelCardMetadata,
 ) -> None:
     """Log a trained model to MLflow with a ``ModelSignature`` attached.
 
-    The signature's input schema preserves the exact training feature
-    order and dtypes — deploy-time scorers can then use
-    ``mlflow.models.get_model_info(run_uri).signature`` to detect drift.
-
-    Dispatches to ``mlflow.catboost.log_model`` for ``.cbm`` artifacts and
-    to ``mlflow.pyfunc.log_model`` otherwise; when the model is a
-    ``.rsglm`` (RustyStats GLM) we still log via pyfunc because MLflow has
-    no native flavor for it and a pyfunc signature is the contract the
-    deploy scorer actually consults.
-
-    If the caller lacks the feature metadata and the model file cannot be
-    loaded to infer feature names (test harnesses, mid-training crashes),
-    ``signature`` is still passed explicitly as ``None`` — the kwarg
-    presence lets downstream code detect that log_model was used and not
-    fall back to an untyped artifact upload.
-    """
-    model_file = Path(model_path)
-    resolved_task = "classification" if task == "classification" else "regression"
-
-    signature = _build_signature_for_log(
-        model_file=model_file,
-        task=resolved_task,
-        features=features,
-        feature_types=feature_types,
-        categorical_features=categorical_features,
-        target_name=target_name,
-        target_type=target_type,
-        offset_name=offset_name,
-        offset_type=offset_type,
-    )
-
-    if model_file.suffix == ".cbm":
-        # Native CatBoost flavor — loads the .cbm directly so the logged
-        # model is invokable through the MLflow pyfunc layer too.
-        from catboost import CatBoostClassifier, CatBoostRegressor
-
-        cat_model: Any
-        try:
-            cat_model = (
-                CatBoostClassifier() if resolved_task == "classification" else CatBoostRegressor()
-            )
-            cat_model.load_model(str(model_file))
-        except Exception:
-            # Fake/unloadable file (test fixtures, or a mid-training crash):
-            # we still call log_model with the signature kwarg so downstream
-            # verifiers see the contract-bearing call site.
-            cat_model = None
-        mlflow.catboost.log_model(
-            cb_model=cat_model,
-            artifact_path="model",
-            signature=signature,
-        )
-        return
-
-    # Non-CatBoost flavors (RustyStats .rsglm, generic): log via pyfunc so
-    # the signature is still attached to the MLflow artifact.  pyfunc only
-    # registers the loader module — it doesn't upload the native model
-    # file — so log it as a plain artifact at the run root too.  Run
-    # discovery (_find_rsglm_artifact / _find_model_artifact) walks the
-    # top-level artifact list before falling back to the pyfunc model
-    # directory, so the file has to be there for scoring to find it.
-    mlflow.pyfunc.log_model(
-        artifact_path="model",
-        loader_module="haute._mlflow_io",
-        signature=signature,
-    )
-    mlflow.log_artifact(str(model_file))
-
-
-def _build_signature_for_log(
-    *,
-    model_file: Path,
-    task: str,
-    features: list[str],
-    feature_types: dict[str, str],
-    categorical_features: list[str],
-    target_name: str,
-    target_type: str,
-    offset_name: str = "",
-    offset_type: str = "",
-) -> Any | None:
-    """Best-effort build of an ``mlflow.models.ModelSignature``.
-
-    Tries in order:
-
-    1. Caller-supplied ``features`` + ``feature_types`` → full contract.
-    2. Inspect a ``.cbm`` model file for ``feature_names_`` when callers
-       have not plumbed metadata through.
-    3. ``None`` — surfaces the missing-metadata case to the caller via an
-       explicit ``signature=None`` kwarg on the log call.
+    The signature's input schema preserves the exact training feature order and
+    dtypes from the feature contract. A ``.cbm`` model is logged through the
+    native CatBoost flavor; a ``.rsglm`` model through a pyfunc whose loader
+    scores with haute's own GLM path. The native file is also logged at the run
+    root, where haute's run-artifact discovery finds it.
     """
     from haute.modelling._signature import build_signature
 
-    resolved_features = list(features)
-    resolved_types = dict(feature_types)
-    resolved_cats = list(categorical_features)
-
-    if not resolved_features and model_file.suffix == ".cbm":
-        try:
-            from catboost import CatBoostRegressor
-
-            cb = CatBoostRegressor()
-            cb.load_model(str(model_file))
-            resolved_features = list(cb.feature_names_)
-            if hasattr(cb, "get_cat_feature_indices"):
-                cat_idx = set(cb.get_cat_feature_indices())
-                resolved_cats = [name for i, name in enumerate(resolved_features) if i in cat_idx]
-        except Exception:
-            # Unloadable file — fall through to the no-signature path.
-            pass
-
-    if not resolved_features:
-        return None
-
-    if not resolved_types:
-        resolved_types = {f: "Float64" for f in resolved_features}
-    else:
-        # Fill in any missing feature dtypes with a safe default — if the
-        # caller supplied partial types we respect their entries but don't
-        # crash on ``build_signature``.
-        for f in resolved_features:
-            resolved_types.setdefault(f, "Float64")
-
-    return build_signature(
-        features=resolved_features,
-        feature_types=resolved_types,
-        categorical_features=resolved_cats,
-        target_name=target_name or "target",
-        target_type=target_type or "Float64",
-        task=task,  # type: ignore[arg-type]
-        offset_name=offset_name or None,
-        offset_type=offset_type or "Float64",
+    task: Literal["classification", "regression"] = (
+        "classification" if metadata.task == "classification" else "regression"
     )
+    signature = build_signature(
+        features=list(metadata.features),
+        feature_types=dict(metadata.feature_types),
+        categorical_features=list(metadata.categorical_features),
+        target_name=metadata.target_name,
+        target_type=metadata.target_type,
+        task=task,
+        offset_name=metadata.offset_name or None,
+        offset_type=metadata.offset_type or "Float64",
+    )
+
+    if model_path.suffix == ".cbm":
+        from catboost import CatBoostClassifier, CatBoostRegressor
+
+        cat_model: CatBoostClassifier | CatBoostRegressor = (
+            CatBoostClassifier() if task == "classification" else CatBoostRegressor()
+        )
+        try:
+            cat_model.load_model(str(model_path))
+        except Exception as exc:
+            raise HauteValidationError(
+                "The trained CatBoost model file could not be loaded "
+                f"({type(exc).__name__}); retrain the model."
+            ) from exc
+        # ``name`` is MLflow 3's spelling (``artifact_path`` is deprecated);
+        # ``runs:/<run>/model`` still resolves the logged model. The
+        # environment scope makes the recorded requirements describe this
+        # interpreter, not a uv.lock in the working directory.
+        with runtime_environment_inference():
+            mlflow.catboost.log_model(
+                cb_model=cat_model,
+                name="model",
+                signature=signature,
+            )
+    elif model_path.suffix == ".rsglm":
+        with runtime_environment_inference():
+            mlflow.pyfunc.log_model(
+                name="model",
+                loader_module="haute.modelling._glm_pyfunc",
+                data_path=str(model_path),
+                signature=signature,
+            )
+    else:
+        raise HauteValidationError(
+            f"Cannot log a {model_path.suffix or 'suffix-less'} model file to MLflow; "
+            "expected a CatBoost .cbm or RustyStats .rsglm model."
+        )
+    # mlflow 3.x stores logged models as LoggedModel entities outside the run's
+    # artifact listing, so haute's run-artifact discovery needs the native file
+    # at the run root too.
+    mlflow.log_artifact(str(model_path))
 
 
 def _log_model_card(

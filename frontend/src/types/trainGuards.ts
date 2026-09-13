@@ -1,6 +1,12 @@
 /** Runtime parsers for on-demand modelling train endpoints. */
 
-import type { EvaluationPreview, TrainEstimate, TrainResponse, TrainStatusResponse } from "../api/types"
+import type {
+  EvaluationPreview,
+  TrainEstimate,
+  TrainExportReceipts,
+  TrainResponse,
+  TrainStatusResponse,
+} from "../api/types"
 import { JOB_STATUS_VALUES } from "../api/types"
 import {
   expectArray,
@@ -1293,6 +1299,39 @@ export function parseTrainStatusResponse(value: unknown): TrainStatusResponse {
     completed_fits,
     total_fits,
     best_objective,
+    ...(obj.export_receipts === undefined
+      ? {}
+      : { export_receipts: parseTrainExportReceipts(obj.export_receipts) }),
+  }
+}
+
+function parseTrainExportReceipts(value: unknown): TrainExportReceipts {
+  const p = "parseTrainStatusResponse"
+  const obj = expectPlainObject(p, value, "field `export_receipts`")
+  return {
+    mlflow: parseArray(p, obj.mlflow, "field `export_receipts.mlflow`", (item, field) => {
+      const receipt = expectPlainObject(p, item, field)
+      return {
+        operation_id: expectString(p, receipt.operation_id, `${field}.operation_id`),
+        destination: expectStringLiteral(p, receipt.destination, `${field}.destination`, ["", "databricks", "server", "local"] as const),
+        backend: expectString(p, receipt.backend, `${field}.backend`),
+        experiment_name: expectString(p, receipt.experiment_name, `${field}.experiment_name`),
+        run_id: expectString(p, receipt.run_id, `${field}.run_id`),
+        run_url: receipt.run_url === undefined || receipt.run_url === null
+          ? null
+          : expectString(p, receipt.run_url, `${field}.run_url`),
+        tracking_uri: receipt.tracking_uri === undefined ? "" : expectString(p, receipt.tracking_uri, `${field}.tracking_uri`),
+        logged_at: expectString(p, receipt.logged_at, `${field}.logged_at`),
+      }
+    }),
+    model_files: parseArray(p, obj.model_files, "field `export_receipts.model_files`", (item, field) => {
+      const receipt = expectPlainObject(p, item, field)
+      return {
+        path: expectString(p, receipt.path, `${field}.path`),
+        feature_contract_path: expectString(p, receipt.feature_contract_path, `${field}.feature_contract_path`),
+        saved_at: expectString(p, receipt.saved_at, `${field}.saved_at`),
+      }
+    }),
   }
 }
 

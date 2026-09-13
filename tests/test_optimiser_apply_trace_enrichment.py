@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 import polars as pl
 import pytest
@@ -1101,3 +1102,20 @@ def test_optimiser_apply_import_error_without_name_still_renders_safely(tmp_path
     # exposing the literal ``None`` from ``exc.name`` to the user.
     assert "'None'" not in detail["error"]
     assert "None library" not in detail["error"]
+
+
+def test_load_artifact_from_config_forwards_destination():
+    """The node's ``mlflow_destination`` reaches the MLflow artifact loader."""
+    from haute._optimiser_apply_explainability import _load_artifact_from_config
+
+    artifact = _online_artifact()
+    with patch(
+        "haute._optimiser_io.load_mlflow_optimiser_artifact",
+        return_value=artifact,
+    ) as mock_load:
+        result = _load_artifact_from_config(
+            {"sourceType": "run", "run_id": "r", "mlflow_destination": "local"}
+        )
+
+    assert result is artifact
+    assert mock_load.call_args.kwargs["destination"] == "local"

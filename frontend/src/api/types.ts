@@ -519,12 +519,60 @@ export interface OutputAssembleDryRunResponse {
 // Modelling types
 // ---------------------------------------------------------------------------
 
-export interface MlflowCheckResponse {
+/** The three tracking destinations; a request's `""` means the local folder. */
+export type MlflowDestinationKey = "databricks" | "server" | "local"
+
+export type MlflowProbeCategory =
+  | ""
+  | "authentication"
+  | "permission"
+  | "missing_resource"
+  | "connectivity"
+  | "configuration"
+  | "unknown"
+
+export interface MlflowDestinationEntry {
+  key: MlflowDestinationKey
+  configured: boolean
+  /** Secret-free display form of what the key resolves to. */
+  destination: string
+  config_source: "" | "toml" | "env" | "default"
+  detail: string
+  probed: boolean
+  ok: boolean
+  category: MlflowProbeCategory
+}
+
+export interface MlflowDestinationsResponse {
   mlflow_installed: boolean
   mlflow_importable: boolean
-  tracking_configured: boolean
-  backend: string
-  databricks_host: string
+  destinations: MlflowDestinationEntry[]
+  detail: string
+}
+
+export interface MlflowSettingsResponse {
+  section_present: boolean
+  tracking_uri: string
+  folder: string
+  resolved_folder: string
+  detail: string
+}
+
+export interface MlflowSettingsUpdateRequest {
+  tracking_uri: string
+  folder: string
+}
+
+export interface MlflowTestConnectionRequest {
+  /** Empty destination probes the local folder. */
+  destination: "" | MlflowDestinationKey
+  tracking_uri?: string
+  folder?: string
+}
+
+export interface MlflowTestConnectionResponse {
+  ok: boolean
+  category: MlflowProbeCategory
   detail?: string
 }
 
@@ -839,6 +887,31 @@ export interface TrainStatusResponse {
   completed_fits?: number | null
   total_fits?: number | null
   best_objective?: number | null
+  /** Where the completed result has been exported, oldest first. */
+  export_receipts?: TrainExportReceipts
+}
+
+export interface MlflowExportReceipt {
+  operation_id: string
+  /** The request's destination: `""` is the local folder. */
+  destination: "" | MlflowDestinationKey
+  backend: string
+  experiment_name: string
+  run_id: string
+  run_url: string | null
+  tracking_uri: string
+  logged_at: string
+}
+
+export interface ModelFileExportReceipt {
+  path: string
+  feature_contract_path: string
+  saved_at: string
+}
+
+export interface TrainExportReceipts {
+  mlflow: MlflowExportReceipt[]
+  model_files: ModelFileExportReceipt[]
 }
 
 // ---------------------------------------------------------------------------
@@ -1044,6 +1117,34 @@ export interface MlflowLogResponse {
   run_url: string | null
   tracking_uri: string
   error: string | null
+  /** The logged operation (training logs only); a retry with it returns this run. */
+  operation_id?: string | null
+  logged_at?: string | null
+}
+
+export interface ModelSaveDestinationRequest {
+  /** A bare filename saves under models/; paths are project-root-relative. */
+  output_path: string
+  algorithm: "catboost" | "glm"
+}
+
+export interface ModelSaveDestinationResponse {
+  path: string
+  suffix_mismatch: boolean
+}
+
+export interface SaveModelRequest {
+  job_id: string
+  /** A bare filename saves under models/; paths are project-root-relative. */
+  output_path: string
+  /** Replace an existing destination; without it the server answers 409. */
+  overwrite: boolean
+}
+
+export interface SaveModelResponse {
+  status: "ok"
+  path: string
+  feature_contract_path: string
 }
 
 // ---------------------------------------------------------------------------
@@ -1106,8 +1207,9 @@ export interface SaveOptimiserResponse {
 export interface LogOptimiserToMlflowRequest {
   job_id: string
   experiment_name?: string | null
-  model_name?: string | null
   point_index?: number
+  /** `""` logs to the local folder. */
+  destination: "" | MlflowDestinationKey
 }
 
 export type FrontierPoint = Record<string, unknown> & {
@@ -1400,6 +1502,8 @@ export interface MlflowModelVersion {
   description: string
   params?: Record<string, string>
   creation_timestamp?: number | null
+  /** Registered model aliases currently targeting this version. */
+  aliases?: string[]
 }
 
 // ---------------------------------------------------------------------------

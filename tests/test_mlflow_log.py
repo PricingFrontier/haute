@@ -2,28 +2,171 @@
 
 from __future__ import annotations
 
+import math
+import os
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from haute.modelling._result_types import ModelCardMetadata, ModelDiagnostics
 
+if TYPE_CHECKING:
+    from haute.modelling._candidate_run import CandidateRun
+
+
+@pytest.fixture(autouse=True)
+def _clean_tracking_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each test opts into its own environment destination, including real-store tests."""
+    for var in (
+        "MLFLOW_TRACKING_URI",
+        "DATABRICKS_HOST",
+        "DATABRICKS_TOKEN",
+        "DATABRICKS_MLFLOW_HOST",
+        "DATABRICKS_MLFLOW_TOKEN",
+        "DATABRICKS_CONFIG_PROFILE",
+        "MLFLOW_ENABLE_DB_SDK",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+def _real_catboost_model(directory: Path, features: tuple[str, ...] = ("age",)) -> Path:
+    import pandas as pd
+    from catboost import CatBoostRegressor
+
+    directory.mkdir(parents=True, exist_ok=True)
+    frame = pd.DataFrame({name: [20.0, 30.0, 40.0, 50.0] for name in features})
+    model = CatBoostRegressor(iterations=2, depth=1, verbose=0, allow_writing_files=False)
+    model.fit(frame, [1.0, 2.0, 3.0, 4.0])
+    model_file = directory / "model.cbm"
+    model.save_model(str(model_file))
+    return model_file
+
+
+def _candidate(
+    directory: Path,
+    *,
+    model_file: Path | None = None,
+    suffix: str = ".cbm",
+    features: tuple[str, ...] = ("age",),
+    feature_types: dict[str, str] | None = None,
+    diagnostics: ModelDiagnostics | None = None,
+    metrics: dict[str, float] | None = None,
+    params: dict[str, Any] | None = None,
+    tags: dict[str, str] | None = None,
+    algorithm: str = "catboost",
+) -> CandidateRun:
+    """A complete candidate run whose artifact files exist on disk."""
+    from haute.modelling._candidate_run import (
+        CandidateArtifacts,
+        CandidateProvenance,
+        CandidateRun,
+    )
+    from haute.modelling._feature_contract import build_contract, save_contract
+    from haute.modelling._training_job import model_contract_filename
+
+    directory.mkdir(parents=True, exist_ok=True)
+    if model_file is None:
+        model_file = directory / f"model{suffix}"
+        model_file.write_bytes(b"fake-model")
+    types = feature_types or {name: "Float64" for name in features}
+    contract_file = directory / model_contract_filename(model_file.stem)
+    save_contract(
+        build_contract(
+            features=list(features),
+            feature_types=types,
+            categorical_features=[],
+            target_name="y",
+            target_type="Float64",
+            task="regression",
+        ),
+        contract_file,
+    )
+    evidence = {}
+    for kind in ("evaluation_plan", "evaluation_results", "evaluation_report"):
+        (directory / f"{model_file.stem}.{kind}.json").write_text("{}", encoding="utf-8")
+        evidence[kind] = directory / f"{model_file.stem}.{kind}.json"
+    return CandidateRun(
+        provenance=CandidateProvenance(
+            job_id="job-1",
+            node_label="freq",
+            trained_at=datetime(2026, 9, 13, 8, 30, tzinfo=UTC),
+            training_identity_sha256="a" * 64,
+        ),
+        run_name="freq · 2026-09-13 08:30 UTC",
+        tags=tags or {"haute.contract_version": "1", "haute.job_id": "job-1"},
+        params=params or {"algorithm": algorithm, "task": "regression"},
+        metrics=metrics or {"final_test_rmse": 0.5},
+        diagnostics=diagnostics or ModelDiagnostics(),
+        metadata=ModelCardMetadata(
+            algorithm=algorithm,
+            task="regression",
+            features=list(features),
+            feature_types=types,
+            target_name="y",
+            target_type="Float64",
+        ),
+        artifacts=CandidateArtifacts(
+            model=model_file, feature_contract=contract_file, evidence=evidence
+        ),
+    )
+
+
+@contextmanager
+def _mocked_mlflow(run_id: str = "abc123", **extra_patches: Any) -> Iterator[SimpleNamespace]:
+    """Patch every MLflow side effect ``log_experiment`` makes and expose the mocks."""
+    mock_run = MagicMock()
+    mock_run.info.run_id = run_id
+    names = {
+        "tracking": "mlflow.set_tracking_uri",
+        "registry": "mlflow.set_registry_uri",
+        "experiment": "mlflow.set_experiment",
+        "run": "mlflow.start_run",
+        "params": "mlflow.log_params",
+        "metrics": "mlflow.log_metrics",
+        "artifact": "mlflow.log_artifact",
+        "set_tag": "mlflow.set_tag",
+        "catboost_log_model": "mlflow.catboost.log_model",
+        "pyfunc_log_model": "mlflow.pyfunc.log_model",
+        "register": "mlflow.register_model",
+        **extra_patches,
+    }
+    with ExitStack() as stack:
+        mocks = {key: stack.enter_context(patch(target)) for key, target in names.items()}
+        mocks["run"].return_value.__enter__ = MagicMock(return_value=mock_run)
+        mocks["run"].return_value.__exit__ = MagicMock(return_value=False)
+        yield SimpleNamespace(**mocks)
+
+
+def _artifact_dirs(artifact_mock: MagicMock) -> list[str]:
+    return [
+        call.args[1] if len(call.args) > 1 else call.kwargs.get("artifact_path", "")
+        for call in artifact_mock.call_args_list
+    ]
+
 
 class TestResolveTrackingBackend:
-    def test_databricks_when_env_vars_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi_test_token")
+    def test_databricks_when_chosen_and_env_vars_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://myhost.databricks.com")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi_test_token")
 
         from haute.modelling._mlflow_log import resolve_tracking_backend
 
-        uri, backend = resolve_tracking_backend()
+        uri, backend = resolve_tracking_backend("databricks")
         assert uri == "databricks"
         assert backend == "databricks"
 
     def test_local_when_env_vars_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         from haute.modelling._mlflow_log import resolve_tracking_backend
 
@@ -33,8 +176,9 @@ class TestResolveTrackingBackend:
         assert backend == "local"
 
     def test_local_when_only_host_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://myhost.databricks.com")
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         from haute.modelling._mlflow_log import resolve_tracking_backend
 
@@ -43,12 +187,79 @@ class TestResolveTrackingBackend:
 
     def test_local_when_only_token_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi_test_token")
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi_test_token")
 
         from haute.modelling._mlflow_log import resolve_tracking_backend
 
         uri, backend = resolve_tracking_backend()
         assert backend == "local"
+
+    def test_env_tracking_uri_selects_server(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
+
+        from haute.modelling._mlflow_log import resolve_tracking_backend
+
+        uri, backend = resolve_tracking_backend("server")
+        assert uri == "http://localhost:5000"
+        assert backend == "server"
+        # The environment configures the server destination; it never chooses it.
+        assert resolve_tracking_backend()[1] == "local"
+
+    def test_no_destination_is_local_even_with_databricks_credentials(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from haute._sandbox import set_project_root
+
+        set_project_root(tmp_path)
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "t")
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+
+        from haute.modelling._mlflow_log import resolve_tracking_backend
+
+        assert resolve_tracking_backend("databricks")[1] == "databricks"
+        for destination in ("", "local"):
+            uri, backend = resolve_tracking_backend(destination)
+            assert backend == "local" and uri == (tmp_path / "mlruns").as_uri()
+
+    def test_explicit_unconfigured_destination_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for var in (
+            "DATABRICKS_HOST",
+            "DATABRICKS_TOKEN",
+            "DATABRICKS_MLFLOW_HOST",
+            "DATABRICKS_MLFLOW_TOKEN",
+            "MLFLOW_TRACKING_URI",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+        from haute.errors import MlflowConfigError
+        from haute.modelling._mlflow_log import resolve_tracking_backend
+
+        with pytest.raises(MlflowConfigError, match="MLflow server is not configured"):
+            resolve_tracking_backend("server")
+
+    def test_unknown_destination_raises_before_resolution(self) -> None:
+        from haute.errors import MlflowConfigError
+        from haute.modelling._mlflow_log import resolve_tracking_backend
+
+        with pytest.raises(MlflowConfigError, match="databricks, server, or local"):
+            resolve_tracking_backend("managed")
+
+    def test_unsupported_env_scheme_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
+
+        from haute.errors import MlflowConfigError
+        from haute.modelling._mlflow_log import resolve_tracking_backend
+
+        with pytest.raises(MlflowConfigError, match="sqlite"):
+            resolve_tracking_backend()
 
 
 def test_decimal_signature_error_happens_before_pyfunc_model_logging(tmp_path: Path) -> None:
@@ -63,14 +274,15 @@ def test_decimal_signature_error_happens_before_pyfunc_model_logging(tmp_path: P
         with pytest.raises(ValueError, match="MLflow 3.x"):
             _log_model_with_signature(
                 mlflow,
-                model_path=str(model_path),
-                algorithm="glm",
-                task="regression",
-                features=["monetary_amount"],
-                feature_types={"monetary_amount": "Decimal(precision=12, scale=3)"},
-                categorical_features=[],
-                target_name="loss",
-                target_type="Float64",
+                model_path=model_path,
+                metadata=ModelCardMetadata(
+                    algorithm="glm",
+                    task="regression",
+                    features=["monetary_amount"],
+                    feature_types={"monetary_amount": "Decimal(precision=12, scale=3)"},
+                    target_name="loss",
+                    target_type="Float64",
+                ),
             )
 
     log_model.assert_not_called()
@@ -83,24 +295,18 @@ class TestResolveExperimentName:
         assert (
             resolve_experiment_name(
                 explicit="/my/override",
-                config_value="/from/config",
                 node_label="freq",
                 backend="local",
             )
             == "/my/override"
         )
 
-    def test_config_value_second(self) -> None:
+    def test_no_training_snapshot_tier_exists(self) -> None:
+        import inspect
+
         from haute.modelling._mlflow_log import resolve_experiment_name
 
-        assert (
-            resolve_experiment_name(
-                config_value="/from/config",
-                node_label="freq",
-                backend="local",
-            )
-            == "/from/config"
-        )
+        assert "config_value" not in inspect.signature(resolve_experiment_name).parameters
 
     def test_databricks_default(self) -> None:
         from haute.modelling._mlflow_log import resolve_experiment_name
@@ -127,6 +333,8 @@ class TestResolveExperimentName:
     def test_auto_detects_backend(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         from haute.modelling._mlflow_log import resolve_experiment_name
 
@@ -138,11 +346,22 @@ class TestResolveExperimentName:
         assert (
             resolve_experiment_name(
                 explicit="",
-                config_value="",
                 node_label="freq",
                 backend="local",
             )
             == "freq"
+        )
+
+    def test_destination_drives_the_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "t")
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+
+        from haute.modelling._mlflow_log import resolve_experiment_name
+
+        assert resolve_experiment_name(node_label="m", destination="local") == "m"
+        assert (
+            resolve_experiment_name(node_label="m", destination="databricks") == "/Shared/haute/m"
         )
 
 
@@ -152,930 +371,524 @@ class TestBuildRunUrl:
 
         assert build_run_url("local", "exp", "run123") is None
 
-    def test_returns_url_for_databricks(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
-
+    def test_returns_url_for_databricks(self) -> None:
         mock_experiment = MagicMock()
         mock_experiment.experiment_id = "42"
 
-        with patch("mlflow.get_experiment_by_name", return_value=mock_experiment):
+        with (
+            patch(
+                "mlflow.utils.databricks_utils.get_databricks_host_creds",
+                return_value=SimpleNamespace(host="https://myhost.databricks.com"),
+            ),
+            patch("mlflow.get_experiment_by_name", return_value=mock_experiment),
+        ):
             from haute.modelling._mlflow_log import build_run_url
 
             url = build_run_url("databricks", "/Shared/haute/freq", "run123")
             assert url == "https://myhost.databricks.com/#mlflow/experiments/42/runs/run123"
 
-    def test_returns_none_when_experiment_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
-
-        with patch("mlflow.get_experiment_by_name", return_value=None):
+    def test_returns_none_when_experiment_not_found(self) -> None:
+        with (
+            patch(
+                "mlflow.utils.databricks_utils.get_databricks_host_creds",
+                return_value=SimpleNamespace(host="https://myhost.databricks.com"),
+            ),
+            patch("mlflow.get_experiment_by_name", return_value=None),
+        ):
             from haute.modelling._mlflow_log import build_run_url
 
             assert build_run_url("databricks", "/Shared/haute/freq", "run123") is None
 
-    def test_returns_none_when_host_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    def test_returns_none_when_host_missing(self) -> None:
+        with patch(
+            "mlflow.utils.databricks_utils.get_databricks_host_creds",
+            return_value=SimpleNamespace(host=""),
+        ):
+            from haute.modelling._mlflow_log import build_run_url
 
-        from haute.modelling._mlflow_log import build_run_url
+            assert build_run_url("databricks", "/Shared/haute/freq", "run123") is None
 
-        assert build_run_url("databricks", "/Shared/haute/freq", "run123") is None
-
-    def test_strips_trailing_slash_from_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com/")
-
+    def test_strips_trailing_slash_from_host(self) -> None:
         mock_experiment = MagicMock()
         mock_experiment.experiment_id = "42"
 
-        with patch("mlflow.get_experiment_by_name", return_value=mock_experiment):
+        with (
+            patch(
+                "mlflow.utils.databricks_utils.get_databricks_host_creds",
+                return_value=SimpleNamespace(host="https://myhost.databricks.com/"),
+            ),
+            patch("mlflow.get_experiment_by_name", return_value=mock_experiment),
+        ):
             from haute.modelling._mlflow_log import build_run_url
 
             url = build_run_url("databricks", "/Shared/haute/freq", "run123")
             assert "databricks.com//" not in url  # no double slash
 
-
-class TestLogExperiment:
-    def test_calls_mlflow_correctly(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Mock mlflow and verify correct calls are made."""
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-
-        mock_run = MagicMock()
-        mock_run.info.run_id = "abc123"
-
-        with (
-            patch("mlflow.set_tracking_uri") as m_tracking,
-            patch("mlflow.set_registry_uri") as m_registry,
-            patch("mlflow.set_experiment") as m_experiment,
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params") as m_params,
-            patch("mlflow.log_metrics") as m_metrics,
-            patch("mlflow.log_artifact"),
-            patch("mlflow.register_model"),
-        ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
-
-            from haute.modelling._mlflow_log import log_experiment
-
-            result = log_experiment(
-                experiment_name="/test/experiment",
-                run_name="test-run",
-                metrics={"rmse": 0.5, "gini": 0.8},
-                params={"algorithm": "catboost", "task": "regression"},
-            )
-
-            m_tracking.assert_called_once()
-            assert "file://" in m_tracking.call_args[0][0]
-            m_registry.assert_not_called()  # local backend, no registry
-            m_experiment.assert_called_once_with("/test/experiment")
-            m_params.assert_called_once_with({"algorithm": "catboost", "task": "regression"})
-            m_metrics.assert_called_once_with({"rmse": 0.5, "gini": 0.8})
-
-            assert result.backend == "local"
-            assert result.experiment_name == "/test/experiment"
-            assert result.run_id == "abc123"
-            assert result.run_url is None
-
-    def test_databricks_sets_registry(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """When Databricks env vars present, set_registry_uri('databricks-uc') is called."""
-        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi_test_token")
-
-        mock_run = MagicMock()
-        mock_run.info.run_id = "abc123"
-
+    def test_returns_url_for_server(self) -> None:
         mock_experiment = MagicMock()
         mock_experiment.experiment_id = "42"
 
         with (
-            patch("mlflow.set_tracking_uri") as m_tracking,
-            patch("mlflow.set_registry_uri") as m_registry,
-            patch("mlflow.set_experiment"),
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params"),
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_artifact"),
-            patch("mlflow.register_model"),
             patch("mlflow.get_experiment_by_name", return_value=mock_experiment),
+            patch("mlflow.get_tracking_uri", return_value="http://localhost:5000/"),
         ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
+            from haute.modelling._mlflow_log import build_run_url
 
-            from haute.modelling._mlflow_log import log_experiment
+            url = build_run_url("server", "freq", "run123")
+            assert url == "http://localhost:5000/#/experiments/42/runs/run123"
 
-            result = log_experiment(
-                experiment_name="/test/experiment",
-                run_name="test-run",
-                metrics={"rmse": 0.5},
-                params={"algorithm": "catboost"},
-            )
+    def test_server_returns_none_when_experiment_not_found(self) -> None:
+        with (
+            patch("mlflow.get_experiment_by_name", return_value=None),
+            patch("mlflow.get_tracking_uri", return_value="http://localhost:5000"),
+        ):
+            from haute.modelling._mlflow_log import build_run_url
 
-            m_tracking.assert_called_once_with("databricks")
-            m_registry.assert_called_once_with("databricks-uc")
-            assert result.backend == "databricks"
-            assert result.run_url is not None
-            assert "myhost.databricks.com" in result.run_url
-            assert "/experiments/42/runs/abc123" in result.run_url
+            assert build_run_url("server", "freq", "run123") is None
 
-    def test_missing_model_file_no_crash(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Non-existent model path should not crash."""
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-
-        mock_run = MagicMock()
-        mock_run.info.run_id = "abc123"
+    def test_server_run_url_redacts_embedded_credentials(self) -> None:
+        mock_experiment = MagicMock()
+        mock_experiment.experiment_id = "42"
 
         with (
-            patch("mlflow.set_tracking_uri"),
-            patch("mlflow.set_experiment"),
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params"),
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_artifact") as m_artifact,
-            patch("mlflow.register_model"),
-        ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
-
-            from haute.modelling._mlflow_log import log_experiment
-
-            result = log_experiment(
-                experiment_name="/test/experiment",
-                run_name="test-run",
-                metrics={"rmse": 0.5},
-                params={},
-                model_path="/nonexistent/model.cbm",
-            )
-
-            # model file doesn't exist — only model_card artifact should be logged
-            assert result.run_id == "abc123"
-            artifact_dirs = [
-                call.args[1] if len(call.args) > 1 else "" for call in m_artifact.call_args_list
-            ]
-            assert "model_card" in artifact_dirs
-            # No direct model artifact (only model_card)
-            assert m_artifact.call_count == 1
-            assert m_artifact.call_args[0][1] == "model_card"
-
-    def test_rustystats_model_file_logged_as_native_artifact(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        """Pyfunc-logged flavors must upload the native file at run root.
-
-        Run discovery (``_find_rsglm_artifact``) only sees artifacts that are
-        physically present in the run, and ``mlflow.pyfunc.log_model`` does
-        not upload the native model file — so without an explicit
-        ``log_artifact`` the ``.rsglm`` is missing and downstream scoring
-        falls all the way through to the pyfunc fallback (which has nothing
-        to load).
-        """
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-
-        mock_run = MagicMock()
-        mock_run.info.run_id = "glm-artifact"
-        model_file = tmp_path / "conversion.rsglm"
-        model_file.write_bytes(b"fake-rsglm")
-        signature = object()
-
-        with (
-            patch("mlflow.set_tracking_uri"),
-            patch("mlflow.set_experiment"),
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params"),
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_artifact") as m_artifact,
-            patch("mlflow.register_model"),
-            patch("mlflow.pyfunc.log_model") as m_pyfunc_log_model,
+            patch("mlflow.get_experiment_by_name", return_value=mock_experiment),
             patch(
-                "haute.modelling._mlflow_log._build_signature_for_log",
-                return_value=signature,
+                "mlflow.get_tracking_uri",
+                return_value="https://alice:hunter2xyz@mlflow.example.com:8443",
             ),
         ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
+            from haute.modelling._mlflow_log import build_run_url
 
-            from haute.modelling._mlflow_log import log_experiment
+            url = build_run_url("server", "freq", "run123")
+            assert url == "https://mlflow.example.com:8443/#/experiments/42/runs/run123"
+            assert "hunter2xyz" not in url
 
-            log_experiment(
-                experiment_name="/test/glm",
-                run_name="conversion",
-                metrics={"auc": 0.7},
-                params={"algorithm": "glm"},
-                model_path=str(model_file),
-                metadata=ModelCardMetadata(
-                    algorithm="glm",
-                    task="regression",
-                    features=["difference_to_market"],
-                ),
-            )
 
-        m_pyfunc_log_model.assert_called_once()
-        assert m_pyfunc_log_model.call_args.kwargs["signature"] is signature
-        native_model_calls = [
-            call
-            for call in m_artifact.call_args_list
-            if call.args and Path(call.args[0]).name == "conversion.rsglm"
-        ]
-        assert len(native_model_calls) == 1
-        assert native_model_calls[0].args == (str(model_file),)
-        assert native_model_calls[0].kwargs == {}
-
-    def test_catboost_model_file_not_re_logged_as_native_artifact(
+class TestRegistryUriFollowsDestination:
+    def test_databricks_registry_retains_profile(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        """``mlflow.catboost.log_model`` already bundles the .cbm; don't dup it.
+        from haute._sandbox import set_project_root
+        from haute.modelling._mlflow_log import configure_mlflow_tracking
 
-        Adding a top-level ``mlflow.log_artifact(<.cbm>)`` would re-upload
-        the binary on every run with no functional benefit (run discovery
-        already finds the .cbm inside the catboost model directory).
-        """
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        set_project_root(tmp_path)
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team-profile")
+        with patch("mlflow.set_tracking_uri"), patch("mlflow.set_registry_uri") as registry:
+            configure_mlflow_tracking("databricks")
+        registry.assert_called_once_with("databricks-uc://team-profile")
 
-        mock_run = MagicMock()
-        mock_run.info.run_id = "cbm-artifact"
-        model_file = tmp_path / "model.cbm"
-        model_file.write_bytes(b"fake-cbm")
-        signature = object()
+    def test_leaving_databricks_resets_the_registry_uri(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The process-global registry URI must never stay on Unity Catalog
+        after the destination switches away from Databricks."""
+        from haute._sandbox import set_project_root
+
+        set_project_root(tmp_path)
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+
+        from haute.modelling._mlflow_log import configure_mlflow_tracking
 
         with (
             patch("mlflow.set_tracking_uri"),
-            patch("mlflow.set_experiment"),
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params"),
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_artifact") as m_artifact,
-            patch("mlflow.register_model"),
-            patch("mlflow.catboost.log_model") as m_catboost_log_model,
-            patch(
-                "haute.modelling._mlflow_log._build_signature_for_log",
-                return_value=signature,
+            patch("mlflow.set_registry_uri") as m_registry,
+        ):
+            monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
+            monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi-token")
+            configure_mlflow_tracking("databricks")
+            assert m_registry.call_args_list[-1].args == ("databricks-uc",)
+
+            tracking_uri, backend = configure_mlflow_tracking("local")
+            assert backend == "local"
+            # The registry explicitly follows the local tracking store.
+            assert m_registry.call_args_list[-1].args == (tracking_uri,)
+
+
+class TestLocalRegistrationEndToEnd:
+    def test_destination_switch_during_log_keeps_run_at_original_store(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        import mlflow
+        from mlflow.tracking import MlflowClient
+
+        from haute._sandbox import set_project_root
+        from haute.modelling._mlflow_log import log_experiment
+        from haute.modelling._mlflow_settings import MlflowSettings, save_mlflow_settings
+        from haute.routes.mlflow import list_experiments
+
+        set_project_root(tmp_path)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        save_mlflow_settings(MlflowSettings(folder="a"), tmp_path)
+        checks = 0
+
+        def interleave() -> None:
+            nonlocal checks
+            checks += 1
+            if checks == 2:
+                save_mlflow_settings(MlflowSettings(folder="b"), tmp_path)
+                list_experiments()
+
+        previous_tracking, previous_registry = mlflow.get_tracking_uri(), mlflow.get_registry_uri()
+        try:
+            with (
+                patch("haute.modelling._mlflow_log._log_model_card"),
+                patch("haute.modelling._mlflow_log._log_model_with_signature"),
+            ):
+                result = log_experiment(
+                    experiment_name="review",
+                    candidate=_candidate(tmp_path / "candidate", params={"key": "value"}),
+                    check_cancelled=interleave,
+                )
+            original = MlflowClient(tracking_uri=(tmp_path / "a").as_uri())
+            assert original.get_run(result.run_id).info.status == "FINISHED"
+            assert original.get_run(result.run_id).data.params == {"key": "value"}
+            assert mlflow.get_tracking_uri() == previous_tracking
+            assert mlflow.get_registry_uri() == previous_registry
+            assert "MLFLOW_TRACKING_URI" not in os.environ
+        finally:
+            mlflow.set_tracking_uri(previous_tracking)
+            mlflow.set_registry_uri(previous_registry)
+
+    def test_log_register_discover_load_and_score_locally(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A real local file store: haute logs a genuine CatBoost model, an
+        external promotion step registers the logged run (haute never
+        registers), and the registered-model path (including "latest"
+        resolution over the file store's int versions) loads a
+        scoring-capable model."""
+        import pandas as pd
+
+        from haute._sandbox import set_project_root
+
+        set_project_root(tmp_path)
+        frame = pd.DataFrame({"age": [20.0, 30.0, 40.0, 50.0]})
+        artifacts = tmp_path / "artifacts"
+        candidate = _candidate(artifacts, model_file=_real_catboost_model(artifacts))
+
+        import mlflow
+
+        from haute.modelling._mlflow_log import log_experiment
+
+        try:
+            result = log_experiment(experiment_name="e2e-exp", candidate=candidate)
+            assert result.backend == "local"
+            # The external promotion process registers the candidate run
+            # against the tracking store the run was logged to.
+            mlflow.set_tracking_uri(result.tracking_uri)
+            mlflow.set_registry_uri(result.tracking_uri)
+            mlflow.register_model(f"runs:/{result.run_id}/model", "e2e-model")
+
+            from haute._mlflow_io import load_mlflow_model
+
+            scoring = load_mlflow_model(
+                source_type="registered",
+                registered_model="e2e-model",
+                version="latest",
+                task="regression",
+            )
+            predictions = scoring.raw_model.predict(frame)
+            assert len(predictions) == 4
+            assert all(math.isfinite(float(p)) for p in predictions)
+        finally:
+            mlflow.set_tracking_uri(None)
+            mlflow.set_registry_uri(None)
+
+
+class TestLoggingNeverRegisters:
+    """Haute logs candidate runs; registering and promoting them is external."""
+
+    def test_log_experiment_has_no_registry_parameter(self) -> None:
+        import inspect
+
+        from haute.modelling._mlflow_log import log_experiment
+
+        assert "model_name" not in inspect.signature(log_experiment).parameters
+
+    def test_logging_never_calls_the_registry(self, tmp_path: Path) -> None:
+        from haute.modelling._mlflow_log import log_experiment
+
+        with _mocked_mlflow(
+            model_card="haute.modelling._mlflow_log._log_model_card",
+            model_logger="haute.modelling._mlflow_log._log_model_with_signature",
+        ) as m:
+            log_experiment(experiment_name="exp", candidate=_candidate(tmp_path))
+        m.register.assert_not_called()
+
+
+class TestLogExperiment:
+    def test_logs_the_candidate_run_name_tags_params_and_metrics(self, tmp_path: Path) -> None:
+        from haute.modelling._mlflow_log import log_experiment
+
+        candidate = _candidate(
+            tmp_path,
+            params={"algorithm": "catboost", "task": "regression"},
+            metrics={"final_test_rmse": 0.5, "selection_gini_mean": 0.8},
+            tags={"haute.contract_version": "1", "haute.node_id": "freq"},
+        )
+        with _mocked_mlflow(
+            model_card="haute.modelling._mlflow_log._log_model_card",
+            model_logger="haute.modelling._mlflow_log._log_model_with_signature",
+        ) as m:
+            result = log_experiment(experiment_name="/test/experiment", candidate=candidate)
+
+        assert "file://" in m.tracking.call_args[0][0]
+        m.registry.assert_called_once()  # registry follows the local tracking store
+        m.experiment.assert_called_once_with("/test/experiment")
+        m.run.assert_called_once_with(
+            run_name="freq · 2026-09-13 08:30 UTC",
+            tags={"haute.contract_version": "1", "haute.node_id": "freq"},
+        )
+        m.params.assert_called_once_with({"algorithm": "catboost", "task": "regression"})
+        m.metrics.assert_called_once_with({"final_test_rmse": 0.5, "selection_gini_mean": 0.8})
+        m.model_logger.assert_called_once()
+        assert result.backend == "local"
+        assert result.experiment_name == "/test/experiment"
+        assert result.run_id == "abc123"
+        assert result.run_url is None
+
+    def test_logs_the_feature_contract_and_evaluation_evidence(self, tmp_path: Path) -> None:
+        from haute.modelling._mlflow_log import log_experiment
+
+        candidate = _candidate(tmp_path)
+        tuning_plan = tmp_path / "model.tuning-plan.json"
+        tuning_plan.write_text("{}", encoding="utf-8")
+        candidate = replace(
+            candidate,
+            artifacts=replace(
+                candidate.artifacts,
+                evidence={**candidate.artifacts.evidence, "tuning_plan": tuning_plan},
             ),
-        ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
+        )
+        with _mocked_mlflow(
+            model_card="haute.modelling._mlflow_log._log_model_card",
+            model_logger="haute.modelling._mlflow_log._log_model_with_signature",
+        ) as m:
+            log_experiment(experiment_name="exp", candidate=candidate)
 
-            from haute.modelling._mlflow_log import log_experiment
-
-            log_experiment(
-                experiment_name="/test/cbm",
-                run_name="freq",
-                metrics={"rmse": 0.5},
-                params={"algorithm": "catboost"},
-                model_path=str(model_file),
-                metadata=ModelCardMetadata(
-                    algorithm="catboost",
-                    task="regression",
-                    features=["age"],
-                ),
+        logged = list(
+            zip(
+                (Path(call.args[0]).name for call in m.artifact.call_args_list),
+                _artifact_dirs(m.artifact),
+                strict=True,
             )
+        )
+        assert (candidate.artifacts.feature_contract.name, "") in logged
+        for kind, path in candidate.artifacts.evidence.items():
+            expected_dir = "tuning" if kind == "tuning_plan" else "evaluation"
+            assert (path.name, expected_dir) in logged
 
-        m_catboost_log_model.assert_called_once()
-        native_model_calls = [
-            call
-            for call in m_artifact.call_args_list
-            if call.args and Path(call.args[0]).name == "model.cbm"
-        ]
-        assert native_model_calls == []
+    def test_databricks_sets_registry(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """When Databricks env vars present, set_registry_uri('databricks-uc') is called."""
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://myhost.databricks.com")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi_test_token")
+        mock_experiment = MagicMock()
+        mock_experiment.experiment_id = "42"
 
-    def test_with_artifacts(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        """SHAP, importance, and CV results are all logged as artifacts."""
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        from haute.modelling._mlflow_log import log_experiment
 
-        mock_run = MagicMock()
-        mock_run.info.run_id = "abc123"
-
-        model_file = tmp_path / "model.cbm"
-        model_file.write_text("fake model")
-
-        with (
-            patch("mlflow.set_tracking_uri"),
-            patch("mlflow.set_experiment"),
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params"),
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_artifact") as m_artifact,
-            patch("mlflow.log_metric") as m_metric,
-            patch("mlflow.register_model"),
-            # Item #2: log_experiment now attaches a signature via the
-            # flavor-typed logger for .cbm files.  Patch so the fake
-            # bytes don't trigger a real CatBoost save.
-            patch("mlflow.catboost.log_model"),
-            patch("mlflow.pyfunc.log_model"),
-        ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
-
-            from haute.modelling._mlflow_log import log_experiment
-
+        with _mocked_mlflow(
+            model_card="haute.modelling._mlflow_log._log_model_card",
+            model_logger="haute.modelling._mlflow_log._log_model_with_signature",
+            get_experiment="mlflow.get_experiment_by_name",
+        ) as m:
+            m.get_experiment.return_value = mock_experiment
             result = log_experiment(
                 experiment_name="/test/experiment",
-                run_name="test-run",
-                metrics={"rmse": 0.5},
-                params={},
-                model_path=str(model_file),
-                diagnostics=ModelDiagnostics(
-                    shap_summary=[{"feature": "x1", "mean_abs_shap": 0.3}],
-                    feature_importance_loss=[{"feature": "x1", "importance": 0.4}],
-                ),
+                candidate=_candidate(tmp_path),
+                destination="databricks",
             )
 
-            assert result.run_id == "abc123"
-            artifact_dirs = [
-                call.args[1] if len(call.args) > 1 else call.kwargs.get("artifact_path", "")
-                for call in m_artifact.call_args_list
-            ]
-            # CV results were removed in Phase 2 Package 2C-5 — the "cv"
-            # artifact dir must no longer be emitted.
-            for expected in ("shap", "importance", "model_card"):
-                assert expected in artifact_dirs, f"Missing artifact dir: {expected}"
-            assert "cv" not in artifact_dirs
-            m_metric.assert_not_called()
+        m.tracking.assert_called_once_with("databricks")
+        m.registry.assert_called_once_with("databricks-uc")
+        assert result.backend == "databricks"
+        assert result.run_url is not None
+        assert "myhost.databricks.com" in result.run_url
+        assert "/experiments/42/runs/abc123" in result.run_url
 
-    def test_databricks_registers_model(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    def test_missing_artifact_fails_before_any_tracking_call(self, tmp_path: Path) -> None:
+        from haute.errors import HauteValidationError
+        from haute.modelling._mlflow_log import log_experiment
+
+        candidate = _candidate(tmp_path)
+        candidate.artifacts.feature_contract.unlink()
+        with _mocked_mlflow() as m, pytest.raises(HauteValidationError, match="feature_contract"):
+            log_experiment(experiment_name="exp", candidate=candidate)
+        m.tracking.assert_not_called()
+        m.run.assert_not_called()
+
+    def test_rustystats_model_is_a_haute_pyfunc_plus_native_root_artifact(
+        self, tmp_path: Path
     ) -> None:
-        """When backend is databricks and model_name is set, model is registered."""
-        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi_test")
+        """The GLM logs as a pyfunc whose loader scores with haute, and the native
+        file sits at the run root where haute's run discovery looks for it."""
+        from haute.modelling._mlflow_log import log_experiment
 
-        mock_run = MagicMock()
-        mock_run.info.run_id = "abc123"
+        candidate = _candidate(tmp_path, suffix=".rsglm", algorithm="glm")
+        with _mocked_mlflow(model_card="haute.modelling._mlflow_log._log_model_card") as m:
+            log_experiment(experiment_name="/test/glm", candidate=candidate)
 
-        model_file = tmp_path / "model.cbm"
-        model_file.write_text("fake model")
+        m.pyfunc_log_model.assert_called_once()
+        kwargs = m.pyfunc_log_model.call_args.kwargs
+        assert kwargs["name"] == "model"
+        assert kwargs["loader_module"] == "haute.modelling._glm_pyfunc"
+        assert kwargs["data_path"] == str(candidate.artifacts.model)
+        assert kwargs["signature"] is not None
+        native = [c for c in m.artifact.call_args_list if Path(c.args[0]).name == "model.rsglm"]
+        assert [c.args for c in native] == [(str(candidate.artifacts.model),)]
 
-        with (
-            patch("mlflow.set_tracking_uri"),
-            patch("mlflow.set_registry_uri"),
-            patch("mlflow.set_experiment"),
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params"),
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_artifact"),
-            patch("mlflow.register_model") as m_register,
-            patch("mlflow.catboost.log_model"),
-            patch("mlflow.pyfunc.log_model"),
-        ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
-
-            from haute.modelling._mlflow_log import log_experiment
-
-            log_experiment(
-                experiment_name="/test/experiment",
-                run_name="test-run",
-                metrics={"rmse": 0.5},
-                params={},
-                model_path=str(model_file),
-                model_name="my-registered-model",
-            )
-
-            m_register.assert_called_once_with(
-                "runs:/abc123/model",
-                "my-registered-model",
-            )
-
-    def test_log_generates_model_card(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
+    def test_catboost_model_is_the_named_native_flavor_plus_root_artifact(
+        self, tmp_path: Path
     ) -> None:
-        """With full data, model card artifact should be logged."""
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        from haute.modelling._mlflow_log import log_experiment
 
-        mock_run = MagicMock()
-        mock_run.info.run_id = "abc123"
+        candidate = _candidate(tmp_path, model_file=_real_catboost_model(tmp_path))
+        with _mocked_mlflow(model_card="haute.modelling._mlflow_log._log_model_card") as m:
+            log_experiment(experiment_name="/test/cbm", candidate=candidate)
 
-        model_file = tmp_path / "model.cbm"
-        model_file.write_text("fake model")
+        m.catboost_log_model.assert_called_once()
+        # MLflow 3 spelling: the LoggedModel is named, never ``artifact_path``.
+        assert m.catboost_log_model.call_args.kwargs["name"] == "model"
+        assert "artifact_path" not in m.catboost_log_model.call_args.kwargs
+        assert m.catboost_log_model.call_args.kwargs["cb_model"] is not None
+        signature = m.catboost_log_model.call_args.kwargs["signature"]
+        assert signature.inputs.input_names() == ["age"]
+        native = [c for c in m.artifact.call_args_list if Path(c.args[0]).name == "model.cbm"]
+        assert len(native) == 1
 
+    def test_unloadable_catboost_model_fails_before_log_model(self, tmp_path: Path) -> None:
+        from haute.errors import HauteValidationError
+        from haute.modelling._mlflow_log import log_experiment
+
+        candidate = _candidate(tmp_path)  # b"fake-model" is not a CatBoost file
         with (
-            patch("mlflow.set_tracking_uri"),
-            patch("mlflow.set_experiment"),
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params"),
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_artifact") as m_artifact,
-            patch("mlflow.log_metric"),
-            patch("mlflow.register_model"),
-            patch("mlflow.catboost.log_model"),
-            patch("mlflow.pyfunc.log_model"),
+            _mocked_mlflow(model_card="haute.modelling._mlflow_log._log_model_card") as m,
+            pytest.raises(HauteValidationError, match="could not be loaded"),
         ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
+            log_experiment(experiment_name="/test/cbm", candidate=candidate)
+        m.catboost_log_model.assert_not_called()
 
-            from haute.modelling._mlflow_log import log_experiment
+    def test_unknown_model_suffix_is_rejected(self, tmp_path: Path) -> None:
+        from haute.errors import HauteValidationError
+        from haute.modelling._mlflow_log import log_experiment
 
-            log_experiment(
-                experiment_name="/test/experiment",
-                run_name="test-run",
-                metrics={"rmse": 0.5},
-                params={"algorithm": "catboost"},
-                model_path=str(model_file),
-                diagnostics=ModelDiagnostics(
-                    double_lift=[{"decile": 1, "actual": 0.1, "predicted": 0.12, "count": 100}],
-                    feature_importance=[{"feature": "x1", "importance": 0.8}],
-                ),
-                metadata=ModelCardMetadata(
-                    algorithm="catboost",
-                    task="regression",
-                    development_rows=1000,
-                    features=["x1"],
-                    evaluation_config={"strategy": "random"},
-                ),
-            )
-
-            # Check that model_card artifact was logged
-            artifact_dirs = [
-                call.args[1] if len(call.args) > 1 else call.kwargs.get("artifact_path", "")
-                for call in m_artifact.call_args_list
-            ]
-            assert "model_card" in artifact_dirs
-
-    def test_log_model_card_skipped_when_minimal(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """With minimal data (no double_lift/importance), model card should still be generated."""
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-
-        mock_run = MagicMock()
-        mock_run.info.run_id = "abc123"
-
+        candidate = _candidate(tmp_path, suffix=".pkl")
         with (
-            patch("mlflow.set_tracking_uri"),
-            patch("mlflow.set_experiment"),
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params"),
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_artifact") as m_artifact,
-            patch("mlflow.register_model"),
+            _mocked_mlflow(model_card="haute.modelling._mlflow_log._log_model_card") as m,
+            pytest.raises(HauteValidationError, match="expected a CatBoost .cbm or RustyStats"),
         ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
+            log_experiment(experiment_name="exp", candidate=candidate)
+        m.catboost_log_model.assert_not_called()
+        m.pyfunc_log_model.assert_not_called()
 
-            from haute.modelling._mlflow_log import log_experiment
+    def test_diagnostics_are_logged_as_artifacts(self, tmp_path: Path) -> None:
+        from haute.modelling._mlflow_log import log_experiment
 
-            log_experiment(
-                experiment_name="/test/experiment",
-                run_name="test-run",
-                metrics={"rmse": 0.5},
-                params={},
-                metadata=ModelCardMetadata(algorithm="catboost", task="regression"),
-            )
-
-            # Model card should still be logged even with minimal data
-            artifact_dirs = [
-                call.args[1] if len(call.args) > 1 else call.kwargs.get("artifact_path", "")
-                for call in m_artifact.call_args_list
-            ]
-            assert "model_card" in artifact_dirs
-
-    def test_log_model_card_failure_silent(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """If model card generation raises, log_experiment should still succeed."""
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-
-        mock_run = MagicMock()
-        mock_run.info.run_id = "abc123"
-
-        with (
-            patch("mlflow.set_tracking_uri"),
-            patch("mlflow.set_experiment"),
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params"),
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_artifact"),
-            patch("mlflow.register_model"),
-            patch("haute.modelling._mlflow_log._log_model_card", side_effect=RuntimeError("boom")),
-        ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
-
-            from haute.modelling._mlflow_log import log_experiment
-
-            # Should not raise
-            result = log_experiment(
-                experiment_name="/test/experiment",
-                run_name="test-run",
-                metrics={"rmse": 0.5},
-                params={},
-            )
-            assert result.run_id == "abc123"
-
-    def test_local_does_not_register_model(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """When backend is local, model_name should be ignored (no UC registry)."""
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-
-        mock_run = MagicMock()
-        mock_run.info.run_id = "abc123"
-
-        model_file = tmp_path / "model.cbm"
-        model_file.write_text("fake model")
-
-        with (
-            patch("mlflow.set_tracking_uri"),
-            patch("mlflow.set_experiment"),
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params"),
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_artifact"),
-            patch("mlflow.register_model") as m_register,
-            patch("mlflow.catboost.log_model"),
-            patch("mlflow.pyfunc.log_model"),
-        ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
-
-            from haute.modelling._mlflow_log import log_experiment
-
-            log_experiment(
-                experiment_name="/test/experiment",
-                run_name="test-run",
-                metrics={"rmse": 0.5},
-                params={},
-                model_path=str(model_file),
-                model_name="my-registered-model",
-            )
-
-            m_register.assert_not_called()
-
-    def test_with_all_diagnostics_artifacts(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """All diagnostic fields should be logged as artifacts."""
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-
-        mock_run = MagicMock()
-        mock_run.info.run_id = "full123"
-
-        model_file = tmp_path / "model.cbm"
-        model_file.write_text("fake model")
-
-        with (
-            patch("mlflow.set_tracking_uri"),
-            patch("mlflow.set_experiment"),
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params"),
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_artifact") as m_artifact,
-            patch("mlflow.log_metric") as m_metric,
-            patch("mlflow.register_model"),
-            patch("mlflow.catboost.log_model"),
-            patch("mlflow.pyfunc.log_model"),
-        ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
-
-            from haute.modelling._mlflow_log import log_experiment
-
+        diagnostics = ModelDiagnostics(
+            shap_summary=[{"feature": "x1", "mean_abs_shap": 0.3}],
+            feature_importance=[{"feature": "x1", "importance": 0.7}],
+            feature_importance_loss=[{"feature": "x1", "importance": 0.4}],
+            double_lift=[{"decile": 1, "actual": 0.1, "predicted": 0.12, "count": 100}],
+            loss_history=[{"iteration": i, "train_RMSE": 1.0 / (i + 1)} for i in range(10)],
+            residuals_stats={"mean": 0.01, "std": 0.5},
+            pdp_data=[{"feature": "x1", "grid": [{"value": 1, "avg_prediction": 0.5}]}],
+            glm_coefficients=[{"feature": "x1", "coeff": 0.5}],
+            glm_fit_statistics={"aic": 100.0},
+        )
+        with _mocked_mlflow(
+            model_logger="haute.modelling._mlflow_log._log_model_with_signature",
+        ) as m:
             result = log_experiment(
                 experiment_name="/test/all",
-                run_name="full-run",
-                metrics={"rmse": 0.5},
-                params={"algo": "catboost"},
-                model_path=str(model_file),
-                diagnostics=ModelDiagnostics(
-                    shap_summary=[{"feature": "x1", "mean_abs_shap": 0.3}],
-                    feature_importance=[{"feature": "x1", "importance": 0.7}],
-                    feature_importance_loss=[{"feature": "x1", "importance": 0.4}],
-                    double_lift=[{"decile": 1, "actual": 0.1, "predicted": 0.12, "count": 100}],
-                    loss_history=[{"iteration": i, "train_RMSE": 1.0 / (i + 1)} for i in range(10)],
-                    ave_per_feature=[
-                        {
-                            "feature": "x1",
-                            "bins": [
-                                {
-                                    "label": "0-5",
-                                    "exposure": 100,
-                                    "avg_actual": 0.5,
-                                    "avg_predicted": 0.6,
-                                }
-                            ],
-                        }
-                    ],
-                    residuals_histogram=[{"bin_center": 0, "count": 10, "weighted_count": 10.0}],
-                    residuals_stats={"mean": 0.01, "std": 0.5},
-                    actual_vs_predicted=[{"actual": 0.5, "predicted": 0.6, "weight": 1.0}],
-                    lorenz_curve=[{"cum_weight_frac": 0.0, "cum_actual_frac": 0.0}],
-                    lorenz_curve_perfect=[{"cum_weight_frac": 0.0, "cum_actual_frac": 0.0}],
-                    pdp_data=[{"feature": "x1", "grid": [{"value": 1, "avg_prediction": 0.5}]}],
-                    final_test_metrics={"rmse": 0.55, "gini": 0.65},
-                ),
-                metadata=ModelCardMetadata(
-                    algorithm="catboost",
-                    task="regression",
-                    development_rows=1000,
-                    features=["x1", "x2"],
-                    best_iteration=5,
-                ),
+                candidate=_candidate(tmp_path, diagnostics=diagnostics),
             )
 
-            assert result.run_id == "full123"
-            artifact_dirs = [
-                call.args[1] if len(call.args) > 1 else call.kwargs.get("artifact_path", "")
-                for call in m_artifact.call_args_list
-            ]
-            # All artifact subdirectories should be present. The "cv"
-            # artifact dir was removed in Phase 2 Package 2C-5.
-            for expected in (
-                "shap",
-                "importance",
-                "diagnostics",
-                "model_card",
-            ):
-                assert expected in artifact_dirs, f"Missing artifact dir: {expected}"
-            assert "cv" not in artifact_dirs
+        assert result.run_id == "abc123"
+        dirs = _artifact_dirs(m.artifact)
+        for expected in ("shap", "importance", "diagnostics", "glm", "model_card"):
+            assert expected in dirs, f"Missing artifact dir: {expected}"
+        assert "cv" not in dirs
 
-            final_test_calls = [
-                call for call in m_metric.call_args_list if call.args[0].startswith("final_test_")
-            ]
-            assert len(final_test_calls) == 2
+    def test_model_card_failure_is_tagged_not_hidden(self, tmp_path: Path) -> None:
+        from haute.modelling._mlflow_log import log_experiment
 
-    def test_with_glm_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """GLM-specific diagnostics should be logged as artifacts and metrics."""
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        with _mocked_mlflow(
+            model_card="haute.modelling._mlflow_log._log_model_card",
+            model_logger="haute.modelling._mlflow_log._log_model_with_signature",
+        ) as m:
+            m.model_card.side_effect = RuntimeError("boom")
+            result = log_experiment(experiment_name="exp", candidate=_candidate(tmp_path))
+        assert result.run_id == "abc123"
+        m.set_tag.assert_called_once_with("haute.model_card", "unavailable")
 
-        mock_run = MagicMock()
-        mock_run.info.run_id = "glm123"
+    def test_many_params_batched_and_long_values_truncated(self, tmp_path: Path) -> None:
+        from haute.modelling._mlflow_log import log_experiment
 
-        with (
-            patch("mlflow.set_tracking_uri"),
-            patch("mlflow.set_experiment"),
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params"),
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_artifact") as m_artifact,
-            patch("mlflow.log_metric") as m_metric,
-            patch("mlflow.register_model"),
-        ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
-
-            from haute.modelling._mlflow_log import log_experiment
-
-            result = log_experiment(
-                experiment_name="/test/glm",
-                run_name="glm-run",
-                metrics={"rmse": 0.5},
-                params={},
-                diagnostics=ModelDiagnostics(
-                    glm_coefficients=[{"feature": "x1", "coeff": 0.5}],
-                    glm_relativities=[{"feature": "x1", "relativity": 1.5}],
-                    glm_fit_statistics={
-                        "aic": 100.0,
-                        "bic": 110.0,
-                        "deviance": 50.0,
-                        "null_deviance": 200.0,
-                    },
-                    glm_regularization_path={"alphas": [0.1, 0.01], "scores": [0.5, 0.6]},
-                ),
-            )
-
-            assert result.run_id == "glm123"
-            artifact_dirs = [
-                call.args[1] if len(call.args) > 1 else "" for call in m_artifact.call_args_list
-            ]
-            assert "glm" in artifact_dirs
-
-            # GLM fit stats should be logged as top-level metrics
-            metric_names = [c.args[0] for c in m_metric.call_args_list]
-            for key in ("aic", "bic", "deviance", "null_deviance"):
-                assert key in metric_names, f"GLM stat {key} not logged as metric"
-
-    def test_enhanced_params_include_metadata(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Metadata fields should be added to params."""
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-
-        mock_run = MagicMock()
-        mock_run.info.run_id = "meta123"
-
-        with (
-            patch("mlflow.set_tracking_uri"),
-            patch("mlflow.set_experiment"),
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params") as m_params,
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_artifact"),
-            patch("mlflow.register_model"),
-        ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
-
-            from haute.modelling._mlflow_log import log_experiment
-
-            log_experiment(
-                experiment_name="/test/meta",
-                run_name="meta-run",
-                metrics={"rmse": 0.5},
-                params={"algo": "catboost"},
-                metadata=ModelCardMetadata(
-                    algorithm="catboost",
-                    task="regression",
-                    development_rows=1000,
-                    features=["x1", "x2"],
-                    best_iteration=42,
-                ),
-            )
-
-            logged_params = m_params.call_args[0][0]
-            assert "development_rows" in logged_params
-            assert "n_features" in logged_params
-            assert "best_iteration" in logged_params
-            assert logged_params["development_rows"] == "1000"
-
-    def test_tuning_summary_is_logged_as_params_and_metrics(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-        mock_run = MagicMock()
-        mock_run.info.run_id = "tuning123"
-
-        with (
-            patch("mlflow.set_tracking_uri"),
-            patch("mlflow.set_experiment"),
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params") as m_params,
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_metric") as m_metric,
-            patch("mlflow.log_artifact"),
-            patch("mlflow.register_model"),
-        ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
-
-            from haute.modelling._mlflow_log import log_experiment
-
-            log_experiment(
-                experiment_name="/test/tuning",
-                run_name="tuned-run",
-                metrics={"gini": 0.45},
-                params={"algorithm": "catboost"},
-                diagnostics=ModelDiagnostics(
-                    tuning={
-                        "metric": "gini",
-                        "direction": "maximize",
-                        "baseline_objective": 0.40,
-                        "winner_trial_index": 3,
-                        "winner_objective": 0.45,
-                        "improvement": 0.05,
-                        "trial_count": 10,
-                        "total_fit_count": 51,
-                        "final_tree_count": 87,
-                    }
-                ),
-            )
-
-            logged_params = m_params.call_args.args[0]
-            assert logged_params["tuning_metric"] == "gini"
-            assert logged_params["tuning_direction"] == "maximize"
-            assert logged_params["tuning_winner_trial_index"] == "3"
-            assert logged_params["tuning_trial_count"] == "10"
-            assert logged_params["tuning_total_fit_count"] == "51"
-            assert logged_params["tuning_final_tree_count"] == "87"
-            assert {call.args[0]: call.args[1] for call in m_metric.call_args_list} == {
-                "tuning_baseline_gini": 0.40,
-                "tuning_winner_gini": 0.45,
-                "tuning_improvement_gini": 0.05,
-            }
-
-    def test_many_params_batched(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """More than 100 params should be batched in groups of 100."""
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-
-        mock_run = MagicMock()
-        mock_run.info.run_id = "batch123"
-
-        with (
-            patch("mlflow.set_tracking_uri"),
-            patch("mlflow.set_experiment"),
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params") as m_params,
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_artifact"),
-            patch("mlflow.register_model"),
-        ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
-
-            from haute.modelling._mlflow_log import log_experiment
-
-            log_experiment(
-                experiment_name="/test/batch",
-                run_name="batch-run",
-                metrics={"rmse": 0.5},
-                params={f"param_{i}": f"value_{i}" for i in range(150)},
-            )
-
-            # Should be called twice: first batch of 100, second batch of 50
-            assert m_params.call_count == 2
-
-    def test_long_param_values_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Param values longer than 500 chars should be truncated."""
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-
-        mock_run = MagicMock()
-        mock_run.info.run_id = "trunc123"
-
-        with (
-            patch("mlflow.set_tracking_uri"),
-            patch("mlflow.set_experiment"),
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params") as m_params,
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_artifact"),
-            patch("mlflow.register_model"),
-        ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
-
-            from haute.modelling._mlflow_log import log_experiment
-
-            log_experiment(
-                experiment_name="/test/trunc",
-                run_name="trunc-run",
-                metrics={"rmse": 0.5},
-                params={"long_param": "x" * 1000},
-            )
-
-            logged_params = m_params.call_args[0][0]
-            assert len(logged_params["long_param"]) == 500
+        params: dict[str, Any] = {f"param_{i}": f"value_{i}" for i in range(149)}
+        params["long_param"] = "x" * 1000
+        with _mocked_mlflow(
+            model_card="haute.modelling._mlflow_log._log_model_card",
+            model_logger="haute.modelling._mlflow_log._log_model_with_signature",
+        ) as m:
+            log_experiment(experiment_name="exp", candidate=_candidate(tmp_path, params=params))
+        assert m.params.call_count == 2
+        logged = {k: v for call in m.params.call_args_list for k, v in call.args[0].items()}
+        assert len(logged["long_param"]) == 500
 
     def test_rustystats_run_yields_native_artifact_discoverable_end_to_end(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        """End-to-end: ``log_experiment`` for an .rsglm produces a run where
-        ``_find_model_artifact`` returns the native ``.rsglm``.
-
-        The unit-level test mocks ``mlflow.log_artifact`` and asserts the
-        call site.  This test exercises the real MLflow file-store so the
-        contract that ``_find_rsglm_artifact`` actually depends on — the
-        native file being present in the run's top-level artifact list —
-        is locked in against future refactors of the logging path.
-        """
-        pytest.importorskip("mlflow", reason="core mlflow dependency is unavailable")
+        """Against a real file store, the logged GLM run's native ``.rsglm`` is what
+        haute's run-artifact discovery finds."""
         import mlflow
 
         from haute._mlflow_io import _find_model_artifact
-
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-        monkeypatch.chdir(tmp_path)
-
-        model_file = tmp_path / "conversion.rsglm"
-        model_file.write_bytes(b"fake-rsglm-bytes")
-
+        from haute._sandbox import set_project_root
         from haute.modelling._mlflow_log import log_experiment
 
-        result = log_experiment(
-            experiment_name="rustystats_e2e",
-            run_name="conversion",
-            metrics={"auc": 0.7},
-            params={"algorithm": "glm"},
-            model_path=str(model_file),
-            metadata=ModelCardMetadata(
-                algorithm="glm",
-                task="regression",
-                features=["difference_to_market"],
-                feature_types={"difference_to_market": "Float64"},
-            ),
+        set_project_root(tmp_path)
+        candidate = _candidate(
+            tmp_path / "artifacts",
+            suffix=".rsglm",
+            algorithm="glm",
+            features=("difference_to_market",),
         )
+        try:
+            result = log_experiment(experiment_name="rustystats_e2e", candidate=candidate)
 
-        from mlflow.tracking import MlflowClient
+            from mlflow.tracking import MlflowClient
 
-        client = MlflowClient(tracking_uri=result.tracking_uri)
-        artifact_path, flavor = _find_model_artifact(client, result.run_id)
-
-        assert flavor == "rustystats"
-        assert Path(artifact_path).name == "conversion.rsglm"
-        # Reset any tracking URI mlflow set during the run so other tests
-        # in the same process don't inherit our temp file-store URI.
-        mlflow.set_tracking_uri("")
+            client = MlflowClient(tracking_uri=result.tracking_uri)
+            artifact_path, flavor = _find_model_artifact(client, result.run_id)
+            assert flavor == "rustystats"
+            assert Path(artifact_path).name == "model.rsglm"
+            root = {Path(f.path).name for f in client.list_artifacts(result.run_id)}
+            assert candidate.artifacts.feature_contract.name in root
+            assert client.get_run(result.run_id).data.tags["haute.contract_version"] == "1"
+        finally:
+            mlflow.set_tracking_uri("")
+            mlflow.set_registry_uri(None)
 
 
 class TestBuildRunUrlExtra:
-    def test_returns_none_on_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_none_on_exception(self) -> None:
         """When mlflow.get_experiment_by_name raises, return None."""
-        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
-
-        with patch("mlflow.get_experiment_by_name", side_effect=RuntimeError("boom")):
+        with (
+            patch(
+                "mlflow.utils.databricks_utils.get_databricks_host_creds",
+                return_value=SimpleNamespace(host="https://myhost.databricks.com"),
+            ),
+            patch("mlflow.get_experiment_by_name", side_effect=RuntimeError("boom")),
+        ):
             from haute.modelling._mlflow_log import build_run_url
 
             assert build_run_url("databricks", "/Shared/haute/freq", "run123") is None
@@ -1086,6 +899,8 @@ class TestConfigureMlflowTracking:
         """Local backend should set tracking URI to file:// path."""
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
 
         with (
             patch("mlflow.set_tracking_uri") as m_tracking,
@@ -1097,12 +912,15 @@ class TestConfigureMlflowTracking:
             assert backend == "local"
             assert uri.startswith("file://")
             m_tracking.assert_called_once_with(uri)
-            m_registry.assert_not_called()
+            # The registry explicitly follows the tracking store, so a
+            # leftover databricks-uc registry URI can never capture local
+            # registrations.
+            m_registry.assert_called_once_with(uri)
 
     def test_databricks_tracking(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Databricks backend should set both tracking and registry URIs."""
-        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
-        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi_test")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://myhost.databricks.com")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi_test")
 
         with (
             patch("mlflow.set_tracking_uri") as m_tracking,
@@ -1110,11 +928,50 @@ class TestConfigureMlflowTracking:
         ):
             from haute.modelling._mlflow_log import configure_mlflow_tracking
 
-            uri, backend = configure_mlflow_tracking()
+            uri, backend = configure_mlflow_tracking("databricks")
             assert backend == "databricks"
             assert uri == "databricks"
             m_tracking.assert_called_once_with("databricks")
             m_registry.assert_called_once_with("databricks-uc")
+
+    def test_cold_process_logging_binds_the_selected_profile_not_the_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cold-process logging binds profile credentials over conflicting environment."""
+        import mlflow
+        import requests
+
+        from haute._mlflow_utils import mlflow_fluent_operation
+        from haute.modelling._mlflow_log import configure_mlflow_tracking
+
+        cfg = tmp_path / "databrickscfg"
+        cfg.write_text(
+            "[team]\nhost = https://profile-host.example.net\ntoken = profile-token-value\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(cfg))
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://env-host.example.net")
+        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "env-token-value")
+        monkeypatch.delenv("MLFLOW_ENABLE_DB_SDK", raising=False)
+        captured: dict[str, object] = {}
+
+        def fake_request(self_, method, url, **kwargs):
+            captured["url"] = url
+            captured["auth"] = dict(kwargs.get("headers") or {}).get("Authorization")
+            resp = requests.Response()
+            resp.status_code = 200
+            resp._content = b'{"experiments": []}'
+            resp.url = url
+            return resp
+
+        with patch("requests.Session.request", new=fake_request):
+            with mlflow_fluent_operation():
+                configure_mlflow_tracking("databricks")
+                mlflow.search_experiments(max_results=1)
+
+        assert str(captured["url"]).startswith("https://profile-host.example.net/")
+        assert captured["auth"] == "Bearer profile-token-value"
 
 
 class TestLogJsonArtifact:
@@ -1170,18 +1027,14 @@ class TestLogModelCard:
 # ---------------------------------------------------------------------------
 
 # ``(module, callable, keywords)`` haute passes literally in _mlflow_log.py.
-# The catboost call is mock-only in the test suite and the pyfunc call has one
-# real-MLflow test (test_mlflow_signature.py), so this is where the installed
-# MLflow is asked whether it still accepts each name. In MLflow 3 both
-# ``log_model`` calls document ``artifact_path`` as deprecated in favour of
-# ``name``. Do NOT migrate it in passing: the ``name`` form stores the model as
-# a logged-model entity rather than under the run's artifacts, and
-# ``_find_model_artifact`` in _mlflow_io.py walks run artifacts to find it.
-# Moving is a deliberate change of where the model lives, with its own tests.
+# Most logging tests mock these calls, so this is where the installed MLflow is
+# asked whether it still accepts each name. Both ``log_model`` calls use MLflow
+# 3's ``name`` spelling; the native model file is logged at the run root as well
+# because ``_find_model_artifact`` in _mlflow_io.py walks run artifacts.
 _MLFLOW_LITERAL_KEYWORDS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
-    ("mlflow", "start_run", ("run_name",)),
-    ("mlflow.catboost", "log_model", ("cb_model", "artifact_path", "signature")),
-    ("mlflow.pyfunc", "log_model", ("artifact_path", "loader_module", "signature")),
+    ("mlflow", "start_run", ("run_name", "tags")),
+    ("mlflow.catboost", "log_model", ("cb_model", "name", "signature")),
+    ("mlflow.pyfunc", "log_model", ("name", "loader_module", "data_path", "signature")),
 )
 
 
@@ -1202,3 +1055,87 @@ def test_keywords_haute_passes_to_mlflow_are_still_accepted() -> None:
         f"haute passes literally: {problems}. Those call sites in _mlflow_log.py will raise "
         "TypeError; fix them and keep _MLFLOW_LITERAL_KEYWORDS in step."
     )
+
+
+class TestLoggedModelEnvironment:
+    """The logged model's environment is the interpreter that trained it."""
+
+    def test_non_catboost_flavor_is_logged_as_the_named_model(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.delenv("MLFLOW_UV_AUTO_DETECT", raising=False)
+        seen: dict[str, Any] = {}
+
+        def _capture(**kwargs: Any) -> None:
+            # The switches must be off *while* MLflow infers the environment.
+            seen["auto_detect"] = os.environ.get("MLFLOW_UV_AUTO_DETECT")
+            seen["log_uv_files"] = os.environ.get("MLFLOW_LOG_UV_FILES")
+            seen["kwargs"] = sorted(kwargs)
+
+        from haute.modelling._mlflow_log import log_experiment
+
+        with _mocked_mlflow(model_card="haute.modelling._mlflow_log._log_model_card") as m:
+            m.pyfunc_log_model.side_effect = _capture
+            log_experiment(
+                experiment_name="/test/rsglm",
+                candidate=_candidate(tmp_path, suffix=".rsglm", algorithm="glm"),
+            )
+
+        assert seen["kwargs"] == ["data_path", "loader_module", "name", "signature"]
+        assert seen["auto_detect"] == "false"
+        assert seen["log_uv_files"] == "false"
+        assert "MLFLOW_UV_AUTO_DETECT" not in os.environ
+
+    def test_logged_model_records_the_executing_interpreter_not_a_cwd_lock(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A uv.lock in the working directory never becomes the model's environment.
+
+        MLflow 3.15 would ``uv export`` a lock found in the cwd (and log the
+        lock as an artifact) instead of capturing the imported packages, so a
+        stale or foreign lock would describe an environment that never
+        trained the model. Against a real local file store, the recorded
+        requirements pin the installed CatBoost and carry no lock artefact.
+        """
+        import warnings
+
+        import catboost
+
+        from haute._mlflow_utils import mlflow_fluent_operation
+        from haute._sandbox import set_project_root
+
+        monkeypatch.delenv("MLFLOW_UV_AUTO_DETECT", raising=False)
+        monkeypatch.delenv("MLFLOW_LOG_UV_FILES", raising=False)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        set_project_root(tmp_path)
+        # A foreign uv project in the working directory, exactly the trap.
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "foreign"\nversion = "0.1.0"\ndependencies = ["bogus-package"]\n',
+            encoding="utf-8",
+        )
+        (tmp_path / "uv.lock").write_text(
+            'version = 1\n\n[[package]]\nname = "bogus-package"\nversion = "9.9.9"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        artifacts = tmp_path / "artifacts"
+        candidate = _candidate(artifacts, model_file=_real_catboost_model(artifacts))
+
+        import mlflow
+
+        from haute.modelling._mlflow_log import log_experiment
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = log_experiment(experiment_name="env-exp", candidate=candidate)
+        assert not [w for w in caught if "artifact_path" in str(w.message)]
+        assert "MLFLOW_UV_AUTO_DETECT" not in os.environ
+
+        with mlflow_fluent_operation():
+            mlflow.set_tracking_uri(result.tracking_uri)
+            model_dir = Path(mlflow.artifacts.download_artifacts(f"runs:/{result.run_id}/model"))
+        requirements = (model_dir / "requirements.txt").read_text(encoding="utf-8").splitlines()
+        assert f"catboost=={catboost.__version__}" in requirements
+        assert not [line for line in requirements if "bogus-package" in line]
+        assert not (model_dir / "uv.lock").exists()

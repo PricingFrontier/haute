@@ -110,8 +110,10 @@ Azure DevOps stores shared secrets in **Variable Groups**. Haute's generated pip
 
 | Name | Value | Secret? |
 |---|---|---|
+| `DATABRICKS_MLFLOW_HOST` | The workspace URL for MLflow and the model registry | ✓ Lock |
+| `DATABRICKS_MLFLOW_TOKEN` | A personal access token scoped for MLflow and the model registry | ✓ Lock |
 | `DATABRICKS_RATING_HOST` | Your workspace URL | ✓ Lock |
-| `DATABRICKS_RATING_TOKEN` | Your personal access token | ✓ Lock |
+| `DATABRICKS_RATING_TOKEN` | Your personal access token scoped for Model Serving | ✓ Lock |
 
 **For Docker/Container targets:**
 

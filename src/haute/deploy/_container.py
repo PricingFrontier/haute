@@ -18,7 +18,7 @@ from haute.deploy._mlflow import DeployResult
 from haute.deploy._request_limits import (
     DEFAULT_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES,
 )
-from haute.deploy._utils import build_manifest
+from haute.deploy._utils import build_manifest, model_source_line
 from haute.errors import DeployError
 
 logger = get_logger(component="deploy.container")
@@ -185,6 +185,8 @@ def build_and_push_image(
         _log("Building deployment manifest...")
         manifest_path = prepare_build_directory(resolved, build_dir)
         _log(f"  Manifest: {manifest_path}")
+        for node_id, source in resolved.model_sources.items():
+            _log(f"  {model_source_line(node_id, source)}")
         _log(f"Copying {len(resolved.artifacts)} artifacts...")
         _log("Generating FastAPI app...")
         _log("Generating Dockerfile...")

@@ -202,11 +202,14 @@ export default function useExplorePivotActions({
       requestedDataframeCacheKey: string | null = null,
       autoClaimToken?: number,
     ) => {
-      if (!isPivotConfigured(pivot)) return
-
-      const documentFence = captureDocumentExecutionFence()
-      if (!isDocumentExecutionFenceCurrent(documentFence)) return
       const key = explorePivotResultKey(node.id, pivot.id)
+      const documentFence = captureDocumentExecutionFence()
+      if (!isPivotConfigured(pivot) || !isDocumentExecutionFenceCurrent(documentFence)) {
+        if (autoClaimToken !== undefined) {
+          useNodeResultsStore.getState().releaseExplorePivotStart(key, autoClaimToken)
+        }
+        return
+      }
       const calculationIdentity = pivotCalculationIdentity(pivot)
       const startToken = autoClaimToken
         ?? useNodeResultsStore

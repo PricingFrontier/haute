@@ -24,11 +24,31 @@ vi.mock("../../hooks/useDragResize", () => ({
   }),
 }))
 
+/** A local-only inventory, so every node can log and nothing is probed. */
+const MLFLOW_INVENTORY = vi.hoisted(() => ({
+  status: "ready" as const,
+  installed: true,
+  importable: true,
+  auto: "local" as const,
+  destinations: [
+    {
+      key: "local" as const,
+      configured: true,
+      destination: "C:/proj/mlruns",
+      config_source: "default" as const,
+      detail: "",
+      probed: false,
+      ok: false,
+      category: "" as const,
+    },
+  ],
+  detail: "",
+}))
+
 vi.mock("../../stores/useSettingsStore", () => ({
   default: (selector: (s: Record<string, unknown>) => unknown) =>
-    selector({
-      mlflow: { status: "connected", backend: "local", host: "" },
-    }),
+    selector({ mlflow: MLFLOW_INVENTORY }),
+  useMlflowDestinations: () => MLFLOW_INVENTORY,
 }))
 
 function resetStore() {

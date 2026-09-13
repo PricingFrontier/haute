@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from haute._logging import get_logger
 from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
 from haute.errors import DeployError
 from haute.graph_utils import NodeType, PipelineGraph
+
+if TYPE_CHECKING:
+    from haute._mlflow_utils import ResolvedBackend
 
 logger = get_logger(component="deploy.bundler")
 
@@ -22,6 +25,7 @@ def collect_artifacts(
     project_root: Path | None = None,
     resources: ExitStack | None = None,
     snapshot_provenance: dict[str, dict[str, Any]] | None = None,
+    model_sources: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Path]:
     """Discover and collect all artifacts needed for deployment.
 
@@ -37,6 +41,11 @@ def collect_artifacts(
         input_node_ids: Source node IDs that receive live input (excluded).
         pipeline_dir: Directory containing the pipeline file (for resolving
             relative paths).
+
+        model_sources: When given, receives each registered ``modelScore``
+            node's resolution (registered model, alias, concrete version and
+            run ID), resolved once here so the bundle records exactly what it
+            packaged.
 
     Returns:
         Dict of artifact_name → absolute_path.
@@ -97,25 +106,46 @@ def collect_artifacts(
                 _check_exists(contract_path, nid, "modelScore feature contract")
                 artifacts[f"{nid}__feature_contract.json"] = contract_path
 
+            # The node's stored destination ("" = local) is resolved to exactly
+            # one backend, after the skip guards so an unconfigured node stays a
+            # silent skip, and that object is threaded through both the registry
+            # lookup and the download: a settings save mid-bundle cannot split
+            # the two across backends.
+            from haute._mlflow_utils import resolve_backend
+
+            destination = str(config.get("mlflow_destination", "") or "")
+
             if source_type == "registered":
                 registered_model = config.get("registered_model", "")
                 version = config.get("version", "")
+                alias = str(config.get("alias", "") or "")
                 if not registered_model:
                     logger.warning(
                         "model_score_skip_no_registered_model",
                         node_id=nid,
                     )
                     continue
-                run_id, artifact_path = _resolve_registered_model(
+                backend = resolve_backend(destination)
+                run_id, artifact_path, resolved_version = _resolve_registered_model(
                     registered_model,
                     version,
+                    backend=backend,
+                    alias=alias,
                 )
+                if model_sources is not None:
+                    model_sources[nid] = {
+                        "registered_model": registered_model,
+                        "alias": alias,
+                        "version": resolved_version,
+                        "run_id": run_id,
+                    }
             else:
                 # source_type == "run" (default)
                 if artifact_path not in (None, ""):
                     _validate_mlflow_artifact_identifier(nid, artifact_path)
                 if not run_id or artifact_path in (None, ""):
                     continue
+                backend = resolve_backend(destination)
 
             _validate_mlflow_artifact_identifier(nid, artifact_path)
 
@@ -125,6 +155,7 @@ def collect_artifacts(
                 run_id,
                 artifact_path,
                 pipeline_dir,
+                backend=backend,
             )
             # Patch config so the scorer can build a matching artifact key
             config["artifact_path"] = Path(artifact_path).name
@@ -378,8 +409,11 @@ def _artifact_name(node_id: str, path: Path) -> str:
 def _resolve_registered_model(
     registered_model: str,
     version: str,
-) -> tuple[str, str]:
-    """Resolve a registered model name + version to (run_id, artifact_path).
+    *,
+    backend: ResolvedBackend,
+    alias: str = "",
+) -> tuple[str, str, str]:
+    """Resolve a registered model name + version or alias to (run_id, artifact_path, version).
 
     Uses MLflow's model registry to look up the concrete run that produced
     the model version, then auto-discovers the artifact path within that run.
@@ -387,9 +421,13 @@ def _resolve_registered_model(
     Args:
         registered_model: Registered model name (e.g. ``"my-model"``).
         version: Version string (``"1"``, ``"2"``, ``"latest"``, or ``""``).
+        backend: The backend the caller already resolved for this node. It is
+            used as-is, so the registry lookup and the download that follows
+            can never land on different destinations.
+        alias: Registered model alias, resolved once to the version it targets.
 
     Returns:
-        Tuple of ``(run_id, artifact_path)``.
+        Tuple of ``(run_id, artifact_path, resolved_version)``.
 
     Raises:
         ImportError: If ``mlflow`` is not installed.
@@ -399,10 +437,12 @@ def _resolve_registered_model(
     from haute._mlflow_io import _find_model_artifact
     from haute._mlflow_utils import resolve_mlflow_source
 
-    run_id, resolved_version, _mlflow, client = resolve_mlflow_source(
+    run_id, resolved_version, _mlflow, client, _backend = resolve_mlflow_source(
         source_type="registered",
         registered_model=registered_model,
         version=version,
+        backend=backend,
+        alias=alias,
     )
 
     if not run_id:
@@ -417,23 +457,30 @@ def _resolve_registered_model(
     logger.info(
         "registered_model_resolved",
         model=registered_model,
+        alias=alias,
         version=resolved_version,
         run_id=run_id,
         artifact_path=artifact_path,
+        backend_mode=backend.mode,
+        backend_digest=backend.digest,
     )
 
-    return run_id, artifact_path
+    return run_id, artifact_path, resolved_version
 
 
 def _download_model_artifact(
     run_id: str,
     artifact_path: str,
     pipeline_dir: Path,
+    *,
+    backend: ResolvedBackend,
 ) -> Path:
     """Download a MODEL_SCORE .cbm artifact from MLflow, with local caching.
 
     Uses the same ``.cache/models/`` directory as ``_mlflow_io`` so that
-    previously downloaded models aren't re-fetched.
+    previously downloaded models aren't re-fetched; *backend* selects the
+    digest partition within that cache, so two destinations never share a
+    cached file for the same run and artifact path.
     """
     from haute._mlflow_io import _resolve_artifact_local
 
@@ -445,12 +492,12 @@ def _download_model_artifact(
             "Install it with: pip install mlflow"
         ) from None
 
-    from haute.modelling._mlflow_log import resolve_tracking_backend
-
-    tracking_uri, _ = resolve_tracking_backend()
-    mlflow.set_tracking_uri(tracking_uri)
-
-    local_path = _resolve_artifact_local(mlflow, run_id, artifact_path)
+    local_path = _resolve_artifact_local(
+        mlflow,
+        backend,
+        run_id,
+        artifact_path,
+    )
     resolved = Path(local_path)
     if not resolved.is_file():
         raise FileNotFoundError(f"MODEL_SCORE artifact not found after download: {local_path}")

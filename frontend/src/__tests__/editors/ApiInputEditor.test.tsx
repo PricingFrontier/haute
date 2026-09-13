@@ -514,6 +514,16 @@ describe("ApiInputEditor", () => {
     expect(screen.getByText(/No tables yet/)).toBeTruthy()
   })
 
+  it("keeps the decorative salt-names help icon hidden from assistive technology", () => {
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        config={{ path: "data/input.json", tables: [] }}
+      />,
+    )
+    expect(screen.getByTestId("api-input-salt-help")).toHaveAttribute("aria-hidden", "true")
+  })
+
   it("suppresses the raw source SchemaPreview for a v2 config (per-frame tables are the schema view)", () => {
     // The bottom SchemaPreview shows the un-shredded source schema (e.g.
     // Struct(...) for nested root fields), which is redundant and misleading

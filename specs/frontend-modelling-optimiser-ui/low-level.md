@@ -17,7 +17,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | --- | --- |
 | `frontend/src/panels/ModellingConfig.tsx` | Modelling form orchestration, early training-job registration/cancellation, RAM estimate and GLM estimate wiring. |
 | `frontend/src/panels/ModellingPreview.tsx` | Result-backed modelling tab selection and tab reset. Loaded on demand by the app when the active node has model results, through the same Suspense boundary pattern as optimiser results. |
-| `frontend/src/panels/NodePanel.tsx`, `frontend/src/panels/PreviewPanelTabs.tsx` | Five-pane hosting owned by [frontend-node-editors](../frontend-node-editors/low-level.md) and the accessible tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md), both consumed by modelling. |
+| `frontend/src/panels/NodePanel.tsx`, `frontend/src/panels/PreviewPanelTabs.tsx` | Six-pane hosting owned by [frontend-node-editors](../frontend-node-editors/low-level.md) and the accessible tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md), both consumed by modelling. |
 | `frontend/src/panels/OptimiserConfig.tsx` | Optimiser form, solve submission, and source/constraint configuration. It delegates auto-range request identity and terminal presentation to `useOptimiserAutoRange`. |
 | `frontend/src/panels/optimiser/OptimiserConstraintSettings.tsx` | Constraint-bound, efficient-frontier, range, and step controls. It composes `useOptimiserAutoRange` beside the fields whose current constraint scope it owns, keeping request state out of the parent form. |
 | `frontend/src/panels/optimiser/OptimiserSolveStatus.tsx` | Pure solve estimate, stale-result, progress, terminal diagnostics, action, and convergence-result presentation. It receives the parent-owned solve transition and owns no request lifecycle state. |
@@ -33,13 +33,17 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/modelling/TargetAndTaskConfig.tsx`, `frontend/src/panels/modelling/CommonFeatureConfig.tsx`, `frontend/src/panels/modelling/SplitAndMetricsConfig.tsx` | CatBoost target/loss/metric controls with loss-derived task compatibility, the common feature/monotonicity browser, and the canonical evaluation editor with exact-plan preview. |
 | `frontend/src/panels/modelling/HyperparametersConfig.tsx`, `frontend/src/panels/modelling/hyperparameters.ts`, `frontend/src/panels/modelling/featureSelection.ts` | Algorithm-neutral fixed-parameter JSON editing, optional bounded CatBoost tuning/search-space editing, and pure parameter/feature transitions. |
 | `frontend/src/panels/modelling/GLMTargetConfig.tsx`, `frontend/src/panels/modelling/GLMFactorConfig.tsx`, `frontend/src/panels/modelling/GLMRegularizationConfig.tsx` | GLM family/dispersion, terms/factors and regularisation controls. |
-| `frontend/src/panels/modelling/TrainingActionsAndResults.tsx`, `frontend/src/panels/modelling/TrainingProgress.tsx`, `frontend/src/panels/modelling/MlflowExportSection.tsx` | Train action/result summary, progress and MLflow export. |
-| `frontend/src/panels/modelling/SummaryTab.tsx` | Model info, diagnostics/errors, development/selection/final-test metrics, tuning baseline/winner evidence, warnings and MLflow export summary. |
+| `frontend/src/panels/modelling/TrainingActionsAndResults.tsx`, `frontend/src/panels/modelling/TrainingProgress.tsx` | Train action/result summary and progress. |
+| `frontend/src/panels/modelling/ExportPane.tsx`, `frontend/src/panels/modelling/MlflowExportSection.tsx`, `frontend/src/panels/modelling/ModelFileExportSection.tsx` | The Export pane: the MLflow logging fields, the manual MLflow log action (names the node's destination, disabled with the reason when that destination is unconfigured or no trained model is exportable, always sends `destination`), and the save-model-to-file action. |
+| `frontend/src/panels/modelling/exportReceipts.ts`, `frontend/src/panels/modelling/useTrainedJobRestore.ts` | `useExportReceipts(jobId)` (reads a completed job's export receipts from the status endpoint on mount and on `refresh`), `newOperationId()`, and `useTrainedJobRestore` (after a reload, reads a remembered job's status once to restore its result — current only when the editor's current payload has the same `trainingLineage` — or report it expired). |
+| `frontend/src/utils/trainedJobHandles.ts`, `frontend/src/utils/modellingExportConfig.ts` | Per-document browser handles to a node's last completed training job (`read`/`write`/`clearTrainedJobHandle`, each holding job ID, config hash, source and lineage) and `trainingLineage` (a digest of the graph payload a training request submitted, submodel graphs included); the modelling export-field keys (`MODELLING_EXPORT_CONFIG_KEYS`) and `trainingIdentityConfig`, which omits them. |
+| `frontend/src/panels/modelling/modelExport.ts`, `frontend/src/panels/modelling/FieldHelpIcon.tsx` | The model file extension per algorithm and the shared hover-only field help icon. |
+| `frontend/src/panels/modelling/SummaryTab.tsx` | Model info, diagnostics/errors, development/selection/final-test metrics, tuning baseline/winner evidence and warnings. |
 | `frontend/src/panels/modelling/GLMCoefficientsTab.tsx`, `frontend/src/panels/modelling/GLMRelativitiesTab.tsx` | GLM-specific coefficient and relativity result tables. |
 | `frontend/src/panels/modelling/FeatureImportance.tsx`, `frontend/src/panels/modelling/FeaturesTab.tsx`, `frontend/src/panels/modelling/FeatureBrowser.tsx` | Feature-importance display, tab and feature browser. |
 | `frontend/src/panels/modelling/ChartScaffold.tsx`, `frontend/src/panels/modelling/LossChart.tsx`, `frontend/src/panels/modelling/LossTab.tsx` | Shared chart primitives and loss visualisation. |
 | `frontend/src/panels/modelling/LiftTab.tsx`, `frontend/src/panels/modelling/ResidualsTab.tsx`, `frontend/src/panels/modelling/AveTab.tsx`, `frontend/src/panels/modelling/PdpTab.tsx` | Lift, residual, actual-versus-estimated and partial-dependence result views. |
-| `frontend/src/panels/modelling/FailoverHelp.tsx`, `frontend/src/panels/modelling/OffsetFieldLabel.tsx`, `frontend/src/panels/modelling/styles.ts` | Algorithm help, offset label and modelling visual helpers. |
+| `frontend/src/panels/modelling/FailoverHelp.tsx`, `frontend/src/panels/modelling/OffsetFieldLabel.tsx`, `frontend/src/panels/modelling/styles.ts` | Algorithm help, offset label and modelling visual helpers, including the shared modelling input surface. |
 | `frontend/src/panels/optimiser/SummaryTab.tsx` | Objective/constraint/lambda summary, ratebook-impact state and scenario histogram. |
 | `frontend/src/panels/optimiser/ConvergenceChart.tsx`, `frontend/src/panels/optimiser/FrontierChart.tsx`, `frontend/src/panels/optimiser/DetailCard.tsx` | Iteration convergence, selectable frontier and strict frontier-point detail display. |
 | `frontend/src/panels/optimiser/RatebookRatesTab.tsx`, `frontend/src/panels/optimiser/RatebookImpactBeeswarm.tsx`, `frontend/src/panels/optimiser/ratebookFactorTables.ts` | Ratebook tables, impact chart and factor-table normalisation/order. |
@@ -70,7 +74,12 @@ Only a current, accepted save response may acknowledge this revision transition.
 ### Modelling
 
 1. `frontend/src/panels/ModellingConfig.tsx` reads graph/source/job state, routes the active
-   Target/Features/Params/Split/Train pane, and passes the shared `onUpdate` contract. It
+   Target/Features/Params/Split/Train/Export pane, and passes the shared `onUpdate` contract. It
+   hashes the training identity from the config without the export fields
+   (`MODELLING_EXPORT_CONFIG_KEYS`: `mlflow_destination`, `mlflow_experiment`,
+   `model_export_path`), and the graph's structural fingerprint omits the same keys for modelling
+   nodes, so export edits made on the canvas neither mark the cached result stale nor re-request
+   the RAM estimate. It
    continuously derives every applicable configuration issue, including the selected CatBoost
    strategy's JSON-draft issue, and passes the current messages to the Train pane. An idle
    Train/Re-train press with a non-empty list suppresses the request and reveals those messages
@@ -148,7 +157,9 @@ Only a current, accepted save response may acknowledge this revision transition.
    point. In ratebook mode a selected point without tables is materialised only on Rates/Summary;
    request sequence bookkeeping drops stale replies and persists accepted tables in the result
    store. A point change aborts and clears materialised export detail before Save/MLflow actions
-   can be used for the new point.
+   can be used for the new point. The MLflow log request carries the node's current
+   `mlflow_destination` (found through `allNodes` by `nodeId`; `""` for Auto) and the Export tab
+   and detail card derive availability from that destination alone.
 5. `frontend/src/panels/OptimiserDataPreview.tsx` caps rows at 5,000 before grouping by quote,
    orders scenario rows, and calculates full-preview statistics only when its Statistics tab is open.
 
@@ -304,8 +315,99 @@ The behavioural contract is defined in
   canonicalise random/group/temporal keys; validation changes canonicalise none/single/CV shapes;
   final-test controls use source-relative fractions for random/group and explicit starts for
   temporal. The neutral exact-plan card renders guarded backend counts/ranges only when present.
-  The Train pane owns GPU, row limit, MLflow fields,
-  actions, progress and results. Those editable controls retain the standard modelling input
+  The Train pane owns GPU, row limit, actions, progress and results. `ExportPane.tsx` owns the
+  "MLflow logging" and "Model file" sections. It derives one export block from the node's train
+  state — an active train job ("Training is running — export is available when it completes."),
+  else no cached result or an error result ("Train this model to export it.") — and, when not
+  blocked, a stale warning from the parent's training-identity staleness ("Training settings
+  changed since this model was trained. Exports use the last trained model."). A blocked pane
+  passes no job id to either section, which renders its action disabled; each section is keyed
+  by the exportable job id so a previous job's success or error never survives a new result.
+  The MLflow logging section is headed by an Info icon whose
+  tooltip carries the manual-only note ("used only when you press Log run to MLflow after
+  training completes; nothing is logged automatically"), mounts the shared
+  `MlflowDestinationSelector` bound to `mlflow_destination` (absent = the local folder; choosing
+  Local folder removes the key), and gives the
+  Experiment path label an Info icon in the offset-field pattern whose tooltip explains the
+  field. The experiment tooltip says an MLflow experiment is the named group
+  a logged run is filed under so related runs can be compared, that on Databricks it is a
+  workspace folder path and elsewhere a plain name, and names the computed default used when
+  blank, which follows the node's effective destination (`/Shared/haute/<label>` for databricks,
+  else `<label>`); the field's placeholder is that default. The section has no model name or
+  registry field and the log request carries none. The section carries no always-visible instruction prose and no "Logging destination"
+  line. The experiment datalist loads through `useMlflowBrowser({destination})` from the node's
+  destination on focus, only when that destination can accept a log. The optimiser config's
+  collapsible MLflow section receives the same selector and the same explanatory experiment
+  tooltip, worded for an optimisation result. The Export pane's `MlflowExportSection` and the optimiser `ExportMlflowSection` show one
+  line naming the node's destination under the button (`mlflowLogAvailability`), render the button
+  disabled with the reason and a "Configure MLflow" link (opens the settings modal) only when the
+  node's *own* destination is unconfigured or the package is unavailable — never because some
+  other remote is — (the modelling button is additionally disabled, without that link, while the
+  pane has no exportable job id) and always include `destination` in the log request: the node's
+  remote key or `""` for the local folder, read from the node's current config at click time, so
+  choosing Local folder after a job completes sends `""` and the response names the local backend.
+  A remote the node chose that cannot be reached or rejects its credentials fails the log with the
+  classified error and its "Test connection in MLflow settings" action; nothing falls back to
+  local. The optimiser
+  `DetailCard` log button gets the same disabled-with-reason treatment plus a "Configure" link.
+  Both log requests also carry `experiment_name`, the node's current `mlflow_experiment` or
+  `null` when blank. A failed modelling log renders `apiErrorMessage` in an alert (never
+  `ApiError: HTTP <status>`), and when `apiErrorCode` is `mlflow_connectivity` or
+  `mlflow_authentication` the alert adds a "Test connection in MLflow settings" button that opens
+  the settings modal. The optimiser preview reports failures as "MLflow log failed: <message>"
+  with the same `apiErrorMessage` text.
+  A successful modelling log shows only "Run ID: <run id>", followed by an "Open in Databricks"
+  (databricks) or "Open run" (server) link when the response carries a `run_url`; there is no
+  heading, local `mlflow ui` command or other description.
+  The Export pane reads the exportable job's receipts through `useExportReceipts` and passes the
+  newest of each kind down. With an MLflow receipt the section shows "Last logged to <destination
+  label> · <experiment> · Open run" (or the run ID when there is no link) and its button reads "Log
+  again"; pressing it first asks "This result is already logged to <experiment>. Logging again
+  creates a new run." with "Log as a new run" and Cancel. Every attempt sends a fresh
+  `operation_id` (`newOperationId`) and re-reads the receipts afterwards (`onLogAttempted`). A
+  failure without an HTTP response keeps that operation ID and offers Retry, which resends it — a
+  log whose response was lost returns its recorded run instead of creating another; a failure the
+  server answered offers no Retry. The Model file section shows "Last saved to <path>" while no
+  save outcome of its own is visible and re-reads receipts after a save (`onSaved`).
+  The results store remembers a completed training job at its completion boundary, so a job that
+  finishes while the node's editor is closed is remembered too. `ModellingConfig.onTrain` builds
+  the training payload once, takes its `trainingLineage` before awaiting the request (every node's
+  type, label, description, code, function name and config with sorted keys, runtime keys and
+  modelling export settings omitted; every edge; the preamble; every submodel definition's
+  interface, file and internal graph by the same rules), submits that same payload, and passes the
+  lineage to `startTrainJob`, so an edit made while the request is pending never relabels the job.
+  A fence-current `completeTrainJob` writes the handle — job ID, config hash, source and that
+  lineage — under the job's document (`documentFence.sourceFile`); a job started without a lineage
+  is never remembered; a fence-current error result, failure (`failTrainJob`) or direct completion
+  without a job forgets the node's handle, and a job whose document changed touches no handle.
+  `ModellingConfig`, through `useTrainedJobRestore`, reads the handle when the node has neither a
+  result nor a running job: a completed result is put back with `restoreTrainResult`, keeping the
+  stored config hash and source, with the current structural version when the `trainingLineage`
+  of the payload the editor would submit now equals the stored one and `-1` (always stale)
+  otherwise, so an upstream or submodel edit saved before the reload still shows the stale
+  warning; a missing job (`404`) or any other status forgets the handle and the
+  Export pane reports "The last training result for this node is no longer available (the server
+  restarted or it expired). Train this model again to export it." Storage failures are tolerated.
+  `ModelFileExportSection` is headed "Model file" with an Info icon tooltip describing the
+  action and mirrors `DataOutputEditor`'s file flow. It mounts the shared `PathPickerField`
+  (label "Filename or path *", manual entry, browser filtered to `modelFileExtension(algorithm)`)
+  bound to `model_export_path`, described as "Filenames save in the project's models/ folder.
+  Paths are relative to the project root. The model's {ext} extension is added if omitted."
+  While the stored path is non-empty it resolves `resolveModelSaveDestination({output_path,
+  algorithm})` (aborting the previous request on change) and shows "Destination: {path}", a
+  "The destination extension does not match the model format ({ext})." alert for
+  `suffix_mismatch`, or "Could not resolve destination: {detail}"; a result is shown only for the
+  path it was resolved for. **Save model to file** is disabled without an exportable job id, with
+  an empty path, while saving, or while the resolved destination reports a suffix mismatch; it
+  calls `saveTrainedModel({job_id, output_path, overwrite: false})` and reads "Saving..." while
+  pending. A failure whose `apiErrorCode` is `model_file_exists` (dispatched on the code, never the
+  HTTP status) moves to a confirm state showing its message and a **Replace existing file**
+  button, which is the only way to call `saveTrainedModel` with `overwrite: true`. Success shows
+  "Saved model to {path}" and "Feature contract: {feature_contract_path}"; any other failure shows
+  `apiErrorMessage` in the danger treatment. Save outcomes are
+  tied to the path they were made for: editing the path hides them, and a new attempt replaces
+  them.
+  Those editable controls retain the standard modelling input
   background, border, text, spacing and monospace-value treatment instead of relying on unstyled
   browser defaults. `TrainingProgress.tsx` renders authoritative planning/trial/fold/final-fit/
   publication phases, bounded fit counts and best objective, plus the final model's bounded

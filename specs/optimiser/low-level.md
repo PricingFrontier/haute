@@ -8,7 +8,7 @@
 | `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService` and its supporting free functions: pipeline execution, schema/value-contract validation, quote-grid construction, solver dispatch (online and ratebook), background frontier-auto-range estimation, ownership-marked apply/ratebook-factor artifact persistence and stale-startup reporting, and ratebook factor-table canonicalisation/serialisation. |
 | `src/haute/routes/_optimiser_limits.py` | Shared response-size and solver-compute budgets: `APPLY_PREVIEW_ROW_LIMIT`, `FRONTIER_POINT_LIMIT`, `FRONTIER_COMPUTE_LIMIT`, `enforce_frontier_compute_budget`, `limited_apply_preview_payload`, `limited_frontier_payload`. |
 | `src/haute/_builders.py` | Cross-component runtime registry owned by [execution-engine](../execution-engine/low-level.md). The optimiser component consumes its optimiser-apply online/ratebook closures; saved artifact validation and trace reconstruction must remain contract-compatible with those closures. |
-| `src/haute/_optimiser_io.py` | Loads a previously saved optimiser artifact for an optimiser-apply node — from a local JSON file (content-hash cached) or from MLflow (run-id/version cached). Analogous to `_mlflow_io.py` and `_io.py`. |
+| `src/haute/_optimiser_io.py` | Loads a previously saved optimiser artifact for an optimiser-apply node — from a local JSON file (content-hash cached) or from MLflow (`load_mlflow_optimiser_artifact(..., destination="")`, cached on the resolved backend identity plus run-id/version, so the same run on two destinations never aliases and an unresolvable destination fails before any cache lookup). Analogous to `_mlflow_io.py` and `_io.py`. |
 | `src/haute/_optimiser_apply_explainability.py` | Builds a structured trace-detail payload for one clicked optimiser-apply output row, for both online and ratebook modes. Consumed by the tracing subsystem, not exposed as its own route. |
 | `src/haute/schemas.py` | Shared Pydantic contracts owned by [server-api](../server-api/low-level.md) for optimiser solve/estimate/status, auto-range, frontier, apply, save, and MLflow-log routes. |
 | `frontend/src/api/types.ts` | Canonical frontend optimiser response contracts owned by [frontend-shared](../frontend-shared/low-level.md), including `OptimiserSolveResult`; panels, stores, and tests import this type directly without panel-owned aliases. |
@@ -352,11 +352,27 @@ atomically write it to disk
 (`atomic_write_text`, with `allow_nan=False` as a defence-in-depth backstop behind the explicit
 validation) or attach it as an MLflow run artifact alongside metrics/params and (if present) a
 frontier-points CSV. Tracking-URI/registry setup and experiment-name resolution for `mlflow_log`
-go through the same shared `configure_mlflow_tracking()` / `resolve_experiment_name()` /
+go through the same shared `configure_mlflow_tracking(destination)` / `resolve_experiment_name()` /
 `build_run_url()` helpers in `haute.modelling._mlflow_log` that `routes/modelling.py` uses
 (see [modelling low-level](../modelling/low-level.md#shared-mlflow-trackingexperiment-name-resolution))
 without calling `log_experiment()` itself, since the optimiser's artifact shape (solver params, frontier CSV,
 `optimiser_result.json`) doesn't fit `log_experiment()`'s model-diagnostics-shaped signature.
+`OptimiserMlflowLogRequest.destination` (`""|"databricks"|"server"|"local"`, default `""` =
+the local folder) is authoritative for where the run goes: the job's training-time `mlflow_destination`
+snapshot is never consulted, an unknown value is a `422` before any work, and an unconfigured
+destination fails with `400` carrying the prerequisite-naming `MlflowConfigError` detail and
+writes nothing; the experiment-name default follows the resolved backend. `experiment_name` is
+equally authoritative — the frontend sends the node's current `mlflow_experiment`, and a blank
+value uses the backend default rather than the job's solve-time snapshot. Failures share the
+modelling log route's outcomes (`routes/_mlflow_log_errors.py`): a missing MLflow package is the
+shared `503` checked before any work, a classified remote failure is a `502` with an
+`mlflow_<category>` code and write-specific message, anything unclassified is the generic `500`,
+and only the category and error type are logged. The OPTIMISER node
+config gains the optional `mlflow_destination` field (absent = the local folder; `databricks`
+or `server` when chosen), declared on the
+`OptimiserConfig` TypedDict and `OPTIMISER_CONFIG_KEYS`, classified as node config for the
+execution cache, and rejected by `validate_node_config` for unknown values; solving never logs
+automatically.
 
 ### Artifact lifecycle (persist / validate / load / cleanup)
 
@@ -445,9 +461,19 @@ the neutral-miss path.
 source_names)` is the sole public entry point:
 
 1. Loads the artifact the `OPTIMISER_APPLY` node was configured with (`_load_artifact_from_config`
-   — file or MLflow, delegating to `_optimiser_io.py`), reading `mode` from it (defaulting to
+   — file or MLflow, delegating to `_optimiser_io.py` with the node's `mlflow_destination`, absent
+   = the local folder, exactly as the runtime apply in `_node_apply.py` and the deploy scorer's request-time
+   loader do), reading `mode` from it (defaulting to
    `"online"` if absent, but rejecting an explicitly present-but-blank `mode` as a
-   misconfiguration).
+   misconfiguration). A registered source may name an `alias` instead of a `version`
+   (see [mlflow-model-registry](../mlflow-model-registry/low-level.md#registered-model-aliases)).
+   The OPTIMISER_APPLY node config's optional `mlflow_destination`
+   (MLflow source types only) is declared on the `OptimiserApplyConfig` TypedDict and
+   `OPTIMISER_APPLY_CONFIG_KEYS` (round-tripping through save, parse, and the codegen sidecar),
+   classified as an artifact input for the execution cache, and rejected by `validate_node_config`
+   for unknown values. An explicit destination must be configured in the environment that loads
+   the artifact, including deployed scoring and explanations; it never falls back to another
+   backend.
 2. Selects the correct parent lazy frame from `input_frames` (`_select_optimiser_apply_input`,
    shared with the runtime executor in `haute._builders`, so the trace path resolves the same
    input the real apply ran against). A ratebook artifact requires a non-empty
@@ -769,7 +795,12 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   rejection, and exact save/apply dtype mismatch errors.
 - **`tests/test_optimiser_io.py`** — `load_optimiser_artifact`/`load_mlflow_optimiser_artifact`
   caching behaviour (content-hash cache hit/miss for file loads across the two MLflow source
-  types) and version resolution.
+  types), version resolution, the `destination` argument forwarded to `resolve_backend` for the
+  empty and explicit keys, and the same run on two backend identities producing two distinct cache
+  entries. `tests/test_optimiser_apply.py`, the deploy scorer tests, and
+  `tests/test_optimiser_apply_trace_enrichment.py` pin that every config-driven caller forwards
+  `mlflow_destination`; `tests/test_mlflow_destinations_e2e.py` (mlflow-model-registry) proves the
+  local-folder-while-Databricks-is-configured apply, deployed scoring, and generated-script paths end to end.
 - **`tests/test_optimiser_golden.py`** — golden-snapshot pinning: the `/solve/status` route
   response against `tests/fixtures/ui_contracts/solve_optimiser_response.json`, and
   `_build_artifact_payload` against `tests/fixtures/golden/optimiser_artifact_online.json` /

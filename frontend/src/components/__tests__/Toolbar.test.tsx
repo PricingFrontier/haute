@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+
+vi.mock("../MlflowSettingsModal", () => ({
+  default: () => <div data-testid="mlflow-modal-stub" />,
+}))
+
 import Toolbar from "../Toolbar"
 import useSettingsStore from "../../stores/useSettingsStore"
+import useUIStore from "../../stores/useUIStore"
 
 function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
   return {
@@ -37,6 +43,7 @@ describe("Toolbar", () => {
       sources: ["live"],
       activeSource: "live",
     })
+    useUIStore.setState({ mlflowSettingsOpen: false })
   })
 
   afterEach(cleanup)
@@ -44,6 +51,23 @@ describe("Toolbar", () => {
   it("renders Haute brand name", () => {
     render(<Toolbar {...makeProps()} />)
     expect(screen.getByText("Haute")).toBeInTheDocument()
+  })
+
+  it("renders no MLflow control", () => {
+    // The destination is a per-node choice now, so the toolbar carries no
+    // MLflow control of its own — it only still mounts the settings modal for
+    // the UI flag the node selectors set. Asserting on rendered text rather
+    // than the retired chip's test id keeps the guard alive without naming a
+    // symbol the codebase no longer has.
+    render(<Toolbar {...makeProps()} />)
+    expect(screen.queryByText(/mlflow/i)).toBeNull()
+    expect(screen.queryByTestId("mlflow-modal-stub")).toBeNull()
+
+    cleanup()
+    useUIStore.setState({ mlflowSettingsOpen: true })
+    render(<Toolbar {...makeProps()} />)
+    expect(screen.queryByText(/mlflow/i)).toBeNull()
+    expect(screen.getByTestId("mlflow-modal-stub")).toBeInTheDocument()
   })
 
   it("renders the package-derived browser version", () => {

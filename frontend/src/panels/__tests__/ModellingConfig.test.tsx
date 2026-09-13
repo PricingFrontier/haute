@@ -1,13 +1,21 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
+import { act, render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import ModellingConfig from "../ModellingConfig"
+import { ApiError } from "../../api/client"
+import { trainingIdentityConfig } from "../../utils/modellingExportConfig"
+import { trainingLineage } from "../../utils/trainedJobHandles"
+import { buildGraph } from "../../utils/buildGraph"
+import type { SimpleNode as GraphNodeInput } from "../editors"
 import { GraphProvider } from "../GraphContext"
+import useGraphStore from "../../stores/useGraphStore"
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useToastStore from "../../stores/useToastStore"
 import type { ModellingPane } from "../../stores/useUIStore"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import type { SimpleNode, SimpleEdge } from "../editors"
+import type { MlflowDestinationEntry, MlflowDestinationKey } from "../../api/types"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 import { makeTrainResult as makeCanonicalTrainResult } from "../../test-utils/factories"
 
@@ -16,12 +24,30 @@ import { makeTrainResult as makeCanonicalTrainResult } from "../../test-utils/fa
 const mockTrainModel = vi.fn()
 const mockCancelTrain = vi.fn()
 const mockEstimateTrainingRam = vi.fn()
+const mockGetExperiments = vi.fn()
+const mockGetMlflowDestinations = vi.fn()
+const mockLogToMlflow = vi.fn()
+const mockSaveTrainedModel = vi.fn()
+const mockResolveModelSaveDestination = vi.fn()
+const mockGetTrainStatus = vi.fn()
 let defaultPane: ModellingPane = "target"
 
 vi.mock("../../api/client", () => ({
   trainModel: (...args: unknown[]) => mockTrainModel(...args),
   cancelTrain: (...args: unknown[]) => mockCancelTrain(...args),
   estimateTrainingRam: (...args: unknown[]) => mockEstimateTrainingRam(...args),
+  getExperiments: (...args: unknown[]) => mockGetExperiments(...args),
+  // Reached only if a test leaves the inventory pending — the settings store
+  // fetches it for the destination selector the Export pane mounts.
+  getMlflowDestinations: (...args: unknown[]) => mockGetMlflowDestinations(...args),
+  logToMlflow: (...args: unknown[]) => mockLogToMlflow(...args),
+  saveTrainedModel: (...args: unknown[]) => mockSaveTrainedModel(...args),
+  resolveModelSaveDestination: (...args: unknown[]) => mockResolveModelSaveDestination(...args),
+  // The Export pane reads the job's export receipts, and a reload restores a
+  // remembered result through the same status endpoint.
+  getTrainStatus: (...args: unknown[]) => mockGetTrainStatus(...args),
+  // The Export pane's path picker browses project files when no path is set.
+  listFiles: vi.fn(() => Promise.resolve({ items: [] })),
   // GLMTargetConfig narrows errors with `instanceof ApiError`, so the mock
   // must export a real class or the instanceof check throws.
   ApiError: class ApiError extends Error {},
@@ -88,6 +114,31 @@ function defaultProps(overrides: ConfigOverrides = {}) {
   }
 }
 
+/**
+ * `buildGraph` is mocked to an empty graph for this file. Lineage tests need the
+ * payload to follow the rendered graph, so they install this pass-through.
+ */
+function payloadFor(
+  allNodes: GraphNodeInput[],
+  submodels?: Record<string, unknown>,
+): ReturnType<typeof buildGraph> {
+  return {
+    nodes: allNodes.map((node) => ({
+      id: node.id,
+      type: node.data.nodeType,
+      data: node.data,
+      position: { x: 0, y: 0 },
+    })),
+    edges: [],
+    submodels,
+    preamble: undefined,
+  } as unknown as ReturnType<typeof buildGraph>
+}
+
+function withPassThroughGraph() {
+  vi.mocked(buildGraph).mockImplementation((allNodes, _edges, submodels) => payloadFor(allNodes, submodels))
+}
+
 function renderConfig(overrides: ConfigOverrides = {}) {
   const { allNodes = [], edges = [], submodels, preamble } = overrides
   const props = defaultProps(overrides)
@@ -111,6 +162,57 @@ function makeTrainResult(overrides: Partial<TrainResult> = {}): TrainResult {
   })
 }
 
+// ── MLflow inventory helpers ─────────────────────────────────────
+
+type MlflowSlice = ReturnType<typeof useSettingsStore.getState>["mlflow"]
+
+function mlflowEntry(
+  key: MlflowDestinationKey,
+  over: Partial<MlflowDestinationEntry> = {},
+): MlflowDestinationEntry {
+  return {
+    key,
+    configured: true,
+    destination: "",
+    config_source: "env",
+    detail: "",
+    probed: false,
+    ok: false,
+    category: "",
+    ...over,
+  }
+}
+
+const MLFLOW_DATABRICKS = mlflowEntry("databricks", {
+  destination: "databricks://team",
+  probed: true,
+  ok: true,
+})
+const MLFLOW_SERVER = mlflowEntry("server", {
+  destination: "http://mlflow.example:5000",
+  config_source: "toml",
+  probed: true,
+  ok: true,
+})
+const MLFLOW_LOCAL = mlflowEntry("local", {
+  destination: "C:/proj/mlruns",
+  config_source: "default",
+})
+
+/** Default inventory: local only, so nothing probes and auto is local. */
+function setMlflowInventory(over: Partial<MlflowSlice> = {}): void {
+  useSettingsStore.setState({
+    mlflow: {
+      status: "ready",
+      installed: true,
+      importable: true,
+      destinations: [MLFLOW_LOCAL],
+      detail: "",
+      ...over,
+    },
+  })
+}
+
 // ── Setup / teardown ─────────────────────────────────────────────
 
 beforeEach(() => {
@@ -119,20 +221,28 @@ beforeEach(() => {
     trainJobs: {},
     trainResults: {},
   })
-  useSettingsStore.setState({
-    mlflow: {
-      status: "pending",
-      backend: "",
-      host: "",
-      installed: null,
-      importable: null,
-      trackingConfigured: null,
-      detail: "",
-    },
-    openSections: {},
+  mockGetTrainStatus.mockReset().mockReturnValue(new Promise(() => {}))
+  vi.mocked(buildGraph).mockImplementation(() => ({ nodes: [], edges: [], preamble: "" }) as unknown as ReturnType<typeof buildGraph>)
+  useGraphStore.setState(useGraphStore.getInitialState())
+  useDocumentStatusStore.setState(useDocumentStatusStore.getInitialState())
+  try {
+    localStorage.clear()
+  } catch {
+    // Storage may be unavailable in the test environment.
+  }
+  mockGetMlflowDestinations.mockReset().mockResolvedValue({
+    mlflow_installed: true,
+    mlflow_importable: true,
+    destinations: [MLFLOW_LOCAL],
+    detail: "",
   })
+  setMlflowInventory()
+  useSettingsStore.setState({ openSections: {} })
   mockTrainModel.mockReset()
   mockCancelTrain.mockReset()
+  mockLogToMlflow.mockReset()
+  mockSaveTrainedModel.mockReset()
+  mockResolveModelSaveDestination.mockReset().mockReturnValue(new Promise(() => {}))
   vi.stubGlobal("confirm", vi.fn(() => true))
   // Return a never-resolving promise by default so the useEffect doesn't cause
   // act() warnings from resolved promises after unmount.
@@ -507,6 +617,32 @@ describe("ModellingConfig", () => {
           node_id: "node_1",
         }),
       )
+    })
+
+    it("records the lineage of the graph it submitted, not one edited while the request was pending", async () => {
+      let respond: (value: unknown) => void = () => {}
+      mockTrainModel.mockReturnValue(new Promise((resolve) => { respond = resolve }))
+      withPassThroughGraph()
+      const upstream = { id: "source", data: { label: "source", description: "", nodeType: "polars", code: "df" } }
+      const { rerender, props } = renderConfig({ allNodes: [upstream] })
+      fireEvent.click(screen.getByRole("button", { name: /Train Model/ }))
+      await waitFor(() => expect(mockTrainModel).toHaveBeenCalledTimes(1))
+      const submitted = mockTrainModel.mock.calls[0][0].graph
+
+      const edited = [{ ...upstream, data: { ...upstream.data, code: "df.head(10)" } }]
+      rerender(
+        <GraphProvider allNodes={edited} edges={[]}>
+          <ModellingConfig {...props} />
+        </GraphProvider>,
+      )
+      await act(async () => {
+        respond({ status: "started", job_id: "job_pending" })
+      })
+
+      const job = useNodeResultsStore.getState().trainJobs.node_1
+      expect(job?.jobId).toBe("job_pending")
+      expect(job?.lineage).toBe(trainingLineage(submitted))
+      expect(job?.lineage).not.toBe(trainingLineage(payloadFor(edited)))
     })
 
     it("keeps validation hidden and Train enabled before the first press", () => {
@@ -1421,7 +1557,7 @@ describe("ModellingConfig", () => {
 
     it("keeps the selected algorithm immutable and renders exactly one owning pane for both algorithms", () => {
       for (const algorithm of ["catboost", "glm"] as const) {
-        for (const pane of ["target", "features", "params", "split", "train"] as const) {
+        for (const pane of ["target", "features", "params", "split", "train", "export"] as const) {
           const { unmount } = renderConfig({ activePane: pane, config: { _nodeId: "node_1", algorithm, target: "loss_ratio", loss_function: "RMSE" } })
           expect(screen.getByRole("tabpanel")).toHaveAttribute("id", `modelling-${pane}-pane`)
           expect(screen.queryByRole("button", { name: "CatBoost" })).toBeNull()
@@ -1509,7 +1645,7 @@ describe("ModellingConfig", () => {
       expect(mockTrainModel).not.toHaveBeenCalled()
     })
 
-    it("autosaves fixed params exactly while Train owns GPU, row limit, and MLflow", () => {
+    it("autosaves fixed params exactly while Train owns GPU and row limit and Export owns MLflow", () => {
       const { rerender, props } = renderConfig({ activePane: "params", config: { _nodeId: "node_1", algorithm: "catboost", params: { depth: 6, task_type: "GPU" } } })
       fireEvent.change(screen.getByLabelText("CatBoost hyperparameters JSON"), { target: { value: '{"iterations":200,"custom":true}' } })
       expect(props.onUpdate).toHaveBeenCalledWith("params", {
@@ -1522,30 +1658,753 @@ describe("ModellingConfig", () => {
       rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="train" /></GraphProvider>)
       expect(screen.getByRole("checkbox", { name: /GPU training/ })).toBeTruthy()
       expect(screen.getByLabelText("Row limit")).toBeTruthy()
-      expect(screen.getByPlaceholderText("MLflow experiment")).toBeTruthy()
-      expect(screen.getByPlaceholderText("MLflow model name")).toBeTruthy()
+      expect(screen.queryByLabelText("MLflow experiment path")).toBeNull()
+      expect(screen.queryByRole("radiogroup", { name: "MLflow destination" })).toBeNull()
+      rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="export" /></GraphProvider>)
+      expect(screen.queryByLabelText("Row limit")).toBeNull()
+      expect(screen.getByLabelText("MLflow experiment path")).toBeTruthy()
+      expect(screen.queryByLabelText("MLflow model name")).toBeNull()
+      expect(screen.getByRole("radiogroup", { name: "MLflow destination" })).toBeTruthy()
+      expect(screen.getByLabelText("Filename or path *")).toBeTruthy()
     })
 
-    it("uses the standard themed form styling throughout the Train pane", () => {
-      renderConfig({ activePane: "train" })
+    describe("MLflow section", () => {
+      beforeEach(async () => {
+        mockGetExperiments.mockReset().mockResolvedValue([])
+        const { default: useUIStore } = await import("../../stores/useUIStore")
+        useUIStore.setState({ mlflowSettingsOpen: false })
+      })
+
+      /** Text anywhere in the pane EXCEPT inside a tooltip. */
+      function proseText(pattern: RegExp) {
+        return screen.queryByText(pattern, { ignore: "[role='tooltip'],script,style" })
+      }
+
+      /** Hover the icon's Tooltip wrapper; read the bubble the icon itself is described by. */
+      function tooltipTextOf(ariaLabel: string): string {
+        const icon = screen.getByLabelText(ariaLabel)
+        fireEvent.mouseEnter(icon.parentElement!)
+        return document.getElementById(icon.getAttribute("aria-describedby")!)!.textContent ?? ""
+      }
+
+      it("keeps the manual-only note in the heading tooltip, not in the pane", () => {
+        renderConfig({ activePane: "export" })
+        expect(proseText(/nothing is logged automatically/i)).toBeNull()
+        expect(tooltipTextOf("About MLflow logging")).toMatch(/nothing is logged automatically/i)
+      })
+
+      it("mounts the destination selector and drops the logging-destination line", () => {
+        renderConfig({ activePane: "export" })
+        expect(screen.getByRole("radiogroup", { name: "MLflow destination" })).toBeTruthy()
+        expect(proseText(/Logging destination/i)).toBeNull()
+        expect(proseText(/toolbar/i)).toBeNull()
+      })
+
+      it("names the Databricks default experiment path when the node chooses Databricks", () => {
+        setMlflowInventory({
+          destinations: [MLFLOW_DATABRICKS, MLFLOW_SERVER, MLFLOW_LOCAL],
+        })
+        renderConfig({
+          activePane: "export",
+          config: { _nodeId: "node_1", algorithm: "catboost", mlflow_destination: "databricks" },
+        })
+        const help = tooltipTextOf("About the experiment path")
+        expect(help).toContain("Leave blank to use /Shared/haute/model.")
+        expect(help).toContain("named group")
+        expect(help).toContain("workspace folder path")
+        expect(screen.getByLabelText("About the experiment path")).toHaveAccessibleDescription(
+          /named group/,
+        )
+        expect(screen.getByLabelText("MLflow experiment path")).toHaveAttribute(
+          "placeholder",
+          "/Shared/haute/model",
+        )
+      })
+
+      it("names the bare node label when the node names no destination under the same inventory", () => {
+        setMlflowInventory({
+          destinations: [MLFLOW_DATABRICKS, MLFLOW_SERVER, MLFLOW_LOCAL],
+        })
+        renderConfig({
+          activePane: "export",
+          config: { _nodeId: "node_1", algorithm: "catboost" },
+        })
+        const help = tooltipTextOf("About the experiment path")
+        expect(help).toContain("Leave blank to use model.")
+        expect(help).toContain("named group")
+        expect(help).toContain("workspace folder path")
+        expect(screen.getByLabelText("MLflow experiment path")).toHaveAttribute(
+          "placeholder",
+          "model",
+        )
+      })
+
+      it("offers no model registry field: haute logs candidate runs and never registers them", () => {
+        renderConfig({ activePane: "export" })
+        expect(screen.queryByLabelText("MLflow model name")).toBeNull()
+        expect(screen.queryByLabelText("About the model name")).toBeNull()
+        expect(proseText(/regist/i)).toBeNull()
+      })
+
+      it("keeps a node without a destination on the local folder whatever else is configured", () => {
+        const trainConfig = { _nodeId: "node_1", algorithm: "catboost" }
+        setMlflowInventory({
+          destinations: [MLFLOW_SERVER, MLFLOW_LOCAL],
+        })
+        renderConfig({ activePane: "export", config: trainConfig })
+        expect(screen.getByRole("radio", { name: /Local folder/ })).toBeChecked()
+        cleanup()
+
+        setMlflowInventory({
+          destinations: [MLFLOW_DATABRICKS, MLFLOW_SERVER, MLFLOW_LOCAL],
+        })
+        renderConfig({ activePane: "export", config: trainConfig })
+        expect(screen.getByRole("radio", { name: /Local folder/ })).toBeChecked()
+        expect(screen.getByRole("radio", { name: /Databricks/ })).not.toBeChecked()
+        expect(screen.queryByRole("button", { name: /auto/i })).toBeNull()
+      })
+
+      it("writes a remote choice to the node config and removes the key for Local folder", () => {
+        setMlflowInventory({
+          destinations: [MLFLOW_DATABRICKS, MLFLOW_SERVER, MLFLOW_LOCAL],
+        })
+        const { props } = renderConfig({ activePane: "export" })
+        fireEvent.click(screen.getByRole("radio", { name: /MLflow server/ }))
+        expect(props.onUpdate).toHaveBeenCalledWith("mlflow_destination", "server")
+
+        cleanup()
+        const chosen = renderConfig({
+          activePane: "export",
+          config: { _nodeId: "node_1", algorithm: "catboost", mlflow_destination: "databricks" },
+        })
+        fireEvent.click(screen.getByRole("radio", { name: /Local folder/ }))
+        expect(chosen.props.onUpdate).toHaveBeenCalledWith("mlflow_destination", undefined)
+      })
+
+      it("browses the node's own destination for experiment suggestions", async () => {
+        setMlflowInventory({
+          destinations: [MLFLOW_DATABRICKS, MLFLOW_SERVER, MLFLOW_LOCAL],
+        })
+        mockGetExperiments.mockResolvedValue([{ experiment_id: "1", name: "local-exp" }])
+        renderConfig({
+          activePane: "export",
+          config: { _nodeId: "node_1", algorithm: "catboost", mlflow_destination: "server" },
+        })
+        fireEvent.focus(screen.getByLabelText("MLflow experiment path"))
+        await waitFor(() => {
+          expect(mockGetExperiments).toHaveBeenCalledWith("server")
+          expect(document.querySelector("datalist option[value='local-exp']")).toBeTruthy()
+        })
+      })
+
+      it("browses the local folder with an empty destination", async () => {
+        mockGetExperiments.mockResolvedValue([
+          { experiment_id: "1", name: "/Shared/haute/team-exp" },
+        ])
+        renderConfig({ activePane: "export" })
+        fireEvent.focus(screen.getByLabelText("MLflow experiment path"))
+        await waitFor(() => {
+          expect(mockGetExperiments).toHaveBeenCalledWith("")
+          expect(document.querySelector("datalist option[value='/Shared/haute/team-exp']")).toBeTruthy()
+        })
+      })
+
+      it("does not browse when the node's destination cannot accept a log", () => {
+        setMlflowInventory({
+          destinations: [
+            mlflowEntry("server", { configured: false, config_source: "", detail: "Set [mlflow] tracking_uri." }),
+            MLFLOW_LOCAL,
+          ],
+        })
+        renderConfig({
+          activePane: "export",
+          config: { _nodeId: "node_1", algorithm: "catboost", mlflow_destination: "server" },
+        })
+        fireEvent.focus(screen.getByLabelText("MLflow experiment path"))
+        expect(mockGetExperiments).not.toHaveBeenCalled()
+      })
+
+      it("invalidates suggestions and discards stale responses on a destination switch", async () => {
+        setMlflowInventory({
+          destinations: [MLFLOW_SERVER, MLFLOW_LOCAL],
+        })
+        let resolveFirst: (value: { experiment_id: string; name: string }[]) => void
+        mockGetExperiments.mockReturnValueOnce(
+          new Promise((resolve) => {
+            resolveFirst = resolve
+          }),
+        )
+        renderConfig({
+          activePane: "export",
+          config: { _nodeId: "node_1", algorithm: "catboost", mlflow_destination: "server" },
+        })
+        fireEvent.focus(screen.getByLabelText("MLflow experiment path"))
+        expect(mockGetExperiments).toHaveBeenCalledTimes(1)
+
+        // The workspace repoints the server while the first fetch is in flight.
+        act(() => {
+          setMlflowInventory({
+            destinations: [
+              mlflowEntry("server", { destination: "http://other:5000", config_source: "toml", probed: true, ok: true }),
+              MLFLOW_LOCAL,
+            ],
+          })
+        })
+        // Resolve the stale request and let every resulting update settle
+        // BEFORE asserting absence — a not-yet-rendered option must not be
+        // what makes this pass.
+        await act(async () => {
+          resolveFirst!([{ experiment_id: "9", name: "stale-exp" }])
+        })
+        expect(document.querySelector("datalist option[value='stale-exp']")).toBeNull()
+
+        mockGetExperiments.mockResolvedValueOnce([
+          { experiment_id: "2", name: "fresh-exp" },
+        ])
+        fireEvent.focus(screen.getByLabelText("MLflow experiment path"))
+        await waitFor(() => {
+          expect(mockGetExperiments).toHaveBeenCalledTimes(2)
+          expect(document.querySelector("datalist option[value='fresh-exp']")).toBeTruthy()
+        })
+        expect(document.querySelector("datalist option[value='stale-exp']")).toBeNull()
+      })
+
+      it("clears already populated suggestions when the destination changes", async () => {
+        setMlflowInventory({
+          destinations: [MLFLOW_SERVER, MLFLOW_LOCAL],
+        })
+        mockGetExperiments.mockResolvedValueOnce([
+          { experiment_id: "1", name: "old-exp" },
+        ])
+        renderConfig({
+          activePane: "export",
+          config: { _nodeId: "node_1", algorithm: "catboost", mlflow_destination: "server" },
+        })
+        fireEvent.focus(screen.getByLabelText("MLflow experiment path"))
+        await waitFor(() => {
+          expect(document.querySelector("datalist option[value='old-exp']")).toBeTruthy()
+        })
+
+        act(() => {
+          setMlflowInventory({
+            destinations: [
+              mlflowEntry("server", { destination: "http://other:5000", config_source: "toml", probed: true, ok: true }),
+              MLFLOW_LOCAL,
+            ],
+          })
+        })
+        expect(document.querySelector("datalist option[value='old-exp']")).toBeNull()
+      })
+    })
+
+    it("uses the standard themed form styling throughout the Train and Export panes", () => {
+      const { rerender, props } = renderConfig({ activePane: "train" })
 
       const gpu = screen.getByRole("checkbox", { name: /GPU training/ })
       const rowLimit = screen.getByLabelText("Row limit")
-      const experiment = screen.getByLabelText("MLflow experiment path")
-      const modelName = screen.getByLabelText("MLflow model name")
-
       expect(gpu).toHaveClass("accent-purple-500")
       expect(rowLimit).toHaveAttribute("placeholder", "All rows")
-      for (const field of [rowLimit, experiment, modelName]) {
-        expect(field).toHaveStyle({
-          background: "var(--bg-input)",
-          color: "var(--text-primary)",
-        })
-        expect(field.getAttribute("style")).toContain("border: 1px solid var(--border)")
-      }
       expect(rowLimit).toHaveClass("w-32", "font-mono")
+      expectThemedField(rowLimit)
+
+      rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="export" /></GraphProvider>)
+      const experiment = screen.getByLabelText("MLflow experiment path")
+      expectThemedField(experiment)
       expect(experiment).toHaveClass("w-full", "rounded-lg", "font-mono")
-      expect(modelName).toHaveClass("w-full", "rounded-lg", "font-mono")
+    })
+
+    function expectThemedField(field: HTMLElement) {
+      expect(field).toHaveStyle({
+        background: "var(--bg-input)",
+        color: "var(--text-primary)",
+      })
+      expect(field.getAttribute("style")).toContain("border: 1px solid var(--border)")
+    }
+
+    describe("Export pane", () => {
+      const EXPORT_BLOCKED_NO_MODEL = "Train this model to export it."
+      const EXPORT_BLOCKED_TRAINING = "Training is running — export is available when it completes."
+      const EXPORT_STALE =
+        "Training settings changed since this model was trained. Exports use the last trained model."
+
+      function seedTrainedResult(
+        config: Record<string, unknown>,
+        overrides: { result?: TrainResult; configHash?: string } = {},
+      ) {
+        useNodeResultsStore.setState({
+          trainResults: {
+            node_1: {
+              result: overrides.result ?? makeTrainResult(),
+              jobId: "job_1",
+              configHash: overrides.configHash ?? hashConfig(trainingIdentityConfig(config)),
+              source: "live",
+              structuralVersion: 0,
+            },
+          },
+        })
+      }
+
+      function actionButtons() {
+        return {
+          log: screen.getByRole("button", { name: "Log run to MLflow" }),
+          save: screen.getByRole("button", { name: "Save model to file" }),
+        }
+      }
+
+      it("keeps both actions visible but disabled beneath a train-first note without a trained model", () => {
+        renderConfig({ activePane: "export" })
+        expect(screen.getByText(EXPORT_BLOCKED_NO_MODEL)).toBeTruthy()
+        const { log, save } = actionButtons()
+        expect(log).toBeDisabled()
+        expect(save).toBeDisabled()
+        fireEvent.click(save)
+        expect(mockSaveTrainedModel).not.toHaveBeenCalled()
+      })
+
+      it("treats a failed training result as no exportable model", () => {
+        seedTrainedResult(defaultProps().config, {
+          result: makeTrainResult({ status: "error", error: "OOM" }),
+        })
+        renderConfig({ activePane: "export" })
+        expect(screen.getByText(EXPORT_BLOCKED_NO_MODEL)).toBeTruthy()
+        expect(actionButtons().save).toBeDisabled()
+      })
+
+      it("disables both actions while a training job for the node runs", () => {
+        const config = defaultProps().config
+        seedTrainedResult(config)
+        useNodeResultsStore.setState({
+          trainJobs: {
+            node_1: {
+              jobId: "job_2",
+              nodeId: "node_1",
+              nodeLabel: "Model",
+              progress: null,
+              error: null,
+              configHash: hashConfig(config),
+              source: "live",
+              structuralVersion: 0,
+            },
+          },
+        })
+        renderConfig({ activePane: "export" })
+        expect(screen.getByText(EXPORT_BLOCKED_TRAINING)).toBeTruthy()
+        expect(screen.queryByText(EXPORT_BLOCKED_NO_MODEL)).toBeNull()
+        const { log, save } = actionButtons()
+        expect(log).toBeDisabled()
+        expect(save).toBeDisabled()
+      })
+
+      it("enables both actions without notes for a current trained model", () => {
+        const config = { ...defaultProps().config, model_export_path: "frequency" }
+        seedTrainedResult(config)
+        renderConfig({ activePane: "export", config })
+        expect(screen.queryByText(EXPORT_BLOCKED_NO_MODEL)).toBeNull()
+        expect(screen.queryByText(EXPORT_STALE)).toBeNull()
+        const { log, save } = actionButtons()
+        expect(log).toBeEnabled()
+        expect(save).toBeEnabled()
+      })
+
+      it("warns that exports use the last trained model after training settings change", () => {
+        const config = { ...defaultProps().config, model_export_path: "frequency" }
+        seedTrainedResult(config, { configHash: "hash_before_target_change" })
+        renderConfig({ activePane: "export", config })
+        expect(screen.getByText(EXPORT_STALE)).toBeTruthy()
+        expect(actionButtons().save).toBeEnabled()
+      })
+
+      it("keeps the trained result current and skips a RAM re-estimate when only export fields change", () => {
+        const exportFields = {
+          mlflow_destination: "databricks",
+          mlflow_experiment: "pricing",
+          model_export_path: "models/frequency.cbm",
+        }
+        // The graph store holds the node config without the panel-injected node id.
+        const storedTrainingConfig: Record<string, unknown> = { ...defaultProps().config }
+        delete storedTrainingConfig._nodeId
+        const modellingNode = (config: Record<string, unknown>) => ({
+          id: "node_1",
+          type: "modelling",
+          position: { x: 0, y: 0 },
+          data: { label: "model", nodeType: "modelling", config },
+        })
+        // The canvas edit path: the node's stored config changes in the graph store.
+        const updateStoredConfig = (config: Record<string, unknown>) =>
+          act(() => useGraphStore.getState().setNodesRaw([modellingNode(config)]))
+        updateStoredConfig({ ...storedTrainingConfig, ...exportFields })
+        const trainedVersion = useGraphStore.getState().structuralVersion
+        useNodeResultsStore.setState({
+          trainResults: {
+            node_1: {
+              result: makeTrainResult(),
+              jobId: "job_1",
+              configHash: hashConfig(trainingIdentityConfig(defaultProps().config)),
+              source: "live",
+              structuralVersion: trainedVersion,
+            },
+          },
+        })
+        const { rerender, props } = renderConfig({
+          activePane: "train",
+          config: { ...defaultProps().config, ...exportFields },
+        })
+        expect(screen.queryByText("Config changed since last training")).toBeNull()
+        const estimateCalls = mockEstimateTrainingRam.mock.calls.length
+        const renderWith = (config: Record<string, unknown>) =>
+          rerender(
+            <GraphProvider allNodes={[]} edges={[]}>
+              <ModellingConfig {...props} activePane="train" config={{ ...props.config, ...config }} />
+            </GraphProvider>,
+          )
+
+        const renamed = { mlflow_destination: undefined, mlflow_experiment: "renamed", model_export_path: "models/renamed.cbm" }
+        updateStoredConfig({ ...storedTrainingConfig, ...renamed })
+        renderWith(renamed)
+
+        expect(useGraphStore.getState().structuralVersion).toBe(trainedVersion)
+        expect(screen.queryByText("Config changed since last training")).toBeNull()
+        expect(mockEstimateTrainingRam).toHaveBeenCalledTimes(estimateCalls)
+
+        // A training field edited the same way does change the identity.
+        updateStoredConfig({ ...storedTrainingConfig, ...renamed, row_limit: 5000 })
+        expect(useGraphStore.getState().structuralVersion).toBe(trainedVersion + 1)
+        renderWith({ ...renamed, row_limit: 5000 })
+        expect(screen.getByText("Config changed since last training")).toBeTruthy()
+      })
+
+      describe("Model file", () => {
+        const TRAINED_CONFIG = () => ({ ...defaultProps().config, model_export_path: "frequency" })
+
+        /** The client mock's ApiError ignores constructor fields, so set them explicitly. */
+        function apiError(status: number, detail: string | Record<string, unknown>) {
+          const text = typeof detail === "string" ? detail : JSON.stringify(detail)
+          const error = new ApiError(`HTTP ${status}`, status, text)
+          return Object.assign(error, { status, detail: text, rawDetail: detail })
+        }
+
+        it("requires a filename or path, described like a Data Output file in models/", () => {
+          seedTrainedResult(defaultProps().config)
+          renderConfig({ activePane: "export" })
+
+          expect(
+            screen.getByText(
+              "Filenames save in the project's models/ folder. Paths are relative to the project root. The model's .cbm extension is added if omitted.",
+            ),
+          ).toBeTruthy()
+          expect(actionButtons().save).toBeDisabled()
+          expect(mockResolveModelSaveDestination).not.toHaveBeenCalled()
+        })
+
+        it("commits the filename or path to the node config", () => {
+          const { props } = renderConfig({ activePane: "export" })
+          const field = screen.getByLabelText("Filename or path *")
+          fireEvent.change(field, { target: { value: "severity" } })
+          expect(props.onUpdate).not.toHaveBeenCalled()
+          fireEvent.blur(field)
+          expect(props.onUpdate).toHaveBeenCalledWith("model_export_path", "severity")
+        })
+
+        it("shows the server-resolved destination for the stored path and algorithm", async () => {
+          const glmConfig = {
+            _nodeId: "node_1",
+            algorithm: "glm",
+            target: "loss_ratio",
+            model_export_path: "severity",
+          }
+          mockResolveModelSaveDestination.mockResolvedValue({
+            path: "models/severity.rsglm",
+            suffix_mismatch: false,
+          })
+          renderConfig({ activePane: "export", config: glmConfig })
+
+          expect(await screen.findByText("Destination: models/severity.rsglm")).toBeTruthy()
+          expect(mockResolveModelSaveDestination).toHaveBeenCalledWith(
+            { output_path: "severity", algorithm: "glm" },
+            expect.objectContaining({ signal: expect.any(AbortSignal) }),
+          )
+          expect(screen.getByText(/The model's \.rsglm extension is added if omitted\./)).toBeTruthy()
+        })
+
+        it("blocks saving when the destination extension does not match the model format", async () => {
+          const config = { ...defaultProps().config, model_export_path: "frequency.parquet" }
+          seedTrainedResult(config)
+          mockResolveModelSaveDestination.mockResolvedValue({
+            path: "models/frequency.parquet",
+            suffix_mismatch: true,
+          })
+          renderConfig({ activePane: "export", config })
+
+          expect(
+            await screen.findByText("The destination extension does not match the model format (.cbm)."),
+          ).toBeTruthy()
+          expect(actionButtons().save).toBeDisabled()
+        })
+
+        it("reports a destination the server cannot resolve", async () => {
+          mockResolveModelSaveDestination.mockRejectedValue(
+            apiError(403, "Path '../x' resolves outside the project root"),
+          )
+          renderConfig({
+            activePane: "export",
+            config: { ...defaultProps().config, model_export_path: "../x" },
+          })
+
+          expect(
+            await screen.findByText(
+              "Could not resolve destination: Path '../x' resolves outside the project root",
+            ),
+          ).toBeTruthy()
+        })
+
+        it("saves without overwrite and names both written files", async () => {
+          const config = TRAINED_CONFIG()
+          seedTrainedResult(config)
+          mockSaveTrainedModel.mockResolvedValue({
+            status: "ok",
+            path: "models/frequency.cbm",
+            feature_contract_path: "models/frequency.feature_contract.json",
+          })
+          renderConfig({ activePane: "export", config })
+
+          fireEvent.click(actionButtons().save)
+
+          expect(mockSaveTrainedModel).toHaveBeenCalledWith({
+            job_id: "job_1",
+            output_path: "frequency",
+            overwrite: false,
+          })
+          expect(await screen.findByText("Saved model to models/frequency.cbm")).toBeTruthy()
+          expect(screen.getByText("Feature contract: models/frequency.feature_contract.json")).toBeTruthy()
+        })
+
+        it("asks before replacing an existing file and only then saves with overwrite", async () => {
+          const config = TRAINED_CONFIG()
+          seedTrainedResult(config)
+          mockSaveTrainedModel
+            .mockRejectedValueOnce(
+              apiError(409, {
+                error_code: "model_file_exists",
+                message: "Model file already exists: models/frequency.cbm",
+              }),
+            )
+            .mockReturnValueOnce(new Promise(() => {}))
+          renderConfig({ activePane: "export", config })
+
+          fireEvent.click(actionButtons().save)
+          expect(await screen.findByText("Model file already exists: models/frequency.cbm")).toBeTruthy()
+          expect(mockSaveTrainedModel).toHaveBeenCalledTimes(1)
+
+          fireEvent.click(screen.getByRole("button", { name: "Replace existing file" }))
+
+          expect(mockSaveTrainedModel).toHaveBeenLastCalledWith({
+            job_id: "job_1",
+            output_path: "frequency",
+            overwrite: true,
+          })
+          expect(screen.getByRole("button", { name: "Saving..." })).toBeDisabled()
+          expect(screen.queryByRole("button", { name: "Replace existing file" })).toBeNull()
+        })
+
+        it("shows the server's detail when saving fails and hides it once the path changes", async () => {
+          const config = TRAINED_CONFIG()
+          seedTrainedResult(config)
+          mockSaveTrainedModel.mockRejectedValueOnce(
+            apiError(410, {
+              error_code: "training_artifacts_unavailable",
+              message: "The trained model files are no longer on disk; retrain the model before saving it.",
+            }),
+          )
+          const { rerender, props } = renderConfig({ activePane: "export", config })
+
+          fireEvent.click(actionButtons().save)
+          const message = "The trained model files are no longer on disk; retrain the model before saving it."
+          expect(await screen.findByText(message)).toBeTruthy()
+          expect(screen.queryByRole("button", { name: "Replace existing file" })).toBeNull()
+
+          rerender(
+            <GraphProvider allNodes={[]} edges={[]}>
+              <ModellingConfig {...props} config={{ ...config, model_export_path: "severity" }} />
+            </GraphProvider>,
+          )
+          expect(screen.queryByText(message)).toBeNull()
+        })
+      })
+
+      it("logs the last trained job to MLflow from the Export pane", async () => {
+        seedTrainedResult(defaultProps().config)
+        mockLogToMlflow.mockResolvedValue({
+          status: "ok",
+          backend: "local",
+          experiment_name: "model",
+          run_id: "run-1",
+          run_url: null,
+          tracking_uri: "file:///C:/proj/mlruns",
+          error: null,
+        })
+        renderConfig({ activePane: "export" })
+        fireEvent.click(actionButtons().log)
+        await waitFor(() => {
+          expect(mockLogToMlflow).toHaveBeenCalledWith(
+            expect.objectContaining({ job_id: "job_1", destination: "" }),
+          )
+        })
+        expect(await screen.findByTestId("mlflow-log-success")).toHaveTextContent("Run ID: run-1")
+      })
+
+      describe("receipts and reload", () => {
+        const RECEIPT = {
+          operation_id: "op-1",
+          destination: "",
+          backend: "local",
+          experiment_name: "model",
+          run_id: "run-42",
+          run_url: null,
+          tracking_uri: "file:///C:/proj/mlruns",
+          logged_at: "2026-09-13T08:30:00+00:00",
+        }
+
+        function completedStatus(overrides: Record<string, unknown> = {}) {
+          return {
+            status: "completed",
+            progress: 1,
+            message: "",
+            iteration: 0,
+            total_iterations: 0,
+            train_loss: {},
+            elapsed_seconds: 1,
+            result: makeTrainResult(),
+            export_receipts: { mlflow: [RECEIPT], model_files: [{ path: "models/frequency.cbm", feature_contract_path: "models/frequency.feature_contract.json", saved_at: "2026-09-13T08:31:00+00:00" }] },
+            ...overrides,
+          }
+        }
+
+        it("says where the result was last logged and saved and asks before logging again", async () => {
+          const config = { ...defaultProps().config, model_export_path: "frequency" }
+          seedTrainedResult(config)
+          mockGetTrainStatus.mockResolvedValue(completedStatus())
+          mockResolveModelSaveDestination.mockResolvedValue({ path: "models/frequency.cbm", suffix_mismatch: false })
+          renderConfig({ activePane: "export", config })
+
+          expect(await screen.findByTestId("mlflow-last-logged")).toHaveTextContent(
+            "Last logged to Local folder · model · run run-42",
+          )
+          expect(screen.getByTestId("model-file-last-saved")).toHaveTextContent(
+            "Last saved to models/frequency.cbm",
+          )
+          expect(mockGetTrainStatus).toHaveBeenCalledWith("job_1", expect.anything())
+
+          fireEvent.click(screen.getByRole("button", { name: "Log again" }))
+          expect(mockLogToMlflow).not.toHaveBeenCalled()
+          expect(screen.getByText("This result is already logged to model. Logging again creates a new run.")).toBeTruthy()
+          mockLogToMlflow.mockResolvedValue({ status: "ok", backend: "local", experiment_name: "model", run_id: "run-43", run_url: null, tracking_uri: "file:///C:/proj/mlruns", error: null })
+          fireEvent.click(screen.getByRole("button", { name: "Log as a new run" }))
+          await waitFor(() => expect(mockLogToMlflow).toHaveBeenCalledTimes(1))
+          const operationId = mockLogToMlflow.mock.calls[0][0].operation_id
+          expect(operationId).not.toBe(RECEIPT.operation_id)
+          expect(typeof operationId).toBe("string")
+          // The receipts are re-read after the attempt.
+          await waitFor(() => expect(mockGetTrainStatus).toHaveBeenCalledTimes(2))
+        })
+
+        it("restores a remembered result after a reload through the job status", async () => {
+          const config = defaultProps().config
+          useDocumentStatusStore.setState({ sourceFile: "rating/main.py" })
+          const { writeTrainedJobHandle } = await import("../../utils/trainedJobHandles")
+          writeTrainedJobHandle("rating/main.py", "node_1", {
+            jobId: "job_restored",
+            configHash: hashConfig(trainingIdentityConfig(config)),
+            source: "live",
+            // The (mocked) empty graph this editor renders against.
+            lineage: trainingLineage({ nodes: [], edges: [], preamble: "" }),
+          })
+          mockGetTrainStatus.mockResolvedValue(completedStatus())
+
+          renderConfig({ activePane: "export", config })
+
+          await waitFor(() =>
+            expect(useNodeResultsStore.getState().trainResults.node_1?.jobId).toBe("job_restored"),
+          )
+          expect(mockGetTrainStatus).toHaveBeenCalledWith("job_restored", expect.anything())
+          expect(screen.getByRole("button", { name: "Log again" })).toBeEnabled()
+          expect(screen.queryByText(EXPORT_STALE)).toBeNull()
+        })
+
+        it("restores a result trained against a different graph as stale", async () => {
+          const config = defaultProps().config
+          useDocumentStatusStore.setState({ sourceFile: "rating/main.py" })
+          const { writeTrainedJobHandle } = await import("../../utils/trainedJobHandles")
+          const upstream = { id: "source", data: { label: "source", description: "", nodeType: "polars", code: "df" } }
+          writeTrainedJobHandle("rating/main.py", "node_1", {
+            jobId: "job_restored",
+            configHash: hashConfig(trainingIdentityConfig(config)),
+            source: "live",
+            lineage: trainingLineage(payloadFor([upstream])),
+          })
+          mockGetTrainStatus.mockResolvedValue(completedStatus())
+          withPassThroughGraph()
+
+          // The upstream transform was edited and saved after training; then the page reloaded.
+          renderConfig({
+            activePane: "export",
+            config,
+            allNodes: [{ ...upstream, data: { ...upstream.data, code: "df.head(10)" } }],
+          })
+
+          await waitFor(() =>
+            expect(useNodeResultsStore.getState().trainResults.node_1?.jobId).toBe("job_restored"),
+          )
+          expect(await screen.findByText(EXPORT_STALE)).toBeTruthy()
+          expect(screen.getByRole("button", { name: "Log again" })).toBeEnabled()
+        })
+
+        it("restores a result as stale after a submodel's internal transform changed", async () => {
+          const config = defaultProps().config
+          useDocumentStatusStore.setState({ sourceFile: "rating/main.py" })
+          const { writeTrainedJobHandle } = await import("../../utils/trainedJobHandles")
+          const submodels = (code: string) => ({
+            features: {
+              definitionId: "features",
+              file: "submodels/features.py",
+              inputPorts: [],
+              outputPorts: [],
+              graph: { nodes: [{ id: "clean", data: { label: "clean", nodeType: "polars", code } }], edges: [] },
+            },
+          })
+          writeTrainedJobHandle("rating/main.py", "node_1", {
+            jobId: "job_restored",
+            configHash: hashConfig(trainingIdentityConfig(config)),
+            source: "live",
+            lineage: trainingLineage(payloadFor([], submodels("df"))),
+          })
+          mockGetTrainStatus.mockResolvedValue(completedStatus())
+          withPassThroughGraph()
+
+          renderConfig({ activePane: "export", config, submodels: submodels("df.drop_nulls()") })
+
+          await waitFor(() =>
+            expect(useNodeResultsStore.getState().trainResults.node_1?.jobId).toBe("job_restored"),
+          )
+          expect(await screen.findByText(EXPORT_STALE)).toBeTruthy()
+        })
+
+        it("reports honestly when the remembered result is gone from the server", async () => {
+          useDocumentStatusStore.setState({ sourceFile: "rating/main.py" })
+          const { readTrainedJobHandle, writeTrainedJobHandle } = await import("../../utils/trainedJobHandles")
+          writeTrainedJobHandle("rating/main.py", "node_1", { jobId: "job_gone", configHash: "h", source: "live", lineage: "l" })
+          mockGetTrainStatus.mockRejectedValue(Object.assign(new ApiError("HTTP 404", 404), { status: 404 }))
+
+          renderConfig({ activePane: "export" })
+
+          expect(
+            await screen.findByText(
+              "The last training result for this node is no longer available (the server restarted or it expired). Train this model again to export it.",
+            ),
+          ).toBeTruthy()
+          expect(readTrainedJobHandle("rating/main.py", "node_1")).toBeNull()
+          expect(useNodeResultsStore.getState().trainResults.node_1).toBeUndefined()
+        })
+      })
     })
   })
 })

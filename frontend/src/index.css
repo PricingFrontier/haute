@@ -173,14 +173,6 @@
   --banner-success-data: var(--success-hover);
   --banner-success-action: var(--success-hover);
 
-  /* Editor status badge (MlflowStatusBadge in editors/_shared), success
-     tone.  Its success/danger/warning tints deliberately share the .06
-     alpha tier so no tone shouts over the others — keep parity with the
-     danger/warning sides of the tone map when retuning. */
-  --editor-status-success-bg: var(--success-soft-subtle);
-  --editor-status-success-border: var(--success-border);
-  --editor-status-success-text: var(--success);
-
   /* Training data-summary banner (modelling panel), ok state.  Pairs
      with a warning state at the same .06 tint tier — keep parity. */
   --train-summary-success-bg: var(--success-soft-subtle);
