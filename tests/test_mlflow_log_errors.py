@@ -85,6 +85,25 @@ class TestClassifyMlflowError:
         assert classify_mlflow_error(RuntimeError("boom")) == "unknown"
         assert classify_mlflow_error(MlflowException("bare")) == "unknown"
 
+    def test_classifies_without_raising_when_mlflow_is_a_stub(self) -> None:
+        """An error handler must not fail because ``mlflow.exceptions`` cannot import."""
+        import sys
+
+        with patch.dict(sys.modules, {"mlflow": MagicMock()}):
+            sys.modules.pop("mlflow.exceptions", None)
+            assert classify_mlflow_error(RuntimeError("summary boom")) == "unknown"
+            assert classify_mlflow_error(ConnectionRefusedError("refused")) == "connectivity"
+            assert classify_mlflow_error(_http_error(403)) == "permission"
+
+    def test_classifies_without_requests(self) -> None:
+        import sys
+
+        with patch.dict(sys.modules, {"requests": None}):
+            assert classify_mlflow_error(TimeoutError("deadline")) == "connectivity"
+            assert classify_mlflow_error(RestException({"error_code": "PERMISSION_DENIED"})) == (
+                "permission"
+            )
+
 
 # ---------------------------------------------------------------------------
 # Log routes

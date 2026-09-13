@@ -87,21 +87,42 @@ def classify_mlflow_error(exc: BaseException) -> MlflowFailureCategory:
     Inspects the whole ``__cause__``/``__context__`` chain, because MLflow wraps
     transport failures in ``MlflowException``: a structured MLflow error code or
     HTTP status decides first, then a transport exception means connectivity.
-    """
-    import requests
-    from mlflow.exceptions import MlflowException, RestException
 
-    transport_types = (
+    Classification runs inside error handlers, so it never raises itself: when
+    ``mlflow.exceptions`` or ``requests`` cannot be imported (MLflow missing or
+    replaced by a stub), no link can be one of their exceptions and only the
+    remaining rules apply.
+    """
+    mlflow_exception_types: tuple[type[BaseException], ...] = ()
+    rest_exception_types: tuple[type[BaseException], ...] = ()
+    http_error_types: tuple[type[BaseException], ...] = ()
+    transport_types: tuple[type[BaseException], ...] = (
         ConnectionError,
         TimeoutError,
         socket.gaierror,
-        requests.exceptions.ConnectionError,
-        requests.exceptions.Timeout,
     )
+    try:
+        from mlflow.exceptions import MlflowException, RestException
+    except ImportError:
+        pass
+    else:
+        mlflow_exception_types = (MlflowException,)
+        rest_exception_types = (RestException,)
+    try:
+        import requests
+    except ImportError:
+        pass
+    else:
+        http_error_types = (requests.exceptions.HTTPError,)
+        transport_types = (
+            *transport_types,
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+        )
     for link in _exception_chain(exc):
         if isinstance(link, MlflowRemoteError):
             return link.category
-        if isinstance(link, MlflowException):
+        if isinstance(link, mlflow_exception_types):
             code = getattr(link, "error_code", "")
             if code in _AUTHENTICATION_CODES:
                 return "authentication"
@@ -109,12 +130,12 @@ def classify_mlflow_error(exc: BaseException) -> MlflowFailureCategory:
                 return "permission"
             if code in _MISSING_RESOURCE_CODES:
                 return "missing_resource"
-            if isinstance(link, RestException):
+            if isinstance(link, rest_exception_types):
                 return "unknown"
             # A plain MlflowException usually wraps the transport failure.
             continue
-        if isinstance(link, requests.exceptions.HTTPError):
-            status = getattr(link.response, "status_code", None)
+        if isinstance(link, http_error_types):
+            status = getattr(getattr(link, "response", None), "status_code", None)
             if status in _HTTP_STATUS_CATEGORIES:
                 return _HTTP_STATUS_CATEGORIES[status]
             return "unknown"
