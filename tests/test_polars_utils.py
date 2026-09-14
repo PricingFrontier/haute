@@ -375,47 +375,20 @@ def test_streaming_collect_preserves_execution_memory_limit() -> None:
     assert exc_info.value is memory_error
 
 
-def test_bounded_collect_batches_uses_polars_streaming_batches() -> None:
-    captured: dict[str, object] = {}
-
-    class Lazy:
-        def collect_batches(
-            self,
-            *,
-            chunk_size: int,
-            maintain_order: bool,
-            engine: str,
-        ):
-            captured.update(
-                {
-                    "chunk_size": chunk_size,
-                    "maintain_order": maintain_order,
-                    "engine": engine,
-                }
-            )
-            return iter([pl.DataFrame({"x": [1]}), pl.DataFrame({"x": [2]})])
-
+def test_bounded_collect_batches_streams_ordered_chunks_of_the_real_query() -> None:
     batches = list(
         bounded_collect_batches(
-            Lazy(),  # type: ignore[arg-type]
-            chunk_size=7,
+            pl.LazyFrame({"x": list(range(10))}).with_columns(y=pl.col("x") * 2),
+            chunk_size=3,
             maintain_order=True,
         )
     )
 
-    assert captured == {
-        "chunk_size": 7,
-        "maintain_order": True,
-        "engine": "streaming",
-    }
-    assert [batch["x"].to_list() for batch in batches] == [[1], [2]]
+    assert [batch["x"].to_list() for batch in batches] == [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9]]
+    assert pl.concat(batches)["y"].to_list() == [value * 2 for value in range(10)]
 
 
 def test_bounded_collect_batches_records_only_real_batch_stages() -> None:
-    class Lazy:
-        def collect_batches(self, **_kwargs):
-            return iter([pl.DataFrame({"x": [1]}), pl.DataFrame({"x": [2]})])
-
     context = ExecutionContext(
         operation="chunked",
         profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
@@ -424,8 +397,9 @@ def test_bounded_collect_batches_records_only_real_batch_stages() -> None:
 
     batches = list(
         bounded_collect_batches(
-            Lazy(),  # type: ignore[arg-type]
-            chunk_size=7,
+            pl.LazyFrame({"x": [1, 2]}),
+            chunk_size=1,
+            maintain_order=True,
             execution_context=context,
             stage_name="batch_collect",
         )
@@ -440,29 +414,130 @@ def test_bounded_collect_batches_records_only_real_batch_stages() -> None:
     assert summary.n_checkpoints == 3
 
 
-def test_bounded_collect_batches_preserves_unverified_iteration_failure() -> None:
-    original = pl.exceptions.ComputeError("streaming batch failed")
+def test_bounded_collect_batches_raises_the_engine_error() -> None:
+    query = pl.LazyFrame({"x": ["1", "not a number"]}).select(pl.col("x").str.to_integer())
 
-    class FailingIterator:
-        def __iter__(self):
-            return self
+    with pytest.raises(pl.exceptions.ComputeError, match="not a number"):
+        list(bounded_collect_batches(query, chunk_size=5))
 
-        def __next__(self) -> pl.DataFrame:
-            raise original
 
-    class Lazy:
-        def collect_batches(self, **_kwargs):
-            return FailingIterator()
+def test_bounded_collect_batches_raises_an_engine_panic_instead_of_ending_early() -> None:
+    """Polars' own ``collect_batches`` ends its stream as though exhausted when
+    the engine panics, which would read as an empty result."""
 
-    with pytest.raises(pl.exceptions.ComputeError) as exc_info:
-        list(
-            bounded_collect_batches(
-                Lazy(),  # type: ignore[arg-type]
-                chunk_size=5,
-            )
-        )
+    def panicking_udf(frame: pl.DataFrame) -> pl.DataFrame:
+        raise pl.exceptions.PanicException("engine panic")
 
-    assert exc_info.value is original
+    query = pl.LazyFrame({"x": [1, 2, 3]}).map_batches(
+        panicking_udf, schema=pl.Schema({"x": pl.Int64})
+    )
+
+    with pytest.raises(pl.exceptions.PanicException, match="engine panic"):
+        list(bounded_collect_batches(query, chunk_size=1))
+
+
+def test_bounded_collect_batches_yields_delivered_batches_before_a_later_panic() -> None:
+    from polars.io.plugins import register_io_source
+
+    def source(
+        with_columns: list[str] | None,
+        predicate: pl.Expr | None,
+        n_rows: int | None,
+        batch_size: int | None,
+    ):
+        del with_columns, predicate, n_rows, batch_size
+        yield pl.DataFrame({"x": [1, 2]})
+        raise pl.exceptions.PanicException("panic after the first batch")
+
+    query = register_io_source(source, schema=pl.Schema({"x": pl.Int64}))
+    delivered: list[list[int]] = []
+
+    with pytest.raises(pl.exceptions.PanicException):
+        for batch in bounded_collect_batches(query, chunk_size=1, maintain_order=True):
+            delivered.append(batch["x"].to_list())
+
+    assert delivered == [[1], [2]]
+
+
+def test_bounded_collect_batches_restores_a_parked_python_scan_failure() -> None:
+    class TransformFailedError(RuntimeError):
+        pass
+
+    def failing_transform(frame: pl.DataFrame) -> pl.DataFrame:
+        raise TransformFailedError("typed failure")
+
+    scan = row_local_python_scan(
+        pl.LazyFrame({"x": [1, 2]}),
+        failing_transform,
+        schema=pl.Schema({"x": pl.Int64, "y": pl.Int64}),
+        generated_columns=("y",),
+        required_input_columns=("x",),
+        input_predicates_allowed=True,
+        elide_transform_when_unused=False,
+    )
+
+    with pytest.raises(TransformFailedError, match="typed failure"):
+        list(bounded_collect_batches(scan, chunk_size=1))
+
+
+def test_bounded_collect_batches_stops_the_query_when_closed_early() -> None:
+    import threading
+    import time
+
+    from polars.io.plugins import register_io_source
+
+    produced: list[int] = []
+
+    def source(
+        with_columns: list[str] | None,
+        predicate: pl.Expr | None,
+        n_rows: int | None,
+        batch_size: int | None,
+    ):
+        del with_columns, predicate, n_rows, batch_size
+        for index in range(1_000):
+            produced.append(index)
+            yield pl.DataFrame({"x": [index]})
+
+    query = register_io_source(source, schema=pl.Schema({"x": pl.Int64}))
+    batches = bounded_collect_batches(query, chunk_size=1, maintain_order=True)
+
+    assert next(batches)["x"].to_list() == [0]
+    batches.close()
+
+    deadline = time.monotonic() + 10
+    while (
+        any(thread.name == "haute-collect-batches" for thread in threading.enumerate())
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
+    assert not any(thread.name == "haute-collect-batches" for thread in threading.enumerate())
+    assert len(produced) < 1_000
+
+
+def test_bounded_collect_batches_runs_the_query_in_the_caller_context() -> None:
+    context = ExecutionContext(
+        operation="chunked",
+        profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
+        memory_sampler=lambda: 1_000,
+    )
+    seen: list[ExecutionContext | None] = []
+    real_sink_batches = pl.LazyFrame.sink_batches
+
+    def spying_sink_batches(self: pl.LazyFrame, *args: object, **kwargs: object) -> object:
+        from haute._execution_context import current_execution_context
+
+        seen.append(current_execution_context())
+        return real_sink_batches(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    with (
+        context.stage("caller"),
+        patch.object(pl.LazyFrame, "sink_batches", spying_sink_batches),
+    ):
+        batches = list(bounded_collect_batches(pl.LazyFrame({"x": [1]}), chunk_size=1))
+
+    assert [batch["x"].to_list() for batch in batches] == [[1]]
+    assert seen == [context]
 
 
 def test_streaming_collect_with_active_context_preserves_unverified_error() -> None:

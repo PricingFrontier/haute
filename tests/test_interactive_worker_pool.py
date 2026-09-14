@@ -459,7 +459,9 @@ def test_wait_for_result_defensive_paths(monkeypatch: pytest.MonkeyPatch) -> Non
     [
         (-9, 64 * 1024 * 1024, "memory_limited"),
         (-int(signal.SIGABRT), 64 * 1024 * 1024, "memory_limited"),
+        (0xC0000409, 64 * 1024 * 1024, "memory_limited"),
         (-9, None, "error"),
+        (0xC0000409, None, "error"),
         (3, 64 * 1024 * 1024, "error"),
     ],
 )
@@ -469,7 +471,7 @@ def test_crashed_worker_memory_classification_follows_the_one_shot_heuristic(
     memory_growth_limit_bytes: int | None,
     expected_reason: str,
 ) -> None:
-    """A SIGKILL/SIGABRT-shaped exit under a configured growth cap is a
+    """A SIGKILL/SIGABRT/Windows fail-fast exit under a configured growth cap is a
     hedged memory outcome; without a cap, or for any other exit, it stays a
     plain crash — exactly the one-shot isolated-worker classification."""
     pool = InteractiveWorkerPool(size=1, poll_interval_seconds=0.01)

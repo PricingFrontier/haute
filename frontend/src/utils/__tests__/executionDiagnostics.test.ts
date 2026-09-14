@@ -5,6 +5,7 @@ import {
   buildExecutionStrategyDiagnostic,
   buildExecutionFailureMessage,
   buildMemoryPressureDiagnostic,
+  executionErrorDetailMessage,
   executionJobStatusFromReason,
   executionWarningNodeIds,
   executionTerminalReasonFromError,
@@ -253,5 +254,94 @@ describe("executionDiagnostics", () => {
 
     expect(executionTerminalReasonFromError(error)).toBe("memory_limited")
     expect(executionJobStatusFromReason("memory_limit")).toBe("memory_limited")
+  })
+
+  describe("memory-limit error details", () => {
+    const GB = 1024 ** 3
+    const reduce = "To reduce the memory it needs, filter rows or drop columns earlier in the pipeline."
+
+    it.each([
+      [
+        "a worker crash that looks memory-limited",
+        { reason: "worker_may_have_exceeded_memory_limit" },
+        `The process running this stopped abruptly, most likely because it ran out of memory. ${reduce}`,
+      ],
+      [
+        "an exhausted worker",
+        { reason: "worker_memory_exhausted" },
+        `This ran out of memory before it finished. ${reduce}`,
+      ],
+      [
+        "an unknown reason",
+        { reason: "something_new" },
+        `This ran out of memory before it finished. ${reduce}`,
+      ],
+      [
+        "a worker over its RSS limit",
+        { reason: "worker_rss_limit_exceeded", rss_bytes: 4.5 * GB, rss_limit_bytes: 4 * GB },
+        `This used 4.5 GB of memory, over its 4.0 GB limit. ${reduce}`,
+      ],
+      [
+        "a run over its growth allowance",
+        { reason: "rss_exceeds_memory_limit", memory_limit_bytes: 4 * GB, rss_bytes: 9 * GB },
+        `This needed more than its 4.0 GB memory allowance. ${reduce}`,
+      ],
+      [
+        "a run over its growth allowance without byte values",
+        { reason: "rss_exceeds_memory_limit" },
+        `This needed more than its memory allowance. ${reduce}`,
+      ],
+      [
+        "a run that reached the process limit",
+        {
+          reason: "process_rss_limit_exceeded",
+          memory_limit_bytes: 16 * GB,
+          rss_bytes: 12.5 * GB,
+          baseline_rss_bytes: GB,
+          rss_limit_bytes: 12 * GB,
+        },
+        `Haute reached its 12.0 GB process memory limit while running this. ${reduce}`,
+      ],
+      [
+        "an admission refused at the process limit",
+        {
+          reason: "process_rss_limit_exceeded",
+          rss_at_admission_bytes: 11 * GB,
+          process_rss_limit_bytes: 12 * GB,
+        },
+        "There isn't enough free memory to start this: Haute is already using 11.0 GB of its 12.0 GB process memory limit.",
+      ],
+      [
+        "an admission refused by in-flight work",
+        { reason: "in_flight_memory_budget_exceeded", rss_at_admission_bytes: GB },
+        "Other running work holds the memory this needs. Try again when it finishes.",
+      ],
+      [
+        "an unenforceable native cap",
+        { reason: "native_memory_cap_unavailable" },
+        "This can't run because Haute can't enforce its memory limit on this machine.",
+      ],
+      [
+        "an unavailable memory sampler",
+        { reason: "memory_sampler_unavailable" },
+        "Haute stopped this because it couldn't measure its memory use.",
+      ],
+    ])("renders %s in plain language", (_label, fields, expected) => {
+      const error = { rawDetail: { error_code: "memory_limit", operation: "pipeline_preview", ...fields } }
+
+      expect(executionErrorDetailMessage(error)).toBe(expected)
+    })
+
+    it("keeps an authored message on a memory-limit detail", () => {
+      const error = {
+        rawDetail: {
+          error_code: "memory_limit",
+          reason: "rss_exceeds_memory_limit",
+          message: "Auto-range exceeded its memory budget.",
+        },
+      }
+
+      expect(executionErrorDetailMessage(error)).toBe("Auto-range exceeded its memory budget.")
+    })
   })
 })

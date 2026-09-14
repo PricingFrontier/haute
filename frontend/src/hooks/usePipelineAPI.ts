@@ -38,7 +38,7 @@ import {
   runtimeNodeIdForVisibleNode,
   type DrilledOccurrenceIdentity,
 } from "../utils/submodelRuntimeTarget"
-import { executionWarningNodeIds } from "../utils/executionDiagnostics"
+import { executionErrorDetailMessage, executionWarningNodeIds } from "../utils/executionDiagnostics"
 export { columnFingerprint } from "../utils/columnFingerprint"
 
 interface PipelineAPIParams {
@@ -350,6 +350,8 @@ function isApiTimeoutError(err: unknown): err is ApiTimeoutError {
 }
 
 function previewErrorDetail(err: unknown): string {
+  const detailMessage = executionErrorDetailMessage(err)
+  if (detailMessage) return detailMessage
   if (err instanceof ApiError && err.detail) return err.detail
   return err instanceof Error ? err.message : String(err)
 }

@@ -930,6 +930,10 @@ def _run_cleanup_callbacks(
     return IsolatedWorkerCleanupError(errors) if errors else None
 
 
+# ``STATUS_STACK_BUFFER_OVERRUN``: the exit status of a Windows fail-fast abort.
+_WINDOWS_FAIL_FAST_EXITCODE = 0xC0000409
+
+
 def _exitcode_looks_memory_limited(
     exitcode: int | None,
     memory_limit_bytes: int | None,
@@ -944,6 +948,11 @@ def _exitcode_looks_memory_limited(
     # hedges ("may have run out of memory") and the exit code stays on the
     # exception and in ``worker_exitcode``, at the cost of the UI showing
     # memory guidance for such an abort.
+    #
+    # ``_WINDOWS_FAIL_FAST_EXITCODE`` is SIGABRT's Windows counterpart: a
+    # native allocation the Job Object cap refuses aborts through the
+    # fail-fast path (Polars prints ``memory allocation of N bytes failed``),
+    # and a panic or assertion abort exits the same way.
     if memory_limit_bytes is None or exitcode is None:
         return False
     try:
@@ -955,4 +964,4 @@ def _exitcode_looks_memory_limited(
     # their classification is platform-independent; live Windows RSS breaches
     # are reported directly by the parent watchdog rather than this heuristic.
     sigkill_number = int(getattr(signal, "SIGKILL", 9))
-    return exitcode in {-sigkill_number, -int(signal.SIGABRT)}
+    return exitcode in {-sigkill_number, -int(signal.SIGABRT), _WINDOWS_FAIL_FAST_EXITCODE}

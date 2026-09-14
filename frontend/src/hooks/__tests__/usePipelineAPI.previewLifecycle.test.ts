@@ -308,6 +308,34 @@ describe("usePipelineAPI — preview lifecycle terminal states (W0)", () => {
     expect(result.current.previewBusy).toBe(false)
   })
 
+  it("renders a memory-limit preview failure in plain language rather than its raw detail", async () => {
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    const detail = {
+      error_code: "memory_limit",
+      operation: "pipeline_preview",
+      reason: "worker_may_have_exceeded_memory_limit",
+    }
+    const { ApiError } = await import("../../api/client")
+    mockPreview.mockRejectedValue(
+      Object.assign(new ApiError("HTTP 507", 507, JSON.stringify(detail)), { rawDetail: detail }),
+    )
+
+    const scoringNode = makeNode("competitor_scoring", "modelScore")
+    const params = makeParams()
+    params.graphRef.current = { nodes: [scoringNode], edges: [] }
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => { result.current.fetchPreview(scoringNode, { debounceMs: 0 }) })
+
+    await waitFor(() => expect(result.current.previewData?.status).toBe("error"))
+    expect(result.current.previewData?.error).toBe(
+      "The process running this stopped abruptly, most likely because it ran out of memory. "
+        + "To reduce the memory it needs, filter rows or drop columns earlier in the pipeline.",
+    )
+  })
+
   it("does not resurrect the panel or cache for a node deleted while its preview was in flight", async () => {
     // handleDeleteNode clears previewData to null and removes the node;
     // the late response must keep that terminal state (no panel for a

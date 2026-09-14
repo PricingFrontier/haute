@@ -280,6 +280,12 @@ _EXPECTED_DEBT_IDS = {
     # one leg can only be exercised where that file exists.
     # See tests/test_worker_isolation.py.
     "e928b1daccb49a17",
+    # A native allocation refused by the per-worker memory cap is classified as
+    # a memory outcome from the child's real crash status (Linux SIGABRT/SIGKILL,
+    # Windows fail-fast). It needs a host where that native cap can be installed;
+    # the exit-code classification itself is covered on every platform.
+    # See tests/test_worker_isolation.py.
+    "28de4bc1e189b1c6",
     # macOS available-RAM probe — the Mach ``host_statistics64`` counters exist
     # only on darwin, so the unmocked-kernel assertion is darwin-gated. This is
     # the test that would have caught the original defect (darwin had no

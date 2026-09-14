@@ -8,12 +8,14 @@ import io
 import json
 import math
 import operator
+import queue
 import threading
 import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable, Collection, Generator, Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -184,40 +186,98 @@ def bounded_collect_batches(
     stage_name: str = "collect_batches",
     node_id: str | None = None,
 ) -> Iterator[pl.DataFrame]:
-    """Yield native streaming batches with execution checkpoints."""
+    """Yield native streaming batches with execution checkpoints.
+
+    Polars' own ``collect_batches`` ends its stream as though the query were
+    exhausted when the engine panics, so a crash would read as a short result.
+    The query runs instead as a blocking streaming ``sink_batches`` on a
+    dedicated thread, which raises every engine failure (a panic as
+    ``PanicException``). Batches reach the caller through a one-slot queue;
+    after the batches delivered before a failure, the failure is re-raised.
+    Closing the iterator early stops the query at its next batch.
+    """
 
     if not isinstance(chunk_size, int) or isinstance(chunk_size, bool) or chunk_size <= 0:
         raise ValueError("chunk_size must be a positive integer")
     metrics_context = execution_context or current_execution_context()
     if metrics_context is not None:
         metrics_context.fault_point("collect_before_native", node_id=node_id)
-    batches = lf.collect_batches(
-        chunk_size=chunk_size,
-        maintain_order=maintain_order,
-        engine="streaming",
-    )
-    if metrics_context is not None:
-        metrics_context.checkpoint(label="before_collect_batches", node_id=node_id)
-    while True:
+    handoff: queue.Queue[pl.DataFrame | _BatchStreamEnd] = queue.Queue(maxsize=1)
+    closed = threading.Event()
+
+    def hand_off(item: pl.DataFrame | _BatchStreamEnd) -> bool:
+        while not closed.is_set():
+            try:
+                handoff.put(item, timeout=_BATCH_HANDOFF_POLL_SECONDS)
+            except queue.Full:
+                continue
+            return True
+        return False
+
+    def run_query() -> None:
+        failure: BaseException | None = None
         try:
-            if metrics_context is not None:
-                with metrics_context.stage(
-                    stage_name,
-                    node_id=node_id,
-                    skip_metric_on_exception=(StopIteration,),
-                ):
-                    batch = next(batches)
-                    metrics_context.record_collect()
-            else:
-                batch = next(batches)
-        except StopIteration:
-            break
-        except pl.exceptions.ComputeError as exc:
-            _reraise_python_scan_failure(exc)
-            raise
+            lf.sink_batches(
+                lambda batch: not hand_off(batch),
+                chunk_size=chunk_size,
+                maintain_order=maintain_order,
+                lazy=False,
+                engine="streaming",
+            )
+        except BaseException as exc:
+            failure = exc
+        hand_off(_BatchStreamEnd(failure))
+
+    query_context = contextvars.copy_context()
+    threading.Thread(
+        target=query_context.run,
+        args=(run_query,),
+        name="haute-collect-batches",
+        daemon=True,
+    ).start()
+
+    def next_batch() -> pl.DataFrame:
+        item = handoff.get()
+        if isinstance(item, _BatchStreamEnd):
+            if item.failure is None:
+                raise StopIteration
+            if isinstance(item.failure, pl.exceptions.ComputeError):
+                _reraise_python_scan_failure(item.failure)
+            raise item.failure
+        return item
+
+    try:
         if metrics_context is not None:
-            metrics_context.checkpoint(label="after_collect_batch", node_id=node_id)
-        yield batch
+            metrics_context.checkpoint(label="before_collect_batches", node_id=node_id)
+        while True:
+            try:
+                if metrics_context is not None:
+                    with metrics_context.stage(
+                        stage_name,
+                        node_id=node_id,
+                        skip_metric_on_exception=(StopIteration,),
+                    ):
+                        batch = next_batch()
+                        metrics_context.record_collect()
+                else:
+                    batch = next_batch()
+            except StopIteration:
+                return
+            if metrics_context is not None:
+                metrics_context.checkpoint(label="after_collect_batch", node_id=node_id)
+            yield batch
+    finally:
+        closed.set()
+
+
+_BATCH_HANDOFF_POLL_SECONDS = 0.05
+
+
+@dataclass(frozen=True, slots=True)
+class _BatchStreamEnd:
+    """The end of a batch stream: a clean finish, or the query's failure."""
+
+    failure: BaseException | None
 
 
 # Polars reports an exception raised inside a Python scan source as a

@@ -172,6 +172,25 @@ labels (including “Caching the dataframe”), and adaptive limits are describe
 automatically set from available RAM; explicit configuration keys remain available.
 These wording changes do not change thresholds, severity, or failure precedence.
 
+A structured `error_code: "memory_limit"` error detail carrying no authored `message` is
+never shown as its raw JSON or reason code: `executionErrorDetailMessage` renders it in
+plain language chosen by its closed `reason`, with GB-scale byte values:
+`worker_may_have_exceeded_memory_limit` — the process running it stopped abruptly, most
+likely because it ran out of memory; `worker_memory_exhausted`, `worker_memory_limit`,
+or an unknown reason — it ran out of memory before it finished;
+`worker_rss_limit_exceeded` — it used `rss_bytes`, over its `rss_limit_bytes` limit;
+`rss_exceeds_memory_limit` — it needed more than its `memory_limit_bytes` allowance;
+`process_rss_limit_exceeded` — at admission (the detail carries `rss_at_admission_bytes`)
+not enough memory is free to start because Haute already uses that much of its
+`process_rss_limit_bytes` limit, otherwise Haute reached its process limit (the running
+execution's effective `rss_limit_bytes`) while running it; `in_flight_memory_budget_exceeded` — other running work holds the memory it needs,
+so try again when that finishes; `native_memory_cap_unavailable` — Haute cannot enforce
+its memory limit on this machine; `memory_sampler_unavailable` — Haute stopped it because
+it could not measure its memory use. A byte value missing from the detail is omitted
+from the sentence rather than invented. Each ran-out-of-memory outcome (the first four,
+and a process limit reached while running) adds the action: filter rows or drop columns
+earlier in the pipeline to reduce the memory it needs.
+
 `ExecutionDiagnosticsSummary` consumes the guarded versioned metrics contract
 and renders only actionable memory pressure, a rejected strategy, or a `warned`
 conservative strategy, with technical collections behind disclosure. Memory

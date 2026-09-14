@@ -592,6 +592,11 @@ reconciliation rather than dropping them or committing a second mutation.
     Once `tables` is present, schema validation failures remain visible;
     explicitly previewing an unfinished Quote Input still receives its normal
     execution validation error.
+    A failed preview request renders as that node's preview error with
+    `executionErrorDetailMessage`'s text when the detail yields one (so a
+    memory-limit 507 reads as plain language — see
+    [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md)),
+    else the string detail, else the thrown error's message.
     `previewNode()` resolves into `resultToPreview`; if the response's
     columns differ from the node's previous columns
     (`columnsEqualByFingerprint`), `propagate(nodeId)` kicks off the
