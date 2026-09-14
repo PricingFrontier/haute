@@ -395,8 +395,17 @@ the skip/conservation accounting.
    generation verifies size and SHA-256 from the pinned artifact in fixed-size chunks;
    the complete compressed payload is never held in a Python `bytes`/`BytesIO` object.
    The verified snapshot may remain in a process-local LRU bounded by
-   `HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_ENTRIES` and
-   `HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_BYTES`. A later probe acquires that snapshot
+   `HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_ENTRIES` (default 64) and
+   `HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_BYTES`. The byte bound defaults to half the
+   runtime storage budget (`HAUTE_JSON_RUNTIME_DISK_BUDGET_BYTES`, at least one byte), because
+   retained snapshots count against that budget: pins never take more than half of it, and
+   an artifact up to that size stays cacheable while the other half remains for captures
+   and spills. An artifact larger than the byte bound is never retained, so every
+   operation re-hashes it; the earlier fixed 512 MiB bound re-hashed a 1 GB quote table
+   (about 2 s) on every preview and trace. Retaining a newly verified generation drops the
+   cache pins of every other generation of the same visible path: the path can never
+   present a superseded generation's revision again, so those pins could only hold its
+   disk blocks. A later probe acquires that snapshot
    without hashing only when the current visible path has the exact strong native
    identity/change revision captured after verification and the private file still
    exists. The warm-hit path performs the fork-safe process-state reset and native

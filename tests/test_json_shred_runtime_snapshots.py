@@ -328,6 +328,85 @@ def test_unchanged_artifact_reuses_one_verified_snapshot_without_rehashing(
     }
 
 
+@pytest.mark.parametrize(
+    ("disk_budget", "cache_bytes", "expected"),
+    [
+        pytest.param(None, None, 2 * 1024 * 1024 * 1024, id="default"),
+        pytest.param("10", None, 5, id="half-the-budget"),
+        pytest.param("1", None, 1, id="at-least-one-byte"),
+        pytest.param("10", "7", 7, id="explicit"),
+    ],
+)
+def test_snapshot_cache_byte_bound_defaults_to_half_the_runtime_disk_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    disk_budget: str | None,
+    cache_bytes: str | None,
+    expected: int,
+) -> None:
+    for name, value in (
+        ("HAUTE_JSON_RUNTIME_DISK_BUDGET_BYTES", disk_budget),
+        ("HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_BYTES", cache_bytes),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+
+    assert _runtime_storage._runtime_snapshot_cache_max_bytes() == expected
+
+
+def _stat_revision(path: Path) -> _source_proof._StrongFileRevision | None:
+    """A strong revision from ``os.stat``, so generation tests run on any filesystem."""
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    return _source_proof._StrongFileRevision(
+        file_identity=(stat.st_dev, stat.st_ino),
+        size=stat.st_size,
+        mtime_ns=stat.st_mtime_ns,
+        change_token=stat.st_ctime_ns,
+    )
+
+
+def test_retaining_a_new_generation_drops_superseded_generation_pins(
+    tmp_path: Path,
+    isolated_snapshot_state: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", _stat_revision)
+    cache_dir = tmp_path / "cache"
+    source = tmp_path / "source.parquet"
+    source.write_bytes(b"first")
+    first = _runtime_storage._snapshot_cache_artifact(cache_dir, source, _signature(b"first"))
+    assert first is not None
+    _runtime_storage._release_runtime_snapshot(first)
+    assert first.exists()
+
+    replacement = tmp_path / "replacement.parquet"
+    replacement.write_bytes(b"second!")
+    os.replace(replacement, source)
+    second = _runtime_storage._snapshot_cache_artifact(cache_dir, source, _signature(b"second!"))
+    assert second is not None
+
+    assert not first.exists()
+    replacement.write_bytes(b"third!!!")
+    os.replace(replacement, source)
+    # A superseded generation still leased by an execution survives until released.
+    third = _runtime_storage._snapshot_cache_artifact(cache_dir, source, _signature(b"third!!!"))
+    assert third is not None
+    assert second.exists()
+    _runtime_storage._release_runtime_snapshot(second)
+    assert not second.exists()
+    _runtime_storage._release_runtime_snapshot(third)
+    assert third.exists()
+    assert _runtime_storage._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats() == {
+        "entries": 1,
+        "bytes": len(b"third!!!"),
+        "inflight": 0,
+    }
+
+
 def test_same_stat_artifact_corruption_invalidates_retained_snapshot(
     tmp_path: Path,
     isolated_snapshot_state: None,
