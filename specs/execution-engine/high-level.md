@@ -386,6 +386,14 @@ running heavy work in a child process the parent can kill on timeout or memory l
   columns use `ContractMismatchError`; join-key dtype disagreement uses
   `SchemaMismatchError`. Both propagate identically through the eager core and
   are adapted identically by the preview route.
+- **A declared contract only fills the builder's opaque sides.** The effective
+  contract used for enforcement and projection (`overlay_declared_contract`) keeps
+  every side the builder derives from the node's current config and takes a
+  declared `config["contract"]` side only where the builder is opaque. A parsed
+  graph carries the previously generated annotation as that declaration, so after
+  an unsaved config edit (a renamed Model Score output column, a model whose
+  features changed) a preview checks and projects the edited node's real columns,
+  not the stale annotation.
 - **Contract resolution is fail-loud outside interactive preview.** Only
   `PREVIEW_EAGER` may turn classified configuration/I/O/model-boundary resolution
   failures into a diagnosed opaque contract. Every non-preview profile, and an

@@ -59,6 +59,21 @@ class Contract:
         outputs = _freeze(produced)
         return cls(inputs=inputs, outputs=outputs)
 
+    def fill_opaque_sides(self, declared: Contract) -> Contract:
+        """Return this builder contract with its opaque sides taken from *declared*.
+
+        A side the builder derives from the node's configuration is
+        authoritative.  A declared value for that side is either identical
+        (the parse-time check enforces it) or stale: parsing carries the
+        previously generated annotation onto the config, and editing the
+        config afterwards does not rewrite it.  A declaration therefore only
+        supplies the sides the builder cannot derive.
+        """
+        return Contract(
+            inputs=self.inputs if self.inputs is not None else declared.inputs,
+            outputs=self.outputs if self.outputs is not None else declared.outputs,
+        )
+
     def to_tuple(self) -> ColumnContract:
         """Return the ``(produced, referenced)`` tuple form."""
         produced = set(self.outputs) if self.outputs is not None else None

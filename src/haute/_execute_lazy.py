@@ -195,7 +195,7 @@ def _resolve_effective_contract(
 ) -> ContractResolution:
     """Resolve the effective node contract under the active profile policy.
 
-    User-declared concrete sides overlay the builder-derived contract. Known
+    User-declared sides fill the builder-derived contract's opaque sides. Known
     external/configuration failures fail strict execution with a typed,
     redacted error; interactive preview retains a diagnosed opaque degradation.
     Programmer errors always propagate unchanged.

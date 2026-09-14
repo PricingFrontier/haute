@@ -260,7 +260,7 @@ def test_contract_resolution_raises_for_malformed_declared_contract() -> None:
 def test_contract_resolution_merges_declared_inputs_with_builder_outputs() -> None:
     with patch(
         "haute._execute_lazy.get_column_contract",
-        return_value=({"premium"}, {"base_rate"}),
+        return_value=({"premium"}, None),
     ):
         contract = _resolve_effective_contract(
             _node(
@@ -273,6 +273,27 @@ def test_contract_resolution_merges_declared_inputs_with_builder_outputs() -> No
     assert contract == Contract(
         inputs=frozenset({"declared_rate"}),
         outputs=frozenset({"premium"}),
+    )
+
+
+def test_contract_resolution_prefers_builder_sides_over_a_stale_declaration() -> None:
+    # A declaration parsed from the previous save still names the old output
+    # column and model features after the user edits the node's config.
+    with patch(
+        "haute._execute_lazy.get_column_contract",
+        return_value=({"competitor_premium"}, {"annual_mileage"}),
+    ):
+        contract = _resolve_effective_contract(
+            _node(
+                NodeType.MODEL_SCORE,
+                {"contract": {"inputs": ["retired_feature"], "outputs": ["prediction"]}},
+            ),
+            strict=True,
+        ).contract
+
+    assert contract == Contract(
+        inputs=frozenset({"annual_mileage"}),
+        outputs=frozenset({"competitor_premium"}),
     )
 
 

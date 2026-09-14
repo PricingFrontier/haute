@@ -170,8 +170,14 @@ Out of scope (owned by neighbouring components):
   documenting its column-level input/output contract (or the string sentinel `"opaque"` when it
   cannot be determined statically). An instance node with no explicit declared contract omits the
   kwarg because it inherits the original node's contract; an instance carrying a declaration has
-  that declaration emitted. Injection rewrites already-generated source text in place (see Design
-  rationale), rather than templating the kwarg in from the start.
+  that declaration emitted. Every other node's contract is re-derived from its current config on
+  every generation: parsing carries the previously generated annotation back onto
+  `config["contract"]`, so that declaration only supplies the sides (inputs/outputs) the builder
+  cannot derive, plus its `inputs_by_parent` fan-in metadata, and a concrete builder side replaces
+  it. A declared `"opaque"` declares no side and is emitted unchanged. Editing a node's config (renaming a Model Score output column, a banding output) therefore
+  saves the refreshed annotation instead of a stale one the post-save parse check rejects.
+  Injection rewrites already-generated source text in place (see Design rationale), rather than
+  templating the kwarg in from the start.
 - **Instance mappings are persisted, not merely baked into one function body.** An
   instance emits both `of=...` and its explicit `inputMapping=...` on the
   decorator, as well as the resolved keyword call to the original function.
@@ -246,13 +252,16 @@ Out of scope (owned by neighbouring components):
   same-named node in an unrelated submodel. That wider authoring error surface
   is the accepted cost of preventing silent execution-time shadowing.
 - **`OSError`/`mlflow.*` are the only contract-computation errors treated as
-  "opaque," not fallback-worthy.** `_is_codegen_infra_error` narrowly
+  "offline," not fallback-worthy.** `_is_codegen_infra_error` narrowly
   allowlists environmental failures (missing artifact, unreachable MLflow
   server) so codegen can save a pipeline in a disconnected/CI environment
-  without a running model server. Every other exception — misconfiguration,
-  a genuine bug in contract computation — propagates and fails the save;
-  masking those behind `contract="opaque"` would hide a real defect inside a
-  file that then runs and fails far from the cause.
+  without a running model server. Such a failure degrades the annotation to
+  the contract the parser derives offline (for Model Score: the configured
+  output column, with inputs opaque unless declared), which is exactly what
+  the post-save parse check compares it against. Every other exception —
+  misconfiguration, a genuine bug in contract computation — propagates and
+  fails the save; masking those behind `contract="opaque"` would hide a real
+  defect inside a file that then runs and fails far from the cause.
 - **Optimiser / modelling / explore bodies are genuine first-frame
   passthroughs.** Their actual computation (solving, training) happens via
   dedicated API routes, not by running the generated function — so a
@@ -331,7 +340,7 @@ execution time on a mis-wired pipeline). Concretely:
   enriched with the offending node's id/label/type before re-raising.
 - **Contract computation raises `ConfigError`** (user misconfiguration) or
   any other non-infra exception → propagates unchanged; only `OSError` and
-  `mlflow.*` exceptions are downgraded to an opaque contract.
+  `mlflow.*` exceptions are downgraded to the offline parse-time contract.
 - **`inputs_by_parent` has two distinct source keys colliding on the same
   emitted parent with different columns** → `ParseError` from
   `_format_contract_source`; ambiguous data is never silently resolved by

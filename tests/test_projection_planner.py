@@ -508,7 +508,7 @@ def _edge_join_graph(*, keys: dict[str, object], base_outputs, join_outputs):
                     "id": "join",
                     "data": {
                         "label": "join",
-                        "nodeType": "modelScore",
+                        "nodeType": "polars",
                         "config": {"contract": {"inputs": [], "outputs": join_outputs}},
                     },
                 },

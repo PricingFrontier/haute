@@ -2150,7 +2150,7 @@ def with_api_input_port_projection_boundaries(
 
 
 def overlay_declared_contract(node: GraphNode, builder: Contract) -> Contract:
-    """Apply any user-declared contract fields over a builder contract."""
+    """Fill a builder contract's opaque sides from the node's declared contract."""
     declared_raw = node.data.config.get("contract")
     if declared_raw is None:
         return builder
@@ -2167,11 +2167,7 @@ def overlay_declared_contract(node: GraphNode, builder: Contract) -> Contract:
         return builder
     if _empty_declared_contract_should_defer_to_builder(node, builder, declared):
         return builder
-    inputs = declared.inputs if declared.inputs is not None else builder.inputs
-    outputs = declared.outputs if declared.outputs is not None else builder.outputs
-    if node.data.nodeType == NodeType.SCENARIO_EXPANDER and builder.outputs is not None:
-        outputs = builder.outputs if outputs is None else outputs | builder.outputs
-    return Contract(inputs=inputs, outputs=outputs)
+    return builder.fill_opaque_sides(declared)
 
 
 def _empty_declared_contract_should_defer_to_builder(
@@ -2184,9 +2180,6 @@ def _empty_declared_contract_should_defer_to_builder(
         return False
     if declared.inputs_by_parent:
         return False
-
-    if node.data.nodeType == NodeType.SCENARIO_EXPANDER and builder.outputs:
-        return True
 
     return _has_projection_user_code(node) and (builder.inputs is None or builder.outputs is None)
 
@@ -2207,12 +2200,13 @@ def _projection_contract_from_registered(
     registered: Contract,
 ) -> Contract:
     """Apply projection-specific interpretation to one registered contract."""
-    builder = (
-        Contract(inputs=frozenset(), outputs=frozenset())
-        if node.data.nodeType == NodeType.POLARS and not _has_user_polars_code(node)
-        else registered
-    )
-    return overlay_declared_contract(node, builder)
+    contract = overlay_declared_contract(node, registered)
+    if node.data.nodeType == NodeType.POLARS and not _has_user_polars_code(node):
+        # A code-free Polars node is a passthrough: undeclared sides read and
+        # produce nothing. This is a projection default, not a config-derived
+        # builder side, so it must not displace the node's declaration.
+        contract = contract.fill_opaque_sides(Contract(inputs=frozenset(), outputs=frozenset()))
+    return contract
 
 
 def ratebook_factor_required_columns(config: Mapping[str, Any]) -> frozenset[str]:

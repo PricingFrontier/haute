@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 
 from haute._codegen_builders import (
     _build_params,
@@ -18,6 +19,7 @@ from haute._codegen_builders import (
     _safe_str,
     _sanitize_description,
 )
+from haute._config_builder import resolve_parse_time_contract
 from haute._config_io import config_path_for_node, has_config_folder
 from haute._config_validation import reject_removed_config_keys
 from haute._contracts import (
@@ -95,6 +97,8 @@ def _is_codegen_infra_error(exc: BaseException) -> bool:
 def _format_contract_kwarg(
     node: GraphNode,
     parent_name_by_id: dict[str, str] | None = None,
+    *,
+    derive: bool = True,
 ) -> str | None:
     """Return the ``contract=...`` decorator kwarg source, or ``None``.
 
@@ -104,20 +108,57 @@ def _format_contract_kwarg(
     ``contract="opaque"`` — a short string sentinel that both survives
     JSON config round-tripping and is trivially human-readable.
 
-    Returns ``None`` for instance nodes (their contract comes from the
-    original node they reference, not from their own usually-empty
-    config).
+    The contract is re-derived from the node's current config on every
+    call.  A declared ``config["contract"]`` — usually the annotation the
+    previous save generated, carried back by the parser — only supplies the
+    sides the builder cannot derive, plus its fan-in ownership metadata; a
+    concrete derived side replaces it, so a config edit never leaves a stale
+    annotation that the post-save parse check rejects.
+
+    Instance nodes, and callers passing ``derive=False``, emit the
+    declaration unchanged: an instance's own config does not describe the
+    columns it references, and offline recovery generation must not derive
+    from external model artifacts.  An instance with no declaration returns
+    ``None`` because its contract comes from the original node.  A declared
+    ``"opaque"`` is also emitted unchanged: it declares no side, so it can
+    neither go stale against the config nor override the builder.
+    """
+    config = node.data.config
+    declared = Contract.from_user_declared(config.get("contract"))
+    if config.get("instanceOf") or not derive:
+        if declared is None:
+            return None
+        return _format_contract_source(declared, parent_name_by_id=parent_name_by_id)
+    if declared == Contract.opaque():
+        return f'contract="{OPAQUE_CONTRACT_SENTINEL}"'
+    derived = _derive_contract_for_codegen(node)
+    if declared is None:
+        # Annotate the builder contract alone, which documents only fully
+        # concrete contracts.
+        if derived.inputs is None or derived.outputs is None:
+            return f'contract="{OPAQUE_CONTRACT_SENTINEL}"'
+        inputs_repr = repr(sorted(derived.inputs))
+        outputs_repr = repr(sorted(derived.outputs))
+        return f'contract={{"inputs": {inputs_repr}, "outputs": {outputs_repr}}}'
+    contract = replace(
+        derived.fill_opaque_sides(declared),
+        inputs_by_parent=declared.inputs_by_parent,
+    )
+    return _format_contract_source(contract, parent_name_by_id=parent_name_by_id)
+
+
+def _derive_contract_for_codegen(node: GraphNode) -> Contract:
+    """Derive *node*'s builder contract for its generated annotation.
 
     Contract computation for some nodes (notably ``MODEL_SCORE``)
     loads an MLflow artifact to discover feature names — that load can
     fail at codegen time in disconnected environments or CI runs.  We
-    treat *infrastructure* failures ONLY — an ``OSError`` (artifact file
-    missing, connection refused) or any ``mlflow.*`` exception (MLflow
-    unreachable) — as "opaque at codegen time" rather than propagating:
-    the purpose of the kwarg is documentation at the source-file level,
-    and the executor still re-computes + enforces the contract at runtime
-    from the actual model.  Forcing a running MLflow server just to save a
-    pipeline would be a regression.
+    treat *infrastructure* failures ONLY (see :func:`_is_codegen_infra_error`)
+    as degraded rather than propagating: the annotation falls back to the
+    contract the parser derives offline, which is exactly what the post-save
+    parse check compares it against, and the executor still re-computes +
+    enforces the contract at runtime from the actual model.  Forcing a
+    running MLflow server just to save a pipeline would be a regression.
 
     Every OTHER exception fails loud at save time.  ``ConfigError``
     (misconfiguration — e.g. ``sourceType="run"`` with no ``run_id``) and
@@ -127,51 +168,20 @@ def _format_contract_kwarg(
     would hide a real bug inside a file that silently runs, then blows up at
     execution far from the cause.
     """
+    node_type = node.data.nodeType
     config = node.data.config
-    declared_raw = config.get("contract")
-    if config.get("instanceOf") and declared_raw is None:
-        return None
-    if declared_raw is not None:
-        # ``from_user_declared`` only returns None for a None input, and
-        # declared_raw is non-None here — so declared is always a Contract.
-        declared = Contract.from_user_declared(declared_raw)
-        assert declared is not None
-        return _format_contract_source(declared, parent_name_by_id=parent_name_by_id)
     try:
-        tup = get_column_contract(node.data.nodeType, config)
-    except ConfigError as exc:
-        # Misconfiguration is a user bug, not an environmental one — let
-        # it propagate so save fails at the source of the mistake. The one
-        # exception is a merely unconfigured explicit MLflow destination,
-        # which is environmental and rescues like an unreachable server.
-        if not _is_codegen_infra_error(exc):
-            raise
-        logger.warning(
-            "contract_emit_opaque_on_error",
-            node=node.data.label,
-            node_type=str(node.data.nodeType),
-            error=str(exc),
-        )
-        return f'contract="{OPAQUE_CONTRACT_SENTINEL}"'
+        return Contract.from_tuple(get_column_contract(node_type, config))
     except Exception as exc:
         if not _is_codegen_infra_error(exc):
-            # A genuine contract-computation bug (TypeError, KeyError, a
-            # HauteError such as ContractMismatchError, …) — fail loud
-            # rather than masking it behind an opaque contract.
             raise
         logger.warning(
-            "contract_emit_opaque_on_error",
+            "contract_emit_offline_on_error",
             node=node.data.label,
-            node_type=str(node.data.nodeType),
+            node_type=str(node_type),
             error=str(exc),
         )
-        return f'contract="{OPAQUE_CONTRACT_SENTINEL}"'
-    contract = Contract.from_tuple(tup)
-    if contract.inputs is None or contract.outputs is None:
-        return f'contract="{OPAQUE_CONTRACT_SENTINEL}"'
-    inputs_repr = repr(sorted(contract.inputs))
-    outputs_repr = repr(sorted(contract.outputs))
-    return f'contract={{"inputs": {inputs_repr}, "outputs": {outputs_repr}}}'
+    return resolve_parse_time_contract(node_type, config)
 
 
 def _format_contract_source(
@@ -318,6 +328,7 @@ def _node_to_code(
     contract_kwarg = _format_contract_kwarg(
         node,
         parent_name_by_id=_parent_name_by_id(source_ids, source_names),
+        derive=derive_contract,
     )
     if contract_kwarg is not None:
         try:
