@@ -7,6 +7,7 @@ from typing import Any
 import polars as pl
 import pytest
 
+from haute._polars_utils import streaming_collect
 from haute._rating import (
     _apply_banding,
     _apply_rating_step_outputs,
@@ -15,6 +16,7 @@ from haute._rating import (
     _combine_rating_columns,
     _normalise_banding_factors,
     apply_rating_step_from_config,
+    normalise_rating_key,
 )
 from haute.errors import (
     RatingExtremaUndefinedError,
@@ -442,7 +444,7 @@ class TestApplyRatingTableNonNumericDefault:
 
         lf = pl.DataFrame({"region": ["North", "Unknown"]}).lazy()
         with pytest.raises(RatingTableMissError) as excinfo:
-            _apply_rating_table(lf, self._make_table(junk_default)).collect()
+            streaming_collect(_apply_rating_table(lf, self._make_table(junk_default)))
         message = str(excinfo.value)
         assert "Unknown" in message
         assert repr(junk_default) in message
@@ -458,7 +460,7 @@ class TestApplyRatingTableNonNumericDefault:
 
         lf = pl.DataFrame({"region": ["North", "Unknown"]}).lazy()
         with pytest.raises(RatingTableMissError) as excinfo:
-            _apply_rating_table(lf, self._make_table(empty_default)).collect()
+            streaming_collect(_apply_rating_table(lf, self._make_table(empty_default)))
         assert "Note:" not in str(excinfo.value)
 
     def test_unusable_default_with_neutral_opt_in_leaves_null(self) -> None:
@@ -2071,4 +2073,52 @@ class TestWs11RatingHardening:
         from haute._rating import RatingTableMissError
 
         with pytest.raises(RatingTableMissError):
-            projected.collect()
+            streaming_collect(projected)
+
+    def test_miss_guard_survives_a_filter_that_excludes_the_missing_row(self) -> None:
+        from haute._rating import RatingTableMissError
+
+        lf = pl.DataFrame({"region": ["north", "missing"]}).lazy()
+        table = {
+            "factors": ["region"],
+            "outputColumn": "factor",
+            "entries": [{"region": "north", "value": 2.0}],
+        }
+
+        filtered = _apply_rating_table(lf, table).filter(pl.col("region") != "missing")
+
+        with pytest.raises(RatingTableMissError):
+            streaming_collect(filtered)
+
+    def test_miss_guard_validates_only_the_rows_a_limit_reads(self) -> None:
+        lf = pl.DataFrame({"region": ["north", "missing"]}).lazy()
+        table = {
+            "factors": ["region"],
+            "outputColumn": "factor",
+            "entries": [{"region": "north", "value": 2.0}],
+        }
+
+        limited = streaming_collect(_apply_rating_table(lf, table).head(1))
+
+        assert limited.to_dicts() == [{"region": "north", "factor": 2.0}]
+
+    @pytest.mark.parametrize(
+        "dtype",
+        [pl.Int64, pl.Float32, pl.String, pl.Date, pl.Boolean],
+    )
+    def test_miss_guard_declares_the_joined_schema(self, dtype: pl.DataType) -> None:
+        value = pl.Series("factor_in", [1], dtype=pl.Int64).cast(dtype).item()
+        lf = pl.DataFrame({"factor_in": pl.Series([value], dtype=dtype), "other": [1]}).lazy()
+        entry_key = normalise_rating_key(value, dtype)
+        guarded = {
+            "factors": ["factor_in"],
+            "outputColumn": "factor",
+            "entries": [{"factor_in": entry_key, "value": 2.0}],
+        }
+        defaulted = {**guarded, "defaultValue": 1.0}
+
+        assert (
+            _apply_rating_table(lf, guarded).collect_schema()
+            == _apply_rating_table(lf, defaulted).collect_schema()
+        )
+        assert streaming_collect(_apply_rating_table(lf, guarded))["factor"].to_list() == [2.0]

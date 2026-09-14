@@ -51,6 +51,7 @@ from haute._graph_utils import (
 from haute._host_memory import available_ram_bytes, require_positive_available_ram
 from haute._logging import get_logger
 from haute._polars_operations import materialisation_factor_basis_points
+from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_utils import read_parquet_metadata
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.errors import ConfigError
@@ -994,6 +995,7 @@ def _resolve_row_cardinality_from_index(
     port: str | None,
 ) -> _ResolvedRowCardinality:
     """Prove one graph node's output and peak row bounds without executing it."""
+    selector_aliases = preamble_selector_aliases(index.graph.preamble or "")
 
     node = index.node_map.get(target_node_id)
     if node is None:
@@ -1016,7 +1018,9 @@ def _resolve_row_cardinality_from_index(
         )
         code = node.data.config.get("code")
         if node_type is NodeType.DATA_INPUT and isinstance(code, str) and code.strip():
-            analysis = analyze_polars_cardinality(code, {"df": metadata.row_count})
+            analysis = analyze_polars_cardinality(
+                code, {"df": metadata.row_count}, selector_aliases=selector_aliases
+            )
             return _cardinality_from_analysis(target_node_id, analysis, (base,))
         return base
 
@@ -1085,6 +1089,7 @@ def _resolve_row_cardinality_from_index(
         analysis = analyze_polars_cardinality(
             code,
             {name: cast(int, result.output_rows) for name, result in bindings.items()},
+            selector_aliases=selector_aliases,
         )
         return _cardinality_from_analysis(target_node_id, analysis, parents)
 
@@ -1118,7 +1123,9 @@ def _resolve_row_cardinality_from_index(
         )
         code = node.data.config.get("code")
         if isinstance(code, str) and code.strip():
-            analysis = analyze_polars_cardinality(code, {"df": expanded_rows})
+            analysis = analyze_polars_cardinality(
+                code, {"df": expanded_rows}, selector_aliases=selector_aliases
+            )
             return _cardinality_from_analysis(target_node_id, analysis, (expanded,))
         return expanded
 
@@ -1131,7 +1138,9 @@ def _resolve_row_cardinality_from_index(
         code = node.data.config.get("code")
         if isinstance(code, str) and code.strip():
             assert parents[0].output_rows is not None
-            analysis = analyze_polars_cardinality(code, {"df": parents[0].output_rows})
+            analysis = analyze_polars_cardinality(
+                code, {"df": parents[0].output_rows}, selector_aliases=selector_aliases
+            )
             return _cardinality_from_analysis(target_node_id, analysis, parents)
         return _passthrough_cardinality(target_node_id, parents)
 
@@ -1157,6 +1166,7 @@ def _resolve_row_cardinality_from_index(
             analysis = analyze_polars_cardinality(
                 code,
                 {name: cast(int, result.output_rows) for name, result in bindings.items()},
+                selector_aliases=selector_aliases,
             )
             return _cardinality_from_analysis(target_node_id, analysis, parents)
         return _passthrough_cardinality(target_node_id, parents)
@@ -1236,6 +1246,7 @@ def _resolve_row_cardinality_from_index(
             analysis = analyze_polars_cardinality(
                 code,
                 {name: cast(int, result.output_rows) for name, result in bindings.items()},
+                selector_aliases=selector_aliases,
             )
             return _cardinality_from_analysis(target_node_id, analysis, parents)
         return _passthrough_cardinality(target_node_id, parents)

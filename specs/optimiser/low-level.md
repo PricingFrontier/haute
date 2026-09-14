@@ -455,6 +455,27 @@ exact descriptor against its once-resolved apply schema, and raises
 It does not coerce an apply column to the saved dtype and does not run legacy artifacts through
 the neutral-miss path.
 
+### Runtime online apply (`_apply_online` in `src/haute/_builders.py`)
+
+`_apply_online` applies an online artifact through `price_contour.ApplyOptimiser` on the frame
+`_prepare_online_apply_frame` materialises (null quote ids dropped, apply dtypes cast). The
+apply emits one row per quote in ascending order of the `Utf8` quote id, with the literal id
+column `quote_id` whatever the artifact names its input quote-id column. How the result is
+exposed depends on the artifact's constraints (`has_ratio_constraint`):
+
+- A `pl.DataFrame` input is applied eagerly.
+- A ratio constraint linearises against the whole apply-time frame, so the apply always reads
+  every input row and returns its eager result.
+- Otherwise each quote is chosen independently, so the result is a
+  `key_prefix_python_scan` (execution engine) keyed by the quote-id column with the schema
+  `online_apply_output_schema` derives from the artifact: `quote_id` (`Utf8`), `optimal_step`
+  (`Int32`), the optimised value column or its configured rename (`Float32`),
+  `optimal_objective` (`Float32`), `optimal_<constraint>` (`Float32`) per sorted constraint,
+  and the version column when configured. A limit Polars pushes to the scan reads only the
+  quote-id column to choose the first quotes in that order — which elides upstream row-local
+  scoring for that read — and applies to the input filtered to those quotes, so upstream
+  scoring runs only for their scenario rows. Without a limit the apply reads every row.
+
 ### Trace explainability (`src/haute/_optimiser_apply_explainability.py`)
 
 `explain_optimiser_apply_from_config(config, input_row, output_row, *, input_frames,
@@ -486,7 +507,13 @@ RAM cardinality estimation follows the same selector identity when `optimiser_mo
 be `ratebook`: `ratebook_input` must be present and match one exact executable incoming-edge name.
 It never estimates a missing or stale selector by choosing the first connected frame.
 
-`_explain_online` builds the online apply input frame
+Trace enrichment passes an online apply's inputs from the trace's uncapped lineage plans and a
+ratebook-mode apply's inputs from the frames that produced the clicked row (see
+[tracing](../tracing/low-level.md)). `_explain_online` resolves the clicked quote id from the
+output row's artifact quote-id column when present, else from the literal `quote_id` the apply
+emits; filters the parent frame to that quote unless the artifact has a ratio constraint (whose
+linearisation baseline is the whole input); raises `OptimiserApplyTraceError` when no input row
+remains; builds the online apply input frame
 (`_prepare_online_apply_frame`), constructs a `price_contour.ApplyOptimiser` with the artifact's
 lambdas/constraints/column names, and calls `applier.with_explainer_columns(df)` — the
 `price-contour` API documented in full in
@@ -769,6 +796,11 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
 - **`tests/test_optimiser_apply.py`** — node-type registration, parser inference, codegen,
   executor passthrough for both modes, `ApplyOnlineHelper`/`ApplyRatebookHelper` (composite
   ratebook factor tables and their contract-error cases), and a "bundler" test class.
+  `TestLimitedOnlineApply` pins limited reads: the limited result equals the unlimited
+  prefix and applies to only the selected quotes' rows, an upstream row-local scorer predicts
+  only those quotes' scenario rows, ratio-constraint results are identical under any limit,
+  and `online_apply_output_schema` equals the eager apply's schema with renames, version
+  columns, and a custom quote-id column.
 - **`tests/test_optimiser_apply_artifacts.py`** — the artifact-handle contract directly: round-
   trip persist→load, rejecting a path outside the owned root, rejecting a directory/file
   mismatch, rejecting a relative path.
@@ -779,7 +811,10 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   errors, reconciliation-mismatch and missing-output-column error surfacing, explicit-empty
   config-value rejection (`optimised_value_column`, artifact `quote_id`, artifact `mode`),
   Polars-type-mismatch fallback to the Python match path, duplicate-level "last wins" agreement
-  with the runtime engine, and the `ImportError`-without-`exc.name` safe-rendering case.
+  with the runtime engine, and the `ImportError`-without-`exc.name` safe-rendering case. Limited
+  traces pin a `max_pct` ratio explanation linearised against the whole portfolio, a custom
+  quote-id column explained from exactly the clicked quote's rows, and
+  `test_trace_correlates_only_the_input_an_apply_reads`.
 - **`tests/test_optimiser_frontier_materialisation.py`** — frontier-point selection/materialisation
   in isolation: cached-summary reuse without touching the solver, malformed/partial frontier-
   point rejection, explicit-point save/mlflow-log without a live solve result, stale-solve-result

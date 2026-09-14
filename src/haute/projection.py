@@ -36,6 +36,7 @@ from haute._polars_operations import (
     materialising_frame_methods,
     registered_names,
 )
+from haute._polars_selectors import preamble_selector_aliases
 from haute._topo import ancestors, topo_sort_ids
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.errors import ContractMismatchError
@@ -3308,6 +3309,7 @@ def _analyse_polars_node_lineage(
     contract: Contract,
     *,
     submodels: Mapping[str, Any] | None = None,
+    selector_aliases: frozenset[str] = frozenset(),
 ) -> tuple[ColumnLineageAnalysis, tuple[_LineageInputBinding, ...]] | None:
     if node.data.nodeType is not NodeType.POLARS:
         return None
@@ -3329,7 +3331,10 @@ def _analyse_polars_node_lineage(
     schemas: dict[str, frozenset[str] | None] = {}
     for binding in bindings:
         schemas[binding.name] = binding.exact_columns
-    return analyze_polars_lineage(code, schemas, demanded_output), bindings
+    return (
+        analyze_polars_lineage(code, schemas, demanded_output, selector_aliases=selector_aliases),
+        bindings,
+    )
 
 
 def _exact_registered_contract_output(
@@ -3360,6 +3365,7 @@ def _exact_structural_outputs(
     effective_contract_for: Callable[[GraphNode], Contract],
     *,
     submodels: Mapping[str, Any] | None = None,
+    selector_aliases: frozenset[str] = frozenset(),
 ) -> dict[str, frozenset[str]]:
     """Propagate every mechanically proven exact schema topologically."""
     exact: dict[str, frozenset[str]] = {}
@@ -3373,6 +3379,7 @@ def _exact_structural_outputs(
             set(),
             effective_contract_for(node_map[node_id]),
             submodels=submodels,
+            selector_aliases=selector_aliases,
         )
         if analysed is not None:
             result, _bindings = analysed
@@ -3425,6 +3432,7 @@ def compute_prepared_plan(
     *,
     relevant_edges: Iterable[GraphEdge] | None = None,
     submodels: Mapping[str, Any] | None = None,
+    selector_aliases: frozenset[str] = frozenset(),
 ) -> ProjectionPlan:
     """Run the reverse topological projection sweep on a prepared graph."""
     prepared_edges = _projection_edges(order, children_of, relevant_edges)
@@ -3458,6 +3466,7 @@ def compute_prepared_plan(
         registered_contract_for,
         effective_contract_for,
         submodels=submodels,
+        selector_aliases=selector_aliases,
     )
     needed: dict[str, set[str] | None] = {}
     edge_demands: dict[ProjectionEdgeKey, set[str] | None] = {}
@@ -3623,6 +3632,7 @@ def compute_prepared_plan(
             my_needed,
             effective_contract_for(node),
             submodels=submodels,
+            selector_aliases=selector_aliases,
         )
         if lineage is not None:
             lineage_result, bindings = lineage
@@ -3970,7 +3980,7 @@ def with_runtime_inferred_streaming_edges(
         frozen_columns = frozenset(columns)
         reason = ProjectionReason(
             rule=RUNTIME_INFERRED_STREAMING_RULE_NAME,
-            message="runtime-inferred streaming join demand",
+            message="runtime-inferred streaming demand",
             details={
                 "strategy": RUNTIME_INFERRED_STREAMING_RULE_NAME,
                 "columns": tuple(sorted(frozen_columns)),
@@ -3998,7 +4008,7 @@ def with_runtime_inferred_streaming_edges(
         needed_by_node[parent_id] = frozen_columns
         node_reasons[parent_id] = ProjectionReason(
             rule=RUNTIME_INFERRED_STREAMING_RULE_NAME,
-            message="runtime-inferred streaming join demand",
+            message="runtime-inferred streaming demand",
             details={
                 "strategy": RUNTIME_INFERRED_STREAMING_RULE_NAME,
                 "columns": tuple(sorted(frozen_columns)),
@@ -4033,6 +4043,7 @@ def plan(request: ProjectionRequest) -> ProjectionPlan:
         required_columns_by_node=request.required_columns_by_node,
         relevant_edges=prepared.relevant_edges,
         submodels=prepared.submodels,
+        selector_aliases=preamble_selector_aliases(request.graph.preamble or ""),
     )
     return with_api_input_port_projection_boundaries(
         projection_plan,

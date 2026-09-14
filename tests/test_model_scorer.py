@@ -41,6 +41,7 @@ from haute._model_scorer import (
     model_score_temp_file_scope,
     score_from_config,
 )
+from haute._polars_utils import streaming_collect
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -289,18 +290,23 @@ class TestModelScorerScore:
 
     @patch("haute._mlflow_io._score_eager")
     @patch("haute._mlflow_io.load_mlflow_model")
-    def test_row_limit_forces_eager(self, mock_load, mock_score_eager):
-        """Even non-live scenario uses eager when row_limit is set."""
+    def test_row_limit_scores_only_the_rows_a_downstream_limit_reads(
+        self, mock_load, mock_score_eager
+    ):
+        """A limited scorer stays lazy and predicts only the rows that are read."""
         sm = _make_scoring_model()
+        sm.raw_model.predict.side_effect = lambda x_data: np.full(len(x_data), 0.5)
         mock_load.return_value = sm
-        mock_score_eager.return_value = pl.DataFrame({"x": [1]}).lazy()
 
         scorer = ModelScorer(source_type="run", run_id="abc", source="batch", row_limit=10)
-        lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
+        lf = pl.DataFrame({"a": list(range(20)), "b": list(range(20))}).lazy()
         result = scorer.score(lf)
 
-        mock_score_eager.assert_called_once()
+        mock_score_eager.assert_not_called()
         assert isinstance(result, pl.LazyFrame)
+        assert streaming_collect(result.head(3))["prediction"].to_list() == [0.5, 0.5, 0.5]
+        predicted = sum(len(call.args[0]) for call in sm.raw_model.predict.call_args_list)
+        assert predicted == 3
 
     @patch("haute._mlflow_io._score_eager")
     @patch("haute._mlflow_io.load_mlflow_model")
@@ -1156,11 +1162,12 @@ class TestRunScorePipeline:
         _run_score_pipeline(sm, lf, task="regression", output_col="prediction", source="batch")
         mock_batched.assert_called_once()
 
+    @patch("haute._model_scorer._score_row_local_scan")
     @patch("haute._mlflow_io._score_eager")
-    def test_row_limit_forces_eager(self, mock_eager):
-        """row_limit forces eager path even with non-live source."""
+    def test_row_limit_routes_to_the_row_local_scan(self, mock_eager, mock_scan):
+        """A row limit (preview or trace) scores through the row-local scan."""
         sm = _make_scoring_model(feature_names=["a", "b"])
-        mock_eager.return_value = pl.DataFrame({"a": [1]}).lazy()
+        mock_scan.return_value = pl.DataFrame({"a": [1]}).lazy()
 
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
         _run_score_pipeline(
@@ -1171,7 +1178,8 @@ class TestRunScorePipeline:
             source="batch",
             row_limit=100,
         )
-        mock_eager.assert_called_once()
+        mock_scan.assert_called_once()
+        mock_eager.assert_not_called()
 
     @patch("haute._mlflow_io._score_eager")
     def test_generic_exception_propagates_unwrapped(self, mock_eager):
@@ -1733,6 +1741,134 @@ class TestBatchScoreToParquetEmptyDtype:
 
         assert nonempty_dtype == expected_dtype
         assert empty_dtype == nonempty_dtype
+
+
+class TestRowLocalScanScoring:
+    """Limited scoring predicts only what Polars reads, matching eager scoring."""
+
+    @staticmethod
+    def _fit(task: str) -> ScoringModel:
+        from catboost import CatBoostClassifier, CatBoostRegressor
+
+        features = [[float(i), float(i % 7)] for i in range(40)]
+        if task == "classification":
+            model: Any = CatBoostClassifier(
+                iterations=5, depth=2, random_seed=7, verbose=0, allow_writing_files=False
+            )
+            model.fit(features, [i % 2 for i in range(40)])
+        else:
+            model = CatBoostRegressor(
+                iterations=5, depth=2, random_seed=7, verbose=0, allow_writing_files=False
+            )
+            model.fit(features, [float(i) for i in range(40)])
+        return ScoringModel(model, ["a", "b"], flavor="catboost")
+
+    @staticmethod
+    def _frame(rows: int) -> pl.LazyFrame:
+        return pl.DataFrame(
+            {"a": [float(i) for i in range(rows)], "b": [float(i % 7) for i in range(rows)]}
+        ).lazy()
+
+    @staticmethod
+    def _count_predicted_rows(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+        import haute._model_scorer as model_scorer
+
+        heights: list[int] = []
+        real = model_scorer._score_collected_frame
+
+        def counting(model: Any, frame: pl.DataFrame, *args: Any, **kwargs: Any) -> Any:
+            heights.append(frame.height)
+            return real(model, frame, *args, **kwargs)
+
+        monkeypatch.setattr(model_scorer, "_score_collected_frame", counting)
+        return heights
+
+    def _limited(self, scoring_model: ScoringModel, lf: pl.LazyFrame, task: str) -> pl.LazyFrame:
+        return _run_score_pipeline(
+            scoring_model, lf, task=task, output_col="pred", source="batch", row_limit=10
+        )
+
+    def test_limit_reaching_the_scorer_predicts_only_limited_rows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        scoring_model = self._fit("regression")
+        heights = self._count_predicted_rows(monkeypatch)
+
+        limited = streaming_collect(
+            self._limited(scoring_model, self._frame(1_000), "regression").head(10)
+        )
+
+        assert limited.height == 10
+        assert sum(heights) == 10
+
+    def test_downstream_aggregation_predicts_every_row(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        scoring_model = self._fit("regression")
+        heights = self._count_predicted_rows(monkeypatch)
+
+        streaming_collect(
+            self._limited(scoring_model, self._frame(1_000), "regression").select(
+                pl.col("pred").mean()
+            )
+        )
+
+        assert sum(heights) == 1_000
+
+    def test_projection_without_the_prediction_predicts_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        scoring_model = self._fit("regression")
+        heights = self._count_predicted_rows(monkeypatch)
+
+        result = streaming_collect(
+            self._limited(scoring_model, self._frame(100), "regression").select("a")
+        )
+
+        assert result.height == 100
+        assert heights == []
+
+    @pytest.mark.parametrize("task", ["regression", "classification"])
+    def test_scan_predictions_and_dtypes_match_eager_scoring(self, task: str) -> None:
+        scoring_model = self._fit(task)
+        lf = self._frame(50)
+
+        scanned = streaming_collect(self._limited(scoring_model, lf, task))
+        eager = streaming_collect(
+            _run_score_pipeline(scoring_model, lf, task=task, output_col="pred", source="live")
+        )
+
+        assert scanned.schema == eager.schema
+        assert scanned.equals(eager)
+
+    def test_undeclared_categorical_level_raises_through_the_scan(self) -> None:
+        from catboost import CatBoostRegressor
+
+        model = CatBoostRegressor(
+            iterations=5, depth=2, random_seed=7, verbose=0, allow_writing_files=False
+        )
+        model.fit(
+            pl.DataFrame({"region": ["north", "south"] * 10}).to_pandas(),
+            [float(i) for i in range(20)],
+            cat_features=[0],
+        )
+        scoring_model = ScoringModel(
+            model, ["region"], cat_feature_names=frozenset({"region"}), flavor="catboost"
+        )
+        lf = pl.DataFrame({"region": ["north", "west"]}).lazy()
+
+        scored = _run_score_pipeline(
+            scoring_model,
+            lf,
+            task="regression",
+            output_col="pred",
+            source="batch",
+            row_limit=10,
+            categorical_levels={"region": ["north", "south"]},
+        )
+
+        with pytest.raises(FeatureMismatchError, match="west"):
+            streaming_collect(scored)
 
 
 class TestFeatureMismatchTypeOverflow:

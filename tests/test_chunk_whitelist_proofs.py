@@ -37,6 +37,8 @@ from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
 from haute._execute_lazy import _execute_lazy
+from haute._polars_operations import chunk_admitted_selector_constructors
+from haute._polars_selectors import preamble_selector_aliases
 from haute.chunking import (
     _ADMITTED_CALL_SHAPES,
     _ROW_LOCAL_DF_METHOD_NAMES,
@@ -51,7 +53,7 @@ from haute.chunking import (
     iter_chunked_frames,
 )
 from haute.errors import ChunkPlanUnsupportedError
-from haute.executor import _build_node_fn
+from haute.executor import _build_node_fn, _compile_preamble
 from tests.conftest import make_edge, make_graph, make_output_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
@@ -89,6 +91,7 @@ def _xform_graph(
     *,
     output_fields: list[str],
     contract: dict[str, list[str]] | None = None,
+    preamble: str = "",
 ):
     """source(parquet) -> xform(polars user code) -> out(output)."""
     xform_config: dict[str, object] = {"code": code}
@@ -96,6 +99,7 @@ def _xform_graph(
         xform_config["contract"] = contract
     return make_graph(
         {
+            "preamble": preamble,
             "nodes": [
                 _node("source", "dataInput", {"path": str(source_path)}),
                 _node("xform", "polars", xform_config),
@@ -123,12 +127,17 @@ def _chunk_plan(graph, *, chunk_size: int):
     return chunk_plan(ChunkPlanRequest(graph=graph, target_node_id="xform", chunk_size=chunk_size))
 
 
+def _preamble_ns(graph) -> dict[str, object] | None:
+    return _compile_preamble(graph.preamble) if graph.preamble else None
+
+
 def _run_chunked(graph, *, chunk_size: int) -> pl.DataFrame:
     return collect_chunked(
         ChunkRunnerRequest(
             graph=graph,
             plan=_chunk_plan(graph, chunk_size=chunk_size),
             build_node_fn=_build_node_fn,
+            preamble_ns=_preamble_ns(graph),
         ),
         allow_unbounded=True,
     )
@@ -140,6 +149,7 @@ def _run_full(graph) -> pl.DataFrame:
         _build_node_fn,
         target_node_id="xform",
         source="batch",
+        preamble_ns=_preamble_ns(graph),
     )
     return outputs["xform"].collect(engine="streaming")
 
@@ -428,6 +438,11 @@ def test_min_horizontal_nan_stream_batch_is_de_whitelisted_and_full_path_is_corr
             "df = source.with_columns(r=pl.col('i').replace({1: 10}, default=0))",
             id="replace-deprecated-default",
         ),
+        pytest.param("df = source.with_columns(pl.all().cum_sum())", id="selector-cum-sum"),
+        pytest.param("df = source.select(pl.first('i'))", id="first-aggregation"),
+        pytest.param(
+            "df = source.select(pl.exclude(names))", id="selector-with-computed-arguments"
+        ),
     ],
 )
 def test_chunk_unsafe_constructs_are_not_whitelisted(code: str) -> None:
@@ -477,6 +492,17 @@ def test_chunk_safe_constructs_remain_whitelisted(code: str) -> None:
     assert is_chunk_local_polars_code(code, frame_names=("source",))
 
 
+def test_selectors_module_needs_a_preamble_alias_the_code_does_not_rebind() -> None:
+    code = "df = source.with_columns(cs.numeric().fill_null(0))"
+    aliases = frozenset({"cs"})
+
+    assert is_chunk_local_polars_code(code, frame_names=("source",), selector_aliases=aliases)
+    assert not is_chunk_local_polars_code(code, frame_names=("source",))
+    assert not is_chunk_local_polars_code(
+        f"cs = source\n{code}", frame_names=("source",), selector_aliases=aliases
+    )
+
+
 # ---------------------------------------------------------------------------
 # §A3 proofs: chunked == full for every surviving whitelist entry.
 # ---------------------------------------------------------------------------
@@ -492,6 +518,8 @@ class WhitelistProofCase:
     # True only where raising is part of the admitted contract (strict temporal
     # parsing); every other case must prove equality on values, not on a raise.
     raising_expected: bool = False
+    # Pipeline preamble; ``polars.selectors`` reaches node code only through it.
+    preamble: str = ""
 
 
 def _proves(*entries: tuple[str, ...]) -> frozenset[tuple[str, ...]]:
@@ -515,7 +543,45 @@ def _expr_case(
     )
 
 
+_SELECTORS_PREAMBLE = "import polars.selectors as cs"
+
 WHITELIST_PROOF_CASES: dict[str, WhitelistProofCase] = {
+    # --- literal column selectors ---------------------------------------------
+    # A selector expands against the frame's schema, which every chunk shares.
+    "selector_all": WhitelistProofCase(
+        "df = source.with_columns(pl.all().is_null())",
+        _BASE_FIELDS,
+        _proves(("selector", "all")),
+    ),
+    "selector_exclude": WhitelistProofCase(
+        "df = source.select(pl.exclude('s'))", ("i", "f", "d"), _proves(("selector", "exclude"))
+    ),
+    "selector_nth": WhitelistProofCase(
+        "df = source.select(pl.nth(0, 1))", ("i", "f"), _proves(("selector", "nth"))
+    ),
+    "selector_first": WhitelistProofCase(
+        "df = source.select(pl.first())", ("i",), _proves(("selector", "first"))
+    ),
+    "selector_last": WhitelistProofCase(
+        "df = source.select(pl.last())", ("d",), _proves(("selector", "last"))
+    ),
+    "selector_col_regex": WhitelistProofCase(
+        "df = source.with_columns(pl.col('^(i|f)$') * 2)",
+        _BASE_FIELDS,
+        _proves(("selector", "col")),
+    ),
+    "selector_module_dtype": WhitelistProofCase(
+        "df = source.with_columns(cs.numeric().fill_null(0))",
+        _BASE_FIELDS,
+        _proves(("selector_module", "polars.selectors")),
+        preamble=_SELECTORS_PREAMBLE,
+    ),
+    "selector_module_set_operations": WhitelistProofCase(
+        "df = source.select(~cs.string() - cs.by_index(3) | cs.starts_with('s'))",
+        ("i", "f", "s"),
+        _proves(("selector_module", "polars.selectors")),
+        preamble=_SELECTORS_PREAMBLE,
+    ),
     # --- frame-level methods -------------------------------------------------
     "df_cast": WhitelistProofCase(
         "df = source.cast({'i': pl.Float64})",
@@ -752,6 +818,8 @@ def test_every_whitelist_entry_has_a_proof_case() -> None:
         {("df", name) for name in _ROW_LOCAL_DF_METHOD_NAMES}
         | {("expr", name) for name in _ROW_LOCAL_EXPR_METHOD_NAMES}
         | {("fn", name) for name in _ROW_LOCAL_POLARS_FUNCTIONS}
+        | {("selector", name) for name in chunk_admitted_selector_constructors()}
+        | {("selector_module", "polars.selectors")}
         | {
             (f"expr.{namespace}", name)
             for namespace, names in _ROW_LOCAL_NAMESPACE_METHOD_NAMES.items()
@@ -816,7 +884,11 @@ def test_whitelisted_construct_chunked_equals_full(
     tmp_path: Path,
 ) -> None:
     case = WHITELIST_PROOF_CASES[case_id]
-    assert is_chunk_local_polars_code(case.code, frame_names=("source",)), (
+    assert is_chunk_local_polars_code(
+        case.code,
+        frame_names=("source",),
+        selector_aliases=preamble_selector_aliases(case.preamble),
+    ), (
         f"Proof case {case_id!r} is no longer whitelisted; delete the stale proof "
         "or restore the whitelist entry."
     )
@@ -825,7 +897,9 @@ def test_whitelisted_construct_chunked_equals_full(
     chunk_size = data.draw(st.integers(1, frame.height + 1), label="chunk_size")
     source = tmp_path / "src.parquet"
     frame.write_parquet(source)
-    graph = _xform_graph(source, case.code, output_fields=list(case.output_fields))
+    graph = _xform_graph(
+        source, case.code, output_fields=list(case.output_fields), preamble=case.preamble
+    )
 
     _assert_chunked_matches_full(
         graph, chunk_size=chunk_size, raising_expected=case.raising_expected

@@ -1070,6 +1070,7 @@ def _streaming_auto_range_node_is_eligible(
     node: GraphNode,
     *,
     frame_names: Iterable[str],
+    selector_aliases: frozenset[str] = frozenset(),
 ) -> tuple[bool, _ChunkFallback | None]:
     """Return chunk eligibility for one node plus any lost-optimisation record.
 
@@ -1113,6 +1114,7 @@ def _streaming_auto_range_node_is_eligible(
     decision = classify_chunk_local_polars_code(
         config.get("code"),
         frame_names=("df",) if node_type == NodeType.SCENARIO_EXPANDER else frame_names,
+        selector_aliases=selector_aliases,
     )
     if decision.eligible:
         return True, None
@@ -1180,7 +1182,10 @@ def _build_streaming_auto_range_plan(
     if not isinstance(data_input_id, str) or not data_input_id:
         return None, None
 
+    from haute._polars_selectors import preamble_selector_aliases
+
     node_map = graph.node_map
+    selector_aliases = preamble_selector_aliases(graph.preamble or "")
     downstream_to_upstream: list[str] = []
     current_id = data_input_id
     seen: set[str] = set()
@@ -1203,7 +1208,9 @@ def _build_streaming_auto_range_plan(
             for parent_id in parent_ids
             if parent_id in node_map
         ]
-        eligible, fallback = _streaming_auto_range_node_is_eligible(node, frame_names=frame_names)
+        eligible, fallback = _streaming_auto_range_node_is_eligible(
+            node, frame_names=frame_names, selector_aliases=selector_aliases
+        )
         if not eligible:
             return None, fallback
 

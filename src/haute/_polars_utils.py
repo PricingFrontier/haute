@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import contextvars
+import functools
+import io
+import json
 import math
+import operator
 import threading
 import time
-from collections.abc import Collection, Generator, Iterator, Sequence
+import uuid
+from collections import OrderedDict
+from collections.abc import Callable, Collection, Generator, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal, cast
 
 import polars as pl
+from polars.io.plugins import register_io_source
 
 from haute._execution_context import (
     ExecutionContext,
@@ -105,7 +113,11 @@ def _cancellable_collect(
     execution_context.record_collect()
     query = lf.collect(engine=engine, background=True)
     while True:
-        result = query.fetch()
+        try:
+            result = query.fetch()
+        except pl.exceptions.ComputeError as exc:
+            _reraise_python_scan_failure(exc)
+            raise
         if result is not None:
             return result
         try:
@@ -150,7 +162,11 @@ def execution_collect(
         raise ValueError("engine must be 'auto' or 'streaming'")
     context = execution_context or current_execution_context()
     if context is None:
-        return lf.collect(engine=engine)
+        try:
+            return lf.collect(engine=engine)
+        except pl.exceptions.ComputeError as exc:
+            _reraise_python_scan_failure(exc)
+            raise
     return _cancellable_collect(
         lf,
         execution_context=context,
@@ -196,9 +212,341 @@ def bounded_collect_batches(
                 batch = next(batches)
         except StopIteration:
             break
+        except pl.exceptions.ComputeError as exc:
+            _reraise_python_scan_failure(exc)
+            raise
         if metrics_context is not None:
             metrics_context.checkpoint(label="after_collect_batch", node_id=node_id)
         yield batch
+
+
+# Polars reports an exception raised inside a Python scan source as a
+# ``ComputeError`` carrying only its text, which would turn a typed Haute error
+# (feature mismatch, cancellation, memory limit) into an anonymous engine error.
+# The source parks the original under a token named in the message, and every
+# collect helper above hands the original back to its caller.
+_PYTHON_SCAN_FAILURE_MARKER = "haute-python-scan-failure:"
+_PYTHON_SCAN_FAILURE_LIMIT = 64
+_python_scan_failures: OrderedDict[str, BaseException] = OrderedDict()
+_python_scan_failures_lock = threading.Lock()
+
+
+def _park_python_scan_failure(exc: BaseException) -> str:
+    token = uuid.uuid4().hex
+    with _python_scan_failures_lock:
+        _python_scan_failures[token] = exc
+        while len(_python_scan_failures) > _PYTHON_SCAN_FAILURE_LIMIT:
+            _python_scan_failures.popitem(last=False)
+    return f"{_PYTHON_SCAN_FAILURE_MARKER}{token}"
+
+
+def _reraise_python_scan_failure(exc: pl.exceptions.ComputeError) -> None:
+    """Re-raise the original exception a Python scan source parked, if any."""
+    message = str(exc)
+    start = message.find(_PYTHON_SCAN_FAILURE_MARKER)
+    if start < 0:
+        return
+    token_start = start + len(_PYTHON_SCAN_FAILURE_MARKER)
+    token = message[token_start : token_start + 32]
+    with _python_scan_failures_lock:
+        original = _python_scan_failures.pop(token, None)
+    if original is not None:
+        raise original
+
+
+def row_local_python_scan(
+    input_lf: pl.LazyFrame,
+    transform: Callable[[pl.DataFrame], pl.DataFrame],
+    *,
+    schema: pl.Schema,
+    generated_columns: Collection[str],
+    required_input_columns: Collection[str] | None,
+    input_predicates_allowed: bool,
+    elide_transform_when_unused: bool,
+    input_schema: pl.Schema | None = None,
+    execution_context: ExecutionContext | None = None,
+    node_id: str | None = None,
+) -> pl.LazyFrame:
+    """Expose a row-local Python transform to Polars as a scan source.
+
+    Polars treats a Python UDF (``map_batches``) as opaque: no slice passes
+    below it, so a ``.head(n)`` downstream still computes the transform over
+    every input row. A registered IO source is a scan instead, and the
+    optimiser hands it the row limit, projection, and predicate it could push
+    down — and only where doing so leaves the query result unchanged (a
+    downstream filter, aggregation, window, or join lookup side withholds the
+    limit). Polars' scan contract reads ``n_rows`` source rows, then applies
+    the predicate, then the projection.
+
+    ``transform`` must be row-local: every output row derives only from the
+    input row at the same position, and the output keeps the input's height
+    and order. That makes the first ``n_rows`` input rows exactly the source of
+    the first ``n_rows`` output rows, so the limit always caps ``input_lf``.
+    ``schema`` is the transform's exact output schema and ``generated_columns``
+    the columns the transform adds or replaces; every other output column is an
+    input column carried through unchanged.
+
+    ``required_input_columns`` are the input columns the transform reads
+    (``None``: every input column). A pushed projection narrows the input to
+    the requested carried columns plus these. ``input_predicates_allowed``
+    lets a pushed predicate that references no generated column filter the
+    input before the transform; otherwise every read row is transformed and the
+    predicate filters the transformed rows — required when the transform
+    validates rows that a downstream filter must not hide.
+    ``elide_transform_when_unused`` skips the transform for a read that needs no
+    generated column (a count, or a projection of carried columns only); refuse
+    it when the transform validates rows. ``input_schema`` lets a caller that
+    already threads the input schema avoid re-planning ``input_lf``.
+    """
+    context = execution_context or current_execution_context()
+    caller_context = contextvars.copy_context()
+    generated = frozenset(generated_columns)
+    if input_schema is None:
+        input_schema = input_lf.collect_schema()
+    mismatched_carried = sorted(
+        name
+        for name, dtype in schema.items()
+        if name not in generated and input_schema.get(name) != dtype
+    )
+    if mismatched_carried:
+        raise ValueError(
+            f"non-generated scan columns must be input columns of the same dtype: "
+            f"{mismatched_carried}"
+        )
+    unknown_generated = generated - set(schema.names())
+    if unknown_generated:
+        raise ValueError(
+            f"generated columns are absent from the scan schema: {sorted(unknown_generated)}"
+        )
+    input_names = input_schema.names()
+    required = frozenset(input_names if required_input_columns is None else required_input_columns)
+    unknown_required = required - set(input_names)
+    if unknown_required:
+        raise ValueError(
+            f"required input columns are absent from the input: {sorted(unknown_required)}"
+        )
+
+    def frames(
+        with_columns: list[str] | None,
+        predicate: pl.Expr | None,
+        n_rows: int | None,
+        batch_size: int | None,
+    ) -> Iterator[pl.DataFrame]:
+        source_lf = input_lf if n_rows is None else input_lf.head(n_rows)
+        output_predicate = predicate
+        if (
+            predicate is not None
+            and input_predicates_allowed
+            and generated.isdisjoint(predicate.meta.root_names())
+        ):
+            source_lf = source_lf.filter(predicate)
+            output_predicate = None
+        output_roots = (
+            set() if output_predicate is None else set(output_predicate.meta.root_names())
+        )
+        transform_needed = (
+            not elide_transform_when_unused
+            or with_columns is None
+            or not generated.isdisjoint(with_columns)
+            or not generated.isdisjoint(output_roots)
+        )
+        if with_columns is not None:
+            keep = (set(with_columns) | output_roots) - generated
+            if transform_needed:
+                keep |= required
+            source_lf = source_lf.select(projected_or_carrier_columns(input_names, keep))
+        for batch in bounded_collect_batches(
+            source_lf,
+            chunk_size=batch_size or DEFAULT_STREAMING_CHUNK_SIZE,
+            maintain_order=True,
+            execution_context=context,
+            stage_name="row_local_python_scan",
+            node_id=node_id,
+        ):
+            frame = transform(batch) if transform_needed else batch
+            if output_predicate is not None:
+                frame = frame.filter(output_predicate)
+            if with_columns is not None:
+                frame = frame.select(with_columns)
+            yield frame
+
+    return _register_python_scan(frames, schema=schema, caller_context=caller_context)
+
+
+_ScanFrames = Callable[
+    [list[str] | None, pl.Expr | None, int | None, int | None],
+    Iterator[pl.DataFrame],
+]
+
+# A sort-limit (``sort().head(n)``, ``top_k``) pushes its running bound into
+# scans as an extra ``dynamic_pred`` conjunct of the predicate. The bound only
+# prunes rows the sort-limit discards anyway, and it exists only inside the
+# engine: evaluating it from Python panics, and a panic inside
+# ``collect_batches`` ends the batch stream as though it were empty.
+_DYNAMIC_PREDICATE_PREFIX = "dynamic_pred:"
+
+
+def _is_dynamic_predicate(node: object) -> bool:
+    if not isinstance(node, dict) or set(node) != {"Display"}:
+        return False
+    display = node["Display"]
+    return isinstance(display, dict) and str(display.get("fmt_str", "")).startswith(
+        _DYNAMIC_PREDICATE_PREFIX
+    )
+
+
+def _contains_dynamic_predicate(node: object) -> bool:
+    if _is_dynamic_predicate(node):
+        return True
+    if isinstance(node, dict):
+        return any(_contains_dynamic_predicate(value) for value in node.values())
+    if isinstance(node, list):
+        return any(_contains_dynamic_predicate(value) for value in node)
+    return False
+
+
+def scan_evaluable_predicate(predicate: pl.Expr | None) -> pl.Expr | None:
+    """Return a pushed scan predicate without the engine's runtime-only bounds.
+
+    Every ordinary conjunct is kept, so the result filters exactly the rows the
+    engine requires the scan to filter. A runtime bound nested anywhere but a
+    top-level conjunct cannot be separated and fails loudly.
+    """
+    if predicate is None or _DYNAMIC_PREDICATE_PREFIX not in str(predicate):
+        return predicate
+    tree = json.loads(predicate.meta.serialize(format="json"))
+    if not _contains_dynamic_predicate(tree):
+        return predicate
+    conjuncts: list[object] = []
+    pending: list[object] = [tree]
+    while pending:
+        node = pending.pop()
+        binary = node.get("BinaryExpr") if isinstance(node, dict) and len(node) == 1 else None
+        if isinstance(binary, dict) and binary.get("op") == "And":
+            pending.extend((binary["right"], binary["left"]))
+        else:
+            conjuncts.append(node)
+    kept: list[pl.Expr] = []
+    for node in conjuncts:
+        if _is_dynamic_predicate(node):
+            continue
+        if _contains_dynamic_predicate(node):
+            raise RuntimeError(
+                "a Python scan received a predicate whose engine-only bound is not a "
+                f"top-level conjunct: {predicate}"
+            )
+        kept.append(pl.Expr.deserialize(io.StringIO(json.dumps(node)), format="json"))
+    return functools.reduce(operator.and_, kept) if kept else None
+
+
+def _register_python_scan(
+    frames: _ScanFrames,
+    *,
+    schema: pl.Schema,
+    caller_context: contextvars.Context,
+) -> pl.LazyFrame:
+    """Register *frames* as a Polars IO source run in the caller's context."""
+
+    def io_source(
+        with_columns: list[str] | None,
+        predicate: pl.Expr | None,
+        n_rows: int | None,
+        batch_size: int | None,
+    ) -> Iterator[pl.DataFrame]:
+        # Polars may call the source on an engine thread; run it with the
+        # caller's context variables (execution context, scenario, temp scope).
+        run_context = caller_context.copy()
+        try:
+            evaluable = scan_evaluable_predicate(predicate)
+        except BaseException as exc:
+            raise RuntimeError(
+                f"{_park_python_scan_failure(exc)} {type(exc).__name__}: {exc}"
+            ) from exc
+        iterator = run_context.run(frames, with_columns, evaluable, n_rows, batch_size)
+        while True:
+            try:
+                frame = run_context.run(next, iterator)
+            except StopIteration:
+                return
+            except BaseException as exc:
+                raise RuntimeError(
+                    f"{_park_python_scan_failure(exc)} {type(exc).__name__}: {exc}"
+                ) from exc
+            yield frame
+
+    return register_io_source(io_source, schema=schema)
+
+
+def limited_python_scan(
+    produce: Callable[[int | None], pl.DataFrame],
+    *,
+    schema: pl.Schema,
+) -> pl.LazyFrame:
+    """Expose a Python computation that can produce just its first rows.
+
+    ``produce(n)`` must return a frame whose first ``n`` rows equal the first
+    ``n`` rows of ``produce(None)``, reading only what those rows need; it may
+    return fewer. Polars passes ``n`` only where a limit above the scan leaves
+    the query result unchanged. Output columns are cast to ``schema``, so a
+    computation that emits different columns or dtypes fails loudly.
+    """
+    caller_context = contextvars.copy_context()
+    declared = [pl.col(name).cast(dtype, strict=True) for name, dtype in schema.items()]
+
+    def frames(
+        with_columns: list[str] | None,
+        predicate: pl.Expr | None,
+        n_rows: int | None,
+        batch_size: int | None,
+    ) -> Iterator[pl.DataFrame]:
+        frame = produce(n_rows).select(declared)
+        if n_rows is not None:
+            frame = frame.head(n_rows)
+        if predicate is not None:
+            frame = frame.filter(predicate)
+        if with_columns is not None:
+            frame = frame.select(with_columns)
+        yield frame
+
+    return _register_python_scan(frames, schema=schema, caller_context=caller_context)
+
+
+def key_prefix_python_scan(
+    input_lf: pl.LazyFrame,
+    apply: Callable[[pl.LazyFrame], pl.DataFrame],
+    *,
+    schema: pl.Schema,
+    key_column: str,
+    execution_context: ExecutionContext | None = None,
+) -> pl.LazyFrame:
+    """Expose a per-key Python computation to Polars as a scan source.
+
+    ``apply`` turns the input rows of any set of keys into exactly one output
+    row per non-null key, independently of every other key, ordered by the key
+    cast to ``Utf8``. A pushed row limit ``n`` therefore reads only the key
+    column to find the first ``n`` keys in that order and applies to the input
+    rows of those keys alone; the key predicate reaches the input's own scans
+    and row-local Python scans. Without a limit ``apply`` sees every input row.
+    """
+    context = execution_context or current_execution_context()
+    key = pl.col(key_column).cast(pl.Utf8)
+
+    def produce(n_rows: int | None) -> pl.DataFrame:
+        if n_rows is None:
+            return apply(input_lf)
+        keys = streaming_collect(
+            input_lf.select(key.alias(key_column))
+            .drop_nulls()
+            .unique()
+            .sort(key_column)
+            .head(n_rows),
+            execution_context=context,
+        )
+        if keys.height == 0:
+            return pl.DataFrame(schema=schema)
+        return apply(input_lf.filter(key.is_in(keys[key_column].to_list())))
+
+    return limited_python_scan(produce, schema=schema)
 
 
 def _checkpoint_compression(fast_checkpoint: bool) -> Literal["lz4", "zstd"]:

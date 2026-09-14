@@ -1552,3 +1552,77 @@ def test_execute_plan_two_disjoint_groups_are_both_emitted() -> None:
     }
     plan = _plan_cut(_fs({"G1": "Ax", "G2": "By"}))
     assert _objects(_execute_plan(frames, plan)) == Counter([_obj(A="p", x=1), _obj(B="q", y=2)])
+
+
+# ---------------------------------------------------------------------------
+# Limited assembly: the first documents without assembling every document
+# ---------------------------------------------------------------------------
+
+
+def _counted_frame(frame: pl.DataFrame, seen: list[int]) -> pl.LazyFrame:
+    """A lazy frame that records how many rows the assembler actually reads."""
+    from haute._polars_utils import row_local_python_scan
+
+    def record(batch: pl.DataFrame) -> pl.DataFrame:
+        seen.append(batch.height)
+        return batch
+
+    return row_local_python_scan(
+        frame.lazy(),
+        record,
+        schema=frame.schema,
+        generated_columns=(),
+        required_input_columns=None,
+        input_predicates_allowed=True,
+        elide_transform_when_unused=False,
+    )
+
+
+def test_limited_assembly_reads_only_the_selected_policies_children() -> None:
+    policies = pl.DataFrame(
+        {"$[:].id": list(range(100)), "$[:].policy": [f"P{i}" for i in range(100)]}
+    )
+    covers = pl.DataFrame(
+        {
+            "$[:].id": [policy for policy in range(100) for _ in range(2)],
+            "$[:].covers[:].name": [f"C{policy}-{n}" for policy in range(100) for n in range(2)],
+        }
+    )
+    unlimited = _assemble_document({"policies": policies.lazy(), "covers": covers.lazy()})
+
+    seen: list[int] = []
+    limited = _assemble_document(
+        {"policies": policies.lazy(), "covers": _counted_frame(covers, seen)},
+        row_limit=3,
+    )
+
+    assert limited == unlimited[:3]
+    assert sum(seen) == 6
+
+
+def test_limited_assembly_objects_equal_unlimited_objects_for_multi_port_levels() -> None:
+    field_frames = {
+        "left": pl.LazyFrame({"$[:].id": [1, 2, 3], "$[:].a": ["x", "y", "z"]}),
+        "right": pl.LazyFrame({"$[:].id": [1, 2, 3], "$[:].b": [10, 20, 30]}),
+    }
+    unlimited = _assemble_document(field_frames)
+
+    limited = _assemble_document(field_frames, row_limit=2)
+
+    assert 0 < len(limited) <= 2
+    assert all(document in unlimited for document in limited)
+
+
+def test_limited_assembly_of_a_synthesised_root_is_complete() -> None:
+    field_frames = {
+        "T1": pl.LazyFrame({"$[:].K": ["K0", "K1"], "$[:].obj[:].A": ["P", "Q"]}),
+        "T2": pl.LazyFrame({"$[:].K": ["K0", "K1"], "$[:].obj[:].B": ["R", "S"]}),
+    }
+
+    assert _assemble_document(field_frames, row_limit=1) == _assemble_document(field_frames)
+
+
+def test_limited_assembly_collapses_duplicate_root_rows() -> None:
+    field_frames = {"root": pl.LazyFrame({"$[:].id": ["A", "A", "B"]})}
+
+    assert _assemble_document(field_frames, row_limit=2) == [{"id": "A"}]

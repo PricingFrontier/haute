@@ -44,6 +44,7 @@ from haute._graph_utils import (
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._logging import get_logger
 from haute._path_resolution import runtime_project_root_scoped
+from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_utils import (
     _malloc_trim,
     bounded_sink,
@@ -703,7 +704,76 @@ def _conservative_strategy_passthrough(
     }
 
 
-def _runtime_join_demands(
+_SELECTOR_SCHEMA_REASONS = frozenset({"selector_schema_unknown", "selector_dtypes_unknown"})
+
+
+def _runtime_selector_demands(
+    node: GraphNode,
+    edge: GraphEdge,
+    input_lf: _Frame,
+    projection: set[str] | frozenset[str] | None,
+    existing_edge_demands: Mapping[
+        projection_planner.ProjectionEdgeKey,
+        set[str] | frozenset[str] | None,
+    ],
+    node_map: Mapping[str, GraphNode],
+    submodels: Mapping[str, Any] | None,
+    selector_aliases: frozenset[str],
+) -> dict[projection_planner.ProjectionEdgeKey, set[str]]:
+    """Resolve a single-input Polars node whose lineage needs a selector's schema.
+
+    Static planning knows no input schema for such a node, or no dtypes; its
+    input frame's runtime schema supplies both. Nodes whose static lineage fails
+    for any other reason are left to the static plan.
+    """
+    if node.data.nodeType is not NodeType.POLARS:
+        return {}
+    edge_key = projection_planner.ProjectionEdgeKey.from_edge(edge)
+    if existing_edge_demands.get(edge_key) is not None:
+        return {}
+    if projection_planner.has_configured_column_renames(node):
+        return {}
+    code = node.data.config.get("code")
+    if not isinstance(code, str) or not code.strip():
+        return {}
+    try:
+        input_name = edge_input_name(edge, node_map[edge.source], submodels=submodels)
+    except (KeyError, ValueError):
+        return {}
+    names = {input_name}
+    raw_mapping = node.data.config.get("inputMapping")
+    if raw_mapping:
+        if not isinstance(raw_mapping, Mapping):
+            return {}
+        for alias, current_name in raw_mapping.items():
+            if not isinstance(alias, str) or not alias or current_name != input_name:
+                return {}
+            names.add(alias)
+
+    probe = analyze_polars_lineage(
+        code, {name: None for name in names}, projection, selector_aliases=selector_aliases
+    )
+    if probe.supported or probe.reason not in _SELECTOR_SCHEMA_REASONS:
+        return {}
+    lazy_frame = input_lf if isinstance(input_lf, pl.LazyFrame) else input_lf.lazy()
+    schema = lazy_frame.collect_schema()
+    columns = frozenset(schema.names())
+    analysis = analyze_polars_lineage(
+        code,
+        {name: columns for name in names},
+        projection,
+        input_dtypes={name: dict(schema) for name in names},
+        selector_aliases=selector_aliases,
+    )
+    if not analysis.supported:
+        return {}
+    demand: set[str] = set()
+    for name in names:
+        demand.update(analysis.demands_by_input.get(name, ()))
+    return {edge_key: demand}
+
+
+def _runtime_lineage_demands(
     node: GraphNode,
     incoming_edges: Sequence[GraphEdge],
     input_lfs: Sequence[_Frame],
@@ -714,8 +784,25 @@ def _runtime_join_demands(
     ],
     node_map: Mapping[str, GraphNode],
     submodels: Mapping[str, Any] | None = None,
+    selector_aliases: frozenset[str] = frozenset(),
 ) -> dict[projection_planner.ProjectionEdgeKey, set[str]]:
-    """Resolve a safe join projection from lazy parent schemas."""
+    """Resolve a safe input projection from lazy parent schemas.
+
+    A join resolves its parents' demands from their column names. A single-input
+    Polars node whose static lineage lacks only the schema a selector expands
+    against resolves from its input frame's runtime names and dtypes.
+    """
+    if len(incoming_edges) == 1:
+        return _runtime_selector_demands(
+            node,
+            incoming_edges[0],
+            input_lfs[0],
+            projection,
+            existing_edge_demands,
+            node_map,
+            submodels,
+            selector_aliases,
+        )
     if projection is None or len(incoming_edges) < 2:
         return {}
     if projection_planner.has_configured_column_renames(node):
@@ -791,7 +878,9 @@ def _runtime_join_demands(
         code = node.data.config.get("code")
         if not isinstance(code, str):
             return {}
-        analysis = analyze_polars_lineage(code, schemas, projection)
+        analysis = analyze_polars_lineage(
+            code, schemas, projection, selector_aliases=selector_aliases
+        )
         if not analysis.supported:
             return {}
         demands: dict[projection_planner.ProjectionEdgeKey, set[str]] = {}
@@ -1170,6 +1259,7 @@ def _execute_lazy(
             schema_only=schema_only,
             relevant_edges=relevant_edges,
             submodels=graph.submodels,
+            selector_aliases=preamble_selector_aliases(graph.preamble or ""),
         )
     public_projection_plan = public_strategy_result.projection_plan
     projection_plan = public_projection_plan
@@ -1184,6 +1274,7 @@ def _execute_lazy(
             normalised_required_columns,
             relevant_edges=relevant_edges,
             submodels=graph.submodels,
+            selector_aliases=preamble_selector_aliases(graph.preamble or ""),
         )
         if cache_broadens_projection
         else projection_plan
@@ -1373,7 +1464,7 @@ def _execute_lazy(
         incoming_edges: Sequence[GraphEdge],
         input_lfs: Sequence[_Frame],
     ) -> dict[projection_planner.ProjectionEdgeKey, set[str]]:
-        return _runtime_join_demands(
+        return _runtime_lineage_demands(
             node_map[child_id],
             incoming_edges,
             input_lfs,
@@ -1381,6 +1472,7 @@ def _execute_lazy(
             edge_demands,
             node_map,
             graph.submodels,
+            preamble_selector_aliases(graph.preamble or ""),
         )
 
     def _build_lazy_node(boundary: NodeBoundary) -> tuple[_Frame, bool, GraphNode]:
@@ -1909,6 +2001,10 @@ class EagerResult(NamedTuple):
     # so per-frame columns are available WITHOUT collecting the ancestor.
     # Empty for single-frame nodes (their schema is in ``output_columns``).
     frame_columns: dict[tuple[str, str], list[tuple[str, str]]]
+    # Uncapped runtime plan (or per-frame plans) of every successful node.
+    # Row-limited collections never feed consumers, so these are the plans a
+    # downstream node — or a trace lineage lookup — reads.
+    plans: dict[str, pl.LazyFrame | dict[str, pl.LazyFrame]]
 
 
 def _declared_api_input_frame_schema_items(
@@ -1944,6 +2040,7 @@ def _execute_eager_core(
     materialize_node_ids: set[str] | frozenset[str] | None = None,
     materialize_column_limits_by_node: Mapping[str, int] | None = None,
     execution_context: ExecutionContext | None = None,
+    row_limits_by_node: Mapping[str, int] | None = None,
 ) -> EagerResult:
     """Execute the graph eagerly in topo order and collect DataFrames.
 
@@ -1953,7 +2050,14 @@ def _execute_eager_core(
         graph: React Flow graph.
         build_node_fn: ``(node, source_names=..., ...) -> (name, fn, is_source)``.
         target_node_id: If set, only execute ancestors of this node.
-        row_limit: Cap source-node output to this many rows.
+        row_limit: Collect each materialised node limited to this many rows
+            (SQL ``LIMIT`` semantics). Sources are never capped: a limited
+            collection never feeds a consumer, which reads the node's uncapped
+            plan, and Polars pushes each collection's slice upstream only where
+            the result is unchanged. Builders also receive it as the
+            interactive-execution signal.
+        row_limits_by_node: Per-node collection limits overriding
+            ``row_limit`` (trace collects each ancestor to its own prefix).
         swallow_errors: If ``True``, record per-node errors and continue
             (preview behaviour).  If ``False``, raise immediately (trace).
         source: Active execution source (``"live"`` = eager scoring).
@@ -2000,6 +2104,16 @@ def _execute_eager_core(
     relevant_edges = graph_plan.relevant_edges
     normalised_required_columns = prepared_execution.normalised_required_columns
     materialized_ids = None if materialize_node_ids is None else frozenset(materialize_node_ids)
+    node_row_limits = dict(row_limits_by_node or {})
+    for limit_node_id, node_limit in node_row_limits.items():
+        if not isinstance(limit_node_id, str) or not limit_node_id:
+            raise ValueError("row_limits_by_node keys must be node ids")
+        if type(node_limit) is not int or node_limit < 1:
+            raise ValueError("row limits must be positive integers")
+
+    def collection_row_limit(node_id: str) -> int | None:
+        return node_row_limits.get(node_id, row_limit or None)
+
     materialize_column_limits = dict(materialize_column_limits_by_node or {})
     for limit_node_id, limit in materialize_column_limits.items():
         if not isinstance(limit_node_id, str) or not limit_node_id:
@@ -2041,6 +2155,7 @@ def _execute_eager_core(
             required_columns_by_node=normalised_required_columns,
             relevant_edges=relevant_edges,
             submodels=graph.submodels,
+            selector_aliases=preamble_selector_aliases(graph.preamble or ""),
         )
     else:
         projection_plan = None
@@ -2194,8 +2309,6 @@ def _execute_eager_core(
         try:
             if is_source:
                 result = boundary_runner.invoke(boundary)
-                if row_limit and isinstance(result, (pl.LazyFrame, pl.DataFrame)):
-                    result = result.head(row_limit)
             else:
                 input_ids = parents_of.get(nid, [])
                 missing_parents = [pid for pid in input_ids if pid not in runtime_outputs]
@@ -2256,7 +2369,7 @@ def _execute_eager_core(
                         f"No input data available for node '{nid}'",
                     )
 
-                runtime_edge_demands = _runtime_join_demands(
+                runtime_edge_demands = _runtime_lineage_demands(
                     node,
                     incoming_edges_for_node,
                     input_lfs,
@@ -2264,6 +2377,7 @@ def _execute_eager_core(
                     projection_plan.edge_demands if projection_plan is not None else {},
                     node_map,
                     graph.submodels,
+                    preamble_selector_aliases(graph.preamble or ""),
                 )
                 if runtime_edge_demands:
                     projected_inputs: list[pl.LazyFrame] = []
@@ -2405,19 +2519,20 @@ def _execute_eager_core(
                 # collect — exactly like a single-frame ancestor, so per-frame
                 # ``scan_parquet`` pushdown survives into its consumers.
                 mp_should_materialize = materialized_ids is None or nid in materialized_ids
-                # Head-cap each frame's lazy plan up front (before any
-                # collect/schema) like the single-frame source path (the
-                # ``row_limit`` head at the top of this loop): a preview
-                # row_limit must reach the per-frame plans of a multi-frame
-                # source too, or they collect in full while single-frame
-                # sources cap. The cap is a no-op
-                # for the schema-only ancestor path but keeps the lazy plan
-                # consistent with what a downstream collect would see.
+                # A limited node collects each frame to its limit, while its
+                # consumers read the uncapped per-frame plans.
+                frame_row_limit = collection_row_limit(nid)
+                port_plans: dict[str, pl.LazyFrame] = {}
                 capped_ports: dict[str, pl.LazyFrame | pl.DataFrame] = {}
                 for port_label, port_frame in result.items():
                     if isinstance(port_frame, (pl.LazyFrame, pl.DataFrame)):
+                        port_plans[port_label] = (
+                            port_frame
+                            if isinstance(port_frame, pl.LazyFrame)
+                            else port_frame.lazy()
+                        )
                         capped_ports[port_label] = (
-                            port_frame.head(row_limit) if row_limit else port_frame
+                            port_frame.head(frame_row_limit) if frame_row_limit else port_frame
                         )
                     else:
                         raise TypeError(
@@ -2439,8 +2554,9 @@ def _execute_eager_core(
                         materialised[port_label] = port_df
                     # Store DataFrames for cache accounting; downstream
                     # _pick_source_frame + _to_lazy_if_needed will lazify when
-                    # consumers need a LazyFrame.
-                    runtime_outputs[nid] = materialised
+                    # consumers need a LazyFrame. A limited collection is never
+                    # a consumer's input.
+                    runtime_outputs[nid] = port_plans if frame_row_limit else materialised
                     # Populate the per-port contract cache for every bundle,
                     # but expose frame_schema_cache only for genuinely
                     # multi-frame producers.  A one-frame API source now has
@@ -2473,8 +2589,7 @@ def _execute_eager_core(
                     # ancestor — schema via collect_schema(), absent from
                     # eager_outputs). Schema is read without materialising.
                     lazy_ports: dict[str, pl.LazyFrame] = {}
-                    for port_label, capped in capped_ports.items():
-                        port_lf = capped if isinstance(capped, pl.LazyFrame) else capped.lazy()
+                    for port_label, port_lf in port_plans.items():
                         lazy_ports[port_label] = port_lf
                         port_schema = port_lf.collect_schema()
                         column_cache[(nid, port_label)] = frozenset(port_schema.names())
@@ -2578,6 +2693,9 @@ def _execute_eager_core(
                     and len(output_column_names) > column_limit
                 ):
                     collect_lf = output_lf.select(output_column_names[:column_limit])
+                node_row_limit = collection_row_limit(nid)
+                if node_row_limit:
+                    collect_lf = collect_lf.head(node_row_limit)
                 if execution_context is not None:
                     execution_context.checkpoint(label="before_collect", node_id=nid)
                     with execution_context.stage("eager_collect", node_id=nid):
@@ -2589,7 +2707,7 @@ def _execute_eager_core(
                 else:
                     df = streaming_collect(collect_lf)
                 eager_outputs[nid] = df
-                runtime_outputs[nid] = df
+                runtime_outputs[nid] = output_lf if node_row_limit else df
                 memory_bytes[nid] = int(df.estimated_size("b"))
             else:
                 runtime_outputs[nid] = output_lf
@@ -2619,6 +2737,20 @@ def _execute_eager_core(
                 error_lines[nid] = error_line
         timings[nid] = round((time.perf_counter() - t0) * 1000, 1)
 
+    plans: dict[str, pl.LazyFrame | dict[str, pl.LazyFrame]] = {}
+    for plan_node_id, runtime_output in runtime_outputs.items():
+        if isinstance(runtime_output, dict):
+            plans[plan_node_id] = {
+                port: frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
+                for port, frame in runtime_output.items()
+            }
+        elif runtime_output is not None:
+            plans[plan_node_id] = (
+                runtime_output
+                if isinstance(runtime_output, pl.LazyFrame)
+                else runtime_output.lazy()
+            )
+
     return EagerResult(
         eager_outputs,
         order,
@@ -2632,4 +2764,5 @@ def _execute_eager_core(
         available_columns,
         output_columns,
         frame_schema_cache,
+        plans,
     )

@@ -1148,15 +1148,11 @@ def test_multi_port_ancestor_node_frame_columns_via_route(isolated_root) -> None
     assert all({"name", "dtype"} <= set(c) for c in api_frames["drivers"])
 
 
-def test_multi_port_ancestor_row_limit_caps_collected_target(isolated_root) -> None:
-    """CAP (ancestor variant): a preview ``row_limit`` reaches a multi-port
-    ancestor's lazy per-port plan, so the head-cap survives into the
-    collected downstream target. The ``drivers`` port has 3 rows; with
-    ``row_limit=1`` the lazy-gated ancestor head-caps each port before its
-    consumer collects, so the target sees 1.
+def test_multi_port_ancestor_ports_stay_uncapped_under_a_limited_target(isolated_root) -> None:
+    """A limited target preview reads its multi-port ancestor's complete ports.
 
-    Pre-fix the dict branch ignored ``row_limit`` and the ancestor's ports
-    flowed in full (this would assert 3 downstream).
+    The ``drivers`` port has 3 rows. The target counts them, so a preview limit
+    of 1 applies to the single count row and the count still sees all 3 drivers.
     """
     data_path = isolated_root / "data.json"
     data_path.write_text(json.dumps(_rating_records()))
@@ -1171,7 +1167,7 @@ def test_multi_port_ancestor_row_limit_caps_collected_target(isolated_root) -> N
                 data=NodeData(
                     label="d_drivers",
                     nodeType=NodeType.POLARS,
-                    config={"code": "df = drivers"},
+                    config={"code": "df = drivers.select(pl.len().alias('drivers'))"},
                 ),
             ),
         ],
@@ -1180,7 +1176,6 @@ def test_multi_port_ancestor_row_limit_caps_collected_target(isolated_root) -> N
         ],
     )
 
-    # target_preview_only=True engages the lazy gate on the apiInput ancestor.
     results = execute_graph(
         graph,
         target_node_id="d_drivers",
@@ -1189,7 +1184,33 @@ def test_multi_port_ancestor_row_limit_caps_collected_target(isolated_root) -> N
         include_schema_metadata=True,
     )
     assert results["d_drivers"].status == "ok", results["d_drivers"].error
-    assert results["d_drivers"].row_count == 1  # capped from 3 through a lazy ancestor
+    assert results["d_drivers"].preview == [{"drivers": 3}]
+
+
+def test_multi_port_target_limits_each_collected_frame(isolated_root) -> None:
+    """A limited preview of the multi-port source itself caps every emitted frame."""
+    from haute.executor import _eager_execute
+
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+
+    graph = PipelineGraph(nodes=[_api_input_node("api", config)], edges=[])
+
+    (raw_outputs, *_rest) = _eager_execute(
+        graph,
+        target_node_id="api",
+        row_limit=2,
+        materialize_node_ids={"api"},
+    )
+
+    api_out = raw_outputs["api"]
+    assert isinstance(api_out, dict)
+    assert {label: frame.height for label, frame in api_out.items()} == {
+        "policies": 2,
+        "drivers": 2,
+    }
 
 
 def test_apiinput_preview_invalidates_when_optional_cache_is_built(isolated_root) -> None:

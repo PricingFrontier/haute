@@ -29,7 +29,7 @@ import copy
 import dataclasses
 import math
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
@@ -846,89 +846,50 @@ def enrich_optimiser_apply(
 # ---------------------------------------------------------------------------
 
 
-def _node_output_row_count(df: pl.DataFrame | dict[str, pl.DataFrame] | None) -> int:
-    """Row count of a node's materialised output for lineage detection.
-
-    Multi-frame sources store ``dict[label, DataFrame]`` in
-    ``eager_outputs`` — count the widest frame's rows (mirroring the
-    parent-side handling in ``enrich_steps``), never ``len(dict)``,
-    which would count FRAMES, not rows.
-    """
-    if df is None:
-        return 0
-    if isinstance(df, dict):
-        return max((len(frame) for frame in df.values()), default=0)
-    return len(df)
-
-
 def detect_row_lineage_type(
     *,
-    input_row_count: int | None = None,
-    output_row_count: int = 0,
     node_type: str = "",
     operation_type: str = "",
 ) -> str:
-    """Detect the row lineage type based on node metadata and row counts.
+    """Classify how a node produces its rows from node type and operation alone.
+
+    Trace frames are limited or row-scoped, so their heights say nothing about
+    a node's real cardinality; the label never depends on them.
 
     Returns one of:
       - "created"     : rows originate from a data source / API input
       - "selected"    : rows chosen by a live switch
-      - "filtered"    : rows removed by a filter
-      - "aggregated"  : rows collapsed by a group_by
+      - "filtered"    : rows may be removed by a filter
+      - "aggregated"  : rows collapsed per group (group_by, optimiser apply)
       - "joined"      : rows produced by a join
       - "expanded"    : rows multiplied (cross join, explode, scenario expansion)
       - "sorted"      : rows reordered
       - "passthrough" : rows unchanged (with_columns, rename, etc.)
     """
     try:
-        # Source nodes always create rows
-        if node_type in ("dataInput", "apiInput"):
+        if node_type in ("dataInput", "apiInput", "constant"):
             return "created"
-
         if node_type == "liveSwitch":
             return "selected"
-
-        # Join nodes are config-driven — their code carries no literal
-        # ".join(" token, so row-count deltas would otherwise mislabel a
-        # join fan-out as "expanded" or a fan-in as "filtered".  Classify
-        # them by node type before falling through to code/row-count.
+        # Config-driven nodes carry no literal operation in code.
         if node_type == "edgeJoin":
             return "joined"
-
-        # Operation-type based detection
-        op = operation_type.lower() if operation_type else ""
-
-        if op in ("group_by", "groupby", "agg"):
+        if node_type == "scenarioExpander":
+            return "expanded"
+        if node_type == "optimiserApply":
             return "aggregated"
 
+        op = operation_type.lower() if operation_type else ""
+        if op in ("group_by", "groupby", "agg"):
+            return "aggregated"
         if op in ("join",):
             return "joined"
-
         if op in ("sort", "sort_by"):
             return "sorted"
-
         if op in ("filter",):
-            # A filter call alone is not proof that rows were removed.
-            # Preserve actual observed cardinality in the trace.
-            if input_row_count is not None and output_row_count < input_row_count:
-                return "filtered"
-            return "passthrough"
-
+            return "filtered"
         if op in ("cross_join", "explode", "scenario_expand"):
             return "expanded"
-
-        # Fallback: infer from row count changes
-        parent = input_row_count if input_row_count is not None else 0
-
-        if parent == 0 and output_row_count > 0:
-            return "created"
-
-        if output_row_count < parent:
-            return "filtered"
-
-        if output_row_count > parent:
-            return "expanded"
-
         return "passthrough"
     except Exception as exc:
         logger.warning(
@@ -1428,6 +1389,7 @@ def enrich_steps(
     preamble_ns: dict[str, Any] | None = None,
     source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None = None,
     incoming_edges_of: Mapping[str, Sequence[GraphEdge]] | None = None,
+    lineage_plans: Callable[[], Mapping[str, Any]] | None = None,
 ) -> None:
     """Enrich trace steps in-place with expression/calculation/detail data.
 
@@ -1446,6 +1408,11 @@ def enrich_steps(
     order. Optimiser Apply uses it to keep materialised frames aligned with
     their exact executable input names, including multiple frames emitted by
     one API Input node.
+
+    *lineage_plans* returns the uncapped runtime plan of every lineage node.
+    Online Optimiser Apply explanations read their inputs from it: a quote's
+    full scenario set and a ratio constraint's whole-frame baseline both lie
+    outside a limited preview's head rows.
     """
     completed_memo: dict[_EnrichmentMemoKey, dict[str, Any]] = {}
     frame_identity = _enrichment_frame_identity(eager_outputs)
@@ -1834,9 +1801,13 @@ def enrich_steps(
                 elif node_type == "liveSwitch":
                     detail = enrich_live_switch(cfg, source)
                 elif node_type == "optimiserApply":
+                    # A ratebook apply is row-local, so the head frames that
+                    # produced the clicked row explain it; an online apply
+                    # reads the uncapped plans.
+                    row_local = cfg.get("optimiser_mode") == "ratebook"
                     input_frames, source_names = _resolve_optimiser_apply_inputs(
                         step.node_id,
-                        eager_outputs,
+                        eager_outputs if row_local or lineage_plans is None else lineage_plans(),
                         node_map,
                         incoming_edges_of,
                     )
@@ -1878,24 +1849,8 @@ def enrich_steps(
 
             # --- Row lineage type ---
             try:
-                parent_ids = parents_of.get(step.node_id, [])
-                parent_row_count = 0
-                for pid in parent_ids:
-                    parent_row_count = max(
-                        parent_row_count,
-                        _node_output_row_count(eager_outputs.get(pid)),
-                    )
-                # The node's own output may itself be a multi-frame
-                # bundle (the source appearing as an intermediate
-                # step) — same dict guard as the parent side.
-                child_row_count = _node_output_row_count(eager_outputs.get(step.node_id))
-
-                # Sniff operation type from code string
                 operation_type = _sniff_operation_type(code) if code else ""
-
                 step.row_lineage_type = detect_row_lineage_type(
-                    input_row_count=parent_row_count,
-                    output_row_count=child_row_count,
                     node_type=node_type,
                     operation_type=operation_type,
                 )

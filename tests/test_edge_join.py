@@ -290,7 +290,7 @@ def test_codegen_emits_edge_join_with_base_first_params_and_connects(
     namespace = {"__file__": str(_write_pipeline(tmp_path, code))}
     exec(compile(code, str(tmp_path / "pipeline.py"), "exec"), namespace)
     result = namespace["pipeline"].run()
-    assert result.collect()["factor"].to_list() == [1.1]
+    assert result["factor"].to_list() == [1.1]
     preview = execute_graph(parsed)["Join_Rates"]
     assert preview.status == "ok"
     assert [column.name for column in preview.columns] == (selected_columns or ["region", "factor"])
@@ -383,7 +383,7 @@ def test_edge_join_round_trip_resolves_roles_when_node_ids_differ_from_labels(
     namespace = {"__file__": str(path)}
     exec(compile(code, str(path), "exec"), namespace)
     result = namespace["pipeline"].run()
-    assert result.collect()["factor"].to_list() == [1.1]
+    assert result["factor"].to_list() == [1.1]
 
     # Re-save (second codegen pass) is byte-stable for the decorator kwargs.
     resaved = graph_to_code(parsed, pipeline_name="joins")

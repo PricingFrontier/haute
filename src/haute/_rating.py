@@ -796,12 +796,14 @@ def _apply_rating_miss_guard(
     output_col: str,
     on_missing: str,
     default_note: str = "",
+    input_schema: pl.Schema | None = None,
 ) -> _Frame:
-    """Validate lookup misses at a projection-safe lazy-plan barrier.
+    """Validate lookup misses as a row-local Python scan.
 
-    Projection, predicate, and slice pushdown stop at this barrier so a caller
-    cannot accidentally prune the validation by selecting a different output
-    column. The callback returns each batch unchanged and remains streamable.
+    The scan always reads the key and lookup-value columns and refuses pushed
+    input predicates, so neither a downstream projection nor a filter can prune
+    validation; a pushed row limit bounds it to the rows computed. The callback
+    returns each batch unchanged.
     """
 
     resolved_key_columns = key_columns if key_columns is not None else factors
@@ -845,12 +847,18 @@ def _apply_rating_miss_guard(
 
     if isinstance(lf, pl.DataFrame):
         return _check(lf)
-    return lf.map_batches(
+    from haute._polars_utils import row_local_python_scan
+
+    guard_schema = input_schema if input_schema is not None else lf.collect_schema()
+    return row_local_python_scan(
+        lf,
         _check,
-        predicate_pushdown=False,
-        projection_pushdown=False,
-        slice_pushdown=False,
-        streamable=True,
+        schema=guard_schema,
+        input_schema=guard_schema,
+        generated_columns=(),
+        required_input_columns=(*resolved_key_columns, lookup_value_column),
+        input_predicates_allowed=False,
+        elide_transform_when_unused=False,
     )
 
 
@@ -1062,6 +1070,13 @@ def _apply_rating_table(
     # defaultValue fills every miss below, so nothing can be silent.
     # Diagnostics relabel temporary keys with the public factor names.
     if default_val is None:
+        joined_schema = pl.Schema(
+            {
+                **dict(zip(_schema_names(frame_schema), frame_schema.values(), strict=True)),
+                **dict.fromkeys(key_columns, pl.String()),
+                lookup_value_column: lookup.schema[lookup_value_column],
+            }
+        )
         lf = _apply_rating_miss_guard(
             lf,
             factors,
@@ -1071,6 +1086,7 @@ def _apply_rating_table(
             output_col=output_col,
             on_missing=on_missing,
             default_note=default_note,
+            input_schema=joined_schema,
         )
 
     # Rename value → outputColumn, apply default

@@ -28,6 +28,7 @@ from haute._polars_io_registry import (
     validate_data_input_config,
 )
 from haute._polars_operations import OperationReceiver, chunk_admitted_names
+from haute._polars_selectors import literal_selector, preamble_selector_aliases
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, streaming_collect
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.errors import (
@@ -671,6 +672,7 @@ def _row_local_subexprs_are_supported(
     *,
     allowed_frames: set[str],
     local_frames: set[str],
+    selector_aliases: frozenset[str],
     trace: _ChunkLocalTrace,
 ) -> bool:
     """Return whether every sub-expression is row-local and frame-free.
@@ -686,6 +688,7 @@ def _row_local_subexprs_are_supported(
             allowed_frames=allowed_frames,
             local_frames=local_frames,
             trace=trace,
+            selector_aliases=selector_aliases,
         )
         if not supported:
             return False
@@ -721,6 +724,7 @@ def classify_chunk_local_polars_code(
     code: object,
     *,
     frame_names: Iterable[str] | None = None,
+    selector_aliases: frozenset[str] = frozenset(),
 ) -> ChunkLocalDecision:
     """Classify user Polars code for independent per-chunk application.
 
@@ -745,12 +749,19 @@ def classify_chunk_local_polars_code(
         )
     trace = _ChunkLocalTrace()
     local_frames: set[str] = set()
+    # A ``polars.selectors`` alias the code rebinds no longer names the module.
+    selector_aliases = frozenset(selector_aliases) - {
+        node.id
+        for node in ast.walk(module)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))
+    }
     for stmt in module.body:
         if not _row_local_stmt_is_supported(
             stmt,
             allowed_frames=allowed_frames,
             local_frames=local_frames,
             trace=trace,
+            selector_aliases=selector_aliases,
         ):
             return ChunkLocalDecision(
                 eligible=False,
@@ -766,10 +777,13 @@ def is_chunk_local_polars_code(
     code: object,
     *,
     frame_names: Iterable[str] | None = None,
+    selector_aliases: frozenset[str] = frozenset(),
 ) -> bool:
     """Return whether user Polars code is safe to apply independently per chunk."""
 
-    return classify_chunk_local_polars_code(code, frame_names=frame_names).eligible
+    return classify_chunk_local_polars_code(
+        code, frame_names=frame_names, selector_aliases=selector_aliases
+    ).eligible
 
 
 def _validate_positive_int(value: object, *, field_name: str) -> None:
@@ -817,6 +831,7 @@ def _plan_chunk_sizes(
             source_columns,
             source_node=prepared.node_map[chunk_start_node_id],
             target_node_id=chunk_start_node_id,
+            selector_aliases=preamble_selector_aliases(request.graph.preamble or ""),
         )
     )
     if target_row_bytes > request.target_chunk_bytes:
@@ -1110,6 +1125,7 @@ def _estimate_projected_row_bytes(
     *,
     source_node: GraphNode | None,
     target_node_id: str,
+    selector_aliases: frozenset[str] = frozenset(),
 ) -> int:
     if projected_columns is None:
         raise ChunkPlanUnsupportedError(
@@ -1120,7 +1136,9 @@ def _estimate_projected_row_bytes(
         return 1
 
     source_widths = (
-        _source_projected_column_widths(source_node, projected_columns)
+        _source_projected_column_widths(
+            source_node, projected_columns, selector_aliases=selector_aliases
+        )
         if source_node is not None
         else {}
     )
@@ -1133,12 +1151,14 @@ def _estimate_projected_row_bytes(
 def _source_projected_column_widths(
     node: GraphNode,
     projected_columns: frozenset[str],
+    *,
+    selector_aliases: frozenset[str] = frozenset(),
 ) -> dict[str, int]:
     if node.data.nodeType != NodeType.DATA_INPUT:
         return {}
 
     try:
-        lf = _source_lazy_frame(node)
+        lf = _source_lazy_frame(node, selector_aliases=selector_aliases)
         schema = lf.collect_schema()
         schema_by_name = dict(schema.items())
         columns = [column for column in schema.names() if column in projected_columns]
@@ -1205,6 +1225,7 @@ def chunk_plan(request: ChunkPlanRequest) -> ChunkPlan:
         profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
         required_columns_by_node=request.required_columns_by_node,
         schema_only=True,
+        selector_aliases=preamble_selector_aliases(request.graph.preamble or ""),
     )
     source_node_ids: list[str] = []
     for node_id in prepared.order:
@@ -1239,6 +1260,7 @@ def chunk_plan(request: ChunkPlanRequest) -> ChunkPlan:
     chunk_node_ids = tuple(prepared.order[start_index:])
     capabilities: dict[str, ChunkCapability] = {}
     row_expansion_factor = 1
+    selector_aliases = preamble_selector_aliases(request.graph.preamble or "")
     for node_id in prepared.order:
         node = resolve_instance_node(prepared.node_map[node_id], prepared.node_map)
         parent_ids = prepared.parents_of.get(node_id, [])
@@ -1246,7 +1268,7 @@ def chunk_plan(request: ChunkPlanRequest) -> ChunkPlan:
             node_id == chunk_start_node_id and chunk_start_node_id != source_node_id
         ):
             if node.data.nodeType == NodeType.DATA_INPUT:
-                _validate_chunkable_input(node)
+                _validate_chunkable_input(node, selector_aliases=selector_aliases)
             capability = ChunkCapability(
                 kind=ChunkCapabilityKind.BOUNDED_STATE,
                 preserves_row_order=True,
@@ -1261,6 +1283,7 @@ def chunk_plan(request: ChunkPlanRequest) -> ChunkPlan:
                     for parent_id in parent_ids
                     if parent_id in prepared.id_to_name
                 ],
+                selector_aliases=selector_aliases,
             )
             row_expansion_factor *= capability.row_multiplier
         capabilities[node_id] = capability
@@ -1373,7 +1396,10 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
                 chunk_start_node_id=plan.chunk_start_node_id,
                 source_node_id=plan.source_node_id,
             )
-        source_lf = _source_lazy_frame(source_node)
+        source_lf = _source_lazy_frame(
+            source_node,
+            selector_aliases=preamble_selector_aliases(request.graph.preamble or ""),
+        )
         source_code = _data_input_code(source_node)
         if source_code:
             from haute._user_exec import _exec_user_code
@@ -1638,6 +1664,7 @@ def _capability_for_node(
     parent_ids: list[str],
     *,
     frame_names: Iterable[str] = (),
+    selector_aliases: frozenset[str] = frozenset(),
 ) -> ChunkCapability:
     node_type = node.data.nodeType
     declaration = _CHUNK_CAPABILITY_DECLARATIONS[node_type]
@@ -1651,7 +1678,7 @@ def _capability_for_node(
         )
 
     if node_type == NodeType.DATA_INPUT:
-        _validate_chunkable_input(node)
+        _validate_chunkable_input(node, selector_aliases=selector_aliases)
         return ChunkCapability(
             kind=ChunkCapabilityKind.MAP_ONLY,
             preserves_row_order=True,
@@ -1672,6 +1699,7 @@ def _capability_for_node(
         decision = classify_chunk_local_polars_code(
             node.data.config.get("code"),
             frame_names=frame_names,
+            selector_aliases=selector_aliases,
         )
         if not decision.eligible:
             raise ChunkUserCodeUnsupportedError(
@@ -1694,7 +1722,7 @@ def _capability_for_node(
         )
     if node_type == NodeType.SCENARIO_EXPANDER:
         decision = classify_chunk_local_polars_code(
-            node.data.config.get("code"), frame_names=("df",)
+            node.data.config.get("code"), frame_names=("df",), selector_aliases=selector_aliases
         )
         if not decision.eligible:
             raise ChunkUserCodeUnsupportedError(
@@ -1769,12 +1797,17 @@ def _row_local_call_is_supported(
     *,
     allowed_frames: set[str],
     local_frames: set[str],
+    selector_aliases: frozenset[str],
     trace: _ChunkLocalTrace,
 ) -> tuple[bool, bool]:
     func = call.func
     if not isinstance(func, ast.Attribute):
         trace.record("unsupported_expression", type(call).__name__, call)
         return False, False
+    if literal_selector(call, aliases=selector_aliases) is not None:
+        # A literal selector picks the same columns in every chunk: each chunk
+        # shares the frame's schema.
+        return True, False
     method_name = func.attr
     if isinstance(func.value, ast.Name) and func.value.id == "pl":
         if method_name not in _ROW_LOCAL_POLARS_FUNCTIONS:
@@ -1785,6 +1818,7 @@ def _row_local_call_is_supported(
             allowed_frames=allowed_frames,
             local_frames=local_frames,
             trace=trace,
+            selector_aliases=selector_aliases,
         )
         return args_supported, False
     if isinstance(func.value, ast.Attribute) and func.value.attr in _ROW_LOCAL_NAMESPACE_NAMES:
@@ -1794,12 +1828,14 @@ def _row_local_call_is_supported(
             allowed_frames=allowed_frames,
             local_frames=local_frames,
             trace=trace,
+            selector_aliases=selector_aliases,
         )
     receiver_supported, receiver_derived = _row_local_expr_is_supported(
         func.value,
         allowed_frames=allowed_frames,
         local_frames=local_frames,
         trace=trace,
+        selector_aliases=selector_aliases,
     )
     if not receiver_supported:
         return False, False
@@ -1819,6 +1855,7 @@ def _row_local_call_is_supported(
         allowed_frames=allowed_frames,
         local_frames=local_frames,
         trace=trace,
+        selector_aliases=selector_aliases,
     )
     return args_supported, receiver_derived
 
@@ -1829,6 +1866,7 @@ def _row_local_namespace_call_is_supported(
     namespace: ast.Attribute,
     allowed_frames: set[str],
     local_frames: set[str],
+    selector_aliases: frozenset[str],
     trace: _ChunkLocalTrace,
 ) -> tuple[bool, bool]:
     """Classify ``<expr>.<namespace>.<method>(...)`` against the namespace allowlist."""
@@ -1839,6 +1877,7 @@ def _row_local_namespace_call_is_supported(
         allowed_frames=allowed_frames,
         local_frames=local_frames,
         trace=trace,
+        selector_aliases=selector_aliases,
     )
     if not receiver_supported:
         return False, False
@@ -1868,6 +1907,7 @@ def _row_local_expr_is_supported(
     *,
     allowed_frames: set[str],
     local_frames: set[str],
+    selector_aliases: frozenset[str],
     trace: _ChunkLocalTrace,
 ) -> tuple[bool, bool]:
     if isinstance(node, ast.Call):
@@ -1876,6 +1916,7 @@ def _row_local_expr_is_supported(
             allowed_frames=allowed_frames,
             local_frames=local_frames,
             trace=trace,
+            selector_aliases=selector_aliases,
         )
     if isinstance(node, ast.Attribute):
         if isinstance(node.value, ast.Name) and node.value.id == "pl":
@@ -1888,6 +1929,10 @@ def _row_local_expr_is_supported(
             trace.record("unsupported_expression", type(node).__name__, node)
         return is_frame, is_frame
     if isinstance(node, ast.Constant):
+        return True, False
+    if isinstance(node, ast.BinOp | ast.UnaryOp) and (
+        literal_selector(node, aliases=selector_aliases) is not None
+    ):
         return True, False
     # Composite expressions must be row-local AND frame-free.  A frame name is
     # only chunk-safe as a method-chain receiver; embedded in a subscript
@@ -1920,6 +1965,7 @@ def _row_local_expr_is_supported(
         allowed_frames=allowed_frames,
         local_frames=local_frames,
         trace=trace,
+        selector_aliases=selector_aliases,
     ), False
 
 
@@ -1928,6 +1974,7 @@ def _row_local_stmt_is_supported(
     *,
     allowed_frames: set[str],
     local_frames: set[str],
+    selector_aliases: frozenset[str],
     trace: _ChunkLocalTrace,
 ) -> bool:
     if isinstance(stmt, ast.Assign | ast.AnnAssign):
@@ -1946,6 +1993,7 @@ def _row_local_stmt_is_supported(
             allowed_frames=allowed_frames,
             local_frames=local_frames,
             trace=trace,
+            selector_aliases=selector_aliases,
         )
         if not supported:
             return False
@@ -1960,6 +2008,7 @@ def _row_local_stmt_is_supported(
             allowed_frames=allowed_frames,
             local_frames=local_frames,
             trace=trace,
+            selector_aliases=selector_aliases,
         )
         if not supported:
             return False
@@ -1975,13 +2024,19 @@ def _data_input_code(node: GraphNode) -> str:
     return str(node.data.config.get("code") or "").strip()
 
 
-def _validate_chunkable_input(node: GraphNode) -> None:
+def _validate_chunkable_input(
+    node: GraphNode,
+    *,
+    selector_aliases: frozenset[str] = frozenset(),
+) -> None:
     """Prove that a canonical Data Input can feed bounded record batches."""
     try:
         validate_data_input_config(node.data.config)
         code = _data_input_code(node)
         if code:
-            decision = classify_chunk_local_polars_code(code, frame_names=("df",))
+            decision = classify_chunk_local_polars_code(
+                code, frame_names=("df",), selector_aliases=selector_aliases
+            )
             if not decision.eligible:
                 raise ChunkUserCodeUnsupportedError(
                     "Chunked Data Input editor code must be row-local.",
@@ -2086,8 +2141,12 @@ def _assert_runner_shape(
         )
 
 
-def _source_lazy_frame(node: GraphNode) -> pl.LazyFrame:
-    _validate_chunkable_input(node)
+def _source_lazy_frame(
+    node: GraphNode,
+    *,
+    selector_aliases: frozenset[str] = frozenset(),
+) -> pl.LazyFrame:
+    _validate_chunkable_input(node, selector_aliases=selector_aliases)
     try:
         from haute._builders import _configured_pipeline_dir
 

@@ -383,13 +383,15 @@ class TestTraceJsonSafeRowMatching:
         assert {step.node_id for step in result.steps} == {"aggregate"}
         assert len(result.correlation_diagnostics) == 1
         diagnostic = result.correlation_diagnostics[0]
+        # The grouping carries only its key, so the strict lineage lookup finds
+        # both north source rows and reports the ambiguity.
         assert diagnostic["code"] == "ambiguous_row_match"
-        assert diagnostic["reason"] == "relaxed_match_ambiguous"
+        assert diagnostic["reason"] == "duplicate_exact_match"
         assert diagnostic["node_id"] == "source"
         assert diagnostic["child_node_id"] == "aggregate"
-        assert diagnostic["match_strategy"] == "relaxed"
+        assert diagnostic["match_strategy"] == "exact"
         assert diagnostic["match_columns"] == ["region"]
-        assert diagnostic["ignored_columns"] == ["premium"]
+        assert diagnostic["ignored_columns"] == []
         assert diagnostic["matched_row_count"] == 2
         assert diagnostic["matched_row_indices"] == [0, 1]
         assert "ambiguous" in str(diagnostic["message"])

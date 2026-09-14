@@ -393,5 +393,13 @@ def assemble_output_from_config(
     )
     if schema_only:
         return pl.LazyFrame(schema=schema)
-    document = assemble_output_from_mapping(frames, mapping)
-    return pl.LazyFrame(document, schema=schema)
+
+    from haute._polars_utils import limited_python_scan
+
+    lazy_frames = {port: frame.lazy() for port, frame in frames.items()}
+
+    def produce(row_limit: int | None) -> pl.DataFrame:
+        document = assemble_output_from_mapping(lazy_frames, mapping, row_limit=row_limit)
+        return pl.DataFrame(document, schema=schema)
+
+    return limited_python_scan(produce, schema=schema)

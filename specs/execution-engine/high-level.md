@@ -111,6 +111,20 @@ running heavy work in a child process the parent can kill on timeout or memory l
   instead of a generic 500. Preamble compilation happens outside that core:
   interactive preview attaches a `PreambleError` only to nodes that consume its
   namespace, while non-preview execution propagates it.
+- **Preview row limits apply at the previewed node.** Target-only preview applies
+  `row_limit` once to the previewed node's collected output, with SQL `LIMIT` semantics:
+  the rows shown are rows the unlimited run produces, and Polars decides how far upstream
+  the limit travels. Sources and API-input ports are never capped, so a join between
+  sources stored in different key orders previews the rows the full run joins. Opaque
+  row-local Python steps — eager model scoring, the rating miss guard, sum-constraint online
+  optimiser apply, and OUTPUT assembly — run as Python scans that honour the limit,
+  projection, and predicate Polars pushes into them, and their exceptions keep their types at
+  every Haute collect, batch-collect, and sink seam (a direct Polars `.collect()` receives a
+  `ComputeError` naming the original). Native Polars node plans are never wrapped. A
+  preview's row count is the height of the limited target output, and trace follows the
+  limited preview. Deploy live scoring, batched parquet scoring, sink/batch execution, and
+  user-authored Python UDFs keep their execution; Explore reports, training, and optimiser
+  solve read their inputs in full.
 - **Sink/batch execution** (`executor.write_data_output`, `execution.execute_lazy_graph`)
   builds one Polars lazy plan for the whole graph (or up to a target node). Native
   sink-capable file formats use bounded Polars sinks and fail loudly if the plan cannot
@@ -307,7 +321,14 @@ running heavy work in a child process the parent can kill on timeout or memory l
   String and temporal expression methods are attributable only through an audited
   registry of methods whose bare string arguments Polars parses as literals, so a
   `str.contains` predicate is proven while an unregistered method with a direct
-  string argument keeps the boundary. Dynamic
+  string argument keeps the boundary. A column selector written with literal arguments
+  (`pl.all()`, `pl.exclude`, regex and dtype columns, a preamble-imported
+  `polars.selectors` function) is expanded by Polars against the exact schema and analysed
+  like the explicit columns it expands to: name-based selectors resolve wherever column names
+  are known, dtype-based selectors where dtypes are known, and positional selectors are
+  chunk-local but not resolved for lineage; only an expression Polars reports as a pure
+  column selection counts as a selector. When static planning lacks a node's input schema,
+  the node is resolved at runtime from its input frame's schema, as joins are. Non-literal
   selectors, unregistered expression helpers, helper/control-flow-dependent frame mutation,
   unsupported join
   semantics, unknown schemas needed for ownership, ambiguous names, or any

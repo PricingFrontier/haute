@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 
 from haute._execution_context import (
     ExecutionCancelledError,
@@ -24,8 +26,10 @@ from haute._polars_utils import (
     cancellable_streaming_collect,
     execution_collect,
     is_bounded_execution_profile,
+    limited_python_scan,
     normalise_execution_profile,
     read_parquet_metadata,
+    row_local_python_scan,
     streaming_collect,
     temporary_streaming_chunk_size,
 )
@@ -1149,3 +1153,233 @@ class TestMallocTrimEdgeCases:
         for _ in range(5):
             result = _malloc_trim()
             assert result is None
+
+
+# ---------------------------------------------------------------------------
+# row_local_python_scan
+# ---------------------------------------------------------------------------
+
+
+class TestRowLocalPythonScan:
+    """Row-local Python steps stay transparent to Polars pushdown."""
+
+    @staticmethod
+    def _doubling_scan(
+        frame: pl.DataFrame,
+        seen: list[pl.DataFrame],
+        *,
+        input_predicates_allowed: bool = True,
+        elide_transform_when_unused: bool = True,
+    ) -> pl.LazyFrame:
+        def transform(batch: pl.DataFrame) -> pl.DataFrame:
+            seen.append(batch)
+            return batch.with_columns((pl.col("x") * 2).alias("pred"))
+
+        return row_local_python_scan(
+            frame.lazy(),
+            transform,
+            schema=pl.Schema({**frame.schema, "pred": frame.schema["x"]}),
+            generated_columns=("pred",),
+            required_input_columns=("x",),
+            input_predicates_allowed=input_predicates_allowed,
+            elide_transform_when_unused=elide_transform_when_unused,
+        )
+
+    @pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+    def test_limit_is_read_before_the_pushed_predicate(self, engine: str) -> None:
+        frame = pl.DataFrame({"x": [0, 0, 1, 2], "key": ["a", "b", "c", "d"]})
+        scan = self._doubling_scan(frame, [])
+
+        head_then_filter = scan.head(2).filter(pl.col("x") > 0).collect(engine=engine)
+        filter_then_head = scan.filter(pl.col("x") > 0).head(2).collect(engine=engine)
+
+        assert head_then_filter.height == 0
+        assert filter_then_head["x"].to_list() == [1, 2]
+
+    def test_limit_caps_rows_given_to_the_transform(self) -> None:
+        seen: list[pl.DataFrame] = []
+        frame = pl.DataFrame({"x": list(range(1_000)), "key": [str(i) for i in range(1_000)]})
+
+        result = streaming_collect(self._doubling_scan(frame, seen).head(10))
+
+        assert result["pred"].to_list() == [value * 2 for value in range(10)]
+        assert sum(batch.height for batch in seen) == 10
+
+    def test_transform_is_elided_when_no_generated_column_is_read(self) -> None:
+        seen: list[pl.DataFrame] = []
+        frame = pl.DataFrame({"x": [1, 2, 3], "key": ["a", "b", "c"]})
+        scan = self._doubling_scan(frame, seen)
+
+        assert streaming_collect(scan.select(pl.col("key").len())).item() == 3
+        assert streaming_collect(scan.select("key"))["key"].to_list() == ["a", "b", "c"]
+        assert seen == []
+
+    def test_refused_elision_transforms_every_read_row(self) -> None:
+        seen: list[pl.DataFrame] = []
+        frame = pl.DataFrame({"x": [1, 2, 3], "key": ["a", "b", "c"]})
+        scan = self._doubling_scan(frame, seen, elide_transform_when_unused=False)
+
+        streaming_collect(scan.select("key"))
+
+        assert sum(batch.height for batch in seen) == 3
+        assert all("x" in batch.columns for batch in seen)
+
+    def test_refused_input_predicates_still_transform_filtered_rows(self) -> None:
+        seen: list[pl.DataFrame] = []
+        frame = pl.DataFrame({"x": [1, 2, 3], "key": ["keep", "miss", "keep"]})
+        scan = self._doubling_scan(
+            frame,
+            seen,
+            input_predicates_allowed=False,
+            elide_transform_when_unused=False,
+        )
+
+        result = streaming_collect(scan.filter(pl.col("key") != "miss"))
+
+        assert result["x"].to_list() == [1, 3]
+        assert "miss" in pl.concat(seen)["key"].to_list()
+
+    def test_permitted_input_predicates_filter_before_the_transform(self) -> None:
+        seen: list[pl.DataFrame] = []
+        frame = pl.DataFrame({"x": [1, 2, 3], "key": ["keep", "miss", "keep"]})
+
+        result = streaming_collect(self._doubling_scan(frame, seen).filter(pl.col("key") != "miss"))
+
+        assert result["pred"].to_list() == [2, 6]
+        assert pl.concat(seen)["key"].to_list() == ["keep", "keep"]
+
+    def test_predicate_on_a_generated_column_filters_transformed_rows(self) -> None:
+        seen: list[pl.DataFrame] = []
+        frame = pl.DataFrame({"x": [1, 2, 3], "key": ["a", "b", "c"]})
+
+        result = streaming_collect(self._doubling_scan(frame, seen).filter(pl.col("pred") > 2))
+
+        assert result["x"].to_list() == [2, 3]
+        assert sum(batch.height for batch in seen) == 3
+
+    def test_original_exception_survives_every_haute_collect_seam(self, tmp_path: Path) -> None:
+        from haute.errors import ConfigError
+
+        def failing(batch: pl.DataFrame) -> pl.DataFrame:
+            raise ConfigError("scan transform failed", node_id="scorer")
+
+        def scan() -> pl.LazyFrame:
+            frame = pl.LazyFrame({"x": [1, 2]})
+            return row_local_python_scan(
+                frame,
+                failing,
+                schema=frame.collect_schema(),
+                generated_columns=(),
+                required_input_columns=None,
+                input_predicates_allowed=False,
+                elide_transform_when_unused=False,
+            )
+
+        context = ExecutionContext(
+            operation="preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_sampler=lambda: 1,
+        )
+        seams = [
+            lambda: streaming_collect(scan()),
+            lambda: execution_collect(scan()),
+            lambda: execution_collect(scan(), execution_context=context),
+            lambda: list(bounded_collect_batches(scan(), chunk_size=10)),
+            lambda: bounded_sink(scan(), tmp_path / "out.parquet"),
+        ]
+        for seam in seams:
+            with pytest.raises(ConfigError, match="scan transform failed"):
+                seam()
+        with pytest.raises(pl.exceptions.ComputeError, match="ConfigError"):
+            scan().collect()
+
+    def test_caller_context_variables_reach_streaming_engine_threads(self) -> None:
+        import contextvars
+
+        marker: contextvars.ContextVar[str] = contextvars.ContextVar("marker", default="unset")
+        observed: list[str] = []
+        token = marker.set("caller")
+        try:
+            frame = pl.LazyFrame({"x": [1]})
+
+            def transform(batch: pl.DataFrame) -> pl.DataFrame:
+                observed.append(marker.get())
+                return batch
+
+            scan = row_local_python_scan(
+                frame,
+                transform,
+                schema=frame.collect_schema(),
+                generated_columns=(),
+                required_input_columns=None,
+                input_predicates_allowed=False,
+                elide_transform_when_unused=False,
+            )
+        finally:
+            marker.reset(token)
+
+        scan.collect(engine="streaming")
+
+        assert observed == ["caller"]
+
+    @pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+    @pytest.mark.parametrize(
+        "query",
+        [
+            pytest.param(lambda lf: lf.sort("key").head(2), id="sort-head"),
+            pytest.param(
+                lambda lf: lf.select("key").unique().sort("key").head(2), id="unique-sort-head"
+            ),
+            pytest.param(
+                lambda lf: lf.filter(pl.col("x") > 1).sort("key").head(2), id="filter-sort-head"
+            ),
+            pytest.param(lambda lf: lf.top_k(2, by="pred"), id="top-k-generated"),
+            pytest.param(lambda lf: lf.bottom_k(2, by=["x", "key"]), id="bottom-k-carried"),
+        ],
+    )
+    def test_sort_limits_read_the_same_rows_as_native_polars(
+        self, engine: str, query: Callable[[pl.LazyFrame], pl.LazyFrame]
+    ) -> None:
+        frame = pl.DataFrame({"x": [3, 1, 4, 1, 5, 2], "key": ["f", "b", "e", "a", "d", "c"]})
+        native = frame.lazy().with_columns((pl.col("x") * 2).alias("pred"))
+
+        for elide in (True, False):
+            scan = self._doubling_scan(frame, [], elide_transform_when_unused=elide)
+            assert_frame_equal(
+                query(scan).collect(engine=engine), query(native).collect(engine=engine)
+            )
+
+    def test_limited_scan_sort_limit_reads_the_same_rows_as_native_polars(self) -> None:
+        frame = pl.DataFrame({"x": [3, 1, 4], "key": ["c", "a", "b"]})
+        scan = limited_python_scan(lambda n_rows: frame, schema=frame.schema)
+
+        assert_frame_equal(
+            streaming_collect(scan.filter(pl.col("x") > 1).sort("key").head(1)),
+            frame.filter(pl.col("x") > 1).sort("key").head(1),
+        )
+
+    @pytest.mark.parametrize(
+        ("schema", "generated", "required", "message"),
+        [
+            ({"x": pl.String}, (), None, "same dtype"),
+            ({"x": pl.Int64}, ("pred",), None, "absent from the scan schema"),
+            ({"x": pl.Int64}, (), ("missing",), "absent from the input"),
+        ],
+    )
+    def test_declarations_that_disagree_with_the_input_fail_at_construction(
+        self,
+        schema: dict[str, pl.DataType],
+        generated: tuple[str, ...],
+        required: tuple[str, ...] | None,
+        message: str,
+    ) -> None:
+        with pytest.raises(ValueError, match=message):
+            row_local_python_scan(
+                pl.LazyFrame({"x": [1]}),
+                lambda batch: batch,
+                schema=pl.Schema(schema),
+                generated_columns=generated,
+                required_input_columns=required,
+                input_predicates_allowed=False,
+                elide_transform_when_unused=False,
+            )

@@ -15,9 +15,10 @@
 | `src/haute/_execution_schemas.py` | Canonical Pydantic API DTOs for execution-strategy diagnostic boundaries, reasons, provenance, bounded collections, calibration, and the versioned diagnostic payload. `src/haute/schemas.py` re-exports the public models so existing imports remain stable. |
 | `src/haute/_column_lineage.py` | Fail-closed AST interpreter for linear Polars frame programs: exact forward schema transfer, per-input backward column demand, and a closed row-effect class (row-preserving, row-non-increasing, bounded-expansion, or unavailable) for the supported operation vocabulary, plus the audited per-namespace registry of `str`/`dt` expression methods whose bare string arguments Polars parses as literals. |
 | `src/haute/_polars_operations.py` | The closed, receiver-aware registry of recognised Polars operations (`PolarsOperation` entries keyed by receiver, namespace, and name) with their class, evidence-backed policy, expansion, chunk-proof status, lineage support, and materialisation memory factor in basis points, plus the lookup helpers the chunk classifier, the lineage/cardinality analyser, and the planner derive their vocabularies from. Import-time validation rejects duplicate keys and class/policy/expansion combinations that contradict each other. |
+| `src/haute/_polars_selectors.py` | Literal Polars column selectors: `preamble_selector_aliases` (the preamble's `polars.selectors` import aliases), `literal_selector` (the closed grammar that rebuilds a selector written with literal arguments as the Polars object, accepted only when Polars reports a pure column selection), `selector_root` (the selector a computation starts from), and `expand_literal_selector` (expansion against a column set by Polars, refusing positional selectors and dtype-dependent selectors without every dtype). |
 | `src/haute/_execution_context.py` | `ExecutionContext`, `ExecutionProfile`, `ExecutionCancellationToken`, `ExecutionMetricsRecorder`, deterministic request-local fault points, bounded opt-in terminal telemetry, cancellation-latency evidence, cleanup precedence, and RSS-sampling/memory-pressure-event machinery. Contexts created directly may be unbudgeted; admitted contexts carry the resolved limits. |
 | `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (fixed default / explicit env override / adaptive fraction of available RAM), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
-| `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` selects `auto` or streaming execution and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve fault, collect-count, and typed-error telemetry. |
+| `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` selects `auto` or streaming execution and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve fault, collect-count, and typed-error telemetry. It also owns the Python scans that expose opaque Python steps to Polars pushdown (`row_local_python_scan`, `limited_python_scan`, `key_prefix_python_scan`), `scan_evaluable_predicate`, and the parked scan-failure registry every collect seam re-raises from. |
 | `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion, `optimiserApply` artifact dispatch, and output response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
 | `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`; owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
 | `src/haute/_node_builder.py` | `NodeBuildHooks` and `wrap_builder`, the interception seam used by deploy scoring while preserving the canonical runtime builders. |
@@ -111,7 +112,8 @@
   `_execute_eager_core`: `outputs` (`dict[node_id, DataFrame | dict[label, DataFrame] |
   None]`), `order`, `parents_of`, `node_map`, `id_to_name`, `errors`, `timings`,
   `memory_bytes`, `error_lines`, `available_columns`, `output_columns`,
-  `frame_columns` (per-`(node_id, port_label)` schema for multi-frame emitters).
+  `frame_columns` (per-`(node_id, port_label)` schema for multi-frame emitters), and
+  `plans` (each node's uncapped runtime plan, or its per-port plans).
 - **`PreparedExecutionRequest` / `PreparedExecution`** (`_execute_lazy.py`, frozen
   dataclasses) — the single eager/lazy preparation boundary. The request carries
   the authored graph, selected target/source, required-column seeds, and active
@@ -389,12 +391,64 @@ calling the node function, calls it,
 applies `selected_columns`/`column_renames`, checks output columns against the
 contract, and either materialises the result (`streaming_collect`) or — when
 `materialize_node_ids` restricts collection to a target-only preview — keeps it lazy
-and reports schema via `collect_schema()` without collecting. Exceptions are
+and reports schema via `collect_schema()` without collecting. Sources and API-input ports
+are never capped. A materialised node collects its own plan limited to
+`row_limits_by_node[node]`, or `row_limit` when unset, after projection and column-limit
+selection (each frame of a multi-frame node), and a limited collection never feeds a
+consumer: consumers read the node's uncapped plan, which `EagerResult.plans` also exposes.
+A target-only preview therefore limits only the target with SQL `LIMIT` semantics — Polars
+pushes the slice upstream only where the result is unchanged — a full materialisation
+gives every node its own limited output, and trace passes its head-frame prefixes.
+Non-positive limits raise `ValueError`, and `PREVIEW_EXECUTION_SEMANTICS_VERSION`
+(`preview-materialisation:v2`) keeps older cache entries from being served. Exceptions are
 captured per-node when `swallow_errors=True`, except
 `ContractMismatchError` and `SchemaMismatchError`, any `HauteError` whose class
 declares a stable public `error_code`, plus `ExecutionCancelledError` and
 `ExecutionMemoryLimitExceededError`, which always propagate. The preview route
 adapts either explicit mismatch to the same in-situ error response.
+
+**Python scans (`_polars_utils.py`).** Polars treats a Python UDF (`map_batches`) as
+opaque, so no limit passes below it. A registered IO source is a scan instead, and Polars
+hands it the limit, projection, and predicate it may push — only where doing so leaves the
+query result unchanged; its contract reads `n_rows` source rows, then applies the
+predicate, then the projection.
+
+- `row_local_python_scan(input_lf, transform, *, schema, generated_columns,
+  required_input_columns, input_predicates_allowed, elide_transform_when_unused,
+  input_schema=None, execution_context=None, node_id=None)` wraps one input plan and one
+  row-local transform. `schema` is the exact output schema, and every non-generated column
+  must be an input column of the same dtype; construction validates the declarations and
+  raises `ValueError` on any mismatch. For each call the source caps the input at
+  `n_rows`; pushes the predicate into the input when permitted and none of its root columns
+  is generated, otherwise keeps it for the output; decides the transform is needed unless
+  elision is permitted and neither the requested columns nor the kept predicate reference a
+  generated column; narrows the input to the requested non-generated columns, the kept
+  predicate's non-generated roots, and — when the transform runs — the required input
+  columns, retaining one carrier column for an empty projection; collects ordered bounded
+  streaming batches with execution checkpoints (stage `row_local_python_scan`); and yields
+  each transformed (or elided) batch after the kept predicate and the projection. Eager
+  preview/trace model scoring and the rating miss guard use it.
+- `limited_python_scan(produce, *, schema)` runs a `produce(n)` callable whose first `n`
+  rows equal the unlimited result's and casts its output strictly to the declared schema
+  (OUTPUT assembly). `key_prefix_python_scan(input_lf, apply, *, schema, key_column)` runs a
+  per-key computation emitting one row per non-null key in ascending `Utf8` key order; a
+  pushed limit `n` reads only the key column to pick the first `n` keys and applies to those
+  keys' rows (sum-constraint online optimiser apply).
+- `_register_python_scan` runs every source in the caller's copied context variables on
+  engine threads. Before a source sees the pushed predicate, `scan_evaluable_predicate`
+  drops every top-level `dynamic_pred` conjunct Polars adds for a sort-limit
+  (`sort().head(n)`, `top_k`, `bottom_k`) and keeps every ordinary conjunct: the bound
+  prunes only rows the sort-limit discards, evaluating it outside the engine panics, and a
+  panic inside `collect_batches` ends the stream as though empty. A bound nested below any
+  other operator raises.
+- An exception raised while producing a batch is parked under a token in a bounded process
+  registry (64 entries, oldest evicted) and re-raised as `RuntimeError` carrying the token,
+  the original type name, and message. `execution_collect`, the background cancellable
+  collect, `bounded_collect_batches`, and every sink routed through them re-raise the
+  parked original for a `ComputeError` naming a live token, so typed errors (including
+  cancellation and memory-limit signals raised by nested checkpoints) keep their types; an
+  evicted or foreign token leaves the `ComputeError` unchanged, and a direct Polars
+  `.collect()` receives a `ComputeError` naming the original type and message.
 
 Before `_build_funcs()` constructs a JSON `apiInput`, eager and lazy execution
 derive a per-source `{port_label: columns | None}` demand from the prepared
@@ -816,7 +870,40 @@ present a structural or schema result as execution evidence.
   profiles may differ in budgets, in eager-versus-streaming output mechanics, and in
   the diagnostic labels that describe those mechanics, never in which columns or
   boundaries the plan keeps.
-- **Unsupported syntax stays visible.** Dynamic selectors/keys, dataframe-dependent
+- **Literal selectors resolve against the exact schema.** `src/haute/_polars_selectors.py`
+  recognises a column selector written with literal arguments — `pl.all()`, `pl.exclude`,
+  `pl.nth`, argument-free `pl.first()`/`pl.last()`, regex, wildcard, or dtype `pl.col`,
+  `.exclude(...)` refinements, a `polars.selectors` function under a single top-level
+  preamble import alias (`preamble_selector_aliases`), and selector set operators — rebuilds
+  it as the Polars object from the literal values alone, and accepts it only when Polars
+  reports a pure column selection (`meta.is_column_selection`), so `~pl.all()` is a
+  computation while `~cs.numeric()` is a selector. `expand_literal_selector` expands it with
+  `polars.selectors.expand_selector`; it refuses positional selectors (column order is not
+  tracked) and dtype-dependent selectors without a dtype for every column. The registry
+  records every form as a `SelectorForm`. The chunk classifier admits a literal selector
+  wherever it admits `pl.col` (the preamble aliases reach it from chunk planning, streaming
+  auto-range eligibility, and trace alignment; an alias the node code rebinds is not an
+  alias). Column lineage parses selector-bearing `select`/`with_columns` outputs (a pure
+  selection, or a computation rooted at a selector whose only naming step is its outermost
+  `alias`/`.name.suffix`/`.name.prefix`), horizontal-helper arguments, `group_by.agg`
+  outputs (expanded without the grouping keys), `filter` predicates, and the column
+  arguments of `drop`, `drop_nulls`, `unique`, and `sort` into `SelectorItem`s, validating
+  each expression with every selector replaced by a placeholder column so call-context rules
+  apply unchanged. `_evaluate_program` expands them against each operation's exact input
+  columns and carried dtypes (kept through identity outputs, renames, grouping keys, joins,
+  and value-preserving steps; unknown for computed columns) before the unchanged schema and
+  demand transfers. Unsupported results name `selector_schema_unknown`,
+  `selector_dtypes_unknown`, `selector_order_unknown`, `selector_nested`, or the operation's
+  `dynamic_<method>` reason for a naming step deeper in the chain. Because the backward pass
+  demands every column an expansion references, a projected input always contains the full
+  expansion. The static planner passes column names and the preamble aliases; for a
+  single-input Polars node whose static lineage fails only with `selector_schema_unknown` or
+  `selector_dtypes_unknown`, `_runtime_lineage_demands` resolves the demand from the input
+  frame's runtime names and dtypes, projects the input, and records a runtime-inferred
+  edge demand through `with_runtime_inferred_streaming_edges`. The cardinality analysis
+  accepts selector-bearing outputs without their names and treats `nth`, `first`, and
+  `last` as row-count-safe.
+- **Unsupported syntax stays visible.** Non-literal selectors/keys, dataframe-dependent
   helper assignments, unregistered expression functions, string-argument methods
   outside the audited `str`/`dt` literal-argument registry,
   branches/loops/functions, unsupported join options, schema-
@@ -1543,6 +1630,17 @@ present a structural or schema result as execution evidence.
   literal-string-argument method registry against the pinned Polars source, and
   differential execution checks: running supported programs against projected
   inputs must equal running the same programs against full-width inputs.
+  Its selector section pins name-selector resolution with executed projected-equals-full
+  checks, argument references, `selector_nested` and bare-string call context, dtype
+  rules, order-unknown refusals, output-name parity with Polars for composed
+  expressions, the carried-column proof's selector rules, and cardinality without
+  selector names. `tests/test_polars_selectors.py` pins selector recognition, purity,
+  preamble aliases, roots, and expansion parity with Polars.
+- `tests/test_polars_utils.py` — `TestRowLocalPythonScan` pins the Python-scan
+  contract: limit before predicate, limited transform rows, projection elision and its
+  refusal, input-predicate permission, generated-column predicates, typed exceptions
+  through every collect seam, context variables on engine threads, construction-time
+  declaration checks, and sort-limits matching native Polars.
 - `tests/test_cardinality.py` — overflow-safe join-cardinality formulas, uniqueness
   contracts, evidence payloads, invalid bounds, and row-cardinality lineage analysis.
 - `tests/test_column_lineage_properties.py` — Hypothesis differential properties for the closed Polars column-lineage model, including projected-versus-full execution equivalence and row-count bounds that hold over empty, null-heavy, and NaN-heavy frames.
@@ -1586,7 +1684,10 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   **`test_projection_planner.py`** — backward column-projection analysis and its
   effect on checkpoint/eager collection width.
 - **`test_executor.py`** — `execute_graph`/`write_data_output`/preamble
-  compilation end to end.
+  compilation end to end. `TestTargetPreviewRowLimit` pins the limit at the previewed node (a join, a filter, an
+  aggregation, per-node limits under full materialisation, invalid limits), and
+  `TestSelectorRuntimeProjection` the runtime-inferred source demand of a literal
+  selector node.
 - **`test_executor_critical_edges.py`**, **`test_executor_edge_cases.py`**,
   **`test_executor_mut_witnesses.py`** — focused/mutation-witness pins on the pure
   helper functions in `executor.py` (preview row-limit math, dangerous-binding
@@ -1654,7 +1755,8 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   frames (nulls/NaN/inf anywhere, empty strings and dates, single-row chunks),
   including every namespace-keyed `str`/`dt` admission and the literal-mapping
   `replace` shape; the inventory test fails when an allowlist entry has no proof or
-  a proof cites a retired entry.
+  a proof cites a retired entry. Selector forms carry their own chunked-equals-full cases (`selector_*`, including
+  `polars.selectors` under a preamble alias) and rejection pins.
 - **`test_streaming_chunk_size_threading.py`** — thread-local streaming chunk-size
   propagation used by the chunk runner and bounded-collect helpers.
 - **`test_topo.py`**, **`test_topo_contracts.py`** — strict topological sort ordering,

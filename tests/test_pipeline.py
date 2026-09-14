@@ -393,6 +393,51 @@ class TestPipeline:
             p.run()
         assert _scenario_ctx.get() == "batch"  # reset despite error
 
+    def test_run_raises_typed_rating_miss_from_a_lazy_output(self):
+        from haute._rating import RatingTableMissError, _apply_rating_table
+
+        p = Pipeline("rating_miss")
+
+        @p.data_input
+        def source() -> pl.DataFrame:
+            return pl.DataFrame({"region": ["north", "missing"]})
+
+        @p.polars
+        def rated(source: pl.DataFrame) -> pl.LazyFrame:
+            table = {
+                "factors": ["region"],
+                "outputColumn": "factor",
+                "entries": [{"region": "north", "value": 2.0}],
+            }
+            return _apply_rating_table(source.lazy(), table)
+
+        p.connect("source", "rated")
+        with pytest.raises(RatingTableMissError):
+            p.run()
+        assert _scenario_ctx.get() == "batch"
+
+    @pytest.mark.parametrize(("method", "expected"), [("run", "batch"), ("score", "live")])
+    def test_lazy_output_is_collected_inside_the_scenario_context(self, method, expected):
+        p = Pipeline(f"lazy_{method}")
+
+        @p.data_input
+        def source() -> pl.DataFrame:
+            return pl.DataFrame({"x": [1]})
+
+        @p.polars
+        def tagged(source: pl.DataFrame) -> pl.LazyFrame:
+            return source.lazy().map_batches(
+                lambda frame: frame.with_columns(pl.lit(_scenario_ctx.get()).alias("ctx")),
+                schema={"x": pl.Int64, "ctx": pl.String},
+            )
+
+        p.connect("source", "tagged")
+        runner = getattr(p, method)
+        result = runner() if method == "run" else runner(pl.DataFrame({"x": [1]}))
+
+        assert isinstance(result, pl.DataFrame)
+        assert result["ctx"].to_list() == [expected]
+
     def test_to_graph_positions_spaced(self):
         """Nodes should be positioned with x_spacing."""
         p = Pipeline("pos")

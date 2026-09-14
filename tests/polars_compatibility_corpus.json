@@ -1231,15 +1231,14 @@
     {
       "cardinality": "cardinality_proven",
       "chunk": {
-        "blocking_operator": "pl.all",
-        "eligible": false,
-        "reason": "unsupported_polars_function"
+        "eligible": true,
+        "reason": "eligible"
       },
       "class": "opaque",
       "code": "df = df.select(pl.all())",
       "expansion": "none",
       "id": "fn_all_selector",
-      "lineage": "dynamic_select",
+      "lineage": "lineage_proven",
       "namespace": null,
       "operation": "all",
       "policy": "opaque",

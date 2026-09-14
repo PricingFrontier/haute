@@ -14,15 +14,24 @@ full-width boundary rather than guessing.
 from __future__ import annotations
 
 import ast
+import copy
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import lru_cache
 from types import MappingProxyType
 
+import polars as pl
+
 from haute._cardinality import join_cardinality_upper_bound, normalise_join_validation
 from haute._edge_join import narrow_join_parent_demand
 from haute._polars_operations import unbounded_expansion_expression_methods
+from haute._polars_selectors import (
+    LiteralSelector,
+    expand_literal_selector,
+    literal_selector,
+    selector_root,
+)
 
 
 class LineageOperationKind(StrEnum):
@@ -44,6 +53,43 @@ class LineageOperationKind(StrEnum):
     JOIN = "join"
 
 
+class SelectorItemRole(StrEnum):
+    """How an expanded selector contributes to its operation."""
+
+    OUTPUT = "output"
+    """One output per expanded column, or one named output for a single column."""
+
+    HELPER_OUTPUT = "helper_output"
+    """One horizontal-helper output that reads every expanded column."""
+
+    REFERENCES = "references"
+    """Columns a predicate reads."""
+
+    COLUMNS = "columns"
+    """Columns a frame method names (``drop``, ``unique`` subset, ``sort`` keys)."""
+
+
+@dataclass(frozen=True, slots=True)
+class SelectorItem:
+    """A selector-bearing part of an operation, expanded against its input schema.
+
+    ``references`` are the columns the rest of the expression reads, found by
+    analysing the whole expression with each selector replaced by a placeholder
+    column. ``output_name`` names a single output (a keyword, an alias, or a
+    helper's first argument); ``None`` emits one output per expanded column, or
+    names a helper after its first selector's only column.
+    """
+
+    role: SelectorItemRole
+    selectors: tuple[LiteralSelector, ...]
+    references: frozenset[str] = frozenset()
+    output_name: str | None = None
+    prefix: str = ""
+    suffix: str = ""
+    pure: bool = False
+    exclude_group_keys: bool = False
+
+
 @dataclass(frozen=True, slots=True)
 class LineageOperation:
     """One normalised frame operation in execution order."""
@@ -62,6 +108,11 @@ class LineageOperation:
     strict: bool = True
     produced_columns: tuple[str, ...] = ()
     index_columns: frozenset[str] | None = None
+    selector_items: tuple[SelectorItem, ...] = ()
+    """Selector-bearing parts, expanded by ``_evaluate_program`` into the fields above."""
+    identity_outputs: frozenset[str] = frozenset()
+    """``select``/``with_columns`` outputs that are the unchanged input column."""
+    group_keys: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,6 +335,9 @@ _ROW_BOUND_SAFE_POLARS_CALLS = frozenset(
         # Column selectors name columns; they never change the row count.
         "all",
         "exclude",
+        "first",
+        "last",
+        "nth",
         "arg_sort_by",
         "arg_where",
         "business_day_count",
@@ -785,12 +839,287 @@ def _expression_output_name(node: ast.AST) -> str | None:
     return None
 
 
+_SELECTOR_PLACEHOLDER = "\x00haute-selector-{}"
+
+
+def _selector_nodes(node: ast.AST, aliases: frozenset[str]) -> list[ast.AST]:
+    """Return the maximal literal-selector subtrees of *node*, in source order."""
+    if isinstance(node, (ast.Call, ast.BinOp, ast.UnaryOp)) and (
+        literal_selector(node, aliases=aliases) is not None
+    ):
+        return [node]
+    found: list[ast.AST] = []
+    for child in ast.iter_child_nodes(node):
+        found.extend(_selector_nodes(child, aliases))
+    return found
+
+
+def _placeholder(index: int) -> str:
+    return _SELECTOR_PLACEHOLDER.format(index)
+
+
+def _substitute_selectors(node: ast.AST, targets: Sequence[ast.AST]) -> ast.AST:
+    """Copy *node* with each target selector replaced by a placeholder ``pl.col``."""
+    positions = {id(target): index for index, target in enumerate(targets)}
+
+    def rebuild(current: ast.AST) -> ast.AST:
+        index = positions.get(id(current))
+        if index is not None:
+            return ast.Call(
+                func=ast.Attribute(value=ast.Name(id="pl", ctx=ast.Load()), attr="col"),
+                args=[ast.Constant(_placeholder(index))],
+                keywords=[],
+            )
+        clone = copy.copy(current)
+        for field_name, value in ast.iter_fields(current):
+            if isinstance(value, list):
+                setattr(
+                    clone,
+                    field_name,
+                    [rebuild(item) if isinstance(item, ast.AST) else item for item in value],
+                )
+            elif isinstance(value, ast.AST):
+                setattr(clone, field_name, rebuild(value))
+        return clone
+
+    return rebuild(node)
+
+
+_NAME_CHANGING_METHOD_NAMES = frozenset({"alias", "pipe"})
+_NAME_CHANGING_NAMESPACE_NAMES = frozenset({"name", "struct"})
+
+
+@dataclass(frozen=True, slots=True)
+class _SelectorNaming:
+    """How a selector-rooted expression names its outputs."""
+
+    selector: LiteralSelector
+    root: ast.AST
+    inner: ast.AST
+    """The expression without its terminal naming call."""
+    alias: str | None
+    prefix: str
+    suffix: str
+
+
+def _receiver_chain_reaches(expression: ast.AST, target: ast.AST) -> bool:
+    """Whether *target* is reached by following receivers, left operands, and operands."""
+    current = expression
+    while current is not target:
+        if isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
+            receiver: ast.AST = current.func.value
+            if isinstance(receiver, ast.Attribute) and not isinstance(receiver.value, ast.Name):
+                receiver = receiver.value
+            current = receiver
+        elif isinstance(current, ast.BinOp):
+            current = current.left
+        elif isinstance(current, ast.UnaryOp):
+            current = current.operand
+        else:
+            return False
+    return True
+
+
+def _selector_naming(expression: ast.AST, aliases: frozenset[str]) -> _SelectorNaming | None:
+    """Resolve the output naming of an expression rooted at a literal selector.
+
+    Only the outermost call may name the outputs (``alias``, ``.name.prefix``,
+    ``.name.suffix`` with a literal argument). A naming step anywhere deeper in
+    the chain — an intermediate ``alias``, any other ``.name`` or ``.struct``
+    method, or ``pipe`` — renames outputs in a way the per-column expansion
+    cannot follow, so the expression is refused.
+    """
+    inner = expression
+    alias: str | None = None
+    prefix = suffix = ""
+    if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute):
+        func = inner.func
+        literal = (
+            _literal_string(inner.args[0]) if len(inner.args) == 1 and not inner.keywords else None
+        )
+        if func.attr == "alias":
+            if literal is None:
+                return None
+            alias = literal
+            inner = func.value
+        elif isinstance(func.value, ast.Attribute) and func.value.attr == "name":
+            if func.attr not in {"prefix", "suffix"} or literal is None:
+                return None
+            prefix, suffix = (literal, "") if func.attr == "prefix" else ("", literal)
+            inner = func.value.value
+    pure = literal_selector(inner, aliases=aliases)
+    if pure is not None:
+        return _SelectorNaming(pure, inner, inner, alias, prefix, suffix)
+    found = selector_root(inner, aliases=aliases)
+    if found is None:
+        return None
+    selector, root = found
+    current = inner
+    while current is not root:
+        if isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
+            if current.func.attr in _NAME_CHANGING_METHOD_NAMES:
+                return None
+            receiver: ast.AST = current.func.value
+            if isinstance(receiver, ast.Attribute) and not isinstance(receiver.value, ast.Name):
+                if receiver.attr in _NAME_CHANGING_NAMESPACE_NAMES:
+                    return None
+                receiver = receiver.value
+            current = receiver
+        elif isinstance(current, ast.BinOp):
+            current = current.left
+        elif isinstance(current, ast.UnaryOp):
+            current = current.operand
+        else:
+            return None
+    return _SelectorNaming(selector, root, inner, alias, prefix, suffix)
+
+
+def _selector_expression_item(
+    expression: ast.AST,
+    aliases: frozenset[str],
+    *,
+    method: str,
+    keyword: str | None = None,
+) -> SelectorItem | _ParseFailure | None:
+    """Parse a selector-bearing output expression, or return ``None`` without one.
+
+    A failure is either ``selector_nested`` (a selector outside the shapes the
+    model expands) or the operation's ordinary ``dynamic_<method>`` reason when
+    the whole expression, analysed with placeholder columns, is not provable.
+    """
+    nodes = _selector_nodes(expression, aliases)
+    if not nodes:
+        return None
+    dynamic = _ParseFailure(f"dynamic_{method}", method)
+    selectors = tuple(literal_selector(node, aliases=aliases) for node in nodes)
+    assert all(selector is not None for selector in selectors)
+    resolved = tuple(selector for selector in selectors if selector is not None)
+    if nodes == [expression]:
+        return SelectorItem(
+            SelectorItemRole.OUTPUT, resolved, output_name=keyword, pure=keyword is None
+        )
+
+    naming = _selector_naming(expression, aliases)
+    if naming is not None and len(nodes) == 1 and naming.root is nodes[0]:
+        if keyword is not None and (naming.alias is not None or naming.prefix or naming.suffix):
+            return dynamic
+        if naming.inner is naming.root:
+            # A renamed pure selection: every output reads only its own column.
+            return SelectorItem(
+                SelectorItemRole.OUTPUT,
+                resolved,
+                output_name=keyword or naming.alias,
+                prefix=naming.prefix,
+                suffix=naming.suffix,
+            )
+        substituted = _substitute_selectors(naming.inner, nodes)
+        references = _referenced_columns(substituted)
+        # With no deeper naming step the computation keeps its root's name.
+        if references is None or _expression_output_name(substituted) != _placeholder(0):
+            return dynamic
+        return SelectorItem(
+            SelectorItemRole.OUTPUT,
+            resolved,
+            references=references - {_placeholder(0)},
+            output_name=keyword or naming.alias,
+            prefix=naming.prefix,
+            suffix=naming.suffix,
+        )
+
+    inner = expression
+    helper = inner
+    alias = _alias_name(inner)
+    if alias is not None:
+        assert isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute)
+        helper = inner.func.value
+    if (
+        isinstance(helper, ast.Call)
+        and _polars_call_name(helper) in _HORIZONTAL_PL_CALL_OUTPUTS
+        and helper.args
+        and all(any(node is argument for argument in helper.args) for node in nodes)
+    ):
+        first_is_selector = any(node is helper.args[0] for node in nodes)
+        if first_is_selector:
+            ordered = [helper.args[0], *[node for node in nodes if node is not helper.args[0]]]
+        else:
+            ordered = list(nodes)
+        substituted = _substitute_selectors(inner, ordered)
+        references = _referenced_columns(substituted)
+        if references is None:
+            return dynamic
+        output_name = keyword or alias
+        if output_name is None and not first_is_selector:
+            output_name = _expression_output_name(substituted)
+            if output_name is None:
+                return dynamic
+        ordered_selectors = tuple(literal_selector(node, aliases=aliases) for node in ordered)
+        return SelectorItem(
+            SelectorItemRole.HELPER_OUTPUT,
+            tuple(selector for selector in ordered_selectors if selector is not None),
+            references=references - {_placeholder(index) for index in range(len(ordered))},
+            output_name=output_name,
+        )
+    if len(nodes) == 1 and _receiver_chain_reaches(expression, nodes[0]):
+        # Rooted at its only selector but named in a way the expansion cannot follow.
+        return dynamic
+    return _ParseFailure("selector_nested", method)
+
+
+def _selector_reference_item(
+    expression: ast.AST, aliases: frozenset[str]
+) -> SelectorItem | None | _ParseFailure:
+    """Parse a predicate that reads selector columns, or ``None`` without one."""
+    nodes = _selector_nodes(expression, aliases)
+    if not nodes:
+        return None
+    substituted = _substitute_selectors(expression, nodes)
+    references = _referenced_columns(substituted)
+    if references is None:
+        return _ParseFailure("dynamic_filter", "filter")
+    selectors = tuple(literal_selector(node, aliases=aliases) for node in nodes)
+    return SelectorItem(
+        SelectorItemRole.REFERENCES,
+        tuple(selector for selector in selectors if selector is not None),
+        references=references - {_placeholder(index) for index in range(len(nodes))},
+    )
+
+
+def _selector_column_item(node: ast.AST, aliases: frozenset[str]) -> SelectorItem | None:
+    """Parse a frame-method column argument that is a literal selector."""
+    selector = literal_selector(node, aliases=aliases)
+    if selector is None:
+        return None
+    return SelectorItem(SelectorItemRole.COLUMNS, (selector,))
+
+
+def _readable_with_selectors(expression: ast.AST, aliases: frozenset[str]) -> bool:
+    """Whether an expression's references are provable once selectors become columns."""
+    if _is_column_selector_call(expression) or _literal_column_name(expression) is not None:
+        return True
+    if isinstance(expression, (ast.List, ast.Tuple)):
+        return all(_readable_with_selectors(element, aliases) for element in expression.elts)
+    nodes = _selector_nodes(expression, aliases)
+    candidate = _substitute_selectors(expression, nodes) if nodes else expression
+    return _referenced_columns(candidate) is not None
+
+
 def _normalise_expression_outputs(
     call: ast.Call,
     *,
     allow_plain_strings: bool,
-) -> tuple[tuple[str, frozenset[str]], ...] | None:
+    selector_aliases: frozenset[str] = frozenset(),
+) -> (
+    tuple[tuple[tuple[str, frozenset[str]], ...], tuple[SelectorItem, ...], frozenset[str]]
+    | _ParseFailure
+    | None
+):
+    """Return outputs, selector items, and identity outputs of ``select``/``with_columns``."""
+    method = call.func.attr if isinstance(call.func, ast.Attribute) else "select"
+    method = "select" if method == "select_seq" else method
     outputs: list[tuple[str, frozenset[str]]] = []
+    items: list[SelectorItem] = []
+    identity: set[str] = set()
+    failure: list[_ParseFailure] = []
 
     def append_expression(expression: ast.AST) -> bool:
         # Polars treats a bare string as a column expression in both
@@ -800,42 +1129,64 @@ def _normalise_expression_outputs(
         name = _literal_column_name(expression)
         if name is not None:
             outputs.append((name, frozenset({name})))
+            identity.add(name)
             return True
         if allow_plain_strings:
             if isinstance(expression, (ast.List, ast.Tuple)):
                 return all(append_expression(element) for element in expression.elts)
         if _may_evaluate_to_python_string(expression):
             return False
+        item = _selector_expression_item(expression, selector_aliases, method=method)
+        if isinstance(item, _ParseFailure):
+            failure.append(item)
+            return False
+        if item is not None:
+            items.append(item)
+            return True
         references = _referenced_columns(expression)
         if references is None:
             return False
         output_name = _expression_output_name(expression)
         if output_name is not None:
             outputs.append((output_name, references))
+            if _pl_col_name(expression) == output_name:
+                identity.add(output_name)
             return True
         return False
 
     for expression in call.args:
         if not append_expression(expression):
-            return None
+            return failure[0] if failure else None
     for keyword in call.keywords:
         if keyword.arg is None:
             return None
         bare_column = _literal_column_name(keyword.value)
         if bare_column is not None:
             references = frozenset({bare_column})
+            if bare_column == keyword.arg:
+                identity.add(bare_column)
         elif _may_evaluate_to_python_string(keyword.value):
             return None
         else:
+            keyword_item = _selector_expression_item(
+                keyword.value, selector_aliases, method=method, keyword=keyword.arg
+            )
+            if isinstance(keyword_item, _ParseFailure):
+                return keyword_item
+            if keyword_item is not None:
+                items.append(keyword_item)
+                continue
             maybe_references = _referenced_columns(keyword.value)
             if maybe_references is None:
                 return None
             references = maybe_references
+            if _pl_col_name(keyword.value) == keyword.arg:
+                identity.add(keyword.arg)
         outputs.append((keyword.arg, references))
     names = [name for name, _references in outputs]
-    if not outputs or len(names) != len(set(names)):
+    if (not outputs and not items) or len(names) != len(set(names)):
         return None
-    return tuple(outputs)
+    return tuple(outputs), tuple(items), frozenset(identity)
 
 
 def _chain_root_name(expr: ast.AST) -> str | None:
@@ -860,6 +1211,7 @@ def _frame_chain_calls(expr: ast.AST) -> list[ast.Call]:
 def _parse_group_by_agg(
     group_call: ast.Call,
     aggregate_call: ast.Call,
+    selector_aliases: frozenset[str] = frozenset(),
 ) -> LineageOperation | _ParseFailure:
     key_nodes = list(group_call.args)
     for keyword in group_call.keywords:
@@ -879,6 +1231,7 @@ def _parse_group_by_agg(
         return _ParseFailure("dynamic_group_by", "group_by")
 
     expressions: list[tuple[str, frozenset[str]]] = []
+    aggregate_items: list[SelectorItem] = []
     positional: list[ast.AST] = []
     for expression in aggregate_call.args:
         if isinstance(expression, (ast.List, ast.Tuple)):
@@ -886,6 +1239,14 @@ def _parse_group_by_agg(
         else:
             positional.append(expression)
     for positional_expression in positional:
+        aggregate_item = _selector_expression_item(
+            positional_expression, selector_aliases, method="aggregate"
+        )
+        if isinstance(aggregate_item, _ParseFailure):
+            return aggregate_item
+        if aggregate_item is not None:
+            aggregate_items.append(replace(aggregate_item, exclude_group_keys=True))
+            continue
         output = _alias_name(positional_expression)
         references = _referenced_columns(positional_expression)
         if output is None or references is None:
@@ -900,6 +1261,14 @@ def _parse_group_by_agg(
         elif _may_evaluate_to_python_string(keyword.value):
             return _ParseFailure("dynamic_aggregate", "agg")
         else:
+            keyword_item = _selector_expression_item(
+                keyword.value, selector_aliases, method="aggregate", keyword=keyword.arg
+            )
+            if isinstance(keyword_item, _ParseFailure):
+                return keyword_item
+            if keyword_item is not None:
+                aggregate_items.append(replace(keyword_item, exclude_group_keys=True))
+                continue
             maybe_references = _referenced_columns(keyword.value)
             if maybe_references is None:
                 return _ParseFailure("dynamic_aggregate", "agg")
@@ -915,6 +1284,8 @@ def _parse_group_by_agg(
         referenced_columns=frozenset(
             keys | {column for _name, refs in expressions for column in refs}
         ),
+        selector_items=tuple(aggregate_items),
+        group_keys=frozenset(keys),
     )
 
 
@@ -1228,10 +1599,17 @@ def _parse_shift(call: ast.Call) -> LineageOperation | _ParseFailure:
     return LineageOperation(kind=LineageOperationKind.ROW_ONLY, method="shift")
 
 
-def _parse_drop(call: ast.Call) -> LineageOperation | _ParseFailure:
+def _parse_drop(
+    call: ast.Call, selector_aliases: frozenset[str] = frozenset()
+) -> LineageOperation | _ParseFailure:
     dropped: set[str] = set()
+    items: list[SelectorItem] = []
     strict = True
     for node in call.args:
+        item = _selector_column_item(node, selector_aliases)
+        if item is not None:
+            items.append(item)
+            continue
         parsed = _literal_columns(node)
         if parsed is None:
             return _ParseFailure("dynamic_drop", "drop")
@@ -1241,7 +1619,7 @@ def _parse_drop(call: ast.Call) -> LineageOperation | _ParseFailure:
         if literal is None:
             return _ParseFailure("dynamic_drop", "drop")
         strict = literal
-    if not dropped:
+    if not dropped and not items:
         return _ParseFailure("dynamic_drop", "drop")
     return LineageOperation(
         kind=LineageOperationKind.DROP,
@@ -1250,10 +1628,13 @@ def _parse_drop(call: ast.Call) -> LineageOperation | _ParseFailure:
         # Polars requires every named column to exist for a strict drop.
         referenced_columns=frozenset(dropped) if strict else frozenset(),
         strict=strict,
+        selector_items=tuple(items),
     )
 
 
-def _parse_drop_nulls(call: ast.Call) -> LineageOperation | _ParseFailure:
+def _parse_drop_nulls(
+    call: ast.Call, selector_aliases: frozenset[str] = frozenset()
+) -> LineageOperation | _ParseFailure:
     if len(call.args) > 1:
         return _ParseFailure("dynamic_drop_nulls", "drop_nulls")
     subset_node: ast.AST | None = call.args[0] if call.args else None
@@ -1262,15 +1643,21 @@ def _parse_drop_nulls(call: ast.Call) -> LineageOperation | _ParseFailure:
             return _ParseFailure("dynamic_drop_nulls", "drop_nulls")
         subset_node = keyword.value
     subset: frozenset[str] | None = None
+    item: SelectorItem | None = None
     if subset_node is not None and not _is_literal_none(subset_node):
-        subset = _literal_columns(subset_node)
-        if subset is None:
-            return _ParseFailure("dynamic_drop_nulls", "drop_nulls")
+        item = _selector_column_item(subset_node, selector_aliases)
+        if item is not None:
+            subset = frozenset()
+        else:
+            subset = _literal_columns(subset_node)
+            if subset is None:
+                return _ParseFailure("dynamic_drop_nulls", "drop_nulls")
     return LineageOperation(
         kind=LineageOperationKind.DROP_NULLS,
         method="drop_nulls",
         subset_columns=subset,
         referenced_columns=subset if subset is not None else frozenset(),
+        selector_items=() if item is None else (item,),
     )
 
 
@@ -1370,6 +1757,7 @@ def _parse_call_sequence(
     input_names: frozenset[str],
     *,
     cardinality_only: bool = False,
+    selector_aliases: frozenset[str] = frozenset(),
 ) -> tuple[list[LineageOperation], _ParseFailure | None]:
     operations: list[LineageOperation] = []
     index = 0
@@ -1398,7 +1786,7 @@ def _parse_call_sequence(
                     )
                 )
             else:
-                parsed_group = _parse_group_by_agg(call, aggregate)
+                parsed_group = _parse_group_by_agg(call, aggregate, selector_aliases)
                 if isinstance(parsed_group, _ParseFailure):
                     return [], parsed_group
                 operations.append(parsed_group)
@@ -1415,7 +1803,16 @@ def _parse_call_sequence(
                 ]
             ):
                 return [], _ParseFailure("row_expansion_unbounded", method)
-            outputs = _normalise_expression_outputs(call, allow_plain_strings=True)
+            normalised = _normalise_expression_outputs(
+                call, allow_plain_strings=True, selector_aliases=selector_aliases
+            )
+            if isinstance(normalised, _ParseFailure):
+                if not cardinality_only:
+                    return [], normalised
+                normalised = None
+            outputs, select_items, select_identity = (
+                normalised if normalised is not None else (None, (), frozenset())
+            )
             if outputs is None:
                 # Row counts do not need the output names: a selection whose
                 # expressions are all readable and row-bounded emits at most
@@ -1425,8 +1822,7 @@ def _parse_call_sequence(
                 # unreadable expression (a call the analyser cannot see
                 # through) is rejected on both paths.
                 readable = cardinality_only and all(
-                    _referenced_columns(expression) is not None
-                    or _is_column_selector_call(expression)
+                    _readable_with_selectors(expression, selector_aliases)
                     for expression in [
                         *call.args,
                         *(keyword.value for keyword in call.keywords),
@@ -1440,6 +1836,8 @@ def _parse_call_sequence(
                     kind=LineageOperationKind.SELECT,
                     method=method,
                     output_to_inputs=outputs,
+                    selector_items=select_items,
+                    identity_outputs=select_identity,
                 )
             )
         elif method == "with_columns":
@@ -1451,17 +1849,35 @@ def _parse_call_sequence(
                 ]
             ):
                 return [], _ParseFailure("row_expansion_unbounded", method)
-            outputs = _normalise_expression_outputs(call, allow_plain_strings=False)
-            if outputs is None:
+            normalised = _normalise_expression_outputs(
+                call, allow_plain_strings=False, selector_aliases=selector_aliases
+            )
+            if cardinality_only and (normalised is None or isinstance(normalised, _ParseFailure)):
+                # Row counts do not need output names (see ``select`` above).
+                if not all(
+                    _readable_with_selectors(expression, selector_aliases)
+                    for expression in [
+                        *call.args,
+                        *(keyword.value for keyword in call.keywords),
+                    ]
+                ):
+                    return [], _ParseFailure("dynamic_with_columns", method)
+                normalised = ((), (), frozenset())
+            if isinstance(normalised, _ParseFailure):
+                return [], normalised
+            if normalised is None:
                 return [], _ParseFailure("dynamic_with_columns", method)
+            with_outputs, with_items, with_identity = normalised
             operations.append(
                 LineageOperation(
                     kind=LineageOperationKind.WITH_COLUMNS,
                     method=method,
-                    output_to_inputs=outputs,
+                    output_to_inputs=with_outputs,
                     referenced_columns=frozenset(
-                        column for _name, refs in outputs for column in refs
+                        column for _name, refs in with_outputs for column in refs
                     ),
+                    selector_items=with_items,
+                    identity_outputs=with_identity,
                 )
             )
         elif method == "rename":
@@ -1491,6 +1907,7 @@ def _parse_call_sequence(
             if any(keyword.arg is None for keyword in call.keywords):
                 return [], _ParseFailure(f"dynamic_{method}", method)
             collected: set[str] = set()
+            predicate_items: list[SelectorItem] = []
             failed = False
             for argument in call.args:
                 if method == "filter":
@@ -1504,6 +1921,13 @@ def _parse_call_sequence(
                     if _may_evaluate_to_python_string(argument):
                         failed = True
                         break
+                    predicate_item = _selector_reference_item(argument, selector_aliases)
+                    if isinstance(predicate_item, _ParseFailure):
+                        return [], predicate_item
+                    if predicate_item is not None:
+                        predicate_items.append(predicate_item)
+                        collected.update(predicate_item.references)
+                        continue
                 argument_references = _referenced_columns(argument)
                 if argument_references is None:
                     failed = True
@@ -1525,6 +1949,7 @@ def _parse_call_sequence(
                     kind=LineageOperationKind.READ_COLUMNS,
                     method=method,
                     referenced_columns=frozenset(collected),
+                    selector_items=tuple(predicate_items),
                 )
             )
         elif method == "cast":
@@ -1565,18 +1990,24 @@ def _parse_call_sequence(
                 else:
                     return [], _ParseFailure("dynamic_sort", method)
             sort_columns: set[str] = set()
+            sort_items: list[SelectorItem] = []
             for by_node in by_nodes:
+                sort_item = _selector_column_item(by_node, selector_aliases)
+                if sort_item is not None:
+                    sort_items.append(sort_item)
+                    continue
                 parsed = _literal_columns(by_node)
                 if parsed is None:
                     return [], _ParseFailure("dynamic_sort", method)
                 sort_columns.update(parsed)
-            if not sort_columns:
+            if not sort_columns and not sort_items:
                 return [], _ParseFailure("dynamic_sort", method)
             operations.append(
                 LineageOperation(
                     kind=LineageOperationKind.SORT,
                     method=method,
                     referenced_columns=frozenset(sort_columns),
+                    selector_items=tuple(sort_items),
                 )
             )
         elif method == "unique":
@@ -1592,14 +2023,24 @@ def _parse_call_sequence(
                     continue
                 else:
                     return [], _ParseFailure("dynamic_unique", method)
-            subset = None if subset_node is None else _literal_columns(subset_node)
-            if subset_node is not None and subset is None:
-                return [], _ParseFailure("dynamic_unique", method)
+            unique_item = (
+                None
+                if subset_node is None
+                else _selector_column_item(subset_node, selector_aliases)
+            )
+            subset: frozenset[str] | None
+            if unique_item is not None:
+                subset = frozenset()
+            else:
+                subset = None if subset_node is None else _literal_columns(subset_node)
+                if subset_node is not None and subset is None:
+                    return [], _ParseFailure("dynamic_unique", method)
             operations.append(
                 LineageOperation(
                     kind=LineageOperationKind.UNIQUE,
                     method=method,
                     subset_columns=subset,
+                    selector_items=() if unique_item is None else (unique_item,),
                 )
             )
         elif method == "explode":
@@ -1627,9 +2068,9 @@ def _parse_call_sequence(
             )
         elif method in {"drop", "drop_nulls", "with_row_index", "unpivot"}:
             if method == "drop":
-                parsed_frame = _parse_drop(call)
+                parsed_frame = _parse_drop(call, selector_aliases)
             elif method == "drop_nulls":
-                parsed_frame = _parse_drop_nulls(call)
+                parsed_frame = _parse_drop_nulls(call, selector_aliases)
             elif method == "with_row_index":
                 parsed_frame = _parse_with_row_index(call)
             else:
@@ -1653,6 +2094,7 @@ def _parse_program(
     code: str,
     input_names: frozenset[str],
     cardinality_only: bool = False,
+    selector_aliases: frozenset[str] = frozenset(),
 ) -> LinearFrameProgram | _ParseFailure:
     try:
         tree = ast.parse(code)
@@ -1718,6 +2160,7 @@ def _parse_program(
             calls,
             input_names,
             cardinality_only=cardinality_only,
+            selector_aliases=selector_aliases,
         )
         if failure is not None:
             return failure
@@ -1772,6 +2215,7 @@ def _ensure_root_carrier(
     input_schemas: Mapping[str, frozenset[str] | None],
     root_schema: frozenset[str],
     root_demand: set[str],
+    input_dtypes: Mapping[str, Mapping[str, pl.DataType]] | None = None,
 ) -> bool:
     """Widen the root demand until the projected frame is never empty.
 
@@ -1791,6 +2235,7 @@ def _ensure_root_carrier(
         projected = _evaluate_program(
             program,
             {**input_schemas, program.root_input: frozenset(root_demand)},
+            input_dtypes,
         )
         if isinstance(projected, _ParseFailure):
             return False
@@ -1811,13 +2256,210 @@ def _ensure_root_carrier(
         root_demand.add(carrier)
 
 
+_DtypeMap = dict[str, "pl.DataType | None"]
+
+# A named output (keyword or alias) over a multi-column selector is rejected
+# with the operation's ordinary reason for an unprovable expression; clashing
+# output names keep the operation's duplicate-output reason.
+_DYNAMIC_OUTPUT_REASONS = {
+    LineageOperationKind.SELECT: "dynamic_select",
+    LineageOperationKind.WITH_COLUMNS: "dynamic_with_columns",
+    LineageOperationKind.GROUP_BY_AGG: "dynamic_aggregate",
+}
+_DUPLICATE_OUTPUT_REASONS = {
+    LineageOperationKind.SELECT: "dynamic_select",
+    LineageOperationKind.WITH_COLUMNS: "dynamic_with_columns",
+    LineageOperationKind.GROUP_BY_AGG: "ambiguous_aggregate_output",
+}
+
+
+def _resolve_selector_items(
+    operation: LineageOperation,
+    schema: frozenset[str] | None,
+    dtypes: Mapping[str, pl.DataType | None] | None,
+) -> LineageOperation | _ParseFailure:
+    """Expand every selector item of *operation* against its exact input schema."""
+    method = operation.method
+    if schema is None:
+        return _ParseFailure("selector_schema_unknown", method)
+    outputs = list(operation.output_to_inputs)
+    references = set(operation.referenced_columns)
+    named_columns: set[str] = set()
+    identity = set(operation.identity_outputs)
+    for item in operation.selector_items:
+        columns = schema - operation.group_keys if item.exclude_group_keys else schema
+        expansions: list[tuple[str, ...]] = []
+        for selector in item.selectors:
+            if selector.positional:
+                return _ParseFailure("selector_order_unknown", method)
+            expanded = expand_literal_selector(selector, columns, dtypes)
+            if expanded is None:
+                return _ParseFailure(
+                    "selector_dtypes_unknown"
+                    if selector.dtype_dependent
+                    else "selector_unexpandable",
+                    method,
+                )
+            expansions.append(expanded)
+        expanded_columns = {column for expansion in expansions for column in expansion}
+        if item.role is SelectorItemRole.OUTPUT:
+            expansion = expansions[0]
+            if item.output_name is None:
+                for column in expansion:
+                    outputs.append(
+                        (
+                            f"{item.prefix}{column}{item.suffix}",
+                            frozenset({column}) | item.references,
+                        )
+                    )
+                    if item.pure:
+                        identity.add(column)
+            else:
+                if len(expansion) != 1:
+                    return _ParseFailure(_DYNAMIC_OUTPUT_REASONS[operation.kind], method)
+                outputs.append((item.output_name, frozenset(expansion) | item.references))
+            references |= expanded_columns | item.references
+        elif item.role is SelectorItemRole.HELPER_OUTPUT:
+            name = item.output_name
+            if name is None:
+                if len(expansions[0]) != 1:
+                    return _ParseFailure("selector_order_unknown", method)
+                name = expansions[0][0]
+            outputs.append((name, frozenset(expanded_columns) | item.references))
+            references |= expanded_columns | item.references
+        elif item.role is SelectorItemRole.REFERENCES:
+            references |= expanded_columns | item.references
+        else:
+            named_columns |= expanded_columns
+
+    names = [name for name, _refs in outputs]
+    if len(names) != len(set(names)) or (
+        operation.kind is LineageOperationKind.GROUP_BY_AGG
+        and len(set(names) - operation.group_keys) != len(names) - len(operation.group_keys)
+    ):
+        return _ParseFailure(
+            _DUPLICATE_OUTPUT_REASONS.get(operation.kind, f"dynamic_{method}"), method
+        )
+    if operation.kind is LineageOperationKind.SORT:
+        references |= named_columns
+        if not references:
+            return _ParseFailure("dynamic_sort", method)
+        return replace(operation, referenced_columns=frozenset(references), selector_items=())
+    if operation.kind is LineageOperationKind.DROP:
+        assert operation.subset_columns is not None
+        # A selector drops only columns that exist, so unlike a strict drop by
+        # name it demands none of them.
+        return replace(
+            operation,
+            subset_columns=operation.subset_columns | named_columns,
+            selector_items=(),
+        )
+    if operation.kind in {LineageOperationKind.UNIQUE, LineageOperationKind.DROP_NULLS}:
+        subset = (operation.subset_columns or frozenset()) | named_columns
+        return replace(
+            operation,
+            subset_columns=subset,
+            referenced_columns=(
+                subset if operation.kind is LineageOperationKind.DROP_NULLS else frozenset()
+            ),
+            selector_items=(),
+        )
+    if operation.kind is LineageOperationKind.WITH_COLUMNS:
+        references = {column for _name, refs in outputs for column in refs}
+    return replace(
+        operation,
+        output_to_inputs=tuple(outputs),
+        referenced_columns=frozenset(references),
+        identity_outputs=frozenset(identity),
+        selector_items=(),
+    )
+
+
+def _transfer_dtypes(
+    operation: LineageOperation,
+    before_schema: frozenset[str] | None,
+    after_schema: frozenset[str] | None,
+    dtypes: _DtypeMap | None,
+    input_dtypes: Mapping[str, Mapping[str, pl.DataType]] | None,
+) -> _DtypeMap | None:
+    """Carry column dtypes through an operation; computed columns become unknown."""
+    if dtypes is None or after_schema is None:
+        return None
+    kind = operation.kind
+    if kind in {LineageOperationKind.SELECT, LineageOperationKind.WITH_COLUMNS}:
+        assigned = {name for name, _refs in operation.output_to_inputs}
+        return {
+            column: (
+                dtypes.get(column)
+                if column in operation.identity_outputs or column not in assigned
+                else None
+            )
+            for column in after_schema
+        }
+    if kind is LineageOperationKind.RENAME:
+        mapping = dict(operation.renamed_columns)
+        renamed = {mapping.get(column, column): dtype for column, dtype in dtypes.items()}
+        return {column: renamed.get(column) for column in after_schema}
+    if kind is LineageOperationKind.GROUP_BY_AGG:
+        return {
+            column: dtypes.get(column) if column in operation.group_keys else None
+            for column in after_schema
+        }
+    if kind is LineageOperationKind.JOIN:
+        right: Mapping[str, pl.DataType] = (input_dtypes or {}).get(
+            operation.right_input or ""
+        ) or {}
+        suffix = operation.suffix or ""
+        result: _DtypeMap = {}
+        for column in after_schema:
+            if before_schema is not None and column in before_schema:
+                result[column] = dtypes.get(column)
+            elif column in right:
+                result[column] = right[column]
+            elif suffix and column.endswith(suffix) and column[: -len(suffix)] in right:
+                result[column] = right[column[: -len(suffix)]]
+            else:
+                result[column] = None
+        return result
+    if kind is LineageOperationKind.WITH_ROW_INDEX:
+        return {
+            column: pl.UInt32() if column in operation.produced_columns else dtypes.get(column)
+            for column in after_schema
+        }
+    preserving = {
+        LineageOperationKind.ROW_ONLY,
+        LineageOperationKind.SORT,
+        LineageOperationKind.UNIQUE,
+        LineageOperationKind.DROP,
+        LineageOperationKind.DROP_NULLS,
+    }
+    if kind in preserving or (
+        kind is LineageOperationKind.READ_COLUMNS and operation.method == "filter"
+    ):
+        return {column: dtypes.get(column) for column in after_schema}
+    return {column: None for column in after_schema}
+
+
 def _evaluate_program(
     program: LinearFrameProgram,
     input_schemas: Mapping[str, frozenset[str] | None],
+    input_dtypes: Mapping[str, Mapping[str, pl.DataType]] | None = None,
 ) -> tuple[tuple[_EvaluatedOperation, ...], frozenset[str] | None] | _ParseFailure:
     schema = input_schemas[program.root_input]
+    root_dtypes = None if input_dtypes is None else input_dtypes.get(program.root_input)
+    dtypes: _DtypeMap | None = (
+        None
+        if root_dtypes is None or schema is None
+        else {column: root_dtypes.get(column) for column in schema}
+    )
     evaluated: list[_EvaluatedOperation] = []
-    for operation in program.operations:
+    for original in program.operations:
+        operation = original
+        if operation.selector_items:
+            resolved = _resolve_selector_items(operation, schema, dtypes)
+            if isinstance(resolved, _ParseFailure):
+                return resolved
+            operation = resolved
         before = schema
         if schema is not None:
             # Rename validates its own sources below so a missing source keeps
@@ -1902,6 +2544,7 @@ def _evaluate_program(
                 # the upstream schema.
                 schema = operation.index_columns | produced
         # Read/row/sort/unique/explode/drop_nulls preserve the schema.
+        dtypes = _transfer_dtypes(operation, before, schema, dtypes, input_dtypes)
         evaluated.append(
             _EvaluatedOperation(
                 operation=operation,
@@ -1947,6 +2590,9 @@ def analyze_polars_lineage(
     code: str,
     inputs: Mapping[str, frozenset[str] | None],
     demanded_output: Iterable[str] | None = None,
+    *,
+    input_dtypes: Mapping[str, Mapping[str, pl.DataType]] | None = None,
+    selector_aliases: frozenset[str] = frozenset(),
 ) -> ColumnLineageAnalysis:
     """Prove exact output schema and per-input demand for linear Polars code.
 
@@ -1961,10 +2607,10 @@ def analyze_polars_lineage(
     normalised_inputs = {
         name: None if columns is None else frozenset(columns) for name, columns in inputs.items()
     }
-    program = _parse_program(code, frozenset(normalised_inputs))
+    program = _parse_program(code, frozenset(normalised_inputs), False, frozenset(selector_aliases))
     if isinstance(program, _ParseFailure):
         return _unsupported(program.reason, program.operation)
-    evaluated_result = _evaluate_program(program, normalised_inputs)
+    evaluated_result = _evaluate_program(program, normalised_inputs, input_dtypes)
     if isinstance(evaluated_result, _ParseFailure):
         return _unsupported(evaluated_result.reason, evaluated_result.operation)
     evaluated, exact_output = evaluated_result
@@ -2087,6 +2733,7 @@ def analyze_polars_lineage(
         normalised_inputs,
         root_schema,
         root_demand,
+        input_dtypes,
     ):
         return _unsupported("carrier_unresolvable", program.operations[-1].method)
     return ColumnLineageAnalysis(
@@ -2103,6 +2750,8 @@ def analyze_polars_lineage(
 def analyze_polars_cardinality(
     code: str,
     inputs: Mapping[str, int],
+    *,
+    selector_aliases: frozenset[str] = frozenset(),
 ) -> RowCardinalityAnalysis:
     """Prove finite output and intermediate row-count bounds for Polars code.
 
@@ -2124,7 +2773,7 @@ def analyze_polars_cardinality(
         return _unsupported_cardinality("invalid_inputs")
 
     normalised_inputs = dict(inputs)
-    program = _parse_program(code, frozenset(normalised_inputs), True)
+    program = _parse_program(code, frozenset(normalised_inputs), True, frozenset(selector_aliases))
     if isinstance(program, _ParseFailure):
         return _unsupported_cardinality(program.reason, program.operation)
 
@@ -2207,7 +2856,410 @@ def analyze_polars_cardinality(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class CarriedColumnProof:
+    """What a program proves about the input columns it carries unchanged.
+
+    ``root_input`` is the input whose columns keep their names and values when
+    another input's columns collide. ``assigned`` are output columns the program
+    may rewrite, ``join_keys`` maps each joined input to the literal same-name
+    ``on`` keys of the join that brought it in (an output key column holds that
+    input's matching value), and ``carried_only`` (when set) is the only set of
+    columns carried at all — a grouping carries just its keys.
+    """
+
+    root_input: str
+    assigned: frozenset[str]
+    join_keys: Mapping[str, frozenset[str]]
+    carried_only: frozenset[str] | None = None
+
+
+# Frame methods that never change a surviving row's values.
+_VALUE_PRESERVING_FRAME_METHODS = frozenset(
+    {"filter", "sort", "head", "tail", "limit", "slice", "unique", "drop", "drop_nulls", "lazy"}
+)
+_ASSIGNING_FRAME_METHODS = frozenset({"with_columns", "with_columns_seq"})
+_ROW_PRESERVING_JOINS = frozenset({"inner", "left", "semi", "anti"})
+_ALLOWED_JOIN_OPTIONS = frozenset(
+    {"on", "left_on", "right_on", "how", "suffix", "validate", "coalesce", "maintain_order"}
+)
+
+
+def _is_polars_call(node: ast.AST, name: str) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == name
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "pl"
+    )
+
+
+# Expression methods and namespaces whose output name is not the receiver's:
+# ``pipe`` may alias, ``.name`` renames, and ``.struct`` emits field columns.
+_NAME_CHANGING_EXPRESSION_METHODS = frozenset({"pipe"})
+_NAME_CHANGING_NAMESPACES = frozenset({"name", "struct"})
+
+
+def _plain_column_name(name: str) -> bool:
+    """Whether a column string names one column rather than a regex or wildcard."""
+    return name != "*" and not (name.startswith("^") and name.endswith("$"))
+
+
+def _expression_output(node: ast.AST) -> tuple[str, bool] | None:
+    """Return an expression's output column name and whether it is a bare column.
+
+    ``None`` means the output name cannot be read from the syntax (selectors,
+    regex or wildcard columns, ``.name`` or ``.struct`` rewrites, ``pipe``,
+    ``when``/``then`` without ``alias``, variables).
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return (node.value, True) if _plain_column_name(node.value) else None
+    if isinstance(node, ast.BinOp):
+        left = _expression_output(node.left)
+        return None if left is None else (left[0], False)
+    if isinstance(node, ast.UnaryOp):
+        operand = _expression_output(node.operand)
+        return None if operand is None else (operand[0], False)
+    if not isinstance(node, ast.Call):
+        return None
+    if _is_polars_call(node, "col"):
+        if len(node.args) == 1 and not node.keywords:
+            argument = node.args[0]
+            if (
+                isinstance(argument, ast.Constant)
+                and isinstance(argument.value, str)
+                and _plain_column_name(argument.value)
+            ):
+                return argument.value, True
+        return None
+    if _is_polars_call(node, "lit"):
+        return "literal", False
+    if not isinstance(node.func, ast.Attribute):
+        return None
+    receiver = node.func.value
+    if node.func.attr == "alias":
+        if len(node.args) == 1 and isinstance(node.args[0], ast.Constant):
+            name = node.args[0].value
+            return (name, False) if isinstance(name, str) else None
+        return None
+    if node.func.attr in _NAME_CHANGING_EXPRESSION_METHODS:
+        return None
+    if isinstance(receiver, ast.Attribute) and receiver.attr in _NAME_CHANGING_NAMESPACES:
+        return None
+    if isinstance(receiver, ast.Attribute) and isinstance(receiver.value, ast.AST):
+        # Namespace methods (``.str.to_uppercase()``) keep the root name.
+        inner = _expression_output(receiver.value)
+        return None if inner is None else (inner[0], False)
+    inner = _expression_output(receiver)
+    return None if inner is None else (inner[0], False)
+
+
+def _selects_unchanged_columns(node: ast.AST) -> bool:
+    """Whether an expression argument only selects columns, keeping their values.
+
+    ``pl.all()``, ``pl.exclude(<names>)``, and a literal list of names select
+    columns without naming each output; none of them rewrites a value.
+    """
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return _literal_names(node) is not None
+    if _is_polars_call(node, "all"):
+        assert isinstance(node, ast.Call)
+        return not node.args and not node.keywords
+    if _is_polars_call(node, "exclude"):
+        assert isinstance(node, ast.Call)
+        return (
+            bool(node.args)
+            and not node.keywords
+            and all(_literal_names(argument) is not None for argument in node.args)
+        )
+    return False
+
+
+def _literal_names(node: ast.AST) -> list[str] | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node.value]
+    if isinstance(node, (ast.List, ast.Tuple)):
+        names = [element.value for element in node.elts if isinstance(element, ast.Constant)]
+        if len(names) == len(node.elts) and all(isinstance(name, str) for name in names):
+            return [str(name) for name in names]
+    return None
+
+
+def _literal_frame_columns(node: ast.AST) -> list[str] | None:
+    """Return the columns of an inline ``pl.DataFrame({...})`` / ``pl.LazyFrame({...})``."""
+    while (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "lazy"
+        and not node.args
+        and not node.keywords
+    ):
+        node = node.func.value
+    if not (_is_polars_call(node, "DataFrame") or _is_polars_call(node, "LazyFrame")):
+        return None
+    assert isinstance(node, ast.Call)
+    if len(node.args) != 1 or not isinstance(node.args[0], ast.Dict):
+        return None
+    columns = [key.value for key in node.args[0].keys if isinstance(key, ast.Constant)]
+    if len(columns) != len(node.args[0].keys) or not all(isinstance(c, str) for c in columns):
+        return None
+    return [str(column) for column in columns]
+
+
+def _selector_assignment(
+    argument: ast.AST,
+    aliases: frozenset[str],
+    *,
+    superset: set[str] | None,
+    root_dtypes: Mapping[str, pl.DataType] | None,
+) -> set[str] | None:
+    """Return the columns a computation rooted at a literal selector may write.
+
+    ``superset`` holds every column the frame can have at this point, so a
+    name-based selector expanded over it names every column the expression can
+    rewrite. A dtype-dependent selector needs ``root_dtypes`` (the frame is still
+    the unchanged root input); a positional one is never resolved.
+    """
+    naming = _selector_naming(argument, aliases)
+    if naming is None or len(_selector_nodes(naming.inner, aliases)) != 1:
+        return None
+    if naming.alias is not None:
+        return {naming.alias}
+    prefix, suffix = naming.prefix, naming.suffix
+    if naming.inner is naming.root and not (prefix or suffix):
+        return set()
+    selector = naming.selector
+    if selector.positional or superset is None:
+        return None
+    if selector.dtype_dependent:
+        if root_dtypes is None:
+            return None
+        expanded = expand_literal_selector(selector, list(root_dtypes), root_dtypes)
+    else:
+        expanded = expand_literal_selector(selector, superset, None)
+    if expanded is None:
+        return None
+    return {f"{prefix}{column}{suffix}" for column in expanded}
+
+
+def carried_column_proof(
+    code: str,
+    input_names: Iterable[str],
+    *,
+    input_columns: Mapping[str, Iterable[str]] | None = None,
+    input_dtypes: Mapping[str, Mapping[str, pl.DataType]] | None = None,
+    selector_aliases: frozenset[str] = frozenset(),
+    input_aliases: Mapping[str, str] | None = None,
+) -> CarriedColumnProof | None:
+    """Prove which input columns a Polars program carries through unchanged.
+
+    The proof is syntactic and closed: every frame method must be one whose
+    effect on values is known, and every column an expression writes must be
+    named in the syntax. Anything else returns ``None`` — a trace then reports
+    the step as unproven instead of matching on a value the code may have
+    rewritten. A literal selector that only selects writes nothing; a
+    computation rooted at one writes its expansion over the program's proven
+    column superset (``input_columns`` plus every column the program assigned or
+    a join suffixed), which ``input_columns`` must be supplied to resolve.
+    ``input_aliases`` maps a logical name the code uses (an ``inputMapping``
+    entry) to the input name it stands for; the proof reports input names.
+    """
+    aliases = dict(input_aliases or {})
+    input_set = frozenset(input_names)
+    names = input_set | frozenset(aliases)
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None
+    root_input: str | None = None
+    assigned: set[str] = set()
+    join_keys: dict[str, frozenset[str]] = {}
+    carried_only: set[str] | None = None
+    superset: set[str] | None = (
+        None
+        if input_columns is None
+        else {column for columns in input_columns.values() for column in columns}
+    )
+    frame_changed = False
+    for statement in tree.body:
+        if isinstance(statement, (ast.Import, ast.ImportFrom, ast.Pass)):
+            continue
+        if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant):
+            continue
+        if (
+            not isinstance(statement, ast.Assign)
+            or len(statement.targets) != 1
+            or not isinstance(statement.targets[0], ast.Name)
+            or statement.targets[0].id != "df"
+        ):
+            return None
+        root = _chain_root_name(statement.value)
+        if root is None:
+            return None
+        if root == "df" and root_input is None:
+            if len(input_set) != 1:
+                return None
+            root = next(iter(input_set))
+        if root != "df":
+            if root not in names or root_input is not None:
+                return None
+            root_input = aliases.get(root, root)
+        calls = _frame_chain_calls(statement.value) if isinstance(statement.value, ast.Call) else []
+        index = 0
+        while index < len(calls):
+            call = calls[index]
+            assert isinstance(call.func, ast.Attribute)
+            method = call.func.attr
+            if method in _VALUE_PRESERVING_FRAME_METHODS:
+                pass
+            elif method in _ASSIGNING_FRAME_METHODS or method == "select":
+                outputs: list[tuple[str, bool]] = []
+                for argument in call.args:
+                    if _selects_unchanged_columns(argument):
+                        continue
+                    if _selector_nodes(argument, selector_aliases):
+                        root_name = root_input or (
+                            next(iter(input_set)) if len(input_set) == 1 else None
+                        )
+                        root_dtypes = (
+                            None
+                            if frame_changed or input_dtypes is None or root_name is None
+                            else input_dtypes.get(root_name)
+                        )
+                        written = _selector_assignment(
+                            argument,
+                            selector_aliases,
+                            superset=None if superset is None else superset | assigned,
+                            root_dtypes=root_dtypes,
+                        )
+                        if written is None:
+                            return None
+                        outputs.extend((name, False) for name in written)
+                        continue
+                    output = _expression_output(argument)
+                    if output is None:
+                        return None
+                    outputs.append(output)
+                outputs.extend((keyword.arg, False) for keyword in call.keywords if keyword.arg)
+                if any(keyword.arg is None for keyword in call.keywords):
+                    return None
+                written_names = {name for name, bare in outputs if not bare}
+                assigned.update(written_names)
+                frame_changed = frame_changed or bool(written_names)
+            elif method == "with_row_index":
+                index_name = call.args[0] if call.args else None
+                for keyword in call.keywords:
+                    if keyword.arg == "name":
+                        index_name = keyword.value
+                if index_name is None:
+                    assigned.add("index")
+                elif isinstance(index_name, ast.Constant) and isinstance(index_name.value, str):
+                    assigned.add(index_name.value)
+                else:
+                    return None
+                frame_changed = True
+            elif method == "rename":
+                if len(call.args) != 1 or not isinstance(call.args[0], ast.Dict):
+                    return None
+                for key, value in zip(call.args[0].keys, call.args[0].values, strict=True):
+                    if not (
+                        isinstance(key, ast.Constant)
+                        and isinstance(key.value, str)
+                        and isinstance(value, ast.Constant)
+                        and isinstance(value.value, str)
+                    ):
+                        return None
+                    assigned.update((key.value, value.value))
+                frame_changed = True
+            elif method in {"join", "cross_join"}:
+                if not call.args:
+                    return None
+                right = call.args[0]
+                right_input: str | None = None
+                right_columns: list[str] | None
+                if isinstance(right, ast.Name):
+                    # A non-root input joined twice has two rows behind one output
+                    # row; its carried values would mix them.
+                    if right.id not in names or aliases.get(right.id, right.id) in join_keys:
+                        return None
+                    right_input = aliases.get(right.id, right.id)
+                    join_keys[right_input] = frozenset()
+                    right_columns = (
+                        None
+                        if input_columns is None or right_input not in input_columns
+                        else list(input_columns[right_input])
+                    )
+                else:
+                    literal_columns = _literal_frame_columns(right)
+                    if literal_columns is None:
+                        return None
+                    assigned.update(literal_columns)
+                    right_columns = list(literal_columns)
+                options = {keyword.arg: keyword.value for keyword in call.keywords}
+                if None in options or not set(options) <= _ALLOWED_JOIN_OPTIONS:
+                    return None
+                frame_changed = True
+                # Colliding right-side columns arrive suffixed; the superset keeps
+                # every name a later selector could match.
+                suffix_node = options.get("suffix")
+                join_suffix = "_right" if suffix_node is None else _literal_string(suffix_node)
+                if superset is not None:
+                    if join_suffix is None or right_columns is None:
+                        superset = None
+                    else:
+                        superset |= set(right_columns)
+                        superset |= {f"{column}{join_suffix}" for column in right_columns}
+                how_node = options.get("how")
+                how = "cross" if method == "cross_join" else "inner"
+                if how_node is not None:
+                    if not isinstance(how_node, ast.Constant) or not isinstance(
+                        how_node.value, str
+                    ):
+                        return None
+                    how = how_node.value
+                if how not in _ROW_PRESERVING_JOINS and how != "cross":
+                    return None
+                on = options.get("on", call.args[1] if len(call.args) > 1 else None)
+                if on is not None:
+                    on_names = _literal_names(on)
+                    if on_names is None:
+                        return None
+                    if right_input is not None:
+                        join_keys[right_input] = frozenset(on_names)
+            elif method == "group_by":
+                if index + 1 >= len(calls) or calls[index + 1].func.attr != "agg":  # type: ignore[attr-defined]
+                    return None
+                group_keys: list[str] = []
+                for argument in call.args:
+                    literal = _literal_names(argument)
+                    if literal is None:
+                        return None
+                    group_keys.extend(literal)
+                if call.keywords or not group_keys:
+                    return None
+                carried_only = (
+                    set(group_keys) if carried_only is None else carried_only & set(group_keys)
+                )
+                frame_changed = True
+                index += 1
+            else:
+                return None
+            index += 1
+    if root_input is None:
+        if len(input_set) != 1:
+            return None
+        root_input = next(iter(input_set))
+    return CarriedColumnProof(
+        root_input,
+        frozenset(assigned),
+        MappingProxyType(dict(join_keys)),
+        None if carried_only is None else frozenset(carried_only),
+    )
+
+
 __all__ = [
+    "CarriedColumnProof",
     "ColumnLineageAnalysis",
     "LinearFrameProgram",
     "LineageOperation",
@@ -2215,4 +3267,5 @@ __all__ = [
     "RowCardinalityAnalysis",
     "analyze_polars_cardinality",
     "analyze_polars_lineage",
+    "carried_column_proof",
 ]

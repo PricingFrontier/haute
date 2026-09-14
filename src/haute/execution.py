@@ -60,6 +60,7 @@ from haute._hashing import HASH_ALGO, content_hash, content_hash_bytes
 from haute._json_flatten import cache_state_signature_for_graph
 from haute._native_memory_limit import current_native_memory_backend
 from haute._path_resolution import _infer_project_root, resolve_runtime_file_path
+from haute._polars_selectors import preamble_selector_aliases
 from haute._ram_estimate import (
     MaterialisationEstimate,
     MaterialisationEstimateBasis,
@@ -143,7 +144,7 @@ __all__ = [
     "source_scan_projection",
 ]
 
-PREVIEW_EXECUTION_SEMANTICS_VERSION = "preview-materialisation:v1"
+PREVIEW_EXECUTION_SEMANTICS_VERSION = "preview-materialisation:v2"
 _PREVIEW_CONTRACT_FINGERPRINT_VERSION = 1
 
 LazyExecutionResult = tuple[dict[str, _Frame], list[str], dict[str, list[str]], dict[str, str]]
@@ -265,6 +266,7 @@ def plan_execution_strategy(
         required_columns_by_node=required_columns_by_node,
         relevant_edges=prepared.relevant_edges,
         submodels=prepared.submodels,
+        selector_aliases=preamble_selector_aliases(request.graph.preamble or ""),
     )
     projection_plan = with_api_input_port_projection_boundaries(
         projection_plan,
@@ -368,6 +370,7 @@ def plan_prepared_execution_strategy(
     schema_only: bool = False,
     relevant_edges: Iterable[GraphEdge] | None = None,
     submodels: Mapping[str, Any] | None = None,
+    selector_aliases: frozenset[str] = frozenset(),
 ) -> ExecutionStrategyResult:
     """Plan projection/streaming strategy for an already prepared graph.
 
@@ -390,6 +393,7 @@ def plan_prepared_execution_strategy(
         required_columns_by_node=required_columns_by_node,
         relevant_edges=prepared_relevant_edges,
         submodels=submodels,
+        selector_aliases=selector_aliases,
     )
     if prepared_relevant_edges is not None:
         projection_plan = with_api_input_port_projection_boundaries(

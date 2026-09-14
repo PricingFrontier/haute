@@ -110,7 +110,7 @@ def test_ambiguous_relevant_parent_is_preserved_as_an_omission(tmp_path) -> None
     omission = result.omissions[0]
     assert omission.node_id == "source"
     assert omission.topological_rank == 0
-    assert omission.reason == "relaxed_match_ambiguous"
+    assert omission.reason == "duplicate_exact_match"
     assert result.correlation_diagnostics[omission.diagnostic_index]["node_id"] == "source"
     assert result.nodes_in_trace == len(result.steps) + len(result.omissions) == 2
 
@@ -121,7 +121,7 @@ def test_ambiguous_relevant_parent_is_preserved_as_an_omission(tmp_path) -> None
             "node_name": "source",
             "node_type": "dataInput",
             "topological_rank": 0,
-            "reason": "relaxed_match_ambiguous",
+            "reason": "duplicate_exact_match",
             "diagnostic_index": omission.diagnostic_index,
         }
     ]

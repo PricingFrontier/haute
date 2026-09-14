@@ -421,6 +421,21 @@ class NodeRegistry:
         return [edge.source_port for edge in self._edges]
 
 
+def _collect_standalone_output(result: Any) -> pl.DataFrame:
+    """Collect a lazy standalone output through Haute's collect seam.
+
+    Collecting inside ``run()``/``score()`` keeps the scenario context active
+    while the plan executes and restores typed errors raised inside Haute's
+    Python scans, which a caller's own ``.collect()`` would see as Polars
+    ``ComputeError``.
+    """
+    if isinstance(result, pl.LazyFrame):
+        from haute._polars_utils import execution_collect
+
+        return execution_collect(result)
+    return cast(pl.DataFrame, result)
+
+
 class Pipeline(NodeRegistry):
     """A haute pricing pipeline - a DAG of decorated nodes.
 
@@ -577,7 +592,7 @@ class Pipeline(NodeRegistry):
                 else:
                     self._execute_transform(n, outputs)
 
-            return cast(pl.DataFrame, outputs[self._resolve_output_node(order).name])
+            return _collect_standalone_output(outputs[self._resolve_output_node(order).name])
         finally:
             _scenario_ctx.reset(_token)
 
@@ -669,7 +684,7 @@ class Pipeline(NodeRegistry):
                     continue
                 self._execute_transform(n, outputs)
 
-            return cast(pl.DataFrame, outputs[self._resolve_output_node(order).name])
+            return _collect_standalone_output(outputs[self._resolve_output_node(order).name])
         finally:
             _scenario_ctx.reset(_token)
 

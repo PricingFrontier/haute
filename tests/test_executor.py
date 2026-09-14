@@ -1222,6 +1222,125 @@ class TestExecuteGraph:
         assert "b" in col_names
 
 
+class TestTargetPreviewRowLimit:
+    """A target preview limits the previewed node's output, never each source."""
+
+    @staticmethod
+    def _preview(graph, target: str, row_limit: int):
+        return execute_graph(
+            graph,
+            target_node_id=target,
+            row_limit=row_limit,
+            target_preview_only=True,
+        )[target]
+
+    def test_left_join_of_differently_ordered_sources_previews_joined_values(self, tmp_path):
+        base_path = tmp_path / "base.parquet"
+        lookup_path = tmp_path / "lookup.parquet"
+        pl.DataFrame({"id": list(range(99, -1, -1))}).write_parquet(base_path)
+        pl.DataFrame(
+            {"id": list(range(100)), "premium": [float(i) * 10 for i in range(100)]}
+        ).write_parquet(lookup_path)
+        graph = _g(
+            {
+                "nodes": [
+                    _ready_source_node("base", str(base_path)),
+                    _ready_source_node("lookup", str(lookup_path)),
+                    _n(
+                        {
+                            "id": "join",
+                            "data": {
+                                "label": "join",
+                                "nodeType": "edgeJoin",
+                                "config": {"how": "left", "on": ["id"]},
+                            },
+                        }
+                    ),
+                ],
+                "edges": [
+                    _edge("base", "join", target_handle="base"),
+                    _edge("lookup", "join", target_handle="join"),
+                ],
+            }
+        )
+
+        result = self._preview(graph, "join", row_limit=5)
+
+        assert result.status == "ok"
+        assert result.row_count == 5
+        assert [(row["id"], row["premium"]) for row in result.preview] == [
+            (row_id, float(row_id) * 10) for row_id in range(99, 94, -1)
+        ]
+
+    def test_filter_preview_returns_first_rows_of_the_filtered_output(self, tmp_path):
+        path = tmp_path / "data.parquet"
+        pl.DataFrame({"x": list(range(100))}).write_parquet(path)
+        graph = _g(
+            {
+                "nodes": [
+                    _ready_source_node("src", str(path)),
+                    _transform_node("kept", "df = src.filter(pl.col('x') >= 50)"),
+                ],
+                "edges": [_edge("src", "kept")],
+            }
+        )
+
+        result = self._preview(graph, "kept", row_limit=3)
+
+        assert [row["x"] for row in result.preview] == [50, 51, 52]
+
+    def test_aggregation_preview_summarises_the_complete_input(self, tmp_path):
+        path = tmp_path / "data.parquet"
+        pl.DataFrame({"x": list(range(100))}).write_parquet(path)
+        graph = _g(
+            {
+                "nodes": [
+                    _ready_source_node("src", str(path)),
+                    _transform_node("total", "df = src.select(pl.col('x').sum())"),
+                ],
+                "edges": [_edge("src", "total")],
+            }
+        )
+
+        result = self._preview(graph, "total", row_limit=5)
+
+        assert result.preview == [{"x": sum(range(100))}]
+
+    def test_full_materialisation_limits_each_node_output_not_its_inputs(self, tmp_path):
+        path = tmp_path / "data.parquet"
+        pl.DataFrame({"x": list(range(100))}).write_parquet(path)
+        graph = _g(
+            {
+                "nodes": [
+                    _ready_source_node("src", str(path)),
+                    _transform_node("kept", "df = src.filter(pl.col('x') >= 50)"),
+                ],
+                "edges": [_edge("src", "kept")],
+            }
+        )
+
+        results = execute_graph(graph, row_limit=3)
+
+        assert [row["x"] for row in results["src"].preview] == [0, 1, 2]
+        assert [row["x"] for row in results["kept"].preview] == [50, 51, 52]
+
+    def test_invalid_node_row_limits_are_rejected(self, tmp_path):
+        from haute._execute_lazy import _execute_eager_core
+        from haute.executor import _build_node_fn
+
+        path = tmp_path / "data.parquet"
+        pl.DataFrame({"x": [1]}).write_parquet(path)
+        graph = _g({"nodes": [_ready_source_node("src", str(path))], "edges": []})
+
+        with pytest.raises(ValueError, match="positive integers"):
+            _execute_eager_core(
+                graph,
+                _build_node_fn,
+                target_node_id="src",
+                row_limits_by_node={"src": 0},
+            )
+
+
 # ---------------------------------------------------------------------------
 # Data source user code preservation
 # ---------------------------------------------------------------------------
@@ -4490,3 +4609,82 @@ class TestPreambleFailureIsolation:
         assert "sink" not in errors or "bad_name" not in errors.get("sink", "")
 
         _preview_cache.clear()
+
+
+class TestSelectorRuntimeProjection:
+    """A preview resolves a selector node's input demand from the runtime schema."""
+
+    @staticmethod
+    def _graph(tmp_path, code: str, *, preamble: str = ""):
+        path = tmp_path / "wide.parquet"
+        pl.DataFrame({"id": ["q1", "q2"], "a": [1, 2], "big": [1.5, 2.5]}).write_parquet(path)
+        return _g(
+            {
+                "preamble": preamble,
+                "nodes": [
+                    _ready_source_node("source", str(path)),
+                    _transform_node("selected", code),
+                ],
+                "edges": [_edge("source", "selected")],
+            }
+        )
+
+    @staticmethod
+    def _preview(graph, monkeypatch):
+        import haute._execute_lazy as execute_lazy
+
+        selections: list[list[str]] = []
+        real = execute_lazy.projected_or_carrier_columns
+
+        def recording(schema_names, demand):
+            selected = real(schema_names, demand)
+            selections.append(list(selected))
+            return selected
+
+        monkeypatch.setattr(execute_lazy, "projected_or_carrier_columns", recording)
+        context = ExecutionContext(
+            operation="preview-test",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            telemetry_enabled=False,
+            memory_sampler=lambda: None,
+        )
+        results = execute_graph(
+            graph,
+            target_node_id="selected",
+            row_limit=10,
+            target_preview_only=True,
+            execution_context=context,
+        )
+        assert results["selected"].status == "ok", results["selected"].error
+        assert context.projection_plan is not None
+        return results["selected"], context.projection_plan.projection_plan, selections
+
+    def test_a_name_selector_resolves_the_source_demand_at_runtime(self, tmp_path, monkeypatch):
+        graph = self._graph(tmp_path, "df = source.select(pl.exclude('big'))")
+
+        result, plan, selections = self._preview(graph, monkeypatch)
+
+        assert [column.name for column in result.columns] == ["id", "a"]
+        diagnostics = plan.diagnostics_payload(profile=ExecutionProfile.PREVIEW_EAGER)
+        assert diagnostics is not None
+        assert (
+            diagnostics["edge_reasons"]["source->selected"]["rule"] == "runtime_inferred_streaming"
+        )
+        assert diagnostics["edge_reasons"]["source->selected"]["details"]["columns"] == ("a", "id")
+        assert "source" not in plan.opaque_boundaries
+        assert ["id", "a"] in selections
+
+    def test_a_selector_with_computed_arguments_keeps_the_boundary(self, tmp_path, monkeypatch):
+        graph = self._graph(
+            tmp_path,
+            "df = source.select(pl.exclude(names))",
+            preamble="names = ['big']",
+        )
+
+        _result, plan, selections = self._preview(graph, monkeypatch)
+
+        diagnostics = plan.diagnostics_payload(profile=ExecutionProfile.PREVIEW_EAGER)
+        assert diagnostics is not None
+        edge_reason = diagnostics["edge_reasons"].get("source->selected")
+        assert edge_reason is None or edge_reason["rule"] != "runtime_inferred_streaming"
+        assert selections == []

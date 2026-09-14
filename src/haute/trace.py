@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast, runtime_checkable
@@ -53,21 +54,28 @@ from haute._expression_parser import (
     parse_expression,
     parse_expression_chain,
 )
+from haute._graph_utils import edge_input_name
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute._path_resolution import runtime_project_root_scope
+from haute._polars_selectors import preamble_selector_aliases
 from haute._topo import ancestors
 from haute._trace_correlation import (
     CorrelationWork,
+    RowScopeResolver,
     SchemaDiff,
+    TraceEdgeAlignment,
+    TraceEdgeKey,
     _compute_schema_diff,
     _correlate_rows_posthoc,
     _jsonify_row,
     _match_rows_vectorized,
     _RowMatchStatus,
     edge_join_role_edges,
+    trace_edge_alignment,
+    trace_head_prefixes,
 )
 from haute._trace_enrichment import (
     detect_row_lineage_type,
@@ -513,6 +521,17 @@ def execute_trace(
         materialisation_scope="full",
         memo=fingerprint_memo,
     )
+    prepared_lineage = execution_facade.prepare_graph(graph, target_node_id, source=source)
+    selector_aliases = preamble_selector_aliases(graph.preamble or "")
+    alignments, lineage_input_names, child_input_names, child_input_aliases = (
+        _trace_lineage_alignments(prepared_lineage, selector_aliases)
+    )
+    prefixes = trace_head_prefixes(
+        prepared_lineage.order,
+        alignments,
+        target_node_id=target_node_id,
+        row_limit=row_limit,
+    )
 
     cached = _cache.get(fp)
     if cached is not None:
@@ -529,6 +548,7 @@ def execute_trace(
         parents_of = cached["parents_of"]
         node_map = cached["node_map"]
         source_ids = cached["source_ids"]
+        plans = None
     else:
         cache_hit = False
         logger.debug(
@@ -551,10 +571,12 @@ def execute_trace(
             node_map,
             source_ids,
             execution_origin,
+            plans,
         ) = _materialize_eager_outputs(
             graph=graph,
             target_node_id=target_node_id,
             row_limit=row_limit,
+            prefixes=prefixes,
             source=source,
             row_values=row_values,
             preamble_ns=preamble_ns,
@@ -604,6 +626,40 @@ def execute_trace(
         roles = edge_join_role_edges(node, edge_metadata)
         edge_join_roles[node.id] = (roles.base.source_id, roles.join.source_id)
 
+    # Plans hold Python scans bound to this request's execution context, so they
+    # are built per request and never cached with the head frames.
+    plan_state: dict[str, Any] = {"plans": plans}
+
+    def _lineage_plans() -> dict[str, Any]:
+        if plan_state["plans"] is None:
+            plan_state["plans"] = _build_trace_plans(
+                graph=graph,
+                target_node_id=target_node_id,
+                row_limit=row_limit,
+                source=source,
+                preamble_ns=preamble_ns,
+                execution_context=execution_context,
+            )
+        return cast(dict[str, Any], plan_state["plans"])
+
+    # Row-scoped lookups belong to this click only; never write them into the
+    # cached head frames another click reuses.
+    frames: dict[str, Any] = dict(eager_outputs)
+    row_scope = RowScopeResolver(
+        node_map=node_map,
+        prefixes=prefixes,
+        alignments=alignments,
+        edge_metadata=edge_metadata,
+        input_names=lineage_input_names,
+        child_input_names=child_input_names,
+        plans=_lineage_plans,
+        frames=frames,
+        head_resolved={target_node_id},
+        execution_context=execution_context,
+        selector_aliases=selector_aliases,
+        child_input_aliases=child_input_aliases,
+    )
+
     # ---------- Verify row identity ----------
     # If the frontend sent the clicked row's values, verify that the
     # DataFrame at the target node has the same values at row_index.
@@ -636,6 +692,21 @@ def execute_trace(
                 row_values,
                 node_id=target_node_id,
             )
+            if matched_index is None:
+                # The clicked row lies outside the limited target frame: look
+                # it up in the target's uncapped plan. No head frame then
+                # proves any ancestor's lineage.
+                target_lookup = _lookup_clicked_row(row_scope, target_node_id, row_values)
+                if target_lookup is not None:
+                    matched_index = _find_target_row_index(
+                        target_lookup,
+                        row_values,
+                        node_id=target_node_id,
+                    )
+                    if matched_index is not None:
+                        frames[target_node_id] = target_lookup
+                        target_output = target_lookup
+                        row_scope.head_resolved.clear()
             if matched_index is not None:
                 row_index = matched_index
             else:
@@ -655,7 +726,7 @@ def execute_trace(
     try:
         if isinstance(target_output, pl.DataFrame):
             cached_rows = _correlate_rows_posthoc(
-                eager_outputs,
+                frames,
                 order,
                 parents_of,
                 target_node_id,
@@ -666,6 +737,7 @@ def execute_trace(
                 edge_metadata=edge_metadata,
                 traced_column=column,
                 work=correlation_work,
+                row_scope=row_scope,
             )
         else:
             # Target node execution failed — build partial rows from available nodes
@@ -706,13 +778,14 @@ def execute_trace(
     _enrich_steps(
         steps,
         node_map,
-        eager_outputs,
+        frames,
         parents_of,
         column,
         source,
         preamble_ns=preamble_ns,
         source_frames_of=source_frames_of,
         incoming_edges_of=incoming_edges_of,
+        lineage_plans=_lineage_plans,
     )
 
     # ---------- Column relevance: tag then prune irrelevant ancestors ----------
@@ -723,7 +796,7 @@ def execute_trace(
         unresolved_rows=unresolved_rows,
         order=order,
         node_map=node_map,
-        eager_outputs=eager_outputs,
+        eager_outputs=frames,
         steps=steps,
         column=column,
     )
@@ -758,7 +831,7 @@ def execute_trace(
     # reconcile with the traced output value displayed beside it (C8).
     waterfall_data: list[dict[str, Any]] | dict[str, Any] | None = None
     if column:
-        integer_output_node_ids = _integer_output_node_ids(eager_outputs, steps, column)
+        integer_output_node_ids = _integer_output_node_ids(frames, steps, column)
         waterfall_data = build_waterfall_from_steps(
             steps,
             column,
@@ -769,7 +842,7 @@ def execute_trace(
             edge_join_roles=edge_join_roles,
             integer_output_node_ids=integer_output_node_ids,
             final_output_is_integer=_is_integer_output_column(
-                eager_outputs,
+                frames,
                 target_node_id,
                 column,
             ),
@@ -853,6 +926,7 @@ def _materialize_eager_outputs(
     graph: PipelineGraph,
     target_node_id: str,
     row_limit: int,
+    prefixes: Mapping[str, int],
     source: str,
     row_values: dict[str, Any] | None,
     preamble_ns: dict[str, Any] | None,
@@ -867,11 +941,16 @@ def _materialize_eager_outputs(
     dict[str, Any],
     set[str],
     str,
+    dict[str, Any] | None,
 ]:
     """Populate the trace cache: reuse preview outputs if available, else execute.
 
+    Only head-framed nodes (those whose own first *prefixes* rows contain the
+    target preview's lineage) are materialised, each to its prefix length.
+
     Returns ``(eager_outputs, order, parents_of, node_map, source_ids,
-    execution_origin)``.
+    execution_origin, plans)``; ``plans`` is ``None`` when frames came from the
+    preview cache and are built on demand for row-scoped lookups.
 
     The *preview* parameter is the sole source of preview-cache data.
     Passing ``None`` forces a cold execution; passing a reader or a
@@ -905,11 +984,14 @@ def _materialize_eager_outputs(
             node_map = prepared.node_map
             order = prepared.order
             parents_of = prepared.parents_of
-            # A full trace needs every executed ancestor so its waterfall
-            # remains truthful. Partial target-only preview caches fall
+            # A full-materialisation preview collects every node to
+            # ``row_limit``; those frames are head frames only where the
+            # propagated prefix is ``row_limit`` too. Anything else falls
             # through to cold trace execution below.
-            missing_preview_nodes = [nid for nid in order if prev_outputs.get(nid) is None]
-            if missing_preview_nodes:
+            missing_preview_nodes = [
+                nid for nid in order if nid in prefixes and prev_outputs.get(nid) is None
+            ]
+            if missing_preview_nodes or any(prefix != row_limit for prefix in prefixes.values()):
                 logger.debug(
                     "trace_preview_cache_partial",
                     fingerprint=fp[:8],
@@ -918,7 +1000,7 @@ def _materialize_eager_outputs(
                     missing_nodes=missing_preview_nodes,
                 )
             else:
-                eager_outputs = {nid: prev_outputs[nid] for nid in order}
+                eager_outputs = {nid: prev_outputs[nid] for nid in order if nid in prefixes}
                 source_ids = {nid for nid in order if not parents_of.get(nid)}
                 logger.debug(
                     "trace_reused_preview_cache",
@@ -934,6 +1016,7 @@ def _materialize_eager_outputs(
                     node_map,
                     source_ids,
                     "preview_cache",
+                    None,
                 )
 
     # No usable preview cache. Execute fresh; if the frontend supplied
@@ -964,13 +1047,132 @@ def _materialize_eager_outputs(
         preamble_ns=effective_preamble or None,
         source=source,
         execution_context=execution_context,
+        materialize_node_ids=frozenset(prefixes),
+        row_limits_by_node=dict(prefixes),
     )
     eager_outputs = {nid: df for nid, df in result.outputs.items() if df is not None}
     order = result.order
     parents_of = result.parents_of
     node_map = result.node_map
     source_ids = {nid for nid in order if not parents_of.get(nid)}
-    return eager_outputs, order, parents_of, node_map, source_ids, "fresh_execution"
+    return (
+        eager_outputs,
+        order,
+        parents_of,
+        node_map,
+        source_ids,
+        "fresh_execution",
+        dict(result.plans),
+    )
+
+
+def _build_trace_plans(
+    *,
+    graph: PipelineGraph,
+    target_node_id: str,
+    row_limit: int,
+    source: str,
+    preamble_ns: dict[str, Any] | None,
+    execution_context: ExecutionContext | None,
+) -> dict[str, Any]:
+    """Build the uncapped runtime plan of every lineage node without collecting."""
+    compiled_preamble_ns = _compile_preamble(
+        graph.preamble or "",
+        pipeline_dir=_pipeline_dir(graph),
+    )
+    effective_preamble = dict(compiled_preamble_ns or {})
+    if preamble_ns:
+        effective_preamble.update(preamble_ns)
+    result = _execute_eager_core(
+        graph,
+        _build_node_fn,
+        target_node_id=target_node_id,
+        row_limit=row_limit,
+        swallow_errors=False,
+        preamble_ns=effective_preamble or None,
+        source=source,
+        execution_context=execution_context,
+        materialize_node_ids=frozenset(),
+    )
+    return dict(result.plans)
+
+
+def _trace_lineage_alignments(
+    prepared: Any,
+    selector_aliases: frozenset[str] = frozenset(),
+) -> tuple[
+    dict[TraceEdgeKey, TraceEdgeAlignment],
+    dict[TraceEdgeKey, str],
+    dict[str, tuple[str, ...]],
+    dict[str, dict[str, str]],
+]:
+    """Classify every physical lineage edge for limited-preview tracing.
+
+    Input names are keyed by physical edge: one source may feed several ports of
+    a child, each under its own executable name.
+    """
+    input_names: dict[TraceEdgeKey, str] = {}
+    child_inputs: dict[str, list[str]] = {}
+    for edge in prepared.relevant_edges:
+        try:
+            name = edge_input_name(
+                edge,
+                prepared.node_map[edge.source],
+                submodels=prepared.submodels,
+            )
+        except ValueError:
+            continue
+        input_names[(edge.source, edge.target, edge.sourceHandle, edge.targetHandle)] = name
+        child_inputs.setdefault(edge.target, []).append(name)
+    # A Polars transform's ``inputMapping`` lets its code name an input by a
+    # stable logical name (``logical -> current edge name``); the executor binds
+    # both, so the trace analysers must read both too.
+    input_aliases: dict[str, dict[str, str]] = {}
+    for target, names in child_inputs.items():
+        node = prepared.node_map[target]
+        mapping = node.data.config.get("inputMapping")
+        if node.data.nodeType != NodeType.POLARS or not isinstance(mapping, dict):
+            continue
+        aliases = {
+            logical: current
+            for logical, current in mapping.items()
+            if isinstance(logical, str) and logical and current in names and logical not in names
+        }
+        if aliases:
+            input_aliases[target] = aliases
+    alignments: dict[TraceEdgeKey, TraceEdgeAlignment] = {}
+    for edge in prepared.relevant_edges:
+        key = (edge.source, edge.target, edge.sourceHandle, edge.targetHandle)
+        alignments[key] = trace_edge_alignment(
+            prepared.node_map[edge.target],
+            target_role=edge.targetHandle,
+            edge_input=input_names.get(key),
+            input_names=tuple(child_inputs.get(edge.target, ())),
+            selector_aliases=selector_aliases,
+            input_aliases=input_aliases.get(edge.target),
+        )
+    return (
+        alignments,
+        input_names,
+        {child: tuple(names) for child, names in child_inputs.items()},
+        input_aliases,
+    )
+
+
+def _lookup_clicked_row(
+    row_scope: RowScopeResolver,
+    target_node_id: str,
+    row_values: Mapping[str, Any],
+) -> pl.DataFrame | None:
+    """Look the clicked preview row up in the target's uncapped plan."""
+    plan = row_scope.plan_for(target_node_id, None)
+    if plan is None:
+        return None
+    columns = set(plan.collect_schema().names())
+    values = {name: value for name, value in row_values.items() if name in columns}
+    if not values:
+        return None
+    return row_scope.lookup(target_node_id, None, values)
 
 
 def _assemble_steps(
