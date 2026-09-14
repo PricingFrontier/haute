@@ -28,7 +28,11 @@ from typing import Any, NamedTuple
 
 import polars as pl
 
-from haute._edge_join import build_edge_join_kwargs, resolve_edge_join_role_indices
+from haute._edge_join import (
+    build_edge_join_kwargs,
+    edge_join_key_columns_by_role,
+    resolve_edge_join_role_indices,
+)
 from haute._json_safe import (
     MAX_SAFE_INTEGER,
     non_finite_float_token,
@@ -1661,6 +1665,8 @@ _PASS_THROUGH_TRACE_TYPES = frozenset(
 _CODE_FREE_PASS_THROUGH_TYPES = frozenset({NodeType.EXPLORE, NodeType.EXTERNAL_FILE})
 _ROW_DROPPING_METHODS = frozenset({"filter", "drop_nulls"})
 _ROW_SCOPE_CANDIDATE_LIMIT = 2
+# A key probe reading more candidate rows than this falls back to the full filter.
+_ROW_SCOPE_PROBE_LIMIT = 1_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -1859,6 +1865,7 @@ class RowScopeResolver:
     lookups: dict[tuple[str, str | None, str], pl.DataFrame] = field(default_factory=dict)
     selector_aliases: frozenset[str] = frozenset()
     child_input_aliases: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    _join_key_columns: frozenset[str] | None = field(default=None, init=False, repr=False)
 
     def _head_edge(
         self,
@@ -1911,6 +1918,19 @@ class RowScopeResolver:
             return plan.get(source_handle) if source_handle is not None else None
         return plan
 
+    def join_key_columns(self) -> frozenset[str]:
+        """Every column keying an Edge Join (either role) on the traced lineage."""
+        if self._join_key_columns is None:
+            columns: set[str] = set()
+            lineage_children = {child_id for _parent, child_id, _handle, _role in self.alignments}
+            for child_id in sorted(lineage_children):
+                node = self.node_map[child_id]
+                if node.data.nodeType is NodeType.EDGE_JOIN:
+                    base_keys, join_keys = edge_join_key_columns_by_role(node.data.config)
+                    columns.update(base_keys, join_keys)
+            self._join_key_columns = frozenset(columns)
+        return self._join_key_columns
+
     def lookup(
         self,
         node_id: str,
@@ -1919,7 +1939,11 @@ class RowScopeResolver:
     ) -> pl.DataFrame | None:
         """Read up to two rows of a node's uncapped plan matching *values*.
 
-        Two rows decide uniqueness.
+        Two rows decide uniqueness. Filtering on every carried column makes
+        Polars decode each of them across the whole input, so a lookup that
+        carries a non-null join key first reads the rows matching its keys and
+        matches the rest in memory, falling back to the full filter when that
+        probe reaches ``_ROW_SCOPE_PROBE_LIMIT`` rows.
         """
         from haute._polars_utils import streaming_collect
 
@@ -1928,23 +1952,39 @@ class RowScopeResolver:
             return None
         schema = plan.collect_schema()
         expressions: list[pl.Expr] = []
+        probe_expressions: list[pl.Expr] = []
+        join_keys = self.join_key_columns()
         for column, value in values.items():
             if column not in schema:
                 return None
             expression, _reason = _typed_value_match_expr(column, value, schema[column])
             if expression is None:
                 return None
-            expressions.append(expression.fill_null(False))
+            # A filter already drops a row whose comparison is null; null-filling
+            # the comparison would stop Parquet statistics from pruning row groups.
+            expressions.append(expression)
+            if column in join_keys and value is not None:
+                probe_expressions.append(expression)
         if not expressions:
             return None
         key = (node_id, source_handle, repr(sorted(values.items(), key=lambda item: item[0])))
         cached = self.lookups.get(key)
-        if cached is None:
-            cached = streaming_collect(
-                plan.filter(pl.all_horizontal(expressions)).head(_ROW_SCOPE_CANDIDATE_LIMIT),
+        if cached is not None:
+            return cached
+        matches_every_value = pl.all_horizontal(expressions)
+        if probe_expressions:
+            candidates = streaming_collect(
+                plan.filter(pl.all_horizontal(probe_expressions)).head(_ROW_SCOPE_PROBE_LIMIT + 1),
                 execution_context=self.execution_context,
             )
-            self.lookups[key] = cached
+            if candidates.height <= _ROW_SCOPE_PROBE_LIMIT:
+                cached = candidates.filter(matches_every_value).head(_ROW_SCOPE_CANDIDATE_LIMIT)
+        if cached is None:
+            cached = streaming_collect(
+                plan.filter(matches_every_value).head(_ROW_SCOPE_CANDIDATE_LIMIT),
+                execution_context=self.execution_context,
+            )
+        self.lookups[key] = cached
         return cached
 
     def _carried_values(

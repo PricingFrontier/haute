@@ -257,7 +257,24 @@ the limited preview shows rather than independent source samples.
    parent's uncapped plan filtered by typed equality on the resolved child row's carried
    columns and limited to two rows, matched strictly with relaxed matching disabled; two
    surviving rows are ambiguous. Lookups are memoised per request by node, port, and
-   carried values. A parent resolved through any lookup is not head-resolved, so its own
+   carried values. A lookup probes by key first, because filtering an uncapped plan on every
+   carried column makes Polars decode each of those columns across the whole input
+   (measured: 108 equalities over a 10-million-row input take seconds, a key equality
+   milliseconds). The probe columns are the carried columns that key an Edge Join on the
+   traced lineage — the child of an edge the trace correlates across — in either role
+   (`edge_join_key_columns_by_role`), and whose carried value is not null. Joins outside
+   that lineage are never read, so an unfinished join elsewhere in the graph cannot affect
+   a trace. With at least one, the lookup first collects the plan filtered on
+   those typed equalities, limited to `_ROW_SCOPE_PROBE_LIMIT + 1` (1,001) rows, then
+   applies every carried equality to those candidates in memory and keeps two rows. A
+   probe returning more than `_ROW_SCOPE_PROBE_LIMIT` rows cannot show it saw every
+   candidate, so the lookup then filters the plan on every carried equality, as does a
+   lookup with no probe column. Both paths use the same typed equality expressions and
+   return the same rows, so matching, ambiguity, and memoisation are unchanged. Lookup
+   filters use the bare comparisons, never null-filled ones: a filter drops a row whose
+   comparison is null either way, and a null-filled comparison stops Polars pruning Parquet
+   row groups by their statistics (a key probe on a 10-million-row file: 1.8 s null-filled,
+   under 0.01 s bare). A parent resolved through any lookup is not head-resolved, so its own
    parents are looked up. Among several matching ports, a frame carrying the traced column
    wins, then the widest carried match, and a tie records `ambiguous_source_frame`. An
    unresolved port records an empty frame with its schema so column relevance keeps its
@@ -707,6 +724,12 @@ integration/regression suites:
   its input through an `inputMapping` alias traced through both upstream Edge Joins.
   `tests/test_trace_multi_frame.py::test_row_scope_names_each_port_of_one_source_by_its_own_frame`
   pins per-edge input names for both edge orders.
+- **`tests/test_trace_row_scope_lookup.py`** — `RowScopeResolver.lookup` probes by Edge
+  Join key (either role, `on` or `leftOn`/`rightOn`) with bare comparisons and matches the
+  other carried values in memory; keeps two rows sharing every value; falls back to the full
+  filter when the probe reaches its limit or no non-null join key is carried (no Edge Join,
+  a cross join, the key not carried, a null key); and returns exactly the full filter's rows
+  across probe limits and null data.
 - **`tests/test_trace_enrichment.py`** — focused enrichment coverage:
   node-type-specific enrichment (rating step, banding, model score, scenario
   expansion, live switch, data-source metadata) and row-lineage-type detection,
