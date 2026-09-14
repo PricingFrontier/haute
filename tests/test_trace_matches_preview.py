@@ -924,6 +924,146 @@ class TestLimitedPreviewTrace:
         }
         assert _step_by_id(result, "join").output_values["id"] == row["id"]
 
+    @staticmethod
+    def _recorded_lookups(monkeypatch) -> list[str]:
+        from haute._trace_correlation import RowScopeResolver
+
+        looked_up: list[str] = []
+        real_lookup = RowScopeResolver.lookup
+
+        def recording_lookup(self, node_id, source_handle, values):
+            looked_up.append(node_id)
+            return real_lookup(self, node_id, source_handle, values)
+
+        monkeypatch.setattr(RowScopeResolver, "lookup", recording_lookup)
+        return looked_up
+
+    @pytest.mark.parametrize(
+        ("join_config", "transfers"),
+        [
+            pytest.param({"how": "left", "on": ["id"]}, True, id="left"),
+            pytest.param({"how": "inner", "on": ["id"]}, True, id="inner"),
+            pytest.param({"how": "right", "on": ["id"]}, False, id="right"),
+            pytest.param(
+                {"how": "left", "on": ["id"], "column_renames": {"premium": "cost"}},
+                False,
+                id="renamed",
+            ),
+        ],
+    )
+    def test_a_unique_joined_row_transfers_its_base_row_without_a_lookup(
+        self, tmp_path, monkeypatch, join_config, transfers
+    ):
+        graph = self._join_graph(tmp_path, None)
+        join_node = next(node for node in graph.nodes if node.id == "join")
+        join_node.data.config = join_config
+        graph.nodes.append(_transform_node("after", "df = join.sort('id')"))
+        graph.edges.append(_edge("join", "after"))
+        looked_up = self._recorded_lookups(monkeypatch)
+
+        row, result = self._trace(graph, "after", 2, row_limit=5, column="id")
+
+        assert result.omissions == []
+        assert _step_by_id(result, "base").output_values == {"id": row["id"]}
+        assert "join" in looked_up
+        assert ("base" in looked_up) is not transfers
+
+    def test_a_slice_below_the_transferred_row_is_still_looked_up(self, tmp_path, monkeypatch):
+        graph = self._join_graph(tmp_path, None)
+        base_edge = next(edge for edge in graph.edges if edge.source == "base")
+        graph.edges.remove(base_edge)
+        graph.nodes.append(_transform_node("limited", "df = base.head(50)"))
+        graph.nodes.append(_transform_node("after", "df = join.sort('id')"))
+        graph.edges.extend(
+            [
+                _edge("base", "limited"),
+                _edge("limited", "join", target_handle="base"),
+                _edge("join", "after"),
+            ]
+        )
+        looked_up = self._recorded_lookups(monkeypatch)
+
+        row, result = self._trace(graph, "after", 2, row_limit=5, column="id")
+
+        assert result.omissions == []
+        assert _step_by_id(result, "limited").output_values == {"id": row["id"]}
+        assert _step_by_id(result, "base").output_values == {"id": row["id"]}
+        assert "limited" not in looked_up
+        assert "base" in looked_up
+
+    @pytest.mark.parametrize("node_type", ["liveSwitch", "dataOutput", "modelling"])
+    def test_an_unselected_pass_through_input_is_not_given_the_selected_row(
+        self, tmp_path, node_type
+    ):
+        """A pass-through node with several inputs returns only one of them, so a
+        unique row below it proves nothing about the other input."""
+        from haute._types import GraphNode, NodeData, NodeType
+
+        first_path = tmp_path / "first.parquet"
+        second_path = tmp_path / "second.parquet"
+        pl.DataFrame({"id": [1]}).write_parquet(first_path)
+        pl.DataFrame({"id": [999]}).write_parquet(second_path)
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("first", str(first_path)),
+                    _source_node("second", str(second_path)),
+                    GraphNode(
+                        id="through",
+                        data=NodeData(label="through", nodeType=NodeType(node_type), config={}),
+                    ),
+                    _transform_node("kept", "df = through.filter(pl.col('id') == 1)"),
+                ],
+                "edges": [
+                    _edge("first", "through"),
+                    _edge("second", "through"),
+                    _edge("through", "kept"),
+                ],
+            }
+        )
+
+        _row, result = self._trace(graph, "kept", 0, row_limit=5, column="id")
+
+        second = next((step for step in result.steps if step.node_id == "second"), None)
+        assert second is None or second.output_values != {"id": 1}
+
+    def test_a_duplicated_base_row_is_not_transferred_as_unique(self, tmp_path, monkeypatch):
+        from haute._types import GraphNode, NodeData, NodeType
+
+        base_path = tmp_path / "base.parquet"
+        lookup_path = tmp_path / "lookup.parquet"
+        pl.DataFrame({"id": [3, 1, 1, 0, 2]}).write_parquet(base_path)
+        pl.DataFrame({"id": [0, 1, 2, 3], "premium": [0.0, 10.0, 20.0, 30.0]}).write_parquet(
+            lookup_path
+        )
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("base", str(base_path)),
+                    _source_node("lookup", str(lookup_path)),
+                    GraphNode(
+                        id="join",
+                        data=NodeData(
+                            label="join",
+                            nodeType=NodeType.EDGE_JOIN,
+                            config={"how": "left", "on": ["id"]},
+                        ),
+                    ),
+                    _transform_node("after", "df = join.sort('id')"),
+                ],
+                "edges": [
+                    _edge("base", "join", target_handle="base"),
+                    _edge("lookup", "join", target_handle="join"),
+                    _edge("join", "after"),
+                ],
+            }
+        )
+
+        row, result = self._trace(graph, "after", 1, row_limit=5, column="premium")
+
+        assert row["id"] == 1
+        assert "join" in {omission.node_id for omission in result.omissions}
+
     def test_a_positional_selector_computation_is_unproven(self, tmp_path):
         graph = self._join_graph(tmp_path, None)
         graph.nodes.append(

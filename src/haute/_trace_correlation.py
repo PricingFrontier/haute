@@ -1667,6 +1667,9 @@ _ROW_DROPPING_METHODS = frozenset({"filter", "drop_nulls"})
 _ROW_SCOPE_CANDIDATE_LIMIT = 2
 # A key probe reading more candidate rows than this falls back to the full filter.
 _ROW_SCOPE_PROBE_LIMIT = 1_000
+# Edge Join strategies whose output rows for a base row depend only on that row's
+# values, and all of whose rows come from a base row.
+_ROW_TRANSFER_JOIN_STRATEGIES = frozenset({"left", "inner", "semi", "anti", "cross"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -1869,6 +1872,7 @@ class RowScopeResolver:
     _schemas: dict[tuple[str, str | None], pl.Schema] = field(
         default_factory=dict, init=False, repr=False
     )
+    _unique_rows: dict[str, pl.DataFrame] = field(default_factory=dict, init=False, repr=False)
 
     def _head_edge(
         self,
@@ -1932,6 +1936,62 @@ class RowScopeResolver:
             schema = plan.collect_schema()
             self._schemas[key] = schema
         return schema
+
+    def record_unique_row(self, node_id: str, frame: pl.DataFrame) -> None:
+        """Record *frame* as *node_id*'s only row in its uncapped plan."""
+        if frame.height != 1:
+            raise ValueError(f"a unique row frame has one row, got {frame.height}")
+        self._unique_rows[node_id] = frame
+
+    def _transferred_parent_frame(
+        self,
+        *,
+        parent_id: str,
+        child_id: str,
+        source_handle: str | None,
+        target_role: str | None,
+    ) -> pl.DataFrame | None:
+        """Return the parent row a unique child row proves, or ``None``.
+
+        When the child derives its rows from each parent row's values alone and
+        carries every parent column unchanged, two identical parent rows would
+        yield two identical matching child rows; a unique child row therefore
+        proves exactly one parent row, which is the child row restricted to the
+        parent's columns.
+        """
+        child_frame = self._unique_rows.get(child_id)
+        if child_frame is None or source_handle is not None:
+            return None
+        child = self.node_map[child_id]
+        if child.data.config.get("column_renames"):
+            return None
+        node_type = child.data.nodeType
+        if node_type is NodeType.EDGE_JOIN:
+            if target_role != "base":
+                return None
+            if build_edge_join_kwargs(child.data.config)["how"] not in (
+                _ROW_TRANSFER_JOIN_STRATEGIES
+            ):
+                return None
+        elif node_type in _PASS_THROUGH_TRACE_TYPES:
+            # A pass-through node returns one of its inputs; only a sole traced
+            # input is the one its rows come from.
+            lineage_inputs = [
+                key
+                for key, alignment in self.alignments.items()
+                if key[1] == child_id and alignment.read
+            ]
+            if len(lineage_inputs) != 1:
+                return None
+        else:
+            return None
+        parent_schema = self.schema_for(parent_id, None)
+        if parent_schema is None:
+            return None
+        child_schema = child_frame.schema
+        if any(child_schema.get(name) != dtype for name, dtype in parent_schema.items()):
+            return None
+        return child_frame.select(parent_schema.names())
 
     def join_key_columns(self) -> frozenset[str]:
         """Every column keying an Edge Join (either role) on the traced lineage."""
@@ -2179,6 +2239,17 @@ class RowScopeResolver:
                 if row is not None:
                     matches.append((source_handle, row, index, width, frame, True))
                 continue
+            transferred = self._transferred_parent_frame(
+                parent_id=parent_id,
+                child_id=child_id,
+                source_handle=source_handle,
+                target_role=target_role,
+            )
+            if transferred is not None:
+                self._record_frame(parent_id, source_handle, transferred)
+                row = _jsonify_row(transferred.row(0, named=True))
+                matches.append((source_handle, row, 0, transferred.width, transferred, False))
+                continue
             carried = self._carried_values(
                 parent_id=parent_id,
                 child_id=child_id,
@@ -2259,9 +2330,11 @@ class RowScopeResolver:
                     }
                 )
             return None, -1
-        _handle, row, index, _width, _frame, from_head = matches[0]
+        handle, row, index, _width, frame, from_head = matches[0]
         if from_head:
             self.head_resolved.add(parent_id)
+        elif handle is None and frame.height == 1:
+            self.record_unique_row(parent_id, frame)
         return row, index
 
     def _record_frame(

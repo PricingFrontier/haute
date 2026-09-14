@@ -275,7 +275,24 @@ the limited preview shows rather than independent source samples.
    filters use the bare comparisons, never null-filled ones: a filter drops a row whose
    comparison is null either way, and a null-filled comparison stops Polars pruning Parquet
    row groups by their statistics (a key probe on a 10-million-row file: 1.8 s null-filled,
-   under 0.01 s bare). A parent resolved through any lookup is not head-resolved, so its own
+   under 0.01 s bare).
+   A child that already proves its parent's row skips the parent's lookup (row transfer).
+   The child's row must be unique in the child's uncapped plan — a lookup, or the clicked
+   row's lookup (`_lookup_clicked_row`), that returned exactly one row, or itself a transfer
+   — and the child must derive its rows from each parent row's values alone: a pass-through
+   node type whose only traced lineage input is this parent (a pass-through node with several
+   inputs returns just one of them, so its row proves nothing about the others), or an Edge
+   Join's `base` port with `how` of `left`, `inner`, `semi`, `anti`, or `cross`. The child must configure no `column_renames`, the parent must have a
+   single-frame plan, and every parent plan column must appear in the child's one-row frame
+   with the same dtype. Two identical parent rows would then yield two identical matching
+   child rows, so a unique child row proves exactly one parent row, and that row is the
+   child's frame restricted to the parent's columns — the frame the lookup would return. A
+   transferred parent is itself unique and not head-resolved. Every other edge still looks
+   up: Polars code, whose slices, deduplication, aggregation, and order-dependent
+   expressions break the argument; builder nodes; an Edge Join's `join` port or `right`
+   and `full` strategies, whose rows need not come from a base row; multi-frame ports; and
+   a child row resolved from a head frame or not proven unique. On the measured pipeline
+   this removes the lookup above a user `.limit(100_000)` (about 2 s). A parent resolved through any lookup is not head-resolved, so its own
    parents are looked up. Among several matching ports, a frame carrying the traced column
    wins, then the widest carried match, and a tie records `ambiguous_source_frame`. An
    unresolved port records an empty frame with its schema so column relevance keeps its

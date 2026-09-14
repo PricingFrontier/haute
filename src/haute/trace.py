@@ -707,6 +707,8 @@ def execute_trace(
                         frames[target_node_id] = target_lookup
                         target_output = target_lookup
                         row_scope.head_resolved.clear()
+                        if target_lookup.height == 1:
+                            row_scope.record_unique_row(target_node_id, target_lookup)
             if matched_index is not None:
                 row_index = matched_index
             else:
