@@ -173,6 +173,13 @@
   Chromium is the normal project and Firefox is restricted to `@smoke` tests.
   CI retries twice, recording traces on first retry and screenshots/video on
   failure.
+- **E2E project reset** (`frontend/e2e/projectIsolation.ts`) verifies the git toplevel,
+  restores `main`, deletes other branches and version tags, scrubs untracked files with
+  `git clean -fdx`, and reseeds the working branch. A test can finish while the backend
+  still completes work that test started — a JSON cache build holds its `.build.lock` open
+  for its duration — and Windows cannot delete an open file, so the scrub is retried every
+  250 ms until it succeeds, for at most 30 seconds; after that the reset fails with git's
+  error as the cause rather than starting the next test on a dirty project.
 - **Edge Join E2E fixture** is a project-isolated, generated pipeline with
   deterministic small frames and one API-input frame whose raw label is the
   persisted source handle. The workflow targets nodes, handles, and rendered
