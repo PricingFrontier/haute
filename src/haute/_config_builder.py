@@ -278,6 +278,25 @@ def _derive_parse_time_contract(node_type: NodeType, config: dict[str, Any]) -> 
     return Contract.from_tuple(get_column_contract(node_type, config))
 
 
+def resolve_parse_time_contract(node_type: NodeType, config: dict[str, Any]) -> Contract:
+    """Return the builder contract a parse-time declaration is checked against.
+
+    If the builder contract cannot be resolved right now (for example a
+    missing artifact file or temporarily unavailable external dependency),
+    the builder is treated as fully opaque. The check re-runs at execution
+    time when runtime resources are actually loaded, so a drifted annotation
+    still surfaces - just not at offline parse-time. Programmer errors
+    (AttributeError / TypeError / KeyError) propagate so they aren't masked
+    as a "harmless parse-time fallback to opaque".
+    """
+    try:
+        return _derive_parse_time_contract(node_type, config)
+    except Exception as exc:
+        if not _is_contract_resolve_fallback_exception(exc):
+            raise
+        return Contract.opaque()
+
+
 def _validate_user_contract(
     node_type: NodeType,
     config: dict[str, Any],
@@ -301,21 +320,7 @@ def _validate_user_contract(
     if declared is None:
         return
 
-    try:
-        derived = _derive_parse_time_contract(node_type, config)
-    except Exception as exc:
-        if not _is_contract_resolve_fallback_exception(exc):
-            raise
-        # If the builder contract cannot be resolved right now (for
-        # example a missing artifact file or temporarily unavailable
-        # external dependency), treat the builder as fully opaque for
-        # this call. The check re-runs at execution time when runtime
-        # resources are actually loaded, so a drifted annotation still
-        # surfaces - just not at offline parse-time.
-        # Programmer errors (AttributeError / TypeError / KeyError)
-        # propagate so they aren't masked as a "harmless parse-time
-        # fallback to opaque".
-        derived = Contract.opaque()
+    derived = resolve_parse_time_contract(node_type, config)
 
     mismatches: list[str] = []
     for side in ("inputs", "outputs"):

@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from haute._codegen_builders import _gen_submodel_placeholder_unreachable
+from haute._config_io import collect_node_configs
+from haute._mlflow_io import ScoringModel
 from haute.codegen import (
     _error_on_name_collisions,
     _format_contract_kwarg,
@@ -13,7 +20,9 @@ from haute.codegen import (
     graph_to_code_multi,
 )
 from haute.errors import HauteError, ParseError
+from haute.parser import parse_pipeline_source
 from tests.conftest import compile_node_code as _compile_node_code
+from tests.conftest import make_edge, make_file_input_config
 from tests.conftest import make_graph as _g
 from tests.conftest import make_node as _n
 
@@ -247,7 +256,7 @@ def test_format_contract_kwarg_preserves_inputs_by_parent() -> None:
     assert "'right': ['key', 'right_value']" in contract_kwarg
 
 
-def test_format_contract_kwarg_preserves_declared_non_polars_contract() -> None:
+def test_format_contract_kwarg_derives_concrete_sides_over_a_declared_contract() -> None:
     node = _n(
         {
             "id": "scenario",
@@ -266,10 +275,142 @@ def test_format_contract_kwarg_preserves_declared_non_polars_contract() -> None:
 
     contract_kwarg = _format_contract_kwarg(node)
 
-    assert contract_kwarg is not None
-    assert "opaque" not in contract_kwarg
-    assert "'inputs': ['premium', 'quote_id']" in contract_kwarg
-    assert "'outputs': ['premium', 'quote_id', 'scenario_index']" in contract_kwarg
+    # The scenario expander derives both sides from its config, so the builder
+    # contract is emitted rather than a declaration the parser would reject.
+    assert contract_kwarg == "contract={'inputs': [], 'outputs': ['scenario_index']}"
+
+
+def _save_and_parse(graph, base_dir: Path):
+    """Generate a pipeline file, write its sidecars, and parse it back."""
+    code = graph_to_code(graph, pipeline_name="stale_contract")
+    for rel_path, content in collect_node_configs(graph).items():
+        cfg_file = base_dir / rel_path
+        cfg_file.parent.mkdir(parents=True, exist_ok=True)
+        cfg_file.write_text(content, encoding="utf-8")
+    return code, parse_pipeline_source(code, _base_dir=base_dir)
+
+
+def _single_parent_graph(node_type: str, config: dict[str, object]):
+    return _g(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataInput",
+                        "config": make_file_input_config("data.parquet"),
+                    },
+                },
+                {
+                    "id": "node",
+                    "data": {"label": "node", "nodeType": node_type, "config": config},
+                },
+            ],
+            "edges": [make_edge("source", "node").model_dump()],
+        }
+    )
+
+
+def _scoring_model_with_features(features: list[str]) -> ScoringModel:
+    model = MagicMock()
+    model.feature_names_ = features
+    return ScoringModel(
+        model=model,
+        feature_names=features,
+        cat_feature_names=frozenset(),
+        flavor="catboost",
+    )
+
+
+@pytest.mark.parametrize(
+    ("node_type", "config", "edit", "expected"),
+    [
+        pytest.param(
+            "banding",
+            {
+                "factors": [
+                    {
+                        "column": "age",
+                        "outputColumn": "age_band",
+                        "banding": "continuous",
+                        "rules": [{"max": 25, "value": "0"}],
+                    }
+                ]
+            },
+            lambda config: config["factors"][0].update(outputColumn="age_group"),
+            {"inputs": ["age"], "outputs": ["age_group"]},
+            id="banding-output-column",
+        ),
+        pytest.param(
+            "modelScore",
+            {
+                "sourceType": "run",
+                "run_id": "run123",
+                "artifact_path": "model.cbm",
+                "task": "regression",
+                "output_column": "prediction",
+            },
+            lambda config: config.update(output_column="competitor_premium"),
+            {"inputs": ["a", "b"], "outputs": ["competitor_premium"]},
+            id="model-score-output-column",
+        ),
+    ],
+)
+def test_graph_to_code_refreshes_a_parsed_contract_after_a_config_edit(
+    tmp_path: Path,
+    node_type: str,
+    config: dict[str, object],
+    edit: Callable[[dict[str, Any]], None],
+    expected: dict[str, list[str]],
+) -> None:
+    with patch(
+        "haute._mlflow_io.load_mlflow_model",
+        return_value=_scoring_model_with_features(["a", "b"]),
+    ):
+        _, first_parse = _save_and_parse(_single_parent_graph(node_type, config), tmp_path)
+        edited = first_parse.model_copy(deep=True)
+        edited_node = next(node for node in edited.nodes if node.id == "node")
+        # The first parse carries the generated contract onto the config, so
+        # the edit below leaves a contract that describes the previous config.
+        assert edited_node.data.config["contract"] is not None
+        edit(edited_node.data.config)
+
+        code, second_parse = _save_and_parse(edited, tmp_path)
+
+    assert f"contract={expected!r}" in code
+    reparsed = next(node for node in second_parse.nodes if node.id == "node")
+    assert reparsed.data.config["contract"] == expected
+
+
+def test_format_contract_kwarg_keeps_declared_model_inputs_when_mlflow_is_unreachable() -> None:
+    node = _n(
+        {
+            "id": "score",
+            "data": {
+                "label": "score",
+                "nodeType": "modelScore",
+                "config": {
+                    "sourceType": "run",
+                    "run_id": "run123",
+                    "artifact_path": "model.cbm",
+                    "task": "regression",
+                    "output_column": "competitor_premium",
+                    "contract": {"inputs": ["a", "b"], "outputs": ["prediction"]},
+                },
+            },
+        }
+    )
+
+    with patch(
+        "haute._mlflow_io.load_mlflow_model",
+        side_effect=OSError("tracking server unreachable"),
+    ):
+        contract_kwarg = _format_contract_kwarg(node)
+
+    # Feature names need the model, so the declaration keeps supplying them;
+    # the output column is local config and still matches the parse-time check.
+    assert contract_kwarg == "contract={'inputs': ['a', 'b'], 'outputs': ['competitor_premium']}"
 
 
 def test_graph_to_code_remaps_inputs_by_parent_ids_to_function_names() -> None:

@@ -142,7 +142,14 @@ fresh markers.
    defaulting or skipping the rewrite.
 5. `_format_contract_kwarg` computes the `contract=...` kwarg text (or
    `None` for instance nodes whose contract comes from the referenced
-   original node); if present, `_inject_contract_kwarg` asks the structured
+   original node). It derives the builder contract from the current config
+   (`_derive_contract_for_codegen`) and fills only that contract's opaque
+   sides from a declared `config["contract"]` (`Contract.fill_opaque_sides`),
+   keeping the declaration's `inputs_by_parent`; with no declaration it
+   emits the builder contract alone (`"opaque"` unless both sides are
+   concrete). Instance nodes, `derive_contract=False` recovery generation, and
+   a declared `"opaque"` (which declares no side, so cannot go stale) emit the
+   declaration unchanged. If present, `_inject_contract_kwarg` asks the structured
    syntax boundary to add it to the first authored decorator, with any
    `HauteError` enriched with `node_id`/`node_label`/
    `node_type` before re-raising.
@@ -389,8 +396,9 @@ preamble global, matching the generated function's local assignment.
 | No codegen builder registered for a `NodeType` | `KeyError` | `codegen._generate_node_code` |
 | Config-backed node has no decorator mapping or its builder emitted no function definition | `HauteError` with node id/label/type | `codegen._node_to_code` |
 | Invalid module/keyword syntax, duplicate injected keyword, or no matching decorator | `HauteError` with stable reason and available line/column (then enriched with node id/label/type) | `_python_syntax.inject_decorator_keyword`, re-raised by `codegen._inject_contract_kwarg` / `_node_to_code` |
-| Contract computation hits `ConfigError` | `ConfigError` (propagated) — except the `MlflowDestinationUnconfigured` marker: a MODEL_SCORE node whose explicit `mlflow_destination` is merely not configured on the authoring machine is environmental, so the kwarg becomes `contract="opaque"` with a warning (the executor resolves the same destination at run time and fails loudly there); every other `MlflowConfigError` (unknown key, rejected SDK mode) still propagates | `codegen._format_contract_kwarg` |
-| Contract computation hits a non-infra exception (`TypeError`, `KeyError`, `HauteError` incl. `ContractMismatchError`) | propagated unchanged | `codegen._format_contract_kwarg` |
+| Contract computation hits `OSError` or an `mlflow.*` exception | degraded, with a `contract_emit_offline_on_error` warning, to the offline parse-time contract (`_config_builder.resolve_parse_time_contract`); a Model Score annotation keeps its configured output column and any declared inputs, and renders `contract="opaque"` when nothing is declared | `codegen._derive_contract_for_codegen` |
+| Contract computation hits `ConfigError` | `ConfigError` (propagated) — except the `MlflowDestinationUnconfigured` marker: a MODEL_SCORE node whose explicit `mlflow_destination` is merely not configured on the authoring machine is environmental, so the annotation degrades to the offline parse-time contract with a warning (the executor resolves the same destination at run time and fails loudly there); every other `MlflowConfigError` (unknown key, rejected SDK mode) still propagates | `codegen._derive_contract_for_codegen` |
+| Contract computation hits a non-infra exception (`TypeError`, `KeyError`, `HauteError` incl. `ContractMismatchError`) | propagated unchanged | `codegen._derive_contract_for_codegen` |
 | `inputs_by_parent` ambiguous key collision | `ParseError` | `codegen._format_contract_source` |
 | Duplicate sanitized function names or occurrence aliases across root graph + submodels, including exact duplicate labels | `ParseError` (all colliding buckets listed) | `codegen._error_on_name_collisions` |
 | Duplicate derived input names among one node's incoming edges | `ParseError` (target node + colliding input name) | `codegen.graph_to_code_multi` (per-edge input-name assembly) |

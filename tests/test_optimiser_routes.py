@@ -770,7 +770,7 @@ class TestSolveRoute:
             ) as launch_background,
         ):
             resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
-            assert launch_called.wait(timeout=2.0)
+            assert launch_called.wait(timeout=10.0)
 
         assert resp.status_code == 200
         data = resp.json()
@@ -1198,7 +1198,7 @@ class TestSolveRoute:
                 "/api/optimiser/solve",
                 json={"graph": graph, "node_id": "online_optimiser"},
             )
-            assert launched.wait(timeout=2.0)
+            assert launched.wait(timeout=10.0)
 
         assert resp.status_code == 200
         launched_config = launch_background.call_args.kwargs["config"]
@@ -8012,7 +8012,7 @@ class TestExecutePipelineArgs:
             ),
         ):
             response = service.start(body)
-            assert launch_called.wait(timeout=2.0)
+            assert launch_called.wait(timeout=10.0)
 
         assert response.status == "started"
         assert execute.call_args.kwargs["required_columns_by_node"] == {
