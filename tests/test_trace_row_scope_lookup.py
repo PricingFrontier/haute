@@ -240,3 +240,25 @@ def test_lookup_returns_the_rows_the_full_filter_returns(
         ).head(2)
         assert found is not None
         assert sorted(map(str, found.to_dicts())) == sorted(map(str, expected.to_dicts())), values
+
+
+def test_repeated_lookups_read_a_plan_schema_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    plan = _ROWS.with_columns(pl.col("premium") * 1)
+    schema_reads = 0
+    real_collect_schema = pl.LazyFrame.collect_schema
+
+    def counting_collect_schema(self: pl.LazyFrame) -> pl.Schema:
+        nonlocal schema_reads
+        if self is plan:
+            schema_reads += 1
+        return real_collect_schema(self)
+
+    monkeypatch.setattr(pl.LazyFrame, "collect_schema", counting_collect_schema)
+    resolver = _resolver(plan, join_config={"how": "left", "on": ["quote_id"]})
+
+    first = resolver.lookup("rows", None, {"quote_id": "q1"})
+    second = resolver.lookup("rows", None, {"quote_id": "q3", "region": "c"})
+
+    assert first is not None and first.height == 1
+    assert second is not None and second.height == 1
+    assert schema_reads == 1

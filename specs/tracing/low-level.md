@@ -257,7 +257,8 @@ the limited preview shows rather than independent source samples.
    parent's uncapped plan filtered by typed equality on the resolved child row's carried
    columns and limited to two rows, matched strictly with relaxed matching disabled; two
    surviving rows are ambiguous. Lookups are memoised per request by node, port, and
-   carried values. A lookup probes by key first, because filtering an uncapped plan on every
+   carried values; the resolver also reads each lineage plan's schema at most once per
+   request. A lookup probes by key first, because filtering an uncapped plan on every
    carried column makes Polars decode each of those columns across the whole input
    (measured: 108 equalities over a 10-million-row input take seconds, a key equality
    milliseconds). The probe columns are the carried columns that key an Edge Join on the

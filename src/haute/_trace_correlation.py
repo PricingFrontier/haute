@@ -1866,6 +1866,9 @@ class RowScopeResolver:
     selector_aliases: frozenset[str] = frozenset()
     child_input_aliases: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
     _join_key_columns: frozenset[str] | None = field(default=None, init=False, repr=False)
+    _schemas: dict[tuple[str, str | None], pl.Schema] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     def _head_edge(
         self,
@@ -1918,6 +1921,18 @@ class RowScopeResolver:
             return plan.get(source_handle) if source_handle is not None else None
         return plan
 
+    def schema_for(self, node_id: str, source_handle: str | None) -> pl.Schema | None:
+        """Return a lineage plan's schema, read at most once per request."""
+        key = (node_id, source_handle)
+        schema = self._schemas.get(key)
+        if schema is None:
+            plan = self.plan_for(node_id, source_handle)
+            if plan is None:
+                return None
+            schema = plan.collect_schema()
+            self._schemas[key] = schema
+        return schema
+
     def join_key_columns(self) -> frozenset[str]:
         """Every column keying an Edge Join (either role) on the traced lineage."""
         if self._join_key_columns is None:
@@ -1948,9 +1963,9 @@ class RowScopeResolver:
         from haute._polars_utils import streaming_collect
 
         plan = self.plan_for(node_id, source_handle)
-        if plan is None:
+        schema = self.schema_for(node_id, source_handle)
+        if plan is None or schema is None:
             return None
-        schema = plan.collect_schema()
         expressions: list[pl.Expr] = []
         probe_expressions: list[pl.Expr] = []
         join_keys = self.join_key_columns()
@@ -1999,10 +2014,10 @@ class RowScopeResolver:
         child = self.node_map[child_id]
         node_type = child.data.nodeType
         code = _node_code(child)
-        parent_plan = self.plan_for(parent_id, source_handle)
-        if parent_plan is None:
+        parent_schema = self.schema_for(parent_id, source_handle)
+        if parent_schema is None:
             return None
-        parent_columns = set(parent_plan.collect_schema().names())
+        parent_columns = set(parent_schema.names())
         shared = {name: value for name, value in child_row.items() if name in parent_columns}
         if node_type is NodeType.EDGE_JOIN:
             if target_role == "base":
@@ -2010,13 +2025,13 @@ class RowScopeResolver:
             if target_role != "join":
                 return None
             base = edge_join_role_edges(child, self.edge_metadata).base
-            base_plan = self.plan_for(base.source_id, base.source_handle)
-            if base_plan is None:
+            base_schema = self.schema_for(base.source_id, base.source_handle)
+            if base_schema is None:
                 return None
             return _edge_join_right_match_row(
                 dict(child_row),
                 parent_columns,
-                set(base_plan.collect_schema().names()),
+                set(base_schema.names()),
                 child.data.config,
             )
         if node_type in _PASS_THROUGH_TRACE_TYPES or node_type in (
@@ -2076,9 +2091,9 @@ class RowScopeResolver:
                 for other_handle, _role in other_edges:
                     if other_parent == parent_id and other_handle == source_handle:
                         continue
-                    other_plan = self.plan_for(other_parent, other_handle)
-                    if other_plan is not None:
-                        other_columns.update(other_plan.collect_schema().names())
+                    other_schema = self.schema_for(other_parent, other_handle)
+                    if other_schema is not None:
+                        other_columns.update(other_schema.names())
             # A non-root input's null may be an outer fill rather than its value.
             carried = {
                 name: value
@@ -2113,10 +2128,9 @@ class RowScopeResolver:
                     if explicit_inputs
                     else "df"
                 )
-                plan = self.plan_for(parent_id, handle)
-                if name is None or plan is None:
+                schema = self.schema_for(parent_id, handle)
+                if name is None or schema is None:
                     return {}
-                schema = plan.collect_schema()
                 columns[name] = schema.names()
                 dtypes[name] = dict(schema)
         return {"input_columns": columns, "input_dtypes": dtypes}
@@ -2175,11 +2189,9 @@ class RowScopeResolver:
             lookup = self.lookup(parent_id, source_handle, carried) if carried else None
             if not carried or lookup is None:
                 unproven = True
-                plan = self.plan_for(parent_id, source_handle)
-                if plan is not None:
-                    self._record_frame(
-                        parent_id, source_handle, pl.DataFrame(schema=plan.collect_schema())
-                    )
+                schema = self.schema_for(parent_id, source_handle)
+                if schema is not None:
+                    self._record_frame(parent_id, source_handle, pl.DataFrame(schema=schema))
                 continue
             self._record_frame(parent_id, source_handle, lookup)
             row, index = _find_matching_row(

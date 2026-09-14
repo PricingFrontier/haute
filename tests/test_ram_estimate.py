@@ -2601,6 +2601,34 @@ class TestJsonApiInputPortMetadata:
         # Sizing a boundary from the wrong table is the failure this prevents.
         assert policies.row_count != drivers.row_count
 
+    def test_repeated_estimates_reuse_the_verified_artifact_metadata(
+        self,
+        json_api_input,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import haute._ram_estimate as ram_estimate_mod
+
+        _data_path, config, _cache_dir, _committed_dir = json_api_input
+        node = _make_source_node(node_type="apiInput", config=config)
+        ram_estimate_mod._VERIFIED_PORT_METADATA.clear()
+        reads: list[str] = []
+        real_read = ram_estimate_mod._detailed_parquet_metadata
+
+        def counting_read(path: str):
+            reads.append(path)
+            return real_read(path)
+
+        monkeypatch.setattr(ram_estimate_mod, "_detailed_parquet_metadata", counting_read)
+
+        first = ram_estimate_mod._json_api_input_port_metadata(node, "policies")
+        second = ram_estimate_mod._json_api_input_port_metadata(node, "policies")
+        drivers = ram_estimate_mod._json_api_input_port_metadata(node, "drivers")
+
+        assert first is not None and second is not None and drivers is not None
+        assert (first.row_count, second.row_count, drivers.row_count) == (2, 2, 3)
+        assert second.column_uncompressed_size_bytes == first.column_uncompressed_size_bytes
+        assert len(reads) == 2
+
     def test_committed_layer_is_used_when_working_holds_no_match(self, json_api_input) -> None:
         """Layer preference is the reader's, not this module's."""
 
@@ -3649,3 +3677,27 @@ def test_edge_join_contract_decides_the_many_to_many_flag(
 
     assert downstream.state is MaterialisationEstimateState.AVAILABLE, downstream.unavailable_reason
     assert downstream.depends_on_many_to_many_join is expected
+
+
+def test_verified_port_metadata_is_keyed_by_artifact_content(tmp_path: Path) -> None:
+    """A rebuilt artifact at the same path carries a new signature and is read afresh."""
+    import hashlib
+
+    import haute._ram_estimate as ram_estimate_mod
+
+    ram_estimate_mod._VERIFIED_PORT_METADATA.clear()
+    artifact = tmp_path / "policies.parquet"
+
+    def signature() -> tuple[int, str]:
+        payload = artifact.read_bytes()
+        return len(payload), hashlib.sha256(payload).hexdigest()
+
+    pl.DataFrame({"policy_id": [1, 2]}).write_parquet(artifact)
+    first_signature = signature()
+    first = ram_estimate_mod._verified_port_metadata(artifact, first_signature)
+    pl.DataFrame({"policy_id": [1, 2, 3]}).write_parquet(artifact)
+    rebuilt = ram_estimate_mod._verified_port_metadata(artifact, signature())
+    repeat = ram_estimate_mod._verified_port_metadata(artifact, first_signature)
+
+    assert (first.row_count, rebuilt.row_count) == (2, 3)
+    assert repeat is first

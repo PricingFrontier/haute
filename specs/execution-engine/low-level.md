@@ -1407,6 +1407,14 @@ present a structural or schema result as execution evidence.
   expanded variable-width sizing. Replaced inputs are not estimated from their persisted
   path configuration. Static inputs in the same graph continue to use their ordinary
   source metadata.
+- **Verified JSON port metadata is memoised by content.** A JSON API-input port's footer
+  metadata and bounded expanded variable-width probe are a pure function of its parquet
+  artifact's bytes, so once `_snapshot_cache_artifact_locked` has verified the artifact
+  against its recorded size and SHA-256, the estimator reuses metadata already read for that
+  exact signature from a process-local LRU of 64 entries instead of re-reading the footer and
+  re-probing (about 0.7 s per planned preview or trace for a 1 GB artifact). Layer choice,
+  cache validity, snapshot verification, and the port's declared-schema check still run on
+  every estimate; a rebuilt artifact carries a new signature and is read afresh.
 - **Chunking starts after global materialisation.** Pure chunk planning performs
   schema-only
   strategy analysis and may place a materialisation boundary in the pre-chunk prefix. The

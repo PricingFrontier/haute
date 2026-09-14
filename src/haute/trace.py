@@ -1165,10 +1165,10 @@ def _lookup_clicked_row(
     row_values: Mapping[str, Any],
 ) -> pl.DataFrame | None:
     """Look the clicked preview row up in the target's uncapped plan."""
-    plan = row_scope.plan_for(target_node_id, None)
-    if plan is None:
+    schema = row_scope.schema_for(target_node_id, None)
+    if schema is None:
         return None
-    columns = set(plan.collect_schema().names())
+    columns = set(schema.names())
     values = {name: value for name, value in row_values.items() if name in columns}
     if not values:
         return None
