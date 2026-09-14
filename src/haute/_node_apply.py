@@ -225,7 +225,11 @@ def expand_scenarios_from_config(
     cast_exprs = [pl.col(step_col).cast(pl.Int32)]
     if col_name:
         cast_exprs.append(pl.col(col_name).cast(pl.Float32))
-    return lf.with_columns(scenario_exprs).explode(explode_cols).with_columns(cast_exprs)
+    return (
+        lf.with_columns(scenario_exprs)
+        .explode(explode_cols, empty_as_null=True)
+        .with_columns(cast_exprs)
+    )
 
 
 # ---------------------------------------------------------------------------

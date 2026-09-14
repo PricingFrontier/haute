@@ -784,7 +784,7 @@ def test_reconcile_discards_a_lone_staging_directory_and_otherwise_reports_absen
 # (compared verbatim on read; a mismatch reports the generation as corrupt)
 # and what ``haute._polars_dtypes.dtype_to_spec`` falls back to for scalar
 # dtypes (read back through ``getattr(pl, key)``). Polars documents neither
-# repr as stable. Generated on polars 1.39.3. If an entry moves, every
+# repr as stable. Generated on polars 1.39.3; unchanged on 1.44.2. If an entry moves, every
 # existing source-cache generation reports as corrupt on the new polars and a
 # node config carrying the old spelling may fail to parse: that is a
 # migration decision to take, not a table to regenerate. The zoned Datetime

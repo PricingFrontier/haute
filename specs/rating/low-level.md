@@ -147,7 +147,13 @@
 - **Temporal keys are supported:** Date, Datetime (including unit/timezone),
   Time, and Duration use Polars' declared-dtype string form. Lookup entries are
   cast through that dtype first, so an ISO sidecar scalar and an input temporal
-  scalar agree or fail loudly during the cast.
+  scalar agree or fail loudly during the cast. A Date entry string has its
+  surrounding whitespace stripped and is then parsed strictly by Polars'
+  `str.to_date("%Y-%m-%d")` (the String-to-Date cast is deprecated from Polars
+  1.44). That format's numeric fields accept unpadded or space-padded digits
+  (`2024-1-31`, `2024-01- 31`); any spelling it rejects — another separator or
+  field order, a time part, whitespace before a separator, or an impossible date
+  — fails loudly on both the engine lookup and the trace scalar path.
 - **Ratebook dtype metadata is mandatory:** `factor_dtypes` is part of every
   newly saved ratebook artifact. `_apply_ratebook` validates ordered factor
   names and exact descriptors before calling `_apply_rating_table`; it neither

@@ -600,6 +600,12 @@ def _duration_key_to_physical(value: str, time_unit: str) -> int:
     return -result if match.group("sign") else result
 
 
+# Date entry strings are ISO calendar dates; surrounding whitespace is
+# stripped first. Polars 1.44 deprecates the String-to-Date cast, and
+# ``str.to_date`` without a format would infer other spellings.
+_ISO_DATE_FORMAT = "%Y-%m-%d"
+
+
 def _coerce_rating_lookup_expr(
     name: str,
     source_dtype: pl.DataType,
@@ -615,6 +621,8 @@ def _coerce_rating_lookup_expr(
             {"true": True, "false": False},
             return_dtype=pl.Boolean,
         ).alias(name)
+    if target_dtype == pl.Date and source_dtype == pl.String:
+        return col.str.strip_chars().str.to_date(_ISO_DATE_FORMAT, strict=True).alias(name)
     if target_dtype == pl.Time and source_dtype == pl.String:
         return col.str.to_time(strict=True).alias(name)
     if isinstance(target_dtype, pl.Datetime) and source_dtype == pl.String:
@@ -657,6 +665,8 @@ def normalise_rating_key(
         typed = pl.Series(raw.name, [None], dtype=pl.Null)
     elif dtype == pl.Boolean and source_dtype == pl.String:
         typed = raw.replace_strict({"true": True, "false": False}, return_dtype=pl.Boolean)
+    elif dtype == pl.Date and source_dtype == pl.String:
+        typed = raw.str.strip_chars().str.to_date(_ISO_DATE_FORMAT, strict=True)
     elif dtype == pl.Time and source_dtype == pl.String:
         typed = raw.str.to_time(strict=True)
     elif isinstance(dtype, pl.Datetime) and source_dtype == pl.String:

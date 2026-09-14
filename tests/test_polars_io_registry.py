@@ -240,6 +240,7 @@ class TestRegistrySchemaCompleteness:
                     assert not any(a.startswith("_") for a in allowed)
                     assert "storage_options" not in allowed
                     assert "credential_provider" not in allowed
+                    assert "sinked_paths_callback" not in allowed
                     assert not (fmt.source_owned_args & allowed)
                     if name.startswith("sink_"):
                         assert "lazy" not in allowed

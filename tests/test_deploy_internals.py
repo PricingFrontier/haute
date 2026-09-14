@@ -4745,7 +4745,7 @@ class TestCondaEnvAndPipRequirements:
         reqs = _pip_requirements(resolved)
 
         assert any("haute==" in r for r in reqs)
-        assert "polars>=1.39.2" in reqs
+        assert "polars>=1.44.2" in reqs
 
     def test_pip_requirements_includes_catboost_when_used(self):
         """If a node has fileType=catboost, catboost is added to requirements."""

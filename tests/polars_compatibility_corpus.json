@@ -1,5 +1,5 @@
 {
-  "polars_version": "1.39.3",
+  "polars_version": "1.44.2",
   "shapes": [
     {
       "cardinality": "cardinality_proven",

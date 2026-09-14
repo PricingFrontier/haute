@@ -1,8 +1,8 @@
 {
-  "polars_version": "1.39.3",
+  "polars_version": "1.44.2",
   "python_version": "3.11.13",
-  "extracted_at": "2026-07-13T14:12:34.561940+00:00",
-  "function_count": 63,
+  "extracted_at": "2026-09-14T21:03:40.453428+00:00",
+  "function_count": 64,
   "functions": [
     {
       "name": "serialize",
@@ -1654,9 +1654,18 @@
           "undocumented": false
         },
         {
-          "name": "optimizations",
+          "name": "engine",
           "kind": "KEYWORD_ONLY",
           "position": 6,
+          "annotation": "EngineType",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "optimizations",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
           "annotation": "QueryOptFlags",
           "has_default": true,
           "default": "<polars.lazyframe.opt_flags.QueryOptFlags object>",
@@ -1691,9 +1700,27 @@
           "undocumented": false
         },
         {
-          "name": "catalog",
+          "name": "schema_mode",
           "kind": "KEYWORD_ONLY",
           "position": 2,
+          "annotation": "Literal['merge', 'overwrite'] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "snapshot_properties",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "dict[str, str] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "catalog",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
           "annotation": "pyiceberg.catalog.Catalog | polars.io.iceberg.IcebergCatalogConfig | None",
           "has_default": true,
           "default": "None",
@@ -1702,10 +1729,19 @@
         {
           "name": "storage_options",
           "kind": "KEYWORD_ONLY",
-          "position": 3,
+          "position": 5,
           "annotation": "StorageOptionsDict | None",
           "has_default": true,
           "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "engine",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "EngineType",
+          "has_default": true,
+          "default": "'auto'",
           "undocumented": false
         }
       ],
@@ -1843,6 +1879,15 @@
           "has_default": true,
           "default": "False",
           "undocumented": true
+        },
+        {
+          "name": "sinked_paths_callback",
+          "kind": "KEYWORD_ONLY",
+          "position": 14,
+          "annotation": "SinkedPathsCallback | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
         }
       ],
       "return_annotation": "LazyFrame | None"
@@ -1994,7 +2039,7 @@
           "name": "compression",
           "kind": "KEYWORD_ONLY",
           "position": 1,
-          "annotation": "str",
+          "annotation": "ParquetCompression",
           "has_default": true,
           "default": "'zstd'",
           "undocumented": false
@@ -2132,6 +2177,15 @@
           "annotation": "QueryOptFlags",
           "has_default": true,
           "default": "<polars.lazyframe.opt_flags.QueryOptFlags object>",
+          "undocumented": false
+        },
+        {
+          "name": "sinked_paths_callback",
+          "kind": "KEYWORD_ONLY",
+          "position": 17,
+          "annotation": "SinkedPathsCallback | None",
+          "has_default": true,
+          "default": "None",
           "undocumented": false
         }
       ],
@@ -2741,12 +2795,12 @@
           "undocumented": false
         },
         {
-          "name": "missing_utf8_is_empty_string",
+          "name": "empty_string_is_null",
           "kind": "KEYWORD_ONLY",
           "position": 12,
           "annotation": "bool",
           "has_default": true,
-          "default": "False",
+          "default": "True",
           "undocumented": false
         },
         {
@@ -2834,9 +2888,9 @@
           "name": "rechunk",
           "kind": "KEYWORD_ONLY",
           "position": 22,
-          "annotation": "bool",
+          "annotation": "bool | None",
           "has_default": true,
-          "default": "False",
+          "default": "None",
           "undocumented": false
         },
         {
@@ -3048,12 +3102,12 @@
           "undocumented": false
         },
         {
-          "name": "missing_utf8_is_empty_string",
+          "name": "empty_string_is_null",
           "kind": "KEYWORD_ONLY",
           "position": 11,
           "annotation": "bool",
           "has_default": true,
-          "default": "False",
+          "default": "True",
           "undocumented": false
         },
         {
@@ -3132,9 +3186,9 @@
           "name": "rechunk",
           "kind": "KEYWORD_ONLY",
           "position": 20,
-          "annotation": "bool",
+          "annotation": "bool | None",
           "has_default": true,
-          "default": "False",
+          "default": "None",
           "undocumented": false
         },
         {
@@ -3487,7 +3541,7 @@
           "name": "source",
           "kind": "POSITIONAL_OR_KEYWORD",
           "position": 0,
-          "annotation": "FileSource",
+          "annotation": "FileSource | memoryview[int]",
           "has_default": false,
           "default": null,
           "undocumented": false
@@ -3670,7 +3724,7 @@
           "position": 4,
           "annotation": "bool",
           "has_default": true,
-          "default": "True",
+          "default": "False",
           "undocumented": false
         },
         {
@@ -3704,9 +3758,9 @@
           "name": "rechunk",
           "kind": "KEYWORD_ONLY",
           "position": 8,
-          "annotation": "bool",
+          "annotation": "bool | None",
           "has_default": true,
-          "default": "True",
+          "default": "None",
           "undocumented": false
         }
       ],
@@ -3805,9 +3859,9 @@
           "name": "rechunk",
           "kind": "KEYWORD_ONLY",
           "position": 7,
-          "annotation": "bool",
+          "annotation": "bool | None",
           "has_default": true,
-          "default": "True",
+          "default": "None",
           "undocumented": false
         }
       ],
@@ -3881,7 +3935,7 @@
           "position": 1,
           "annotation": "str",
           "has_default": true,
-          "default": "'lines'",
+          "default": "'line'",
           "undocumented": false
         },
         {
@@ -4024,9 +4078,9 @@
           "name": "rechunk",
           "kind": "KEYWORD_ONLY",
           "position": 7,
-          "annotation": "bool",
+          "annotation": "bool | None",
           "has_default": true,
-          "default": "False",
+          "default": "None",
           "undocumented": false
         },
         {
@@ -4332,9 +4386,9 @@
           "name": "rechunk",
           "kind": "KEYWORD_ONLY",
           "position": 12,
-          "annotation": "bool",
+          "annotation": "bool | None",
           "has_default": true,
-          "default": "False",
+          "default": "None",
           "undocumented": false
         },
         {
@@ -4496,6 +4550,25 @@
       "return_annotation": "dict[str, DataType]"
     },
     {
+      "name": "scan_arrow_c_stream",
+      "owner": "polars",
+      "qualified_name": "polars.scan_arrow_c_stream",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "Any",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "LazyFrame"
+    },
+    {
       "name": "scan_csv",
       "owner": "polars",
       "qualified_name": "polars.scan_csv",
@@ -4593,12 +4666,12 @@
           "undocumented": false
         },
         {
-          "name": "missing_utf8_is_empty_string",
+          "name": "empty_string_is_null",
           "kind": "KEYWORD_ONLY",
           "position": 10,
           "annotation": "bool",
           "has_default": true,
-          "default": "False",
+          "default": "True",
           "undocumented": false
         },
         {
@@ -4647,9 +4720,18 @@
           "undocumented": false
         },
         {
-          "name": "n_rows",
+          "name": "infer_schema_files",
           "kind": "KEYWORD_ONLY",
           "position": 16,
+          "annotation": "int",
+          "has_default": true,
+          "default": "18446744073709551615",
+          "undocumented": false
+        },
+        {
+          "name": "n_rows",
+          "kind": "KEYWORD_ONLY",
+          "position": 17,
           "annotation": "int | None",
           "has_default": true,
           "default": "None",
@@ -4658,7 +4740,7 @@
         {
           "name": "encoding",
           "kind": "KEYWORD_ONLY",
-          "position": 17,
+          "position": 18,
           "annotation": "CsvEncoding",
           "has_default": true,
           "default": "'utf8'",
@@ -4667,7 +4749,7 @@
         {
           "name": "low_memory",
           "kind": "KEYWORD_ONLY",
-          "position": 18,
+          "position": 19,
           "annotation": "bool",
           "has_default": true,
           "default": "False",
@@ -4676,16 +4758,16 @@
         {
           "name": "rechunk",
           "kind": "KEYWORD_ONLY",
-          "position": 19,
-          "annotation": "bool",
+          "position": 20,
+          "annotation": "bool | None",
           "has_default": true,
-          "default": "False",
+          "default": "None",
           "undocumented": false
         },
         {
           "name": "skip_rows_after_header",
           "kind": "KEYWORD_ONLY",
-          "position": 20,
+          "position": 21,
           "annotation": "int",
           "has_default": true,
           "default": "0",
@@ -4694,7 +4776,7 @@
         {
           "name": "row_index_name",
           "kind": "KEYWORD_ONLY",
-          "position": 21,
+          "position": 22,
           "annotation": "str | None",
           "has_default": true,
           "default": "None",
@@ -4703,7 +4785,7 @@
         {
           "name": "row_index_offset",
           "kind": "KEYWORD_ONLY",
-          "position": 22,
+          "position": 23,
           "annotation": "int",
           "has_default": true,
           "default": "0",
@@ -4712,7 +4794,7 @@
         {
           "name": "try_parse_dates",
           "kind": "KEYWORD_ONLY",
-          "position": 23,
+          "position": 24,
           "annotation": "bool",
           "has_default": true,
           "default": "False",
@@ -4721,7 +4803,7 @@
         {
           "name": "eol_char",
           "kind": "KEYWORD_ONLY",
-          "position": 24,
+          "position": 25,
           "annotation": "str",
           "has_default": true,
           "default": "'\\n'",
@@ -4730,7 +4812,7 @@
         {
           "name": "new_columns",
           "kind": "KEYWORD_ONLY",
-          "position": 25,
+          "position": 26,
           "annotation": "Sequence[str] | None",
           "has_default": true,
           "default": "None",
@@ -4739,7 +4821,7 @@
         {
           "name": "raise_if_empty",
           "kind": "KEYWORD_ONLY",
-          "position": 26,
+          "position": 27,
           "annotation": "bool",
           "has_default": true,
           "default": "True",
@@ -4748,7 +4830,7 @@
         {
           "name": "truncate_ragged_lines",
           "kind": "KEYWORD_ONLY",
-          "position": 27,
+          "position": 28,
           "annotation": "bool",
           "has_default": true,
           "default": "False",
@@ -4757,7 +4839,7 @@
         {
           "name": "decimal_comma",
           "kind": "KEYWORD_ONLY",
-          "position": 28,
+          "position": 29,
           "annotation": "bool",
           "has_default": true,
           "default": "False",
@@ -4766,7 +4848,7 @@
         {
           "name": "glob",
           "kind": "KEYWORD_ONLY",
-          "position": 29,
+          "position": 30,
           "annotation": "bool",
           "has_default": true,
           "default": "True",
@@ -4775,7 +4857,7 @@
         {
           "name": "storage_options",
           "kind": "KEYWORD_ONLY",
-          "position": 30,
+          "position": 31,
           "annotation": "StorageOptionsDict | None",
           "has_default": true,
           "default": "None",
@@ -4784,7 +4866,7 @@
         {
           "name": "credential_provider",
           "kind": "KEYWORD_ONLY",
-          "position": 31,
+          "position": 32,
           "annotation": "CredentialProviderFunction | Literal['auto'] | None",
           "has_default": true,
           "default": "'auto'",
@@ -4793,7 +4875,7 @@
         {
           "name": "retries",
           "kind": "KEYWORD_ONLY",
-          "position": 32,
+          "position": 33,
           "annotation": "int | None",
           "has_default": true,
           "default": "None",
@@ -4802,7 +4884,7 @@
         {
           "name": "file_cache_ttl",
           "kind": "KEYWORD_ONLY",
-          "position": 33,
+          "position": 34,
           "annotation": "int | None",
           "has_default": true,
           "default": "None",
@@ -4811,7 +4893,7 @@
         {
           "name": "include_file_paths",
           "kind": "KEYWORD_ONLY",
-          "position": 34,
+          "position": 35,
           "annotation": "str | None",
           "has_default": true,
           "default": "None",
@@ -4820,7 +4902,7 @@
         {
           "name": "missing_columns",
           "kind": "KEYWORD_ONLY",
-          "position": 35,
+          "position": 36,
           "annotation": "Literal['insert', 'raise'] | None",
           "has_default": true,
           "default": "None",
@@ -5022,18 +5104,18 @@
           "name": "cache",
           "kind": "KEYWORD_ONLY",
           "position": 2,
-          "annotation": "bool",
+          "annotation": "bool | None",
           "has_default": true,
-          "default": "True",
+          "default": "None",
           "undocumented": false
         },
         {
           "name": "rechunk",
           "kind": "KEYWORD_ONLY",
           "position": 3,
-          "annotation": "bool",
+          "annotation": "bool | None",
           "has_default": true,
-          "default": "False",
+          "default": "None",
           "undocumented": false
         },
         {
@@ -5178,7 +5260,7 @@
           "position": 1,
           "annotation": "str",
           "has_default": true,
-          "default": "'lines'",
+          "default": "'line'",
           "undocumented": false
         },
         {
@@ -5321,9 +5403,9 @@
           "name": "rechunk",
           "kind": "KEYWORD_ONLY",
           "position": 7,
-          "annotation": "bool",
+          "annotation": "bool | None",
           "has_default": true,
-          "default": "False",
+          "default": "None",
           "undocumented": false
         },
         {
@@ -5520,9 +5602,9 @@
           "name": "rechunk",
           "kind": "KEYWORD_ONLY",
           "position": 12,
-          "annotation": "bool",
+          "annotation": "bool | None",
           "has_default": true,
-          "default": "False",
+          "default": "None",
           "undocumented": false
         },
         {

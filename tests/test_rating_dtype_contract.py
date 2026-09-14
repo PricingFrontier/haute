@@ -382,3 +382,71 @@ def test_unsupported_factor_dtype_fails_before_lookup(dtype: pl.DataType) -> Non
         match=r"Rating table.*factor.*unsupported dtype.*Supported scalar dtypes.*Cast.*upstream",
     ):
         _apply_rating_table(frame.lazy(), table)
+
+
+_DATE_ENTRY_TABLE_NAME = "dates"
+
+
+def _date_entry_table(entry: str) -> dict[str, Any]:
+    return {
+        "name": _DATE_ENTRY_TABLE_NAME,
+        "factors": ["factor"],
+        "outputColumn": "rate",
+        "entries": [{"factor": entry, "value": 2.0}],
+        "onMissing": "neutral",
+    }
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "2024-01-31",
+        "2024-01-31 ",
+        chr(9) + "2024-01-31" + chr(10),
+        chr(0xA0) + "2024-01-31",
+        "2024-1-31",
+        "2024-01- 31",
+    ],
+)
+def test_date_entries_accept_iso_dates_with_surrounding_whitespace(entry: str) -> None:
+    """A Date factor's entry strings parse with Polars' ``%Y-%m-%d`` format
+    (numeric fields may be unpadded or space-padded) after stripping
+    surrounding whitespace, on both the engine lookup and the trace scalar
+    path, without Polars' String-to-Date cast (deprecated from 1.44)."""
+    import datetime
+    import warnings
+
+    source = pl.DataFrame({"factor": [datetime.date(2024, 1, 31)]}).lazy()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = _apply_rating_table(source, _date_entry_table(entry)).collect()
+        detail = _enrich_single_table(
+            _date_entry_table(entry),
+            {"factor": datetime.date(2024, 1, 31)},
+            {"rate": 2.0},
+            factor_input_dtypes={"factor": pl.Date},
+        )
+
+    assert [str(w.message) for w in caught if issubclass(w.category, DeprecationWarning)] == []
+    assert result["rate"].to_list() == [2.0]
+    assert detail["status"] == "matched"
+
+
+@pytest.mark.parametrize(
+    "entry",
+    ["2024/01/31", "31-01-2024", "20240131", "2024-01-31T00:00:00", "2024 -01-31", "2024-02-30"],
+)
+def test_date_entries_reject_other_spellings_on_both_paths(entry: str) -> None:
+    import datetime
+
+    source = pl.DataFrame({"factor": [datetime.date(2024, 1, 31)]}).lazy()
+
+    with pytest.raises(pl.exceptions.InvalidOperationError):
+        _apply_rating_table(source, _date_entry_table(entry)).collect()
+    with pytest.raises(pl.exceptions.InvalidOperationError):
+        _enrich_single_table(
+            _date_entry_table(entry),
+            {"factor": datetime.date(2024, 1, 31)},
+            {"rate": 2.0},
+            factor_input_dtypes={"factor": pl.Date},
+        )

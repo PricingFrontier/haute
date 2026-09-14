@@ -240,7 +240,7 @@ _HORIZONTAL_PL_CALL_OUTPUTS = {
     "min_horizontal",
     "sum_horizontal",
 }
-# Methods whose bare string arguments Polars 1.39.3 parses with
+# Methods whose bare string arguments the pinned Polars parses with
 # ``str_as_lit=True`` or as plain format/configuration strings, keyed by the
 # receiver namespace they must be called on.  The match is receiver-aware, so a
 # same-named method on another namespace does not inherit the registration.

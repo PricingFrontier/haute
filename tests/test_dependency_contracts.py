@@ -66,8 +66,10 @@ def test_pandas_floor_and_cap_cover_the_pyfunc_conversion_boundary() -> None:
     assert _cap(requirement) <= Version("3"), "pandas cap must exclude pandas 3"
 
 
-def test_polars_floor_supports_order_preserving_lazy_joins() -> None:
-    """Rating-table streaming joins rely on LazyFrame.join(maintain_order=...)."""
+def test_polars_floor_supports_ordered_and_sliced_streaming_joins() -> None:
+    """Rating-table streaming joins rely on LazyFrame.join(maintain_order=...),
+    and previews limited at the previewed node rely on a sliced left join
+    streaming its probe side instead of buffering it (fixed by 1.43)."""
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     dependencies = project["project"]["dependencies"]
     polars_requirement = next(
@@ -80,7 +82,7 @@ def test_polars_floor_supports_order_preserving_lazy_joins() -> None:
     ]
 
     assert lower_bounds
-    assert max(lower_bounds) >= Version("1.39.2")
+    assert max(lower_bounds) >= Version("1.44.2")
 
 
 def test_price_contour_floor_supports_ratebook_factor_contexts() -> None:

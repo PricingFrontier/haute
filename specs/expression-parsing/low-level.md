@@ -161,8 +161,13 @@ no alias or migration shim; direct test callers use the same current contract.
   Polars, not null. Plain integer bitwise `&`/`|` falls through unaffected.
 - **`round()` divergence from Python**: matches Polars' `round(v * 10**n) / 10**n` on the f64 value
   with half-to-even tie-breaking, which is *not* the same as Python's decimal-accurate
-  `round(v, n)` (e.g. `round(2.675, 2)` is `2.68` under this evaluator/Polars 1.39 but `2.67` under
+  `round(v, n)` (e.g. `round(2.675, 2)` is `2.68` under this evaluator/Polars but `2.67` under
   bare Python `round`). Pinned by `tests/test_expression_parser_polars_parity.py`.
+- **Horizontal reductions and NaN**: `max_horizontal` and `min_horizontal` skip nulls and ignore
+  NaN, returning NaN only when every non-null value is NaN, whatever the argument order — Polars'
+  behaviour from 1.44 (earlier releases propagated NaN through `max_horizontal` only).
+  `sum_horizontal` and `mean_horizontal` propagate NaN. Pinned against live Polars by
+  `tests/test_expression_parser_w3_fixes.py`.
 - **`pow()` with a negative base and non-integer float exponent** → `NaN`, matching Polars' float
   domain (Python would return a `complex`).
 - **Single-pass value substitution**: `_substitute_values` builds one combined word-boundary regex

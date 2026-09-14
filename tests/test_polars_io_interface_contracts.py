@@ -132,7 +132,7 @@ _RELIED_ON_DEFAULTS: tuple[tuple[str, str, str, str], ...] = (
     ("polars", "scan_csv", "ignore_errors", "False"),
     ("polars", "scan_csv", "null_values", "None"),
     ("polars", "scan_csv", "encoding", "'utf8'"),
-    ("polars", "scan_csv", "missing_utf8_is_empty_string", "False"),
+    ("polars", "scan_csv", "empty_string_is_null", "True"),
     ("polars", "scan_csv", "quote_char", "'\"'"),
     ("polars", "scan_csv", "decimal_comma", "False"),
     ("polars", "scan_csv", "truncate_ragged_lines", "False"),
@@ -497,9 +497,9 @@ class TestSupportedArgumentNames:
         monkeypatch.setattr(
             schema_module,
             "installed_argument_names",
-            lambda o, n: frozenset(committed | {"empty_string_is_null"}),
+            lambda o, n: frozenset(committed | {"hypothetical_future_argument"}),
         )
-        assert "empty_string_is_null" not in supported_argument_names("polars", "read_csv")
+        assert "hypothetical_future_argument" not in supported_argument_names("polars", "read_csv")
         assert retired_argument_names("polars", "read_csv") == frozenset()
 
     def test_a_retired_argument_is_rejected_with_the_version_named(

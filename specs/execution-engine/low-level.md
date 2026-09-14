@@ -399,6 +399,10 @@ consumer: consumers read the node's uncapped plan, which `EagerResult.plans` als
 A target-only preview therefore limits only the target with SQL `LIMIT` semantics — Polars
 pushes the slice upstream only where the result is unchanged — a full materialisation
 gives every node its own limited output, and trace passes its head-frame prefixes.
+The Polars floor (`polars>=1.44.2`) is part of this contract: earlier releases (measured on
+1.39.3) buffer a left join's entire probe side before a downstream slice stops it, so a
+100-row preview below a join on a 10-million-row input held about 8 GB, where 1.43.2 and
+later stream it in under 1 GB.
 Non-positive limits raise `ValueError`, and `PREVIEW_EXECUTION_SEMANTICS_VERSION`
 (`preview-materialisation:v2`) keeps older cache entries from being served. Exceptions are
 captured per-node when `swallow_errors=True`, except
