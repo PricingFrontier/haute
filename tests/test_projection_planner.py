@@ -2783,6 +2783,7 @@ def test_public_projection_plan_strict_profile_boundaries_terminal_user_code():
 
 
 def test_public_projection_plan_strict_profile_runs_source_user_code_unprojected():
+    """Code outside the lineage model scans full width: a narrowed ``unique()`` dedupes less."""
     graph = make_graph(
         {
             "nodes": [
@@ -2793,7 +2794,7 @@ def test_public_projection_plan_strict_profile_runs_source_user_code_unprojected
                         "nodeType": "dataInput",
                         "config": {
                             "path": "data.parquet",
-                            "code": "df = df.with_columns(pl.col('a') + 1)",
+                            "code": "df = df.unique()",
                         },
                     },
                 },
@@ -2865,7 +2866,8 @@ def test_public_projection_plan_strict_profile_allows_projection_safe_source_lim
     assert projection.needed_by_node["source"] == frozenset({"quote_id", "premium"})
 
 
-def test_public_projection_plan_strict_profile_runs_source_filter_unprojected():
+def test_public_projection_plan_strict_profile_projects_source_filter_by_column_lineage():
+    """The node's demand stays its output; the scan adds the predicate column at build time."""
     graph = make_graph(
         {
             "nodes": [
@@ -2902,11 +2904,52 @@ def test_public_projection_plan_strict_profile_runs_source_filter_unprojected():
         )
     )
 
-    assert projection.needed_by_node["source"] is None
-    assert (
-        projection.diagnostics.opaque_reasons["source"].rule
-        == UNPROJECTED_STREAMING_BOUNDARY_RULE_NAME
+    assert projection.needed_by_node["source"] == frozenset({"quote_id"})
+    assert "source" not in projection.opaque_boundaries
+
+
+def test_public_projection_plan_proves_source_code_lineage_in_pre_rename_names():
+    """Renames run after the code, so lineage is asked for ``a`` rather than ``b``."""
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataInput",
+                        "config": {
+                            "path": "data.parquet",
+                            "contract": "opaque",
+                            "code": "df = df.select('a')",
+                            "selected_columns": ["a"],
+                            "column_renames": {"a": "b"},
+                        },
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": make_output_config(["b"]),
+                    },
+                },
+            ],
+            "edges": [make_edge("source", "out").model_dump()],
+        }
     )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+    assert projection.needed_by_node["source"] == frozenset({"b"})
+    assert "source" not in projection.opaque_boundaries
 
 
 def test_public_projection_plan_strict_profile_allows_contracted_user_code():
@@ -3236,6 +3279,98 @@ def test_source_scan_projection_broadens_unsafe_rename_without_selected_columns(
     projection = source_scan_projection(
         {"column_renames": {"raw_premium": "premium"}},
         {"premium"},
+    )
+
+    assert projection.columns is None
+
+
+_SCANNED_SOURCE_COLUMNS = ("quote_id", "segment", "unused")
+
+
+@pytest.mark.parametrize(
+    ("code", "demand", "expected"),
+    [
+        pytest.param(
+            "df = df.limit(10)",
+            {"quote_id", "segment"},
+            {"quote_id", "segment"},
+            id="row-only-slicing",
+        ),
+        pytest.param(
+            "df = df.with_columns(SaleFlag=pl.lit(1))",
+            {"quote_id", "SaleFlag"},
+            {"quote_id"},
+            id="created-column-is-not-scanned",
+        ),
+        pytest.param(
+            "df = df.filter(pl.col('segment') == 'A')",
+            frozenset(),
+            {"segment"},
+            id="rows-only-demand-still-reads-the-predicate",
+        ),
+        pytest.param(
+            "df = df.drop('quote_id').with_columns(SaleFlag=pl.lit(1))",
+            {"SaleFlag"},
+            {"quote_id", "segment"},
+            id="dropping-every-demanded-column-keeps-a-row-carrier",
+        ),
+        pytest.param("df = helper(df)", {"quote_id"}, None, id="outside-lineage-model"),
+    ],
+)
+def test_source_scan_projection_reads_the_columns_post_load_code_consumes(
+    code: str,
+    demand: frozenset[str],
+    expected: set[str] | None,
+):
+    projection = source_scan_projection(
+        {"selected_columns": ["quote_id", "SaleFlag", "segment"]},
+        demand,
+        code=code,
+        source_columns=_SCANNED_SOURCE_COLUMNS,
+    )
+
+    assert projection.columns == (None if expected is None else frozenset(expected))
+
+
+def test_source_scan_projection_needs_the_scan_schema_to_narrow_under_post_load_code():
+    """Only a known schema lets lineage add the row carrier a narrowed code scan needs."""
+    projection = source_scan_projection(
+        {},
+        {"quote_id", "SaleFlag"},
+        code="df = df.with_columns(SaleFlag=pl.lit(1))",
+        source_columns=None,
+    )
+
+    assert projection.columns is None
+
+
+def test_source_scan_projection_inverts_renames_before_post_load_code_lineage():
+    """Renames run after the code, so the code produces the pre-rename name."""
+    projection = source_scan_projection(
+        {
+            "selected_columns": ["quote_id", "SaleFlag"],
+            "column_renames": {"SaleFlag": "sale_flag"},
+        },
+        {"sale_flag"},
+        code="df = df.with_columns(SaleFlag=pl.col('segment') == 'A')",
+        source_columns=_SCANNED_SOURCE_COLUMNS,
+    )
+
+    assert projection.columns == frozenset({"segment"})
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["", "df = df.with_columns(flag=pl.lit(1))"],
+    ids=["no-code", "column-creating-code"],
+)
+def test_source_scan_projection_reads_full_width_when_a_rename_would_collide(code: str):
+    """Pruning the colliding column would hide the rename error bounded profiles must raise."""
+    projection = source_scan_projection(
+        {"selected_columns": ["a", "b", "flag"], "column_renames": {"a": "b"}},
+        {"b"},
+        code=code,
+        source_columns=("a", "b"),
     )
 
     assert projection.columns is None

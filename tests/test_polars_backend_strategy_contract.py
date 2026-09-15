@@ -1592,7 +1592,7 @@ def test_group_by_strategy_keeps_an_unprovable_api_port_boundary_visible() -> No
     }
 
 
-def _single_source_graph(path: Path):
+def _single_source_graph(path: Path, **config_extra: object):
     return make_graph(
         {
             "nodes": [
@@ -1601,7 +1601,7 @@ def _single_source_graph(path: Path):
                     "data": {
                         "label": "source",
                         "nodeType": "dataInput",
-                        "config": make_ready_file_input_config(path),
+                        "config": make_ready_file_input_config(path, **config_extra),
                     },
                 }
             ],
@@ -1681,6 +1681,111 @@ def test_lazy_source_reports_requested_and_physically_scanned_width(tmp_path: Pa
     source = next(item for item in widths["items"] if item["node_id"] == "source")
     assert source["requested_width"] == 1
     assert source["physically_scanned_width"] == 1
+
+
+_ADD_SALE_FLAG = "df = df.with_columns(SaleFlag=pl.lit(1))"
+
+
+def test_seeded_preview_of_a_source_whose_code_creates_a_column_is_projected(
+    tmp_path: Path,
+) -> None:
+    """Column-creating post-load code is proven by lineage, so no boundary is reported."""
+    path = tmp_path / "policies.parquet"
+    pl.DataFrame({"quote_id": ["q1"], "unused": [2]}).write_parquet(path)
+
+    result = plan_execution_strategy(
+        ProjectionRequest(
+            graph=_single_source_graph(path, code=_ADD_SALE_FLAG, contract="opaque"),
+            target_node_id="source",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            required_columns_by_node={"source": {"quote_id", "SaleFlag"}},
+        )
+    )
+
+    assert result.strategy is ExecutionStrategy.PROJECTED
+    assert result.needed_by_node["source"] == frozenset({"quote_id", "SaleFlag"})
+
+
+def test_lazy_source_scans_only_the_columns_its_post_load_code_consumes(tmp_path: Path) -> None:
+    path = tmp_path / "policies.parquet"
+    pl.DataFrame({"quote_id": ["q1", "q2"], "unused": [2, 3]}).write_parquet(path)
+    context = _context(ExecutionProfile.LAZY_SINK)
+
+    outputs, *_ = execute_lazy_graph(
+        _single_source_graph(path, code=_ADD_SALE_FLAG),
+        _build_node_fn,
+        target_node_id="source",
+        required_columns_by_node={"source": {"quote_id", "SaleFlag"}},
+        execution_context=context,
+    )
+
+    widths = context.metrics_payload()["column_widths"]
+    source = next(item for item in widths["items"] if item["node_id"] == "source")
+    assert source["requested_width"] == 2
+    assert source["physically_scanned_width"] == 1
+    assert outputs["source"].collect().sort("quote_id").to_dict(as_series=False) == {
+        "quote_id": ["q1", "q2"],
+        "SaleFlag": [1, 1],
+    }
+
+
+@pytest.mark.parametrize(
+    ("code", "demand", "expected"),
+    [
+        pytest.param(
+            "df = df.drop('a').with_columns(SaleFlag=pl.lit(1))",
+            "SaleFlag",
+            [1, 1, 1],
+            id="created-column",
+        ),
+        pytest.param("df = df.drop('a').select(pl.len())", "len", [3], id="row-count"),
+    ],
+)
+def test_lazy_source_code_that_drops_every_demanded_column_keeps_every_row(
+    tmp_path: Path,
+    code: str,
+    demand: str,
+    expected: list[int],
+) -> None:
+    path = tmp_path / "carrier.parquet"
+    pl.DataFrame({"a": [1, 2, 3], "keep": [4, 5, 6]}).write_parquet(path)
+
+    outputs, *_ = execute_lazy_graph(
+        _single_source_graph(path, code=code),
+        _build_node_fn,
+        target_node_id="source",
+        required_columns_by_node={"source": {demand}},
+        execution_context=_context(ExecutionProfile.LAZY_SINK),
+    )
+
+    assert outputs["source"].collect()[demand].to_list() == expected
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["", "df = df.with_columns(flag=pl.lit(1))"],
+    ids=["no-code", "column-creating-code"],
+)
+def test_lazy_source_projection_keeps_a_colliding_rename_fatal(tmp_path: Path, code: str) -> None:
+    """Preview reads full width and raises; a narrowed bounded scan must not hide it."""
+    path = tmp_path / "collision.parquet"
+    pl.DataFrame({"a": [1], "b": [2]}).write_parquet(path)
+    graph = _single_source_graph(
+        path,
+        code=code,
+        selected_columns=["a", "b", "flag"],
+        column_renames={"a": "b"},
+    )
+
+    with pytest.raises(pl.exceptions.DuplicateError):
+        outputs, *_ = execute_lazy_graph(
+            graph,
+            _build_node_fn,
+            target_node_id="source",
+            required_columns_by_node={"source": {"b"}},
+            execution_context=_context(ExecutionProfile.LAZY_SINK),
+        )
+        outputs["source"].collect()
 
 
 def test_strategy_provenance_snapshots_one_shot_projection_seeds(tmp_path: Path) -> None:

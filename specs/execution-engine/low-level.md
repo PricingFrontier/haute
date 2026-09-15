@@ -402,7 +402,9 @@ every node's output in every execution profile. Source builders never push it in
 physical read and never validate it against the file schema, so a Data Input's post-load
 code may add or consume any column — a column the code creates can be selected — and a
 stale selection is simply absent from the output rather than fatal, identically in preview
-and bounded profiles. The physical scan projection comes from planner demand only.
+and bounded profiles. The physical scan projection comes from planner demand only, carried
+back through the node's post-load code (see "Data Input post-load code participates in
+projection planning").
 A target-only preview therefore limits only the target with SQL `LIMIT` semantics — Polars
 pushes the slice upstream only where the result is unchanged — a full materialisation
 gives every node its own limited output, and trace passes its head-frame prefixes.
@@ -903,6 +905,26 @@ present a structural or schema result as execution evidence.
   model is loaded). Columns the code computes are therefore never demanded from the
   parent, and columns it reads are, even when the declared inputs list only model features. Post-code outside the lineage model keeps a
   full-width boundary recorded as `builder_post_code`.
+- **Data Input post-load code participates in projection planning.** A Data Input's `code`
+  runs over its scan as `df`, before `selected_columns` and renames. With a known demand, the
+  planner, source builders, and runtime join refinement share one rule
+  (`source_user_code_scan_columns`) for what the scan must read. Demanded names are first
+  mapped back through the configured renames, because the code produces pre-rename names;
+  row-only slicing (`limit`, `head`, `tail`, `slice`) then passes the demand through unchanged,
+  and any other code is analysed with the same fail-closed column lineage as a Polars node.
+  The scan therefore never reads a column the code creates, and always reads the columns the
+  code consumes — a `filter` predicate column, for example, even under a rows-only demand.
+  The source builder supplies the opened scan's schema to that rule, and a scan under
+  projection-opaque code is narrowed only with it: the known schema lets lineage add a row
+  carrier when the code drops every demanded column (so the frame keeps its height), and lets
+  the rule prove the full pre-shaping output. When the configured selection and renames would
+  collide on that output, the scan stays full width, so the rename error is raised in bounded
+  profiles exactly as in preview, with or without code. Planning and runtime join refinement
+  ask the same rule without a schema, which decides only whether projection is provable; the
+  builder's schema-aware answer can only widen the scan further. Code outside the lineage model
+  (a whole-row `unique()` or `drop_nulls()`, a selector, a helper call) keeps a full-width
+  source scan recorded as `unprojected_streaming_boundary`. An unknown demand leaves the scan
+  full width whatever the code is.
 - **Unowned fan-in never uses ordinary contract algebra.** After the dedicated
   optimiser, edge-join, and compositional Polars fan-in rules have had an
   opportunity to assign columns to individual incoming edges, any remaining node
