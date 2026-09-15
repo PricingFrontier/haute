@@ -880,6 +880,15 @@ present a structural or schema result as execution evidence.
   (`0 < pl.col('a')`) runs as the expression's reflected comparison and keeps the
   expression's name, while reflected arithmetic (`2 * pl.col('a')`) is named `literal`; a
   comparison whose left operand is neither a literal nor a provable expression is unnamed.
+  Every name a frame statement uses must resolve to a value the analyser can see: `pl`, an
+  input frame or `df`, a preamble `polars.selectors` alias, a lambda's own parameter inside
+  its body, an earlier helper assignment whose value uses only literals and such names, or a
+  value the node itself binds and declares to the analyser (`value_names`; an External File's
+  `obj`). Any other name — a preamble constant or expression, an imported module, a builtin, a
+  comprehension variable — could hold a Polars expression that reads columns the walk cannot
+  see (`pl.col('premium') * weight` with `weight = pl.col('exposure')` in the preamble), so an
+  otherwise supported program is reported `unresolved_name` and keeps its full-width
+  boundary. Row-count proofs do not apply this rule.
 - **Lineage inputs are incoming edges, not parent node ids.** Each input binding
   carries its complete `ProjectionEdgeKey`, executable `edge_input_name`, and exact
   schema when one is available. Exact API schemas are resolved per source handle;
@@ -951,12 +960,14 @@ present a structural or schema result as execution evidence.
   is. With a known demand the planner analyses the code with the same compositional column
   lineage as a Polars node, over the same incoming-edge bindings (edge input names and
   `inputMapping` aliases) plus `df`, which the builder binds to the first incoming frame.
-  `obj` and preamble names are values, never frames: code that uses `obj` as a scalar or a
-  literal inside provable expressions (`pl.col('premium') * obj['factor']`,
-  `pl.lit(obj['version'])`) is narrowed, while a model call (`obj.predict(...)`), `obj`
-  supplying a column name, list, or output name (`select(obj['features'])`,
-  `then(obj['name'])`, `alias(obj['name'])`), or a join against `obj` is outside the lineage
-  model and keeps the node's inputs full width under `polars_lineage_unsupported`. A declared
+  `obj` is the node's declared value name: the artifact comes from JSON, the restricted
+  unpickler, or a model loader, so it is never a Polars expression or a frame. Code that uses
+  `obj` as a scalar or a literal inside provable expressions (`pl.col('premium') *
+  obj['factor']`, `pl.lit(obj['version'])`) is narrowed, while a model call
+  (`obj.predict(...)`), `obj` supplying a column name, list, or output name
+  (`select(obj['features'])`, `then(obj['name'])`, `alias(obj['name'])`), a join against
+  `obj`, or a preamble name is outside the lineage model and keeps the node's inputs full
+  width under `polars_lineage_unsupported`. A declared
   concrete contract and configured renames keep their existing precedence, as for a Polars
   node. The runtime selector and join refinements (`_runtime_lineage_demands`) remain
   Polars-node rules, so External File code that needs a runtime schema stays full width.

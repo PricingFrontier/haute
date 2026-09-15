@@ -3480,7 +3480,11 @@ def _analyse_polars_node_lineage(
     for binding in bindings:
         schemas[binding.name] = binding.exact_columns
     df_input: str | None = None
+    value_names: frozenset[str] = frozenset()
     if node.data.nodeType is NodeType.EXTERNAL_FILE:
+        # The loaded artifact comes from JSON, the restricted unpickler, or a
+        # model loader, so ``obj`` is a value and never a Polars expression.
+        value_names = frozenset({"obj"})
         # The builder binds the first incoming frame to ``df`` over any input of
         # that name, so an input called ``df`` has no single meaning here.
         if "df" in schemas:
@@ -3494,6 +3498,7 @@ def _analyse_polars_node_lineage(
             demanded_output,
             selector_aliases=selector_aliases,
             df_input=df_input,
+            value_names=value_names,
         ),
         bindings,
     )

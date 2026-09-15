@@ -1906,6 +1906,20 @@ def test_single_parent_polars_helper_call_keeps_visible_full_width_boundary():
     assert reason.details == {"reason": "dynamic_helper", "operation": None}
 
 
+def test_single_parent_polars_preamble_name_keeps_visible_full_width_boundary():
+    """A preamble name may hold an expression that reads columns lineage cannot see."""
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns(x=pl.col('premium') * weight)",
+        ["x"],
+    )
+
+    assert not has_pair(projection.edge_demands, "source", "transform")
+    assert projection.needed_by_node["source"] is None
+    reason = pair_value(projection.diagnostics.edge_reasons, "source", "transform")
+    assert reason.rule == "polars_lineage_unsupported"
+    assert reason.details == {"reason": "unresolved_name", "operation": None}
+
+
 def _external_file_plan(code: str, fields: list[str], *, parents: tuple[str, ...] = ("source",)):
     """Plan ``parents -> ext(code) -> out(fields)`` for an External File node."""
     graph = make_graph(
@@ -2006,6 +2020,7 @@ def test_external_file_input_named_df_keeps_its_inputs_full_width() -> None:
         ),
         ("df = df.with_columns(pl.lit(1).alias(obj['column']))", "dynamic_with_columns"),
         ("df = df.with_columns(x=obj.predict(df))", "dynamic_with_columns"),
+        ("df = df.with_columns(x=pl.col('premium') * weight)", "unresolved_name"),
     ],
 )
 def test_external_file_code_outside_lineage_keeps_its_input_full_width(

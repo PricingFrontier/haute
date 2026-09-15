@@ -1867,6 +1867,31 @@ def test_lazy_code_below_a_schema_less_parent_keeps_every_row(
     assert outputs["child"].collect()[demand].to_list() == expected
 
 
+def test_lazy_polars_code_using_a_preamble_expression_reads_its_columns(tmp_path: Path) -> None:
+    """A preamble name can hold an expression, so the scan must not drop what it reads."""
+    path = tmp_path / "rows.parquet"
+    pl.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6], "keep": [7, 8, 9]}).write_parquet(path)
+    raw = _source_and_child_graph(
+        path,
+        {
+            "nodeType": "polars",
+            "config": {"code": "df = source.with_columns(x=pl.col('a') * weight)"},
+        },
+    ).model_dump()
+    raw["preamble"] = "weight = pl.col('b')"
+
+    outputs, *_ = execute_lazy_graph(
+        make_graph(raw),
+        _build_node_fn,
+        target_node_id="child",
+        required_columns_by_node={"child": {"x"}},
+        execution_context=_context(ExecutionProfile.LAZY_SINK),
+        preamble_ns={"weight": pl.col("b")},
+    )
+
+    assert outputs["child"].collect()["x"].to_list() == [4, 10, 18]
+
+
 def _external_file_graph(tmp_path: Path, code: str, *, lookup: bool = False):
     artifact = tmp_path / "factors.json"
     artifact.write_text(json.dumps({"factor": 10, "column": "tier"}))

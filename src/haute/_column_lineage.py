@@ -2159,6 +2159,7 @@ def _parse_program(
     cardinality_only: bool = False,
     selector_aliases: frozenset[str] = frozenset(),
     df_input: str | None = None,
+    value_names: frozenset[str] = frozenset(),
 ) -> LinearFrameProgram | _ParseFailure:
     try:
         tree = ast.parse(code)
@@ -2172,6 +2173,12 @@ def _parse_program(
     implicit_df = df_input
     if implicit_df is None and len(input_names) == 1:
         implicit_df = next(iter(input_names))
+    # Names the analyser can see. Anything else (a preamble name, an import, a
+    # builtin) could hold a Polars expression reading columns the walk never
+    # sees, so column lineage refuses a program that uses one. Row counts do
+    # not depend on which columns such an expression reads.
+    resolved = {"pl", "df", *input_names, *selector_aliases, *value_names}
+    unresolved_name: str | None = None
     root_input: str | None = None
     operations: list[LineageOperation] = []
     started_operations = False
@@ -2195,8 +2202,14 @@ def _parse_program(
                 return _ParseFailure("frame_dependent_helper")
             if any(isinstance(child, ast.Call) for child in ast.walk(statement.value)):
                 return _ParseFailure("dynamic_helper")
+            if _first_unresolved_name(statement.value, frozenset(resolved)) is None:
+                resolved.add(target.id)
+            else:
+                resolved.discard(target.id)
             continue
 
+        if not cardinality_only and unresolved_name is None:
+            unresolved_name = _first_unresolved_name(statement.value, frozenset(resolved))
         if isinstance(statement.value, ast.Name):
             if started_operations:
                 return _ParseFailure("unknown_frame_root")
@@ -2237,7 +2250,38 @@ def _parse_program(
 
     if root_input is None:
         return _ParseFailure("no_frame_root")
+    if unresolved_name is not None:
+        return _ParseFailure("unresolved_name")
     return LinearFrameProgram(root_input=root_input, operations=tuple(operations))
+
+
+def _first_unresolved_name(node: ast.AST, resolved: frozenset[str]) -> str | None:
+    """Return the first name in *node* outside *resolved*, or ``None``.
+
+    A lambda's own parameters resolve inside its body; its defaults are
+    evaluated where the lambda is written.
+    """
+    if isinstance(node, ast.Name):
+        return None if node.id in resolved else node.id
+    if isinstance(node, ast.Lambda):
+        arguments = node.args
+        for default in [*arguments.defaults, *arguments.kw_defaults]:
+            if default is not None and (found := _first_unresolved_name(default, resolved)):
+                return found
+        parameters = {
+            argument.arg
+            for argument in [
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+                *(extra for extra in (arguments.vararg, arguments.kwarg) if extra is not None),
+            ]
+        }
+        return _first_unresolved_name(node.body, resolved | parameters)
+    for child in ast.iter_child_nodes(node):
+        if (found := _first_unresolved_name(child, resolved)) is not None:
+            return found
+    return None
 
 
 def _rename_schema(
@@ -2714,6 +2758,7 @@ def analyze_polars_lineage(
     input_dtypes: Mapping[str, Mapping[str, pl.DataType]] | None = None,
     selector_aliases: frozenset[str] = frozenset(),
     df_input: str | None = None,
+    value_names: frozenset[str] = frozenset(),
 ) -> ColumnLineageAnalysis:
     """Prove exact output schema and per-input demand for linear Polars code.
 
@@ -2725,6 +2770,12 @@ def analyze_polars_lineage(
     for nodes whose builder binds their first input frame to ``df``. ``df``
     is never a join operand, since after the first statement it is the live
     frame rather than that input.
+
+    ``value_names`` are names the node binds to values that are never Polars
+    expressions or frames (an External File's loaded ``obj``). Every other name
+    the code uses must be an input, ``pl``, a selector alias, a lambda
+    parameter, or a helper built only from those; otherwise the program is
+    ``unresolved_name``.
     """
     if not isinstance(code, str) or not code.strip():
         return _unsupported("empty_code")
@@ -2741,6 +2792,7 @@ def analyze_polars_lineage(
         False,
         frozenset(selector_aliases),
         df_input,
+        frozenset(value_names),
     )
     if isinstance(program, _ParseFailure):
         return _unsupported(program.reason, program.operation)

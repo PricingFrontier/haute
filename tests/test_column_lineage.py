@@ -570,6 +570,62 @@ def test_python_value_expressions_cannot_smuggle_column_names(code: str, reason:
     assert result.reason == reason
 
 
+@pytest.mark.parametrize(
+    ("code", "demand"),
+    [
+        ("df = rows.with_columns(x=pl.col('a') * weight)", {"x"}),
+        ("df = rows.filter(pl.col('a') > weight)", {"a"}),
+        ("df = rows.with_columns(x=-weight)", {"x"}),
+        ("df = rows.with_columns(x=pl.col('a') * (weight if True else 1))", {"x"}),
+        ("df = rows.with_columns(x=pl.col('a').replace_strict([1, 5, 9], weight))", {"x"}),
+        ("scale = weight\ndf = rows.with_columns(x=pl.col('a') * scale)", {"x"}),
+    ],
+)
+def test_a_name_the_analyser_cannot_resolve_fails_closed(code: str, demand: set[str]) -> None:
+    """A preamble name can hold an expression that reads columns the walk cannot see."""
+    frame = pl.DataFrame({"a": [1, 5, 9], "b": [2, 3, 4]})
+    preamble = {"weight": pl.col("b")}
+    _exec_user_code(code, ["rows"], (frame.lazy(),), extra_ns=preamble).collect()
+    with pytest.raises(pl.exceptions.ColumnNotFoundError):
+        _exec_user_code(code, ["rows"], (frame.select("a").lazy(),), extra_ns=preamble).collect()
+
+    result = analyze_polars_lineage(code, {"rows": None}, demand)
+
+    assert not result.supported
+    assert result.reason == "unresolved_name"
+    assert analyze_polars_cardinality(code, {"rows": 3}).supported
+
+
+@pytest.mark.parametrize(
+    ("code", "value_names"),
+    [
+        ("rate = 2\ndf = rows.with_columns(x=pl.col('a') * rate)", frozenset()),
+        ("df = rows.with_columns(x=pl.col('a').map_batches(lambda s: s * 2))", frozenset()),
+        ("df = rows.with_columns(x=pl.col('a') * obj['factor'])", frozenset({"obj"})),
+        (
+            "factor = obj['factor']\ndf = rows.with_columns(x=pl.col('a') * factor)",
+            frozenset({"obj"}),
+        ),
+    ],
+)
+def test_names_the_analyser_can_resolve_stay_supported(
+    code: str, value_names: frozenset[str]
+) -> None:
+    result = analyze_polars_lineage(code, {"rows": None}, {"x"}, value_names=value_names)
+
+    assert result.supported, result
+    assert result.demands_by_input == {"rows": frozenset({"a"})}
+
+
+def test_an_undeclared_value_name_is_unresolved() -> None:
+    result = analyze_polars_lineage(
+        "df = rows.with_columns(x=pl.col('a') * obj['factor'])", {"rows": None}, {"x"}
+    )
+
+    assert not result.supported
+    assert result.reason == "unresolved_name"
+
+
 def test_a_variable_in_a_selector_predicate_keeps_the_row_count_proof() -> None:
     code = "bound = 2\ndf = rows.filter(pl.all().is_between(bound, 10))"
 
@@ -632,7 +688,9 @@ def test_a_column_name_the_walk_cannot_see_fails_closed(
 def test_arguments_that_are_never_column_names_stay_supported(code: str) -> None:
     frame = pl.DataFrame({"a": [1, 5, 9], "b": [2, 2, 2]})
     obj = {"factor": 3, "mapping": {1: "b", 5: "c"}, "name": "b"}
-    result = analyze_polars_lineage(code, {"rows": frozenset(frame.columns)}, {"x"})
+    result = analyze_polars_lineage(
+        code, {"rows": frozenset(frame.columns)}, {"x"}, value_names=frozenset({"obj"})
+    )
 
     assert result.supported, result
     assert result.demands_by_input == {"rows": frozenset({"a"})}
