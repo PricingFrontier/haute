@@ -1906,6 +1906,120 @@ def test_single_parent_polars_helper_call_keeps_visible_full_width_boundary():
     assert reason.details == {"reason": "dynamic_helper", "operation": None}
 
 
+def _external_file_plan(code: str, fields: list[str], *, parents: tuple[str, ...] = ("source",)):
+    """Plan ``parents -> ext(code) -> out(fields)`` for an External File node."""
+    graph = make_graph(
+        {
+            "nodes": [
+                *(
+                    {
+                        "id": parent,
+                        "data": {
+                            "label": parent,
+                            "nodeType": "dataInput",
+                            "config": {"path": f"{parent}.parquet"},
+                        },
+                    }
+                    for parent in parents
+                ),
+                {
+                    "id": "ext",
+                    "data": {
+                        "label": "ext",
+                        "nodeType": "externalFile",
+                        "config": {"path": "factors.json", "fileType": "json", "code": code},
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": make_output_config(fields),
+                    },
+                },
+            ],
+            "edges": [
+                *(make_edge(parent, "ext").model_dump() for parent in parents),
+                make_edge("ext", "out").model_dump(),
+            ],
+        }
+    )
+    return plan(
+        ProjectionRequest(graph=graph, target_node_id="out", profile=ExecutionProfile.LAZY_SINK)
+    )
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = df.with_columns(x=pl.col('premium') * obj['factor'])",
+        "df = source.with_columns(x=pl.col('premium') * obj['factor'])",
+        "df = df.with_columns(x=pl.col('premium') + pl.lit(obj['loading']))",
+    ],
+)
+def test_external_file_code_narrows_its_input_through_column_lineage(code: str) -> None:
+    projection = _external_file_plan(code, ["x"])
+
+    assert projection.needed_by_node["ext"] == frozenset({"x"})
+    assert projection.needed_by_node["source"] == frozenset({"premium"})
+    assert pair_value(projection.edge_demands, "source", "ext") == frozenset({"premium"})
+    reason = pair_value(projection.diagnostics.edge_reasons, "source", "ext")
+    assert reason.rule == "polars_column_lineage"
+
+
+def test_external_file_df_is_the_first_incoming_frame() -> None:
+    projection = _external_file_plan(
+        "df = df.with_columns(x=pl.col('premium') * obj['factor'])",
+        ["x"],
+        parents=("source", "lookup"),
+    )
+
+    assert pair_value(projection.edge_demands, "source", "ext") == frozenset({"premium"})
+    assert pair_value(projection.edge_demands, "lookup", "ext") == frozenset()
+
+
+def test_external_file_input_named_df_keeps_its_inputs_full_width() -> None:
+    """The builder rebinds ``df`` to the first frame, so an input named ``df`` is ambiguous."""
+    projection = _external_file_plan(
+        "df = df.with_columns(x=pl.col('premium') * obj['factor'])",
+        ["x"],
+        parents=("lookup", "df"),
+    )
+
+    assert not has_pair(projection.edge_demands, "lookup", "ext")
+    assert not has_pair(projection.edge_demands, "df", "ext")
+    assert projection.needed_by_node["lookup"] is None
+    assert projection.needed_by_node["df"] is None
+    reason = pair_value(projection.diagnostics.edge_reasons, "df", "ext")
+    assert reason.rule == "unprojected_streaming_boundary"
+
+
+@pytest.mark.parametrize(
+    ("code", "lineage_reason"),
+    [
+        ("df = df.select(obj['features'])", "dynamic_select"),
+        (
+            "df = df.with_columns("
+            "x=pl.when(pl.col('premium') > 1).then(obj['column']).otherwise(0))",
+            "dynamic_with_columns",
+        ),
+        ("df = df.with_columns(pl.lit(1).alias(obj['column']))", "dynamic_with_columns"),
+        ("df = df.with_columns(x=obj.predict(df))", "dynamic_with_columns"),
+    ],
+)
+def test_external_file_code_outside_lineage_keeps_its_input_full_width(
+    code: str, lineage_reason: str
+) -> None:
+    projection = _external_file_plan(code, ["x"])
+
+    assert not has_pair(projection.edge_demands, "source", "ext")
+    assert projection.needed_by_node["source"] is None
+    reason = pair_value(projection.diagnostics.edge_reasons, "source", "ext")
+    assert reason.rule == "polars_lineage_unsupported"
+    assert reason.details["reason"] == lineage_reason
+
+
 def test_single_parent_polars_named_root_derive_select_narrows_parent_demand():
     """A first chain rooted at the named input is as projectable as ``df``."""
     projection = _single_parent_polars_plan(

@@ -2555,12 +2555,12 @@ def _must_run_source_user_code_unprojected(node: GraphNode, demand: set[str] | N
     safe bounded strategy is to scan full width, run the source code, then let
     downstream edges/checkpoints narrow the frame again.  A Data Input whose
     code the column lineage model proves for a known *demand* is the exception:
-    its builder reads exactly the columns that code consumes.
+    its builder reads exactly the columns that code consumes.  An External File
+    opens no scan, so its code is analysed as a transform instead.
     """
     if node.data.nodeType not in {
         NodeType.API_INPUT,
         NodeType.DATA_INPUT,
-        NodeType.EXTERNAL_FILE,
     } or not _user_code_has_unbounded_projection_contract(node):
         return False
     return not (
@@ -2847,7 +2847,11 @@ _PROJECTION_RULE_COVERAGE_BY_NODE_TYPE: Mapping[NodeType, ProjectionRuleCoverage
         {
             NodeType.API_INPUT: _coverage(NodeType.API_INPUT, _SOURCE_SCAN_RULE_NAME),
             NodeType.DATA_INPUT: _coverage(NodeType.DATA_INPUT, _SOURCE_SCAN_RULE_NAME),
-            NodeType.EXTERNAL_FILE: _coverage(NodeType.EXTERNAL_FILE, _SOURCE_SCAN_RULE_NAME),
+            NodeType.EXTERNAL_FILE: _coverage(
+                NodeType.EXTERNAL_FILE,
+                _GENERIC_CONTRACT_RULE_NAME,
+                POLARS_COLUMN_LINEAGE_RULE_NAME,
+            ),
             NodeType.CONSTANT: _coverage(NodeType.CONSTANT, _SOURCE_SCAN_RULE_NAME),
             NodeType.POLARS: _coverage(
                 NodeType.POLARS,
@@ -3383,6 +3387,12 @@ def _exact_columns_for_parent_edge(
     return exact_output_by_node.get(edge.source)
 
 
+# Node kinds whose ``code`` runs over their incoming frames and is analysed with
+# compositional column lineage. An External File also binds its loaded
+# artifact as ``obj``, which lineage treats as a value like any preamble name.
+_LINEAGE_CODE_NODE_TYPES = frozenset({NodeType.POLARS, NodeType.EXTERNAL_FILE})
+
+
 def _lineage_input_bindings(
     node: GraphNode,
     incoming_edges: Iterable[GraphEdge],
@@ -3447,7 +3457,7 @@ def _analyse_polars_node_lineage(
     selector_aliases: frozenset[str] = frozenset(),
     known_port_columns: Mapping[tuple[str, str | None], frozenset[str]] | None = None,
 ) -> tuple[ColumnLineageAnalysis, tuple[_LineageInputBinding, ...]] | None:
-    if node.data.nodeType is not NodeType.POLARS:
+    if node.data.nodeType not in _LINEAGE_CODE_NODE_TYPES:
         return None
     produced, referenced = contract.to_tuple()
     if produced is not None and referenced is not None:
@@ -3455,9 +3465,10 @@ def _analyse_polars_node_lineage(
     code = node.data.config.get("code")
     if not isinstance(code, str) or not code.strip():
         return None
+    edges = tuple(incoming_edges)
     bindings = _lineage_input_bindings(
         node,
-        incoming_edges,
+        edges,
         node_map,
         exact_output_by_node,
         submodels=submodels,
@@ -3468,8 +3479,22 @@ def _analyse_polars_node_lineage(
     schemas: dict[str, frozenset[str] | None] = {}
     for binding in bindings:
         schemas[binding.name] = binding.exact_columns
+    df_input: str | None = None
+    if node.data.nodeType is NodeType.EXTERNAL_FILE:
+        # The builder binds the first incoming frame to ``df`` over any input of
+        # that name, so an input called ``df`` has no single meaning here.
+        if "df" in schemas:
+            return None
+        first_key = ProjectionEdgeKey.from_edge(edges[0])
+        df_input = next(binding.name for binding in bindings if binding.key == first_key)
     return (
-        analyze_polars_lineage(code, schemas, demanded_output, selector_aliases=selector_aliases),
+        analyze_polars_lineage(
+            code,
+            schemas,
+            demanded_output,
+            selector_aliases=selector_aliases,
+            df_input=df_input,
+        ),
         bindings,
     )
 

@@ -1788,6 +1788,178 @@ def test_lazy_source_projection_keeps_a_colliding_rename_fatal(tmp_path: Path, c
         outputs["source"].collect()
 
 
+def _source_and_child_graph(path: Path, child: dict[str, object]):
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataInput",
+                        "config": make_ready_file_input_config(path),
+                    },
+                },
+                {"id": "child", "data": {"label": "child", **child}},
+            ],
+            "edges": [make_edge("source", "child").model_dump()],
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("child", "demand", "expected"),
+    [
+        pytest.param(
+            {
+                "nodeType": "polars",
+                "config": {
+                    "code": "df = source.drop('a', 'b').with_columns(x=pl.int_range(pl.len()))"
+                },
+            },
+            "x",
+            [0, 1, 2],
+            id="polars-drops-every-demanded-column",
+        ),
+        pytest.param(
+            {
+                "nodeType": "scenarioExpander",
+                "config": {
+                    "column_name": "m",
+                    "step_column": "scenario_index",
+                    "steps": 1,
+                    "code": (
+                        "df = df.drop('a', 'm', 'scenario_index')"
+                        ".with_columns(x=pl.int_range(pl.len()))"
+                    ),
+                },
+            },
+            "x",
+            [0, 1, 2],
+            id="post-code-drops-every-demanded-column",
+        ),
+        pytest.param(
+            {"nodeType": "polars", "config": {"code": "df = source.select(pl.len())"}},
+            "len",
+            [3],
+            id="polars-row-count",
+        ),
+    ],
+)
+def test_lazy_code_below_a_schema_less_parent_keeps_every_row(
+    tmp_path: Path,
+    child: dict[str, object],
+    demand: str,
+    expected: list[int],
+) -> None:
+    """Without the parent's schema no carrier can be chosen, so the code must not lose rows."""
+    path = tmp_path / "rows.parquet"
+    pl.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6], "keep": [7, 8, 9]}).write_parquet(path)
+
+    outputs, *_ = execute_lazy_graph(
+        _source_and_child_graph(path, child),
+        _build_node_fn,
+        target_node_id="child",
+        required_columns_by_node={"child": {demand}},
+        execution_context=_context(ExecutionProfile.LAZY_SINK),
+    )
+
+    assert outputs["child"].collect()[demand].to_list() == expected
+
+
+def _external_file_graph(tmp_path: Path, code: str, *, lookup: bool = False):
+    artifact = tmp_path / "factors.json"
+    artifact.write_text(json.dumps({"factor": 10, "column": "tier"}))
+    policies = tmp_path / "policies.parquet"
+    pl.DataFrame(
+        {"premium": [1, 2, 3], "tier": ["a", "b", "c"], "unused": [7, 8, 9]}
+    ).write_parquet(policies)
+    nodes: list[dict[str, object]] = [
+        {
+            "id": "policies",
+            "data": {
+                "label": "policies",
+                "nodeType": "dataInput",
+                "config": make_ready_file_input_config(policies),
+            },
+        },
+        {
+            "id": "ext",
+            "data": {
+                "label": "ext",
+                "nodeType": "externalFile",
+                "config": {"path": str(artifact), "fileType": "json", "code": code},
+            },
+        },
+    ]
+    edges = [make_edge("policies", "ext").model_dump()]
+    if lookup:
+        lookups = tmp_path / "lookup.parquet"
+        pl.DataFrame({"band": ["x", "y", "z"]}).write_parquet(lookups)
+        nodes.append(
+            {
+                "id": "lookup",
+                "data": {
+                    "label": "lookup",
+                    "nodeType": "dataInput",
+                    "config": make_ready_file_input_config(lookups),
+                },
+            }
+        )
+        edges.append(make_edge("lookup", "ext").model_dump())
+    return make_graph({"nodes": nodes, "edges": edges})
+
+
+@pytest.mark.parametrize(
+    ("code", "lookup", "scanned_width", "expected"),
+    [
+        pytest.param(
+            "df = df.with_columns(x=pl.col('premium') * obj['factor'])",
+            False,
+            1,
+            [10, 20, 30],
+            id="obj-as-a-value",
+        ),
+        pytest.param(
+            "df = df.with_columns(x=pl.col('premium') * obj['factor'])",
+            True,
+            1,
+            [10, 20, 30],
+            id="df-is-the-first-input",
+        ),
+        pytest.param(
+            "df = df.with_columns("
+            "x=pl.when(pl.col('premium') > 1).then(obj['column']).otherwise(pl.lit('none')))",
+            False,
+            None,  # a full-width scan records no projected width
+            ["none", "b", "c"],
+            id="obj-names-a-column",
+        ),
+    ],
+)
+def test_lazy_external_file_reads_only_what_its_code_provably_consumes(
+    tmp_path: Path,
+    code: str,
+    lookup: bool,
+    scanned_width: int | None,
+    expected: list[object],
+) -> None:
+    context = _context(ExecutionProfile.LAZY_SINK)
+
+    outputs, *_ = execute_lazy_graph(
+        _external_file_graph(tmp_path, code, lookup=lookup),
+        _build_node_fn,
+        target_node_id="ext",
+        required_columns_by_node={"ext": {"x"}},
+        execution_context=context,
+    )
+
+    assert outputs["ext"].collect()["x"].to_list() == expected
+    widths = context.metrics_payload()["column_widths"]
+    policies = next(item for item in widths["items"] if item["node_id"] == "policies")
+    assert policies["physically_scanned_width"] == scanned_width
+
+
 def test_strategy_provenance_snapshots_one_shot_projection_seeds(tmp_path: Path) -> None:
     path = tmp_path / "one-shot-seed.parquet"
     pl.DataFrame({"x": [1], "unused": [2]}).write_parquet(path)
