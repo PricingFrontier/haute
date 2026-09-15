@@ -3296,6 +3296,12 @@ def test_chained_boundaries_are_recorded_in_evaluation_order(
             "value = src if flag else pl.col('p')\ndf = src.with_columns(value.diff())",
             ("diff",),
         ),
+        (
+            # An expression or a namespace is never a frame, but may be an expression.
+            "value = pl.col('l').list if flag else pl.col('p')\n"
+            "df = src.with_columns(value.sort(), value.diff())",
+            ("diff",),
+        ),
     ],
 )
 def test_neighbouring_row_expressions_are_boundaries_on_any_expression(
