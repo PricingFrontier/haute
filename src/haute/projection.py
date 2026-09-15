@@ -31,6 +31,7 @@ from haute._estimate_calibration import (
 from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name, build_parents_of, edge_input_name
 from haute._polars_operations import (
+    EXPRESSION_NAMESPACE_NAMES,
     OperationReceiver,
     materialising_expression_methods,
     materialising_frame_methods,
@@ -1444,7 +1445,7 @@ evaluation order, so the order it records is the order the frame is transformed.
 _COMPREHENSION_TYPES = (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
 
 # What a value provably is: a frame chain, provably not a frame, or unresolvable.
-_BindingFact = Literal["frame", "non_frame", "unknown"]
+_BindingFact = Literal["frame", "non_frame", "namespace", "unknown"]
 
 # ``pl.<name>(...)`` calls that build expressions rather than frames. Any other
 # ``pl`` attribute call (``pl.concat``, ``pl.scan_parquet``, ``pl.DataFrame``)
@@ -1461,13 +1462,23 @@ def _mutation_root_name(target: ast.AST) -> str | None:
 
 
 def _combine_facts(facts: Iterable[_BindingFact]) -> _BindingFact:
-    """Return the most frame-like fact in ``facts`` (frame > unknown > non-frame)."""
-    collected = list(facts)
-    if "frame" in collected:
-        return "frame"
-    if "unknown" in collected:
-        return "unknown"
-    return "non_frame"
+    """Return the fact of a value that may be any one of ``facts``.
+
+    Equal facts stay; a non-frame and an expression namespace are both
+    non-frames; any other mix may be a frame or may not be one.
+    """
+    collected = set(facts)
+    if not collected:
+        return "non_frame"
+    if len(collected) == 1:
+        return next(iter(collected))
+    if collected <= {"non_frame", "namespace"}:
+        return "non_frame"
+    return "unknown"
+
+
+def _is_non_frame(fact: _BindingFact) -> bool:
+    return fact in ("non_frame", "namespace")
 
 
 def _materialising_calls_in_source_order(
@@ -1479,17 +1490,18 @@ def _materialising_calls_in_source_order(
     """Classify materialising calls with the receiver state at each evaluation.
 
     The pass walks statements in program order and expressions in Python
-    evaluation order, tracking for every simple name whether it is a *frame*
-    (one of the node's bound input names, ``df``, or a name bound from a
-    frame), a *provable non-frame* (``pl`` itself, a literal, an operator or
+    evaluation order, holding one fact for every simple name: a *proven frame*
+    (one of the node's bound input names, ``df``, or a name definitely bound
+    from a proven frame), a *provable non-frame* (``pl`` itself, a literal, a
     comparison result, a ``pl``-rooted expression chain, a function or lambda
-    object, or a name definitely rebound to one of those), or a *may-frame*
+    object, or a name definitely rebound to one of those), an *expression
+    namespace* (``pl.col("l").list``, or a name bound to one), or a *may-frame*
     (every other name: a preamble name, a function parameter, or a name bound
-    from a call the analyser cannot see through). A materialising call is a
-    boundary unless its receiver is a provable non-frame, so a preamble
-    frame's ``group_by``, a helper's returned frame, and a parameter inside a
-    user function all admit a boundary, while ``pl.col(...).list.group_by(...)``
-    never does.
+    from a call the analyser cannot see through). A frame-method call is a
+    boundary unless its receiver is a provable non-frame or a namespace, so a
+    preamble frame's ``group_by``, a helper's returned frame, and a parameter
+    inside a user function all admit a boundary, while
+    ``pl.col(...).list.group_by(...)`` never does.
 
     Binding model. Every simple-name binding form is applied in evaluation
     order: plain, chained (``a = b = value``), annotated, and element-wise
@@ -1505,8 +1517,11 @@ def _materialising_calls_in_source_order(
     frame only for the code that follows. Bindings inside nested blocks,
     short-circuit operands (later operands of ``and``/``or`` and later
     comparators of a chained comparison), conditional branches, lambda and
-    function bodies, and comprehensions are may-bindings: they can add a
-    frame fact but never remove one. Values the analyser cannot resolve
+    function bodies, and comprehensions are may-bindings: they combine the
+    name's fact with the bound value's, so they can add a frame possibility
+    but never remove one. An ``and``/``or``, conditional expression, or
+    operator whose operands' facts differ is a may-frame, except that a
+    non-frame and a namespace combine to a non-frame. Values the analyser cannot resolve
     (unpacking from an unknown value, starred, loop, ``with``, and
     comprehension targets, calls it cannot see through) and every mutable
     container (a list, set, or dict display or comprehension, whatever it
@@ -1517,14 +1532,24 @@ def _materialising_calls_in_source_order(
 
     Frame methods in ``materialising`` are classified by receiver as described
     above. ``materialising_expressions`` holds expression-level boundary
-    methods (``over``): a window expression's receiver is always a ``pl``-rooted
-    chain, which the receiver rule proves is not a frame, so these are matched
-    on the attribute wherever they appear in the node's code -- except on a
-    receiver the analyser proves *is* a frame, which cannot be an expression.
+    methods (``over``, ``shift``, ``diff``, ``pct_change``), written on
+    expressions rather than frames: they are a boundary on any receiver except
+    a proven frame, which cannot be an expression, and an expression namespace
+    (``.list.shift``, directly or through a bound name), whose same-named method
+    works within each row's value. A may-frame receiver -- a helper's parameter,
+    or a value that may be a frame or an expression -- admits both rules.
     """
-    frames: set[str] = set(input_names) | {"df"}
-    non_frames: set[str] = {"pl"}
+    facts_by_name: dict[str, _BindingFact] = {name: "frame" for name in (*input_names, "df")}
+    facts_by_name["pl"] = "non_frame"
     found: list[_MaterialisingCall] = []
+
+    def expression_boundary(attribute: ast.Attribute, receiver: _BindingFact) -> bool:
+        # A proven frame has no expression methods, and ``expr.list.shift`` works
+        # within each row's value rather than being ``Expr.shift``.
+        if attribute.attr not in materialising_expressions or receiver in ("frame", "namespace"):
+            return False
+        value = attribute.value
+        return not (isinstance(value, ast.Attribute) and value.attr in EXPRESSION_NAMESPACE_NAMES)
 
     def record(node: ast.AST, attr: str) -> None:
         found.append(
@@ -1537,22 +1562,12 @@ def _materialising_calls_in_source_order(
         )
 
     def name_fact(name: str) -> _BindingFact:
-        if name in frames:
-            return "frame"
-        if name in non_frames:
-            return "non_frame"
-        return "unknown"
+        return facts_by_name.get(name, "unknown")
 
     def apply_facts(facts: Iterable[tuple[str, _BindingFact]], *, definite: bool) -> None:
         for name, fact in facts:
-            if fact == "non_frame":
-                if definite:
-                    frames.discard(name)
-                    non_frames.add(name)
-            else:
-                # A frame, or an unresolvable value that may hold one.
-                frames.add(name)
-                non_frames.discard(name)
+            # A may-binding keeps what the name held before as a possibility.
+            facts_by_name[name] = fact if definite else _combine_facts((name_fact(name), fact))
 
     def collect(
         target: ast.AST,
@@ -1605,8 +1620,8 @@ def _materialising_calls_in_source_order(
             # A materialising method taken as a value (``g = df.group_by``) is
             # recorded where it is bound: the later ``g(...)`` call has a plain
             # name for its callee and cannot be classified by receiver.
-            if (node.attr in materialising and fact != "non_frame") or (
-                node.attr in materialising_expressions and fact != "frame"
+            if (node.attr in materialising and not _is_non_frame(fact)) or expression_boundary(
+                node, fact
             ):
                 record(node, node.attr)
             if (
@@ -1617,6 +1632,9 @@ def _materialising_calls_in_source_order(
                 # ``pl.LazyFrame`` / ``pl.DataFrame`` are frame classes whose
                 # unbound methods take a frame as their first argument.
                 return "unknown"
+            if _is_non_frame(fact):
+                # ``pl.col("l").list`` is a namespace; a namespace's method is not.
+                return "namespace" if node.attr in EXPRESSION_NAMESPACE_NAMES else "non_frame"
             return fact
         if isinstance(node, ast.Subscript):
             fact = evaluate(node.value, definite=definite)
@@ -1626,10 +1644,10 @@ def _materialising_calls_in_source_order(
             materialises = False
             if isinstance(node.func, ast.Attribute):
                 receiver = evaluate(node.func.value, definite=definite)
-                materialises = (node.func.attr in materialising and receiver != "non_frame") or (
-                    node.func.attr in materialising_expressions and receiver != "frame"
-                )
-                if receiver != "non_frame":
+                materialises = (
+                    node.func.attr in materialising and not _is_non_frame(receiver)
+                ) or expression_boundary(node.func, receiver)
+                if not _is_non_frame(receiver):
                     fact = receiver
                 elif (
                     isinstance(node.func.value, ast.Name)
@@ -1676,13 +1694,14 @@ def _materialising_calls_in_source_order(
             for index, comparator in enumerate(node.comparators):
                 evaluate(comparator, definite=definite and index == 0)
             return "non_frame"
-        if isinstance(node, ast.BinOp | ast.UnaryOp):
-            return _combine_facts(
-                evaluate(child, definite=definite) for child in ast.iter_child_nodes(node)
-            )
+        if isinstance(node, ast.BinOp):
+            left = evaluate(node.left, definite=definite)
+            return _combine_facts((left, evaluate(node.right, definite=definite)))
+        if isinstance(node, ast.UnaryOp):
+            return _combine_facts((evaluate(node.operand, definite=definite),))
         if isinstance(node, ast.Tuple):
             content = _combine_facts(evaluate(item, definite=definite) for item in node.elts)
-            return "non_frame" if content == "non_frame" else "unknown"
+            return "non_frame" if _is_non_frame(content) else "unknown"
         if isinstance(node, ast.List | ast.Set):
             # A mutable container may receive a frame after it is built.
             for item in node.elts:
@@ -1738,7 +1757,7 @@ def _materialising_calls_in_source_order(
             element_facts = [evaluate(item, definite=definite) for item in value.elts]
             fact = (
                 "non_frame"
-                if isinstance(value, ast.Tuple) and _combine_facts(element_facts) == "non_frame"
+                if isinstance(value, ast.Tuple) and _is_non_frame(_combine_facts(element_facts))
                 else "unknown"
             )
         else:
@@ -1755,7 +1774,7 @@ def _materialising_calls_in_source_order(
         definite: bool,
     ) -> None:
         """Analyse a function or lambda body with its parameters as may-frames."""
-        nonlocal frames, non_frames
+        nonlocal facts_by_name
         for default in (*args.defaults, *args.kw_defaults):
             if default is not None:
                 evaluate(default, definite=definite)
@@ -1765,9 +1784,8 @@ def _materialising_calls_in_source_order(
         for variadic in (args.vararg, args.kwarg):
             if variadic is not None:
                 parameters.add(variadic.arg)
-        outer_frames, outer_non_frames = frames, non_frames
-        frames = set(outer_frames) | parameters
-        non_frames = set(outer_non_frames) - parameters
+        outer_facts = facts_by_name
+        facts_by_name = {**outer_facts, **dict.fromkeys(parameters, "unknown")}
         try:
             if isinstance(body, list):
                 for stmt in body:
@@ -1775,14 +1793,17 @@ def _materialising_calls_in_source_order(
             else:
                 evaluate(body, definite=False)
         finally:
-            inner_frames = frames
-            frames, non_frames = outer_frames, outer_non_frames
+            inner_facts = facts_by_name
+            facts_by_name = outer_facts
         # A name that may hold a frame inside the body (a nonlocal or global
         # write, or simply a local the analyser cannot scope) stays a
         # may-frame outside it; the parameters themselves do not escape.
-        escaped = inner_frames - parameters
-        frames.update(escaped)
-        non_frames.difference_update(escaped)
+        escaped = (
+            (name, fact)
+            for name, fact in inner_facts.items()
+            if name not in parameters and not _is_non_frame(fact)
+        )
+        apply_facts(escaped, definite=False)
 
     def visit(node: ast.AST, *, definite: bool) -> None:
         if isinstance(node, ast.Assign):

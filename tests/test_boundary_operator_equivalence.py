@@ -287,6 +287,37 @@ def test_shift_boundary_preserves_ordering_and_schema(tmp_path: Path) -> None:
     assert planned.equals(expected)
 
 
+@pytest.mark.parametrize(
+    ("operator", "code", "expression"),
+    [
+        (
+            "shift",
+            "df = src.with_columns(pl.col('premium').shift(1).alias('previous'))",
+            pl.col("premium").shift(1).alias("previous"),
+        ),
+        (
+            "diff",
+            "df = src.with_columns(pl.col('premium').diff().alias('change'))",
+            pl.col("premium").diff().alias("change"),
+        ),
+        (
+            "pct_change",
+            "df = src.with_columns(pl.col('premium').pct_change().alias('change_rate'))",
+            pl.col("premium").pct_change().alias("change_rate"),
+        ),
+    ],
+)
+def test_neighbouring_row_expression_boundaries_preserve_ordering_and_schema(
+    tmp_path: Path, operator: str, code: str, expression: pl.Expr
+) -> None:
+    """Proves: ordering, schema, and the neighbouring-row values."""
+    planned, source = _run_single_input(tmp_path, code, operator)
+
+    expected = _tail(source.with_columns(expression)).collect()
+    _assert_same_schema(planned, expected)
+    assert planned.equals(expected)
+
+
 def test_top_k_boundary_preserves_ordering_row_count_and_schema(tmp_path: Path) -> None:
     """Proves: ordering, row multiplicity, schema."""
     planned, source = _run_single_input(tmp_path, "df = src.top_k(25, by='premium')", "top_k")

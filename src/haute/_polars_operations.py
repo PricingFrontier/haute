@@ -30,6 +30,7 @@ __all__ = [
     "OperationClass",
     "OperationPolicy",
     "OperationReceiver",
+    "EXPRESSION_NAMESPACE_NAMES",
     "PolarsOperation",
     "SelectorForm",
     "chunk_admitted_names",
@@ -44,6 +45,14 @@ __all__ = [
     "unbounded_expansion_expression_methods",
     "validate_operations",
 ]
+
+
+# The attribute namespaces Polars exposes on an expression. A method reached
+# through one (``pl.col("l").list.shift()``) works within each row's value, so it
+# is never the same-named expression-level method.
+EXPRESSION_NAMESPACE_NAMES = frozenset(
+    {"str", "dt", "list", "arr", "struct", "cat", "bin", "name", "meta"}
+)
 
 
 class OperationReceiver(StrEnum):
@@ -669,13 +678,33 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
     _row_local_expr("round", "proof: expr_round"),
     _row_local_expr("sqrt", "proof: expr_sqrt"),
     _row_local_expr("then", "proof: expr_when_then_otherwise"),
-    _order_dependent_expr("shift", "reads neighbouring rows"),
+    _op(
+        _EXPR,
+        "shift",
+        _ORDER_DEPENDENT,
+        _P_BOUNDARY,
+        "reads neighbouring rows. materialises: a lag column over the full-width fact "
+        "grows with the input like the frame method, certified by the fresh-process lane "
+        "against the scan control and witnessed by growth at four times the rows; the "
+        "certified observed/(width x 3.0) ratio needs no margin",
+        memory_evidence="measured",
+    ),
     _order_dependent_expr("cum_sum", "running total over the whole column"),
     _order_dependent_expr("cum_count", "running count over the whole column"),
     _order_dependent_expr("cum_max", "running extremum over the whole column"),
     _order_dependent_expr("cum_min", "running extremum over the whole column"),
     _order_dependent_expr("cum_prod", "running product over the whole column"),
-    _order_dependent_expr("diff", "reads neighbouring rows"),
+    _op(
+        _EXPR,
+        "diff",
+        _ORDER_DEPENDENT,
+        _P_BOUNDARY,
+        "reads neighbouring rows; Polars computes it as the column minus its shift. "
+        "materialises: certified by the fresh-process lane against the scan control and "
+        "witnessed by growth at four times the rows; the certified observed/(width x 3.0) "
+        "ratio needs no margin",
+        memory_evidence="measured",
+    ),
     _order_dependent_expr("rank", "global ranking"),
     _order_dependent_expr("rolling_mean", "window spans chunk edges"),
     _order_dependent_expr("rolling_sum", "window spans chunk edges"),
@@ -686,7 +715,18 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
     _order_dependent_expr("forward_fill", "carries the previous non-null across chunk edges"),
     _order_dependent_expr("backward_fill", "carries the next non-null across chunk edges"),
     _order_dependent_expr("interpolate", "reads neighbouring rows"),
-    _order_dependent_expr("pct_change", "reads neighbouring rows"),
+    _op(
+        _EXPR,
+        "pct_change",
+        _ORDER_DEPENDENT,
+        _P_BOUNDARY,
+        "reads neighbouring rows. materialises: its extra memory grows about as fast as "
+        "the whole frame, certified by the fresh-process lane against the scan control "
+        "and witnessed by growth at four times the rows; the certified "
+        "observed/(width x 3.0) ratio needs 150 basis points of margin",
+        materialisation_factor_basis_points=150,
+        memory_evidence="measured",
+    ),
     _order_dependent_expr("arg_sort", "global ordering"),
     _order_dependent_expr("sort", "global ordering"),
     _order_dependent_expr("sort_by", "global ordering"),

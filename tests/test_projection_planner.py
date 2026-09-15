@@ -3269,6 +3269,75 @@ def test_chained_boundaries_are_recorded_in_evaluation_order(
     assert dict(_chained_boundary_sequences(code)) == {"op": expected}
 
 
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("df = src.with_columns(pl.col('p').shift(1).alias('lag'))", ("shift",)),
+        (
+            "df = src.with_columns(pl.col('p').diff().alias('d'), "
+            "pl.col('p').pct_change().alias('pc'))",
+            ("diff", "pct_change"),
+        ),
+        ("f = pl.col('p').diff\ndf = src.with_columns(f())", ("diff",)),
+        (
+            "def delta(expr):\n    return expr.diff()\ndf = src.with_columns(delta(pl.col('p')))",
+            ("diff",),
+        ),
+        (
+            "change = lambda expr: expr.pct_change()\ndf = src.with_columns(change(pl.col('p')))",
+            ("pct_change",),
+        ),
+        (
+            "def window(expr):\n    return expr.over('k')\n"
+            "df = src.with_columns(window(pl.col('p').sum()))",
+            ("over",),
+        ),
+        (
+            "value = src if flag else pl.col('p')\ndf = src.with_columns(value.diff())",
+            ("diff",),
+        ),
+    ],
+)
+def test_neighbouring_row_expressions_are_boundaries_on_any_expression(
+    code: str,
+    expected: tuple[str, ...],
+) -> None:
+    assert dict(_chained_boundary_sequences(code)) == {"op": expected}
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = src.with_columns(pl.col('l').list.shift(1), pl.col('l').list.diff())",
+        "df = src.with_columns(pl.col('a').arr.shift(1))",
+        "f = pl.col('l').list.diff\ndf = src.with_columns(f())",
+        "items = pl.col('l').list\ndf = src.with_columns(items.diff())",
+        "items = pl.col('l').list\nlag = items.shift\ndf = src.with_columns(lag(1))",
+        "items = pl.col('l').list if flag else pl.col('m').arr\n"
+        "df = src.with_columns(items.shift(1))",
+    ],
+)
+def test_same_named_expression_namespace_methods_are_not_boundaries(code: str) -> None:
+    """``list.shift`` and ``arr.shift`` work within each row's value."""
+    assert dict(_chained_boundary_sequences(code)) == {}
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("df = src.with_columns((pl.col('a') * 2).sort())", {}),
+        ("df = src.with_columns((-pl.col('a')).sort())", {}),
+        ("df = (src * 2).sort('a')", {"op": ("sort",)}),
+        ("scaled = src * factor\ndf = scaled.sort('a')", {"op": ("sort",)}),
+    ],
+)
+def test_an_operator_result_is_a_frame_only_when_an_operand_may_be_one(
+    code: str,
+    expected: dict[str, tuple[str, ...]],
+) -> None:
+    assert dict(_chained_boundary_sequences(code)) == expected
+
+
 def test_chained_boundary_diagnostic_names_the_first_operator_evaluated() -> None:
     from haute.projection import first_materialising_operators
 
