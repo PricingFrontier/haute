@@ -720,9 +720,8 @@ def _scenario_expander_columns(config: dict[str, Any]) -> _ColumnContract:
     cn = (config.get("column_name") or "").strip()
     if cn:
         produced.add(cn)
-    sc = config.get("step_column", "scenario_index")
-    if sc:
-        produced.add(sc)
+    # Execution names a blank step column ``scenario_index``.
+    produced.add(config.get("step_column") or "scenario_index")
     return produced, set()
 
 

@@ -2707,8 +2707,10 @@ def analyze_polars_lineage(
                 how=operation.how or "",
                 suffix=operation.suffix or "",
             )
-            # Exact schemas and exact output validation make routing total.
-            assert routed is not None
+            if routed is None:
+                # The shared router refuses a suffixed name that is also a real
+                # column when its base name exists on both sides, even as a key.
+                return _unsupported("join_schema_ambiguous", operation.method)
             left_demand, right_demand = routed
             demand = left_demand
             demands_by_input[operation.right_input].update(right_demand)

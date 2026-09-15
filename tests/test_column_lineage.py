@@ -1307,6 +1307,19 @@ def test_closed_operations_have_exact_structured_lineage(
             "join",
         ),
         (
+            # A later join key already present with its suffixed name on the left
+            # cannot be routed by the shared join router.
+            "df = policies.join(rates, on='id').join(factors, on='x')",
+            {
+                "policies": frozenset({"id", "x"}),
+                "rates": frozenset({"id", "x", "premium"}),
+                "factors": frozenset({"x", "f"}),
+            },
+            None,
+            "join_schema_ambiguous",
+            "join",
+        ),
+        (
             "df = rows.select('missing')",
             {"rows": frozenset({"a"})},
             None,

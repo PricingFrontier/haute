@@ -868,6 +868,16 @@ present a structural or schema result as execution evidence.
   remains available. Empty and identity-only rename mappings do not add a boundary.
   Runtime join refinement obeys the same boundary. Requested preview columns apply
   only to the target, even when the caller also requests ancestor preview rows.
+- **Builder post-code participates in projection planning.** A Model Score, Rating Step, or
+  Scenario Expander runs its optional `code` over the builder's own output as `df`. With a
+  known demand, the planner first analyses that code's column lineage against the demand,
+  then applies the contract of the builder's output before the code runs: a Rating Step's or
+  Scenario Expander's code-free contract derived from config (a declared contract describes
+  the whole node, post-code included, so it never fills these sides), or a Model Score's
+  registered scorer output with its unknown model inputs filled from the declared inputs (no
+  model is loaded). Columns the code computes are therefore never demanded from the
+  parent, and columns it reads are, even when the declared inputs list only model features. Post-code outside the lineage model keeps a
+  full-width boundary recorded as `builder_post_code`.
 - **Unowned fan-in never uses ordinary contract algebra.** After the dedicated
   optimiser, edge-join, and compositional Polars fan-in rules have had an
   opportunity to assign columns to individual incoming edges, any remaining node
@@ -890,7 +900,8 @@ present a structural or schema result as execution evidence.
   (`ContractMismatchError`), in every profile. Given the same graph and inputs, two
   profiles may differ in budgets, in eager-versus-streaming output mechanics, and in
   the diagnostic labels that describe those mechanics, never in which columns or
-  boundaries the plan keeps.
+  boundaries the pre-execution plan keeps. A target-only preview additionally publishes a
+  diagnostic re-planned from the frames it built (below).
 - **Literal selectors resolve against the exact schema.** `src/haute/_polars_selectors.py`
   recognises a column selector written with literal arguments — `pl.all()`, `pl.exclude`,
   `pl.nth`, argument-free `pl.first()`/`pl.last()`, regex, wildcard, or dtype `pl.col`,
@@ -932,6 +943,25 @@ present a structural or schema result as execution evidence.
   transfer return a structured unsupported lineage result. The planner retains the
   full-width edge/node boundary and its diagnostic; neither planning nor the UI
   silently treats it as projected.
+- **A target-only preview re-plans its diagnostic from the frames it built.** Before
+  execution the planner cannot route an Edge Join's demand to a parent whose schema is only
+  known once built, so every node above such a join was reported as an unprojected boundary
+  (and the preview warned at the first of them) even though the join's runtime demand is
+  projected into the lazy plan and Polars pushes it to the scans. After a target-only preview
+  (`materialize_node_ids` is exactly the target) has built every node, `_execute_eager_core`
+  re-runs `compute_prepared_plan` with each built node's output column names (per port for
+  a multi-frame node) as `known_output_columns` — seeding the target with the columns it
+  collected when the preview named none — re-applies the runtime-inferred edge demands
+  recorded during the run, and publishes the result with the executed plan's
+  materialisation boundaries and the executed diagnostic's estimate, calibration, admission
+  basis, headroom, assumptions, and materialising operators — and its strategy, reason, and
+  remediation when admission decided them (a materialisation boundary or a conservative
+  run). Known columns stand in
+  for a parent's schema only where demand is routed — column-lineage input bindings and Edge
+  Join ownership — and never replace an unknown demand, so a node outside the lineage model
+  keeps its full-width boundary and diagnostic, as does any node that failed to build. Full
+  materialisation, trace, and non-preview profiles keep the pre-execution plan because their
+  collections, checkpoints, and chunking consume it.
 - **Per-edge input names, not per-source names.** `_build_funcs` derives each
   node's `source_names` per incoming edge via `edge_input_name(edge, source_node)`
   (`_graph_utils.py`) — an apiInput edge contributes its frame label, every other

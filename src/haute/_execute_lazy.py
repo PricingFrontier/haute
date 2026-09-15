@@ -704,6 +704,96 @@ def _conservative_strategy_passthrough(
     }
 
 
+def _replanned_target_preview_strategy(
+    executed: projection_planner.ExecutionStrategyResult,
+    *,
+    order: list[str],
+    children_of: Mapping[str, Iterable[str]],
+    node_map: Mapping[str, GraphNode],
+    required_columns_by_node: Mapping[str, Iterable[str] | projection_planner.AllExceptColumns],
+    relevant_edges: list[GraphEdge],
+    graph: PipelineGraph,
+    known_output_columns: Mapping[tuple[str, str | None], frozenset[str]],
+    runtime_edge_demands: Mapping[projection_planner.ProjectionEdgeKey, frozenset[str]],
+    runtime_resolved_parent_ids: Iterable[str],
+    profile: ExecutionProfile,
+) -> projection_planner.ExecutionStrategyResult:
+    """Re-plan a target-only preview's diagnostic from the frames it built.
+
+    Before execution an Edge Join cannot route demand to a parent whose schema
+    is only known once built, so every node above it reads as unprojected even
+    though the join's runtime demand is pushed through the lazy plan.
+    """
+    replanned = projection_planner.compute_prepared_plan(
+        order,
+        children_of,
+        node_map,
+        required_columns_by_node,
+        relevant_edges=relevant_edges,
+        submodels=graph.submodels,
+        selector_aliases=preamble_selector_aliases(graph.preamble or ""),
+        known_output_columns=known_output_columns,
+    )
+    replanned = projection_planner.with_materialisation_boundaries(
+        replanned,
+        executed.projection_plan.materialisation_boundaries,
+    )
+    if runtime_edge_demands:
+        replanned = projection_planner.with_runtime_inferred_streaming_edges(
+            replanned,
+            demands_by_edge=runtime_edge_demands,
+            resolved_parent_ids=runtime_resolved_parent_ids,
+            relevant_edges=relevant_edges,
+        )
+    diagnostic = executed.diagnostic
+    return projection_planner.build_execution_strategy_result(
+        replanned,
+        profile=profile,
+        order=order,
+        children_of=children_of,
+        node_map=node_map,
+        has_projection_seed=bool(required_columns_by_node),
+        required_columns_by_node=required_columns_by_node,
+        estimated_peak_bytes=diagnostic.estimated_peak_bytes,
+        raw_estimated_peak_bytes=diagnostic.raw_estimated_peak_bytes,
+        estimate_calibration_factor_basis_points=(
+            diagnostic.estimate_calibration_factor_basis_points
+        ),
+        estimate_admission_basis=diagnostic.estimate_admission_basis,
+        headroom_bytes=diagnostic.headroom_bytes,
+        assumptions=diagnostic.assumptions,
+        boundary_operators=projection_planner.materialising_operators_by_node(
+            order,
+            node_map,
+            relevant_edges=relevant_edges,
+            submodels=graph.submodels,
+        ),
+        **_admitted_strategy_passthrough(diagnostic),
+    )
+
+
+def _admitted_strategy_passthrough(
+    diagnostic: projection_planner.ExecutionStrategyDiagnostic,
+) -> dict[str, Any]:
+    """Carry the strategy admission decided through a post-execution re-plan.
+
+    A materialisation boundary's reason and remediation name the admitted
+    operator, and a conservative run is decided from the missing estimate; the
+    re-plan keeps both boundaries and must not replace their wording.
+    """
+    admitted = {
+        projection_planner.ExecutionStrategy.MATERIALISATION_BOUNDARY,
+        projection_planner.ExecutionStrategy.FULL_WIDTH_CONSERVATIVE,
+    }
+    if diagnostic.strategy not in admitted:
+        return {}
+    return {
+        "strategy": diagnostic.strategy,
+        "reason_code": diagnostic.reason_code,
+        "remediation": diagnostic.remediation,
+    }
+
+
 _SELECTOR_SCHEMA_REASONS = frozenset({"selector_schema_unknown", "selector_dtypes_unknown"})
 
 
@@ -2290,6 +2380,8 @@ def _execute_eager_core(
             seen.add(name)
         return full_columns
 
+    recorded_runtime_edge_demands: dict[projection_planner.ProjectionEdgeKey, frozenset[str]] = {}
+    recorded_runtime_resolved_parents: set[str] = set()
     for nid in order:
         boundary = boundary_runner.open(nid)
         is_source = boundary.is_source
@@ -2405,13 +2497,19 @@ def _execute_eager_core(
                         projection_planner.ExecutionStrategyResult,
                     ):
                         assert execution_context is not None
+                        resolved_parent_ids = _runtime_projectable_source_ids(
+                            (key.source for key in runtime_edge_demands),
+                            node_map,
+                        )
+                        recorded_runtime_edge_demands.update(
+                            (key, frozenset(columns))
+                            for key, columns in runtime_edge_demands.items()
+                        )
+                        recorded_runtime_resolved_parents.update(resolved_parent_ids)
                         refined_plan = projection_planner.with_runtime_inferred_streaming_edges(
                             current_strategy.projection_plan,
                             demands_by_edge=runtime_edge_demands,
-                            resolved_parent_ids=_runtime_projectable_source_ids(
-                                (key.source for key in runtime_edge_demands),
-                                node_map,
-                            ),
+                            resolved_parent_ids=resolved_parent_ids,
                             relevant_edges=relevant_edges,
                         )
                         previous_diagnostic = current_strategy.diagnostic
@@ -2736,6 +2834,38 @@ def _execute_eager_core(
             if error_line is not None:
                 error_lines[nid] = error_line
         timings[nid] = round((time.perf_counter() - t0) * 1000, 1)
+
+    executed_strategy = execution_context.projection_plan if execution_context is not None else None
+    target_output = eager_outputs.get(target_node_id) if target_node_id is not None else None
+    if (
+        execution_context is not None
+        and execution_context.profile is ExecutionProfile.PREVIEW_EAGER
+        and target_node_id is not None
+        and materialize_node_ids is not None
+        and set(materialize_node_ids) == {target_node_id}
+        and isinstance(executed_strategy, projection_planner.ExecutionStrategyResult)
+    ):
+        replan_required_columns = dict(normalised_required_columns)
+        if target_node_id not in replan_required_columns and isinstance(
+            target_output, pl.DataFrame
+        ):
+            # A preview that named no columns demands exactly what it collected.
+            replan_required_columns[target_node_id] = set(target_output.columns)
+        execution_context.projection_plan = _replanned_target_preview_strategy(
+            executed_strategy,
+            order=order,
+            children_of=children_of,
+            node_map=node_map,
+            required_columns_by_node=replan_required_columns,
+            relevant_edges=relevant_edges,
+            graph=graph,
+            known_output_columns={
+                key: columns for key, columns in column_cache.items() if key[0] not in errors
+            },
+            runtime_edge_demands=recorded_runtime_edge_demands,
+            runtime_resolved_parent_ids=recorded_runtime_resolved_parents,
+            profile=execution_context.profile,
+        )
 
     plans: dict[str, pl.LazyFrame | dict[str, pl.LazyFrame]] = {}
     for plan_node_id, runtime_output in runtime_outputs.items():
