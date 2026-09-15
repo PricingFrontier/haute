@@ -161,6 +161,74 @@ describe("resetE2eProject", () => {
     expect(gitCalls()).toEqual(fullResetSequence([]))
   })
 
+  it("retries the scrub while the previous test's server work still holds a file", () => {
+    let cleanAttempts = 0
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args[0] === "rev-parse") return e2eProjectRoot
+      if (args[0] === "for-each-ref") return "main"
+      if (args[0] === "clean") {
+        cleanAttempts += 1
+        if (cleanAttempts < 3) {
+          throw new Error("warning: failed to remove .haute_cache/working/.json_x.build.lock: Invalid argument")
+        }
+      }
+      return ""
+    })
+    const wait = vi.spyOn(Atomics, "wait").mockReturnValue("timed-out")
+
+    resetE2eProject()
+
+    const cleans = gitCalls().filter((args) => args[0] === "clean")
+    expect(cleans).toHaveLength(3)
+    expect(wait).toHaveBeenCalledTimes(2)
+    expect(gitCalls().slice(-3)).toEqual([
+      ["branch", e2eWorkingBranch, "main"],
+      ["branch", e2eLedgerBranch, "main"],
+      ["switch", "--force", e2eLedgerBranch],
+    ])
+    wait.mockRestore()
+  })
+
+  it("keeps retrying every 250 ms and fails with git's error at the 30 s deadline", () => {
+    const lockError = new Error("warning: failed to remove .build.lock: Invalid argument")
+    let now = 0
+    const cleanTimes: number[] = []
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args[0] === "rev-parse") return e2eProjectRoot
+      if (args[0] === "for-each-ref") return "main"
+      if (args[0] === "clean") {
+        cleanTimes.push(now)
+        throw lockError
+      }
+      return ""
+    })
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now)
+    const wait = vi
+      .spyOn(Atomics, "wait")
+      .mockImplementation((_array, _index, _value, timeout) => {
+        now += timeout ?? 0
+        return "timed-out"
+      })
+
+    let caught: unknown
+    try {
+      resetE2eProject()
+    } catch (error) {
+      caught = error
+    }
+
+    expect(cleanTimes[0]).toBe(0)
+    expect(cleanTimes.at(-1)).toBe(30_000)
+    expect(cleanTimes).toHaveLength(121)
+    expect(wait.mock.calls.every((call) => call[3] === 250)).toBe(true)
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as Error).message).toContain("git clean -fdx")
+    expect((caught as Error).cause).toBe(lockError)
+    expect(gitCalls().some((args) => args[0] === "branch" && args[1] === e2eWorkingBranch)).toBe(false)
+    wait.mockRestore()
+    clock.mockRestore()
+  })
+
   it("pins cwd and GIT_CEILING_DIRECTORIES on every git invocation", () => {
     vi.stubEnv("GIT_DIR", resolve(repoRoot, ".git"))
     vi.stubEnv("GIT_WORK_TREE", repoRoot)

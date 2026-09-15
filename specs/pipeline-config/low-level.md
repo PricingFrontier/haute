@@ -129,6 +129,12 @@ DataFrames along declared edges — each edge's frame resolved port-aware throug
 `_pick_source_frame` selection on `RegisteredEdge.source_port` — and resolves the return value
 through `_resolve_output_node`: an explicit `@pipeline.output` node wins if there is exactly one;
 otherwise the single node with no outgoing edge; otherwise raise, naming every candidate node.
+A lazy output is collected by `_collect_standalone_output` through Haute's
+`execution_collect` inside the call's scenario context, so `run()` and `score()` always return a
+`pl.DataFrame`, a node reading the scenario context during collection observes `batch` or
+`live`, and typed Haute errors raised while collecting (such as `RatingTableMissError` from a
+rating step's miss guard) keep their types; the scenario context is reset whether collection
+succeeds or fails. An eager output is returned unchanged.
 `Pipeline.to_graph()` converts the same live objects into a React-Flow-shaped plain `dict`,
 taking each node's display type from `config["_node_type"]` (defaulting to `POLARS` when absent).
 It delegates node and edge construction to the same `_build_rf_nodes`/`_build_edges` path as static
@@ -422,7 +428,8 @@ API and real JSON round-trips rather than mocks:
   ports; exact one-key dict accepted at one named port; dict
   rejected with missing keys, with unknown extra keys, and against a zero-port source — every
   rejection an `ExecutionError` naming the ports — plus `run()` port-aware frame selection
-  for one- and many-frame apiInput sources.
+  for one- and many-frame apiInput sources. `test_run_raises_typed_rating_miss_from_a_lazy_output`
+  and `test_lazy_output_is_collected_inside_the_scenario_context` pin lazy-output collection.
 - **`test_config_io.py`** + **`test_config_io_gaps.py`** — sidecar save/load
   round-trips, path conventions (`TestConfigPathForNode`), Windows-reserved-filename rejection
   (`TestIsWindowsReservedFilename`), `collect_node_configs` (including load-error protection

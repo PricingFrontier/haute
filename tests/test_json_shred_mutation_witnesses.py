@@ -52,7 +52,7 @@ def test_json_shred_resource_defaults_are_explicit_contracts() -> None:
     assert _runtime_storage._RUNTIME_STORAGE_BUDGET_DEFAULT_BYTES == 4 * 1024 * 1024 * 1024
     assert _runtime_storage._RUNTIME_STORAGE_ORPHAN_GRACE_DEFAULT_SECONDS == 60 * 60
     assert _runtime_storage.RUNTIME_SNAPSHOT_CACHE_MAX_ENTRIES == 64
-    assert _runtime_storage.RUNTIME_SNAPSHOT_CACHE_MAX_BYTES == 512 * 1024 * 1024
+    assert _runtime_storage.RUNTIME_SNAPSHOT_CACHE_MAX_BYTES == 2 * 1024 * 1024 * 1024
     inference_cache = _inference_cache.InferenceCache()
     assert inference_cache._max_entries == 32
     assert inference_cache._max_bytes == 16 * 1024 * 1024

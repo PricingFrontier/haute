@@ -289,7 +289,13 @@ REMOTE_IO_ARGUMENTS: frozenset[str] = frozenset(
     {"storage_options", "credential_provider", "retries", "file_cache_ttl"}
 )
 _OBJECT_VALUED_ARGUMENTS: frozenset[str] = frozenset(
-    {"with_column_names", "delta_merge_options", "pyarrow_options", "credentials"}
+    {
+        "with_column_names",
+        "delta_merge_options",
+        "pyarrow_options",
+        "credentials",
+        "sinked_paths_callback",
+    }
 )
 _SINK_EXECUTION_OWNED: frozenset[str] = frozenset({"lazy", "engine", "optimizations"})
 

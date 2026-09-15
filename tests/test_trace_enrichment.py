@@ -2397,8 +2397,6 @@ class TestEnrichRowLineageType:
         from haute._trace_enrichment import detect_row_lineage_type
 
         result = detect_row_lineage_type(
-            input_row_count=10,
-            output_row_count=10,
             node_type="polars",
             operation_type="with_columns",
         )
@@ -2410,8 +2408,6 @@ class TestEnrichRowLineageType:
         from haute._trace_enrichment import detect_row_lineage_type
 
         result = detect_row_lineage_type(
-            input_row_count=0,
-            output_row_count=10,
             node_type="dataInput",
             operation_type="load",
         )
@@ -2423,8 +2419,6 @@ class TestEnrichRowLineageType:
         from haute._trace_enrichment import detect_row_lineage_type
 
         result = detect_row_lineage_type(
-            input_row_count=10,
-            output_row_count=5,
             node_type="polars",
             operation_type="filter",
         )
@@ -2436,8 +2430,6 @@ class TestEnrichRowLineageType:
         from haute._trace_enrichment import detect_row_lineage_type
 
         result = detect_row_lineage_type(
-            input_row_count=10,
-            output_row_count=3,
             node_type="polars",
             operation_type="group_by",
         )
@@ -2449,8 +2441,6 @@ class TestEnrichRowLineageType:
         from haute._trace_enrichment import detect_row_lineage_type
 
         result = detect_row_lineage_type(
-            input_row_count=10,
-            output_row_count=10,
             node_type="polars",
             operation_type="join",
         )
@@ -2462,8 +2452,6 @@ class TestEnrichRowLineageType:
         from haute._trace_enrichment import detect_row_lineage_type
 
         result = detect_row_lineage_type(
-            input_row_count=5,
-            output_row_count=15,
             node_type="polars",
             operation_type="cross_join",
         )
@@ -2475,8 +2463,6 @@ class TestEnrichRowLineageType:
         from haute._trace_enrichment import detect_row_lineage_type
 
         result = detect_row_lineage_type(
-            input_row_count=10,
-            output_row_count=10,
             node_type="polars",
             operation_type="sort",
         )
@@ -3724,13 +3710,13 @@ class TestDetectRowLineageTypeExtended:
     def test_api_input_created(self):
         from haute._trace_enrichment import detect_row_lineage_type
 
-        result = detect_row_lineage_type(node_type="apiInput", output_row_count=5)
+        result = detect_row_lineage_type(node_type="apiInput")
         assert result == "created"
 
     def test_live_switch_selected(self):
         from haute._trace_enrichment import detect_row_lineage_type
 
-        result = detect_row_lineage_type(node_type="liveSwitch", output_row_count=5)
+        result = detect_row_lineage_type(node_type="liveSwitch")
         assert result == "selected"
 
     def test_groupby_operation(self):
@@ -3758,65 +3744,25 @@ class TestDetectRowLineageTypeExtended:
 
         assert detect_row_lineage_type(operation_type="scenario_expand") == "expanded"
 
-    def test_fallback_created_from_zero(self):
-        """Zero input rows + positive output rows = created (fallback)."""
+    def test_unclassified_operation_is_passthrough(self):
+        """Labels never infer cardinality from limited or row-scoped frame heights."""
         from haute._trace_enrichment import detect_row_lineage_type
 
-        result = detect_row_lineage_type(
-            input_row_count=0,
-            output_row_count=5,
-            node_type="custom",
-            operation_type="custom_op",
-        )
-        assert result == "created"
-
-    def test_fallback_filtered_from_counts(self):
-        """Output < input = filtered (fallback)."""
-        from haute._trace_enrichment import detect_row_lineage_type
-
-        result = detect_row_lineage_type(
-            input_row_count=10,
-            output_row_count=3,
-            node_type="custom",
-            operation_type="custom_op",
-        )
-        assert result == "filtered"
-
-    def test_fallback_expanded_from_counts(self):
-        """Output > input = expanded (fallback)."""
-        from haute._trace_enrichment import detect_row_lineage_type
-
-        result = detect_row_lineage_type(
-            input_row_count=5,
-            output_row_count=15,
-            node_type="custom",
-            operation_type="custom_op",
-        )
-        assert result == "expanded"
-
-    def test_fallback_passthrough_equal_counts(self):
-        """Output == input = passthrough (fallback)."""
-        from haute._trace_enrichment import detect_row_lineage_type
-
-        result = detect_row_lineage_type(
-            input_row_count=10,
-            output_row_count=10,
-            node_type="custom",
-            operation_type="custom_op",
-        )
+        result = detect_row_lineage_type(node_type="custom", operation_type="custom_op")
         assert result == "passthrough"
 
-    def test_none_input_row_count_fallback(self):
-        """None input_row_count defaults to 0."""
+    @pytest.mark.parametrize(
+        ("node_type", "expected"),
+        [
+            ("constant", "created"),
+            ("scenarioExpander", "expanded"),
+            ("optimiserApply", "aggregated"),
+        ],
+    )
+    def test_config_driven_node_types_are_classified_by_type(self, node_type, expected):
         from haute._trace_enrichment import detect_row_lineage_type
 
-        result = detect_row_lineage_type(
-            input_row_count=None,
-            output_row_count=5,
-            node_type="custom",
-            operation_type="custom_op",
-        )
-        assert result == "created"
+        assert detect_row_lineage_type(node_type=node_type) == expected
 
     def test_no_args_passthrough(self):
         """No arguments defaults to passthrough."""
@@ -3824,14 +3770,8 @@ class TestDetectRowLineageTypeExtended:
 
         assert detect_row_lineage_type() == "passthrough"
 
-    def test_detect_row_lineage_type_zero_rows(self):
-        """input_row_count=0 and output_row_count=0 should return passthrough."""
+    def test_with_columns_is_passthrough(self):
         from haute._trace_enrichment import detect_row_lineage_type
 
-        result = detect_row_lineage_type(
-            input_row_count=0,
-            output_row_count=0,
-            node_type="polars",
-            operation_type="with_columns",
-        )
+        result = detect_row_lineage_type(node_type="polars", operation_type="with_columns")
         assert result == "passthrough"

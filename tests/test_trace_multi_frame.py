@@ -175,6 +175,71 @@ def test_edge_join_same_multi_frame_source_uses_physical_port_roles() -> None:
     assert rows["api"] == {"policy_id": "P1", "premium": 999, "rate": 1.2}
 
 
+@pytest.mark.parametrize("edge_order", [("policies", "rates"), ("rates", "policies")])
+def test_row_scope_names_each_port_of_one_source_by_its_own_frame(
+    edge_order: tuple[str, str],
+) -> None:
+    """Two ports of one source feed one program under different input names.
+
+    Keying the input name by node pair gave both ports the name of whichever edge
+    came last, so the ``rates`` port could be treated as the root input and
+    matched on the policies ``x``.
+    """
+    from haute._trace_correlation import RowScopeResolver
+    from haute._types import GraphEdge, GraphNode, NodeData
+    from haute.trace import _trace_lineage_alignments
+
+    code = "df = policies.join(rates, how='cross', maintain_order='left_right')"
+    node_map = {
+        "api": GraphNode(
+            id="api", data=NodeData(label="api", nodeType=NodeType.API_INPUT, config={})
+        ),
+        "priced": GraphNode(
+            id="priced",
+            data=NodeData(label="priced", nodeType=NodeType.POLARS, config={"code": code}),
+        ),
+    }
+    edges = [
+        GraphEdge(id=f"e_{handle}", source="api", target="priced", sourceHandle=handle)
+        for handle in edge_order
+    ]
+    alignments, input_names, child_input_names, _aliases = _trace_lineage_alignments(
+        SimpleNamespace(relevant_edges=edges, node_map=node_map, submodels=None)
+    )
+    policies = pl.LazyFrame({"x": [1]})
+    rates = pl.LazyFrame({"x": [2, 1], "premium": [7, 7]})
+    priced = policies.join(rates, how="cross", maintain_order="left_right")
+    plans = {"api": {"policies": policies, "rates": rates}, "priced": priced}
+    edge_metadata = {("api", "priced"): [(handle, None) for handle in edge_order]}
+    frames: dict[str, Any] = {"priced": priced.head(2).collect()}
+    resolver = RowScopeResolver(
+        node_map=node_map,
+        prefixes={"priced": 2},
+        alignments=alignments,
+        edge_metadata=edge_metadata,
+        input_names=input_names,
+        child_input_names=child_input_names,
+        plans=lambda: plans,
+        frames=frames,
+        head_resolved={"priced"},
+    )
+
+    rows = _correlate_rows_posthoc(
+        frames,
+        order=["api", "priced"],
+        parents_of={"priced": ["api"]},
+        target_node_id="priced",
+        row_index=0,
+        node_map=node_map,
+        edge_metadata=edge_metadata,
+        traced_column="premium",
+        row_scope=resolver,
+    )
+
+    assert frames["priced"].row(0, named=True) == {"x": 1, "x_right": 2, "premium": 7}
+    assert rows["api"] == {"x": 1}
+
+
 def test_trace_through_multi_frame_source_succeeds(project: Path) -> None:
     """Tracing a node downstream of a multi-frame apiInput must correlate
     through the frame the edge's sourceHandle names — not crash."""
@@ -357,28 +422,6 @@ def test_trace_same_source_join_resolves_frame_per_traced_column(project: Path) 
 # ---------------------------------------------------------------------------
 # Enrichment: bundle-aware row counts and per-edge dtype scoping
 # ---------------------------------------------------------------------------
-
-
-def test_bundle_output_row_count_counts_rows_not_frames() -> None:
-    """A multi-frame node's output row count derives from its frames' rows
-    (max across frames, mirroring the parent-side handling in
-    ``enrich_steps``) — never ``len(dict)``, which counts FRAMES.
-
-    Guards the row-lineage input for a bundle node appearing as an
-    intermediate step; today ``detect_row_lineage_type`` short-circuits
-    apiInput to "created" so the miscount is masked, but the wrong count
-    must not survive to bite the next non-apiInput bundle emitter.
-    """
-    from haute._trace_enrichment import _node_output_row_count
-
-    frames = {
-        "a": pl.DataFrame({"x": [1, 2, 3]}),
-        "b": pl.DataFrame({"y": [1, 2, 3, 4, 5]}),
-    }
-    assert _node_output_row_count(frames) == 5
-    assert _node_output_row_count(pl.DataFrame({"x": [1, 2]})) == 2
-    assert _node_output_row_count(None) == 0
-    assert _node_output_row_count({}) == 0
 
 
 def test_banding_factor_dtypes_scoped_to_consumed_frame(

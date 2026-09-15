@@ -36,6 +36,7 @@ from haute._polars_operations import (
     materialising_frame_methods,
     registered_names,
 )
+from haute._polars_selectors import preamble_selector_aliases
 from haute._topo import ancestors, topo_sort_ids
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.errors import ContractMismatchError
@@ -2209,6 +2210,35 @@ def _projection_contract_from_registered(
     return contract
 
 
+# Builders that run their optional ``code`` over their own output as ``df``.
+_POST_CODE_BUILDER_TYPES = frozenset(
+    {NodeType.MODEL_SCORE, NodeType.RATING_STEP, NodeType.SCENARIO_EXPANDER}
+)
+
+
+def _builder_post_code(node: GraphNode) -> str | None:
+    """Return a builder's post-code, which runs over the builder output as ``df``."""
+    if node.data.nodeType not in _POST_CODE_BUILDER_TYPES:
+        return None
+    code = str(node.data.config.get("code") or "").strip()
+    return code or None
+
+
+def _pre_post_code_contract(node: GraphNode, effective: Contract) -> Contract:
+    """Return the contract of a builder's output before its post-code runs.
+
+    A declared contract describes the whole node, post-code included, so it
+    cannot fill the builder's own sides. A Rating Step or Scenario Expander
+    derives its code-free contract from config alone. A Model Score's registered
+    output is already the scorer's, and its unknown model inputs are filled from
+    the declared inputs rather than by loading the model.
+    """
+    if node.data.nodeType is NodeType.MODEL_SCORE:
+        return effective
+    config = {key: value for key, value in node.data.config.items() if key != "code"}
+    return Contract.from_tuple(get_column_contract(node.data.nodeType, config))
+
+
 def ratebook_factor_required_columns(config: Mapping[str, Any]) -> frozenset[str]:
     """Return factor-side columns required from a ratebook banding source."""
     columns: set[str] = {str(config.get("quote_id", "quote_id"))}
@@ -3239,7 +3269,11 @@ def _exact_columns_for_parent_edge(
     edge: GraphEdge,
     node_map: Mapping[str, GraphNode],
     exact_output_by_node: Mapping[str, frozenset[str]],
+    known_port_columns: Mapping[tuple[str, str | None], frozenset[str]] | None = None,
 ) -> frozenset[str] | None:
+    known = (known_port_columns or {}).get((edge.source, edge.sourceHandle))
+    if known is not None:
+        return known
     parent = node_map[edge.source]
     if parent.data.nodeType is NodeType.API_INPUT:
         declared = _declared_api_input_port_columns(parent)
@@ -3256,6 +3290,7 @@ def _lineage_input_bindings(
     exact_output_by_node: Mapping[str, frozenset[str]],
     *,
     submodels: Mapping[str, Any] | None = None,
+    known_port_columns: Mapping[tuple[str, str | None], frozenset[str]] | None = None,
 ) -> tuple[_LineageInputBinding, ...] | None:
     by_name: dict[str, _LineageInputBinding] = {}
     for edge in incoming_edges:
@@ -3275,6 +3310,7 @@ def _lineage_input_bindings(
                 edge,
                 node_map,
                 exact_output_by_node,
+                known_port_columns,
             ),
         )
         previous = by_name.get(name)
@@ -3308,6 +3344,8 @@ def _analyse_polars_node_lineage(
     contract: Contract,
     *,
     submodels: Mapping[str, Any] | None = None,
+    selector_aliases: frozenset[str] = frozenset(),
+    known_port_columns: Mapping[tuple[str, str | None], frozenset[str]] | None = None,
 ) -> tuple[ColumnLineageAnalysis, tuple[_LineageInputBinding, ...]] | None:
     if node.data.nodeType is not NodeType.POLARS:
         return None
@@ -3323,13 +3361,17 @@ def _analyse_polars_node_lineage(
         node_map,
         exact_output_by_node,
         submodels=submodels,
+        known_port_columns=known_port_columns,
     )
     if not bindings:
         return None
     schemas: dict[str, frozenset[str] | None] = {}
     for binding in bindings:
         schemas[binding.name] = binding.exact_columns
-    return analyze_polars_lineage(code, schemas, demanded_output), bindings
+    return (
+        analyze_polars_lineage(code, schemas, demanded_output, selector_aliases=selector_aliases),
+        bindings,
+    )
 
 
 def _exact_registered_contract_output(
@@ -3360,6 +3402,7 @@ def _exact_structural_outputs(
     effective_contract_for: Callable[[GraphNode], Contract],
     *,
     submodels: Mapping[str, Any] | None = None,
+    selector_aliases: frozenset[str] = frozenset(),
 ) -> dict[str, frozenset[str]]:
     """Propagate every mechanically proven exact schema topologically."""
     exact: dict[str, frozenset[str]] = {}
@@ -3373,6 +3416,7 @@ def _exact_structural_outputs(
             set(),
             effective_contract_for(node_map[node_id]),
             submodels=submodels,
+            selector_aliases=selector_aliases,
         )
         if analysed is not None:
             result, _bindings = analysed
@@ -3425,8 +3469,16 @@ def compute_prepared_plan(
     *,
     relevant_edges: Iterable[GraphEdge] | None = None,
     submodels: Mapping[str, Any] | None = None,
+    selector_aliases: frozenset[str] = frozenset(),
+    known_output_columns: Mapping[tuple[str, str | None], frozenset[str]] | None = None,
 ) -> ProjectionPlan:
-    """Run the reverse topological projection sweep on a prepared graph."""
+    """Run the reverse topological projection sweep on a prepared graph.
+
+    ``known_output_columns`` are output schemas observed for built nodes, keyed
+    by node and port (``None`` for a single-frame node). They stand in for a
+    parent's schema where demand is routed (lineage input bindings and Edge Join
+    ownership) and never replace an unknown demand.
+    """
     prepared_edges = _projection_edges(order, children_of, relevant_edges)
     incoming_by_target, outgoing_by_source = _edges_by_endpoint(order, prepared_edges)
     registered_contracts: dict[str, Contract] = {}
@@ -3458,7 +3510,16 @@ def compute_prepared_plan(
         registered_contract_for,
         effective_contract_for,
         submodels=submodels,
+        selector_aliases=selector_aliases,
     )
+    known_outputs = dict(known_output_columns or {})
+
+    def produced_for_routing(edge: GraphEdge) -> set[str] | None:
+        known = known_outputs.get((edge.source, edge.sourceHandle))
+        if known is not None:
+            return set(known)
+        return _parent_produced_columns(node_map[edge.source])
+
     needed: dict[str, set[str] | None] = {}
     edge_demands: dict[ProjectionEdgeKey, set[str] | None] = {}
     node_reasons: dict[str, ProjectionReason] = {}
@@ -3623,6 +3684,8 @@ def compute_prepared_plan(
             my_needed,
             effective_contract_for(node),
             submodels=submodels,
+            selector_aliases=selector_aliases,
+            known_port_columns=known_outputs,
         )
         if lineage is not None:
             lineage_result, bindings = lineage
@@ -3689,10 +3752,7 @@ def compute_prepared_plan(
 
         if len(incoming) != len(parent_ids):
             if node.data.nodeType == NodeType.EDGE_JOIN:
-                parent_produced = {
-                    parent_id: _parent_produced_columns(node_map[parent_id])
-                    for parent_id in parent_ids
-                }
+                parent_produced = {edge.source: produced_for_routing(edge) for edge in incoming}
                 edge_join_demands = edge_join_fan_in_demands_for_node(
                     node,
                     incoming,
@@ -3768,11 +3828,30 @@ def compute_prepared_plan(
             )
             continue
 
-        produced, referenced = effective_contract_for(node).to_tuple()
+        contract = effective_contract_for(node)
+        post_code = _builder_post_code(node)
+        if post_code is not None:
+            post_code_lineage = analyze_polars_lineage(
+                post_code,
+                {"df": None},
+                my_needed,
+                selector_aliases=selector_aliases,
+            )
+            if not post_code_lineage.supported:
+                store_parent_result(
+                    incoming,
+                    ParentDemandResult(default=None, by_parent={}, rule_name="builder_post_code"),
+                    message=(
+                        "builder post-code is outside the closed column-lineage model: "
+                        f"{post_code_lineage.reason}"
+                    ),
+                )
+                continue
+            my_needed = set(post_code_lineage.demands_by_input.get("df", frozenset()))
+            contract = _pre_post_code_contract(node, contract)
+        produced, referenced = contract.to_tuple()
         if produced is None or referenced is None:
-            parent_produced = {
-                parent_id: _parent_produced_columns(node_map[parent_id]) for parent_id in parent_ids
-            }
+            parent_produced = {edge.source: produced_for_routing(edge) for edge in incoming}
             edge_join_demands = edge_join_fan_in_demands_for_node(
                 node,
                 incoming,
@@ -3970,7 +4049,7 @@ def with_runtime_inferred_streaming_edges(
         frozen_columns = frozenset(columns)
         reason = ProjectionReason(
             rule=RUNTIME_INFERRED_STREAMING_RULE_NAME,
-            message="runtime-inferred streaming join demand",
+            message="runtime-inferred streaming demand",
             details={
                 "strategy": RUNTIME_INFERRED_STREAMING_RULE_NAME,
                 "columns": tuple(sorted(frozen_columns)),
@@ -3998,7 +4077,7 @@ def with_runtime_inferred_streaming_edges(
         needed_by_node[parent_id] = frozen_columns
         node_reasons[parent_id] = ProjectionReason(
             rule=RUNTIME_INFERRED_STREAMING_RULE_NAME,
-            message="runtime-inferred streaming join demand",
+            message="runtime-inferred streaming demand",
             details={
                 "strategy": RUNTIME_INFERRED_STREAMING_RULE_NAME,
                 "columns": tuple(sorted(frozen_columns)),
@@ -4033,6 +4112,7 @@ def plan(request: ProjectionRequest) -> ProjectionPlan:
         required_columns_by_node=request.required_columns_by_node,
         relevant_edges=prepared.relevant_edges,
         submodels=prepared.submodels,
+        selector_aliases=preamble_selector_aliases(request.graph.preamble or ""),
     )
     return with_api_input_port_projection_boundaries(
         projection_plan,

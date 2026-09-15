@@ -259,6 +259,114 @@ def test_online_execute_trace_uses_price_contour_ratio_linearisation(tmp_path):
     )
 
 
+def test_limited_online_trace_linearises_ratio_pct_against_the_whole_portfolio(tmp_path):
+    from price_contour import ApplyOptimiser
+
+    artifact = _ratio_artifact()
+    artifact["constraints"] = {
+        "loss_ratio": {
+            "max_pct": 1.0,
+            "numerator": "predicted_claims",
+            "denominator": "predicted_premium",
+        }
+    }
+    artifact_path = _write_json(tmp_path / "ratio_pct.json", artifact)
+    # q1's own baseline loss ratio (0.60) differs from the portfolio's (0.48).
+    # A ratio apply keeps input quote order, so q1 is the second output row and
+    # its scenario rows lie outside the preview's two head rows.
+    scored = pl.DataFrame(
+        {
+            "quote_id": ["q2", "q2", "q2", "q1", "q1", "q1"],
+            "scenario_index": [0, 1, 2, 0, 1, 2],
+            "scenario_value": [0.9, 1.0, 1.1, 0.9, 1.0, 1.1],
+            "predicted_income": [45.0, 50.0, 55.0, 90.0, 100.0, 110.0],
+            "predicted_claims": [10.0, 12.0, 15.0, 55.0, 60.0, 70.0],
+            "predicted_premium": [50.0, 50.0, 50.0, 100.0, 100.0, 100.0],
+        }
+    )
+    scored_path = tmp_path / "ratio_pct_scored.parquet"
+    scored.write_parquet(scored_path)
+    graph = _g(
+        {
+            "nodes": [
+                _source_node("scored", str(scored_path)),
+                _optimiser_apply_node({"sourceType": "file", "artifact_path": artifact_path}),
+            ],
+            "edges": [_edge("scored", "apply")],
+        }
+    )
+
+    result = execute_trace(
+        graph,
+        row_index=1,
+        target_node_id="apply",
+        column="optimal_scenario_value",
+        row_limit=2,
+    )
+
+    detail = _step_by_id(result, "apply").node_detail
+    assert detail is not None
+    assert detail["status"] == "ok", detail.get("error")
+    assert detail["quote_id_value"] == "q1"
+    typed = scored.with_columns(
+        pl.col("scenario_index").cast(pl.Int32),
+        pl.exclude("quote_id", "scenario_index").cast(pl.Float32),
+    )
+    applier = ApplyOptimiser(
+        lambdas=artifact["lambdas"],
+        objective="predicted_income",
+        constraints=artifact["constraints"],
+    )
+    portfolio = (
+        applier.with_explainer_columns(typed)
+        .filter(pl.col("quote_id") == "q1")
+        .sort("scenario_index")["linearised_loss_ratio"]
+        .to_list()
+    )
+    quote_alone = (
+        applier.with_explainer_columns(typed.filter(pl.col("quote_id") == "q1"))
+        .sort("scenario_index")["linearised_loss_ratio"]
+        .to_list()
+    )
+    assert portfolio != pytest.approx(quote_alone)
+    assert [row["linearised_loss_ratio"] for row in detail["candidates"]] == pytest.approx(
+        portfolio
+    )
+
+
+def test_limited_online_trace_explains_a_custom_quote_id_column(tmp_path):
+    artifact = _online_artifact()
+    artifact["quote_id"] = "policy_id"
+    artifact_path = _write_json(tmp_path / "policy_online.json", artifact)
+    scored_path = tmp_path / "policy_scored.parquet"
+    _scored_online_df().rename({"quote_id": "policy_id"}).write_parquet(scored_path)
+    graph = _g(
+        {
+            "nodes": [
+                _source_node("scored", str(scored_path)),
+                _optimiser_apply_node({"sourceType": "file", "artifact_path": artifact_path}),
+            ],
+            "edges": [_edge("scored", "apply")],
+        }
+    )
+
+    result = execute_trace(
+        graph,
+        row_index=0,
+        target_node_id="apply",
+        column="optimal_scenario_value",
+        row_limit=1,
+    )
+
+    detail = _step_by_id(result, "apply").node_detail
+    assert detail is not None
+    assert detail["status"] == "ok", detail.get("error")
+    assert detail["quote_id_column"] == "policy_id"
+    assert detail["quote_id_value"] == "q1"
+    assert {candidate["policy_id"] for candidate in detail["candidates"]} == {"q1"}
+    assert [candidate["scenario_index"] for candidate in detail["candidates"]] == [0, 1, 2]
+
+
 def test_online_execute_trace_handles_unconstrained_artifact(tmp_path):
     artifact_path = _write_json(tmp_path / "unconstrained.json", _no_constraint_artifact())
     scored_path = tmp_path / "scored.parquet"
@@ -447,6 +555,30 @@ def test_ratebook_trace_uses_exact_multi_frame_api_input_name(tmp_path):
         "Manchester",
         "young",
     ]
+
+
+@pytest.mark.parametrize(
+    ("mode", "read"),
+    [
+        ("ratebook", {"scored": False, "banded": True}),
+        ("online", {"scored": True, "banded": False}),
+        (None, {"scored": True, "banded": True}),
+    ],
+)
+def test_trace_correlates_only_the_input_an_apply_reads(mode, read):
+    from haute._trace_correlation import trace_edge_alignment
+
+    config = {"ratebook_input": "banded"}
+    if mode is not None:
+        config["optimiser_mode"] = mode
+    apply_node = _optimiser_apply_node(config)
+
+    assert {
+        name: trace_edge_alignment(
+            apply_node, target_role=None, edge_input=name, input_names=("scored", "banded")
+        ).read
+        for name in ("scored", "banded")
+    } == read
 
 
 _SEP = "\x1f"  # price-contour's interaction (unit) separator

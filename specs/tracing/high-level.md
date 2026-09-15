@@ -89,6 +89,16 @@ Out of scope (owned elsewhere, linked where relevant):
   produced, or (on a cache miss) runs the same eager-execution path the preview
   uses. Either way, the trace shows exactly the data the user sees in the preview
   table.
+- **Trace follows the limited preview.** A preview limits the previewed node's output
+  rather than its sources, so the rows it shows depend on uncapped joins, filters, and
+  aggregations. Trace locates the clicked row in the previewed node's limited output (or,
+  when it is absent there, in the node's uncapped plan) and follows its real lineage:
+  ancestors on an order-preserving path are read as their own limited outputs, and every
+  other ancestor is looked up by the values its child provably carried through unchanged,
+  keeping enough candidates to report duplicates as ambiguous. A step whose carried values
+  cannot be proven is an explicit `row_scope_unproven` omission; trace never substitutes a
+  sampled frame for a lineage lookup. An online optimiser apply explanation reads the
+  apply's complete input wherever its decision depends on rows beyond the clicked quote.
 - **Row identity is verified, not assumed.** When the frontend supplies the
   clicked row's values, the trace checks that the target node's row at
   `row_index` still matches them. A mismatch (e.g. because a Polars join

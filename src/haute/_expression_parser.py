@@ -2015,7 +2015,7 @@ class _ExprEvaluator:
             # inherits float-multiply error, so e.g. round(2.675, 2) -> 2.68
             # under Polars but 2.67 under ``round(2.675, 2)``. (The 2026-06-24
             # coverage audit's "half-away-from-zero" note does not hold for the
-            # pinned Polars 1.39 — it rounds half-to-even; see the cross-checked
+            # pinned Polars (1.39 through 1.44) — it rounds half-to-even; see the cross-checked
             # regression tests in test_expression_parser_polars_parity.py.)
             if method == "round":
                 val = self.evaluate(receiver)
@@ -2281,18 +2281,13 @@ class _ExprEvaluator:
         if not non_none:
             return None
 
-        if func_name == "max_horizontal":
-            # Polars treats NaN as the maximum, so any NaN propagates. Bare
-            # Python max() would instead be argument-order dependent.
-            if any(self._is_nan(v) for v in non_none):
-                return math.nan
-            return max(non_none)
-        if func_name == "min_horizontal":
-            # Polars ignores NaN for the minimum (only NaN -> NaN).
+        if func_name in ("max_horizontal", "min_horizontal"):
+            # Polars ignores NaN for both extremes (only NaN -> NaN). Bare
+            # Python max()/min() would instead be argument-order dependent.
             numbers = [v for v in non_none if not self._is_nan(v)]
             if not numbers:
                 return math.nan
-            return min(numbers)
+            return max(numbers) if func_name == "max_horizontal" else min(numbers)
         if func_name == "sum_horizontal":
             return sum(non_none)
         if func_name == "mean_horizontal":

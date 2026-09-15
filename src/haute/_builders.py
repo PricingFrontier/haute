@@ -720,9 +720,8 @@ def _scenario_expander_columns(config: dict[str, Any]) -> _ColumnContract:
     cn = (config.get("column_name") or "").strip()
     if cn:
         produced.add(cn)
-    sc = config.get("step_column", "scenario_index")
-    if sc:
-        produced.add(sc)
+    # Execution names a blank step column ``scenario_index``.
+    produced.add(config.get("step_column") or "scenario_index")
     return produced, set()
 
 
@@ -1315,7 +1314,13 @@ def _apply_online(
     version_col: str,
     optimised_value_col: str = "",
 ) -> _Frame:
-    """Apply online optimisation: Lagrangian argmax with stored lambdas."""
+    """Apply online optimisation: Lagrangian argmax with stored lambdas.
+
+    Sum constraints choose each quote's scenario independently, so the result is
+    a per-quote Python scan: a limited preview applies to the first quotes in
+    the result's order only. Ratio constraints linearise against the whole
+    apply-time frame, so their apply always reads every input row.
+    """
     from price_contour import ApplyOptimiser
 
     qid_col = artifact.get("quote_id", "quote_id")
@@ -1324,28 +1329,75 @@ def _apply_online(
     objective = artifact.get("objective", "expected_income")
     constraints = artifact.get("constraints") or {}
 
-    df_eager = _prepare_online_apply_frame(lf, artifact)
+    def apply(frame: _Frame) -> pl.DataFrame:
+        applier = ApplyOptimiser(
+            lambdas=artifact["lambdas"],
+            objective=objective,
+            constraints=constraints,
+            quote_id=qid_col,
+            scenario_index=step_col,
+            scenario_value=mult_col,
+        )
+        result_df: pl.DataFrame = applier.apply(
+            _prepare_online_apply_frame(frame, artifact)
+        ).dataframe
+        result_df = _rename_column_if_configured(
+            result_df,
+            "optimal_scenario_value",
+            optimised_value_col,
+        )
+        if version:
+            result_df = result_df.with_columns(pl.lit(version).alias(version_col))
+        return result_df
 
-    applier = ApplyOptimiser(
-        lambdas=artifact["lambdas"],
-        objective=objective,
-        constraints=constraints,
-        quote_id=qid_col,
-        scenario_index=step_col,
-        scenario_value=mult_col,
-    )
-    result = applier.apply(df_eager)
-    result_df: pl.DataFrame = result.dataframe
-    result_df = _rename_column_if_configured(
-        result_df,
-        "optimal_scenario_value",
-        optimised_value_col,
+    if isinstance(lf, pl.DataFrame):
+        return apply(lf.lazy()).lazy()
+    if has_ratio_constraint(constraints):
+        return apply(lf).lazy()
+
+    from haute._polars_utils import key_prefix_python_scan
+
+    return key_prefix_python_scan(
+        lf,
+        apply,
+        schema=online_apply_output_schema(
+            artifact,
+            version=version,
+            version_col=version_col,
+            optimised_value_col=optimised_value_col,
+        ),
+        key_column=qid_col,
     )
 
+
+def has_ratio_constraint(constraints: dict[str, Any]) -> bool:
+    """Whether an online artifact has a ratio constraint, which reads the whole frame."""
+    return any(
+        isinstance(spec, dict) and {"numerator", "denominator"}.issubset(spec)
+        for spec in constraints.values()
+    )
+
+
+def online_apply_output_schema(
+    artifact: dict[str, Any],
+    *,
+    version: str,
+    version_col: str,
+    optimised_value_col: str = "",
+) -> pl.Schema:
+    """Return the exact schema a sum-constraint online apply emits."""
+    constraints = artifact.get("constraints") or {}
+    columns: dict[str, pl.DataType] = {
+        "quote_id": pl.String(),
+        "optimal_step": pl.Int32(),
+        optimised_value_col or "optimal_scenario_value": pl.Float32(),
+        "optimal_objective": pl.Float32(),
+    }
+    for name in sorted(constraints):
+        columns[f"optimal_{name}"] = pl.Float32()
     if version:
-        result_df = result_df.with_columns(pl.lit(version).alias(version_col))
-
-    return result_df.lazy()
+        columns[version_col] = pl.String()
+    return pl.Schema(columns)
 
 
 def _prepare_online_apply_frame(lf: _Frame, artifact: dict[str, Any]) -> pl.DataFrame:

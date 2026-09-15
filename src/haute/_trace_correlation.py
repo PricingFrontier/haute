@@ -15,10 +15,11 @@ string/float comparisons for the non-Polars edges of the trace surface.
 
 from __future__ import annotations
 
+import ast
 import math
 import re
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
@@ -27,7 +28,11 @@ from typing import Any, NamedTuple
 
 import polars as pl
 
-from haute._edge_join import build_edge_join_kwargs, resolve_edge_join_role_indices
+from haute._edge_join import (
+    build_edge_join_kwargs,
+    edge_join_key_columns_by_role,
+    resolve_edge_join_role_indices,
+)
 from haute._json_safe import (
     MAX_SAFE_INTEGER,
     non_finite_float_token,
@@ -1423,6 +1428,7 @@ def _correlate_rows_posthoc(
     edge_metadata: Mapping[tuple[str, str], Sequence[tuple[str | None, str | None]]] | None = None,
     traced_column: str | None = None,
     work: CorrelationWork | None = None,
+    row_scope: RowScopeResolver | None = None,
 ) -> dict[str, dict[str, Any] | None]:
     """Extract the correct row from each node using post-hoc correlation.
 
@@ -1440,6 +1446,10 @@ def _correlate_rows_posthoc(
     time for multi-frame sources.  *traced_column* (the column the user
     is tracing, if any) disambiguates when several frames of one source
     feed the same child and more than one matches the child row.
+
+    *row_scope* (limited-preview traces) routes every parent that no head
+    frame proves to contain its child's lineage to a row-scoped lookup of the
+    parent's uncapped plan instead of its materialised frame.
 
     Returns a dict mapping node_id → row values (JSON-safe), or None
     for nodes where row correlation failed.
@@ -1469,6 +1479,52 @@ def _correlate_rows_posthoc(
     # Step 3: walk backward through topo order
     for nid in reversed(order):
         if nid in result:
+            continue
+
+        if row_scope is not None:
+            resolved_children = [
+                cid
+                for cid in children_of.get(nid, [])
+                if cid in result and result[cid] and row_scope.reads_parent(nid, cid)
+            ]
+            if not resolved_children:
+                result[nid] = None
+                row_indices[nid] = -1
+                continue
+            head_children = [cid for cid in resolved_children if row_scope.prefers_child(nid, cid)]
+            scoped_child_id = (head_children or resolved_children)[0]
+            scoped_child_frame = eager_outputs.get(scoped_child_id)
+            diagnostic_start = len(diagnostics) if diagnostics is not None else 0
+            scoped_row, scoped_idx = row_scope.resolve(
+                parent_id=nid,
+                child_id=scoped_child_id,
+                child_row=result[scoped_child_id] or {},
+                child_row_idx=row_indices.get(scoped_child_id, -1),
+                child_len=(
+                    len(scoped_child_frame) if isinstance(scoped_child_frame, pl.DataFrame) else -1
+                ),
+                diagnostics=diagnostics,
+                work=work,
+                traced_column=traced_column,
+            )
+            result[nid] = scoped_row
+            row_indices[nid] = scoped_idx
+            if scoped_row is None and unresolved is not None:
+                diagnostic_index = _ensure_unresolved_diagnostic(
+                    diagnostics,
+                    diagnostic_start=diagnostic_start,
+                    node_id=nid,
+                    child_node_id=scoped_child_id,
+                )
+                diagnostic = diagnostics[diagnostic_index] if diagnostics is not None else {}
+                unresolved[nid] = (
+                    str(
+                        diagnostic.get("reason")
+                        or diagnostic.get("code")
+                        or "row_correlation_failed"
+                    ),
+                    diagnostic_index,
+                )
             continue
 
         parent_df = eager_outputs.get(nid)
@@ -1581,3 +1637,717 @@ def _correlate_rows_posthoc(
             )
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Limited-preview lineage frames
+# ---------------------------------------------------------------------------
+#
+# A trace reads the rows the limited preview shows. A parent reached from a
+# head-framed child through an order-aligned edge contains that child's lineage
+# in its own first rows, so the existing positional and value correlation runs
+# over its head frame. Every other parent is looked up in its uncapped plan by
+# the values its child carried through unchanged.
+
+_LEFT_ORDER_PRESERVING_JOINS = frozenset({"left", "left_right"})
+_ROW_PRESERVING_BUILDER_TYPES = frozenset(
+    {NodeType.MODEL_SCORE, NodeType.BANDING, NodeType.RATING_STEP, NodeType.SCENARIO_EXPANDER}
+)
+_PASS_THROUGH_TRACE_TYPES = frozenset(
+    {
+        NodeType.LIVE_SWITCH,
+        NodeType.DATA_OUTPUT,
+        NodeType.MODELLING,
+        NodeType.SUBMODEL,
+        NodeType.SUBMODEL_PORT,
+    }
+)
+_CODE_FREE_PASS_THROUGH_TYPES = frozenset({NodeType.EXPLORE, NodeType.EXTERNAL_FILE})
+_ROW_DROPPING_METHODS = frozenset({"filter", "drop_nulls"})
+_ROW_SCOPE_CANDIDATE_LIMIT = 2
+# A key probe reading more candidate rows than this falls back to the full filter.
+_ROW_SCOPE_PROBE_LIMIT = 1_000
+# Edge Join strategies whose output rows for a base row depend only on that row's
+# values, and all of whose rows come from a base row.
+_ROW_TRANSFER_JOIN_STRATEGIES = frozenset({"left", "inner", "semi", "anti", "cross"})
+
+
+@dataclass(frozen=True, slots=True)
+class TraceEdgeAlignment:
+    """Whether a child emits each input row at least once, in input order.
+
+    ``read`` is false for a port the child never reads; such a port is not row
+    lineage and trace does not correlate it.
+    """
+
+    aligned: bool
+    prefix_cap: int | None = None
+    read: bool = True
+
+
+_NOT_ALIGNED = TraceEdgeAlignment(False)
+_ALIGNED = TraceEdgeAlignment(True)
+
+
+def _node_code(node: GraphNode) -> str:
+    code = node.data.config.get("code")
+    return code.strip() if isinstance(code, str) else ""
+
+
+def _single_head_limit(code: str, input_names: Sequence[str]) -> int | None:
+    """Return ``k`` when the whole program is ``df = <input>.head(k)`` or ``.limit(k)``."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None
+    statements = [
+        statement
+        for statement in tree.body
+        if not (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant))
+    ]
+    if len(statements) != 1 or not isinstance(statements[0], ast.Assign):
+        return None
+    assignment = statements[0]
+    call = assignment.value
+    if (
+        len(assignment.targets) != 1
+        or not isinstance(assignment.targets[0], ast.Name)
+        or assignment.targets[0].id != "df"
+        or not isinstance(call, ast.Call)
+        or not isinstance(call.func, ast.Attribute)
+        or call.func.attr not in {"head", "limit"}
+        or not isinstance(call.func.value, ast.Name)
+        or call.func.value.id not in {*input_names, "df"}
+        or call.keywords
+        or len(call.args) != 1
+        or not isinstance(call.args[0], ast.Constant)
+        or type(call.args[0].value) is not int
+    ):
+        return None
+    return call.args[0].value
+
+
+def _code_edge_alignment(
+    code: str,
+    input_names: Sequence[str],
+    selector_aliases: frozenset[str] = frozenset(),
+) -> TraceEdgeAlignment:
+    limit = _single_head_limit(code, input_names)
+    if limit is not None:
+        return TraceEdgeAlignment(True, limit) if limit >= 1 else _NOT_ALIGNED
+    from haute.chunking import classify_chunk_local_polars_code
+
+    if not classify_chunk_local_polars_code(
+        code, frame_names=input_names, selector_aliases=selector_aliases
+    ).eligible:
+        return _NOT_ALIGNED
+    try:
+        calls = method_call_sites(code.lstrip("﻿"))
+    except StructuredSyntaxError:
+        return _NOT_ALIGNED
+    if any(call.name in _ROW_DROPPING_METHODS for call in calls):
+        return _NOT_ALIGNED
+    return _ALIGNED
+
+
+def trace_edge_alignment(
+    child: GraphNode,
+    *,
+    target_role: str | None,
+    edge_input: str | None,
+    input_names: Sequence[str],
+    selector_aliases: frozenset[str] = frozenset(),
+    input_aliases: Mapping[str, str] | None = None,
+) -> TraceEdgeAlignment:
+    """Classify one incoming edge of *child* for limited-preview tracing.
+
+    *input_names* are the child's edge input names; *input_aliases* adds the
+    logical names its code may use for them (``inputMapping``).
+    """
+    node_type = child.data.nodeType
+    code = _node_code(child)
+    if node_type is NodeType.EDGE_JOIN:
+        if target_role != "base":
+            return _NOT_ALIGNED
+        kwargs = build_edge_join_kwargs(child.data.config)
+        return TraceEdgeAlignment(
+            kwargs["how"] == "left" and kwargs.get("maintain_order") in _LEFT_ORDER_PRESERVING_JOINS
+        )
+    if node_type in _ROW_PRESERVING_BUILDER_TYPES:
+        return _NOT_ALIGNED if code else _ALIGNED
+    if node_type in _PASS_THROUGH_TRACE_TYPES:
+        return _ALIGNED
+    if node_type in _CODE_FREE_PASS_THROUGH_TYPES and not code:
+        return _ALIGNED
+    if node_type is NodeType.OPTIMISER:
+        data_input = child.data.config.get("data_input")
+        selected = len(input_names) == 1 or (bool(data_input) and data_input == edge_input)
+        return TraceEdgeAlignment(selected)
+    if node_type is NodeType.OPTIMISER_APPLY:
+        # Ratebook apply left-joins factor tables onto its selected input in
+        # order; online apply collapses each quote's scenarios into one row.
+        # The apply reads one input: its ``ratebook_input`` in ratebook mode and
+        # its first input in online mode. ``optimiser_mode`` is the artifact's
+        # resolved mode; while it is unknown, both candidates count as read.
+        config = child.data.config
+        mode = config.get("optimiser_mode")
+        ratebook_input = config.get("ratebook_input")
+        selected = len(input_names) == 1 or (bool(ratebook_input) and ratebook_input == edge_input)
+        if len(input_names) <= 1:
+            read = True
+        elif mode == "ratebook":
+            read = selected
+        elif mode == "online":
+            read = edge_input == input_names[0]
+        else:
+            read = edge_input in {input_names[0], ratebook_input}
+        return TraceEdgeAlignment(mode == "ratebook" and selected, read=read)
+    if node_type in (NodeType.POLARS, NodeType.EXPLORE) and code and len(input_names) == 1:
+        return _code_edge_alignment(code, (*input_names, *(input_aliases or {})), selector_aliases)
+    return _NOT_ALIGNED
+
+
+TraceEdgeKey = tuple[str, str, str | None, str | None]
+"""``(parent, child, source_handle, target_handle)`` of one physical edge."""
+
+
+def trace_head_prefixes(
+    order: Sequence[str],
+    alignments: Mapping[TraceEdgeKey, TraceEdgeAlignment],
+    *,
+    target_node_id: str,
+    row_limit: int,
+) -> dict[str, int]:
+    """Return each head-framed node's prefix length.
+
+    The target's prefix is ``row_limit``. A parent is head-framed when an
+    aligned edge reaches it from a head-framed child; its prefix is the largest
+    child requirement, each reduced to ``k`` through a ``head(k)`` program, so
+    no head frame reads rows the preview did not compute.
+    """
+    prefixes = {target_node_id: row_limit}
+    for node_id in reversed(order):
+        if node_id == target_node_id:
+            continue
+        requirements = [
+            prefixes[child_id]
+            if alignment.prefix_cap is None
+            else min(prefixes[child_id], alignment.prefix_cap)
+            for (parent_id, child_id, _handle, _role), alignment in alignments.items()
+            if parent_id == node_id and alignment.aligned and child_id in prefixes
+        ]
+        if requirements:
+            prefixes[node_id] = max(requirements)
+    return prefixes
+
+
+PlanProvider = Callable[[], Mapping[str, "pl.LazyFrame | Mapping[str, pl.LazyFrame]"]]
+
+
+@dataclass
+class RowScopeResolver:
+    """Correlate every parent of a limited-preview trace, one physical edge at a time.
+
+    A port reached over an aligned edge from a child whose row came from its
+    own head frame is matched in the parent's head frame. Every other port is
+    looked up in the parent's uncapped plan by the values the child carries
+    through unchanged. A parent whose row comes from a lookup is no longer
+    head-resolved, so its own parents are looked up too.
+    """
+
+    node_map: Mapping[str, GraphNode]
+    prefixes: Mapping[str, int]
+    alignments: Mapping[TraceEdgeKey, TraceEdgeAlignment]
+    edge_metadata: Mapping[tuple[str, str], Sequence[tuple[str | None, str | None]]]
+    input_names: Mapping[TraceEdgeKey, str]
+    child_input_names: Mapping[str, tuple[str, ...]]
+    plans: PlanProvider
+    frames: dict[str, Any]
+    head_resolved: set[str]
+    execution_context: Any = None
+    lookups: dict[tuple[str, str | None, str], pl.DataFrame] = field(default_factory=dict)
+    selector_aliases: frozenset[str] = frozenset()
+    child_input_aliases: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    _join_key_columns: frozenset[str] | None = field(default=None, init=False, repr=False)
+    _schemas: dict[tuple[str, str | None], pl.Schema] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _unique_rows: dict[str, pl.DataFrame] = field(default_factory=dict, init=False, repr=False)
+
+    def _head_edge(
+        self,
+        parent_id: str,
+        child_id: str,
+        source_handle: str | None,
+        target_handle: str | None,
+    ) -> bool:
+        alignment = self.alignments.get((parent_id, child_id, source_handle, target_handle))
+        return (
+            alignment is not None
+            and alignment.aligned
+            and child_id in self.head_resolved
+            and parent_id in self.prefixes
+        )
+
+    def _reads_edge(
+        self,
+        parent_id: str,
+        child_id: str,
+        source_handle: str | None,
+        target_handle: str | None,
+    ) -> bool:
+        alignment = self.alignments.get((parent_id, child_id, source_handle, target_handle))
+        return alignment is None or alignment.read
+
+    def reads_parent(self, parent_id: str, child_id: str) -> bool:
+        """Whether *child_id* reads any port *parent_id* feeds it."""
+        return any(
+            self._reads_edge(parent_id, child_id, handle, role)
+            for handle, role in self.edge_metadata.get((parent_id, child_id), ())
+        )
+
+    def prefers_child(self, parent_id: str, child_id: str) -> bool:
+        """Whether some edge from *parent_id* to *child_id* can use head frames."""
+        return any(
+            self._head_edge(parent_id, child_id, handle, role)
+            for handle, role in self.edge_metadata.get((parent_id, child_id), ())
+        )
+
+    def _head_frame(self, parent_id: str, source_handle: str | None) -> pl.DataFrame | None:
+        frame = self.frames.get(parent_id)
+        if isinstance(frame, dict):
+            frame = frame.get(source_handle) if source_handle is not None else None
+        return frame if isinstance(frame, pl.DataFrame) else None
+
+    def plan_for(self, node_id: str, source_handle: str | None) -> pl.LazyFrame | None:
+        plan = self.plans().get(node_id)
+        if isinstance(plan, Mapping):
+            return plan.get(source_handle) if source_handle is not None else None
+        return plan
+
+    def schema_for(self, node_id: str, source_handle: str | None) -> pl.Schema | None:
+        """Return a lineage plan's schema, read at most once per request."""
+        key = (node_id, source_handle)
+        schema = self._schemas.get(key)
+        if schema is None:
+            plan = self.plan_for(node_id, source_handle)
+            if plan is None:
+                return None
+            schema = plan.collect_schema()
+            self._schemas[key] = schema
+        return schema
+
+    def record_unique_row(self, node_id: str, frame: pl.DataFrame) -> None:
+        """Record *frame* as *node_id*'s only row in its uncapped plan."""
+        if frame.height != 1:
+            raise ValueError(f"a unique row frame has one row, got {frame.height}")
+        self._unique_rows[node_id] = frame
+
+    def _transferred_parent_frame(
+        self,
+        *,
+        parent_id: str,
+        child_id: str,
+        source_handle: str | None,
+        target_role: str | None,
+    ) -> pl.DataFrame | None:
+        """Return the parent row a unique child row proves, or ``None``.
+
+        When the child derives its rows from each parent row's values alone and
+        carries every parent column unchanged, two identical parent rows would
+        yield two identical matching child rows; a unique child row therefore
+        proves exactly one parent row, which is the child row restricted to the
+        parent's columns.
+        """
+        child_frame = self._unique_rows.get(child_id)
+        if child_frame is None or source_handle is not None:
+            return None
+        child = self.node_map[child_id]
+        if child.data.config.get("column_renames"):
+            return None
+        node_type = child.data.nodeType
+        if node_type is NodeType.EDGE_JOIN:
+            if target_role != "base":
+                return None
+            if build_edge_join_kwargs(child.data.config)["how"] not in (
+                _ROW_TRANSFER_JOIN_STRATEGIES
+            ):
+                return None
+        elif node_type in _PASS_THROUGH_TRACE_TYPES:
+            # A pass-through node returns one of its inputs; only a sole traced
+            # input is the one its rows come from.
+            lineage_inputs = [
+                key
+                for key, alignment in self.alignments.items()
+                if key[1] == child_id and alignment.read
+            ]
+            if len(lineage_inputs) != 1:
+                return None
+        else:
+            return None
+        parent_schema = self.schema_for(parent_id, None)
+        if parent_schema is None:
+            return None
+        child_schema = child_frame.schema
+        if any(child_schema.get(name) != dtype for name, dtype in parent_schema.items()):
+            return None
+        return child_frame.select(parent_schema.names())
+
+    def join_key_columns(self) -> frozenset[str]:
+        """Every column keying an Edge Join (either role) on the traced lineage."""
+        if self._join_key_columns is None:
+            columns: set[str] = set()
+            lineage_children = {child_id for _parent, child_id, _handle, _role in self.alignments}
+            for child_id in sorted(lineage_children):
+                node = self.node_map[child_id]
+                if node.data.nodeType is NodeType.EDGE_JOIN:
+                    base_keys, join_keys = edge_join_key_columns_by_role(node.data.config)
+                    columns.update(base_keys, join_keys)
+            self._join_key_columns = frozenset(columns)
+        return self._join_key_columns
+
+    def lookup(
+        self,
+        node_id: str,
+        source_handle: str | None,
+        values: Mapping[str, Any],
+    ) -> pl.DataFrame | None:
+        """Read up to two rows of a node's uncapped plan matching *values*.
+
+        Two rows decide uniqueness. Filtering on every carried column makes
+        Polars decode each of them across the whole input, so a lookup that
+        carries a non-null join key first reads the rows matching its keys and
+        matches the rest in memory, falling back to the full filter when that
+        probe reaches ``_ROW_SCOPE_PROBE_LIMIT`` rows.
+        """
+        from haute._polars_utils import streaming_collect
+
+        plan = self.plan_for(node_id, source_handle)
+        schema = self.schema_for(node_id, source_handle)
+        if plan is None or schema is None:
+            return None
+        expressions: list[pl.Expr] = []
+        probe_expressions: list[pl.Expr] = []
+        join_keys = self.join_key_columns()
+        for column, value in values.items():
+            if column not in schema:
+                return None
+            expression, _reason = _typed_value_match_expr(column, value, schema[column])
+            if expression is None:
+                return None
+            # A filter already drops a row whose comparison is null; null-filling
+            # the comparison would stop Parquet statistics from pruning row groups.
+            expressions.append(expression)
+            if column in join_keys and value is not None:
+                probe_expressions.append(expression)
+        if not expressions:
+            return None
+        key = (node_id, source_handle, repr(sorted(values.items(), key=lambda item: item[0])))
+        cached = self.lookups.get(key)
+        if cached is not None:
+            return cached
+        matches_every_value = pl.all_horizontal(expressions)
+        if probe_expressions:
+            candidates = streaming_collect(
+                plan.filter(pl.all_horizontal(probe_expressions)).head(_ROW_SCOPE_PROBE_LIMIT + 1),
+                execution_context=self.execution_context,
+            )
+            if candidates.height <= _ROW_SCOPE_PROBE_LIMIT:
+                cached = candidates.filter(matches_every_value).head(_ROW_SCOPE_CANDIDATE_LIMIT)
+        if cached is None:
+            cached = streaming_collect(
+                plan.filter(matches_every_value).head(_ROW_SCOPE_CANDIDATE_LIMIT),
+                execution_context=self.execution_context,
+            )
+        self.lookups[key] = cached
+        return cached
+
+    def _carried_values(
+        self,
+        *,
+        parent_id: str,
+        child_id: str,
+        source_handle: str | None,
+        target_role: str | None,
+        child_row: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        child = self.node_map[child_id]
+        node_type = child.data.nodeType
+        code = _node_code(child)
+        parent_schema = self.schema_for(parent_id, source_handle)
+        if parent_schema is None:
+            return None
+        parent_columns = set(parent_schema.names())
+        shared = {name: value for name, value in child_row.items() if name in parent_columns}
+        if node_type is NodeType.EDGE_JOIN:
+            if target_role == "base":
+                return shared
+            if target_role != "join":
+                return None
+            base = edge_join_role_edges(child, self.edge_metadata).base
+            base_schema = self.schema_for(base.source_id, base.source_handle)
+            if base_schema is None:
+                return None
+            return _edge_join_right_match_row(
+                dict(child_row),
+                parent_columns,
+                set(base_schema.names()),
+                child.data.config,
+            )
+        if node_type in _PASS_THROUGH_TRACE_TYPES or node_type in (
+            NodeType.OPTIMISER,
+            NodeType.OUTPUT,
+        ):
+            return shared
+        if node_type in _CODE_FREE_PASS_THROUGH_TYPES and not code:
+            return shared
+        carried = shared
+        if node_type in _ROW_PRESERVING_BUILDER_TYPES or node_type is NodeType.OPTIMISER_APPLY:
+            from haute.projection import projection_contract
+
+            builder = child
+            if code:
+                config = {key: value for key, value in child.data.config.items() if key != "code"}
+                builder = child.model_copy(
+                    update={"data": child.data.model_copy(update={"config": config})}
+                )
+            produced, _referenced = projection_contract(builder).to_tuple()
+            if produced is None:
+                return None
+            carried = {name: value for name, value in carried.items() if name not in produced}
+        elif node_type not in (NodeType.POLARS, NodeType.EXPLORE, NodeType.EXTERNAL_FILE):
+            return None
+        if not code:
+            return carried
+        from haute._column_lineage import carried_column_proof
+
+        input_names = self.child_input_names.get(child_id, ())
+        explicit_inputs = node_type in (NodeType.POLARS, NodeType.EXTERNAL_FILE)
+        proof = carried_column_proof(
+            code,
+            input_names if explicit_inputs else ("df",),
+            **self._code_input_schemas(child_id, node_type, explicit_inputs=explicit_inputs),
+            selector_aliases=self.selector_aliases,
+            input_aliases=self.child_input_aliases.get(child_id) if explicit_inputs else None,
+        )
+        if proof is None:
+            return None
+        carried = {
+            name: value
+            for name, value in carried.items()
+            if name not in proof.assigned
+            and (proof.carried_only is None or name in proof.carried_only)
+        }
+        edge_input = self.input_names.get((parent_id, child_id, source_handle, target_role))
+        if len(input_names) > 1 and proof.root_input != edge_input:
+            # A column several inputs share keeps the root input's value (or the
+            # value of a key this input was joined on); it identifies no other
+            # parent's row.
+            input_join_keys = proof.join_keys.get(edge_input or "", frozenset())
+            other_columns: set[str] = set()
+            for (other_parent, other_child), other_edges in self.edge_metadata.items():
+                if other_child != child_id:
+                    continue
+                for other_handle, _role in other_edges:
+                    if other_parent == parent_id and other_handle == source_handle:
+                        continue
+                    other_schema = self.schema_for(other_parent, other_handle)
+                    if other_schema is not None:
+                        other_columns.update(other_schema.names())
+            # A non-root input's null may be an outer fill rather than its value.
+            carried = {
+                name: value
+                for name, value in carried.items()
+                if value is not None and (name not in other_columns or name in input_join_keys)
+            }
+        return carried
+
+    def _code_input_schemas(
+        self,
+        child_id: str,
+        node_type: NodeType,
+        *,
+        explicit_inputs: bool,
+    ) -> dict[str, Any]:
+        """Return the proof's input column names and dtypes for *child_id*'s code.
+
+        Explicit inputs are read from each parent port's plan; Explore code's
+        ``df`` is its single parent. Builder post-code runs on the builder's own
+        output, whose schema the plans do not hold, so it gets none.
+        """
+        if not explicit_inputs and node_type is not NodeType.EXPLORE:
+            return {}
+        columns: dict[str, list[str]] = {}
+        dtypes: dict[str, dict[str, pl.DataType]] = {}
+        for (parent_id, other_child), edges in self.edge_metadata.items():
+            if other_child != child_id:
+                continue
+            for handle, role in edges:
+                name = (
+                    self.input_names.get((parent_id, child_id, handle, role))
+                    if explicit_inputs
+                    else "df"
+                )
+                schema = self.schema_for(parent_id, handle)
+                if name is None or schema is None:
+                    return {}
+                columns[name] = schema.names()
+                dtypes[name] = dict(schema)
+        return {"input_columns": columns, "input_dtypes": dtypes}
+
+    def resolve(
+        self,
+        *,
+        parent_id: str,
+        child_id: str,
+        child_row: Mapping[str, Any],
+        child_row_idx: int,
+        child_len: int,
+        diagnostics: list[dict[str, Any]] | None,
+        work: CorrelationWork | None,
+        traced_column: str | None = None,
+    ) -> tuple[dict[str, Any] | None, int]:
+        edges = tuple(
+            (handle, role)
+            for handle, role in self.edge_metadata.get((parent_id, child_id), ())
+            if self._reads_edge(parent_id, child_id, handle, role)
+        )
+        single = len(edges) == 1
+        port_diagnostics = diagnostics if single else None
+        # (source_handle, row, index, width, frame, from_head)
+        matches: list[tuple[str | None, dict[str, Any], int, int, pl.DataFrame, bool]] = []
+        unproven = False
+        for source_handle, target_role in edges:
+            if self._head_edge(parent_id, child_id, source_handle, target_role):
+                frame = self._head_frame(parent_id, source_handle)
+                if frame is None or frame.height == 0:
+                    continue
+                row, index, width = _match_parent_row(
+                    frame,
+                    parent_id=parent_id,
+                    child_row=dict(child_row),
+                    child_row_idx=child_row_idx,
+                    child_len=child_len,
+                    child_id=child_id,
+                    node_map=self.node_map,
+                    eager_outputs=self.frames,
+                    edge_metadata=self.edge_metadata,
+                    target_role=target_role,
+                    diagnostics=port_diagnostics,
+                    work=work,
+                )
+                if row is not None:
+                    matches.append((source_handle, row, index, width, frame, True))
+                continue
+            transferred = self._transferred_parent_frame(
+                parent_id=parent_id,
+                child_id=child_id,
+                source_handle=source_handle,
+                target_role=target_role,
+            )
+            if transferred is not None:
+                self._record_frame(parent_id, source_handle, transferred)
+                row = _jsonify_row(transferred.row(0, named=True))
+                matches.append((source_handle, row, 0, transferred.width, transferred, False))
+                continue
+            carried = self._carried_values(
+                parent_id=parent_id,
+                child_id=child_id,
+                source_handle=source_handle,
+                target_role=target_role,
+                child_row=child_row,
+            )
+            lookup = self.lookup(parent_id, source_handle, carried) if carried else None
+            if not carried or lookup is None:
+                unproven = True
+                schema = self.schema_for(parent_id, source_handle)
+                if schema is not None:
+                    self._record_frame(parent_id, source_handle, pl.DataFrame(schema=schema))
+                continue
+            self._record_frame(parent_id, source_handle, lookup)
+            row, index = _find_matching_row(
+                lookup,
+                dict(carried),
+                diagnostics=port_diagnostics,
+                node_id=parent_id,
+                child_node_id=child_id,
+                allow_relaxed=False,
+                work=work,
+            )
+            if row is not None:
+                matches.append((source_handle, row, index, len(carried), lookup, False))
+        if not matches:
+            if diagnostics is not None and (unproven or not single):
+                diagnostics.append(
+                    {
+                        "code": "row_scope_unproven" if single else "unresolved_source_frame",
+                        "severity": "warning",
+                        "reason": (
+                            "row_scope_unproven" if single else "source_frame_row_not_correlated"
+                        ),
+                        "message": (
+                            f"Row correlation for node {parent_id!r} could not identify the "
+                            f"row that fed child {child_id!r}."
+                        ),
+                        "node_id": parent_id,
+                        "child_node_id": child_id,
+                        "match_strategy": "row_scope" if single else "source_frame",
+                        "match_columns": [],
+                        "ignored_columns": [],
+                        "matched_row_count": 0,
+                        "matched_row_indices": [],
+                    }
+                )
+            return None, -1
+        if traced_column is not None and len(matches) > 1:
+            with_column = [match for match in matches if traced_column in match[4].columns]
+            if with_column:
+                matches = with_column
+        if len(matches) > 1:
+            widest = max(match[3] for match in matches)
+            matches = [match for match in matches if match[3] == widest]
+        if len(matches) != 1:
+            if work is not None:
+                work.ambiguity_count += 1
+            if diagnostics is not None:
+                diagnostics.append(
+                    {
+                        "code": "ambiguous_source_frame",
+                        "severity": "warning",
+                        "reason": "multiple_source_frames_matched",
+                        "message": (
+                            f"Row correlation for multi-frame node {parent_id!r} for child "
+                            f"{child_id!r} matched several frames; no frame was selected."
+                        ),
+                        "node_id": parent_id,
+                        "child_node_id": child_id,
+                        "match_strategy": "source_frame",
+                        "match_columns": [],
+                        "ignored_columns": [],
+                        "matched_row_count": len(matches),
+                        "matched_row_indices": [],
+                        "candidates": [match[0] for match in matches],
+                    }
+                )
+            return None, -1
+        handle, row, index, _width, frame, from_head = matches[0]
+        if from_head:
+            self.head_resolved.add(parent_id)
+        elif handle is None and frame.height == 1:
+            self.record_unique_row(parent_id, frame)
+        return row, index
+
+    def _record_frame(
+        self,
+        parent_id: str,
+        source_handle: str | None,
+        frame: pl.DataFrame,
+    ) -> None:
+        """Expose the looked-up rows to enrichment as this click's parent frame."""
+        if source_handle is not None and isinstance(self.plans().get(parent_id), Mapping):
+            existing = self.frames.get(parent_id)
+            merged = dict(existing) if isinstance(existing, dict) else {}
+            merged[source_handle] = frame
+            self.frames[parent_id] = merged
+        else:
+            self.frames[parent_id] = frame

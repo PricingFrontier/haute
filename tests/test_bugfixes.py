@@ -771,7 +771,12 @@ class TestPreviewRouteSourceFile:
         body = resp.json()
         assert body["status"] == "ok"
         assert [column["name"] for column in body["columns"]] == ["x", "scaled"]
-        assert body["preview"] == [{"x": 2, "scaled": 20}, {"x": 3, "scaled": 30}]
+        # The row limit applies to the Explore output, so the filter sees every source row.
+        assert body["preview"] == [
+            {"x": 2, "scaled": 20},
+            {"x": 3, "scaled": 30},
+            {"x": 4, "scaled": 40},
+        ]
 
 
 # ---------------------------------------------------------------------------

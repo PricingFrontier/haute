@@ -144,6 +144,7 @@ _OPERATION_CODE = {
     "top_k": "df = df.top_k(1000, by='v1')",
     "bottom_k": "df = df.bottom_k(1000, by='v1')",
     "reverse": "df = df.reverse()",
+    "shift": "df = df.shift(1)",
     "interpolate": "df = df.select('key', 'v1_gaps').interpolate()",
 }
 _TWO_INPUT_OPERATIONS = frozenset({"join", "join_asof"})

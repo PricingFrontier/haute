@@ -600,6 +600,12 @@ def _duration_key_to_physical(value: str, time_unit: str) -> int:
     return -result if match.group("sign") else result
 
 
+# Date entry strings are ISO calendar dates; surrounding whitespace is
+# stripped first. Polars 1.44 deprecates the String-to-Date cast, and
+# ``str.to_date`` without a format would infer other spellings.
+_ISO_DATE_FORMAT = "%Y-%m-%d"
+
+
 def _coerce_rating_lookup_expr(
     name: str,
     source_dtype: pl.DataType,
@@ -615,6 +621,8 @@ def _coerce_rating_lookup_expr(
             {"true": True, "false": False},
             return_dtype=pl.Boolean,
         ).alias(name)
+    if target_dtype == pl.Date and source_dtype == pl.String:
+        return col.str.strip_chars().str.to_date(_ISO_DATE_FORMAT, strict=True).alias(name)
     if target_dtype == pl.Time and source_dtype == pl.String:
         return col.str.to_time(strict=True).alias(name)
     if isinstance(target_dtype, pl.Datetime) and source_dtype == pl.String:
@@ -657,6 +665,8 @@ def normalise_rating_key(
         typed = pl.Series(raw.name, [None], dtype=pl.Null)
     elif dtype == pl.Boolean and source_dtype == pl.String:
         typed = raw.replace_strict({"true": True, "false": False}, return_dtype=pl.Boolean)
+    elif dtype == pl.Date and source_dtype == pl.String:
+        typed = raw.str.strip_chars().str.to_date(_ISO_DATE_FORMAT, strict=True)
     elif dtype == pl.Time and source_dtype == pl.String:
         typed = raw.str.to_time(strict=True)
     elif isinstance(dtype, pl.Datetime) and source_dtype == pl.String:
@@ -796,12 +806,14 @@ def _apply_rating_miss_guard(
     output_col: str,
     on_missing: str,
     default_note: str = "",
+    input_schema: pl.Schema | None = None,
 ) -> _Frame:
-    """Validate lookup misses at a projection-safe lazy-plan barrier.
+    """Validate lookup misses as a row-local Python scan.
 
-    Projection, predicate, and slice pushdown stop at this barrier so a caller
-    cannot accidentally prune the validation by selecting a different output
-    column. The callback returns each batch unchanged and remains streamable.
+    The scan always reads the key and lookup-value columns and refuses pushed
+    input predicates, so neither a downstream projection nor a filter can prune
+    validation; a pushed row limit bounds it to the rows computed. The callback
+    returns each batch unchanged.
     """
 
     resolved_key_columns = key_columns if key_columns is not None else factors
@@ -845,12 +857,18 @@ def _apply_rating_miss_guard(
 
     if isinstance(lf, pl.DataFrame):
         return _check(lf)
-    return lf.map_batches(
+    from haute._polars_utils import row_local_python_scan
+
+    guard_schema = input_schema if input_schema is not None else lf.collect_schema()
+    return row_local_python_scan(
+        lf,
         _check,
-        predicate_pushdown=False,
-        projection_pushdown=False,
-        slice_pushdown=False,
-        streamable=True,
+        schema=guard_schema,
+        input_schema=guard_schema,
+        generated_columns=(),
+        required_input_columns=(*resolved_key_columns, lookup_value_column),
+        input_predicates_allowed=False,
+        elide_transform_when_unused=False,
     )
 
 
@@ -1062,6 +1080,13 @@ def _apply_rating_table(
     # defaultValue fills every miss below, so nothing can be silent.
     # Diagnostics relabel temporary keys with the public factor names.
     if default_val is None:
+        joined_schema = pl.Schema(
+            {
+                **dict(zip(_schema_names(frame_schema), frame_schema.values(), strict=True)),
+                **dict.fromkeys(key_columns, pl.String()),
+                lookup_value_column: lookup.schema[lookup_value_column],
+            }
+        )
         lf = _apply_rating_miss_guard(
             lf,
             factors,
@@ -1071,6 +1096,7 @@ def _apply_rating_table(
             output_col=output_col,
             on_missing=on_missing,
             default_note=default_note,
+            input_schema=joined_schema,
         )
 
     # Rename value → outputColumn, apply default

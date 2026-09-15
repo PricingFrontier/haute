@@ -417,16 +417,22 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
 
     preview_reader = RecordingPreview()
 
-    calls = {"materialize": 0, "cold_execute": 0}
+    calls = {"materialize": 0, "cold_execute": 0, "plan_builds": 0}
     correlation_seconds: list[float] = []
     original_materialize = trace_mod._materialize_eager_outputs
     original_correlate = trace_mod._correlate_rows_posthoc
+    original_execute = trace_mod._execute_eager_core
 
     def counting_materialize(*args: Any, **kwargs: Any) -> Any:
         calls["materialize"] += 1
         return original_materialize(*args, **kwargs)
 
     def forbidden_cold_execute(*args: Any, **kwargs: Any) -> Any:
+        # Building the uncapped lineage plans a row-scoped lookup reads collects
+        # nothing; only a materialising execution would redo the preview's work.
+        if kwargs.get("materialize_node_ids") == frozenset():
+            calls["plan_builds"] += 1
+            return original_execute(*args, **kwargs)
         calls["cold_execute"] += 1
         raise AssertionError("trace should reuse preview outputs, not execute the DAG")
 
@@ -473,7 +479,10 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
     second_payload = _serialize_and_validate_trace(second)
     second_serialization_seconds = time.perf_counter() - start
 
-    assert calls == {"materialize": 1, "cold_execute": 0}
+    assert calls["materialize"] == 1
+    assert calls["cold_execute"] == 0
+    # Lineage plans are built at most once per trace request, and never cached.
+    assert calls["plan_builds"] <= 2
     assert len(preview_lookups) == 1
     assert len(correlation_seconds) == 2
     assert first.output_value == preview[_TARGET_NODE].preview[7]["premium"]

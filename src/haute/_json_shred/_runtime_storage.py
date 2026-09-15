@@ -114,9 +114,19 @@ _RUNTIME_STORAGE_RECOVERED_ROOTS: set[Path] = set()
 RUNTIME_SNAPSHOT_CACHE_MAX_ENTRIES = int_env("HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_ENTRIES", 64)
 
 
-RUNTIME_SNAPSHOT_CACHE_MAX_BYTES = int_env(
-    "HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_BYTES", 512 * 1024 * 1024
-)
+def _runtime_snapshot_cache_max_bytes() -> int:
+    """The verified-snapshot cache's byte bound: half the runtime disk budget by default.
+
+    Retained snapshots count against the runtime disk budget, so pins keep at
+    most half of it and the rest stays available for captures and spills.
+    """
+    budget_bytes = int_env(
+        "HAUTE_JSON_RUNTIME_DISK_BUDGET_BYTES", _RUNTIME_STORAGE_BUDGET_DEFAULT_BYTES
+    )
+    return int_env("HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_BYTES", max(1, budget_bytes // 2))
+
+
+RUNTIME_SNAPSHOT_CACHE_MAX_BYTES = _runtime_snapshot_cache_max_bytes()
 
 
 class JsonRuntimeDiskBudgetExceededError(RuntimeError):
@@ -552,8 +562,11 @@ class _VerifiedRuntimeSnapshotCache:
             return False, []
         evicted: list[Path] = []
         with self._lock:
-            if key in self._entries:
-                evicted.extend(self._drop_entry_locked(key))
+            # The visible path now names this generation, so no later probe can
+            # present another generation's revision for it.
+            path_key = key[0]
+            for other_key in [other for other in self._entries if other[0] == path_key]:
+                evicted.extend(self._drop_entry_locked(other_key))
             self._entries[key] = _VerifiedRuntimeSnapshot(revision, snapshot_path, size)
             self._entries.move_to_end(key)
             if snapshot_path in self._path_counts:

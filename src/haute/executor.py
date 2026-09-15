@@ -962,8 +962,10 @@ def execute_graph(
     Args:
         graph: React Flow graph with "nodes" and "edges".
         target_node_id: If set, only execute nodes up to (and including) this node.
-        row_limit: If set, apply .head(row_limit) to source nodes so only
-                   that many rows flow through the pipeline.
+        row_limit: If set, each collected node returns at most that many rows of
+                   its own output (SQL ``LIMIT`` semantics); sources are never
+                   capped, and Polars pushes the limit upstream only where the
+                   result is unchanged.
         max_preview_rows: Max rows to include in the JSON preview payload.
         enforce_contracts: If ``True`` (the default), every node's column
             contract is asserted at the input and output boundaries, so

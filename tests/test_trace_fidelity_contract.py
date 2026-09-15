@@ -170,25 +170,13 @@ def test_lineage_sniff_ignores_non_structural_join_text(code: str) -> None:
     assert _sniff_operation_type(code) == ""
 
 
-def test_lineage_sniff_preserves_real_join_sort_and_observed_filter_semantics() -> None:
+def test_lineage_sniff_preserves_real_join_sort_and_filter_semantics() -> None:
     assert _sniff_operation_type("df = df.join(other, on='id')") == "join"
     assert _sniff_operation_type("df = df.sort('id')") == "sort"
-    assert (
-        detect_row_lineage_type(
-            input_row_count=2,
-            output_row_count=2,
-            operation_type="filter",
-        )
-        == "passthrough"
-    )
-    assert (
-        detect_row_lineage_type(
-            input_row_count=2,
-            output_row_count=1,
-            operation_type="filter",
-        )
-        == "filtered"
-    )
+    # Trace frames are limited or row-scoped, so labels classify the operation
+    # and never read frame heights.
+    assert detect_row_lineage_type(operation_type="filter") == "filtered"
+    assert detect_row_lineage_type(operation_type="") == "passthrough"
 
 
 def test_parent_collision_provenance_is_symmetric_and_order_independent() -> None:

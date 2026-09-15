@@ -214,8 +214,16 @@ of different dtypes, are `OutputMappingSchemaError` rejections.
 document frame under that derived schema rather than by Python inference, which
 makes the derivation the single schema authority for both OUTPUT paths. Under a
 schema-only execution (`schema_only=True`) it returns an empty frame under the
-derived schema and never assembles; otherwise it assembles as before and
-declares the same schema. Declaring the schema is rendering-neutral —
+derived schema and never assembles; otherwise it returns a `limited_python_scan`
+(execution engine) under the same schema. A limit `n` that Polars pushes to the
+scan reaches `assemble_output_from_mapping(..., row_limit=n)` and
+`_assemble_document`: an emitting root level reads only its first `n` rows, and
+every deeper emitting level reads only the rows whose keys match its nearest
+collected ancestor level (`is_in` for one key, a semi join for several), so each
+returned top-level object equals the unlimited assembly's object for the same
+root rows. Root rows sharing their own-field values collapse, so fewer than `n`
+objects may return. A root synthesised from descendants has no rows of its own
+to limit and is assembled in full. Without a limit assembly reads every row. Declaring the schema is rendering-neutral —
 `render_output_document` prunes the null padding a uniform schema introduces —
 and an empty document keeps the typed schema instead of losing its columns.
 OUTPUT is an inherent terminal
@@ -387,8 +395,17 @@ the skip/conservation accounting.
    generation verifies size and SHA-256 from the pinned artifact in fixed-size chunks;
    the complete compressed payload is never held in a Python `bytes`/`BytesIO` object.
    The verified snapshot may remain in a process-local LRU bounded by
-   `HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_ENTRIES` and
-   `HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_BYTES`. A later probe acquires that snapshot
+   `HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_ENTRIES` (default 64) and
+   `HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_BYTES`. The byte bound defaults to half the
+   runtime storage budget (`HAUTE_JSON_RUNTIME_DISK_BUDGET_BYTES`, at least one byte), because
+   retained snapshots count against that budget: pins never take more than half of it, and
+   an artifact up to that size stays cacheable while the other half remains for captures
+   and spills. An artifact larger than the byte bound is never retained, so every
+   operation re-hashes it; the earlier fixed 512 MiB bound re-hashed a 1 GB quote table
+   (about 2 s) on every preview and trace. Retaining a newly verified generation drops the
+   cache pins of every other generation of the same visible path: the path can never
+   present a superseded generation's revision again, so those pins could only hold its
+   disk blocks. A later probe acquires that snapshot
    without hashing only when the current visible path has the exact strong native
    identity/change revision captured after verification and the private file still
    exists. The warm-hit path performs the fork-safe process-state reset and native
@@ -929,8 +946,13 @@ V2 schema codec and OUTPUT shape:
   focused mutation boundaries, deterministic cyclic
   cuts, bag fan-out, unmatched partials, sibling-array non-explosion, pruning,
   rendering, exact assembled shapes, one-parse-per-distinct-path validation,
-  incomplete editor rows, and multi-frame relation keys absent from a
-  non-participating frame; `tests/test_output_nest_example_contract.py`
+  incomplete editor rows, multi-frame relation keys absent from a
+  non-participating frame, and limited assembly (the first documents read only
+  their own children's rows, limited multi-port levels emit unlimited documents,
+  a synthesised root is complete, duplicate root rows collapse, and a limited level
+  filters on its nearest collected ancestor's own key with `is_in`, semi-joins on
+  several, and reads every row when it carries none);
+  `tests/test_output_nest_example_contract.py`
   pins the fixture-level nested-document contract, while
   `tests/test_executor_builders.py` and `tests/test_codegen_builders.py` own the
   executor/generated-code integration boundary, and

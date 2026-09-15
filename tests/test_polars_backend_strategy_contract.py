@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from contextlib import nullcontext
 from datetime import date
 from pathlib import Path
 
@@ -2020,6 +2021,7 @@ _NEW_BOUNDARY_SHAPES: tuple[tuple[str, str], ...] = (
     ("sort", "df = df.sort('premium')"),
     ("unique", "df = df.unique(subset=['segment'])"),
     ("reverse", "df = df.reverse()"),
+    ("shift", "df = df.shift(1)"),
     ("top_k", "df = df.top_k(5, by='premium')"),
     ("bottom_k", "df = df.bottom_k(5, by='premium')"),
     (
@@ -2123,25 +2125,12 @@ def test_an_expression_method_named_like_a_frame_boundary_is_not_a_boundary(
     assert "shape" not in result.projection_plan.materialisation_boundaries
 
 
-@pytest.mark.parametrize(
-    ("operator", "transform_code"),
-    [
-        ("shift", "df = df.shift(1)"),
-        ("unpivot", "df = df.unpivot(on=['premium', 'extra'], index=['segment'])"),
-    ],
-)
-def test_measured_streaming_operations_do_not_become_boundaries(
-    tmp_path: Path,
-    operator: str,
-    transform_code: str,
-) -> None:
+def test_measured_streaming_unpivot_does_not_become_a_boundary(tmp_path: Path) -> None:
     graph = _shape_group_by_graph(
         tmp_path / "rows.parquet",
-        transform_code,
-        "df = df.group_by('segment').agg(pl.col('value').sum().alias('total'))"
-        if operator == "unpivot"
-        else _GROUP_BY_PREMIUM,
-        "total" if operator == "unpivot" else "premium",
+        "df = df.unpivot(on=['premium', 'extra'], index=['segment'])",
+        "df = df.group_by('segment').agg(pl.col('value').sum().alias('total'))",
+        "total",
     )
 
     with native_memory_backend_scope("rlimit"):
@@ -2454,3 +2443,68 @@ def test_prepared_planner_reports_an_estimate_that_was_never_requested() -> None
         )
     assert rejected.value.reason_code == "materialisation_estimate_unavailable"
     assert detail in rejected.value.remediation
+
+
+@pytest.mark.parametrize("conservative", [False, True], ids=["estimated", "conservative"])
+def test_target_preview_replan_preserves_the_executed_materialisation_diagnostic(
+    conservative: bool,
+) -> None:
+    from haute._execute_lazy import _replanned_target_preview_strategy
+    from haute.projection import prepare_graph
+
+    profile = ExecutionProfile.PREVIEW_EAGER
+    graph = _group_by_graph()
+    with native_memory_backend_scope("rlimit") if conservative else nullcontext():
+        executed = _plan_group_by(
+            profile,
+            context=_context(profile),
+            estimate=(
+                MaterialisationEstimate.unavailable("metadata_unavailable")
+                if conservative
+                else MaterialisationEstimate.available(10)
+            ),
+        )
+        prepared = prepare_graph(graph, "out")
+        children_of: dict[str, list[str]] = {node_id: [] for node_id in prepared.order}
+        for child_id, parent_ids in prepared.parents_of.items():
+            for parent_id in parent_ids:
+                children_of[parent_id].append(child_id)
+        replanned = _replanned_target_preview_strategy(
+            executed,
+            order=prepared.order,
+            children_of=children_of,
+            node_map=prepared.node_map,
+            required_columns_by_node={},
+            relevant_edges=prepared.relevant_edges,
+            graph=graph,
+            known_output_columns={
+                ("source", None): frozenset({"segment", "premium"}),
+                ("agg", None): frozenset({"segment", "premium"}),
+            },
+            runtime_edge_demands={},
+            runtime_resolved_parent_ids=(),
+            profile=profile,
+        )
+
+    before, after = executed.diagnostic, replanned.diagnostic
+    assert before.strategy is (
+        ExecutionStrategy.FULL_WIDTH_CONSERVATIVE
+        if conservative
+        else ExecutionStrategy.MATERIALISATION_BOUNDARY
+    )
+    for name in (
+        "strategy",
+        "status",
+        "reason_code",
+        "remediation",
+        "blocking_node_id",
+        "blocking_operator",
+        "estimated_peak_bytes",
+        "raw_estimated_peak_bytes",
+        "estimate_calibration_factor_basis_points",
+        "estimate_admission_basis",
+        "headroom_bytes",
+    ):
+        assert getattr(after, name) == getattr(before, name), name
+    assert tuple(after.assumptions) == tuple(before.assumptions)
+    assert replanned.projection_plan.materialisation_boundaries == frozenset({"agg"})

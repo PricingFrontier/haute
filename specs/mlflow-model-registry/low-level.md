@@ -89,8 +89,9 @@
 - **`ModelScorer`** (`_model_scorer.py`) — holds a MODEL_SCORE node's full
   configuration: `source_type`, `run_id`, `artifact_path`,
   `registered_model`, `version`, `task`, `output_col`, `code`,
-  `source_names`, `source` (`"live"` vs anything else → batched),
-  `row_limit`, `required_output_columns`, `feature_contract_path`,
+  `source_names`, `source` (`"live"` → eager, anything else → batched),
+  `row_limit` (set for preview and trace; scores through the row-local scan
+  regardless of `source`), `required_output_columns`, `feature_contract_path`,
   `_declared_categorical_levels`, `reuse_loaded_model` (plus a private
   `_scoring_model` slot and lock, used only when pinning a model instance
   to the scorer for a reused streaming session).
@@ -321,6 +322,23 @@ no reduced-arity path for earlier delegate signatures.
   supplies the CatBoost baseline `Pool` if applicable, predicts, appends
   the proba column for classification when supported, and projects the
   result.
+- **Row-local scan** (`_score_row_local_scan`, the `row_limit` path of
+  `_run_score_pipeline`): scores through the execution engine's
+  `row_local_python_scan`. Required input columns are the predict features plus
+  any offset column, generated columns are the prediction and probability
+  columns, input predicates and transform elision are permitted, and the write
+  projection still applies. A limit Polars pushes to the scan bounds prediction
+  to the rows the limited result reads, a projection without the prediction
+  predicts nothing, and an aggregation over the prediction predicts every row.
+  Each scored batch goes through `_score_collected_frame` (categorical domain
+  validation, predict-frame preparation, the CatBoost baseline `Pool`,
+  prediction, the proba column) and is cast strictly to output dtypes fixed
+  before any row is scored by `_resolve_score_dtypes`: `_declared_score_dtypes`
+  gives `Float64` for every regression and CatBoost classification's
+  `classes_` dtype, and any other classifier's prediction and probability
+  dtypes come from the same schema-shaped all-null probe row the empty batched
+  score uses. A classifier whose probe cannot be scored fails the node with the
+  probe's error; scorer exceptions keep their types at Haute's collect seams.
 - **Batched** (`_score_batched_unified`): wraps the raw model in a
   short-lived `ScoringModel` carrier, sinks the (possibly projection-
   pruned) input to a temp parquet, delegates to
@@ -336,9 +354,10 @@ categorical domains, prepares the predict frame (offset column riding
 along for pyfunc/rustystats, or supplied as a CatBoost Pool baseline),
 predicts, appends the proba column if applicable, applies the write
 projection, writes to a `ParquetWriter` opened lazily from the first
-chunk's Arrow schema. If the input has zero rows, no chunk loop runs; CatBoost
-derives its hard-label dtype from `raw_model.classes_` (and uses `Float64` for
-probabilities), while other flavors use a schema-shaped probe. A CatBoost
+chunk's Arrow schema. Regression predictions are cast to `Float64` in every
+chunk, matching the eager and scan paths. If the input has zero rows, no chunk
+loop runs; CatBoost derives its hard-label dtype from `raw_model.classes_` (and
+uses `Float64` for probabilities), while other flavors use a schema-shaped probe. A CatBoost
 classifier whose label domain is unavailable raises rather than guessing, and an empty table
 with those dtypes is written. Any failure before the writer closes
 cleans up the (incomplete) output file in a `finally`.
@@ -881,7 +900,12 @@ to a live MLflow tracking server.
   (including the last-entry-cache-cleared regression test and a
   registered-temp-cleanup-callback test), `_run_score_pipeline`, and
   `TestFeatureMismatchTypeOverflow` plus the flavor-SSOT-derivation unit
-  test.
+  test. `TestScoreDtypeResolution` learns an undeclared classifier's dtypes from one
+  all-null row and raises for a CatBoost classifier without `classes_`. `TestRowLocalScanScoring` scores a real CatBoost model through the scan:
+  a limit predicts only the limited rows, an aggregation predicts every row, a
+  projection without the prediction predicts nothing, predictions and dtypes
+  match eager scoring for regression and classification, and an undeclared
+  categorical level raises through `streaming_collect`.
 - **`tests/test_model_scorer_contracts.py`** — the shared
   `_positive_class_proba_vector` shape contract exercised at the module
   boundary (positive/negative/edge shapes, batch-helper agreement),

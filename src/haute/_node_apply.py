@@ -225,7 +225,11 @@ def expand_scenarios_from_config(
     cast_exprs = [pl.col(step_col).cast(pl.Int32)]
     if col_name:
         cast_exprs.append(pl.col(col_name).cast(pl.Float32))
-    return lf.with_columns(scenario_exprs).explode(explode_cols).with_columns(cast_exprs)
+    return (
+        lf.with_columns(scenario_exprs)
+        .explode(explode_cols, empty_as_null=True)
+        .with_columns(cast_exprs)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -393,5 +397,13 @@ def assemble_output_from_config(
     )
     if schema_only:
         return pl.LazyFrame(schema=schema)
-    document = assemble_output_from_mapping(frames, mapping)
-    return pl.LazyFrame(document, schema=schema)
+
+    from haute._polars_utils import limited_python_scan
+
+    lazy_frames = {port: frame.lazy() for port, frame in frames.items()}
+
+    def produce(row_limit: int | None) -> pl.DataFrame:
+        document = assemble_output_from_mapping(lazy_frames, mapping, row_limit=row_limit)
+        return pl.DataFrame(document, schema=schema)
+
+    return limited_python_scan(produce, schema=schema)

@@ -3481,3 +3481,64 @@ def test_opaque_contract_polars_fan_in_is_unprojected() -> None:
     assert result.default is None
     assert result.for_parent("left") is None
     assert result.for_parent("right") is None
+
+
+def _post_code_score_graph(code: str):
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {"label": "source", "nodeType": "dataInput", "config": {}},
+                },
+                {
+                    "id": "score",
+                    "data": {
+                        "label": "score",
+                        "nodeType": "modelScore",
+                        "config": {
+                            "task": "regression",
+                            "output_column": "pred",
+                            "code": code,
+                            "contract": {"inputs": ["f1"], "outputs": ["pred"]},
+                        },
+                    },
+                },
+            ],
+            "edges": [make_edge("source", "score").model_dump()],
+        }
+    )
+
+
+def test_builder_post_code_outputs_are_not_demanded_and_its_inputs_are():
+    projection = plan(
+        ProjectionRequest(
+            graph=_post_code_score_graph(
+                "df = df.with_columns(ratio=pl.col('premium') / pl.col('pred'))"
+            ),
+            target_node_id="score",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"score": {"quote_id", "ratio"}},
+        )
+    )
+
+    assert pair_value(projection.edge_demands, "source", "score") == frozenset(
+        {"quote_id", "premium", "f1"}
+    )
+
+
+def test_builder_post_code_outside_the_lineage_model_keeps_a_full_width_boundary():
+    projection = plan(
+        ProjectionRequest(
+            graph=_post_code_score_graph("for _ in range(1):\n    df = df"),
+            target_node_id="score",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"score": {"quote_id"}},
+        )
+    )
+
+    assert "source" in projection.opaque_boundaries
+    reasons = projection.diagnostics.edge_reasons
+    assert [reason.rule for key, reason in reasons.items() if key.source == "source"] == [
+        "builder_post_code"
+    ]

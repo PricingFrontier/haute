@@ -283,22 +283,13 @@ class TestContinuousRuleDtypeFaithful:
 
 
 # ---------------------------------------------------------------------------
-# F080 — edge-join nodes are classified as joined, not by row-count delta
+# F080 — edge-join nodes are classified as joined whatever their cardinality
 # ---------------------------------------------------------------------------
 
 
 class TestRowLineageEdgeJoin:
-    def test_edge_join_fan_in_is_joined_not_filtered(self):
-        assert (
-            detect_row_lineage_type(input_row_count=5, output_row_count=1, node_type="edgeJoin")
-            == "joined"
-        )
-
-    def test_edge_join_fan_out_is_joined_not_expanded(self):
-        assert (
-            detect_row_lineage_type(input_row_count=1, output_row_count=5, node_type="edgeJoin")
-            == "joined"
-        )
+    def test_edge_join_is_joined_without_reading_row_counts(self):
+        assert detect_row_lineage_type(node_type="edgeJoin") == "joined"
 
 
 # ---------------------------------------------------------------------------

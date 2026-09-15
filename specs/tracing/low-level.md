@@ -7,7 +7,7 @@
 | `src/haute/trace.py` | Public facade and orchestrator. `execute_trace()` entry point, `PreviewReader` protocol, `TraceStep`/`TraceOmission`/`TraceResult` dataclasses, the trace execution cache (`_cache`, `TRACE_CACHE_MAX_BYTES`), row/omission assembly, column-relevance pruning, provenance, and JSON serialisation (`trace_result_to_dict`). Re-exports expression-parser and node-type enricher names as public convenience imports; `_trace_enrichment.py` owns its dependencies directly. |
 | `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. It imports the shared row JSON converter from `src/haute/_json_safe.py` (owned by [json-shredding](../json-shredding/low-level.md)) imported locally as `_jsonify_row` rather than owning a second converter; the module owns `SchemaDiff` computation, dtype-robust Polars match-expression construction (`_typed_value_match_expr`), exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, shared by the single-frame and multi-frame paths), multi-frame per-edge parent resolution (`_resolve_multi_frame_parent`), and the backward-walk driver `_correlate_rows_posthoc`. |
 | `src/haute/_python_syntax.py` | Cross-component dependency owned by [codegen](../codegen/low-level.md): tracing consumes its LibCST-derived exact method-call names and positions; it does not mutate trace source. |
-| `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), canonical instance-aware code selection (`_effective_node_code`), row-lineage-type detection (`detect_row_lineage_type`, backed by `_node_output_row_count` for multi-frame-safe row counting), and the per-step dispatch walk (`enrich_steps`) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, recursive upstream input-source derivation, rename detection, and node-type dispatch for every `TraceStep`. |
+| `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), canonical instance-aware code selection (`_effective_node_code`), row-lineage-type classification (`detect_row_lineage_type`, from node type and operation alone), and the per-step dispatch walk (`enrich_steps`) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, recursive upstream input-source derivation, rename detection, and node-type dispatch for every `TraceStep`. |
 | `src/haute/_trace_waterfall.py` | Waterfall assembly for sequential multiplicative/additive rating chains. `WaterfallEntry`/`WaterfallResult` dataclasses, the value-derived `build_waterfall_from_steps()` traced-path driver, and the C8 arithmetic-reconciliation guards. |
 
 ## Key types and data structures
@@ -132,9 +132,17 @@
    caller's, if one was passed in `fingerprint_memo` (the trace route reuses the
    memo it already built for its supersession key), otherwise a fresh one scoped
    to this call.
-3. On a trace-cache hit (`_cache.get(fp)`), reuse the cached
-   `eager_outputs`/`order`/`parents_of`/`node_map`/`source_ids`. On a miss, call
-   `_materialize_eager_outputs()` (below) and store the result under `fp`.
+3. Prepare the target's lineage (`prepare_graph`), classify every physical lineage
+   edge with `_trace_lineage_alignments` (which passes the graph preamble's
+   `polars.selectors` aliases to `trace_edge_alignment`), and compute each head-framed
+   node's prefix length with `trace_head_prefixes` (see
+   [Limited-preview lineage](#limited-preview-lineage-tracecorrelationpy) below).
+   On a trace-cache hit (`_cache.get(fp)`), reuse the cached head frames
+   (`eager_outputs`) and `order`/`parents_of`/`node_map`/`source_ids`. On a miss, call
+   `_materialize_eager_outputs()` (below) and store the result under `fp`. Uncapped
+   lineage plans are never cached: they hold Python scans bound to this request's
+   execution context, so `_build_trace_plans` builds them at most once per request, and
+   only when a row-scoped lookup or an enrichment needs them.
 4. Read the target output with `.get()`. If it is a `dict` (a multi-frame source
    targeted directly, with no downstream node to pick a frame), raise
    `ValueError` naming the node and directing the caller to trace a node
@@ -145,15 +153,20 @@
    `sourceHandle` to the list keyed by `(edge.source, edge.target)`, preserving
    edge order. One entry per edge, not per pair — a multi-frame source can feed
    the same child through several edges.
-6. If the caller supplied `row_values` and the target DataFrame exists, verify
-   the row at `row_index` with `_match_rows_vectorized`. On mismatch, search via
-   `_find_target_row_index` and relocate; no match or ambiguity raises
-   `ValueError`, while an unsupported target dtype raises
-   `TraceCorrelationUnsupportedError`. A missing target skips verification and
-   continues through the partial-result path.
+6. Build a `RowScopeResolver` over a click-local copy of the head frames (row-scoped
+   lookups are written only there, never to cached head frames). If the caller supplied
+   `row_values` and the target DataFrame exists, verify the row at `row_index` with
+   `_match_rows_vectorized`. On mismatch, search via `_find_target_row_index` in the
+   limited target frame; when the clicked values are absent from it, look the row up in
+   the target's uncapped plan (`_lookup_clicked_row`), use that lookup as the target frame,
+   and clear the resolver's head-resolved set so no ancestor is proven by a head frame. No
+   match or ambiguity raises `ValueError`, while an unsupported target dtype raises
+   `TraceCorrelationUnsupportedError`. A missing target skips verification and continues
+   through the partial-result path.
 7. If the target node produced output, call `_correlate_rows_posthoc()` (below,
-   passed `source_frames_of` and `column` as `traced_column`) to get a JSON-safe
-   row dict per node (or `None` for unresolved nodes). If the target node's
+   passed the click-local frames, `source_frames_of`, `column` as `traced_column`, and the
+   resolver as `row_scope`) to get a JSON-safe row dict per node (or `None` for unresolved
+   nodes). If the target node's
    execution failed, build partial rows directly from whatever `eager_outputs`
    are available instead (no correlation), skipping any node whose output is a
    multi-frame `dict`.
@@ -163,7 +176,12 @@
    more than one parent supplies the key). Nodes whose row correlation returned
    `None` are skipped entirely.
 9. `enrich_steps()` (from `src/haute/_trace_enrichment.py`, imported into `trace.py` as
-   `_enrich_steps`, passed `source_frames_of` and `incoming_edges_of`) enriches every step in place.
+   `_enrich_steps`, passed `source_frames_of`, `incoming_edges_of`, and the request's
+   `lineage_plans` provider) enriches every step in place. An online optimiser apply's
+   explanation reads its inputs from the uncapped plans — a quote's full scenario set and a
+   ratio constraint's whole-frame baseline lie outside the head rows — while a
+   ratebook-mode apply, which is row-local, explains from the frames that produced the
+   clicked row.
 10. If `column` is set, `_prune_to_column_relevance()` tags and filters steps.
 11. `_build_trace_omissions()` turns attempted, unresolved correlations on the
     retained value path into diagnostic-linked `TraceOmission` entries; benign
@@ -184,17 +202,143 @@
    no reuse; a reader → consult the exact full-lineage preview fingerprint; a
    raw dict → used verbatim. Trace does not attempt the target-only projected
    key because that cache shape cannot contain the required ancestor evidence.
-2. If the preview data has a materialized output for `target_node_id` **and**
-   every node in the trace's topological order (built via `prepare_graph`) has a
-   non-`None` output in that preview snapshot, reuse those DataFrames directly —
-   no re-execution. A *partial* preview cache (e.g. a target-only projected
-   preview) intentionally falls through to a cold execution instead of trace-ing
-   with holes.
+2. A full-materialisation preview collects every node limited to `row_limit`, so its
+   frames are head frames only where every propagated prefix equals `row_limit`. When the
+   preview data has a materialised target output, every head-framed node has a non-`None`
+   output, and every prefix equals `row_limit`, reuse those DataFrames for the head-framed
+   nodes — no re-execution — and return no plans. Anything else (a target-only projected
+   preview, a missing head frame, or a shorter prefix) falls through to a cold execution
+   instead of tracing with holes.
 3. Otherwise, compile the preamble, merge in any caller-supplied `preamble_ns`
    (caller-supplied keys win, for test convenience), and call
-   `_execute_eager_core()` (execution-engine) with `swallow_errors=False` — a
-   genuine execution failure propagates unmodified rather than being retried or
-   masked.
+   `_execute_eager_core()` (execution-engine) with `swallow_errors=False`,
+   `materialize_node_ids` set to the head-framed nodes, and `row_limits_by_node` set to
+   their prefixes, so each head frame is its node's plan limited to its own prefix; the
+   run's uncapped `plans` are returned for this request. A genuine execution failure
+   propagates unmodified rather than being retried or masked.
+
+### Limited-preview lineage (`_trace_correlation.py`)
+
+A preview limits the previewed node's output, not its sources, so trace follows the rows
+the limited preview shows rather than independent source samples.
+
+1. **Edge classification.** `trace_edge_alignment` classifies each physical edge —
+   parent, child, source handle, and target role — separately into a `TraceEdgeAlignment`.
+   An edge is order-aligned when its child emits at least one row per input row in input
+   order: the base edge of a left edge join whose `maintainOrder` is `left` or
+   `left_right`; model scoring, banding, rating steps, and scenario expansion without
+   post-code; the selected live-switch input; Explore and external-file nodes without
+   code, data output, and modelling; the selected data input of an optimiser; the selected
+   ratebook input of a ratebook-mode optimiser apply; and single-input Polars or Explore
+   code that the chunk-locality classifier (`classify_chunk_local_polars_code`, given the
+   preamble's selector aliases) admits and that calls no row-dropping frame method
+   (`filter`, `drop_nulls`), or whose whole program is one `head(k)` or `limit(k)` call on
+   its input (`prefix_cap = k`). Chunk-local code evaluates every row from that row alone,
+   so an order-dependent expression such as `pl.col("x").reverse()` makes the edge
+   unaligned. Every other edge is not aligned. A port the child never reads is not row
+   lineage (`read` is false) and is not correlated: an optimiser apply reads its
+   `ratebook_input` when its resolved `optimiser_mode` is `ratebook`, its first input when
+   it is `online`, and both while the mode is unknown. Input names are keyed by physical
+   edge, so two ports of one source keep their own executable names. A Polars transform's
+   `inputMapping` (`logical name -> current edge name`) lets its code address an input by
+   a stable logical name; the executor binds both names, so `_trace_lineage_alignments`
+   returns each child's logical-name aliases and both edge alignment and the carried-column
+   proof read the code under both names.
+2. **Head frames.** `trace_head_prefixes` gives the target prefix length `row_limit`. A
+   parent is head-framed when an aligned edge reaches it from a head-framed child; its
+   prefix length is the largest requirement among those children, each reduced to
+   `min(prefix, k)` through a `head(k)`/`limit(k)` program, so no head frame reads rows the
+   preview did not compute.
+3. **Resolution (`RowScopeResolver.resolve`).** Every port a child reads is resolved
+   separately. A port is matched in the parent's head frame, with `_match_parent_row`'s
+   positional and value matching, when its edge is aligned, the parent is head-framed, and
+   the child's row came from the child's own head frame; the clicked target row starts
+   head-resolved. Every other port correlates in a row-scoped frame (`lookup`): the
+   parent's uncapped plan filtered by typed equality on the resolved child row's carried
+   columns and limited to two rows, matched strictly with relaxed matching disabled; two
+   surviving rows are ambiguous. Lookups are memoised per request by node, port, and
+   carried values; the resolver also reads each lineage plan's schema at most once per
+   request. A lookup probes by key first, because filtering an uncapped plan on every
+   carried column makes Polars decode each of those columns across the whole input
+   (measured: 108 equalities over a 10-million-row input take seconds, a key equality
+   milliseconds). The probe columns are the carried columns that key an Edge Join on the
+   traced lineage — the child of an edge the trace correlates across — in either role
+   (`edge_join_key_columns_by_role`), and whose carried value is not null. Joins outside
+   that lineage are never read, so an unfinished join elsewhere in the graph cannot affect
+   a trace. With at least one, the lookup first collects the plan filtered on
+   those typed equalities, limited to `_ROW_SCOPE_PROBE_LIMIT + 1` (1,001) rows, then
+   applies every carried equality to those candidates in memory and keeps two rows. A
+   probe returning more than `_ROW_SCOPE_PROBE_LIMIT` rows cannot show it saw every
+   candidate, so the lookup then filters the plan on every carried equality, as does a
+   lookup with no probe column. Both paths use the same typed equality expressions and
+   return the same rows, so matching, ambiguity, and memoisation are unchanged. Lookup
+   filters use the bare comparisons, never null-filled ones: a filter drops a row whose
+   comparison is null either way, and a null-filled comparison stops Polars pruning Parquet
+   row groups by their statistics (a key probe on a 10-million-row file: 1.8 s null-filled,
+   under 0.01 s bare).
+   A child that already proves its parent's row skips the parent's lookup (row transfer).
+   The child's row must be unique in the child's uncapped plan — a lookup, or the clicked
+   row's lookup (`_lookup_clicked_row`), that returned exactly one row, or itself a transfer
+   — and the child must derive its rows from each parent row's values alone: a pass-through
+   node type whose only traced lineage input is this parent (a pass-through node with several
+   inputs returns just one of them, so its row proves nothing about the others), or an Edge
+   Join's `base` port with `how` of `left`, `inner`, `semi`, `anti`, or `cross`. The child must configure no `column_renames`, the parent must have a
+   single-frame plan, and every parent plan column must appear in the child's one-row frame
+   with the same dtype. Two identical parent rows would then yield two identical matching
+   child rows, so a unique child row proves exactly one parent row, and that row is the
+   child's frame restricted to the parent's columns — the frame the lookup would return. A
+   transferred parent is itself unique and not head-resolved. Every other edge still looks
+   up: Polars code, whose slices, deduplication, aggregation, and order-dependent
+   expressions break the argument; builder nodes; an Edge Join's `join` port or `right`
+   and `full` strategies, whose rows need not come from a base row; multi-frame ports; and
+   a child row resolved from a head frame or not proven unique. On the measured pipeline
+   this removes the lookup above a user `.limit(100_000)` (about 2 s). A parent resolved through any lookup is not head-resolved, so its own
+   parents are looked up. Among several matching ports, a frame carrying the traced column
+   wins, then the widest carried match, and a tie records `ambiguous_source_frame`. An
+   unresolved port records an empty frame with its schema so column relevance keeps its
+   omission; with no carried column the diagnostic reason is `row_scope_unproven`.
+   `_correlate_rows_posthoc` does not correlate a parent through a child that reads none of
+   its ports.
+4. **Carried columns (`_carried_values`).** Join-role parents use the edge-join
+   right-provenance mapping; base-role parents use the child columns present in the base;
+   pass-through node types (including OUTPUT documents and the optimiser) use every shared
+   column; node types with column contracts use the shared columns minus the builder's
+   produced columns. Code (Polars, Explore, external file, and builder post-code) must pass
+   `carried_column_proof` in `src/haute/_column_lineage.py`, given each port plan's column
+   names and dtypes (builder post-code, which runs on the builder's own output, gets none),
+   the preamble's selector aliases, and the child's `inputMapping` aliases, which the proof
+   resolves to the edge input names it reports (`input_aliases`). The proof is closed and syntactic over
+   `df = <chain>` statements rooted at one input:
+   - `filter`, `sort`, `head`, `tail`, `limit`, `slice`, `unique`, `drop`, `drop_nulls`,
+     and `lazy` keep values;
+   - `with_columns` and `select` assign every keyword output and every output that is not a
+     bare column; a pure column selection (a literal selector or a literal name list)
+     assigns nothing; an expression rooted at a literal selector whose only naming step is
+     its outermost call assigns that call's `alias`, or the selector's expansion (renamed
+     by a trailing `.name.suffix`/`.name.prefix`) over the program's proven column superset
+     — every input's columns, every column assigned so far, and for each join every
+     right-side column with and without the join's literal `suffix` (default `_right`).
+     Because a name-based selector decides each column by its own name, expanding over that
+     superset assigns every column the expression can rewrite. A dtype-dependent rooted
+     selector expands only against the root input's dtypes before any assigning operation
+     or join; a positional rooted selector, a naming step deeper in the chain, a
+     non-literal join suffix, or missing input schemas fail the proof;
+   - `with_row_index` assigns its name; a literal `rename` assigns both names;
+   - `join` or `cross_join` of another input or an inline literal frame (whose columns are
+     assigned) with `how` of `inner`, `left`, `semi`, `anti`, or `cross` records its literal
+     `on` keys as the same-name keys of that joined input; a non-root input joined twice
+     fails the proof;
+   - a literal `group_by(...).agg(...)` carries only its keys;
+   - an output whose name the syntax cannot fix — a regex or wildcard column outside a
+     selector computation, a non-literal selector, `.name` or `.struct` rewrites, `pipe`,
+     or an unaliased `when`/`then` — and every other method or statement fail the proof.
+
+   The proven assignments are removed from the carried columns. A column several inputs
+   share identifies only the program's root input, unless the join that brought in this
+   port's input proves it a same-name key of that input, and a non-root input's null value
+   is not carried because it may be an outer fill. Every remaining shared column is a
+   strict equality constraint, so a rewrite the proof cannot see matches no parent row
+   rather than a wrong one.
 
 ### `_match_parent_row()` (`_trace_correlation.py`)
 
@@ -264,7 +408,11 @@ of `(sourceHandle, targetHandle)` pairs per edge between that pair, in edge orde
 1. Extract and jsonify the target node's row at `row_index`; seed `result` and
    `row_indices` with it.
 2. Build `children_of` as the reverse of `parents_of`.
-3. Walk `order` in reverse. For each unresolved node with a materialized output:
+3. With a `row_scope` resolver (every `execute_trace` call), walk `order` in reverse and
+   resolve each node through `RowScopeResolver.resolve` from a resolved child that reads
+   one of its ports, preferring a child whose edge can use head frames; a node with no such
+   child is not on the path to the target. Without a resolver (direct callers of the
+   function), walk `order` in reverse. For each unresolved node with a materialized output:
    - Find a child of that node already resolved with a non-empty row
      (`resolved_child_id`); if none exists, the node is not on the path to the
      target and is marked unresolved (`None`, index `-1`).
@@ -368,14 +516,12 @@ its public facade.
    runtime skipped for having no usable operator/value pair cannot be selected
    by enrichment.
 7. Classifies `step.row_lineage_type` via `detect_row_lineage_type()`, using the
-   node type first (source nodes → `"created"`, `liveSwitch` → `"selected"`,
-   `edgeJoin` → `"joined"` — checked before any code-sniffing because a join's
-   config-driven code carries no literal `.join(` token), then a code-sniffed
-   `operation_type` (`_sniff_operation_type`), then a row-count-delta fallback.
-   Parent and child row counts for the fallback go through
-   `_node_output_row_count()`, which counts the widest frame's rows for a
-   multi-frame `dict` output rather than `len(dict)` (which would count frames,
-   not rows).
+   node type first (source nodes and constants → `"created"`, `liveSwitch` →
+   `"selected"`, `edgeJoin` → `"joined"`, `scenarioExpander` → `"expanded"`,
+   `optimiserApply` → `"aggregated"` — checked before any code-sniffing because
+   config-driven nodes carry no literal operation), then a code-sniffed
+   `operation_type` (`_sniff_operation_type`), falling back to `"passthrough"`.
+   Trace frames are limited or row-scoped, so frame heights never decide a label.
 
 ### `build_waterfall_from_steps()` (`_trace_waterfall.py`)
 
@@ -583,7 +729,25 @@ integration/regression suites:
 - **`tests/test_trace_matches_preview.py`** — pins the contract that a trace's
   target-node values exactly match `preview[row_index]` for the same graph and
   `row_limit`, including the shared-cache-fingerprint requirement between preview
-  and trace calls.
+  and trace calls. `TestLimitedPreviewTrace` traces rows of a target-only limited
+  preview: a joined value to its lookup row with and without `maintainOrder`, a filtered
+  row past the source prefix, a grouped row's source rows reported ambiguous, order-
+  preserving lineage from head frames with no lookup, code below an unordered join through
+  its carried columns (and `row_scope_unproven` when the carried key is rewritten), a later
+  join key never identifying an earlier joined input, an order-dependent expression never
+  attributed positionally, a limited rating step validating only the rows it read,
+  computed and positional selectors below an unordered join, a row-local `polars.selectors`
+  program traced from head frames, a selector renamed mid-expression reported
+  `row_scope_unproven` instead of attributed to an unrelated row, and code that addresses
+  its input through an `inputMapping` alias traced through both upstream Edge Joins.
+  `tests/test_trace_multi_frame.py::test_row_scope_names_each_port_of_one_source_by_its_own_frame`
+  pins per-edge input names for both edge orders.
+- **`tests/test_trace_row_scope_lookup.py`** — `RowScopeResolver.lookup` probes by Edge
+  Join key (either role, `on` or `leftOn`/`rightOn`) with bare comparisons and matches the
+  other carried values in memory; keeps two rows sharing every value; falls back to the full
+  filter when the probe reaches its limit or no non-null join key is carried (no Edge Join,
+  a cross join, the key not carried, a null key); and returns exactly the full filter's rows
+  across probe limits and null data.
 - **`tests/test_trace_enrichment.py`** — focused enrichment coverage:
   node-type-specific enrichment (rating step, banding, model score, scenario
   expansion, live switch, data-source metadata) and row-lineage-type detection,
@@ -616,8 +780,7 @@ integration/regression suites:
   than whichever edge's `sourceHandle` came last; a single polars node joining
   two frames of the same source via two edges resolves the correlated source row
   to the drivers frame or the vehicles frame depending on which column is
-  traced; `_node_output_row_count` counts a multi-frame bundle's rows (max
-  across frames) rather than its frame count; and a banding node fed by one
+  traced; and a banding node fed by one
   frame of a multi-frame source resolves factor dtypes from that frame alone,
   not a dict-iteration-order merge across every frame the source emits; and an
   `edgeJoin` whose BASE is one named frame of a multi-frame source correlates

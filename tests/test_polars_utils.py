@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 
 from haute._execution_context import (
     ExecutionCancelledError,
@@ -24,8 +26,11 @@ from haute._polars_utils import (
     cancellable_streaming_collect,
     execution_collect,
     is_bounded_execution_profile,
+    key_prefix_python_scan,
+    limited_python_scan,
     normalise_execution_profile,
     read_parquet_metadata,
+    row_local_python_scan,
     streaming_collect,
     temporary_streaming_chunk_size,
 )
@@ -371,47 +376,20 @@ def test_streaming_collect_preserves_execution_memory_limit() -> None:
     assert exc_info.value is memory_error
 
 
-def test_bounded_collect_batches_uses_polars_streaming_batches() -> None:
-    captured: dict[str, object] = {}
-
-    class Lazy:
-        def collect_batches(
-            self,
-            *,
-            chunk_size: int,
-            maintain_order: bool,
-            engine: str,
-        ):
-            captured.update(
-                {
-                    "chunk_size": chunk_size,
-                    "maintain_order": maintain_order,
-                    "engine": engine,
-                }
-            )
-            return iter([pl.DataFrame({"x": [1]}), pl.DataFrame({"x": [2]})])
-
+def test_bounded_collect_batches_streams_ordered_chunks_of_the_real_query() -> None:
     batches = list(
         bounded_collect_batches(
-            Lazy(),  # type: ignore[arg-type]
-            chunk_size=7,
+            pl.LazyFrame({"x": list(range(10))}).with_columns(y=pl.col("x") * 2),
+            chunk_size=3,
             maintain_order=True,
         )
     )
 
-    assert captured == {
-        "chunk_size": 7,
-        "maintain_order": True,
-        "engine": "streaming",
-    }
-    assert [batch["x"].to_list() for batch in batches] == [[1], [2]]
+    assert [batch["x"].to_list() for batch in batches] == [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9]]
+    assert pl.concat(batches)["y"].to_list() == [value * 2 for value in range(10)]
 
 
 def test_bounded_collect_batches_records_only_real_batch_stages() -> None:
-    class Lazy:
-        def collect_batches(self, **_kwargs):
-            return iter([pl.DataFrame({"x": [1]}), pl.DataFrame({"x": [2]})])
-
     context = ExecutionContext(
         operation="chunked",
         profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
@@ -420,8 +398,9 @@ def test_bounded_collect_batches_records_only_real_batch_stages() -> None:
 
     batches = list(
         bounded_collect_batches(
-            Lazy(),  # type: ignore[arg-type]
-            chunk_size=7,
+            pl.LazyFrame({"x": [1, 2]}),
+            chunk_size=1,
+            maintain_order=True,
             execution_context=context,
             stage_name="batch_collect",
         )
@@ -436,29 +415,130 @@ def test_bounded_collect_batches_records_only_real_batch_stages() -> None:
     assert summary.n_checkpoints == 3
 
 
-def test_bounded_collect_batches_preserves_unverified_iteration_failure() -> None:
-    original = pl.exceptions.ComputeError("streaming batch failed")
+def test_bounded_collect_batches_raises_the_engine_error() -> None:
+    query = pl.LazyFrame({"x": ["1", "not a number"]}).select(pl.col("x").str.to_integer())
 
-    class FailingIterator:
-        def __iter__(self):
-            return self
+    with pytest.raises(pl.exceptions.ComputeError, match="not a number"):
+        list(bounded_collect_batches(query, chunk_size=5))
 
-        def __next__(self) -> pl.DataFrame:
-            raise original
 
-    class Lazy:
-        def collect_batches(self, **_kwargs):
-            return FailingIterator()
+def test_bounded_collect_batches_raises_an_engine_panic_instead_of_ending_early() -> None:
+    """Polars' own ``collect_batches`` ends its stream as though exhausted when
+    the engine panics, which would read as an empty result."""
 
-    with pytest.raises(pl.exceptions.ComputeError) as exc_info:
-        list(
-            bounded_collect_batches(
-                Lazy(),  # type: ignore[arg-type]
-                chunk_size=5,
-            )
-        )
+    def panicking_udf(frame: pl.DataFrame) -> pl.DataFrame:
+        raise pl.exceptions.PanicException("engine panic")
 
-    assert exc_info.value is original
+    query = pl.LazyFrame({"x": [1, 2, 3]}).map_batches(
+        panicking_udf, schema=pl.Schema({"x": pl.Int64})
+    )
+
+    with pytest.raises(pl.exceptions.PanicException, match="engine panic"):
+        list(bounded_collect_batches(query, chunk_size=1))
+
+
+def test_bounded_collect_batches_yields_delivered_batches_before_a_later_panic() -> None:
+    from polars.io.plugins import register_io_source
+
+    def source(
+        with_columns: list[str] | None,
+        predicate: pl.Expr | None,
+        n_rows: int | None,
+        batch_size: int | None,
+    ):
+        del with_columns, predicate, n_rows, batch_size
+        yield pl.DataFrame({"x": [1, 2]})
+        raise pl.exceptions.PanicException("panic after the first batch")
+
+    query = register_io_source(source, schema=pl.Schema({"x": pl.Int64}))
+    delivered: list[list[int]] = []
+
+    with pytest.raises(pl.exceptions.PanicException):
+        for batch in bounded_collect_batches(query, chunk_size=1, maintain_order=True):
+            delivered.append(batch["x"].to_list())
+
+    assert delivered == [[1], [2]]
+
+
+def test_bounded_collect_batches_restores_a_parked_python_scan_failure() -> None:
+    class TransformFailedError(RuntimeError):
+        pass
+
+    def failing_transform(frame: pl.DataFrame) -> pl.DataFrame:
+        raise TransformFailedError("typed failure")
+
+    scan = row_local_python_scan(
+        pl.LazyFrame({"x": [1, 2]}),
+        failing_transform,
+        schema=pl.Schema({"x": pl.Int64, "y": pl.Int64}),
+        generated_columns=("y",),
+        required_input_columns=("x",),
+        input_predicates_allowed=True,
+        elide_transform_when_unused=False,
+    )
+
+    with pytest.raises(TransformFailedError, match="typed failure"):
+        list(bounded_collect_batches(scan, chunk_size=1))
+
+
+def test_bounded_collect_batches_stops_the_query_when_closed_early() -> None:
+    import threading
+    import time
+
+    from polars.io.plugins import register_io_source
+
+    produced: list[int] = []
+
+    def source(
+        with_columns: list[str] | None,
+        predicate: pl.Expr | None,
+        n_rows: int | None,
+        batch_size: int | None,
+    ):
+        del with_columns, predicate, n_rows, batch_size
+        for index in range(1_000):
+            produced.append(index)
+            yield pl.DataFrame({"x": [index]})
+
+    query = register_io_source(source, schema=pl.Schema({"x": pl.Int64}))
+    batches = bounded_collect_batches(query, chunk_size=1, maintain_order=True)
+
+    assert next(batches)["x"].to_list() == [0]
+    batches.close()
+
+    deadline = time.monotonic() + 10
+    while (
+        any(thread.name == "haute-collect-batches" for thread in threading.enumerate())
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
+    assert not any(thread.name == "haute-collect-batches" for thread in threading.enumerate())
+    assert len(produced) < 1_000
+
+
+def test_bounded_collect_batches_runs_the_query_in_the_caller_context() -> None:
+    context = ExecutionContext(
+        operation="chunked",
+        profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
+        memory_sampler=lambda: 1_000,
+    )
+    seen: list[ExecutionContext | None] = []
+    real_sink_batches = pl.LazyFrame.sink_batches
+
+    def spying_sink_batches(self: pl.LazyFrame, *args: object, **kwargs: object) -> object:
+        from haute._execution_context import current_execution_context
+
+        seen.append(current_execution_context())
+        return real_sink_batches(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    with (
+        context.stage("caller"),
+        patch.object(pl.LazyFrame, "sink_batches", spying_sink_batches),
+    ):
+        batches = list(bounded_collect_batches(pl.LazyFrame({"x": [1]}), chunk_size=1))
+
+    assert [batch["x"].to_list() for batch in batches] == [[1]]
+    assert seen == [context]
 
 
 def test_streaming_collect_with_active_context_preserves_unverified_error() -> None:
@@ -1149,3 +1229,316 @@ class TestMallocTrimEdgeCases:
         for _ in range(5):
             result = _malloc_trim()
             assert result is None
+
+
+# ---------------------------------------------------------------------------
+# row_local_python_scan
+# ---------------------------------------------------------------------------
+
+
+class TestRowLocalPythonScan:
+    """Row-local Python steps stay transparent to Polars pushdown."""
+
+    @staticmethod
+    def _doubling_scan(
+        frame: pl.DataFrame,
+        seen: list[pl.DataFrame],
+        *,
+        input_predicates_allowed: bool = True,
+        elide_transform_when_unused: bool = True,
+    ) -> pl.LazyFrame:
+        def transform(batch: pl.DataFrame) -> pl.DataFrame:
+            seen.append(batch)
+            return batch.with_columns((pl.col("x") * 2).alias("pred"))
+
+        return row_local_python_scan(
+            frame.lazy(),
+            transform,
+            schema=pl.Schema({**frame.schema, "pred": frame.schema["x"]}),
+            generated_columns=("pred",),
+            required_input_columns=("x",),
+            input_predicates_allowed=input_predicates_allowed,
+            elide_transform_when_unused=elide_transform_when_unused,
+        )
+
+    @pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+    def test_limit_is_read_before_the_pushed_predicate(self, engine: str) -> None:
+        frame = pl.DataFrame({"x": [0, 0, 1, 2], "key": ["a", "b", "c", "d"]})
+        scan = self._doubling_scan(frame, [])
+
+        head_then_filter = scan.head(2).filter(pl.col("x") > 0).collect(engine=engine)
+        filter_then_head = scan.filter(pl.col("x") > 0).head(2).collect(engine=engine)
+
+        assert head_then_filter.height == 0
+        assert filter_then_head["x"].to_list() == [1, 2]
+
+    def test_limit_caps_rows_given_to_the_transform(self) -> None:
+        seen: list[pl.DataFrame] = []
+        frame = pl.DataFrame({"x": list(range(1_000)), "key": [str(i) for i in range(1_000)]})
+
+        result = streaming_collect(self._doubling_scan(frame, seen).head(10))
+
+        assert result["pred"].to_list() == [value * 2 for value in range(10)]
+        assert sum(batch.height for batch in seen) == 10
+
+    def test_transform_is_elided_when_no_generated_column_is_read(self) -> None:
+        seen: list[pl.DataFrame] = []
+        frame = pl.DataFrame({"x": [1, 2, 3], "key": ["a", "b", "c"]})
+        scan = self._doubling_scan(frame, seen)
+
+        assert streaming_collect(scan.select(pl.col("key").len())).item() == 3
+        assert streaming_collect(scan.select("key"))["key"].to_list() == ["a", "b", "c"]
+        assert seen == []
+
+    def test_refused_elision_transforms_every_read_row(self) -> None:
+        seen: list[pl.DataFrame] = []
+        frame = pl.DataFrame({"x": [1, 2, 3], "key": ["a", "b", "c"]})
+        scan = self._doubling_scan(frame, seen, elide_transform_when_unused=False)
+
+        streaming_collect(scan.select("key"))
+
+        assert sum(batch.height for batch in seen) == 3
+        assert all("x" in batch.columns for batch in seen)
+
+    def test_refused_input_predicates_still_transform_filtered_rows(self) -> None:
+        seen: list[pl.DataFrame] = []
+        frame = pl.DataFrame({"x": [1, 2, 3], "key": ["keep", "miss", "keep"]})
+        scan = self._doubling_scan(
+            frame,
+            seen,
+            input_predicates_allowed=False,
+            elide_transform_when_unused=False,
+        )
+
+        result = streaming_collect(scan.filter(pl.col("key") != "miss"))
+
+        assert result["x"].to_list() == [1, 3]
+        assert "miss" in pl.concat(seen)["key"].to_list()
+
+    def test_permitted_input_predicates_filter_before_the_transform(self) -> None:
+        seen: list[pl.DataFrame] = []
+        frame = pl.DataFrame({"x": [1, 2, 3], "key": ["keep", "miss", "keep"]})
+
+        result = streaming_collect(self._doubling_scan(frame, seen).filter(pl.col("key") != "miss"))
+
+        assert result["pred"].to_list() == [2, 6]
+        assert pl.concat(seen)["key"].to_list() == ["keep", "keep"]
+
+    def test_predicate_on_a_generated_column_filters_transformed_rows(self) -> None:
+        seen: list[pl.DataFrame] = []
+        frame = pl.DataFrame({"x": [1, 2, 3], "key": ["a", "b", "c"]})
+
+        result = streaming_collect(self._doubling_scan(frame, seen).filter(pl.col("pred") > 2))
+
+        assert result["x"].to_list() == [2, 3]
+        assert sum(batch.height for batch in seen) == 3
+
+    def test_original_exception_survives_every_haute_collect_seam(self, tmp_path: Path) -> None:
+        from haute.errors import ConfigError
+
+        def failing(batch: pl.DataFrame) -> pl.DataFrame:
+            raise ConfigError("scan transform failed", node_id="scorer")
+
+        def scan() -> pl.LazyFrame:
+            frame = pl.LazyFrame({"x": [1, 2]})
+            return row_local_python_scan(
+                frame,
+                failing,
+                schema=frame.collect_schema(),
+                generated_columns=(),
+                required_input_columns=None,
+                input_predicates_allowed=False,
+                elide_transform_when_unused=False,
+            )
+
+        context = ExecutionContext(
+            operation="preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_sampler=lambda: 1,
+        )
+        seams = [
+            lambda: streaming_collect(scan()),
+            lambda: execution_collect(scan()),
+            lambda: execution_collect(scan(), execution_context=context),
+            lambda: list(bounded_collect_batches(scan(), chunk_size=10)),
+            lambda: bounded_sink(scan(), tmp_path / "out.parquet"),
+        ]
+        for seam in seams:
+            with pytest.raises(ConfigError, match="scan transform failed"):
+                seam()
+        with pytest.raises(pl.exceptions.ComputeError, match="ConfigError"):
+            scan().collect()
+
+    def test_caller_context_variables_reach_streaming_engine_threads(self) -> None:
+        import contextvars
+
+        marker: contextvars.ContextVar[str] = contextvars.ContextVar("marker", default="unset")
+        observed: list[str] = []
+        token = marker.set("caller")
+        try:
+            frame = pl.LazyFrame({"x": [1]})
+
+            def transform(batch: pl.DataFrame) -> pl.DataFrame:
+                observed.append(marker.get())
+                return batch
+
+            scan = row_local_python_scan(
+                frame,
+                transform,
+                schema=frame.collect_schema(),
+                generated_columns=(),
+                required_input_columns=None,
+                input_predicates_allowed=False,
+                elide_transform_when_unused=False,
+            )
+        finally:
+            marker.reset(token)
+
+        scan.collect(engine="streaming")
+
+        assert observed == ["caller"]
+
+    @pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+    @pytest.mark.parametrize(
+        "query",
+        [
+            pytest.param(lambda lf: lf.sort("key").head(2), id="sort-head"),
+            pytest.param(
+                lambda lf: lf.select("key").unique().sort("key").head(2), id="unique-sort-head"
+            ),
+            pytest.param(
+                lambda lf: lf.filter(pl.col("x") > 1).sort("key").head(2), id="filter-sort-head"
+            ),
+            pytest.param(lambda lf: lf.top_k(2, by="pred"), id="top-k-generated"),
+            pytest.param(lambda lf: lf.bottom_k(2, by=["x", "key"]), id="bottom-k-carried"),
+        ],
+    )
+    def test_sort_limits_read_the_same_rows_as_native_polars(
+        self, engine: str, query: Callable[[pl.LazyFrame], pl.LazyFrame]
+    ) -> None:
+        frame = pl.DataFrame({"x": [3, 1, 4, 1, 5, 2], "key": ["f", "b", "e", "a", "d", "c"]})
+        native = frame.lazy().with_columns((pl.col("x") * 2).alias("pred"))
+
+        for elide in (True, False):
+            scan = self._doubling_scan(frame, [], elide_transform_when_unused=elide)
+            assert_frame_equal(
+                query(scan).collect(engine=engine), query(native).collect(engine=engine)
+            )
+
+    def test_limited_scan_sort_limit_reads_the_same_rows_as_native_polars(self) -> None:
+        frame = pl.DataFrame({"x": [3, 1, 4], "key": ["c", "a", "b"]})
+        scan = limited_python_scan(lambda n_rows: frame, schema=frame.schema)
+
+        assert_frame_equal(
+            streaming_collect(scan.filter(pl.col("x") > 1).sort("key").head(1)),
+            frame.filter(pl.col("x") > 1).sort("key").head(1),
+        )
+
+    @pytest.mark.parametrize(
+        ("schema", "generated", "required", "message"),
+        [
+            ({"x": pl.String}, (), None, "same dtype"),
+            ({"x": pl.Int64}, ("pred",), None, "absent from the scan schema"),
+            ({"x": pl.Int64}, (), ("missing",), "absent from the input"),
+        ],
+    )
+    def test_declarations_that_disagree_with_the_input_fail_at_construction(
+        self,
+        schema: dict[str, pl.DataType],
+        generated: tuple[str, ...],
+        required: tuple[str, ...] | None,
+        message: str,
+    ) -> None:
+        with pytest.raises(ValueError, match=message):
+            row_local_python_scan(
+                pl.LazyFrame({"x": [1]}),
+                lambda batch: batch,
+                schema=pl.Schema(schema),
+                generated_columns=generated,
+                required_input_columns=required,
+                input_predicates_allowed=False,
+                elide_transform_when_unused=False,
+            )
+
+    @pytest.mark.parametrize("input_predicates_allowed", [True, False])
+    def test_a_predicate_the_input_cannot_evaluate_filters_transformed_rows(
+        self, input_predicates_allowed: bool
+    ) -> None:
+        seen: list[pl.DataFrame] = []
+        frame = pl.DataFrame({"x": [1, 2, 3], "key": ["a", "b", "c"]})
+        scan = self._doubling_scan(
+            frame,
+            seen,
+            input_predicates_allowed=input_predicates_allowed,
+            elide_transform_when_unused=False,
+        )
+        # A generated column cannot filter the input; a refused input predicate
+        # must not hide rows from a transform that validates them.
+        predicate = pl.col("pred") > 2 if input_predicates_allowed else pl.col("x") > 1
+
+        result = scan.filter(predicate).select("key").collect()
+
+        assert result["key"].to_list() == ["b", "c"]
+        assert sum(batch.height for batch in seen) == 3
+
+    def test_limited_scan_caps_filters_and_projects_what_the_source_produces(self) -> None:
+        frame = pl.DataFrame(
+            {"x": [3, 1, 4, 1, 5], "key": ["c", "a", "b", "d", "e"], "extra": [0] * 5}
+        )
+        requested: list[int | None] = []
+
+        def produce(n_rows: int | None) -> pl.DataFrame:
+            requested.append(n_rows)
+            # Returning every row even under a limit: the scan still caps it.
+            return frame
+
+        scan = limited_python_scan(produce, schema=frame.schema)
+
+        assert_frame_equal(scan.head(2).collect(), frame.head(2))
+        assert requested == [2]
+        assert_frame_equal(
+            scan.filter(pl.col("x") > 1).select("key").collect(),
+            frame.filter(pl.col("x") > 1).select("key"),
+        )
+
+    def test_key_prefix_scan_applies_only_to_the_first_keys_rows(self) -> None:
+        input_lf = pl.LazyFrame({"k": ["b", "a", "b", None, "c"], "v": [1, 2, 3, 4, 5]})
+        applied_rows: list[int] = []
+
+        def apply(rows: pl.LazyFrame) -> pl.DataFrame:
+            collected = rows.collect()
+            applied_rows.append(collected.height)
+            return collected.drop_nulls("k").group_by("k").agg(pl.col("v").sum()).sort("k")
+
+        scan = key_prefix_python_scan(
+            input_lf, apply, schema=pl.Schema({"k": pl.String, "v": pl.Int64}), key_column="k"
+        )
+
+        assert scan.head(2).collect().to_dicts() == [{"k": "a", "v": 2}, {"k": "b", "v": 4}]
+        assert applied_rows == [3]
+
+    def test_key_prefix_scan_without_keys_is_empty_and_applies_nothing(self) -> None:
+        applied: list[pl.LazyFrame] = []
+        schema = pl.Schema({"k": pl.String, "v": pl.Int64})
+
+        scan = key_prefix_python_scan(
+            pl.LazyFrame({"k": [None], "v": [1]}, schema=schema),
+            lambda rows: applied.append(rows) or pl.DataFrame(schema=schema),
+            schema=schema,
+            key_column="k",
+        )
+
+        assert_frame_equal(scan.head(1).collect(), pl.DataFrame(schema=schema))
+        assert applied == []
+
+    def test_the_parked_failure_registry_evicts_its_oldest_failure(self) -> None:
+        from haute import _polars_utils
+
+        oldest = _polars_utils._park_python_scan_failure(ValueError("oldest"))
+        newest = oldest
+        for index in range(_polars_utils._PYTHON_SCAN_FAILURE_LIMIT):
+            newest = _polars_utils._park_python_scan_failure(ValueError(f"failure {index}"))
+
+        _polars_utils._reraise_python_scan_failure(pl.exceptions.ComputeError(oldest))
+        with pytest.raises(ValueError, match="failure 63"):
+            _polars_utils._reraise_python_scan_failure(pl.exceptions.ComputeError(newest))

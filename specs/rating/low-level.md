@@ -24,7 +24,7 @@
   otherwise-empty fields is the one documented draft no-op.
 - **Rating table** (`dict`): `{"factors": list[str] (1-3 cols), "factorDtypes"?: dict[str, dtype-descriptor], "outputColumn": str, "entries": list[dict], "defaultValue"?: str|number, "onMissing"?: "error"|"neutral"}`. `entries` is an ordered row array with one JSON scalar per factor plus numeric `"value"`. Invariant: `len(factors) <= _MAX_RATING_FACTORS` (3), enforced in `_rating_step_config._validate_factors`.
 - **Combined output** (`dict`): `{"outputColumn": str, "operation": "multiply"|"add"|"min"|"max", "baseValue": float}`.
-- **`RatingTableMissError(HauteValidationError)`** (a `ValueError` subclass) — raised at frame materialisation, not at config-build time, by `_apply_rating_miss_guard`'s `map_batches` callback.
+- **`RatingTableMissError(HauteValidationError)`** (a `ValueError` subclass) — raised at frame materialisation, not at config-build time, by `_apply_rating_miss_guard`'s row-local Python scan transform.
 - **Rating dtype descriptor** (`dict`): `{"kind": <name>}` where `<name>` is
   exactly one of `Int8`, `Int16`, `Int32`, `Int64`, `Int128`, `UInt8`,
   `UInt16`, `UInt32`, `UInt64`, `Float32`, `Float64`, `Boolean`, `String`,
@@ -89,17 +89,22 @@
       `keep="last"` and rename `value` to a collision-free internal value name.
    i. Left join on the temporary keys (`how="left", maintain_order="left"`).
       Source factor columns are untouched throughout.
-   j. If no usable default, wire in `_apply_rating_miss_guard` as a lazy-frame
-      batch barrier over the temporary keys and internal value. Projection,
-      predicate, and slice pushdown stop at the barrier, so validation cannot be
-      pruned when a caller selects a different output column; diagnostics still
-      show the exact keys used by the join.
+   j. If no usable default, wire in `_apply_rating_miss_guard` over the temporary
+      keys and internal value, passing the joined schema (input schema, `String`
+      temporary keys, and the lookup value dtype) so no plan is re-resolved.
+      Validation cannot be pruned when a caller selects a different output
+      column or filters rows; diagnostics still show the exact keys used by the join.
    k. Materialise/fill `outputColumn`, then drop every temporary key/value column.
-6. `_apply_rating_miss_guard` wraps the joined lazy frame in
-   `map_batches(_check, projection_pushdown=False, predicate_pushdown=False,
-   slice_pushdown=False, streamable=True)`. The callback returns each batch
-   unchanged after validating misses and relabels temporary keys with the public
-   factor names in diagnostics.
+6. `_apply_rating_miss_guard` exposes the joined lazy frame as a
+   `row_local_python_scan` (execution engine) with no generated columns, the
+   temporary keys and internal value as required input columns, input predicates
+   refused, and transform elision refused, in every execution profile. A
+   downstream projection therefore narrows the upstream read to the requested
+   columns plus the guard columns, a downstream filter never hides a miss from
+   validation, and a limit pushed by Polars bounds validation to the rows the
+   limited result reads. The transform returns each batch unchanged after
+   validating misses and relabels temporary keys with the public factor names in
+   diagnostics. The eager `pl.DataFrame` path is unchanged.
 7. `_combine_rating_output` (per combined output): if `baseValue` is `None`, delegates straight to `_combine_rating_columns`; otherwise adds a uniquely-named literal column (`__haute_rating_base_{output}__`, prefixed with more `_` until it doesn't collide with an existing column or the table-output list) holding `baseValue`, prepends it to the columns list, combines, then drops the scratch column.
 8. `_combine_rating_columns`: first reject duplicate participant column names
    and an output name that would overwrite one of its participants.
@@ -142,7 +147,13 @@
 - **Temporal keys are supported:** Date, Datetime (including unit/timezone),
   Time, and Duration use Polars' declared-dtype string form. Lookup entries are
   cast through that dtype first, so an ISO sidecar scalar and an input temporal
-  scalar agree or fail loudly during the cast.
+  scalar agree or fail loudly during the cast. A Date entry string has its
+  surrounding whitespace stripped and is then parsed strictly by Polars'
+  `str.to_date("%Y-%m-%d")` (the String-to-Date cast is deprecated from Polars
+  1.44). That format's numeric fields accept unpadded or space-padded digits
+  (`2024-1-31`, `2024-01- 31`); any spelling it rejects — another separator or
+  field order, a time part, whitespace before a separator, or an impossible date
+  — fails loudly on both the engine lookup and the trace scalar path.
 - **Ratebook dtype metadata is mandatory:** `factor_dtypes` is part of every
   newly saved ratebook artifact. `_apply_ratebook` validates ordered factor
   names and exact descriptors before calling `_apply_rating_table`; it neither
@@ -174,7 +185,7 @@
 
 | Condition | Exception | Where raised | Where it surfaces |
 |---|---|---|---|
-| Rating-table miss, no default, `onMissing: "error"` | `RatingTableMissError` (subclass of `HauteValidationError`/`ValueError`) | `_apply_rating_miss_guard._check`, inside `map_batches` | At `.collect()`/materialisation of the lazy plan — propagates up through whichever caller (executor preview, sink write, codegen'd script) triggers execution |
+| Rating-table miss, no default, `onMissing: "error"` | `RatingTableMissError` (subclass of `HauteValidationError`/`ValueError`) | `_apply_rating_miss_guard._check`, inside the row-local Python scan | At materialisation of the lazy plan — Haute's collect, batch-collect, and sink seams and standalone `Pipeline.run()` re-raise it with its type; a direct Polars `.collect()` receives a `ComputeError` naming it |
 | Non-numeric/non-finite banding rule value or breakpoint boundary | `ValueError` | `_banding_condition`, `_breakpoints_to_rules` | Eagerly, during `_apply_banding` — before any frame materialisation |
 | >1 open-ended breakpoint, or a sole open-ended breakpoint with no bounded anchor, or a duplicate breakpoint boundary | `ValueError` | `_breakpoints_to_rules` | Eagerly |
 | Rating table entries contain NaN/Infinity `value` | `ValueError` | `_apply_rating_table` | Eagerly, before the join |
@@ -236,7 +247,7 @@ Backend tests live under `tests/` (no dedicated subdirectory for this component)
   scalar-key benchmark comparing the production Series path with the historical
   one-row DataFrame-expression reference, with the shared dtype matrix checked
   for semantic equivalence before timings are accepted.
-- **`tests/test_rating_miss_fail_loud.py`** — the miss-policy contract: default (`error`) fails loud, no default + no miss stays silent, opt-in `onMissing: "neutral"`, and `_apply_rating_table`'s miss-guard wiring specifically.
+- **`tests/test_rating_miss_fail_loud.py`** — the miss-policy contract: default (`error`) fails loud, no default + no miss stays silent, opt-in `onMissing: "neutral"`, and `_apply_rating_table`'s miss-guard wiring specifically. `tests/test_rating.py` pins the scan semantics: `test_miss_guard_survives_a_filter_that_excludes_the_missing_row`, `test_miss_guard_validates_only_the_rows_a_limit_reads`, and `test_miss_guard_declares_the_joined_schema`.
 - **`tests/test_trace_banding_lineage.py`** — integration tests asserting a banding-created output continues the same lineage chain as other trace-calculated fields (through prior banding, through a computed upstream input, and for breakpoint-matched boundaries).
 
 Strategy is predominantly unit/property-style direct calls into the module functions (not full pipeline runs), with a smaller number of executor-integration and trace-integration tests confirming the shared primitives behave identically across entry points. `test_rating_key_agreement.py` in particular is written as a pinning/regression suite specifically to prevent the Python-mirror and Polars-expression forms of the canonical key from drifting apart, since that would be silently wrong in exactly the misleading way this codebase's error-handling conventions are designed to avoid (a trace agreeing with a join that actually disagreed).

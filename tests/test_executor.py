@@ -1222,6 +1222,129 @@ class TestExecuteGraph:
         assert "b" in col_names
 
 
+class TestTargetPreviewRowLimit:
+    """A target preview limits the previewed node's output, never each source."""
+
+    @staticmethod
+    def _preview(graph, target: str, row_limit: int):
+        return execute_graph(
+            graph,
+            target_node_id=target,
+            row_limit=row_limit,
+            target_preview_only=True,
+        )[target]
+
+    def test_left_join_of_differently_ordered_sources_previews_joined_values(self, tmp_path):
+        base_path = tmp_path / "base.parquet"
+        lookup_path = tmp_path / "lookup.parquet"
+        pl.DataFrame({"id": list(range(99, -1, -1))}).write_parquet(base_path)
+        pl.DataFrame(
+            {"id": list(range(100)), "premium": [float(i) * 10 for i in range(100)]}
+        ).write_parquet(lookup_path)
+        graph = _g(
+            {
+                "nodes": [
+                    _ready_source_node("base", str(base_path)),
+                    _ready_source_node("lookup", str(lookup_path)),
+                    _n(
+                        {
+                            "id": "join",
+                            "data": {
+                                "label": "join",
+                                "nodeType": "edgeJoin",
+                                "config": {"how": "left", "on": ["id"]},
+                            },
+                        }
+                    ),
+                ],
+                "edges": [
+                    _edge("base", "join", target_handle="base"),
+                    _edge("lookup", "join", target_handle="join"),
+                ],
+            }
+        )
+
+        result = self._preview(graph, "join", row_limit=5)
+
+        assert result.status == "ok"
+        assert result.row_count == 5
+        assert [(row["id"], row["premium"]) for row in result.preview] == [
+            (row_id, float(row_id) * 10) for row_id in range(99, 94, -1)
+        ]
+
+    def test_filter_preview_returns_first_rows_of_the_filtered_output(self, tmp_path):
+        path = tmp_path / "data.parquet"
+        pl.DataFrame({"x": list(range(100))}).write_parquet(path)
+        graph = _g(
+            {
+                "nodes": [
+                    _ready_source_node("src", str(path)),
+                    _transform_node("kept", "df = src.filter(pl.col('x') >= 50)"),
+                ],
+                "edges": [_edge("src", "kept")],
+            }
+        )
+
+        result = self._preview(graph, "kept", row_limit=3)
+
+        assert [row["x"] for row in result.preview] == [50, 51, 52]
+
+    def test_aggregation_preview_summarises_the_complete_input(self, tmp_path):
+        path = tmp_path / "data.parquet"
+        pl.DataFrame({"x": list(range(100))}).write_parquet(path)
+        graph = _g(
+            {
+                "nodes": [
+                    _ready_source_node("src", str(path)),
+                    _transform_node("total", "df = src.select(pl.col('x').sum())"),
+                ],
+                "edges": [_edge("src", "total")],
+            }
+        )
+
+        result = self._preview(graph, "total", row_limit=5)
+
+        assert result.preview == [{"x": sum(range(100))}]
+
+    def test_full_materialisation_limits_each_node_output_not_its_inputs(self, tmp_path):
+        path = tmp_path / "data.parquet"
+        pl.DataFrame({"x": list(range(100))}).write_parquet(path)
+        graph = _g(
+            {
+                "nodes": [
+                    _ready_source_node("src", str(path)),
+                    _transform_node("kept", "df = src.filter(pl.col('x') >= 50)"),
+                ],
+                "edges": [_edge("src", "kept")],
+            }
+        )
+
+        results = execute_graph(graph, row_limit=3)
+
+        assert [row["x"] for row in results["src"].preview] == [0, 1, 2]
+        assert [row["x"] for row in results["kept"].preview] == [50, 51, 52]
+
+    @pytest.mark.parametrize(
+        ("row_limits_by_node", "message"),
+        [({"src": 0}, "positive integers"), ({"": 1}, "must be node ids")],
+    )
+    def test_invalid_node_row_limits_are_rejected(self, tmp_path, row_limits_by_node, message):
+        from haute._execute_lazy import _execute_eager_core
+        from haute.executor import _build_node_fn
+
+        path = tmp_path / "data.parquet"
+        pl.DataFrame({"x": [1]}).write_parquet(path)
+        graph = _g({"nodes": [_ready_source_node("src", str(path))], "edges": []})
+
+        with pytest.raises(ValueError, match=message):
+            _execute_eager_core(
+                graph,
+                _build_node_fn,
+                target_node_id="src",
+                row_limits_by_node=row_limits_by_node,
+            )
+
+
 # ---------------------------------------------------------------------------
 # Data source user code preservation
 # ---------------------------------------------------------------------------
@@ -4490,3 +4613,305 @@ class TestPreambleFailureIsolation:
         assert "sink" not in errors or "bad_name" not in errors.get("sink", "")
 
         _preview_cache.clear()
+
+
+class TestSelectorRuntimeProjection:
+    """A preview resolves a selector node's input demand from the runtime schema."""
+
+    @staticmethod
+    def _graph(tmp_path, code: str, *, preamble: str = ""):
+        path = tmp_path / "wide.parquet"
+        pl.DataFrame({"id": ["q1", "q2"], "a": [1, 2], "big": [1.5, 2.5]}).write_parquet(path)
+        return _g(
+            {
+                "preamble": preamble,
+                "nodes": [
+                    _ready_source_node("source", str(path)),
+                    _transform_node("selected", code),
+                ],
+                "edges": [_edge("source", "selected")],
+            }
+        )
+
+    @staticmethod
+    def _preview(graph, monkeypatch):
+        import haute._execute_lazy as execute_lazy
+
+        selections: list[list[str]] = []
+        real = execute_lazy.projected_or_carrier_columns
+
+        def recording(schema_names, demand):
+            selected = real(schema_names, demand)
+            selections.append(list(selected))
+            return selected
+
+        monkeypatch.setattr(execute_lazy, "projected_or_carrier_columns", recording)
+        context = ExecutionContext(
+            operation="preview-test",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            telemetry_enabled=False,
+            memory_sampler=lambda: None,
+        )
+        results = execute_graph(
+            graph,
+            target_node_id="selected",
+            row_limit=10,
+            target_preview_only=True,
+            execution_context=context,
+        )
+        assert results["selected"].status == "ok", results["selected"].error
+        assert context.projection_plan is not None
+        return results["selected"], context.projection_plan.projection_plan, selections
+
+    def test_a_name_selector_resolves_the_source_demand_at_runtime(self, tmp_path, monkeypatch):
+        graph = self._graph(tmp_path, "df = source.select(pl.exclude('big'))")
+
+        result, plan, selections = self._preview(graph, monkeypatch)
+
+        assert [column.name for column in result.columns] == ["id", "a"]
+        diagnostics = plan.diagnostics_payload(profile=ExecutionProfile.PREVIEW_EAGER)
+        assert diagnostics is not None
+        assert (
+            diagnostics["edge_reasons"]["source->selected"]["rule"] == "runtime_inferred_streaming"
+        )
+        assert diagnostics["edge_reasons"]["source->selected"]["details"]["columns"] == ("a", "id")
+        assert "source" not in plan.opaque_boundaries
+        assert ["id", "a"] in selections
+
+    def test_a_selector_with_computed_arguments_keeps_the_boundary(self, tmp_path, monkeypatch):
+        graph = self._graph(
+            tmp_path,
+            "df = source.select(pl.exclude(names))",
+            preamble="names = ['big']",
+        )
+
+        _result, plan, selections = self._preview(graph, monkeypatch)
+
+        diagnostics = plan.diagnostics_payload(profile=ExecutionProfile.PREVIEW_EAGER)
+        assert diagnostics is not None
+        edge_reason = diagnostics["edge_reasons"].get("source->selected")
+        assert edge_reason is None or edge_reason["rule"] != "runtime_inferred_streaming"
+        assert selections == []
+
+
+class TestTargetPreviewDiagnosticReplan:
+    """A target-only preview re-plans its diagnostic from the frames it built."""
+
+    @staticmethod
+    def _joined_graph(tmp_path, *, limited_code: str = "df = competitor_join.limit(5)"):
+        from haute._types import GraphNode, NodeData, NodeType
+
+        pl.DataFrame(
+            {"id": list(range(10)), "a": list(range(10)), "wide": [1.5] * 10}
+        ).write_parquet(tmp_path / "quotes.parquet")
+        pl.DataFrame({"id": list(range(10)), "comp": [2.0] * 10}).write_parquet(
+            tmp_path / "comp.parquet"
+        )
+        pl.DataFrame({"id": list(range(10)), "premium": [3.0] * 10}).write_parquet(
+            tmp_path / "prem.parquet"
+        )
+
+        def join(node_id: str) -> GraphNode:
+            return GraphNode(
+                id=node_id,
+                data=NodeData(
+                    label=node_id,
+                    nodeType=NodeType.EDGE_JOIN,
+                    config={"how": "left", "on": ["id"]},
+                ),
+            )
+
+        return _g(
+            {
+                "nodes": [
+                    _ready_source_node("quotes", str(tmp_path / "quotes.parquet")),
+                    _ready_source_node("comp", str(tmp_path / "comp.parquet")),
+                    _ready_source_node("prem", str(tmp_path / "prem.parquet")),
+                    join("competitor_join"),
+                    _transform_node("limited", limited_code),
+                    join("premium_join"),
+                ],
+                "edges": [
+                    _edge("quotes", "competitor_join", target_handle="base"),
+                    _edge("comp", "competitor_join", target_handle="join"),
+                    _edge("competitor_join", "limited"),
+                    _edge("limited", "premium_join", target_handle="base"),
+                    _edge("prem", "premium_join", target_handle="join"),
+                ],
+            }
+        )
+
+    @staticmethod
+    def _preview(
+        graph,
+        *,
+        target_preview_only: bool = True,
+        requested_columns: list[str] | None = None,
+    ):
+        context = ExecutionContext(
+            operation="preview-test",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            telemetry_enabled=False,
+            memory_sampler=lambda: None,
+        )
+        results = execute_graph(
+            graph,
+            target_node_id="premium_join",
+            row_limit=3,
+            target_preview_only=target_preview_only,
+            requested_preview_columns=requested_columns,
+            execution_context=context,
+        )
+        assert results["premium_join"].status == "ok", results["premium_join"].error
+        assert context.projection_plan is not None
+        return context.projection_plan
+
+    @pytest.mark.parametrize(
+        "requested_columns",
+        [["id", "a", "wide", "comp", "premium"], None],
+        ids=["requested-columns", "first-click"],
+    )
+    def test_nodes_above_an_edge_join_are_not_reported_unprojected(
+        self, tmp_path, requested_columns
+    ):
+        strategy = self._preview(self._joined_graph(tmp_path), requested_columns=requested_columns)
+
+        assert strategy.projection_plan.opaque_boundaries == frozenset()
+        diagnostic = strategy.diagnostic.to_dict()
+        assert [
+            item["node_id"]
+            for item in diagnostic["boundaries"]["items"]
+            if item["boundary_kind"] == "unprojected-streaming-boundary"
+        ] == []
+
+    def test_code_outside_the_lineage_model_keeps_its_boundary(self, tmp_path):
+        graph = self._joined_graph(
+            tmp_path,
+            limited_code="for _ in range(1):\n    df = competitor_join.limit(5)",
+        )
+
+        strategy = self._preview(graph)
+
+        assert "competitor_join" in strategy.projection_plan.opaque_boundaries
+
+    def test_a_full_materialisation_keeps_the_pre_execution_plan(self, tmp_path):
+        strategy = self._preview(self._joined_graph(tmp_path), target_preview_only=False)
+
+        assert "competitor_join" in strategy.projection_plan.opaque_boundaries
+
+
+class TestBuilderPostCodeProjection:
+    """Builder post-code reads builder-generated columns without demanding them upstream."""
+
+    @staticmethod
+    def _preview(tmp_path, node_type: str, config: dict, requested: list[str]):
+        from haute._types import GraphNode, NodeData, NodeType
+
+        path = tmp_path / "rows.parquet"
+        pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "premium": [50.0, 100.0],
+                "vehicle_age_band": ["1-3", "10+"],
+                "cover_type": ["comprehensive", "comprehensive"],
+            }
+        ).write_parquet(path)
+        graph = _g(
+            {
+                "nodes": [
+                    _ready_source_node("source", str(path)),
+                    GraphNode(
+                        id="built",
+                        data=NodeData(label="built", nodeType=NodeType(node_type), config=config),
+                    ),
+                ],
+                "edges": [_edge("source", "built")],
+            }
+        )
+        result = execute_graph(
+            graph,
+            target_node_id="built",
+            row_limit=10,
+            target_preview_only=True,
+            requested_preview_columns=requested,
+        )["built"]
+        assert result.status == "ok", result.error
+        return result
+
+    def test_scenario_expander_post_code_reads_its_generated_columns(self, tmp_path):
+        result = self._preview(
+            tmp_path,
+            "scenarioExpander",
+            {
+                "column_name": "scenario_value",
+                "min_value": 1.0,
+                "max_value": 3.0,
+                "steps": 3,
+                "step_column": "scenario_index",
+                "code": "df = df.select(result=pl.col('scenario_value') * pl.col('premium'))",
+                "contract": {"inputs": ["premium"], "outputs": ["result"]},
+            },
+            ["result"],
+        )
+
+        assert sorted(row["result"] for row in result.preview) == [
+            50.0,
+            100.0,
+            100.0,
+            150.0,
+            200.0,
+            300.0,
+        ]
+
+    def test_scenario_expander_post_code_reads_the_default_index_column(self, tmp_path):
+        result = self._preview(
+            tmp_path,
+            "scenarioExpander",
+            {
+                "min_value": 1.0,
+                "max_value": 1.0,
+                "steps": 2,
+                "step_column": "",
+                "code": "df = df.select(result=pl.col('premium') + pl.col('scenario_index'))",
+                "contract": {"inputs": ["premium"], "outputs": ["result"]},
+            },
+            ["result"],
+        )
+
+        assert sorted(row["result"] for row in result.preview) == [50.0, 51.0, 100.0, 101.0]
+
+    def test_rating_step_post_code_reads_its_generated_columns(self, tmp_path):
+        result = self._preview(
+            tmp_path,
+            "ratingStep",
+            {
+                "tables": [
+                    {
+                        "name": "vehicle_factor",
+                        "factors": ["vehicle_age_band", "cover_type"],
+                        "outputColumn": "vehicle_factor",
+                        "defaultValue": "1.0",
+                        "entries": [
+                            {
+                                "vehicle_age_band": "1-3",
+                                "cover_type": "comprehensive",
+                                "value": 0.9,
+                            },
+                            {
+                                "vehicle_age_band": "10+",
+                                "cover_type": "comprehensive",
+                                "value": 1.4,
+                            },
+                        ],
+                    }
+                ],
+                "code": "df = df.select(rated=pl.col('premium') * pl.col('vehicle_factor'))",
+                "contract": {
+                    "inputs": ["vehicle_age_band", "cover_type", "premium"],
+                    "outputs": ["rated"],
+                },
+            },
+            ["rated"],
+        )
+
+        assert sorted(row["rated"] for row in result.preview) == [45.0, 140.0]

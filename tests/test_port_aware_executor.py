@@ -591,7 +591,11 @@ def test_eager_diamond_reuses_one_cached_lazyframe_and_executes_source_once() ->
 
 
 def test_eager_nested_diamond_has_one_cache_per_shared_lazy_producer() -> None:
-    """Nested fan-out retains one cache identity for each shared producer."""
+    """Nested fan-out retains one cache identity for each shared producer.
+
+    The identities are read from the plan Haute builds: the optimiser may merge
+    nested caches whose intermediate columns nothing reads (Polars 1.44 does).
+    """
     graph = PipelineGraph(
         nodes=[
             _node("src", "src", NodeType.DATA_INPUT),
@@ -631,7 +635,7 @@ def test_eager_nested_diamond_has_one_cache_per_shared_lazy_producer() -> None:
 
             def sink(*frames: pl.LazyFrame) -> pl.LazyFrame:
                 result = pl.concat([frame.select("id") for frame in frames])
-                plans.append(result.explain(optimized=True))
+                plans.append(result.explain(optimized=False))
                 return result
 
             return node.id, sink, False

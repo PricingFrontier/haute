@@ -169,7 +169,7 @@ package input validated by `hatch_build.py`, not hand-edited source.
 
 ## Testing
 
-- `tests/test_dependency_contracts.py` — dependency version floors for Polars ordered joins, ratebook factor contexts, and required build/runtime assumptions.
+- `tests/test_dependency_contracts.py` — dependency version floors for Polars ordered joins and streamed sliced left joins (the preview row-limit contract in [execution-engine](../execution-engine/low-level.md)), ratebook factor contexts, and required build/runtime assumptions.
 - `tests/test_optional_dependency_extras.py` — core MLflow plus Databricks-extra
   import smoke checks (skipped when the Databricks extra is absent).
 - `tests/test_optional_dependency_matrix.py` — core-install import/route smoke

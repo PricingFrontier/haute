@@ -25,11 +25,15 @@ from typing import Literal
 
 __all__ = [
     "POLARS_OPERATIONS",
+    "POLARS_SELECTORS_MODULE_FUNCTIONS",
+    "POLARS_SELECTOR_CONSTRUCTORS",
     "OperationClass",
     "OperationPolicy",
     "OperationReceiver",
     "PolarsOperation",
+    "SelectorForm",
     "chunk_admitted_names",
+    "chunk_admitted_selector_constructors",
     "lineage_supported_frame_methods",
     "materialisation_factor_basis_points",
     "measured_operation_names",
@@ -436,9 +440,11 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         _FRAME,
         "shift",
         _ORDER_DEPENDENT,
-        _P_STREAMING,
-        "reads neighbouring rows. streams: certified by the fresh-process lane against the "
-        "scan control, at the streaming floor",
+        _P_BOUNDARY,
+        "reads neighbouring rows. materialises: from Polars 1.44 the streaming shift "
+        "buffers state that grows with the input, certified by the fresh-process lane "
+        "against the scan control; the certified observed/(width x 3.0) ratio needs no "
+        "margin",
         lineage_supported=True,
         memory_evidence="measured",
     ),
@@ -1064,4 +1070,116 @@ def lineage_supported_frame_methods() -> frozenset[str]:
         entry.name
         for entry in POLARS_OPERATIONS.values()
         if entry.receiver is OperationReceiver.FRAME and entry.lineage_supported
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class SelectorForm:
+    """One Polars column-selector constructor the selector grammar rebuilds.
+
+    ``dtype_dependent`` marks a form that chooses columns by dtype (``exclude``
+    and ``col`` decide it from their arguments), ``positional`` a form that
+    chooses by position, and ``chunk_admitted`` a form with a chunked==full
+    proof case in tests/test_chunk_whitelist_proofs.py.
+    """
+
+    name: str
+    dtype_dependent: bool
+    positional: bool
+    chunk_admitted: bool
+    note: str
+
+
+def _selector(
+    name: str,
+    note: str,
+    *,
+    dtype_dependent: bool = False,
+    positional: bool = False,
+    chunk_admitted: bool = True,
+) -> SelectorForm:
+    return SelectorForm(name, dtype_dependent, positional, chunk_admitted, note)
+
+
+# ``pl.<name>`` constructors that select columns. ``first``/``last`` select only
+# without arguments; with arguments they are order-dependent aggregations and
+# stay registered as opaque functions above.
+POLARS_SELECTOR_CONSTRUCTORS: Mapping[str, SelectorForm] = MappingProxyType(
+    {
+        form.name: form
+        for form in (
+            _selector("all", "proof: selector_all"),
+            _selector("exclude", "proof: selector_exclude; dtype arguments read dtypes"),
+            _selector("nth", "proof: selector_nth", positional=True),
+            _selector("first", "proof: selector_first; argument-free only", positional=True),
+            _selector("last", "proof: selector_last; argument-free only", positional=True),
+            _selector("col", "proof: selector_col_regex; regex, wildcard, or dtype argument only"),
+        )
+    }
+)
+
+_NAME_SELECTOR_FUNCTIONS = (
+    "all",
+    "alpha",
+    "alphanumeric",
+    "by_name",
+    "contains",
+    "digit",
+    "empty",
+    "ends_with",
+    "exclude",
+    "matches",
+    "starts_with",
+)
+_POSITIONAL_SELECTOR_FUNCTIONS = ("by_index", "first", "last")
+_DTYPE_SELECTOR_FUNCTIONS = (
+    "array",
+    "binary",
+    "boolean",
+    "by_dtype",
+    "categorical",
+    "date",
+    "datetime",
+    "decimal",
+    "duration",
+    "enum",
+    "float",
+    "integer",
+    "list",
+    "nested",
+    "numeric",
+    "object",
+    "signed_integer",
+    "string",
+    "struct",
+    "temporal",
+    "time",
+    "unsigned_integer",
+)
+
+# ``polars.selectors`` functions, reached through a preamble import alias.
+# Chunk admission for the whole module rests on one proof case: every selector
+# expands against the schema, which every chunk shares.
+POLARS_SELECTORS_MODULE_FUNCTIONS: Mapping[str, SelectorForm] = MappingProxyType(
+    {
+        **{
+            name: _selector(name, "proof: selector_module", chunk_admitted=True)
+            for name in _NAME_SELECTOR_FUNCTIONS
+        },
+        **{
+            name: _selector(name, "proof: selector_module", positional=True)
+            for name in _POSITIONAL_SELECTOR_FUNCTIONS
+        },
+        **{
+            name: _selector(name, "proof: selector_module", dtype_dependent=True)
+            for name in _DTYPE_SELECTOR_FUNCTIONS
+        },
+    }
+)
+
+
+def chunk_admitted_selector_constructors() -> frozenset[str]:
+    """Return the ``pl`` selector constructors with a chunked==full proof."""
+    return frozenset(
+        name for name, form in POLARS_SELECTOR_CONSTRUCTORS.items() if form.chunk_admitted
     )

@@ -37,6 +37,7 @@ from unittest.mock import MagicMock
 import polars as pl
 import pytest
 
+from haute._polars_utils import streaming_collect
 from haute._rating import (
     RatingTableMissError,
     _apply_rating_table,
@@ -352,7 +353,7 @@ class TestFloat32AndCrossDtypeAgreement:
         }
         lf = pl.DataFrame({"age": pl.Series("age", [25], dtype=apply_dtype)}).lazy()
         try:
-            out = _apply_rating_table(lf, table).collect()
+            out = streaming_collect(_apply_rating_table(lf, table))
         except RatingTableMissError:
             return  # a loud mismatch is acceptable; a silent neutral is not
         assert out["f"].to_list() == [2.0]
@@ -378,7 +379,7 @@ class TestFloat32AndCrossDtypeAgreement:
         }
         lf = pl.DataFrame({"s": pl.Series("s", [value], dtype=apply_dtype)}).lazy()
         try:
-            out = _apply_rating_table(lf, table).collect()
+            out = streaming_collect(_apply_rating_table(lf, table))
         except RatingTableMissError:
             return
         assert out["f"].to_list() == [2.0]

@@ -481,7 +481,11 @@ def _rows_from_dataframe(
     return rows
 
 
-def _assemble_document(field_frames: dict[str, pl.LazyFrame]) -> list[Any]:
+def _assemble_document(
+    field_frames: dict[str, pl.LazyFrame],
+    *,  # pragma: no mutate
+    row_limit: int | None = None,  # pragma: no mutate
+) -> list[Any]:
     """Assemble the nested JSON document by descending the path-prefix TREE (§4.5).
 
     Each source frame's columns are its output paths. A frame *emits* objects at
@@ -498,6 +502,12 @@ def _assemble_document(field_frames: dict[str, pl.LazyFrame]) -> list[Any]:
     no cross-branch blow-up (the 2×2×3 denormalisation the data model names as
     arithmetically meaningless). This is the default, swappable serialiser;
     running it on a single frame renders that frame's own JSON view.
+
+    *row_limit* reads only the first rows of an emitting root level and, for
+    every deeper emitting level, only the rows whose keys match its nearest
+    collected ancestor level, so each top-level object equals the unlimited
+    assembly's object for the same root rows. A root synthesised from
+    descendants has no rows of its own to limit and is assembled in full.
     """
     execution_context = current_execution_context()
     progress = _OutputAssemblyProgress(execution_context)
@@ -571,7 +581,9 @@ def _assemble_document(field_frames: dict[str, pl.LazyFrame]) -> list[Any]:
     # same-level sources is joined while it is still lazy, so no member is re-read.
     rows_by_prefix: dict[tuple[str, ...], list[dict[str, Any]]] = {}
     emitting_prefixes = list(dict.fromkeys(emit_prefix.values()))
-    for prefix in emitting_prefixes:
+    limit_root = row_limit is not None and () in emitting_prefixes
+    collected_by_prefix: dict[tuple[str, ...], pl.DataFrame] = {}
+    for prefix in sorted(emitting_prefixes, key=len):
         port_list = ports_at[prefix]
         if len(port_list) == 1:
             output_plan = planned_frames[port_list[0]]
@@ -581,13 +593,24 @@ def _assemble_document(field_frames: dict[str, pl.LazyFrame]) -> list[Any]:
                 {port: planned_frames[port] for port in port_list},
                 _plan_cut(incidence),
             )
+        if limit_root and row_limit is not None:
+            output_plan = _limit_level_plan(
+                output_plan,
+                prefix=prefix,
+                row_limit=row_limit,
+                level_paths={path for port in port_list for path in port_paths[port]},
+                all_paths=all_paths,
+                collected_by_prefix=collected_by_prefix,
+            )
         marker_errors = {
             marker: error
             for port in port_list
             for marker, error in marker_errors_by_port[port].items()
         }
+        collected = _collect_output_frame(output_plan, execution_context)
+        collected_by_prefix[prefix] = collected
         rows_by_prefix[prefix] = _rows_from_dataframe(
-            _collect_output_frame(output_plan, execution_context),
+            collected,
             progress=progress,
             marker_errors=marker_errors,
         )
@@ -676,6 +699,38 @@ def _assemble_document(field_frames: dict[str, pl.LazyFrame]) -> list[Any]:
     )
     progress.checkpoint("output_assembly_build")
     return document
+
+
+def _limit_level_plan(
+    plan: pl.LazyFrame,
+    *,  # pragma: no mutate
+    prefix: tuple[str, ...],
+    row_limit: int,
+    level_paths: set[str],
+    all_paths: Mapping[str, _ParsedPath],
+    collected_by_prefix: Mapping[tuple[str, ...], pl.DataFrame],
+) -> pl.LazyFrame:
+    """Bound one emitting level's read to the rows a limited document needs."""
+    if not prefix:
+        return plan.head(row_limit)
+    # The root level is always collected before a deeper level is limited, so the
+    # longest collected proper prefix exists.
+    ancestor = next(
+        prefix[:depth]
+        for depth in reversed(range(len(prefix)))
+        if prefix[:depth] in collected_by_prefix
+    )
+    ancestor_own = {
+        column for column, parsed in all_paths.items() if _array_prefix(parsed) == ancestor
+    }
+    keys = sorted(ancestor_own & level_paths)
+    if not keys:
+        return plan
+    ancestor_keys = collected_by_prefix[ancestor].select(keys).unique()
+    first, *others = keys
+    if not others:
+        return plan.filter(pl.col(first).is_in(ancestor_keys[first].to_list()))
+    return plan.join(ancestor_keys.lazy(), on=keys, how="semi")
 
 
 # ---------------------------------------------------------------------------
@@ -847,7 +902,10 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
 
 
 def assemble_output_from_mapping(
-    frames: dict[str, pl.LazyFrame], mapping: list[dict[str, Any]]
+    frames: dict[str, pl.LazyFrame],
+    mapping: list[dict[str, Any]],
+    *,  # pragma: no mutate
+    row_limit: int | None = None,  # pragma: no mutate
 ) -> list[Any]:
     """Assemble the OUTPUT JSON document from source frames + an ``outputMapping``.
 
@@ -873,7 +931,7 @@ def assemble_output_from_mapping(
         )
         for port, entries in by_port.items()
     }
-    return _assemble_document(field_frames)
+    return _assemble_document(field_frames, row_limit=row_limit)
 
 
 def _document_dtype(node: Any) -> pl.DataType:

@@ -1291,3 +1291,157 @@ class TestBundler:
         )
         artifacts = collect_artifacts(graph, [], pipeline_dir=Path("/tmp"))
         assert len(artifacts) == 0
+
+
+class TestLimitedOnlineApply:
+    """A limited read of online apply computes only the quotes it returns."""
+
+    @staticmethod
+    def _scenarios(quote_ids: list[str]) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "quote_id": [quote for quote in quote_ids for _ in range(2)],
+                "scenario_index": [0, 1] * len(quote_ids),
+                "scenario_value": [0.9, 1.1] * len(quote_ids),
+                "predicted_income": [float(i) for i in range(2 * len(quote_ids))],
+                "predicted_volume": [1.0, 0.8] * len(quote_ids),
+            }
+        )
+
+    @staticmethod
+    def _count_applied_rows(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+        import haute._builders as builders
+
+        heights: list[int] = []
+        real = builders._prepare_online_apply_frame
+
+        def counting(frame, artifact):
+            prepared = real(frame, artifact)
+            heights.append(prepared.height)
+            return prepared
+
+        monkeypatch.setattr(builders, "_prepare_online_apply_frame", counting)
+        return heights
+
+    def test_limit_returns_the_unlimited_prefix_and_applies_only_those_quotes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._polars_utils import streaming_collect
+
+        path = tmp_path / "scored.parquet"
+        self._scenarios(["z", "a", "m"]).write_parquet(path)
+        artifact = _make_online_artifact()
+
+        unlimited = streaming_collect(_apply_online(pl.scan_parquet(path), artifact, "", "__ver__"))
+        heights = self._count_applied_rows(monkeypatch)
+        limited = streaming_collect(
+            _apply_online(pl.scan_parquet(path), artifact, "", "__ver__").head(2)
+        )
+
+        assert unlimited["quote_id"].to_list() == ["a", "m", "z"]
+        assert limited.equals(unlimited.head(2))
+        assert heights == [4]
+
+    def test_ratio_constraints_apply_to_the_whole_frame_under_any_limit(self) -> None:
+        from haute._polars_utils import streaming_collect
+
+        artifact = {
+            **_make_online_artifact(),
+            "lambdas": {"loss_ratio": 0.2},
+            "constraints": {
+                "loss_ratio": {
+                    "max": 0.6,
+                    "numerator": "predicted_claims",
+                    "denominator": "predicted_premium",
+                }
+            },
+        }
+        scored = pl.DataFrame(
+            {
+                "quote_id": ["q2", "q2", "q1", "q1"],
+                "scenario_index": [0, 1, 0, 1],
+                "scenario_value": [0.9, 1.1, 0.9, 1.1],
+                "predicted_income": [40.0, 55.0, 90.0, 110.0],
+                "predicted_claims": [30.0, 45.0, 55.0, 70.0],
+                "predicted_premium": [100.0, 100.0, 100.0, 100.0],
+            }
+        )
+
+        unlimited = streaming_collect(_apply_online(scored.lazy(), artifact, "", "__ver__"))
+        limited = streaming_collect(_apply_online(scored.lazy(), artifact, "", "__ver__").head(1))
+
+        assert limited.equals(unlimited.head(1))
+
+    def test_limit_reads_only_the_selected_quotes_through_an_upstream_scorer(self) -> None:
+        from haute._polars_utils import row_local_python_scan, streaming_collect
+
+        scenarios = self._scenarios([f"q{index:02d}" for index in range(50)])
+        scored_rows: list[int] = []
+
+        def score(batch: pl.DataFrame) -> pl.DataFrame:
+            scored_rows.append(batch.height)
+            return batch.with_columns(predicted_income=pl.col("scenario_value") * 100.0)
+
+        def scored() -> pl.LazyFrame:
+            return row_local_python_scan(
+                scenarios.drop("predicted_income").lazy(),
+                score,
+                schema=scenarios.schema,
+                generated_columns=("predicted_income",),
+                required_input_columns=("scenario_value",),
+                input_predicates_allowed=True,
+                elide_transform_when_unused=True,
+            )
+
+        artifact = _make_online_artifact()
+        unlimited = streaming_collect(_apply_online(scored(), artifact, "", "__ver__"))
+        scored_rows.clear()
+
+        limited = streaming_collect(_apply_online(scored(), artifact, "", "__ver__").head(4))
+
+        assert limited.equals(unlimited.head(4))
+        assert limited["quote_id"].to_list() == ["q00", "q01", "q02", "q03"]
+        assert sum(scored_rows) == 8
+
+    @pytest.mark.parametrize(
+        ("version", "optimised_value_col", "quote_id_col"),
+        [
+            ("", "", "quote_id"),
+            ("v9", "", "quote_id"),
+            ("v9", "chosen_multiplier", "quote_id"),
+            ("v9", "chosen_multiplier", "policy_id"),
+        ],
+    )
+    def test_declared_schema_matches_the_eager_apply(
+        self, version: str, optimised_value_col: str, quote_id_col: str
+    ) -> None:
+        from haute._builders import online_apply_output_schema
+        from haute._polars_utils import streaming_collect
+
+        artifact = {
+            **_make_online_artifact(),
+            "quote_id": quote_id_col,
+            "lambdas": {"predicted_volume": 0.5, "predicted_claims": 0.1},
+            "constraints": {
+                "predicted_volume": {"min": 0.9},
+                "predicted_claims": {"max": 100.0},
+            },
+        }
+        scored = (
+            _scored_df()
+            .with_columns(predicted_claims=pl.lit(10.0))
+            .rename({"quote_id": quote_id_col})
+        )
+        declared = online_apply_output_schema(
+            artifact,
+            version=version,
+            version_col="__ver__",
+            optimised_value_col=optimised_value_col,
+        )
+
+        # A DataFrame input applies eagerly, without the declared-schema scan.
+        eager = _apply_online(scored, artifact, version, "__ver__", optimised_value_col)
+        scan = _apply_online(scored.lazy(), artifact, version, "__ver__", optimised_value_col)
+
+        assert streaming_collect(eager).schema == declared
+        assert streaming_collect(scan).equals(streaming_collect(eager))

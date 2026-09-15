@@ -176,9 +176,65 @@ export function executionErrorDetailMessage(error: unknown): string | null {
   const detail = rawErrorDetail(error)
   if (typeof detail === "string" && detail.trim()) return detail
   if (isRecord(detail)) {
-    return stringField(detail, ["message", "detail", "reason", "error_code"])
+    const authored = stringField(detail, ["message", "detail"])
+    if (authored) return authored
+    if (detail.error_code === "memory_limit") return memoryLimitDetailMessage(detail)
+    return stringField(detail, ["reason", "error_code"])
   }
   return null
+}
+
+const REDUCE_MEMORY_ACTION =
+  "To reduce the memory it needs, filter rows or drop columns earlier in the pipeline."
+
+function byteField(fields: Record<string, unknown>, key: string): number | null {
+  const value = fields[key]
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null
+}
+
+/** Plain-language text for a structured `memory_limit` detail, by its closed reason. */
+function memoryLimitDetailMessage(detail: Record<string, unknown>): string {
+  const memory = (key: string) => {
+    const bytes = byteField(detail, key)
+    return bytes === null ? null : formatMemory(bytes)
+  }
+  const ranOutOfMemory = (sentence: string) => `${sentence} ${REDUCE_MEMORY_ACTION}`
+  switch (detail.reason) {
+    case "worker_may_have_exceeded_memory_limit":
+      return ranOutOfMemory(
+        "The process running this stopped abruptly, most likely because it ran out of memory.",
+      )
+    case "worker_rss_limit_exceeded": {
+      const used = memory("rss_bytes")
+      const limit = memory("rss_limit_bytes")
+      return ranOutOfMemory(
+        `This used ${used ? `${used} of ` : "more "}memory${limit ? `, over its ${limit} limit` : " than its limit"}.`,
+      )
+    }
+    case "rss_exceeds_memory_limit": {
+      const allowance = memory("memory_limit_bytes")
+      return ranOutOfMemory(`This needed more than its ${allowance ? `${allowance} ` : ""}memory allowance.`)
+    }
+    case "process_rss_limit_exceeded": {
+      // Admission reports the process cap itself; a running execution reports
+      // the cap as its effective RSS limit.
+      const atAdmission = byteField(detail, "rss_at_admission_bytes") !== null
+      const limit = memory(atAdmission ? "process_rss_limit_bytes" : "rss_limit_bytes")
+      const processLimit = `${limit ? `${limit} ` : ""}process memory limit`
+      if (atAdmission) {
+        return `There isn't enough free memory to start this: Haute is already using ${memory("rss_at_admission_bytes")} of its ${processLimit}.`
+      }
+      return ranOutOfMemory(`Haute reached its ${processLimit} while running this.`)
+    }
+    case "in_flight_memory_budget_exceeded":
+      return "Other running work holds the memory this needs. Try again when it finishes."
+    case "native_memory_cap_unavailable":
+      return "This can't run because Haute can't enforce its memory limit on this machine."
+    case "memory_sampler_unavailable":
+      return "Haute stopped this because it couldn't measure its memory use."
+    default:
+      return ranOutOfMemory("This ran out of memory before it finished.")
+  }
 }
 
 export function executionMetricsFromError(error: unknown): ExecutionMetrics | null {

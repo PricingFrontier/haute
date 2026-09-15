@@ -88,6 +88,8 @@ def _make_mock_model(task: str = "regression", feature_names: list[str] | None =
     model.predict.return_value = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
     model.get_cat_feature_indices.return_value = []
     if task == "classification":
+        # Native CatBoost classifiers declare their label domain.
+        model.classes_ = np.array([0, 1])
         model.predict_proba.return_value = np.array(
             [
                 [0.9, 0.1],

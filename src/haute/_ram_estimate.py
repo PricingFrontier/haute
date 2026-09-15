@@ -50,7 +50,9 @@ from haute._graph_utils import (
 )
 from haute._host_memory import available_ram_bytes, require_positive_available_ram
 from haute._logging import get_logger
+from haute._lru_cache import LRUCache
 from haute._polars_operations import materialisation_factor_basis_points
+from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_utils import read_parquet_metadata
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.errors import ConfigError
@@ -474,6 +476,33 @@ def _detailed_parquet_metadata(path: str) -> _DetailedSourceMetadata:
     )
 
 
+# Parquet metadata of verified JSON-cache artifacts, keyed by content signature.
+_VERIFIED_PORT_METADATA: LRUCache[tuple[int, str], _DetailedSourceMetadata] = LRUCache(max_size=64)
+
+
+def _verified_port_metadata(
+    artifact: Path,
+    signature: tuple[int, str],
+) -> _DetailedSourceMetadata:
+    """Return footer metadata for a parquet artifact whose bytes match *signature*.
+
+    The caller has verified the artifact against its recorded size and SHA-256,
+    so the metadata is a pure function of that signature.
+    """
+    metadata = _VERIFIED_PORT_METADATA.get(signature)
+    if metadata is None:
+        read = _detailed_parquet_metadata(str(artifact))
+        metadata = read._replace(
+            columns=MappingProxyType(dict(read.columns)),
+            column_width_keys=MappingProxyType(dict(read.column_width_keys)),
+            column_uncompressed_size_bytes=MappingProxyType(
+                dict(read.column_uncompressed_size_bytes)
+            ),
+        )
+        _VERIFIED_PORT_METADATA.put(signature, metadata)
+    return metadata
+
+
 def _detailed_dataframe_metadata(
     frame: pl.DataFrame,
     node_id: str,
@@ -607,7 +636,7 @@ def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSource
         _emitting_table_specs,
         _v2_fingerprint,
     )
-    from haute._json_shred._source_proof import _data_file_signature
+    from haute._json_shred._source_proof import _content_signature_parts, _data_file_signature
 
     config = dict(node.data.config)
     raw_path = config.get("path", "")
@@ -662,8 +691,12 @@ def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSource
                     expected_schema = _declared_frame_schema(port_spec)
                     if dict(actual_schema.items()) != dict(expected_schema.items()):
                         continue
+                    verified_signature = _content_signature_parts(
+                        entries[port]["content_signature"]
+                    )
+                    assert verified_signature is not None
                     return _source_scoped_metadata(
-                        _detailed_parquet_metadata(str(snapshot_path)),
+                        _verified_port_metadata(snapshot_path, verified_signature),
                         node.id,
                     )
                 finally:
@@ -994,6 +1027,7 @@ def _resolve_row_cardinality_from_index(
     port: str | None,
 ) -> _ResolvedRowCardinality:
     """Prove one graph node's output and peak row bounds without executing it."""
+    selector_aliases = preamble_selector_aliases(index.graph.preamble or "")
 
     node = index.node_map.get(target_node_id)
     if node is None:
@@ -1016,7 +1050,9 @@ def _resolve_row_cardinality_from_index(
         )
         code = node.data.config.get("code")
         if node_type is NodeType.DATA_INPUT and isinstance(code, str) and code.strip():
-            analysis = analyze_polars_cardinality(code, {"df": metadata.row_count})
+            analysis = analyze_polars_cardinality(
+                code, {"df": metadata.row_count}, selector_aliases=selector_aliases
+            )
             return _cardinality_from_analysis(target_node_id, analysis, (base,))
         return base
 
@@ -1085,6 +1121,7 @@ def _resolve_row_cardinality_from_index(
         analysis = analyze_polars_cardinality(
             code,
             {name: cast(int, result.output_rows) for name, result in bindings.items()},
+            selector_aliases=selector_aliases,
         )
         return _cardinality_from_analysis(target_node_id, analysis, parents)
 
@@ -1118,7 +1155,9 @@ def _resolve_row_cardinality_from_index(
         )
         code = node.data.config.get("code")
         if isinstance(code, str) and code.strip():
-            analysis = analyze_polars_cardinality(code, {"df": expanded_rows})
+            analysis = analyze_polars_cardinality(
+                code, {"df": expanded_rows}, selector_aliases=selector_aliases
+            )
             return _cardinality_from_analysis(target_node_id, analysis, (expanded,))
         return expanded
 
@@ -1131,7 +1170,9 @@ def _resolve_row_cardinality_from_index(
         code = node.data.config.get("code")
         if isinstance(code, str) and code.strip():
             assert parents[0].output_rows is not None
-            analysis = analyze_polars_cardinality(code, {"df": parents[0].output_rows})
+            analysis = analyze_polars_cardinality(
+                code, {"df": parents[0].output_rows}, selector_aliases=selector_aliases
+            )
             return _cardinality_from_analysis(target_node_id, analysis, parents)
         return _passthrough_cardinality(target_node_id, parents)
 
@@ -1157,6 +1198,7 @@ def _resolve_row_cardinality_from_index(
             analysis = analyze_polars_cardinality(
                 code,
                 {name: cast(int, result.output_rows) for name, result in bindings.items()},
+                selector_aliases=selector_aliases,
             )
             return _cardinality_from_analysis(target_node_id, analysis, parents)
         return _passthrough_cardinality(target_node_id, parents)
@@ -1236,6 +1278,7 @@ def _resolve_row_cardinality_from_index(
             analysis = analyze_polars_cardinality(
                 code,
                 {name: cast(int, result.output_rows) for name, result in bindings.items()},
+                selector_aliases=selector_aliases,
             )
             return _cardinality_from_analysis(target_node_id, analysis, parents)
         return _passthrough_cardinality(target_node_id, parents)

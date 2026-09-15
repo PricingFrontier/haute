@@ -620,6 +620,7 @@ class TestExecuteTraceEdgeCases:
                 node_map,
                 {"src"},
                 "fresh_execution",
+                None,
             ),
         )
         trace_module._cache.clear()

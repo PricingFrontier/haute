@@ -1551,14 +1551,17 @@ class TestRowCorrelationAggregation:
         assert "src" not in _step_ids(result)
         assert len(result.correlation_diagnostics) == 1
         diagnostic = result.correlation_diagnostics[0]
+        # The grouping carries only its key, so the lineage lookup finds more
+        # than one source row (candidates are capped at two) and reports the
+        # ambiguity instead of choosing one.
         assert diagnostic["code"] == "ambiguous_row_match"
-        assert diagnostic["reason"] == "relaxed_match_ambiguous"
+        assert diagnostic["reason"] == "duplicate_exact_match"
         assert diagnostic["node_id"] == "src"
         assert diagnostic["child_node_id"] == "agg"
-        assert diagnostic["match_strategy"] == "relaxed"
-        assert set(diagnostic["match_columns"]) == {"region", "premium"}
-        assert set(diagnostic["ignored_columns"]) == {"region", "premium"}
-        assert diagnostic["matched_row_count"] == 3
+        assert diagnostic["match_strategy"] == "exact"
+        assert set(diagnostic["match_columns"]) == {"region"}
+        assert diagnostic["ignored_columns"] == []
+        assert diagnostic["matched_row_count"] == 2
 
 
 class TestRowCorrelationSortChangesOrder:

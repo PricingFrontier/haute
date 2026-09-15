@@ -16,7 +16,7 @@ from haute._execute_lazy import (
     _execute_eager_core,
     _execute_lazy,
     _resolve_effective_contract,
-    _runtime_join_demands,
+    _runtime_lineage_demands,
     _strict_contract_resolution,
 )
 from haute._execution_admission import create_admitted_execution_context
@@ -793,7 +793,7 @@ def test_runtime_join_inference_fails_closed_when_an_edge_name_is_invalid(
     edges = [make_edge("left", "joined"), make_edge("right", "joined")]
 
     with patch("haute._execute_lazy.edge_input_name", side_effect=error):
-        demands = _runtime_join_demands(
+        demands = _runtime_lineage_demands(
             node,
             edges,
             [pl.LazyFrame({"x": [1]}), pl.LazyFrame({"y": [2]})],
@@ -825,7 +825,7 @@ def test_runtime_join_inference_fails_closed_on_duplicate_input_names() -> None:
     edges = [make_edge("left", "joined"), make_edge("right", "joined")]
 
     assert (
-        _runtime_join_demands(
+        _runtime_lineage_demands(
             node,
             edges,
             [pl.LazyFrame({"x": [1]}), pl.LazyFrame({"y": [2]})],
@@ -868,7 +868,7 @@ def test_runtime_join_inference_rejects_invalid_input_mapping(
     edges = [make_edge("left", "joined"), make_edge("right", "joined")]
 
     assert (
-        _runtime_join_demands(
+        _runtime_lineage_demands(
             node,
             edges,
             [pl.LazyFrame({"x": [1]}), pl.LazyFrame({"y": [2]})],
@@ -878,6 +878,52 @@ def test_runtime_join_inference_rejects_invalid_input_mapping(
         )
         == {}
     )
+
+
+def _selector_node(**config: object) -> GraphNode:
+    return GraphNode(
+        id="narrowed",
+        data=NodeData(
+            label="narrowed",
+            nodeType=NodeType.POLARS,
+            config={"code": "df = src.select(pl.exclude('unused'))", **config},
+        ),
+    )
+
+
+def _runtime_selector_demands_for(node: GraphNode) -> dict:
+    source = GraphNode(id="src", data=NodeData(label="src", nodeType=NodeType.DATA_INPUT))
+    return _runtime_lineage_demands(
+        node,
+        [make_edge("src", "narrowed")],
+        [pl.LazyFrame({"x": [1], "unused": [2]})],
+        {"x"},
+        {},
+        {"src": source, "narrowed": node},
+    )
+
+
+def test_runtime_selector_inference_resolves_a_selector_from_the_input_schema() -> None:
+    demands = _runtime_selector_demands_for(_selector_node(inputMapping={"rows": "src"}))
+
+    assert list(demands.values()) == [{"x"}]
+
+
+@pytest.mark.parametrize("error", [KeyError("source"), ValueError("port")])
+def test_runtime_selector_inference_fails_closed_when_the_edge_name_is_invalid(
+    error: Exception,
+) -> None:
+    with patch("haute._execute_lazy.edge_input_name", side_effect=error):
+        demands = _runtime_selector_demands_for(_selector_node())
+
+    assert demands == {}
+
+
+@pytest.mark.parametrize("input_mapping", [["rows"], {"": "src"}, {"rows": "missing"}])
+def test_runtime_selector_inference_rejects_invalid_input_mapping(
+    input_mapping: object,
+) -> None:
+    assert _runtime_selector_demands_for(_selector_node(inputMapping=input_mapping)) == {}
 
 
 def test_runtime_join_inference_maps_alias_demand_to_its_physical_edge() -> None:
@@ -899,7 +945,7 @@ def test_runtime_join_inference_maps_alias_demand_to_its_physical_edge() -> None
     )
     edges = [make_edge("left", "joined"), make_edge("right", "joined")]
 
-    demands = _runtime_join_demands(
+    demands = _runtime_lineage_demands(
         node,
         edges,
         [pl.LazyFrame({"x": [1], "unused": [2]}), pl.LazyFrame({"y": [3]})],
@@ -957,7 +1003,7 @@ def test_eager_runtime_partial_inference_keeps_unknown_edge_full_and_empty_edge_
         return node.id, retain_right, False
 
     monkeypatch.setattr(
-        "haute._execute_lazy._runtime_join_demands",
+        "haute._execute_lazy._runtime_lineage_demands",
         lambda *_args, **_kwargs: {
             projection_planner.ProjectionEdgeKey.from_edge(left_edge): set()
         },

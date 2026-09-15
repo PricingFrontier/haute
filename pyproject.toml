@@ -31,7 +31,7 @@ dependencies = [
     "uvicorn[standard]>=0.40.0,<0.41",
     "websockets>=16.0,<17",
     "pydantic>=2.12.5,<3",
-    "polars>=1.39.3,<2",
+    "polars>=1.44.2,<2",
     # Direct dependency, not just transitive: parquet metadata reads, the
     # parquet writer in _json_shred, the model scorer and _database_io all
     # import pyarrow themselves. Cap: pyarrow 25.0.0 segfaults in

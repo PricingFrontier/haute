@@ -158,7 +158,7 @@ class TestCsvLeg:
 
         overrides_spec = {n: dtype_to_spec(t) for n, t in df.schema.items()}
         # Both node read paths round-trip schema-strict INCLUDING the
-        # empty-string/null distinction at the pinned polars (1.39.3) —
+        # empty-string/null distinction at the pinned polars (1.44.2) —
         # stricter than the audit's 1.39.2 leg, which documented ''→null
         # conflation. Pinned exactly so any regression to conflation surfaces.
         back = _node_read("csv", p, mode="scan", schema_overrides=overrides_spec)

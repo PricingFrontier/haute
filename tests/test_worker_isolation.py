@@ -65,6 +65,12 @@ def _return_large_payload(size: int) -> bytes:
     return b"x" * size
 
 
+def _allocate_native_column(size_bytes: int) -> int:
+    import polars as pl
+
+    return pl.select(pl.int_range(0, size_bytes // 8, dtype=pl.Int64).alias("x")).height
+
+
 def _raise_value_error(message: str) -> None:
     raise ValueError(message)
 
@@ -1074,6 +1080,31 @@ def test_memory_limited_exitcode_classification_is_platform_independent() -> Non
     assert isolation_mod._exitcode_looks_memory_limited(-9, 10) is True
     assert isolation_mod._exitcode_looks_memory_limited(-int(signal.SIGABRT), 10) is True
     assert isolation_mod._exitcode_looks_memory_limited(-7, 10) is False
+    # Windows fail-fast (STATUS_STACK_BUFFER_OVERRUN): a refused native allocation.
+    assert isolation_mod._exitcode_looks_memory_limited(0xC0000409, 10) is True
+    assert isolation_mod._exitcode_looks_memory_limited(0xC0000409, None) is False
+    assert isolation_mod._exitcode_looks_memory_limited(3, 10) is False
+
+
+@pytest.mark.skipif(
+    not process_memory_caps_supported(),
+    reason="the refused-allocation crash needs a native per-worker memory cap",
+)
+def test_native_allocation_refused_by_the_worker_cap_is_a_memory_outcome() -> None:
+    """A native allocator the cap refuses aborts the child without a payload
+    (Linux ``SIGABRT``/``SIGKILL``, Windows fail-fast); the parent reports it
+    as a hedged memory outcome rather than a generic crash."""
+    with pytest.raises(IsolatedWorkerCrashedError) as exc_info:
+        run_isolated_worker(
+            _allocate_native_column,
+            1_600_000_000,
+            config=IsolatedWorkerConfig(
+                memory_limit_bytes=256 * 1024 * 1024,
+                require_memory_limit=True,
+            ),
+        )
+
+    assert exc_info.value.terminal_reason == "memory_limited"
 
 
 def test_worker_memory_enforcement_defaults_to_required(

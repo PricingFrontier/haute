@@ -11,6 +11,7 @@ from haute._builders import (
     _prepare_online_apply_frame,
     _select_optimiser_apply_input,
     _split_ratebook_level,
+    has_ratio_constraint,
 )
 from haute._logging import get_logger
 from haute._rating import (
@@ -171,7 +172,24 @@ def _explain_online(
         default="optimal_scenario_value",
     )
 
+    # The apply emits its id column as the literal ``quote_id`` whatever the
+    # artifact names the input column; a row that carries the artifact's
+    # column names the quote by it.
+    quote_id_value = output_row[qid_col] if qid_col in output_row else output_row.get("quote_id")
+    if quote_id_value is None:
+        raise OptimiserApplyTraceError(
+            "optimiserApply online trace could not resolve quote id from output row"
+        )
+    if not has_ratio_constraint(constraints):
+        # Sum constraints choose each quote independently, so only the clicked
+        # quote's scenarios are read. Ratio constraints linearise against the
+        # whole frame and keep every row.
+        parent_frame = parent_frame.filter(pl.col(qid_col).cast(pl.Utf8) == str(quote_id_value))
     df = _prepare_online_apply_frame(parent_frame, artifact)
+    if df.is_empty():
+        raise OptimiserApplyTraceError(
+            f"no optimiser candidates found for quote_id={quote_id_value!r}"
+        )
     applier = ApplyOptimiser(
         lambdas=lambdas,
         objective=objective_col,
@@ -181,12 +199,6 @@ def _explain_online(
         scenario_value=value_col,
     )
     explained = applier.with_explainer_columns(df)
-
-    quote_id_value = output_row.get(qid_col)
-    if quote_id_value is None:
-        raise OptimiserApplyTraceError(
-            "optimiserApply online trace could not resolve quote id from output row"
-        )
 
     quote_rows = explained.filter(pl.col(qid_col).cast(pl.Utf8) == str(quote_id_value)).sort(
         step_col

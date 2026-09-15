@@ -252,10 +252,14 @@ def test_horizontal_nan_matches_polars(expr_text: str, row: dict) -> None:
     _assert_matches_polars(expr_text, row)
 
 
-def test_max_horizontal_nan_propagates_regardless_of_order() -> None:
+def test_max_horizontal_ignores_nan_regardless_of_order() -> None:
     a = _trace_value('pl.max_horizontal(pl.col("a"), pl.col("b"))', {"a": 1.0, "b": float("nan")})
     b = _trace_value('pl.max_horizontal(pl.col("a"), pl.col("b"))', {"a": float("nan"), "b": 1.0})
-    assert math.isnan(a) and math.isnan(b)
+    assert a == 1.0 and b == 1.0
+    only_nan = _trace_value(
+        'pl.max_horizontal(pl.col("a"), pl.col("b"))', {"a": float("nan"), "b": None}
+    )
+    assert math.isnan(only_nan)
 
 
 def test_min_horizontal_ignores_nan() -> None:

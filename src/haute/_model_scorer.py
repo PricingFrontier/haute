@@ -730,7 +730,6 @@ def _score_eager_unified(
     when ``predict_proba`` is available; otherwise only the point
     prediction is written.
     """
-    from haute._mlflow_io import _prepare_predict_frame
     from haute._polars_utils import streaming_collect
 
     # An explicit offset (from the feature contract) is authoritative; only
@@ -756,6 +755,40 @@ def _score_eager_unified(
         )
         collect_lf = lf.select(ordered)
     frame = streaming_collect(collect_lf)
+    scored, generated_columns = _score_collected_frame(
+        model,
+        frame,
+        features,
+        cat_feature_names,
+        flavor,
+        task,
+        output_col,
+        categorical_levels=categorical_levels,
+        offset_column=offset_column,
+    )
+    return _project_scored_output(
+        scored.lazy(),
+        write_projection,
+        output_col=output_col,
+        generated_columns=generated_columns,
+    )
+
+
+def _score_collected_frame(
+    model: Any,
+    frame: pl.DataFrame,
+    features: list[str],
+    cat_feature_names: frozenset[str],
+    flavor: _ModelFlavor,
+    task: str,
+    output_col: str,
+    *,
+    categorical_levels: _CategoricalLevels,
+    offset_column: str | None,
+) -> tuple[pl.DataFrame, list[str]]:
+    """Validate and score one materialised frame; return it with predictions."""
+    from haute._mlflow_io import _prepare_predict_frame
+
     _validate_runtime_categorical_values(frame, categorical_levels or {})
     predict_features = _offset_predict_features(features, flavor, offset_column)
     x_data = _prepare_predict_frame(
@@ -773,7 +806,10 @@ def _score_eager_unified(
             offset_column,
         )
     preds = np.asarray(model.predict(x_data)).flatten()
-    prediction_columns = [pl.Series(output_col, preds)]
+    prediction = pl.Series(output_col, preds)
+    if task != "classification":
+        prediction = prediction.cast(pl.Float64)
+    prediction_columns = [prediction]
     generated_columns = [output_col]
     if task == "classification":
         probas = _predict_positive_proba(model, x_data, output_col)
@@ -781,12 +817,104 @@ def _score_eager_unified(
             proba_col = f"{output_col}_proba"
             prediction_columns.append(pl.Series(proba_col, probas))
             generated_columns.append(proba_col)
-    result_lf = frame.with_columns(prediction_columns).lazy()
+    return frame.with_columns(prediction_columns), generated_columns
+
+
+def _score_row_local_scan(
+    scoring_model: Any,
+    lf: pl.LazyFrame,
+    features: list[str],
+    output_col: str,
+    task: str,
+    *,
+    write_projection: ScoreWriteProjection | None,
+    categorical_levels: _CategoricalLevels,
+    offset_column: str | None,
+) -> pl.LazyFrame:
+    """Score through a row-local Python scan that Polars can push a limit into.
+
+    Scoring is row-local, so the scored frame is exposed as a Python scan: a
+    preview ``head(n)`` below which the limit is sound scores only ``n`` rows,
+    a downstream aggregation or filter still scores every row, and a read that
+    needs no prediction scores nothing. The scan's schema is fixed before any
+    row is scored by :func:`_resolve_score_dtypes`, and each scored batch is
+    cast to it.
+    """
+    from haute._polars_utils import row_local_python_scan
+
+    model = scoring_model.raw_model
+    flavor = cast(_ModelFlavor, scoring_model.flavor)
+    offset_column = (
+        offset_column if offset_column is not None else _model_offset_column(model, flavor)
+    )
+    schema = lf.collect_schema()
+    if offset_column:
+        _require_offset_column(schema.names(), offset_column)
+    input_lf = lf
+    input_columns = _score_input_projection_columns(
+        lf,
+        features,
+        write_projection,
+        offset_column=offset_column,
+    )
+    if input_columns is not None:
+        input_lf = lf.select(
+            _ordered_required_columns(
+                schema.names(),
+                input_columns,
+                context="model-score input projection",
+            )
+        )
+    input_schema = input_lf.collect_schema()
+    predict_features = _offset_predict_features(features, flavor, offset_column)
+    include_proba = task == "classification" and _raw_model_supports_predict_proba(scoring_model)
+    prediction_dtype, proba_dtype = _resolve_score_dtypes(
+        scoring_model,
+        task=task,
+        input_schema=input_schema,
+        features=features,
+        predict_features=predict_features,
+        output_col=output_col,
+        include_proba=include_proba,
+    )
+    output_dtypes: dict[str, pl.DataType | type[pl.DataType]] = {output_col: prediction_dtype}
+    if proba_dtype is not None:
+        output_dtypes[f"{output_col}_proba"] = proba_dtype
+    output_schema = pl.Schema({**input_schema, **output_dtypes})
+
+    def score_batch(frame: pl.DataFrame) -> pl.DataFrame:
+        scored, _generated = _score_collected_frame(
+            model,
+            frame,
+            features,
+            scoring_model.cat_feature_names,
+            flavor,
+            task,
+            output_col,
+            categorical_levels=categorical_levels,
+            offset_column=offset_column,
+        )
+        return scored.with_columns(
+            pl.col(name).cast(dtype, strict=True) for name, dtype in output_dtypes.items()
+        )
+
+    required_input_columns = set(predict_features)
+    if offset_column:
+        required_input_columns.add(offset_column)
     return _project_scored_output(
-        result_lf,
+        row_local_python_scan(
+            input_lf,
+            score_batch,
+            schema=output_schema,
+            input_schema=input_schema,
+            generated_columns=tuple(output_dtypes),
+            required_input_columns=required_input_columns,
+            input_predicates_allowed=True,
+            elide_transform_when_unused=True,
+        ),
         write_projection,
         output_col=output_col,
-        generated_columns=generated_columns,
+        generated_columns=list(output_dtypes),
     )
 
 
@@ -1109,7 +1237,18 @@ def _run_score_pipeline(
             task=task,
         )
 
-    if source == "live" or row_limit:
+    if row_limit:
+        result_lf = _score_row_local_scan(
+            scoring_model,
+            lf,
+            features,
+            output_col,
+            task,
+            write_projection=write_projection,
+            categorical_levels=normalised_levels,
+            offset_column=resolved_offset,
+        )
+    elif source == "live":
         eager_lf = lf
         if normalised_levels:
             # Materialise ONCE so domain validation inspects the exact rows
@@ -1541,7 +1680,7 @@ def _sink_to_temp(
     return path
 
 
-def _declared_empty_score_dtypes(
+def _declared_score_dtypes(
     *,
     scoring_model: Any,
     flavor: _ModelFlavor,
@@ -1554,20 +1693,68 @@ def _declared_empty_score_dtypes(
     ]
     | None
 ):
-    """Return task/flavor output dtypes when the scoring contract fixes them."""
+    """Return output dtypes when the scoring contract fixes them.
+
+    Regression predictions are ``Float64`` for every flavor. CatBoost
+    classification declares its labels through ``classes_``. Any other
+    classifier must be probed.
+    """
+    proba_dtype = pl.Float64 if include_proba else None
+    if task != "classification":
+        return pl.Float64, proba_dtype
     if flavor != "catboost":
         return None
-    prediction_dtype: pl.DataType | type[pl.DataType]
-    if task == "classification":
-        raw_model = getattr(scoring_model, "raw_model", scoring_model)
-        classes = getattr(raw_model, "classes_", None)
-        if classes is None or len(classes) == 0:
-            raise ValueError("CatBoost classification model has no classes_ for empty-score schema")
-        prediction_dtype = pl.Series("prediction", classes).dtype
-    else:
-        prediction_dtype = pl.Float64
-    proba_dtype = pl.Float64 if include_proba else None
-    return prediction_dtype, proba_dtype
+    raw_model = getattr(scoring_model, "raw_model", scoring_model)
+    classes = getattr(raw_model, "classes_", None)
+    if classes is None or len(classes) == 0:
+        raise ValueError("CatBoost classification model has no classes_ for its score schema")
+    return pl.Series("prediction", classes).dtype, proba_dtype
+
+
+def _resolve_score_dtypes(
+    scoring_model: Any,
+    *,
+    task: str,
+    input_schema: Mapping[str, pl.DataType],
+    features: list[str],
+    predict_features: list[str],
+    output_col: str,
+    include_proba: bool,
+) -> tuple[pl.DataType | type[pl.DataType], pl.DataType | type[pl.DataType] | None]:
+    """Return prediction and probability dtypes before any row is scored.
+
+    Declared contracts win, and every CatBoost model and every regressor has
+    one. Any other classifier is scored once on an all-null, schema-shaped row
+    so its output dtype is learned rather than guessed.
+    """
+    from haute._mlflow_io import _positive_class_proba_vector, _prepare_predict_frame
+
+    flavor = cast(_ModelFlavor, scoring_model.flavor)
+    declared = _declared_score_dtypes(
+        scoring_model=scoring_model,
+        flavor=flavor,
+        task=task,
+        include_proba=include_proba,
+    )
+    if declared is not None:
+        return declared
+    probe = pl.DataFrame(
+        {
+            name: pl.Series([None], dtype=input_schema.get(name, pl.Float64))
+            for name in dict.fromkeys([*predict_features, *features])
+        }
+    )
+    probe_x: Any = _prepare_predict_frame(
+        probe.select(predict_features),
+        predict_features,
+        cat_feature_names=scoring_model.cat_feature_names,
+        flavor=flavor,
+    )
+    prediction_dtype = pl.Series(output_col, scoring_model.predict(probe_x)).dtype
+    if not include_proba:
+        return prediction_dtype, None
+    proba_vector = _positive_class_proba_vector(scoring_model.predict_proba(probe_x), output_col)
+    return prediction_dtype, pl.Series(f"{output_col}_proba", proba_vector).dtype
 
 
 def _batch_score_to_parquet(
@@ -1588,7 +1775,6 @@ def _batch_score_to_parquet(
 
     from haute._mlflow_io import (
         _append_classification_proba,
-        _positive_class_proba_vector,
         _prepare_predict_frame,
     )
 
@@ -1642,10 +1828,10 @@ def _batch_score_to_parquet(
                     scoring_model.cat_feature_names,
                     offset_column,
                 )
-            preds = scoring_model.predict(x_data)
-            chunk = chunk.with_columns(
-                pl.Series(output_col, preds),
-            )
+            preds = pl.Series(output_col, scoring_model.predict(x_data))
+            if not want_proba:
+                preds = preds.cast(pl.Float64)
+            chunk = chunk.with_columns(preds)
             if want_proba:
                 chunk = _append_classification_proba(
                     chunk,
@@ -1686,64 +1872,22 @@ def _batch_score_to_parquet(
             # flavors still use a schema-shaped probe so their output dtype is
             # learned rather than guessed.
             input_schema = pl.read_parquet_schema(input_path)
-            declared_dtypes = _declared_empty_score_dtypes(
-                scoring_model=scoring_model,
-                flavor=scoring_model.flavor,
+            prediction_dtype, proba_dtype = _resolve_score_dtypes(
+                scoring_model,
                 task=task,
+                input_schema=input_schema,
+                features=features,
+                predict_features=predict_features,
+                output_col=output_col,
                 include_proba=can_predict_proba,
             )
-            probe_x: Any | None = None
-            prediction_dtype: pl.DataType | type[pl.DataType]
-            declared_proba_dtype: pl.DataType | type[pl.DataType] | None
-            if declared_dtypes is None:
-                probe = pl.DataFrame(
-                    {
-                        c: pl.Series([None], dtype=input_schema.get(c, pl.Float64))
-                        for c in input_schema_names
-                    }
-                )
-                probe_x = _prepare_predict_frame(
-                    probe.select(predict_features),
-                    predict_features,
-                    cat_feature_names=scoring_model.cat_feature_names,
-                    flavor=scoring_model.flavor,
-                )
-            if declared_dtypes is None and offset_column and scoring_model.flavor == "catboost":
-                # Dtype probe only: a null baseline would make CatBoost
-                # reject the Pool, so probe at the unit raw-score offset 0.
-                from catboost import Pool
-
-                cat_indices = [
-                    i for i, f in enumerate(features) if f in scoring_model.cat_feature_names
-                ]
-                probe_x = Pool(
-                    data=probe_x,
-                    cat_features=cat_indices if cat_indices else None,
-                    baseline=np.zeros(1),
-                )
-            if declared_dtypes is None:
-                prediction_dtype = pl.Series(
-                    output_col,
-                    scoring_model.predict(probe_x),
-                ).dtype
-                declared_proba_dtype = None
-            else:
-                prediction_dtype, declared_proba_dtype = declared_dtypes
             empty = pl.DataFrame(
                 {
                     c: pl.Series([], dtype=input_schema.get(c, pl.Float64))
                     for c in input_schema_names
                 }
             ).with_columns(pl.Series(output_col, [], dtype=prediction_dtype))
-            if can_predict_proba:
-                proba_dtype: pl.DataType | type[pl.DataType]
-                if declared_proba_dtype is None:
-                    proba_vector = _positive_class_proba_vector(
-                        scoring_model.predict_proba(probe_x), output_col
-                    )
-                    proba_dtype = pl.Series(f"{output_col}_proba", proba_vector).dtype
-                else:
-                    proba_dtype = declared_proba_dtype
+            if proba_dtype is not None:
                 empty = empty.with_columns(pl.Series(f"{output_col}_proba", [], dtype=proba_dtype))
             empty = _apply_score_write_projection(
                 empty,

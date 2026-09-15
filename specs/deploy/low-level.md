@@ -345,7 +345,7 @@ new experiment's missing Databricks workspace folder is created first (see
 [modelling](../modelling/low-level.md)), and inside one
 `mlflow.start_run()` logs `HauteModel` as a `pyfunc` model-from-code with the manifest +
 every bundled artefact attached, a `conda_env` with Python 3.11.11 and Haute exactly
-pinned but `polars>=1.39.2` and optional `catboost>=1.2.8` as lower bounds, and
+pinned but `polars>=1.44.2` (Haute's own Polars floor) and optional `catboost>=1.2.8` as lower bounds, and
 `registered_model_name` set to the UC
 three-level name. Fetches the newly registered version, then creates or updates the
 Databricks Model Serving endpoint (`_create_or_update_serving_endpoint`) if

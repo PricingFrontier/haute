@@ -1,5 +1,5 @@
 {
-  "polars_version": "1.39.3",
+  "polars_version": "1.44.2",
   "shapes": [
     {
       "cardinality": "cardinality_proven",
@@ -358,7 +358,7 @@
       "lineage": "lineage_proven",
       "namespace": null,
       "operation": "shift",
-      "policy": "streaming",
+      "policy": "materialisation_boundary",
       "receiver": "frame",
       "strategy": {
         "reason_code": "materialisation_admitted",
@@ -1231,15 +1231,14 @@
     {
       "cardinality": "cardinality_proven",
       "chunk": {
-        "blocking_operator": "pl.all",
-        "eligible": false,
-        "reason": "unsupported_polars_function"
+        "eligible": true,
+        "reason": "eligible"
       },
       "class": "opaque",
       "code": "df = df.select(pl.all())",
       "expansion": "none",
       "id": "fn_all_selector",
-      "lineage": "dynamic_select",
+      "lineage": "lineage_proven",
       "namespace": null,
       "operation": "all",
       "policy": "opaque",
