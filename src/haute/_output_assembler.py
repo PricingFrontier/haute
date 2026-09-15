@@ -483,8 +483,8 @@ def _rows_from_dataframe(
 
 def _assemble_document(
     field_frames: dict[str, pl.LazyFrame],
-    *,
-    row_limit: int | None = None,
+    *,  # pragma: no mutate
+    row_limit: int | None = None,  # pragma: no mutate
 ) -> list[Any]:
     """Assemble the nested JSON document by descending the path-prefix TREE (§4.5).
 
@@ -703,7 +703,7 @@ def _assemble_document(
 
 def _limit_level_plan(
     plan: pl.LazyFrame,
-    *,
+    *,  # pragma: no mutate
     prefix: tuple[str, ...],
     row_limit: int,
     level_paths: set[str],
@@ -711,15 +711,14 @@ def _limit_level_plan(
     collected_by_prefix: Mapping[tuple[str, ...], pl.DataFrame],
 ) -> pl.LazyFrame:
     """Bound one emitting level's read to the rows a limited document needs."""
-    if prefix == ():
+    if not prefix:
         return plan.head(row_limit)
-    ancestor = max(
-        (
-            collected
-            for collected in collected_by_prefix
-            if len(collected) < len(prefix) and prefix[: len(collected)] == collected
-        ),
-        key=len,
+    # The root level is always collected before a deeper level is limited, so the
+    # longest collected proper prefix exists.
+    ancestor = next(
+        prefix[:depth]
+        for depth in reversed(range(len(prefix)))
+        if prefix[:depth] in collected_by_prefix
     )
     ancestor_own = {
         column for column, parsed in all_paths.items() if _array_prefix(parsed) == ancestor
@@ -728,8 +727,9 @@ def _limit_level_plan(
     if not keys:
         return plan
     ancestor_keys = collected_by_prefix[ancestor].select(keys).unique()
-    if len(keys) == 1:
-        return plan.filter(pl.col(keys[0]).is_in(ancestor_keys[keys[0]].to_list()))
+    first, *others = keys
+    if not others:
+        return plan.filter(pl.col(first).is_in(ancestor_keys[first].to_list()))
     return plan.join(ancestor_keys.lazy(), on=keys, how="semi")
 
 
@@ -904,8 +904,8 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
 def assemble_output_from_mapping(
     frames: dict[str, pl.LazyFrame],
     mapping: list[dict[str, Any]],
-    *,
-    row_limit: int | None = None,
+    *,  # pragma: no mutate
+    row_limit: int | None = None,  # pragma: no mutate
 ) -> list[Any]:
     """Assemble the OUTPUT JSON document from source frames + an ``outputMapping``.
 

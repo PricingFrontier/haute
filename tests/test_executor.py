@@ -1324,7 +1324,11 @@ class TestTargetPreviewRowLimit:
         assert [row["x"] for row in results["src"].preview] == [0, 1, 2]
         assert [row["x"] for row in results["kept"].preview] == [50, 51, 52]
 
-    def test_invalid_node_row_limits_are_rejected(self, tmp_path):
+    @pytest.mark.parametrize(
+        ("row_limits_by_node", "message"),
+        [({"src": 0}, "positive integers"), ({"": 1}, "must be node ids")],
+    )
+    def test_invalid_node_row_limits_are_rejected(self, tmp_path, row_limits_by_node, message):
         from haute._execute_lazy import _execute_eager_core
         from haute.executor import _build_node_fn
 
@@ -1332,12 +1336,12 @@ class TestTargetPreviewRowLimit:
         pl.DataFrame({"x": [1]}).write_parquet(path)
         graph = _g({"nodes": [_ready_source_node("src", str(path))], "edges": []})
 
-        with pytest.raises(ValueError, match="positive integers"):
+        with pytest.raises(ValueError, match=message):
             _execute_eager_core(
                 graph,
                 _build_node_fn,
                 target_node_id="src",
-                row_limits_by_node={"src": 0},
+                row_limits_by_node=row_limits_by_node,
             )
 
 

@@ -26,6 +26,7 @@ from haute._polars_utils import (
     cancellable_streaming_collect,
     execution_collect,
     is_bounded_execution_profile,
+    key_prefix_python_scan,
     limited_python_scan,
     normalise_execution_profile,
     read_parquet_metadata,
@@ -1458,3 +1459,86 @@ class TestRowLocalPythonScan:
                 input_predicates_allowed=False,
                 elide_transform_when_unused=False,
             )
+
+    @pytest.mark.parametrize("input_predicates_allowed", [True, False])
+    def test_a_predicate_the_input_cannot_evaluate_filters_transformed_rows(
+        self, input_predicates_allowed: bool
+    ) -> None:
+        seen: list[pl.DataFrame] = []
+        frame = pl.DataFrame({"x": [1, 2, 3], "key": ["a", "b", "c"]})
+        scan = self._doubling_scan(
+            frame,
+            seen,
+            input_predicates_allowed=input_predicates_allowed,
+            elide_transform_when_unused=False,
+        )
+        # A generated column cannot filter the input; a refused input predicate
+        # must not hide rows from a transform that validates them.
+        predicate = pl.col("pred") > 2 if input_predicates_allowed else pl.col("x") > 1
+
+        result = scan.filter(predicate).select("key").collect()
+
+        assert result["key"].to_list() == ["b", "c"]
+        assert sum(batch.height for batch in seen) == 3
+
+    def test_limited_scan_caps_filters_and_projects_what_the_source_produces(self) -> None:
+        frame = pl.DataFrame(
+            {"x": [3, 1, 4, 1, 5], "key": ["c", "a", "b", "d", "e"], "extra": [0] * 5}
+        )
+        requested: list[int | None] = []
+
+        def produce(n_rows: int | None) -> pl.DataFrame:
+            requested.append(n_rows)
+            # Returning every row even under a limit: the scan still caps it.
+            return frame
+
+        scan = limited_python_scan(produce, schema=frame.schema)
+
+        assert_frame_equal(scan.head(2).collect(), frame.head(2))
+        assert requested == [2]
+        assert_frame_equal(
+            scan.filter(pl.col("x") > 1).select("key").collect(),
+            frame.filter(pl.col("x") > 1).select("key"),
+        )
+
+    def test_key_prefix_scan_applies_only_to_the_first_keys_rows(self) -> None:
+        input_lf = pl.LazyFrame({"k": ["b", "a", "b", None, "c"], "v": [1, 2, 3, 4, 5]})
+        applied_rows: list[int] = []
+
+        def apply(rows: pl.LazyFrame) -> pl.DataFrame:
+            collected = rows.collect()
+            applied_rows.append(collected.height)
+            return collected.drop_nulls("k").group_by("k").agg(pl.col("v").sum()).sort("k")
+
+        scan = key_prefix_python_scan(
+            input_lf, apply, schema=pl.Schema({"k": pl.String, "v": pl.Int64}), key_column="k"
+        )
+
+        assert scan.head(2).collect().to_dicts() == [{"k": "a", "v": 2}, {"k": "b", "v": 4}]
+        assert applied_rows == [3]
+
+    def test_key_prefix_scan_without_keys_is_empty_and_applies_nothing(self) -> None:
+        applied: list[pl.LazyFrame] = []
+        schema = pl.Schema({"k": pl.String, "v": pl.Int64})
+
+        scan = key_prefix_python_scan(
+            pl.LazyFrame({"k": [None], "v": [1]}, schema=schema),
+            lambda rows: applied.append(rows) or pl.DataFrame(schema=schema),
+            schema=schema,
+            key_column="k",
+        )
+
+        assert_frame_equal(scan.head(1).collect(), pl.DataFrame(schema=schema))
+        assert applied == []
+
+    def test_the_parked_failure_registry_evicts_its_oldest_failure(self) -> None:
+        from haute import _polars_utils
+
+        oldest = _polars_utils._park_python_scan_failure(ValueError("oldest"))
+        newest = oldest
+        for index in range(_polars_utils._PYTHON_SCAN_FAILURE_LIMIT):
+            newest = _polars_utils._park_python_scan_failure(ValueError(f"failure {index}"))
+
+        _polars_utils._reraise_python_scan_failure(pl.exceptions.ComputeError(oldest))
+        with pytest.raises(ValueError, match="failure 63"):
+            _polars_utils._reraise_python_scan_failure(pl.exceptions.ComputeError(newest))

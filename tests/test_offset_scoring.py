@@ -644,7 +644,8 @@ class TestPyfuncScorerOffset:
         expected = df["age"].to_numpy() * 0.1 * df["exposure"].to_numpy()
         np.testing.assert_allclose(scored, expected, rtol=1e-10)
 
-    def test_missing_offset_fails_loud(self) -> None:
+    @pytest.mark.parametrize("row_limit", [None, 2])
+    def test_missing_offset_fails_loud(self, row_limit: int | None) -> None:
         from haute._model_scorer import _run_score_pipeline
 
         df = self._frame().drop("exposure")
@@ -654,7 +655,35 @@ class TestPyfuncScorerOffset:
                 df.lazy(),
                 task="regression",
                 output_col="prediction",
+                row_limit=row_limit,
             ).collect()
+
+    @pytest.mark.parametrize(
+        "required_output_columns", [None, frozenset({"prediction"})], ids=["all", "narrow"]
+    )
+    def test_limited_preview_scores_with_the_offset(
+        self, required_output_columns: frozenset[str] | None
+    ) -> None:
+        from haute._model_scorer import _run_score_pipeline
+
+        df = self._frame().with_columns(unused=pl.lit("x"))
+        scored = (
+            _run_score_pipeline(
+                self._model(),
+                df.lazy(),
+                task="regression",
+                output_col="prediction",
+                row_limit=2,
+                required_output_columns=required_output_columns,
+            )
+            .head(2)
+            .collect()
+        )
+
+        expected = (df["age"].to_numpy() * 0.1 * df["exposure"].to_numpy())[:2]
+        np.testing.assert_allclose(scored["prediction"].to_numpy(), expected, rtol=1e-10)
+        if required_output_columns is not None:
+            assert scored.columns == ["prediction"]
 
     def test_contract_offset_overrides_when_model_cannot_self_describe(self) -> None:
         """When the model carries no offset but the caller passes one (the

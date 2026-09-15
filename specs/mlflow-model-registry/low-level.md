@@ -900,7 +900,8 @@ to a live MLflow tracking server.
   (including the last-entry-cache-cleared regression test and a
   registered-temp-cleanup-callback test), `_run_score_pipeline`, and
   `TestFeatureMismatchTypeOverflow` plus the flavor-SSOT-derivation unit
-  test. `TestRowLocalScanScoring` scores a real CatBoost model through the scan:
+  test. `TestScoreDtypeResolution` learns an undeclared classifier's dtypes from one
+  all-null row and raises for a CatBoost classifier without `classes_`. `TestRowLocalScanScoring` scores a real CatBoost model through the scan:
   a limit predicts only the limited rows, an aggregation predicts every row, a
   projection without the prediction predicts nothing, predictions and dtypes
   match eager scoring for regression and classification, and an undeclared

@@ -874,7 +874,6 @@ def _score_row_local_scan(
         input_schema=input_schema,
         features=features,
         predict_features=predict_features,
-        offset_column=offset_column,
         output_col=output_col,
         include_proba=include_proba,
     )
@@ -1719,15 +1718,14 @@ def _resolve_score_dtypes(
     input_schema: Mapping[str, pl.DataType],
     features: list[str],
     predict_features: list[str],
-    offset_column: str | None,
     output_col: str,
     include_proba: bool,
 ) -> tuple[pl.DataType | type[pl.DataType], pl.DataType | type[pl.DataType] | None]:
     """Return prediction and probability dtypes before any row is scored.
 
-    Declared contracts win. A classifier without one is scored once on an
-    all-null, schema-shaped row so its output dtype is learned rather than
-    guessed; the probe asks CatBoost for no categorical row.
+    Declared contracts win, and every CatBoost model and every regressor has
+    one. Any other classifier is scored once on an all-null, schema-shaped row
+    so its output dtype is learned rather than guessed.
     """
     from haute._mlflow_io import _positive_class_proba_vector, _prepare_predict_frame
 
@@ -1752,17 +1750,6 @@ def _resolve_score_dtypes(
         cat_feature_names=scoring_model.cat_feature_names,
         flavor=flavor,
     )
-    if offset_column and flavor == "catboost":
-        # Dtype probe only: a null baseline would make CatBoost reject the
-        # Pool, so probe at the unit raw-score offset 0.
-        from catboost import Pool
-
-        cat_indices = [i for i, f in enumerate(features) if f in scoring_model.cat_feature_names]
-        probe_x = Pool(
-            data=probe_x,
-            cat_features=cat_indices if cat_indices else None,
-            baseline=np.zeros(1),
-        )
     prediction_dtype = pl.Series(output_col, scoring_model.predict(probe_x)).dtype
     if not include_proba:
         return prediction_dtype, None
@@ -1891,7 +1878,6 @@ def _batch_score_to_parquet(
                 input_schema=input_schema,
                 features=features,
                 predict_features=predict_features,
-                offset_column=offset_column,
                 output_col=output_col,
                 include_proba=can_predict_proba,
             )

@@ -29,6 +29,7 @@ from haute._output_assembler import (
     _execute_plan,
     _gyo_residue,
     _index_rows,
+    _limit_level_plan,
     _merge_groups,
     _OutputAssemblyProgress,
     _parse_output_path,
@@ -1626,3 +1627,83 @@ def test_limited_assembly_collapses_duplicate_root_rows() -> None:
     field_frames = {"root": pl.LazyFrame({"$[:].id": ["A", "A", "B"]})}
 
     assert _assemble_document(field_frames, row_limit=2) == [{"id": "A"}]
+
+
+def _limited_level(
+    plan: pl.LazyFrame,
+    *,
+    level_paths: set[str],
+    collected_by_prefix: dict[tuple[str, ...], pl.DataFrame],
+) -> pl.LazyFrame:
+    paths = set(level_paths).union(*(frame.columns for frame in collected_by_prefix.values()))
+    return _limit_level_plan(
+        plan,
+        prefix=("a", "b"),
+        row_limit=1,
+        level_paths=level_paths,
+        all_paths={path: _parse_output_path(path) for path in paths},
+        collected_by_prefix=collected_by_prefix,
+    )
+
+
+def test_limited_level_filters_on_its_nearest_collected_ancestors_own_key() -> None:
+    # The level carries the root key too, but only the nearest collected
+    # ancestor's own key filters it, as one pushed-down ``is_in`` predicate.
+    level = pl.LazyFrame(
+        {
+            "$[:].id": [1, 1, 2],
+            "$[:].a[:].k": ["k1", "k2", "k1"],
+            "$[:].a[:].b[:].v": [10, 20, 30],
+        }
+    )
+
+    limited = _limited_level(
+        level,
+        level_paths=set(level.collect_schema().names()),
+        collected_by_prefix={
+            (): pl.DataFrame({"$[:].id": [1]}),
+            ("a",): pl.DataFrame({"$[:].id": [1], "$[:].a[:].k": ["k1"]}),
+        },
+    )
+
+    assert limited.collect()["$[:].a[:].b[:].v"].to_list() == [10, 30]
+    plan = limited.explain()
+    assert "is_in" in plan
+    assert "SEMI" not in plan.upper()
+
+
+def test_limited_level_semi_joins_on_every_own_key_of_its_ancestor() -> None:
+    level = pl.LazyFrame(
+        {
+            "$[:].a[:].k1": [1, 1, 2, 3],
+            "$[:].a[:].k2": ["x", "y", "y", "x"],
+            "$[:].a[:].b[:].v": [10, 20, 30, 40],
+        }
+    )
+
+    limited = _limited_level(
+        level,
+        level_paths=set(level.collect_schema().names()),
+        collected_by_prefix={
+            (): pl.DataFrame({"$[:].id": [7]}),
+            ("a",): pl.DataFrame({"$[:].a[:].k1": [1, 2], "$[:].a[:].k2": ["x", "y"]}),
+        },
+    )
+
+    assert sorted(limited.collect()["$[:].a[:].b[:].v"].to_list()) == [10, 30]
+    assert "SEMI" in limited.explain().upper()
+
+
+def test_limited_level_without_ancestor_keys_reads_every_row() -> None:
+    level = pl.LazyFrame({"$[:].a[:].b[:].v": [10, 20]})
+
+    limited = _limited_level(
+        level,
+        level_paths={"$[:].a[:].b[:].v"},
+        collected_by_prefix={
+            (): pl.DataFrame({"$[:].id": [1]}),
+            ("a",): pl.DataFrame({"$[:].a[:].k": ["k1"]}),
+        },
+    )
+
+    assert limited is level

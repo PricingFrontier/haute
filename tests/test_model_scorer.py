@@ -35,6 +35,7 @@ from haute._model_scorer import (
     _clear_feature_validation_cache,
     _format_feature_mismatch,
     _register_temp_cleanup,
+    _resolve_score_dtypes,
     _run_score_pipeline,
     _sink_to_temp,
     _validate_features,
@@ -273,6 +274,24 @@ class TestModelScorerScore:
         assert isinstance(result, pl.LazyFrame)
         collected = result.collect()
         assert "prediction" in collected.columns
+
+    @patch("haute._mlflow_io._score_eager")
+    @patch("haute._mlflow_io.load_mlflow_model")
+    def test_named_frames_score_the_first_declared_source(self, mock_load, mock_score_eager):
+        mock_load.return_value = _make_scoring_model()
+        mock_score_eager.side_effect = lambda _model, lf, *_args, **_kwargs: lf.with_columns(
+            prediction=pl.lit(0.5)
+        )
+        scorer = ModelScorer(
+            source_type="run", run_id="abc", source="live", source_names=["quotes", "rates"]
+        )
+        quotes = pl.DataFrame({"a": [1], "b": [2]}).lazy()
+        rates = pl.DataFrame({"a": [9], "b": [9]}).lazy()
+
+        result = scorer.score(rates=rates, quotes=quotes).collect()
+
+        assert mock_score_eager.call_args.args[1] is quotes
+        assert result.to_dicts() == [{"a": 1, "b": 2, "prediction": 0.5}]
 
     @patch("haute._model_scorer._score_batched_standalone")
     @patch("haute._mlflow_io.load_mlflow_model")
@@ -742,6 +761,36 @@ class TestBatchScoreToParquet:
                 "regression",
             )
 
+        assert created_paths
+        assert all(not Path(path).exists() for path in created_paths)
+
+    def test_failure_after_a_written_batch_closes_and_removes_the_output(
+        self, tmp_path, monkeypatch
+    ):
+        import tempfile
+
+        import haute._model_scorer as model_scorer
+
+        input_path = str(tmp_path / "input.parquet")
+        pl.DataFrame({"a": [1.0, 2.0]}).write_parquet(input_path)
+        sm = _make_scoring_model(feature_names=["a"])
+        sm._model.predict.side_effect = [np.array([0.5]), RuntimeError("second batch")]
+        created_paths: list[str] = []
+        real_mkstemp = tempfile.mkstemp
+
+        def tracked_mkstemp(*args, **kwargs):
+            kwargs["dir"] = tmp_path
+            fd, path = real_mkstemp(*args, **kwargs)
+            created_paths.append(path)
+            return fd, path
+
+        monkeypatch.setattr(tempfile, "mkstemp", tracked_mkstemp)
+        monkeypatch.setattr(model_scorer, "_SCORE_BATCH_SIZE", 1)
+
+        with pytest.raises(RuntimeError, match="second batch"):
+            _batch_score_to_parquet(sm, input_path, ["a"], "pred", "regression")
+
+        assert sm._model.predict.call_count == 2
         assert created_paths
         assert all(not Path(path).exists() for path in created_paths)
 
@@ -1743,6 +1792,48 @@ class TestBatchScoreToParquetEmptyDtype:
         assert empty_dtype == nonempty_dtype
 
 
+class TestScoreDtypeResolution:
+    """Output dtypes are fixed before any row is scored."""
+
+    @staticmethod
+    def _resolve(scoring_model: ScoringModel, *, include_proba: bool) -> tuple[Any, Any]:
+        return _resolve_score_dtypes(
+            scoring_model,
+            task="classification",
+            input_schema={"a": pl.Float64(), "b": pl.String()},
+            features=["a", "b"],
+            predict_features=["a", "b"],
+            output_col="pred",
+            include_proba=include_proba,
+        )
+
+    @pytest.mark.parametrize("include_proba", [True, False])
+    def test_a_classifier_without_declared_dtypes_learns_them_from_one_null_row(
+        self, include_proba: bool
+    ) -> None:
+        model = MagicMock()
+        model.predict.return_value = np.array(["decline"])
+        model.predict_proba.return_value = np.array([[0.4, 0.6]])
+        scoring_model = ScoringModel(model=model, feature_names=["a", "b"], flavor="rustystats")
+
+        dtypes = self._resolve(scoring_model, include_proba=include_proba)
+
+        assert dtypes == (pl.String, pl.Float64 if include_proba else None)
+        probe = model.predict.call_args.args[0]
+        assert probe.to_dicts() == [{"a": None, "b": None}]
+        assert model.predict_proba.called is include_proba
+
+    def test_a_catboost_classifier_without_classes_raises_instead_of_probing(self) -> None:
+        model = _make_mock_model(["a", "b"])
+        model.classes_ = np.array([])
+        scoring_model = ScoringModel(model=model, feature_names=["a", "b"], flavor="catboost")
+
+        with pytest.raises(ValueError, match="no classes_"):
+            self._resolve(scoring_model, include_proba=False)
+
+        model.predict.assert_not_called()
+
+
 class TestRowLocalScanScoring:
     """Limited scoring predicts only what Polars reads, matching eager scoring."""
 
@@ -1787,6 +1878,20 @@ class TestRowLocalScanScoring:
         return _run_score_pipeline(
             scoring_model, lf, task=task, output_col="pred", source="batch", row_limit=10
         )
+
+    def test_limited_scoring_requires_the_contract_offset_column(self) -> None:
+        scoring_model = ScoringModel(_make_mock_model(["a", "b"]), ["a", "b"], flavor="catboost")
+
+        with pytest.raises(FeatureMismatchError, match="exposure"):
+            _run_score_pipeline(
+                scoring_model,
+                self._frame(3),
+                task="regression",
+                output_col="pred",
+                source="batch",
+                row_limit=10,
+                offset_column="exposure",
+            )
 
     def test_limit_reaching_the_scorer_predicts_only_limited_rows(
         self, monkeypatch: pytest.MonkeyPatch

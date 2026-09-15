@@ -949,7 +949,9 @@ V2 schema codec and OUTPUT shape:
   incomplete editor rows, multi-frame relation keys absent from a
   non-participating frame, and limited assembly (the first documents read only
   their own children's rows, limited multi-port levels emit unlimited documents,
-  a synthesised root is complete, duplicate root rows collapse);
+  a synthesised root is complete, duplicate root rows collapse, and a limited level
+  filters on its nearest collected ancestor's own key with `is_in`, semi-joins on
+  several, and reads every row when it carries none);
   `tests/test_output_nest_example_contract.py`
   pins the fixture-level nested-document contract, while
   `tests/test_executor_builders.py` and `tests/test_codegen_builders.py` own the

@@ -226,6 +226,27 @@ def test_eager_classification_projection_preserves_required_existing_proba() -> 
     assert result["prediction"].to_list() == [0, 1]
 
 
+def test_eager_classification_projection_without_proba_keeps_only_the_prediction() -> None:
+    raw_model = MagicMock(spec=["predict"])
+    raw_model.predict.return_value = np.asarray([0, 1], dtype=np.int64)
+    input_frame = pl.DataFrame({"feature": [1.0, 2.0], "unused": [10, 20]})
+
+    result = score_frame(
+        model=raw_model,
+        lf=input_frame.lazy(),
+        features=["feature"],
+        cat_feature_names=frozenset(),
+        flavor="pyfunc",
+        task="classification",
+        output_col="prediction",
+        batch=False,
+        required_output_columns=frozenset({"prediction"}),
+    ).collect()
+
+    assert result.columns == ["prediction"]
+    assert result["prediction"].to_list() == [0, 1]
+
+
 def _poisoned_column_lazy(base: pl.DataFrame, column: str, message: str) -> pl.LazyFrame:
     """Append a column whose computation raises if it is ever materialised."""
     return base.lazy().with_columns(

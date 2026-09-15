@@ -967,10 +967,11 @@ def _selector_naming(expression: ast.AST, aliases: frozenset[str]) -> _SelectorN
             current = receiver
         elif isinstance(current, ast.BinOp):
             current = current.left
-        elif isinstance(current, ast.UnaryOp):
-            current = current.operand
         else:
-            return None
+            # ``selector_root`` reached the root only through receivers, left
+            # operands, and unary operands, so this step is a unary operand.
+            assert isinstance(current, ast.UnaryOp)
+            current = current.operand
     return _SelectorNaming(selector, root, inner, alias, prefix, suffix)
 
 

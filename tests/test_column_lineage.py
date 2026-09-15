@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 
 import polars as pl
+import polars.selectors as cs
 import pytest
 from polars.expr.datetime import ExprDateTimeNameSpace
 from polars.expr.string import ExprStringNameSpace
@@ -2388,6 +2389,24 @@ def test_cardinality_rejects_a_computed_column_selector() -> None:
         ),
         ("df = src.rename({'x': 'z'})", ("src",), {"x", "z"}, {}, None),
         ("df = src.with_row_index('row')", ("src",), {"row"}, {}, None),
+        ("df = src.with_row_index(name='row', offset=1)", ("src",), {"row"}, {}, None),
+        ("df = src.with_row_index(offset=1)", ("src",), {"index"}, {}, None),
+        (
+            "import polars as pl\n\"Carry the frame.\"\ndf = src.sort('x')",
+            ("src",),
+            set(),
+            {},
+            None,
+        ),
+        ("df = src.with_columns(-pl.col('x'))", ("src",), {"x"}, {}, None),
+        ("df = src.with_columns(pl.lit(1))", ("src",), {"literal"}, {}, None),
+        (
+            "df = src.join(pl.DataFrame({'id': [1], 'z': [2]}).lazy(), on='id')",
+            ("src",),
+            {"id", "z"},
+            {},
+            None,
+        ),
         (
             "df = quotes.join(prices, on='id', how='left')",
             ("quotes", "prices"),
@@ -2446,6 +2465,30 @@ def test_carried_column_proof_names_every_rewritten_column(
         "df = src.join(prices, on='id', how='full')",
         "df = src.join(prices, on='id').join(prices, on='x')",
         "tmp = src.filter(pl.col('x') > 1)\ndf = tmp",
+        "df = src.filter(",
+        "import polars as pl",
+        "df = 1",
+        "df = df.sort('x')",
+        "df = unknown.sort('x')",
+        "df = src.with_columns(**exprs)",
+        "df = src.with_columns(pl.col(name) * 2)",
+        "df = src.with_columns(pl.col('x', 'y') * 2)",
+        "df = src.with_columns(make_expr())",
+        "df = src.with_columns(pl.col('x').alias(name))",
+        "df = src.with_row_index(name)",
+        "df = src.rename(mapping)",
+        "df = src.rename({'x': new_name})",
+        "df = src.join(on='id')",
+        "df = src.join(load_prices(), on='id')",
+        "df = src.join(pl.DataFrame(rows), on='id')",
+        "df = src.join(pl.DataFrame({key: [1]}), on='id')",
+        "df = src.join(prices, **options)",
+        "df = src.join(prices, on='id', how=kind)",
+        "df = src.join(prices, on=keys)",
+        "df = src.join(prices, on=['id', 1])",
+        "df = src.group_by('region')",
+        "df = src.group_by(keys).agg(pl.col('x').sum())",
+        "df = src.group_by('region', maintain_order=True).agg(pl.len())",
     ],
 )
 def test_carried_column_proof_refuses_programs_whose_rewrites_it_cannot_name(code: str) -> None:
@@ -2503,6 +2546,19 @@ _SELECTORS = frozenset({"cs"})
         ("df = rows.unique(subset=pl.exclude('big')).select('big')", {"big"}, {"id", "a", "big"}),
         ("df = rows.sort(pl.exclude('big')).select('big')", {"big"}, {"id", "a", "big"}),
         ("df = rows.drop_nulls(pl.col('^a$')).select('id')", {"id"}, {"id", "a"}),
+        ("df = rows.select(pl.col('^i.*$').str.to_uppercase())", {"id"}, {"id"}),
+        (
+            "df = rows.select(pl.sum_horizontal(pl.exclude('id')).alias('total'))",
+            {"total"},
+            {"a", "big"},
+        ),
+        (
+            "df = rows.select(pl.sum_horizontal(pl.col('^a$'), pl.col('big')))",
+            {"a"},
+            {"a", "big"},
+        ),
+        ("df = rows.select(a='a')", {"a"}, {"a"}),
+        ("df = rows.with_columns(a=pl.col('a'))", {"id", "a", "big"}, {"id", "a", "big"}),
     ],
 )
 def test_name_selectors_resolve_against_the_exact_input_columns(
@@ -2548,6 +2604,90 @@ def test_a_computed_selector_expression_keeps_its_argument_references() -> None:
         False,
         "dynamic_select",
     )
+
+
+@pytest.mark.parametrize(
+    ("code", "reason"),
+    [
+        ("df = rows.select(pl.col('^a$').alias(name))", "dynamic_select"),
+        ("df = rows.select((pl.col('^a.*$') * 2).alias(name))", "dynamic_select"),
+        ("df = rows.select((-pl.col('^a.*$')).alias(name))", "dynamic_select"),
+        ("df = rows.select(x=pl.col('^a$').name.suffix('_s'))", "dynamic_select"),
+        (
+            "df = rows.select(pl.sum_horizontal(pl.struct('a'), pl.exclude('id')))",
+            "dynamic_select",
+        ),
+        (
+            "df = rows.select(pl.sum_horizontal("
+            "pl.when(pl.col('a') > 1).then(1).otherwise(0), pl.exclude('id')))",
+            "dynamic_select",
+        ),
+        ("df = rows.select(pl.col('^a$'), 'a')", "dynamic_select"),
+        ("df = rows.select(pl.col('^a.*$') > 1)", "selector_nested"),
+        ("df = rows.select((pl.col('^a.*$') > 1).alias('x'))", "selector_nested"),
+        ("df = rows.filter(pl.exclude('id') > pl.col(name))", "dynamic_filter"),
+        ("df = rows.sort(pl.col('^zzz$'))", "dynamic_sort"),
+        ("df = rows.group_by('id').agg(pl.exclude('id').alias(name))", "dynamic_aggregate"),
+        (
+            "df = rows.group_by('id').agg(x=pl.exclude('id').name.suffix('_s'))",
+            "dynamic_aggregate",
+        ),
+        (
+            "df = rows.group_by('id').agg(pl.col('^a$'), a=pl.col('big').sum())",
+            "ambiguous_aggregate_output",
+        ),
+    ],
+)
+def test_selector_expressions_whose_outputs_cannot_be_named_fail_closed(
+    code: str, reason: str
+) -> None:
+    result = analyze_polars_lineage(code, _SELECTOR_INPUTS)
+
+    assert (result.supported, result.reason) == (False, reason)
+
+
+def test_dtype_selectors_read_dtypes_carried_through_joins_and_row_indexes() -> None:
+    frame = pl.DataFrame({"id": ["x", "y"], "a": [1, 2], "big": [1.5, 2.5]})
+    other = pl.DataFrame({"id": ["x", "y"], "a": [1.0, 2.0], "z": [True, False]})
+    inputs = {**_SELECTOR_INPUTS, "other": frozenset(other.columns)}
+    dtypes = {**_SELECTOR_DTYPES, "other": dict(other.schema)}
+    joined = "df = rows.join(other, on='id').select(cs.numeric())"
+    indexed = "df = rows.with_row_index('i').select(cs.integer())"
+
+    join_result = analyze_polars_lineage(
+        joined, inputs, input_dtypes=dtypes, selector_aliases=_SELECTORS
+    )
+    right_unknown = analyze_polars_lineage(
+        joined, inputs, input_dtypes=_SELECTOR_DTYPES, selector_aliases=_SELECTORS
+    )
+    index_result = analyze_polars_lineage(
+        indexed, _SELECTOR_INPUTS, input_dtypes=_SELECTOR_DTYPES, selector_aliases=_SELECTORS
+    )
+
+    assert join_result.supported, join_result.reason
+    executed_join = frame.lazy().join(other.lazy(), on="id").select(cs.numeric())
+    assert join_result.exact_output_columns == set(executed_join.collect_schema().names())
+    assert join_result.demands_by_input == {"rows": {"id", "a", "big"}, "other": {"id", "a"}}
+    assert (right_unknown.supported, right_unknown.reason) == (False, "selector_dtypes_unknown")
+    assert index_result.supported, index_result.reason
+    executed_index = frame.lazy().with_row_index("i").select(cs.integer())
+    assert index_result.exact_output_columns == set(executed_index.collect_schema().names())
+    assert index_result.demands_by_input == {"rows": {"a"}}
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = rows.group_by('id').agg(total=pl.col('a').sum()).select(cs.string())",
+        "df = rows.unpivot(index='id').select(cs.string())",
+    ],
+)
+def test_dtype_selectors_after_computed_dtypes_need_a_schema(code: str) -> None:
+    result = analyze_polars_lineage(
+        code, _SELECTOR_INPUTS, input_dtypes=_SELECTOR_DTYPES, selector_aliases=_SELECTORS
+    )
+
+    assert (result.supported, result.reason) == (False, "selector_dtypes_unknown")
 
 
 def test_dtype_selectors_need_every_input_dtype() -> None:
@@ -2662,6 +2802,35 @@ def test_carried_proof_expands_a_selector_over_join_suffixed_names() -> None:
     assert unknown_suffix is None
 
 
+def test_carried_proof_expands_a_dtype_selector_only_over_known_dtypes() -> None:
+    from haute._column_lineage import carried_column_proof
+
+    columns = {"src": ["x", "s"]}
+    dtypes = {"src": {"x": pl.Int64(), "s": pl.String()}}
+    code = "df = src.with_columns(cs.numeric() * 2)"
+
+    proof = carried_column_proof(
+        code, ("src",), input_columns=columns, input_dtypes=dtypes, selector_aliases=_SELECTORS
+    )
+
+    assert proof is not None
+    assert proof.assigned == {"x"}
+    assert (
+        carried_column_proof(code, ("src",), input_columns=columns, selector_aliases=_SELECTORS)
+        is None
+    )
+    for unexpandable in ("cs.by_name('missing') * 2", "pl.col('^(x$') * 2"):
+        assert (
+            carried_column_proof(
+                f"df = src.with_columns({unexpandable})",
+                ("src",),
+                input_columns=columns,
+                selector_aliases=_SELECTORS,
+            )
+            is None
+        )
+
+
 def test_carried_proof_needs_schemas_for_a_computed_selector() -> None:
     from haute._column_lineage import carried_column_proof
 
@@ -2747,9 +2916,14 @@ def test_cardinality_does_not_need_selector_output_names() -> None:
     without_alias = analyze_polars_cardinality(
         "df = rows.with_columns(cs.numeric().fill_null(0))", {"rows": 5}
     )
+    unnamed_keyword = analyze_polars_cardinality(
+        "df = rows.select(['a', 'id'], pl.all(), x=pl.col('^a$').alias('y'))", {"rows": 5}
+    )
 
     assert renamed.supported, renamed.reason
     assert renamed.output_upper_bound == 5
+    assert unnamed_keyword.supported, unnamed_keyword.reason
+    assert unnamed_keyword.output_upper_bound == 5
     assert module.supported, module.reason
     assert module.output_upper_bound == 5
     assert not without_alias.supported

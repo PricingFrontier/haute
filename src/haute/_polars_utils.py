@@ -3,11 +3,7 @@
 from __future__ import annotations
 
 import contextvars
-import functools
-import io
-import json
 import math
-import operator
 import queue
 import threading
 import time
@@ -438,66 +434,6 @@ _ScanFrames = Callable[
     Iterator[pl.DataFrame],
 ]
 
-# A sort-limit (``sort().head(n)``, ``top_k``) pushes its running bound into
-# scans as an extra ``dynamic_pred`` conjunct of the predicate. The bound only
-# prunes rows the sort-limit discards anyway, and it exists only inside the
-# engine: evaluating it from Python panics, and a panic inside
-# ``collect_batches`` ends the batch stream as though it were empty.
-_DYNAMIC_PREDICATE_PREFIX = "dynamic_pred:"
-
-
-def _is_dynamic_predicate(node: object) -> bool:
-    if not isinstance(node, dict) or set(node) != {"Display"}:
-        return False
-    display = node["Display"]
-    return isinstance(display, dict) and str(display.get("fmt_str", "")).startswith(
-        _DYNAMIC_PREDICATE_PREFIX
-    )
-
-
-def _contains_dynamic_predicate(node: object) -> bool:
-    if _is_dynamic_predicate(node):
-        return True
-    if isinstance(node, dict):
-        return any(_contains_dynamic_predicate(value) for value in node.values())
-    if isinstance(node, list):
-        return any(_contains_dynamic_predicate(value) for value in node)
-    return False
-
-
-def scan_evaluable_predicate(predicate: pl.Expr | None) -> pl.Expr | None:
-    """Return a pushed scan predicate without the engine's runtime-only bounds.
-
-    Every ordinary conjunct is kept, so the result filters exactly the rows the
-    engine requires the scan to filter. A runtime bound nested anywhere but a
-    top-level conjunct cannot be separated and fails loudly.
-    """
-    if predicate is None or _DYNAMIC_PREDICATE_PREFIX not in str(predicate):
-        return predicate
-    tree = json.loads(predicate.meta.serialize(format="json"))
-    if not _contains_dynamic_predicate(tree):
-        return predicate
-    conjuncts: list[object] = []
-    pending: list[object] = [tree]
-    while pending:
-        node = pending.pop()
-        binary = node.get("BinaryExpr") if isinstance(node, dict) and len(node) == 1 else None
-        if isinstance(binary, dict) and binary.get("op") == "And":
-            pending.extend((binary["right"], binary["left"]))
-        else:
-            conjuncts.append(node)
-    kept: list[pl.Expr] = []
-    for node in conjuncts:
-        if _is_dynamic_predicate(node):
-            continue
-        if _contains_dynamic_predicate(node):
-            raise RuntimeError(
-                "a Python scan received a predicate whose engine-only bound is not a "
-                f"top-level conjunct: {predicate}"
-            )
-        kept.append(pl.Expr.deserialize(io.StringIO(json.dumps(node)), format="json"))
-    return functools.reduce(operator.and_, kept) if kept else None
-
 
 def _register_python_scan(
     frames: _ScanFrames,
@@ -516,13 +452,7 @@ def _register_python_scan(
         # Polars may call the source on an engine thread; run it with the
         # caller's context variables (execution context, scenario, temp scope).
         run_context = caller_context.copy()
-        try:
-            evaluable = scan_evaluable_predicate(predicate)
-        except BaseException as exc:
-            raise RuntimeError(
-                f"{_park_python_scan_failure(exc)} {type(exc).__name__}: {exc}"
-            ) from exc
-        iterator = run_context.run(frames, with_columns, evaluable, n_rows, batch_size)
+        iterator = run_context.run(frames, with_columns, predicate, n_rows, batch_size)
         while True:
             try:
                 frame = run_context.run(next, iterator)
