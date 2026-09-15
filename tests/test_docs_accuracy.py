@@ -140,6 +140,7 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
 )
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "background-jobs-api",
+    "execution-engine",
     "explore-eda",
     "optimiser",
 )
