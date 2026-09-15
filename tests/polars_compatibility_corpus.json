@@ -358,7 +358,7 @@
       "lineage": "lineage_proven",
       "namespace": null,
       "operation": "shift",
-      "policy": "streaming",
+      "policy": "materialisation_boundary",
       "receiver": "frame",
       "strategy": {
         "reason_code": "materialisation_admitted",

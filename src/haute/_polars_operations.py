@@ -440,9 +440,11 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         _FRAME,
         "shift",
         _ORDER_DEPENDENT,
-        _P_STREAMING,
-        "reads neighbouring rows. streams: certified by the fresh-process lane against the "
-        "scan control, at the streaming floor",
+        _P_BOUNDARY,
+        "reads neighbouring rows. materialises: from Polars 1.44 the streaming shift "
+        "buffers state that grows with the input, certified by the fresh-process lane "
+        "against the scan control; the certified observed/(width x 3.0) ratio needs no "
+        "margin",
         lineage_supported=True,
         memory_evidence="measured",
     ),

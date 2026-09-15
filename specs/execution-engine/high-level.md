@@ -253,14 +253,18 @@ running heavy work in a child process the parent can kill on timeout or memory l
   the registry entry's note; a streaming policy is either measured the same way or
   inherited unmeasured, and which of the two it is is recorded per operator rather
   than assumed.
-  `sort`, `unique`, `join`, `join_asof`, `top_k`, `bottom_k`, `reverse`, and
-  `explode` measurably hold operator state proportional to the frame and are
+  `sort`, `unique`, `join`, `join_asof`, `top_k`, `bottom_k`, `reverse`, `shift`,
+  and `explode` measurably hold operator state proportional to the frame and are
   therefore admitted materialisation boundaries alongside `group_by`: the planner
   places them at a boundary, and admission is the estimate against the caller's
   memory limit and headroom exactly as for a group-by. Window expressions
   materialise their partitions, so `over` is a boundary recorded at the expression
   level: the containing node becomes the boundary with `over` as its operator.
-  `unpivot`, `rolling`, `group_by_dynamic`, `shift`, `merge_sorted`,
+  `shift` streamed at the passthrough floor before Polars 1.44; from 1.44 its
+  buffered state grows with the input (about 1.5x the passthrough control at
+  1.5 million rows and over 2x at 6 million on the Linux reference runner, with a
+  timing-dependent spread), so it is a boundary rather than a streaming operator.
+  `unpivot`, `rolling`, `group_by_dynamic`, `merge_sorted`,
   `interpolate`, and `filter` were measured at or below the streaming control
   matched to what they read rather than what they emit — a full-width passthrough
   sink for a wide plan, a two-column sink for a narrow one, and a two-column sink

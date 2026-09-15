@@ -11,6 +11,7 @@ import pytest
 from polars.testing import assert_frame_equal
 
 import haute._rating as rating
+from haute._polars_utils import streaming_collect
 from haute._rating import RatingTableMissError, apply_rating_step_from_config
 
 pytestmark = pytest.mark.perf
@@ -171,23 +172,27 @@ def test_rating_miss_guard_records_representative_decision_evidence(
 
     # Keep the fail-loud semantic boundary in the same evidence test. The
     # control above is deliberately timing-only and is not a proposed rewrite.
+    # The guard runs as a Python scan, so Haute's collect seam restores the
+    # typed miss error that a bare Polars collect reports as a ComputeError.
     with pytest.raises(
         RatingTableMissError,
         match=r"1 of 2 row\(s\).*Missing key",
     ):
-        apply_rating_step_from_config(
-            pl.DataFrame({"factor": ["known", "missing"]}),
-            {
-                "tables": [
-                    {
-                        "name": "semantic_oracle",
-                        "factors": ["factor"],
-                        "outputColumn": "rate",
-                        "entries": [{"factor": "known", "value": 1.0}],
-                    }
-                ]
-            },
-        ).collect()
+        streaming_collect(
+            apply_rating_step_from_config(
+                pl.DataFrame({"factor": ["known", "missing"]}),
+                {
+                    "tables": [
+                        {
+                            "name": "semantic_oracle",
+                            "factors": ["factor"],
+                            "outputColumn": "rate",
+                            "entries": [{"factor": "known", "value": 1.0}],
+                        }
+                    ]
+                },
+            )
+        )
 
     trigger_cells = sum(
         float(cell["overhead_percent"]) >= _MIN_RELATIVE_OVERHEAD_PERCENT

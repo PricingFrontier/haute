@@ -2021,6 +2021,7 @@ _NEW_BOUNDARY_SHAPES: tuple[tuple[str, str], ...] = (
     ("sort", "df = df.sort('premium')"),
     ("unique", "df = df.unique(subset=['segment'])"),
     ("reverse", "df = df.reverse()"),
+    ("shift", "df = df.shift(1)"),
     ("top_k", "df = df.top_k(5, by='premium')"),
     ("bottom_k", "df = df.bottom_k(5, by='premium')"),
     (
@@ -2124,25 +2125,12 @@ def test_an_expression_method_named_like_a_frame_boundary_is_not_a_boundary(
     assert "shape" not in result.projection_plan.materialisation_boundaries
 
 
-@pytest.mark.parametrize(
-    ("operator", "transform_code"),
-    [
-        ("shift", "df = df.shift(1)"),
-        ("unpivot", "df = df.unpivot(on=['premium', 'extra'], index=['segment'])"),
-    ],
-)
-def test_measured_streaming_operations_do_not_become_boundaries(
-    tmp_path: Path,
-    operator: str,
-    transform_code: str,
-) -> None:
+def test_measured_streaming_unpivot_does_not_become_a_boundary(tmp_path: Path) -> None:
     graph = _shape_group_by_graph(
         tmp_path / "rows.parquet",
-        transform_code,
-        "df = df.group_by('segment').agg(pl.col('value').sum().alias('total'))"
-        if operator == "unpivot"
-        else _GROUP_BY_PREMIUM,
-        "total" if operator == "unpivot" else "premium",
+        "df = df.unpivot(on=['premium', 'extra'], index=['segment'])",
+        "df = df.group_by('segment').agg(pl.col('value').sum().alias('total'))",
+        "total",
     )
 
     with native_memory_backend_scope("rlimit"):

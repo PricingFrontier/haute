@@ -1158,7 +1158,7 @@ present a structural or schema result as execution evidence.
   written on a `pl` chain, so an `over` call admits a boundary on any receiver
   that is not a provable frame method of another name, and the containing node
   records `over` as its operator.
-  `unpivot`, `rolling`, `group_by_dynamic`, `shift`, `merge_sorted`,
+  `unpivot`, `rolling`, `group_by_dynamic`, `merge_sorted`,
   `interpolate`, and `filter` keep the `streaming`/`row_local` policy with the
   measurement that justifies it in the note; `join_where`, `pivot`, `upsample`,
   `gather`, and `sample` keep `streaming` with `memory_evidence=none` recorded.
@@ -1169,7 +1169,12 @@ present a structural or schema result as execution evidence.
   derived from that evidence — measured peak divided by the estimator's
   rows × width × 3.0 figure for the same frame, with margin, rounded up to a whole
   multiple: `sort` 300, `unique` 350, `join` 200, `join_asof` 250, `over` 250,
-  `reverse` 250, `top_k`/`bottom_k` 100, `group_by` 100.
+  `reverse` 250, `top_k`/`bottom_k` 100, `group_by` 100, `shift` 100. `shift` carries
+  no does-not-stream ratio witness: its growth is buffering whose size depends on
+  scheduling (it reaches 1.46x the scan control on the Linux reference runner but
+  stays near 1.15x on Windows), so a fixed floor ratio would certify the platform
+  rather than the operator; the boundary is certified by its estimate bounding the
+  observation.
   `join_asof` holds its right (lookup) port while streaming its left, so its
   evidence is the big-right variant: a wide left against a small right sits near
   the streaming floor and proves nothing, while swapping the ports puts the large
@@ -1724,7 +1729,7 @@ present a structural or schema result as execution evidence.
 - `tests/test_data_input_chunking.py` — Data Input provider snapshots and chunk-plan/runner execution, including unsupported chunk plans.
 - `tests/test_extract_column_refs.py` — extraction of referenced columns across empty/minimal, selected/excluded, and node-config shapes.
 - `tests/test_graph_input_identity.py` — edge-derived pipeline input-name derivation contract across source handles and graph edges.
-- `tests/test_polars_backend_strategy_contract.py` — execution-strategy planning, boundedness/diagnostics payloads, projection/chunking, and error contracts, including the cross-profile table that plans each admitted Polars shape (row-preserving, row-reducing, bounded-expansion, and audited string/temporal predicates ahead of a group-by) under every `ExecutionProfile` with the real estimator and requires identical strategy diagnostics apart from the profile itself; it also proves that an unavailable estimate becomes the `warned` `full-width-conservative` strategy under an active native cap (`native_memory_backend_scope`) and the typed `materialisation_estimate_unavailable` rejection without one, with admission and headroom failures unchanged in both. It also covers every newly admitted boundary operator: `sort`, `unique`, `join`, `join_asof`, `top_k`, `bottom_k`, `reverse`, and an `over` inside `with_columns` each plan `materialisation-boundary` with a positive estimate and identical diagnostics on every profile; `explode` plans `warned` `full-width-conservative` under a native cap and rejects without one; and `unpivot`, `rolling`, `shift`, and `merge_sorted` plan no boundary at all.
+- `tests/test_polars_backend_strategy_contract.py` — execution-strategy planning, boundedness/diagnostics payloads, projection/chunking, and error contracts, including the cross-profile table that plans each admitted Polars shape (row-preserving, row-reducing, bounded-expansion, and audited string/temporal predicates ahead of a group-by) under every `ExecutionProfile` with the real estimator and requires identical strategy diagnostics apart from the profile itself; it also proves that an unavailable estimate becomes the `warned` `full-width-conservative` strategy under an active native cap (`native_memory_backend_scope`) and the typed `materialisation_estimate_unavailable` rejection without one, with admission and headroom failures unchanged in both. It also covers every newly admitted boundary operator: `sort`, `unique`, `join`, `join_asof`, `top_k`, `bottom_k`, `reverse`, `shift`, and an `over` inside `with_columns` each plan `materialisation-boundary` with a positive estimate and identical diagnostics on every profile; `explode` plans `warned` `full-width-conservative` under a native cap and rejects without one; and `unpivot`, `rolling`, and `merge_sorted` plan no boundary at all.
 - `tests/test_data_io_nodes.py` — sink execution and publication: the isolated output worker's admission release and failure classification, atomic staging/commit, overwrite and race handling, and the end-to-end group-by sink, including a conservative (`warned`) run whose written frame equals plain Polars and whose metrics payload carries the warned strategy.
 - `tests/test_scenario_propagation.py` — active scenario propagation through routes, executor, builders, and live-switch pruning.
 - `tests/test_streaming_collect_contract.py` — static contract that bounded callers use `streaming_collect` across execution/deploy/training/optimiser modules.
