@@ -863,13 +863,13 @@ present a structural or schema result as execution evidence.
   `_LITERAL_ARGUMENT_EXPRESSION_METHODS`, the plain-expression `replace` and
   `replace_strict`, whose mapping, list, and default arguments Polars parses as literals.
   A non-literal argument — a name, attribute, subscript, or any other value that could
-  evaluate to a Python string, directly or as a member of a list, tuple, set, or mapping
-  (key or value) — counts as a direct string argument, because Polars reads a string held
-  in a variable or iterated out of a collection as a column exactly as it reads a literal
-  one (`then(label)`, `clip(bound)`, `is_in(levels)`, `sort_by({'b'})`), and a helper
-  assignment, a preamble constant, or an External File's `obj` can hold one. Polars dtype
-  references (`pl.Float64`, a literal dtype call) and lambdas are never strings and stay
-  admitted. Row-count proofs never use the references, so they keep refusing only literal
+  evaluate to a Python string, directly or as a member of a list, tuple, or set — counts as
+  a direct string argument, because Polars reads a string held in a variable or iterated
+  out of a collection as a column exactly as it reads a literal one (`then(label)`,
+  `clip(bound)`, `is_in(levels)`, `sort_by({'b'})`), and a helper assignment, a preamble
+  constant, or an External File's `obj` can hold one. A mapping is always a literal (a struct
+  value or a replacement mapping), and Polars dtype references (`pl.Float64`, a literal dtype
+  call) and lambdas are never strings, so all three stay admitted. Row-count proofs never use the references, so they keep refusing only literal
   string arguments. Output names must be literal in the same way: an `alias` whose argument
   is not a literal string and every `name` or `struct` namespace method other than a literal
   `name.suffix` leave the expression without a provable name, so its operation is

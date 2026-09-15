@@ -500,18 +500,13 @@ def _may_pass_a_string_argument(node: ast.AST) -> bool:
 
     Polars reads a string held in a variable exactly as it reads a literal
     one, so a name, attribute, or subscript is treated as string syntax.
-    Polars iterates lists, tuples, sets, and mapping keys into column
-    expressions, so their members are checked too; dtypes and lambdas are
-    never strings.
+    Polars iterates lists, tuples, and sets into column expressions, so their
+    members are checked too. A mapping is always a literal (a struct value or
+    a replacement mapping), and dtypes and lambdas are never strings.
     """
     if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
         return any(_may_pass_a_string_argument(element) for element in node.elts)
-    if isinstance(node, ast.Dict):
-        return any(
-            key is None or _may_pass_a_string_argument(key) or _may_pass_a_string_argument(value)
-            for key, value in zip(node.keys, node.values, strict=True)
-        )
-    if isinstance(node, ast.Lambda) or _is_polars_dtype(node):
+    if isinstance(node, (ast.Dict, ast.Lambda)) or _is_polars_dtype(node):
         return False
     return _may_evaluate_to_python_string(node)
 
@@ -879,8 +874,6 @@ def _expression_output_name(node: ast.AST) -> str | None:
         # Reflected arithmetic (``2 * pl.col('a')``) is named ``literal`` too.
         return _expression_output_name(node.left)
     if isinstance(node, ast.Compare):
-        if len(node.ops) != 1:
-            return None
         if _is_scalar_literal(node.left):
             # ``0 < pl.col('a')`` runs as the expression's reflected comparison,
             # which keeps the expression's name.

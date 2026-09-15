@@ -601,6 +601,10 @@ def test_a_name_the_analyser_cannot_resolve_fails_closed(code: str, demand: set[
     [
         ("rate = 2\ndf = rows.with_columns(x=pl.col('a') * rate)", frozenset()),
         ("df = rows.with_columns(x=pl.col('a').map_batches(lambda s: s * 2))", frozenset()),
+        (
+            "df = rows.with_columns(x=pl.col('a').map_batches(lambda s, k=2, *, j: s * k))",
+            frozenset(),
+        ),
         ("df = rows.with_columns(x=pl.col('a') * obj['factor'])", frozenset({"obj"})),
         (
             "factor = obj['factor']\ndf = rows.with_columns(x=pl.col('a') * factor)",
@@ -617,10 +621,17 @@ def test_names_the_analyser_can_resolve_stay_supported(
     assert result.demands_by_input == {"rows": frozenset({"a"})}
 
 
-def test_an_undeclared_value_name_is_unresolved() -> None:
-    result = analyze_polars_lineage(
-        "df = rows.with_columns(x=pl.col('a') * obj['factor'])", {"rows": None}, {"x"}
-    )
+@pytest.mark.parametrize(
+    "code",
+    [
+        # ``obj`` resolves only when the node declares it.
+        "df = rows.with_columns(x=pl.col('a') * obj['factor'])",
+        # A lambda default is evaluated where the lambda is written, not in its body.
+        "df = rows.with_columns(x=pl.col('a').map_batches(lambda s, k=weight: s * k))",
+    ],
+)
+def test_names_outside_the_resolved_scope_are_unresolved(code: str) -> None:
+    result = analyze_polars_lineage(code, {"rows": None}, {"x"})
 
     assert not result.supported
     assert result.reason == "unresolved_name"
@@ -714,6 +725,9 @@ def test_arguments_that_are_never_column_names_stay_supported(code: str) -> None
         ),
         ("df = rows.with_columns(pl.col('a').pipe(lambda e: e.alias('b')))", {"b"}),
         ("suffix = '_s'\ndf = rows.select(pl.col('a').name.suffix(suffix))", None),
+        # Polars names this ``a``, but the analyser cannot prove ``bound`` is a literal
+        # rather than an expression that would name the output itself.
+        ("bound = 2\ndf = rows.select(bound < pl.col('a'))", {"a"}),
     ],
 )
 def test_an_output_name_the_syntax_cannot_read_fails_closed(
