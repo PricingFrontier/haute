@@ -14,6 +14,7 @@ import pytest
 
 import haute._builders as builders
 from haute._builders import NodeBuildContext, _build_node_fn
+from haute._execute_lazy import _apply_selected_columns
 from haute._execution_context import ExecutionProfile
 from haute._output_assembler import OutputMappingSchemaError
 from haute.errors import (
@@ -941,24 +942,44 @@ class TestBuildDataInputSelectedColumns:
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_code_produced_selection_matches_across_profiles(self, tmp_path: Path) -> None:
+        """The executor's shared post-call filter yields one output in every profile.
+
+        A bounded profile narrows the physical scan to planner demand carried
+        back through the post-load code, so ``sale_date`` is never read, while
+        preview scans full width.  The selection, applied once after the code
+        runs, is identical either way.
+        """
         data_file = tmp_path / "quotes.parquet"
         pl.DataFrame({"quote_id": ["001"], "sale_date": ["2024-01-01"]}).write_parquet(data_file)
 
-        columns_by_profile = {}
+        scanned_by_profile: dict[str, set[str]] = {}
+        selected_by_profile: dict[str, list[str]] = {}
         for profile in (
             ExecutionProfile.TRAINING_PREP.value,
             ExecutionProfile.PREVIEW_EAGER.value,
         ):
+            node = self._node(data_file)
             _, fn, _ = _build_node_fn(
-                self._node(data_file),
+                node,
                 required_output_columns=frozenset({"quote_id", "SaleFlag"}),
                 execution_profile=profile,
             )
-            columns_by_profile[profile] = set(fn().collect_schema().names())
+            frame = fn()
+            scanned_by_profile[profile] = set(frame.collect_schema().names())
+            selected_by_profile[profile] = (
+                _apply_selected_columns(frame, node.data.config).collect_schema().names()
+            )
 
+        assert scanned_by_profile[ExecutionProfile.TRAINING_PREP.value] == {"quote_id", "SaleFlag"}
+        assert scanned_by_profile[ExecutionProfile.PREVIEW_EAGER.value] == {
+            "quote_id",
+            "sale_date",
+            "SaleFlag",
+        }
         assert (
-            columns_by_profile[ExecutionProfile.TRAINING_PREP.value]
-            == columns_by_profile[ExecutionProfile.PREVIEW_EAGER.value]
+            selected_by_profile[ExecutionProfile.TRAINING_PREP.value]
+            == selected_by_profile[ExecutionProfile.PREVIEW_EAGER.value]
+            == ["quote_id", "SaleFlag"]
         )
 
 
