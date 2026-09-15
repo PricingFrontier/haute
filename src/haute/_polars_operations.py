@@ -684,10 +684,9 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         _ORDER_DEPENDENT,
         _P_BOUNDARY,
         "reads neighbouring rows. materialises: a lag column over the full-width fact "
-        "grows with the input through the frame method's shift node, certified by the "
-        "fresh-process lane against the scan control with its growth recorded at four "
-        "times the rows and the shared node witnessed by frame shift and diff; the "
-        "certified observed/(width x 3.0) ratio needs no margin",
+        "grows with the input like the frame method, certified by the fresh-process lane "
+        "against the scan control and witnessed above the streaming ceiling or by growth "
+        "at four times the rows; the certified observed/(width x 3.0) ratio needs no margin",
         memory_evidence="measured",
     ),
     _order_dependent_expr("cum_sum", "running total over the whole column"),
@@ -702,8 +701,8 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         _P_BOUNDARY,
         "reads neighbouring rows; Polars computes it as the column minus its shift. "
         "materialises: certified by the fresh-process lane against the scan control and "
-        "witnessed by growth at four times the rows; the certified observed/(width x 3.0) "
-        "ratio needs no margin",
+        "witnessed above the streaming ceiling or by growth at four times the rows; the "
+        "certified observed/(width x 3.0) ratio needs no margin",
         memory_evidence="measured",
     ),
     _order_dependent_expr("rank", "global ranking"),
@@ -723,8 +722,8 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         _P_BOUNDARY,
         "reads neighbouring rows. materialises: its extra memory grows about as fast as "
         "the whole frame, certified by the fresh-process lane against the scan control "
-        "and witnessed by growth at four times the rows; the certified "
-        "observed/(width x 3.0) ratio needs 150 basis points of margin",
+        "and witnessed above the streaming ceiling or by growth at four times the rows; "
+        "the certified observed/(width x 3.0) ratio needs 150 basis points of margin",
         materialisation_factor_basis_points=150,
         memory_evidence="measured",
     ),

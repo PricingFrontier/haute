@@ -164,19 +164,16 @@ _OPERATION_RECEIVERS = {
     "diff_expr": OperationReceiver.EXPR,
     "pct_change_expr": OperationReceiver.EXPR,
 }
-# The neighbouring-row boundaries buffer state whose size depends on scheduling,
-# so a fixed floor ratio would certify the platform rather than the operator.
-# They are witnessed by growth instead: measured at the lane's rows and at this
-# multiple of them, their extra memory over the scan control must grow by at
-# least this factor. A constant buffer stays near 1.0; the CI runner measured
-# 2.0x to 2.5x for frame ``shift`` and ``diff`` and about 4.8x for ``pct_change``.
+# The neighbouring-row boundaries buffer state whose size depends on scheduling.
+# Each must show it does not stream in either of two ways: at the lane's rows its
+# paired-mean ratio exceeds the streaming ceiling, or measured again at this
+# multiple of the rows its extra memory over the scan control grows by at least
+# this factor (a constant buffer stays near 1.0). Neither alone is steady enough to
+# gate on: a single lag column's growth is one or two chunk-buffer steps on the
+# four-thread CI runner (1.44x to 2.46x across runs, where the ratio held at 1.39x
+# to 1.53x), and the ratio sits below the ceiling on hosts with a larger passthrough
+# floor (frame ``shift`` near 1.15x on Windows, where its growth is 3x or more).
 _NEIGHBOURING_ROW_BOUNDARY_PROBES = ("shift", "shift_expr", "diff_expr", "pct_change_expr")
-# A single lag column grows by about one streaming chunk-buffer step between the
-# two sizes on the four-thread runner (1.44x and 1.87x in two CI runs), which three
-# pairs cannot resolve, so ``shift_expr`` records its growth without asserting it.
-# Its node is still witnessed: Polars computes ``diff`` as the column minus its
-# shift, and frame ``shift`` runs the same node over every column.
-_GROWTH_WITNESSED_PROBES = frozenset({"shift", "diff_expr", "pct_change_expr"})
 _GROWTH_ROW_MULTIPLE = 4
 _MIN_NEIGHBOURING_ROW_GROWTH = 1.5
 _STREAMING_POLICIES = frozenset({OperationPolicy.ROW_LOCAL, OperationPolicy.STREAMING})
@@ -2287,6 +2284,7 @@ def test_neighbouring_row_boundaries_grow_with_their_input(
         if policy is not OperationPolicy.MATERIALISATION_BOUNDARY:
             failures.append(f"{operation_name} must be a materialisation boundary, got {policy}")
         extra_by_size: dict[str, float] = {}
+        ratio_by_size: dict[str, float] = {}
         for size, fixtures in fixtures_by_size.items():
             paired = _paired_measurement(
                 tmp_path, fixtures, operation_name, control_name=_FULL_WIDTH_FLOOR
@@ -2300,6 +2298,7 @@ def test_neighbouring_row_boundaries_grow_with_their_input(
             planned = _plan_boundary(operation_name, fixtures)
             estimated = planned.diagnostic.estimated_peak_bytes
             extra_by_size[size] = paired["operation_mean_bytes"] - paired["control_mean_bytes"]
+            ratio_by_size[size] = paired["ratio"]
             record["sizes"][size] = {
                 "fact_rows": fixtures["fact_rows"],
                 "rows_out": measured["rows_out"],
@@ -2309,6 +2308,7 @@ def test_neighbouring_row_boundaries_grow_with_their_input(
                 "operation_mean_bytes": paired["operation_mean_bytes"],
                 "control_mean_bytes": paired["control_mean_bytes"],
                 "extra_bytes": extra_by_size[size],
+                "ratio": paired["ratio"],
                 "estimated_peak_bytes": estimated,
                 "blocking_operator": planned.diagnostic.blocking_operator,
             }
@@ -2321,14 +2321,18 @@ def test_neighbouring_row_boundaries_grow_with_their_input(
         grew = scaled_extra > 0 and scaled_extra >= _MIN_NEIGHBOURING_ROW_GROWTH * max(
             base_extra, 0.0
         )
+        exceeds_ceiling = ratio_by_size["base"] > _MAX_STREAMING_FLOOR_RATIO
         record["growth"] = scaled_extra / base_extra if base_extra > 0 else None
         record["grew"] = grew
-        record["growth_witnessed"] = operation_name in _GROWTH_WITNESSED_PROBES
-        if record["growth_witnessed"] and not grew:
+        record["exceeds_streaming_ceiling"] = exceeds_ceiling
+        if not (exceeds_ceiling or grew):
             failures.append(
-                f"{operation_name}: extra memory over the scan control must grow at least "
-                f"{_MIN_NEIGHBOURING_ROW_GROWTH}x for {_GROWTH_ROW_MULTIPLE}x the rows, got "
-                f"{base_extra:.0f} -> {scaled_extra:.0f} bytes"
+                f"{operation_name} must not stream: its ratio at "
+                f"{fixtures_by_size['base']['fact_rows']} rows must exceed "
+                f"{_MAX_STREAMING_FLOOR_RATIO} of the scan control "
+                f"(got {ratio_by_size['base']:.2f}) or its extra memory must grow at least "
+                f"{_MIN_NEIGHBOURING_ROW_GROWTH}x for {_GROWTH_ROW_MULTIPLE}x the rows "
+                f"(got {base_extra:.0f} -> {scaled_extra:.0f} bytes)"
             )
         measurements.append(record)
 
@@ -2354,7 +2358,7 @@ def test_neighbouring_row_boundaries_grow_with_their_input(
                     "paired_samples": _PAIRED_SAMPLES,
                     "growth_row_multiple": _GROWTH_ROW_MULTIPLE,
                     "min_growth": _MIN_NEIGHBOURING_ROW_GROWTH,
-                    "growth_witnessed_probes": sorted(_GROWTH_WITNESSED_PROBES),
+                    "max_streaming_floor_ratio": _MAX_STREAMING_FLOOR_RATIO,
                     "boundary_admission_bytes": _BOUNDARY_ADMISSION_BYTES,
                 },
                 "product_metrics": {
