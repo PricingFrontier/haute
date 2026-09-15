@@ -12,6 +12,7 @@ from polars.expr.string import ExprStringNameSpace
 from polars.testing import assert_frame_equal
 
 from haute._column_lineage import (
+    _LITERAL_ARGUMENT_EXPRESSION_METHODS,
     _LITERAL_STRING_ARGUMENT_METHODS,
     analyze_polars_cardinality,
     analyze_polars_lineage,
@@ -569,6 +570,239 @@ def test_python_value_expressions_cannot_smuggle_column_names(code: str, reason:
     assert result.reason == reason
 
 
+@pytest.mark.parametrize(
+    ("code", "demand"),
+    [
+        ("df = rows.with_columns(x=pl.col('a') * weight)", {"x"}),
+        ("df = rows.filter(pl.col('a') > weight)", {"a"}),
+        ("df = rows.with_columns(x=-weight)", {"x"}),
+        ("df = rows.with_columns(x=pl.col('a') * (weight if True else 1))", {"x"}),
+        ("df = rows.with_columns(x=pl.col('a').replace_strict([1, 5, 9], weight))", {"x"}),
+        ("scale = weight\ndf = rows.with_columns(x=pl.col('a') * scale)", {"x"}),
+    ],
+)
+def test_a_name_the_analyser_cannot_resolve_fails_closed(code: str, demand: set[str]) -> None:
+    """A preamble name can hold an expression that reads columns the walk cannot see."""
+    frame = pl.DataFrame({"a": [1, 5, 9], "b": [2, 3, 4]})
+    preamble = {"weight": pl.col("b")}
+    _exec_user_code(code, ["rows"], (frame.lazy(),), extra_ns=preamble).collect()
+    with pytest.raises(pl.exceptions.ColumnNotFoundError):
+        _exec_user_code(code, ["rows"], (frame.select("a").lazy(),), extra_ns=preamble).collect()
+
+    result = analyze_polars_lineage(code, {"rows": None}, demand)
+
+    assert not result.supported
+    assert result.reason == "unresolved_name"
+    assert analyze_polars_cardinality(code, {"rows": 3}).supported
+
+
+@pytest.mark.parametrize(
+    ("code", "value_names"),
+    [
+        ("rate = 2\ndf = rows.with_columns(x=pl.col('a') * rate)", frozenset()),
+        ("df = rows.with_columns(x=pl.col('a').map_batches(lambda s: s * 2))", frozenset()),
+        (
+            "df = rows.with_columns(x=pl.col('a').map_batches(lambda s, k=2, *, j: s * k))",
+            frozenset(),
+        ),
+        ("df = rows.with_columns(x=pl.col('a') * obj['factor'])", frozenset({"obj"})),
+        (
+            "factor = obj['factor']\ndf = rows.with_columns(x=pl.col('a') * factor)",
+            frozenset({"obj"}),
+        ),
+    ],
+)
+def test_names_the_analyser_can_resolve_stay_supported(
+    code: str, value_names: frozenset[str]
+) -> None:
+    result = analyze_polars_lineage(code, {"rows": None}, {"x"}, value_names=value_names)
+
+    assert result.supported, result
+    assert result.demands_by_input == {"rows": frozenset({"a"})}
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # ``obj`` resolves only when the node declares it.
+        "df = rows.with_columns(x=pl.col('a') * obj['factor'])",
+        # A lambda default is evaluated where the lambda is written, not in its body.
+        "df = rows.with_columns(x=pl.col('a').map_batches(lambda s, k=weight: s * k))",
+    ],
+)
+def test_names_outside_the_resolved_scope_are_unresolved(code: str) -> None:
+    result = analyze_polars_lineage(code, {"rows": None}, {"x"})
+
+    assert not result.supported
+    assert result.reason == "unresolved_name"
+
+
+def test_a_variable_in_a_selector_predicate_keeps_the_row_count_proof() -> None:
+    code = "bound = 2\ndf = rows.filter(pl.all().is_between(bound, 10))"
+
+    assert analyze_polars_cardinality(code, {"rows": 3}).supported
+    assert not analyze_polars_lineage(code, {"rows": frozenset({"a", "b"})}).supported
+
+
+@pytest.mark.parametrize(
+    ("code", "demand", "reason"),
+    [
+        (
+            "label = 'b'\n"
+            "df = rows.with_columns(x=pl.when(pl.col('a') > 1).then(label).otherwise(0))",
+            {"x"},
+            "dynamic_with_columns",
+        ),
+        ("df = rows.with_columns(x=pl.col('a').clip(obj['bound']))", {"x"}, "dynamic_with_columns"),
+        (
+            "df = rows.with_columns(x=pl.col('a').is_in(obj['levels']))",
+            {"x"},
+            "dynamic_with_columns",
+        ),
+        ("df = rows.filter(pl.col('a').is_between(obj['bound'], 10))", {"a"}, "dynamic_filter"),
+        # A set literal is iterated into column expressions just like a list.
+        ("df = rows.with_columns(x=pl.col('a').sort_by({'b'}))", {"x"}, "dynamic_with_columns"),
+        # A mapping unpacked with ``**`` becomes ordinary keyword arguments.
+        (
+            "df = rows.with_columns(x=pl.col('a').sort_by(**{'by': 'b'}))",
+            {"x"},
+            "dynamic_with_columns",
+        ),
+        (
+            "df = rows.with_columns(x=pl.col('a').clip(**{'lower_bound': 'b'}))",
+            {"x"},
+            "dynamic_with_columns",
+        ),
+    ],
+)
+def test_a_column_name_the_walk_cannot_see_fails_closed(
+    code: str, demand: set[str], reason: str
+) -> None:
+    """Polars reads a string held in a variable or a set as a column, like a bare literal."""
+    frame = pl.DataFrame({"a": [1, 5, 9], "b": [2, 2, 2]})
+    obj = {"bound": "b", "levels": "b"}
+    _exec_user_code(code, ["rows"], (frame.lazy(),), extra_ns={"obj": obj}).collect()
+    with pytest.raises(pl.exceptions.ColumnNotFoundError):
+        _exec_user_code(
+            code, ["rows"], (frame.select("a").lazy(),), extra_ns={"obj": obj}
+        ).collect()
+
+    result = analyze_polars_lineage(code, {"rows": None}, demand)
+
+    assert not result.supported
+    assert result.reason == reason
+    # Which column the variable names never changes the row count.
+    assert analyze_polars_cardinality(code, {"rows": 3}).supported
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = rows.with_columns(x=pl.col('a').cast(pl.Float64))",
+        "df = rows.with_columns(x=pl.col('a').map_batches(lambda s: s * 2, return_dtype=pl.Int64))",
+        "df = rows.with_columns(x=pl.col('a') * obj['factor'])",
+        "df = rows.with_columns(x=pl.col('a').replace_strict({1: 10, 5: 50, 9: 90}))",
+        "df = rows.with_columns(x=pl.col('a').replace_strict({1: 'b', 5: 'c'}, default='b'))",
+        "df = rows.with_columns(x=pl.col('a').replace_strict(obj['mapping'], default=obj['name']))",
+        "df = rows.with_columns(x=pl.col('a').cast(pl.String).replace(['1', '5'], ['b', 'c']))",
+    ],
+)
+def test_arguments_that_are_never_column_names_stay_supported(code: str) -> None:
+    frame = pl.DataFrame({"a": [1, 5, 9], "b": [2, 2, 2]})
+    obj = {"factor": 3, "mapping": {1: "b", 5: "c"}, "name": "b"}
+    result = analyze_polars_lineage(
+        code, {"rows": frozenset(frame.columns)}, {"x"}, value_names=frozenset({"obj"})
+    )
+
+    assert result.supported, result
+    assert result.demands_by_input == {"rows": frozenset({"a"})}
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),), extra_ns={"obj": obj}).collect()
+    projected = _exec_user_code(
+        code, ["rows"], (frame.select("a").lazy(),), extra_ns={"obj": obj}
+    ).collect()
+    assert_frame_equal(projected.select("x"), full.select("x"))
+
+
+@pytest.mark.parametrize(
+    ("code", "demand"),
+    [
+        ("name = 'b'\ndf = rows.with_columns(pl.lit(1).alias(name))", {"b"}),
+        ("df = rows.with_columns(pl.lit(1).alias(obj['name']))", {"b"}),
+        ("df = rows.with_columns(pl.col('a').name.to_uppercase())", {"A"}),
+        ("prefix = 'p_'\ndf = rows.with_columns(pl.col('a').name.prefix(prefix))", {"p_a"}),
+        (
+            "df = rows.with_columns(pl.when(pl.col('k') > 0).then(pl.col('a')).name.suffix('_s'))",
+            {"a_s"},
+        ),
+        ("df = rows.with_columns(pl.col('a').pipe(lambda e: e.alias('b')))", {"b"}),
+        ("suffix = '_s'\ndf = rows.select(pl.col('a').name.suffix(suffix))", None),
+        # Polars names this ``a``, but the analyser cannot prove ``bound`` is a literal
+        # rather than an expression that would name the output itself.
+        ("bound = 2\ndf = rows.select(bound < pl.col('a'))", {"a"}),
+    ],
+)
+def test_an_output_name_the_syntax_cannot_read_fails_closed(
+    code: str, demand: set[str] | None
+) -> None:
+    """A computed output name must not be mistaken for a pass-through input column."""
+    result = analyze_polars_lineage(code, {"rows": frozenset({"a", "k"})}, demand)
+    schema_less = analyze_polars_lineage(code, {"rows": None}, demand)
+
+    assert not result.supported
+    assert result.reason in {"dynamic_with_columns", "dynamic_select"}
+    assert not schema_less.supported
+
+
+def test_a_chained_comparison_is_not_mistaken_for_a_literal_output() -> None:
+    """The scalar prefix is ``True``, so Polars returns ``1 < pl.col('a')``, named ``a``."""
+    code = "df = rows.with_columns(0 < 1 < pl.col('a'))"
+    frame = pl.DataFrame({"a": [1, 2, 3], "literal": [10, 20, 30]})
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
+    assert full.to_dict(as_series=False) == {"a": [False, True, True], "literal": [10, 20, 30]}
+
+    for schema in (frozenset(frame.columns), None):
+        result = analyze_polars_lineage(code, {"rows": schema}, {"literal"})
+        assert not result.supported
+        assert result.reason == "dynamic_with_columns"
+
+
+@pytest.mark.parametrize(
+    ("code", "output", "demand"),
+    [
+        ("df = rows.with_columns((pl.col('a') * 2).name.suffix('_s'))", "a_s", {"a"}),
+        (
+            "df = rows.with_columns((pl.col('a') + pl.col('b')).name.suffix('_s'))",
+            "a_s",
+            {"a", "b"},
+        ),
+        ("df = rows.with_columns((pl.lit(1) + pl.col('a')).name.suffix('_s'))", "literal_s", {"a"}),
+        ("df = rows.with_columns(pl.col('a').alias('x').name.suffix('_s'))", "x_s", {"a"}),
+        # A literal on the left of a comparison defers to the expression's reflected
+        # comparison, which keeps the expression's name; reflected arithmetic does not.
+        (
+            "df = rows.with_columns((0 < pl.col('a')).name.suffix('_positive'))",
+            "a_positive",
+            {"a"},
+        ),
+        ("df = rows.select(-1 < pl.col('a'))", "a", {"a"}),
+        ("df = rows.select(2 * pl.col('a'))", "literal", {"a"}),
+    ],
+)
+def test_output_names_match_the_columns_polars_emits(
+    code: str, output: str, demand: set[str]
+) -> None:
+    frame = pl.DataFrame({"a": [1, 5], "b": [2, 2], "k": [0, 0]})
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
+    assert output in full.columns
+
+    result = analyze_polars_lineage(code, {"rows": frozenset(frame.columns)}, {output})
+
+    assert result.supported, result
+    assert result.demands_by_input == {"rows": frozenset(demand)}
+    projected = _exec_user_code(code, ["rows"], (frame.select(sorted(demand)).lazy(),)).collect()
+    assert_frame_equal(projected.select(output), full.select(output))
+
+
 def test_when_and_horizontal_expression_sequences_stay_supported() -> None:
     code = (
         "df = rows.select("
@@ -889,13 +1123,6 @@ def test_projected_inputs_execute_identically_to_full_inputs(
             None,
             {"a"},
             {"rows": {"a", "b"}},
-        ),
-        (
-            "df = rows.select(pl.col('a').name.suffix(suffix))",
-            {"rows": frozenset({"a"})},
-            None,
-            {"a"},
-            {"rows": {"a"}},
         ),
         (
             "df = rows.select(pl.sum_horizontal(pl.col('a') + pl.col('b')))",
@@ -1851,6 +2078,16 @@ def test_literal_string_argument_registry_matches_the_pinned_polars_source() -> 
             )
 
 
+def test_literal_argument_expression_methods_match_the_pinned_polars_source() -> None:
+    for method in sorted(_LITERAL_ARGUMENT_EXPRESSION_METHODS):
+        assert _is_literal_string_argument_method(pl.Expr, method), (
+            f"Expr.{method} no longer parses its arguments as literals"
+        )
+    # Negative control: ``sort_by`` reads strings (and set or list members) as columns.
+    assert not _is_literal_string_argument_method(pl.Expr, "sort_by")
+    assert "sort_by" not in _LITERAL_ARGUMENT_EXPRESSION_METHODS
+
+
 @pytest.mark.parametrize("method", ["contains_any", "to_integer"])
 def test_literal_string_argument_audit_discriminates_column_reading_methods(method: str) -> None:
     # Negative control: these read a bare string as a column expression, so the
@@ -2231,6 +2468,95 @@ def test_an_empty_root_demand_carries_the_first_column() -> None:
     assert result.demands_by_input["rows"] == frozenset({"a"})
 
 
+def test_df_input_names_the_frame_df_holds_before_the_code_assigns_it() -> None:
+    inputs: dict[str, frozenset[str] | None] = {
+        "first": frozenset({"a", "k"}),
+        "second": frozenset({"b", "k"}),
+    }
+
+    bound = analyze_polars_lineage(
+        "df = df.with_columns(x=pl.col('a') * 2)", inputs, {"x"}, df_input="first"
+    )
+    assert bound.supported, bound
+    assert bound.demands_by_input == {"first": frozenset({"a"}), "second": frozenset()}
+
+    reassigned = analyze_polars_lineage(
+        "df = second\ndf = df.select('b')", inputs, {"b"}, df_input="first"
+    )
+    assert reassigned.supported, reassigned
+    assert reassigned.demands_by_input == {"first": frozenset(), "second": frozenset({"b"})}
+
+    # After the first statement ``df`` is the live frame, never an input to join.
+    self_join = analyze_polars_lineage(
+        "df = df.join(df, on='k', how='left')", inputs, df_input="first"
+    )
+    assert not self_join.supported
+    assert self_join.reason == "unknown_join_input"
+
+    missing = analyze_polars_lineage("df = df.select('a')", inputs, df_input="third")
+    assert not missing.supported
+    assert missing.reason == "invalid_inputs"
+    assert analyze_polars_lineage("df = df.select('a')", inputs).reason == "ambiguous_frame_root"
+
+
+@pytest.mark.parametrize(
+    ("code", "narrowed"),
+    [
+        ("df = rows.drop('a', 'b').with_columns(x=pl.int_range(pl.len()))", ["a", "b"]),
+        # An empty demand is carried by the edge's first column, which a drop can remove.
+        ("df = rows.drop('a', strict=False).with_columns(x=pl.int_range(pl.len()))", ["a"]),
+        (
+            "df = rows.with_columns(a=pl.lit(0)).drop('a').with_columns(x=pl.int_range(pl.len()))",
+            ["a"],
+        ),
+    ],
+)
+def test_without_a_root_schema_a_program_that_can_drop_its_last_column_fails_closed(
+    code: str, narrowed: list[str]
+) -> None:
+    """No carrier can be chosen without the schema, so the narrowed frame would lose its rows."""
+    frame = pl.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6], "keep": [7, 8, 9]})
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
+    assert full.height == 3
+    assert _exec_user_code(code, ["rows"], (frame.select(narrowed).lazy(),)).collect().height == 0
+
+    result = analyze_polars_lineage(code, {"rows": None}, {"x"})
+
+    assert not result.supported
+    assert result.reason == "row_carrier_schema_unknown"
+    assert result.unsupported_operation == "drop"
+    known = analyze_polars_lineage(code, {"rows": frozenset(frame.columns)}, {"x"})
+    assert known.supported, known
+    projected = _exec_user_code(
+        code, ["rows"], (frame.select(sorted(known.demands_by_input["rows"])).lazy(),)
+    ).collect()
+    assert_frame_equal(projected.select("x"), full.select("x"))
+
+
+@pytest.mark.parametrize(
+    ("code", "demand", "expected"),
+    [
+        # An empty demand is carried by the edge or scan that applies it.
+        ("df = rows.select(pl.len())", {"len"}, frozenset()),
+        ("df = rows.drop('a').with_columns(x=pl.col('b') + 1)", {"x"}, frozenset({"a", "b"})),
+        ("df = rows.filter(pl.col('a') > 1)", set(), frozenset({"a"})),
+        (
+            "df = rows.with_columns(y=pl.lit(1)).drop('a', strict=False)"
+            ".with_columns(x=pl.int_range(pl.len()))",
+            {"x", "y"},
+            frozenset(),
+        ),
+    ],
+)
+def test_without_a_root_schema_a_frame_that_keeps_a_column_stays_supported(
+    code: str, demand: set[str], expected: frozenset[str]
+) -> None:
+    result = analyze_polars_lineage(code, {"rows": None}, demand)
+
+    assert result.supported, result
+    assert result.demands_by_input["rows"] == expected
+
+
 def test_a_projected_program_that_cannot_be_evaluated_is_unsupported(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2248,9 +2574,13 @@ def test_a_projected_program_that_cannot_be_evaluated_is_unsupported(
 
     monkeypatch.setattr(lineage, "_evaluate_program", failing_projection)
     result = analyze_polars_lineage("df = rows.select('a')", {"rows": frozenset({"a", "b"})})
-
     assert not result.supported
     assert result.reason == "carrier_unresolvable"
+
+    calls.clear()
+    schema_less = analyze_polars_lineage("df = rows.select('a')", {"rows": None}, {"a"})
+    assert not schema_less.supported
+    assert schema_less.reason == "carrier_unresolvable"
 
 
 @pytest.mark.parametrize(

@@ -69,6 +69,7 @@ __all__ = [
     "materialising_operators_by_input_names",
     "materialising_operators_by_node",
     "source_user_code_preserves_column_projection",
+    "source_user_code_scan_columns",
     "validate_projection_rule_coverage",
     "with_api_input_port_projection_boundaries",
 ]
@@ -1303,6 +1304,9 @@ def _strict_renames(config: Mapping[str, Any]) -> dict[str, str]:
 def source_scan_projection(
     config: Mapping[str, Any],
     required_output_columns: Iterable[str] | None,
+    *,
+    code: str = "",
+    source_columns: Iterable[str] | None = None,
 ) -> SourceScanProjection:
     """Map logical source output demand to physical scan columns.
 
@@ -1315,19 +1319,55 @@ def source_scan_projection(
 
     Projection seeds are expressed in post-source logical output names, so a
     demanded logical column such as ``premium`` must be pushed down as its
-    physical input name, for example ``raw_premium``.
+    physical input name, for example ``raw_premium``; the source's post-load
+    ``code`` then carries that demand back to the columns the scan has to read
+    (:func:`source_user_code_scan_columns`).  ``source_columns`` is the opened
+    scan's schema.  Without it a scan under projection-opaque code stays full
+    width, because only a known schema lets lineage keep a row carrier.
     """
     selected = _strict_string_list(config.get("selected_columns"), key="selected_columns")
     selected_set = frozenset(selected)
-    renames = _strict_renames(config)
+    _strict_renames(config)
 
     if required_output_columns is None:
         return SourceScanProjection(columns=None)
 
     required = frozenset(required_output_columns)
-    if not required:
-        return SourceScanProjection(columns=frozenset())
+    pre_shaping_names = _source_pre_shaping_names(config, required)
+    if selected and pre_shaping_names is not None:
+        excluded = sorted(
+            logical_column
+            for logical_column, column in pre_shaping_names.items()
+            if column not in selected_set
+        )
+        if excluded:
+            raise ValueError(
+                "source projection requires a logical output column excluded by "
+                f"selected_columns: {excluded[0]!r}"
+            )
+    if source_columns is None and not source_user_code_preserves_column_projection(code):
+        return SourceScanProjection(columns=None)
+    return SourceScanProjection(
+        columns=source_user_code_scan_columns(
+            config,
+            code,
+            required,
+            source_columns=source_columns,
+        )
+    )
 
+
+def _source_pre_shaping_names(
+    config: Mapping[str, Any],
+    output_columns: frozenset[str],
+) -> dict[str, str] | None:
+    """Map demanded output names to the names a source produces before its renames.
+
+    ``None`` means a demanded name cannot be attributed to exactly one
+    pre-rename column, so the scan has to stay full width.
+    """
+    selected = _strict_string_list(config.get("selected_columns"), key="selected_columns")
+    renames = _strict_renames(config)
     reverse: dict[str, str] = {}
     ambiguous_targets: set[str] = set()
     for source, target in renames.items():
@@ -1336,26 +1376,11 @@ def source_scan_projection(
             continue
         reverse[target] = source
 
-    if renames and not selected:
-        rename_outputs = set(reverse) | ambiguous_targets
-        if required & rename_outputs:
-            return SourceScanProjection(columns=None)
-
-    physical: set[str] = set()
-    for logical_column in required:
-        if logical_column in ambiguous_targets:
-            # The demand cannot be mapped to one physical column, so the scan
-            # stays full width; the post-call filter still applies the selection.
-            return SourceScanProjection(columns=None)
-        physical_column = reverse.get(logical_column, logical_column)
-        if selected and physical_column not in selected_set:
-            raise ValueError(
-                "source projection requires a logical output column excluded by "
-                f"selected_columns: {logical_column!r}"
-            )
-        physical.add(physical_column)
-
-    return SourceScanProjection(columns=frozenset(physical))
+    if renames and not selected and output_columns & (set(reverse) | ambiguous_targets):
+        return None
+    if output_columns & ambiguous_targets:
+        return None
+    return {column: reverse.get(column, column) for column in output_columns}
 
 
 def has_configured_column_renames(node: GraphNode) -> bool:
@@ -1427,6 +1452,50 @@ def source_user_code_preserves_column_projection(code: str) -> bool:
         return False
 
     return saw_df_assignment
+
+
+def source_user_code_scan_columns(
+    config: Mapping[str, Any],
+    code: str,
+    output_columns: Iterable[str],
+    *,
+    source_columns: Iterable[str] | None,
+) -> frozenset[str] | None:
+    """Return the scan columns a source needs to produce logical *output_columns*.
+
+    Output shaping runs after the post-load ``code``, so demanded names are
+    first mapped back through the configured renames.  Projection-transparent
+    code then passes that demand through unchanged; other code is carried back
+    through the closed column lineage model, so the scan never reads a column
+    the code creates and always reads the columns it consumes.  ``None`` means
+    the scan must stay full width.  The planner, source builders, and runtime
+    join refinement all decide source projection through this one rule.
+
+    ``source_columns`` is the opened scan's schema, and a caller choosing
+    physical columns must supply it: only a known schema lets lineage keep a
+    row carrier when the code drops every demanded column, and lets a rename
+    that would collide on the full output keep the scan full width, so the
+    collision raises in every profile.  Planning passes ``None`` to ask only
+    whether projection is provable.
+    """
+    pre_shaping_names = _source_pre_shaping_names(config, frozenset(output_columns))
+    if pre_shaping_names is None:
+        return None
+    demand = frozenset(pre_shaping_names.values())
+    schema = None if source_columns is None else frozenset(source_columns)
+    if source_user_code_preserves_column_projection(code):
+        scan_columns, pre_shaping_output = demand, schema
+    else:
+        lineage = analyze_polars_lineage(code, {"df": schema}, demand)
+        if not lineage.supported:
+            return None
+        scan_columns = lineage.demands_by_input["df"]
+        pre_shaping_output = lineage.exact_output_columns
+    if pre_shaping_output is not None and (
+        _configured_output_schema(config, pre_shaping_output) is None
+    ):
+        return None
+    return scan_columns
 
 
 _MaterialisingCall = tuple[int, int, int, str]
@@ -2477,20 +2546,34 @@ def _user_code_has_unbounded_projection_contract(node: GraphNode) -> bool:
     return produced is None or referenced is None
 
 
-def _must_run_source_user_code_unprojected(node: GraphNode) -> bool:
+def _must_run_source_user_code_unprojected(node: GraphNode, demand: set[str] | None) -> bool:
     """Return whether a source must scan full width before post-load code.
 
     Source post-load code runs inside the source builder before any downstream
     edge projection.  If that code may inspect columns outside the downstream
     demand, pushing scan projection into the builder would be incorrect.  The
     safe bounded strategy is to scan full width, run the source code, then let
-    downstream edges/checkpoints narrow the frame again.
+    downstream edges/checkpoints narrow the frame again.  A Data Input whose
+    code the column lineage model proves for a known *demand* is the exception:
+    its builder reads exactly the columns that code consumes.  An External File
+    opens no scan, so its code is analysed as a transform instead.
     """
-    return node.data.nodeType in {
+    if node.data.nodeType not in {
         NodeType.API_INPUT,
         NodeType.DATA_INPUT,
-        NodeType.EXTERNAL_FILE,
-    } and _user_code_has_unbounded_projection_contract(node)
+    } or not _user_code_has_unbounded_projection_contract(node):
+        return False
+    return not (
+        node.data.nodeType == NodeType.DATA_INPUT
+        and demand is not None
+        and source_user_code_scan_columns(
+            node.data.config,
+            str(node.data.config["code"]),
+            demand,
+            source_columns=None,
+        )
+        is not None
+    )
 
 
 def opaque_contract_demands_for_node(
@@ -2764,7 +2847,11 @@ _PROJECTION_RULE_COVERAGE_BY_NODE_TYPE: Mapping[NodeType, ProjectionRuleCoverage
         {
             NodeType.API_INPUT: _coverage(NodeType.API_INPUT, _SOURCE_SCAN_RULE_NAME),
             NodeType.DATA_INPUT: _coverage(NodeType.DATA_INPUT, _SOURCE_SCAN_RULE_NAME),
-            NodeType.EXTERNAL_FILE: _coverage(NodeType.EXTERNAL_FILE, _SOURCE_SCAN_RULE_NAME),
+            NodeType.EXTERNAL_FILE: _coverage(
+                NodeType.EXTERNAL_FILE,
+                _GENERIC_CONTRACT_RULE_NAME,
+                POLARS_COLUMN_LINEAGE_RULE_NAME,
+            ),
             NodeType.CONSTANT: _coverage(NodeType.CONSTANT, _SOURCE_SCAN_RULE_NAME),
             NodeType.POLARS: _coverage(
                 NodeType.POLARS,
@@ -3300,6 +3387,12 @@ def _exact_columns_for_parent_edge(
     return exact_output_by_node.get(edge.source)
 
 
+# Node kinds whose ``code`` runs over their incoming frames and is analysed with
+# compositional column lineage. An External File also binds its loaded
+# artifact as ``obj``, which lineage treats as a value like any preamble name.
+_LINEAGE_CODE_NODE_TYPES = frozenset({NodeType.POLARS, NodeType.EXTERNAL_FILE})
+
+
 def _lineage_input_bindings(
     node: GraphNode,
     incoming_edges: Iterable[GraphEdge],
@@ -3364,7 +3457,7 @@ def _analyse_polars_node_lineage(
     selector_aliases: frozenset[str] = frozenset(),
     known_port_columns: Mapping[tuple[str, str | None], frozenset[str]] | None = None,
 ) -> tuple[ColumnLineageAnalysis, tuple[_LineageInputBinding, ...]] | None:
-    if node.data.nodeType is not NodeType.POLARS:
+    if node.data.nodeType not in _LINEAGE_CODE_NODE_TYPES:
         return None
     produced, referenced = contract.to_tuple()
     if produced is not None and referenced is not None:
@@ -3372,9 +3465,10 @@ def _analyse_polars_node_lineage(
     code = node.data.config.get("code")
     if not isinstance(code, str) or not code.strip():
         return None
+    edges = tuple(incoming_edges)
     bindings = _lineage_input_bindings(
         node,
-        incoming_edges,
+        edges,
         node_map,
         exact_output_by_node,
         submodels=submodels,
@@ -3385,8 +3479,27 @@ def _analyse_polars_node_lineage(
     schemas: dict[str, frozenset[str] | None] = {}
     for binding in bindings:
         schemas[binding.name] = binding.exact_columns
+    df_input: str | None = None
+    value_names: frozenset[str] = frozenset()
+    if node.data.nodeType is NodeType.EXTERNAL_FILE:
+        # The loaded artifact comes from JSON, the restricted unpickler, or a
+        # model loader, so ``obj`` is a value and never a Polars expression.
+        value_names = frozenset({"obj"})
+        # The builder binds the first incoming frame to ``df`` over any input of
+        # that name, so an input called ``df`` has no single meaning here.
+        if "df" in schemas:
+            return None
+        first_key = ProjectionEdgeKey.from_edge(edges[0])
+        df_input = next(binding.name for binding in bindings if binding.key == first_key)
     return (
-        analyze_polars_lineage(code, schemas, demanded_output, selector_aliases=selector_aliases),
+        analyze_polars_lineage(
+            code,
+            schemas,
+            demanded_output,
+            selector_aliases=selector_aliases,
+            df_input=df_input,
+            value_names=value_names,
+        ),
         bindings,
     )
 
@@ -3660,7 +3773,7 @@ def compute_prepared_plan(
                     message="caller required columns",
                 )
 
-        if _must_run_source_user_code_unprojected(node):
+        if _must_run_source_user_code_unprojected(node, needed[node_id]):
             needed[node_id] = None
             node_reasons[node_id] = ProjectionReason(
                 rule=UNPROJECTED_STREAMING_BOUNDARY_RULE_NAME,

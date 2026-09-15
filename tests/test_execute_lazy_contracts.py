@@ -17,6 +17,7 @@ from haute._execute_lazy import (
     _execute_lazy,
     _resolve_effective_contract,
     _runtime_lineage_demands,
+    _runtime_projectable_source_ids,
     _strict_contract_resolution,
 )
 from haute._execution_admission import create_admitted_execution_context
@@ -771,6 +772,41 @@ def test_bounded_lazy_execution_runtime_projects_simple_contract_free_join() -> 
         "materialisation_boundary": 1,
     }
     json.dumps(diagnostics)
+
+
+def test_runtime_join_inference_resolves_sources_by_their_post_load_code_lineage() -> None:
+    """Refinement uses the same scan rule as the planner and the source builder."""
+    sources = {
+        "plain": ({"code": ""}, {"quote_id", "SaleFlag"}),
+        "created_column": (
+            {"code": "df = df.with_columns(SaleFlag=pl.lit(1))"},
+            {"quote_id", "SaleFlag"},
+        ),
+        "outside_lineage": ({"code": "df = df.unique()"}, {"quote_id", "SaleFlag"}),
+        "renamed_output": (
+            {
+                "code": "df = df.select('a')",
+                "selected_columns": ["a"],
+                "column_renames": {"a": "b"},
+            },
+            {"b"},
+        ),
+    }
+    node_map = {
+        node_id: GraphNode(
+            id=node_id,
+            data=NodeData(label=node_id, nodeType=NodeType.DATA_INPUT, config=config),
+        )
+        for node_id, (config, _demand) in sources.items()
+    }
+    demands = {
+        projection_planner.ProjectionEdgeKey.from_edge(make_edge(node_id, "joined")): demand
+        for node_id, (_config, demand) in sources.items()
+    }
+
+    assert _runtime_projectable_source_ids(demands, node_map) == frozenset(
+        {"plain", "created_column", "renamed_output"}
+    )
 
 
 @pytest.mark.parametrize("error", [KeyError("source"), ValueError("port")])
