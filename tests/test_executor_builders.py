@@ -952,7 +952,7 @@ class TestBuildDataInputSelectedColumns:
         data_file = tmp_path / "quotes.parquet"
         pl.DataFrame({"quote_id": ["001"], "sale_date": ["2024-01-01"]}).write_parquet(data_file)
 
-        scanned_by_profile: dict[str, set[str]] = {}
+        builder_columns_by_profile: dict[str, set[str]] = {}
         selected_by_profile: dict[str, list[str]] = {}
         for profile in (
             ExecutionProfile.TRAINING_PREP.value,
@@ -965,13 +965,16 @@ class TestBuildDataInputSelectedColumns:
                 execution_profile=profile,
             )
             frame = fn()
-            scanned_by_profile[profile] = set(frame.collect_schema().names())
+            builder_columns_by_profile[profile] = set(frame.collect_schema().names())
             selected_by_profile[profile] = (
                 _apply_selected_columns(frame, node.data.config).collect_schema().names()
             )
 
-        assert scanned_by_profile[ExecutionProfile.TRAINING_PREP.value] == {"quote_id", "SaleFlag"}
-        assert scanned_by_profile[ExecutionProfile.PREVIEW_EAGER.value] == {
+        assert builder_columns_by_profile[ExecutionProfile.TRAINING_PREP.value] == {
+            "quote_id",
+            "SaleFlag",
+        }
+        assert builder_columns_by_profile[ExecutionProfile.PREVIEW_EAGER.value] == {
             "quote_id",
             "sale_date",
             "SaleFlag",
