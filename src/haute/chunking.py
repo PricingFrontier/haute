@@ -27,7 +27,11 @@ from haute._polars_io_registry import (
     PolarsIoConfigError,
     validate_data_input_config,
 )
-from haute._polars_operations import OperationReceiver, chunk_admitted_names
+from haute._polars_operations import (
+    EXPRESSION_NAMESPACE_NAMES,
+    OperationReceiver,
+    chunk_admitted_names,
+)
 from haute._polars_selectors import literal_selector, preamble_selector_aliases
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, streaming_collect
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
@@ -425,9 +429,7 @@ _ROW_LOCAL_POLARS_FUNCTIONS = chunk_admitted_names(OperationReceiver.POLARS_FUNC
 # them (not just the admitted ones) keeps ``expr.<ns>.<method>()`` classified as
 # ``unsupported_namespace_method`` instead of falling into the generic
 # "unsupported expression" bucket.
-_ROW_LOCAL_NAMESPACE_NAMES = frozenset(
-    {"str", "dt", "list", "arr", "struct", "cat", "bin", "name", "meta"}
-)
+_ROW_LOCAL_NAMESPACE_NAMES = EXPRESSION_NAMESPACE_NAMES
 # Per-namespace admitted methods.  Each entry cites a proof case in
 # tests/test_chunk_whitelist_proofs.py (tag ``("expr.<ns>", "<method>")``) in
 # its registry ``note``.

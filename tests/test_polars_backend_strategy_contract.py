@@ -2017,16 +2017,29 @@ def test_real_estimator_gap_is_conservative_under_a_cap_and_rejected_without_one
     assert "dynamic_unpivot" in error.value.remediation
 
 
-_NEW_BOUNDARY_SHAPES: tuple[tuple[str, str], ...] = (
-    ("sort", "df = df.sort('premium')"),
-    ("unique", "df = df.unique(subset=['segment'])"),
-    ("reverse", "df = df.reverse()"),
-    ("shift", "df = df.shift(1)"),
-    ("top_k", "df = df.top_k(5, by='premium')"),
-    ("bottom_k", "df = df.bottom_k(5, by='premium')"),
+# (case id, blocking operator, transform code)
+_NEW_BOUNDARY_SHAPES: tuple[tuple[str, str, str], ...] = (
+    ("sort", "sort", "df = df.sort('premium')"),
+    ("unique", "unique", "df = df.unique(subset=['segment'])"),
+    ("reverse", "reverse", "df = df.reverse()"),
+    ("shift", "shift", "df = df.shift(1)"),
+    ("top_k", "top_k", "df = df.top_k(5, by='premium')"),
+    ("bottom_k", "bottom_k", "df = df.bottom_k(5, by='premium')"),
     (
         "over",
+        "over",
         "df = df.with_columns(pl.col('premium').sum().over('segment').alias('segment_total'))",
+    ),
+    (
+        "shift_expr",
+        "shift",
+        "df = df.with_columns(pl.col('premium').shift(1).alias('previous'))",
+    ),
+    ("diff", "diff", "df = df.with_columns(pl.col('premium').diff().alias('change'))"),
+    (
+        "pct_change",
+        "pct_change",
+        "df = df.with_columns(pl.col('premium').pct_change().alias('change_rate'))",
     ),
 )
 
@@ -2034,7 +2047,7 @@ _NEW_BOUNDARY_SHAPES: tuple[tuple[str, str], ...] = (
 @pytest.mark.parametrize("profile", list(ExecutionProfile))
 @pytest.mark.parametrize(
     ("operator", "transform_code"),
-    [pytest.param(op, code, id=op) for op, code in _NEW_BOUNDARY_SHAPES],
+    [pytest.param(op, code, id=case) for case, op, code in _NEW_BOUNDARY_SHAPES],
 )
 def test_global_operations_plan_an_estimated_materialisation_boundary(
     tmp_path: Path,
@@ -2061,7 +2074,7 @@ def test_global_operations_plan_an_estimated_materialisation_boundary(
 
 @pytest.mark.parametrize(
     ("operator", "transform_code"),
-    [pytest.param(op, code, id=op) for op, code in _NEW_BOUNDARY_SHAPES],
+    [pytest.param(op, code, id=case) for case, op, code in _NEW_BOUNDARY_SHAPES],
 )
 def test_global_operation_boundary_plans_differ_only_in_the_configured_profile(
     tmp_path: Path,
@@ -2105,6 +2118,58 @@ def test_explode_is_conservative_under_a_cap_and_rejected_without_one(
     assert error.value.reason_code == "materialisation_estimate_unavailable"
     assert error.value.operator == "explode"
     assert "row_expansion_unbounded" in error.value.remediation
+
+
+def test_a_neighbouring_row_expression_inside_a_helper_is_still_a_boundary(
+    tmp_path: Path,
+) -> None:
+    """A helper's parameter may be an expression, so its ``diff`` is admitted.
+
+    The helper also stops the row-count proof, so the boundary has no estimate:
+    conservative under a cap and rejected without one, like ``explode``.
+    """
+    graph = _shape_group_by_graph(
+        tmp_path / "rows.parquet",
+        "def delta(expr):\n    return expr.diff()\n"
+        "df = df.with_columns(delta(pl.col('premium')).alias('change'))",
+        _GROUP_BY_PREMIUM,
+        "premium",
+    )
+
+    with native_memory_backend_scope("rlimit"):
+        capped = _plan_shape(ExecutionProfile.PREVIEW_EAGER, graph)
+
+    assert capped.strategy is ExecutionStrategy.FULL_WIDTH_CONSERVATIVE
+    assert capped.status is ExecutionStrategyStatus.WARNED
+    assert capped.diagnostic.blocking_node_id == "shape"
+    assert capped.diagnostic.blocking_operator == "diff"
+
+    with pytest.raises(GroupByExecutionUnsupportedError) as error:
+        _plan_shape(ExecutionProfile.PREVIEW_EAGER, graph)
+
+    assert error.value.reason_code == "materialisation_estimate_unavailable"
+    assert error.value.operator == "diff"
+
+
+def test_a_namespace_method_through_an_alias_is_not_a_boundary(tmp_path: Path) -> None:
+    """``items = pl.col('l').list`` keeps ``items.diff()`` within each row's list.
+
+    The row-count proof cannot follow the alias, so the downstream group-by has no
+    estimate and is planned under a cap; the shape node is still not a boundary.
+    """
+    graph = _shape_group_by_graph(
+        tmp_path / "rows.parquet",
+        "items = pl.col('l').list\ndf = df.with_columns(items.diff().alias('l'))",
+        _GROUP_BY_PREMIUM,
+        "premium",
+    )
+
+    with native_memory_backend_scope("rlimit"):
+        result = _plan_shape(ExecutionProfile.PREVIEW_EAGER, graph)
+
+    assert result.diagnostic.blocking_node_id == "agg"
+    assert result.diagnostic.blocking_operator == "group_by"
+    assert "shape" not in result.projection_plan.materialisation_boundaries
 
 
 def test_an_expression_method_named_like_a_frame_boundary_is_not_a_boundary(
@@ -2328,16 +2393,20 @@ def test_multi_input_boundaries_plan_an_estimated_boundary_on_every_profile(
 
 def test_the_positive_boundary_tables_cover_every_registered_boundary_method() -> None:
     """The tables cannot silently miss an operator the registry admits."""
-    from haute._polars_operations import materialising_frame_methods
+    from haute._polars_operations import (
+        materialising_expression_methods,
+        materialising_frame_methods,
+    )
 
     covered = (
-        {operator for operator, _code in _NEW_BOUNDARY_SHAPES}
+        {operator for _case, operator, _code in _NEW_BOUNDARY_SHAPES}
         | {operator for operator, _code in _MULTI_INPUT_BOUNDARY_SHAPES}
         # ``group_by``/``groupby`` have their own suite above; ``explode`` has no
         # estimate and is covered by its conservative/rejected test.
         | {"group_by", "groupby", "explode"}
     )
     assert materialising_frame_methods() <= covered
+    assert materialising_expression_methods() <= covered
 
 
 # --------------------------- EXEC-P07 nested-argument boundary costing (#3)

@@ -439,7 +439,61 @@
       "lineage": "lineage_proven",
       "namespace": null,
       "operation": "shift",
-      "policy": "streaming",
+      "policy": "materialisation_boundary",
+      "receiver": "expr",
+      "strategy": {
+        "reason_code": "materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "blocking_operator": "diff",
+        "eligible": false,
+        "reason": "unsupported_expression_method"
+      },
+      "class": "order_dependent",
+      "code": "df = df.with_columns(pl.col('premium').diff().alias('change'))",
+      "expansion": "none",
+      "id": "expr_diff",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "diff",
+      "policy": "materialisation_boundary",
+      "receiver": "expr",
+      "strategy": {
+        "reason_code": "materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "blocking_operator": "pct_change",
+        "eligible": false,
+        "reason": "unsupported_expression_method"
+      },
+      "class": "order_dependent",
+      "code": "df = df.with_columns(pl.col('premium').pct_change().alias('change_rate'))",
+      "expansion": "none",
+      "id": "expr_pct_change",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "pct_change",
+      "policy": "materialisation_boundary",
       "receiver": "expr",
       "strategy": {
         "reason_code": "materialisation_admitted",

@@ -338,8 +338,22 @@ def test_measured_streaming_global_operations_are_not_boundaries() -> None:
         assert entry.policy is not OperationPolicy.MATERIALISATION_BOUNDARY, name
 
 
-def test_over_is_the_only_materialisation_boundary_expression_method() -> None:
-    assert materialising_expression_methods() == {"over"}
+def test_windows_and_neighbouring_row_methods_are_the_boundary_expression_methods() -> None:
+    assert materialising_expression_methods() == {"over", "shift", "diff", "pct_change"}
+
+
+def test_expression_namespace_names_are_polars_expression_namespaces() -> None:
+    import polars as pl
+
+    from haute._polars_operations import EXPRESSION_NAMESPACE_NAMES
+
+    expression = pl.col("a")
+    for name in EXPRESSION_NAMESPACE_NAMES:
+        namespace = getattr(expression, name)
+        assert not callable(namespace), name
+    assert {"list", "arr"} <= EXPRESSION_NAMESPACE_NAMES
+    assert hasattr(expression.list, "shift") and hasattr(expression.list, "diff")
+    assert hasattr(expression.arr, "shift")
 
 
 def test_boundary_operator_memory_factors_are_pinned_to_the_evidence() -> None:
@@ -360,6 +374,8 @@ def test_boundary_operator_memory_factors_are_pinned_to_the_evidence() -> None:
         "bottom_k": 100,
         "reverse": 250,
         "shift": 100,
+        "diff": 100,
+        "pct_change": 150,
         "group_by": 100,
         "groupby": 100,
         # explode's estimate is unavailable, so its factor is never applied.
@@ -491,7 +507,12 @@ def test_every_measured_operation_is_named_by_the_evidence_accessor() -> None:
         "groupby",
         "melt",
     }
-    assert measured_operation_names(OperationReceiver.EXPR) == {"over"}
+    assert measured_operation_names(OperationReceiver.EXPR) == {
+        "over",
+        "shift",
+        "diff",
+        "pct_change",
+    }
 
 
 def test_every_materialisation_boundary_carries_measured_evidence() -> None:

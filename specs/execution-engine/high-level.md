@@ -264,6 +264,14 @@ running heavy work in a child process the parent can kill on timeout or memory l
   buffered state grows with the input (about 1.5x the passthrough control at
   1.5 million rows and over 2x at 6 million on the Linux reference runner, with a
   timing-dependent spread), so it is a boundary rather than a streaming operator.
+  The expression methods that read neighbouring rows through the same engine
+  state are boundaries recorded at the expression level too: `shift` written on a
+  column (a lag column), `diff`, which Polars computes as the column minus its
+  shift, and `pct_change`, whose extra memory grows about as fast as the whole
+  frame. Each is sized with the same whole-frame estimate as every other
+  boundary, which is conservative for a single lag or difference column; the
+  same-named methods of an expression namespace (`list.shift`, `list.diff`,
+  `arr.shift`) work within each row's value and never create a boundary.
   `unpivot`, `rolling`, `group_by_dynamic`, `merge_sorted`,
   `interpolate`, and `filter` were measured at or below the streaming control
   matched to what they read rather than what they emit — a full-width passthrough

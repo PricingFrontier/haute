@@ -68,7 +68,20 @@ OPERATIONS = (
     "interpolate",
     "over_narrow",
     "join_asof_big_right",
+    "shift_expr",
+    "diff_expr",
+    "pct_change_expr",
 )
+
+#: Probes that certify an expression-level registry entry whose name is also
+#: taken by a frame probe (``shift``) or is expression-only, mapped to that
+#: registry name. Each adds one neighbouring-row column of ``v1`` to the
+#: full-width fact, the way an analyst writes a lag or difference feature.
+EXPRESSION_PROBES = {
+    "shift_expr": "shift",
+    "diff_expr": "diff",
+    "pct_change_expr": "pct_change",
+}
 
 #: Registered spellings that are the same operation as another registered name,
 #: so one measurement certifies both.
@@ -161,6 +174,12 @@ def build_plan(operation: str, fact_path: Path, dim_path: Path, multi_path: Path
         return fact.select("key", "v1_gaps").interpolate()
     if operation == "reverse":
         return fact.reverse()
+    if operation == "shift_expr":
+        return fact.with_columns(pl.col("v1").shift(1).alias("v1_shift"))
+    if operation == "diff_expr":
+        return fact.with_columns(pl.col("v1").diff().alias("v1_diff"))
+    if operation == "pct_change_expr":
+        return fact.with_columns(pl.col("v1").pct_change().alias("v1_pct_change"))
     raise ValueError(f"unknown operation {operation!r}")
 
 

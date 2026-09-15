@@ -145,6 +145,9 @@ _OPERATION_CODE = {
     "bottom_k": "df = df.bottom_k(1000, by='v1')",
     "reverse": "df = df.reverse()",
     "shift": "df = df.shift(1)",
+    "shift_expr": "df = df.with_columns(pl.col('v1').shift(1).alias('v1_shift'))",
+    "diff_expr": "df = df.with_columns(pl.col('v1').diff().alias('v1_diff'))",
+    "pct_change_expr": "df = df.with_columns(pl.col('v1').pct_change().alias('v1_pct_change'))",
     "interpolate": "df = df.select('key', 'v1_gaps').interpolate()",
 }
 _TWO_INPUT_OPERATIONS = frozenset({"join", "join_asof"})
@@ -153,8 +156,26 @@ _TWO_INPUT_OPERATIONS = frozenset({"join", "join_asof"})
 # and the factor for the asof case, whose fixtures are written pre-sorted
 # precisely so it needs no leading sort.
 _SINGLE_OPERATOR_FACTORS = {"join_asof": 250}
-# ``over`` is an expression method; every other measured name is a frame method.
-_OPERATION_RECEIVERS = {"over": OperationReceiver.EXPR}
+# ``over`` and the expression probes certify expression methods; every other
+# measured name is a frame method.
+_OPERATION_RECEIVERS = {
+    "over": OperationReceiver.EXPR,
+    "shift_expr": OperationReceiver.EXPR,
+    "diff_expr": OperationReceiver.EXPR,
+    "pct_change_expr": OperationReceiver.EXPR,
+}
+# The neighbouring-row boundaries buffer state whose size depends on scheduling.
+# Each must show it does not stream in either of two ways: at the lane's rows its
+# paired-mean ratio exceeds the streaming ceiling, or measured again at this
+# multiple of the rows its extra memory over the scan control grows by at least
+# this factor (a constant buffer stays near 1.0). Neither alone is steady enough to
+# gate on: a single lag column's growth is one or two chunk-buffer steps on the
+# four-thread CI runner (1.44x to 2.46x across runs, where the ratio held at 1.39x
+# to 1.53x), and the ratio sits below the ceiling on hosts with a larger passthrough
+# floor (frame ``shift`` near 1.15x on Windows, where its growth is 3x or more).
+_NEIGHBOURING_ROW_BOUNDARY_PROBES = ("shift", "shift_expr", "diff_expr", "pct_change_expr")
+_GROWTH_ROW_MULTIPLE = 4
+_MIN_NEIGHBOURING_ROW_GROWTH = 1.5
 _STREAMING_POLICIES = frozenset({OperationPolicy.ROW_LOCAL, OperationPolicy.STREAMING})
 _RESILIENCE_SCALES = {
     "ci": {"calls": 120, "replacements": 8, "timeout_seconds": 120},
@@ -1471,11 +1492,11 @@ def test_persistent_structured_cache_build_has_bounded_growth_rss(
     )
 
 
-def _write_operation_fixtures(root: Path) -> dict[str, Any]:
+def _write_operation_fixtures(root: Path, *, rows: int = _OPERATION_FACT_ROWS) -> dict[str, Any]:
     """Write the fact/dim parquets the operation probe plans against."""
     from tests.performance import _operation_memory_probe as probe
 
-    rows = _OPERATION_FACT_ROWS
+    root.mkdir(parents=True, exist_ok=True)
     dim_rows = rows // _OPERATION_DIM_DIVISOR
     index = pl.int_range(0, rows, eager=True)
     row_index = pl.int_range(0, pl.len())
@@ -1653,10 +1674,18 @@ def _verify_interpolated_output(sink_path: Path) -> dict[str, Any]:
     }
 
 
-def _registered_operation_policy(operation_name: str) -> OperationPolicy:
+def _registry_key(operation_name: str) -> tuple[OperationReceiver, str]:
+    """Return the registry receiver and name a probe certifies."""
+    from tests.performance._operation_memory_probe import EXPRESSION_PROBES
+
     receiver = _OPERATION_RECEIVERS.get(operation_name, OperationReceiver.FRAME)
-    registered = operation(receiver, operation_name)
-    assert registered is not None, f"{operation_name} is not registered for {receiver}"
+    return receiver, EXPRESSION_PROBES.get(operation_name, operation_name)
+
+
+def _registered_operation_policy(operation_name: str) -> OperationPolicy:
+    receiver, name = _registry_key(operation_name)
+    registered = operation(receiver, name)
+    assert registered is not None, f"{name} is not registered for {receiver}"
     return registered.policy
 
 
@@ -1863,11 +1892,18 @@ def test_global_operation_memory_policies_match_the_registry(
 
     # Registry completeness: every entry the registry claims memory evidence for
     # must have a plan here, so adding a measured entry without a measurement
-    # fails this lane rather than silently going uncertified.
-    buildable = set(OPERATIONS) | set(ALIASES)
-    measured_names = measured_operation_names(OperationReceiver.FRAME) | measured_operation_names(
-        OperationReceiver.EXPR
-    )
+    # fails this lane rather than silently going uncertified. The check is per
+    # receiver, so the frame ``shift`` probe cannot stand in for the expression.
+    buildable = {
+        _registry_key(name)
+        for name in OPERATIONS
+        if name not in CONTROLS and name not in WITNESS_PROBES
+    } | {(OperationReceiver.FRAME, alias) for alias in ALIASES}
+    measured_names = {
+        (receiver, name)
+        for receiver in (OperationReceiver.FRAME, OperationReceiver.EXPR)
+        for name in measured_operation_names(receiver)
+    }
     assert measured_names <= buildable, (
         "registry entries claim memory evidence with no probe plan: "
         f"{sorted(measured_names - buildable)}"
@@ -1907,6 +1943,7 @@ def test_global_operation_memory_policies_match_the_registry(
             sink_path.unlink()
         record: dict[str, Any] = {
             "operation": operation_name,
+            "registry_entry": "{}.{}".format(*_registry_key(operation_name)),
             "policy": policy.value,
             "rows_out": measured["rows_out"],
             "incremental_peak_rss_bytes": incremental,
@@ -2213,3 +2250,134 @@ def test_global_operation_memory_policies_match_the_registry(
         )
     )
     assert not failures, "registry policy contradicted by measured peak RSS: " + "; ".join(failures)
+
+
+def test_neighbouring_row_boundaries_grow_with_their_input(
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Witness the neighbouring-row boundaries by growth rather than a floor ratio.
+
+    Each probe is measured against the full-width scan control at the lane's rows
+    and at a multiple of them. A streaming operator's extra memory over the
+    control is a constant buffer; these operators' extra memory grows with the
+    input, which is why they are boundaries. The planner's whole-frame estimate
+    must bound the observed peak at both sizes, so it scales as they do.
+    """
+    fixtures_by_size = {
+        "base": _write_operation_fixtures(tmp_path / "base"),
+        "scaled": _write_operation_fixtures(
+            tmp_path / "scaled", rows=_OPERATION_FACT_ROWS * _GROWTH_ROW_MULTIPLE
+        ),
+    }
+    measurements: list[dict[str, Any]] = []
+    failures: list[str] = []
+    environment: dict[str, Any] = {}
+    for operation_name in _NEIGHBOURING_ROW_BOUNDARY_PROBES:
+        policy = _registered_operation_policy(operation_name)
+        record: dict[str, Any] = {
+            "operation": operation_name,
+            "registry_entry": "{}.{}".format(*_registry_key(operation_name)),
+            "policy": policy.value,
+            "sizes": {},
+        }
+        if policy is not OperationPolicy.MATERIALISATION_BOUNDARY:
+            failures.append(f"{operation_name} must be a materialisation boundary, got {policy}")
+        extra_by_size: dict[str, float] = {}
+        ratio_by_size: dict[str, float] = {}
+        for size, fixtures in fixtures_by_size.items():
+            paired = _paired_measurement(
+                tmp_path, fixtures, operation_name, control_name=_FULL_WIDTH_FLOOR
+            )
+            measured = paired["last_run"]
+            environment = environment or {
+                "polars_version": measured["polars_version"],
+                "polars_threads": measured["polars_threads"],
+                "streaming_chunk_size": measured["streaming_chunk_size"],
+            }
+            planned = _plan_boundary(operation_name, fixtures)
+            estimated = planned.diagnostic.estimated_peak_bytes
+            extra_by_size[size] = paired["operation_mean_bytes"] - paired["control_mean_bytes"]
+            ratio_by_size[size] = paired["ratio"]
+            record["sizes"][size] = {
+                "fact_rows": fixtures["fact_rows"],
+                "rows_out": measured["rows_out"],
+                "control": paired["control"],
+                "operation_samples": paired["operation_samples"],
+                "control_samples": paired["control_samples"],
+                "operation_mean_bytes": paired["operation_mean_bytes"],
+                "control_mean_bytes": paired["control_mean_bytes"],
+                "extra_bytes": extra_by_size[size],
+                "ratio": paired["ratio"],
+                "estimated_peak_bytes": estimated,
+                "blocking_operator": planned.diagnostic.blocking_operator,
+            }
+            if not (isinstance(estimated, int) and estimated >= paired["operation_mean_bytes"]):
+                failures.append(
+                    f"{operation_name} at {fixtures['fact_rows']} rows: estimate={estimated} "
+                    f"must bound observed mean peak={paired['operation_mean_bytes']}"
+                )
+        base_extra, scaled_extra = extra_by_size["base"], extra_by_size["scaled"]
+        grew = scaled_extra > 0 and scaled_extra >= _MIN_NEIGHBOURING_ROW_GROWTH * max(
+            base_extra, 0.0
+        )
+        exceeds_ceiling = ratio_by_size["base"] > _MAX_STREAMING_FLOOR_RATIO
+        record["growth"] = scaled_extra / base_extra if base_extra > 0 else None
+        record["grew"] = grew
+        record["exceeds_streaming_ceiling"] = exceeds_ceiling
+        if not (exceeds_ceiling or grew):
+            failures.append(
+                f"{operation_name} must not stream: its ratio at "
+                f"{fixtures_by_size['base']['fact_rows']} rows must exceed "
+                f"{_MAX_STREAMING_FLOOR_RATIO} of the scan control "
+                f"(got {ratio_by_size['base']:.2f}) or its extra memory must grow at least "
+                f"{_MIN_NEIGHBOURING_ROW_GROWTH}x for {_GROWTH_ROW_MULTIPLE}x the rows "
+                f"(got {base_extra:.0f} -> {scaled_extra:.0f} bytes)"
+            )
+        measurements.append(record)
+
+    request.node.user_properties.append(
+        (
+            "haute_perf_evidence",
+            {
+                "scenario": "neighbouring_row_boundary_growth",
+                "scale": "ci-operation-memory",
+                "execution_profiles": [ExecutionProfile.LAZY_SINK.value],
+                **environment,
+                "input": {
+                    size: {
+                        "fact_rows": fixtures["fact_rows"],
+                        "fact_columns": fixtures["fact_columns"],
+                        "fact_estimated_size_bytes": fixtures["fact_estimated_size_bytes"],
+                        "fact_row_groups": fixtures["fact_row_groups"],
+                    }
+                    for size, fixtures in fixtures_by_size.items()
+                },
+                "measurements": measurements,
+                "rss_contract": {
+                    "paired_samples": _PAIRED_SAMPLES,
+                    "growth_row_multiple": _GROWTH_ROW_MULTIPLE,
+                    "min_growth": _MIN_NEIGHBOURING_ROW_GROWTH,
+                    "max_streaming_floor_ratio": _MAX_STREAMING_FLOOR_RATIO,
+                    "boundary_admission_bytes": _BOUNDARY_ADMISSION_BYTES,
+                },
+                "product_metrics": {
+                    "n_collects": sum(
+                        len(measured["operation_samples"]) + len(measured["control_samples"])
+                        for entry in measurements
+                        for measured in entry["sizes"].values()
+                    ),
+                    "n_checkpoints": 0,
+                    "chunk_count": 0,
+                    "output_bytes": 0,
+                    "temp_disk_peak_bytes": sum(
+                        fixtures["fact_path"].stat().st_size
+                        for fixtures in fixtures_by_size.values()
+                    ),
+                },
+                "admission": {"state": "isolated_process_control", "detail": None},
+                "payload_bytes": 0,
+            },
+        )
+    )
+    assert not failures, "neighbouring-row boundary evidence failed: " + "; ".join(failures)
