@@ -1859,7 +1859,7 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   and an untested estimator is how a wrong number reaches a caller that treats
   "unknown" as "unlimited".
 - **`test_boundary_operator_equivalence.py`** — full-versus-planned equivalence for every
-  admitted boundary operator (sort, reverse, top_k, bottom_k, unique, join inner/left with
+  admitted boundary operator (sort, reverse, shift, top_k, bottom_k, unique, join inner/left with
   duplicate keys and `validate='m:1'`, join_asof, over, explode under a native cap): each graph
   materialises the boundary mid-graph through the real lazy executor under admission, asserts
   the boundary was planned (`materialisation_boundaries` and `blocking_operator`), and compares

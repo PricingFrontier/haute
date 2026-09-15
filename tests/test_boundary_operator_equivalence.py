@@ -255,7 +255,7 @@ def _run_single_input(
 
 
 # ---------------------------------------------------------------------------
-# Ordering (and schema): sort, reverse, top_k, bottom_k
+# Ordering (and schema): sort, reverse, shift, top_k, bottom_k
 # ---------------------------------------------------------------------------
 
 
@@ -274,6 +274,15 @@ def test_reverse_boundary_preserves_ordering_and_schema(tmp_path: Path) -> None:
     planned, source = _run_single_input(tmp_path, "df = src.reverse()", "reverse")
 
     expected = _tail(source.reverse()).collect()
+    _assert_same_schema(planned, expected)
+    assert planned.equals(expected)
+
+
+def test_shift_boundary_preserves_ordering_and_schema(tmp_path: Path) -> None:
+    """Proves: ordering, schema."""
+    planned, source = _run_single_input(tmp_path, "df = src.shift(1)", "shift")
+
+    expected = _tail(source.shift(1)).collect()
     _assert_same_schema(planned, expected)
     assert planned.equals(expected)
 

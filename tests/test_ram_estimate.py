@@ -3046,6 +3046,7 @@ def test_literal_unpivot_cardinality_is_bounded_by_the_on_column_count() -> None
         ("sort", 300),
         ("unique", 350),
         ("reverse", 250),
+        ("shift", 100),
         ("over", 250),
         ("join_asof", 250),
         ("top_k", 100),
