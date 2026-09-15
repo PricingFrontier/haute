@@ -20,7 +20,6 @@ from haute.errors import (
     BoundedMemoryUnsupportedError,
     ConfigError,
     LiveSwitchScenarioError,
-    SchemaMismatchError,
 )
 from haute.graph_utils import GraphNode, NodeData
 from tests.conftest import make_node as _n
@@ -746,12 +745,10 @@ class TestBuildApiInput:
             base_dir=None,
             profile=None,
             columns=None,
-            validate_columns=None,
             port_columns=None,
         ):
             captured["profile"] = profile
             captured["columns"] = columns
-            captured["validate_columns"] = validate_columns
             captured["port_columns"] = port_columns
             return pl.DataFrame({"quote_id": ["001"], "premium_raw": [10.5]}).lazy()
 
@@ -782,7 +779,6 @@ class TestBuildApiInput:
         fn()
 
         assert captured["columns"] == frozenset({"quote_id", "premium_raw"})
-        assert captured["validate_columns"] == frozenset({"quote_id", "premium_raw", "unused"})
         assert captured["port_columns"] is None
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
@@ -801,11 +797,9 @@ class TestBuildApiInput:
             base_dir=None,
             profile=None,
             columns=None,
-            validate_columns=None,
             port_columns=None,
         ):
             captured["columns"] = columns
-            captured["validate_columns"] = validate_columns
             captured["port_columns"] = port_columns
             return pl.DataFrame({"a": [1], "b": [2]}).lazy()
 
@@ -835,37 +829,43 @@ class TestBuildApiInput:
         fn()
 
         assert captured["columns"] is None
-        assert captured["validate_columns"] == frozenset()
         assert captured["port_columns"] is None
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_source_projection_validates_stale_selected_columns(
+    def test_stale_selected_column_is_absent_not_fatal_in_every_profile(
         self,
         tmp_path: Path,
     ) -> None:
+        from haute._execute_lazy import _apply_selected_columns
+
         data_file = tmp_path / "input.parquet"
         pl.DataFrame({"quote_id": [1], "premium": [10.5]}).write_parquet(data_file)
+        config = {
+            "path": str(data_file),
+            "selected_columns": ["quote_id", "stale_column"],
+        }
         node = _n(
             {
                 "id": "api",
-                "data": {
-                    "label": "api",
-                    "nodeType": "apiInput",
-                    "config": {
-                        "path": str(data_file),
-                        "selected_columns": ["quote_id", "stale_column"],
-                    },
-                },
+                "data": {"label": "api", "nodeType": "apiInput", "config": config},
             }
         )
-        _, fn, _ = _build_node_fn(
-            node,
-            required_output_columns=frozenset({"quote_id"}),
-            execution_profile=ExecutionProfile.AUTO_RANGE.value,
-        )
 
-        with pytest.raises(SchemaMismatchError, match="selected_columns"):
-            fn()
+        columns_by_profile = {}
+        for profile in (
+            ExecutionProfile.PREVIEW_EAGER.value,
+            ExecutionProfile.AUTO_RANGE.value,
+        ):
+            _, fn, _ = _build_node_fn(
+                node,
+                required_output_columns=frozenset({"quote_id"}),
+                execution_profile=profile,
+            )
+            frame = _apply_selected_columns(fn(), config)
+            columns_by_profile[profile] = frame.collect_schema().names()
+
+        assert columns_by_profile[ExecutionProfile.AUTO_RANGE.value] == ["quote_id"]
+        assert columns_by_profile[ExecutionProfile.PREVIEW_EAGER.value] == ["quote_id"]
 
     def test_source_projection_rejects_demand_excluded_by_selected_columns(
         self,
@@ -895,6 +895,71 @@ class TestBuildApiInput:
 
         with pytest.raises(ValueError, match="excluded by selected_columns"):
             fn()
+
+
+# ---------------------------------------------------------------------------
+# dataInput selected_columns
+# ---------------------------------------------------------------------------
+
+
+class TestBuildDataInputSelectedColumns:
+    """``selected_columns`` is interpreted once, after the node's code runs."""
+
+    @staticmethod
+    def _node(data_file: Path) -> GraphNode:
+        return _n(
+            {
+                "id": "din",
+                "data": {
+                    "label": "din",
+                    "nodeType": "dataInput",
+                    "config": {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "mode": "scan",
+                        "path": str(data_file),
+                        "arguments": {},
+                        "code": "df = df.with_columns(SaleFlag = pl.lit(1))",
+                        "selected_columns": ["quote_id", "SaleFlag"],
+                    },
+                },
+            }
+        )
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_post_load_code_may_produce_a_selected_column(self, tmp_path: Path) -> None:
+        data_file = tmp_path / "quotes.parquet"
+        pl.DataFrame({"quote_id": ["001"], "sale_date": ["2024-01-01"]}).write_parquet(data_file)
+
+        _, fn, _ = _build_node_fn(
+            self._node(data_file),
+            required_output_columns=frozenset({"quote_id", "SaleFlag"}),
+            execution_profile=ExecutionProfile.TRAINING_PREP.value,
+        )
+
+        assert "SaleFlag" in fn().collect_schema().names()
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_code_produced_selection_matches_across_profiles(self, tmp_path: Path) -> None:
+        data_file = tmp_path / "quotes.parquet"
+        pl.DataFrame({"quote_id": ["001"], "sale_date": ["2024-01-01"]}).write_parquet(data_file)
+
+        columns_by_profile = {}
+        for profile in (
+            ExecutionProfile.TRAINING_PREP.value,
+            ExecutionProfile.PREVIEW_EAGER.value,
+        ):
+            _, fn, _ = _build_node_fn(
+                self._node(data_file),
+                required_output_columns=frozenset({"quote_id", "SaleFlag"}),
+                execution_profile=profile,
+            )
+            columns_by_profile[profile] = set(fn().collect_schema().names())
+
+        assert (
+            columns_by_profile[ExecutionProfile.TRAINING_PREP.value]
+            == columns_by_profile[ExecutionProfile.PREVIEW_EAGER.value]
+        )
 
 
 # ---------------------------------------------------------------------------

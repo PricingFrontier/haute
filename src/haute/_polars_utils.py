@@ -55,21 +55,17 @@ def is_bounded_execution_profile(profile: ExecutionProfile | str | None) -> bool
 def projected_or_carrier_columns(
     schema_columns: Sequence[str],
     demanded: Collection[str],
-    *,
-    carrier_candidates: Collection[str] | None = None,
 ) -> list[str]:
     """Return schema-ordered demanded columns, keeping one carrier when empty.
 
     Polars collapses a zero-column select to zero rows. An exact empty logical
-    demand means "rows only", so one physical column — the first schema column,
-    or the first of *carrier_candidates* when supplied — is retained to
+    demand means "rows only", so the first schema column is retained to
     preserve the frame's height.
     """
     selected = [column for column in schema_columns if column in demanded]
     if selected or demanded or not schema_columns:
         return selected
-    candidates = carrier_candidates or schema_columns
-    return [next(column for column in schema_columns if column in candidates)]
+    return [schema_columns[0]]
 
 
 def streaming_collect(

@@ -328,7 +328,15 @@ class _EstimateGraphIndex:
     ) -> _EstimateGraphIndex:
         """Build an index, optionally overriding source metadata for this request."""
         from haute._execute_lazy import _prune_live_switch_edges
+        from haute.execution import canonical_dataframe_execution_graph
 
+        # Measure the files execution opens, not the ones the raw config
+        # spells. The executor resolves every local runtime input path through
+        # this one resolver before it runs anything, so an estimator that
+        # anchored the same relative locator differently would report a row
+        # count for a stale copy — or none at all for a file that is simply
+        # somewhere else — while the run itself succeeds.
+        graph = canonical_dataframe_execution_graph(graph)
         node_map = {node.id: node for node in graph.nodes}
         pruned_edges = tuple(
             _prune_live_switch_edges(
@@ -1796,8 +1804,7 @@ def estimate_safe_training_rows(
 
     # Subtract excluded features — the pipeline now projects before
     # sinking, so excluded columns never enter the split or pools.
-    node_map = {n.id: n for n in graph.nodes}
-    target_node = node_map.get(target_node_id)
+    target_node = estimate_index.node_map.get(target_node_id)
     excluded = (
         _normalised_string_sequence(target_node.data.config.get("exclude", []))
         if target_node

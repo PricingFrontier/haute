@@ -195,7 +195,7 @@ class TestReadSourceProjectionAndSchema:
         assert "PROJECT 1/2 COLUMNS" in lf.explain()
         assert lf.select(pl.len().alias("row_count")).collect().item() == 3
 
-    def test_bounded_csv_empty_projection_uses_a_declared_validation_carrier(
+    def test_bounded_csv_empty_projection_uses_the_first_schema_column_as_carrier(
         self,
         tmp_path: Path,
     ) -> None:
@@ -206,11 +206,10 @@ class TestReadSourceProjectionAndSchema:
             path,
             profile=ExecutionProfile.AUTO_RANGE,
             columns=[],
-            validate_columns=["b"],
-            schema_overrides={"b": "Int64"},
+            schema_overrides={"a": "Int64"},
         )
 
-        assert lf.collect_schema().names() == ["b"]
+        assert lf.collect_schema().names() == ["a"]
         assert lf.select(pl.len().alias("row_count")).collect().item() == 3
 
     def test_csv_schema_overrides_are_applied(self, tmp_path: Path) -> None:

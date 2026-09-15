@@ -3704,3 +3704,121 @@ def test_verified_port_metadata_is_keyed_by_artifact_content(tmp_path: Path) -> 
 
     assert (first.row_count, rebuilt.row_count) == (2, 3)
     assert repeat is first
+
+
+# ---------------------------------------------------------------------------
+# Estimator path resolution — the estimate must describe the files execution opens
+# ---------------------------------------------------------------------------
+
+
+def _nested_pipeline_project(tmp_path: Path) -> Path:
+    """Build a project whose pipeline lives in ``rating/`` and data at the root.
+
+    This is the shape that exposes a resolver disagreement: a relative locator
+    such as ``data/policies.parquet`` names a project-root file, while anchoring
+    it to the pipeline directory alone names ``rating/data/policies.parquet``.
+    """
+    from haute._sandbox import set_project_root
+
+    (tmp_path / "haute.toml").write_text(
+        '[project]\nname = "t"\npipeline = "rating/main.py"\n',
+        encoding="utf-8",
+    )
+    pipeline_dir = tmp_path / "rating"
+    pipeline_dir.mkdir(exist_ok=True)
+    main_py = pipeline_dir / "main.py"
+    main_py.write_text("", encoding="utf-8")
+    set_project_root(tmp_path)
+    return main_py
+
+
+class TestEstimatorResolvesPathsLikeTheExecutor:
+    """Relative runtime locators must resolve to the files execution opens.
+
+    Execution canonicalises every local runtime input path through
+    :func:`haute.execution.canonical_dataframe_execution_graph` — project root
+    first, pipeline directory as fallback, existing files win. An estimator
+    that anchors the raw config path to the pipeline directory alone inspects a
+    different file, or no file at all, and reports a degraded or simply wrong
+    estimate for a graph that runs fine.
+    """
+
+    def test_root_relative_data_input_reports_the_row_count_execution_reads(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        main_py = _nested_pipeline_project(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "data").mkdir()
+        pl.DataFrame({"policy_id": [1, 2, 3]}).write_parquet(tmp_path / "data" / "policies.parquet")
+        node = _make_source_node(
+            node_id="src",
+            node_type="dataInput",
+            config=_file_input_config("data/policies.parquet"),
+        )
+        graph = PipelineGraph(nodes=[node], edges=[], source_file=str(main_py))
+
+        index = _EstimateGraphIndex.build(graph, "live")
+        metadata = index.source_metadata(index.node_map["src"])
+
+        assert metadata is not None
+        assert metadata.row_count == 3
+
+    def test_data_input_measures_the_same_copy_execution_opens(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute.execution import canonical_dataframe_execution_graph
+
+        main_py = _nested_pipeline_project(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "rating" / "outputs").mkdir(parents=True)
+        (tmp_path / "outputs").mkdir()
+        pl.DataFrame({"policy_id": [1, 2]}).write_parquet(
+            tmp_path / "rating" / "outputs" / "nb.parquet"
+        )
+        pl.DataFrame({"policy_id": [1, 2, 3, 4, 5]}).write_parquet(
+            tmp_path / "outputs" / "nb.parquet"
+        )
+        node = _make_source_node(
+            node_id="src",
+            node_type="dataInput",
+            config=_file_input_config("outputs/nb.parquet"),
+        )
+        graph = PipelineGraph(nodes=[node], edges=[], source_file=str(main_py))
+        [executed_node] = canonical_dataframe_execution_graph(graph).nodes
+        executed_path = Path(str(executed_node.data.config["path"]))
+
+        index = _EstimateGraphIndex.build(graph, "live")
+        metadata = index.source_metadata(index.node_map["src"])
+
+        assert metadata is not None
+        assert metadata.row_count == read_parquet_metadata(executed_path)["row_count"]
+        assert metadata.row_count == 5
+
+    def test_root_relative_api_input_resolves_from_outside_the_project_root(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        main_py = _nested_pipeline_project(tmp_path)
+        # The estimator must not depend on the process working directory: a
+        # locator is project-relative, not cwd-relative, exactly as execution
+        # treats it.
+        monkeypatch.chdir(tmp_path / "rating")
+        (tmp_path / "data").mkdir()
+        pl.DataFrame({"quote_id": [1, 2, 3, 4]}).write_parquet(tmp_path / "data" / "quotes.parquet")
+        node = _make_source_node(
+            node_id="src",
+            node_type="apiInput",
+            config={"path": "data/quotes.parquet"},
+        )
+        graph = PipelineGraph(nodes=[node], edges=[], source_file=str(main_py))
+
+        index = _EstimateGraphIndex.build(graph, "live")
+        metadata = index.source_metadata(index.node_map["src"])
+
+        assert metadata is not None
+        assert metadata.row_count == 4

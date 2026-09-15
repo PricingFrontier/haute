@@ -254,7 +254,7 @@ def _cache_resilience(root: Path, contenders: int) -> dict[str, Any]:
 
 
 def _soak(calls: int, replacements: int) -> dict[str, Any]:
-    pool = InteractiveWorkerPool(size=1, poll_interval_seconds=0.005)
+    pool = InteractiveWorkerPool(size=1, polars_threads=2, poll_interval_seconds=0.005)
     try:
         pool.start()
         baseline = {"rss_bytes": _rss_bytes(), "resources": _resource_count()}

@@ -449,6 +449,9 @@ def test_launch_background_releases_admission_on_thread_start_failure(
     assert admission_calls["release"] == 1
 
 
+# The graph names a real parquet under ``tmp_path``; the estimate index resolves
+# it through the executor's project-contained resolver before admission runs.
+@pytest.mark.usefixtures("_widen_sandbox_root")
 def test_start_releases_admission_when_prep_fails_before_launch(
     tmp_path: Path,
 ) -> None:
@@ -490,6 +493,9 @@ def test_start_releases_admission_when_prep_fails_before_launch(
     assert "prep boom" in job["error"]
 
 
+# The graph names a real parquet under ``tmp_path``; the estimate index resolves
+# it through the executor's project-contained resolver before admission runs.
+@pytest.mark.usefixtures("_widen_sandbox_root")
 def test_start_keeps_admission_held_after_successful_launch(
     tmp_path: Path,
 ) -> None:

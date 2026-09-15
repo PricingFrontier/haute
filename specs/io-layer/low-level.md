@@ -96,9 +96,12 @@ an in-place or non-atomic fallback.
 2. `source_cache_identity()` canonicalises the logical source. Database named connections
    retain only the environment reference; Databricks retains fixed host/token references and
    excludes `batch_size`; inline records contribute only a canonical content digest and row
-   count, never raw record values. Relative file/lakehouse locators and raw SQLite URIs are
-   anchored to the configured pipeline directory consistently for build, execution
-   fingerprinting, and RAM metadata inspection.
+   count, never raw record values. Relative file/lakehouse locators are resolved through the
+   shared runtime path resolver — project root first, configured pipeline directory as
+   fallback, an existing file beating a missing candidate, the project-root copy winning when
+   both exist — identically for build, execution, execution fingerprinting, and RAM metadata
+   inspection, so one locator names one file at every seam. Raw SQLite URIs remain anchored to
+   the configured pipeline directory.
 3. `data_input_is_direct()` derives the execution mode: file-backed Parquet with
    effective mode `scan` is direct; every other canonical Data Input is snapshot-backed.
    No cache-mode field is stored — validation rejects a config still carrying the removed
@@ -263,10 +266,12 @@ Parquet scan, which already has the lazy, schema-bearing execution shape that a 
 would duplicate.
 
 Flat-file source projection treats an explicit empty `columns` iterable as a
-row-cardinality-only request. `_select_columns()` validates against the complete lazy
-schema and retains its first schema-ordered column as a physical carrier; selecting no
-columns would make Polars report zero rows. Non-empty requests retain their exact existing
-behaviour, and `columns=None` remains full-width.
+row-cardinality-only request. `_select_columns()` retains the source's first
+schema-ordered column as a physical carrier for that empty projection; selecting no
+columns would make Polars report zero rows. A non-empty request must name columns the
+source schema actually has, and `columns=None` remains full-width. The requested columns
+are planner demand alone: a node's `selected_columns` is never passed here and never
+checked against the source schema.
 
 ### SQLite builder
 
@@ -486,7 +491,11 @@ failure sections above are the maintained answers.
   `completed` outcomes mapped onto the job lifecycle (a fake spawn receives the budget, the
   generation id, and the staging token; a memory-limited outcome reconciles both through
   `reconcile_unpublished(identity, generation_id, staging_token)`, removing
-  `.staging-<staging_token>`).
+  `.staging-<staging_token>`). It also pins build/execution path agreement: with the
+  pipeline in `rating/` and the data at the project root, the identity and freshness
+  signature the route derives equal the ones execution derives from the same config after
+  `canonical_dataframe_execution_graph()`, so a root-relative locator cannot build one
+  snapshot while the run reads another file.
 - `tests/test_input_preparation.py` covers automatic preparation: (1) parity — for CSV with
   a declared schema, CSV without one, NDJSON, plain JSON, and inline records the prepared
   generation's schema and rows equal a direct whole-file eager read; (2) mixed late types —

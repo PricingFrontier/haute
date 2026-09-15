@@ -3196,7 +3196,33 @@ def test_source_scan_projection_maps_logical_renames_to_physical_columns():
     )
 
     assert projection.columns == frozenset({"quote_id", "raw_premium"})
-    assert projection.validate_columns == frozenset({"quote_id", "raw_premium", "unused"})
+
+
+def test_source_scan_projection_without_demand_reads_the_full_source_width():
+    projection = source_scan_projection(
+        {"selected_columns": ["quote_id", "raw_premium"]},
+        None,
+    )
+
+    assert projection.columns is None
+
+
+def test_source_scan_projection_reads_full_width_when_a_rename_is_ambiguous():
+    """An unmappable demand never narrows the scan to ``selected_columns``.
+
+    The selection is applied post-call in every profile, so narrowing the
+    physical read to it here would make a stale selected name fatal in bounded
+    profiles only.
+    """
+    projection = source_scan_projection(
+        {
+            "selected_columns": ["a", "b", "stale"],
+            "column_renames": {"a": "x", "b": "x"},
+        },
+        {"x"},
+    )
+
+    assert projection.columns is None
 
 
 def test_source_scan_projection_broadens_unsafe_rename_without_selected_columns():

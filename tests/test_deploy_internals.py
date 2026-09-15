@@ -1931,6 +1931,57 @@ class TestScoreGraphStaticDataSourceRemap:
 
         assert result.columns == ["keep"]
 
+    def test_static_data_source_snapshot_runs_post_load_code_for_a_selected_column(self, tmp_path):
+        """A snapshot's post-load code may produce a ``selected_columns`` entry."""
+        from haute.deploy._scorer import score_graph
+
+        snapshot_path = tmp_path / "lookup.snapshot.parquet"
+        pl.DataFrame({"quote_id": ["001"], "sale_date": ["2024-01-01"]}).write_parquet(
+            snapshot_path
+        )
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "lookup",
+                        "data": {
+                            "label": "lookup",
+                            "nodeType": "dataInput",
+                            "config": {
+                                "inputType": "file",
+                                "format": "csv",
+                                "mode": "scan",
+                                "path": "lookup.csv",
+                                "arguments": {},
+                                "code": "df = df.with_columns(SaleFlag = pl.lit(1))",
+                                "selected_columns": ["quote_id", "SaleFlag"],
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config(["quote_id", "SaleFlag"]),
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "lookup", "target": "out"}],
+            }
+        )
+
+        result = score_graph(
+            graph=graph,
+            input_df=pl.DataFrame(),
+            input_node_ids=[],
+            output_node_id="out",
+            artifact_paths={"lookup__snapshot.parquet": str(snapshot_path)},
+        )
+
+        assert result.columns == ["quote_id", "SaleFlag"]
+        assert result["SaleFlag"].to_list() == [1]
+
 
 class TestScoreGraphMissingOutput:
     """Tests for missing output node RuntimeError."""

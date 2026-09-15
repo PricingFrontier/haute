@@ -1571,6 +1571,89 @@ class TestEstimateEndpoint:
             "max_selection_validation_rows": 12,
         }
 
+    def test_estimate_maps_evaluation_preview_validation_failure_to_422(
+        self,
+        client,
+        tmp_path,
+    ):
+        """A data-dependent preflight failure is a 422 with its reason, never a 500."""
+        path = tmp_path / "null_target.parquet"
+        pl.DataFrame(
+            {
+                "x1": [1.0, 2.0, 3.0],
+                "y": pl.Series([None, None, None], dtype=pl.Float64),
+            }
+        ).write_parquet(path)
+        graph = _make_modelling_graph(str(path))
+
+        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert detail.startswith("Evaluation preview failed: ")
+        assert "only null values" in detail
+
+    def test_estimate_maps_contract_mismatch_to_422(self, client, training_data):
+        """A node whose output breaks its declared contract is a 422, never a 500."""
+        base = _make_modelling_graph(training_data)
+        train_config = next(n for n in base["nodes"] if n["id"] == "train")["data"]["config"]
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataInput",
+                            "config": make_ready_file_input_config(training_data),
+                        },
+                    },
+                    {
+                        "id": "prep",
+                        "data": {
+                            "label": "prep",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": "df = source",
+                                "contract": {
+                                    "inputs": [],
+                                    "outputs": ["x1", "x2", "y", "phantom"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "train",
+                        "data": {"label": "train", "nodeType": "modelling", "config": train_config},
+                    },
+                ],
+                "edges": [
+                    make_edge("source", "prep").model_dump(),
+                    make_edge("prep", "train").model_dump(),
+                ],
+            }
+        ).model_dump()
+
+        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert detail.startswith("Evaluation preview failed: ")
+        assert "phantom" in detail
+
+    def test_estimate_maps_polars_missing_column_to_422(self, client, training_data):
+        """Post-load code naming a column the source lacks is a 422, never a 500."""
+        graph = _make_modelling_graph(training_data)
+        source = next(n for n in graph["nodes"] if n["id"] == "source")
+        source["data"]["config"]["code"] = "df = df.with_columns(flag = pl.col('missing'))"
+
+        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert detail.startswith("Evaluation preview failed: ")
+        assert "missing" in detail
+
     def test_estimate_evaluation_preview_accepts_upstream_group_by(
         self,
         client,
