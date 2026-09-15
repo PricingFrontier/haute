@@ -951,12 +951,18 @@ class TestPreparationTempPathOwnership:
         monkeypatch: pytest.MonkeyPatch,
         training_parquet: str,
         _widen_sandbox_root: None,
+        tmp_path: Path,
     ) -> None:
         """A setup failure before launch ends the job error with nothing left."""
         import tempfile
 
         monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "bogus")
+        # Own the temp root. The system temp directory is shared with every
+        # other worker of a parallel run, whose own haute_train_* files would
+        # otherwise appear between the two snapshots below.
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
         temp_root = Path(tempfile.gettempdir())
+        assert temp_root == tmp_path
         before = set(temp_root.glob("haute_train_*.parquet"))
 
         run = _PreparationRun()

@@ -3207,6 +3207,13 @@ def test_source_scan_projection_without_demand_reads_the_full_source_width():
     assert projection.columns is None
 
 
+def test_source_scan_projection_with_empty_demand_reads_rows_only():
+    """Zero demanded columns is a row-count request: an empty projection, not full width."""
+    projection = source_scan_projection({"selected_columns": ["quote_id", "premium"]}, frozenset())
+
+    assert projection.columns == frozenset()
+
+
 def test_source_scan_projection_reads_full_width_when_a_rename_is_ambiguous():
     """An unmappable demand never narrows the scan to ``selected_columns``.
 
