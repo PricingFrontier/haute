@@ -176,21 +176,11 @@ def _source_format(path: str) -> SourceFormat:
 def _select_columns(
     lf: pl.LazyFrame,
     columns: tuple[str, ...] | None,
-    *,
-    validate_columns: tuple[str, ...] | None = None,
 ) -> pl.LazyFrame:
     schema_columns = lf.collect_schema().names()
-    requested = set(columns or ())
-    validation_requested = set(validate_columns or ())
-    validation_missing = validation_requested - set(schema_columns)
-    if validation_missing:
-        raise SchemaMismatchError(
-            "Source selected_columns references columns missing from the source schema.",
-            missing=sorted(validation_missing),
-            available=schema_columns,
-        )
     if columns is None:
         return lf
+    requested = set(columns)
     missing = requested - set(schema_columns)
     if missing:
         raise SchemaMismatchError(
@@ -198,14 +188,7 @@ def _select_columns(
             missing=sorted(missing),
             available=schema_columns,
         )
-    # When selected_columns are being validated, the carrier comes from those
-    # so a later declarative selection cannot discard it.
-    selected = projected_or_carrier_columns(
-        schema_columns,
-        requested,
-        carrier_candidates=validation_requested,
-    )
-    return lf.select(selected)
+    return lf.select(projected_or_carrier_columns(schema_columns, requested))
 
 
 def _csv_header_columns(path: str) -> list[str]:
@@ -247,7 +230,6 @@ def _validate_csv_declared_schema_for_profile(
     profile: ExecutionProfile | None,
     schema_overrides: Mapping[str, Any] | None,
     columns: tuple[str, ...] | None,
-    validate_columns: tuple[str, ...] | None,
 ) -> list[str] | None:
     if not schema_overrides and not _is_bounded_csv_profile(profile):
         return None
@@ -273,19 +255,9 @@ def _validate_csv_declared_schema_for_profile(
                 missing=missing_projection,
                 available=header,
             )
-    if validate_columns:
-        missing_validation = sorted(set(validate_columns) - header_set)
-        if missing_validation:
-            raise SchemaMismatchError(
-                "Source selected_columns references columns missing from the source schema.",
-                missing=missing_validation,
-                available=header,
-            )
-
     if _is_bounded_csv_profile(profile):
         if columns == ():
-            carrier_candidates = set(validate_columns or header)
-            required = [next(column for column in header if column in carrier_candidates)]
+            required = [header[0]]
         else:
             required = list(columns) if columns is not None else header
         missing_required = sorted(
@@ -366,7 +338,7 @@ class DataSourceAdapter:
     source_type: str
     location: str
     _reader: Callable[
-        [ExecutionProfile | str | None, tuple[str, ...] | None, tuple[str, ...] | None],
+        [ExecutionProfile | str | None, tuple[str, ...] | None],
         pl.LazyFrame,
     ]
 
@@ -375,14 +347,9 @@ class DataSourceAdapter:
         *,
         profile: ExecutionProfile | str | None = None,
         columns: Iterable[str] | None = None,
-        validate_columns: Iterable[str] | None = None,
     ) -> pl.LazyFrame:
         """Read the configured source as a Polars LazyFrame."""
-        return self._reader(
-            profile,
-            _normalise_columns(columns),
-            _normalise_columns(validate_columns),
-        )
+        return self._reader(profile, _normalise_columns(columns))
 
 
 def _required_config_string(
@@ -417,7 +384,6 @@ def build_data_source_adapter(config: Mapping[str, Any]) -> DataSourceAdapter:
         def _read_flat_file(
             _profile: ExecutionProfile | str | None,
             _columns: tuple[str, ...] | None,
-            _validate_columns: tuple[str, ...] | None,
             _path: str = path,
             _schema_overrides: Mapping[str, Any] | None = schema_overrides,
         ) -> pl.LazyFrame:
@@ -425,7 +391,6 @@ def build_data_source_adapter(config: Mapping[str, Any]) -> DataSourceAdapter:
                 _path,
                 profile=_profile,
                 columns=_columns,
-                validate_columns=_validate_columns,
                 schema_overrides=_schema_overrides,
             )
 
@@ -439,14 +404,9 @@ def read_data_source(
     *,
     profile: ExecutionProfile | str | None = None,
     columns: Iterable[str] | None = None,
-    validate_columns: Iterable[str] | None = None,
 ) -> pl.LazyFrame:
     """Read a configured data source through the shared adaptor boundary."""
-    return build_data_source_adapter(config).read(
-        profile=profile,
-        columns=columns,
-        validate_columns=validate_columns,
-    )
+    return build_data_source_adapter(config).read(profile=profile, columns=columns)
 
 
 def read_user_bytes_and_text(path: str | Path) -> tuple[bytes, str]:
@@ -483,7 +443,6 @@ def read_source(
     *,
     profile: ExecutionProfile | str | None = None,
     columns: Iterable[str] | None = None,
-    validate_columns: Iterable[str] | None = None,
     schema_overrides: Mapping[str, Any] | None = None,
 ) -> pl.LazyFrame:
     """Read a data file into a LazyFrame, dispatching on file extension.
@@ -506,7 +465,6 @@ def read_source(
     path_string = _validate_source_path(path)
     normalised_profile = normalise_execution_profile(profile)
     projection_columns = _normalise_columns(columns)
-    validation_columns = _normalise_columns(validate_columns)
     source_schema_overrides = _normalise_schema_overrides(schema_overrides)
     fmt = _source_format(path_string)
 
@@ -516,7 +474,6 @@ def read_source(
             profile=normalised_profile,
             schema_overrides=source_schema_overrides,
             columns=projection_columns,
-            validate_columns=validation_columns,
         )
         if source_schema_overrides is None:
             lf = pl.scan_csv(path_string)
@@ -526,7 +483,7 @@ def read_source(
                 scan_kwargs["infer_schema"] = False
             lf = pl.scan_csv(path_string, **scan_kwargs)
             _validate_declared_schema(lf, source_schema_overrides, path=path_string)
-        return _select_columns(lf, projection_columns, validate_columns=validation_columns)
+        return _select_columns(lf, projection_columns)
 
     if fmt == SourceFormat.JSON:
         if normalised_profile is not None and is_bounded_execution_profile(normalised_profile):
@@ -539,7 +496,7 @@ def read_source(
             )
         lf = pl.read_json(path_string).lazy()
         _validate_declared_schema(lf, source_schema_overrides, path=path_string)
-        return _select_columns(lf, projection_columns, validate_columns=validation_columns)
+        return _select_columns(lf, projection_columns)
 
     if fmt == SourceFormat.NDJSON:
         if source_schema_overrides is None:
@@ -552,11 +509,11 @@ def read_source(
             )
             lf = pl.scan_ndjson(path_string, schema_overrides=source_schema_overrides)
             _validate_declared_schema(lf, source_schema_overrides, path=path_string)
-        return _select_columns(lf, projection_columns, validate_columns=validation_columns)
+        return _select_columns(lf, projection_columns)
 
     lf = pl.scan_parquet(path_string)
     _validate_declared_schema(lf, source_schema_overrides, path=path_string)
-    return _select_columns(lf, projection_columns, validate_columns=validation_columns)
+    return _select_columns(lf, projection_columns)
 
 
 @functools.lru_cache(maxsize=_OBJECT_CACHE_MAX_SIZE)

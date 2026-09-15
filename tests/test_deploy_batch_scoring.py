@@ -927,6 +927,9 @@ class TestInferDeployExecutionPolicy:
         assert policy["strategy"] != "unsupported"
         assert policy["reason_code"]
 
+    # The sample source lives under ``tmp_path``, which the estimate index now
+    # resolves through the executor's project-contained resolver.
+    @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_unavailable_estimate_is_translated_to_the_runtime_warning(
         self,
         tmp_path: Path,
@@ -944,6 +947,9 @@ class TestInferDeployExecutionPolicy:
         assert policy["blocking_operator"] == "group_by"
         assert "hard-capped" in policy["remediation"]
 
+    # The sample source lives under ``tmp_path``, which the estimate index now
+    # resolves through the executor's project-contained resolver.
+    @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_other_planning_rejections_fail_the_bundle(
         self,
         tmp_path: Path,
@@ -988,6 +994,9 @@ class TestInferDeployExecutionPolicy:
 
         assert [context.release_calls for context in contexts] == [[True]]
 
+    # The sample source lives under ``tmp_path``, which the estimate index now
+    # resolves through the executor's project-contained resolver.
+    @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_in_process_runtime_refuses_an_unprovable_group_by(
         self,
         tmp_path: Path,

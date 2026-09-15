@@ -2202,6 +2202,94 @@ class TestDataInputBuilder:
         assert exc_info.value.context["available"] == ["present"]
 
 
+class TestDataInputSelectedColumnsAcrossProfiles:
+    """A Data Input's post-load code may produce a selected column."""
+
+    @staticmethod
+    def _context(profile: ExecutionProfile) -> ExecutionContext:
+        memory_limit = 1024**3
+        admission = ExecutionAdmission(
+            operation="test_selected_columns",
+            profile=profile,
+            memory_limit_bytes=memory_limit,
+            rss_at_admission_bytes=0,
+            rss_limit_bytes=memory_limit,
+            headroom_bytes=memory_limit,
+            config_key="test",
+        )
+        return ExecutionContext(
+            operation="test_selected_columns",
+            profile=profile,
+            memory_limit_bytes=memory_limit,
+            memory_baseline_bytes=0,
+            rss_limit_bytes=memory_limit,
+            admission=admission,
+            memory_sampler=lambda: 0,
+        )
+
+    @staticmethod
+    def _graph(source: Path) -> PipelineGraph:
+        return PipelineGraph(
+            nodes=[
+                _ready_data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "mode": "scan",
+                        "path": str(source),
+                        "arguments": {},
+                        "code": "df = df.with_columns(SaleFlag = pl.lit(1))",
+                        "selected_columns": ["quote_id", "SaleFlag"],
+                    },
+                ),
+                GraphNode(
+                    id="shaped",
+                    data=NodeData(
+                        label="shaped",
+                        nodeType=NodeType.POLARS,
+                        config={"code": "df = din.filter(pl.col('SaleFlag') == 1)"},
+                    ),
+                ),
+            ],
+            edges=[_edge("din", "shaped")],
+        )
+
+    def _columns_for_profile(self, source: Path, profile: ExecutionProfile) -> list[str]:
+        from haute.execution import execute_lazy_graph
+        from haute.executor import _build_node_fn
+
+        frames, *_ = execute_lazy_graph(
+            self._graph(source),
+            _build_node_fn,
+            target_node_id="shaped",
+            required_columns_by_node={"shaped": {"quote_id", "SaleFlag"}},
+            execution_context=self._context(profile),
+        )
+        return frames["shaped"].collect_schema().names()
+
+    def test_code_produced_selection_survives_a_bounded_profile(self, haute_scratch: Path) -> None:
+        source = haute_scratch / "quotes.parquet"
+        pl.DataFrame(
+            {"quote_id": ["q1", "q2"], "sale_date": ["2024-01-01", "2024-02-01"]}
+        ).write_parquet(source)
+
+        assert self._columns_for_profile(source, ExecutionProfile.TRAINING_PREP) == [
+            "quote_id",
+            "SaleFlag",
+        ]
+
+    def test_bounded_and_preview_profiles_agree_on_the_selection(self, haute_scratch: Path) -> None:
+        source = haute_scratch / "quotes.parquet"
+        pl.DataFrame(
+            {"quote_id": ["q1", "q2"], "sale_date": ["2024-01-01", "2024-02-01"]}
+        ).write_parquet(source)
+
+        assert self._columns_for_profile(
+            source, ExecutionProfile.TRAINING_PREP
+        ) == self._columns_for_profile(source, ExecutionProfile.PREVIEW_EAGER)
+
+
 class TestCodegenAndParseRoundTrip:
     """Generated code carries a config= sidecar reference and parses back."""
 

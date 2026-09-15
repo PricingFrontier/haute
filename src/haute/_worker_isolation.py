@@ -7,9 +7,10 @@ import os
 import pickle
 import queue
 import sys
+import threading
 import time
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from multiprocessing.process import BaseProcess
 from typing import Any, Literal, TypeVar, cast
@@ -613,6 +614,37 @@ def create_worker_queue(ctx: Any, maxsize: int) -> Any:
             ) from retry_exc
 
 
+#: Serialises the parent-side environment overrides a spawned child inherits.
+#: The overrides are necessarily process-wide while ``start()`` runs, so two
+#: concurrent spawns must not be able to observe each other's values.
+_SPAWN_ENVIRONMENT_LOCK = threading.Lock()
+
+
+def start_process_with_environment(process: BaseProcess, environment: Mapping[str, str]) -> None:
+    """Start ``process`` with ``environment`` added to the variables it inherits.
+
+    A spawned child inherits the parent's ``os.environ`` exactly as it stands
+    while ``start()`` runs, and that is the only window in which a variable a
+    library reads at import time can be set for that child. The overrides are
+    therefore applied to the parent globally, under a module-wide lock so no
+    other spawn can inherit them, and every touched variable is restored to its
+    prior value before the lock is released — including when ``start()`` raises.
+    Callers with nothing to override pass an empty mapping so that every spawn
+    takes the same serialised path.
+    """
+    with _SPAWN_ENVIRONMENT_LOCK:
+        previous: dict[str, str | None] = {name: os.environ.get(name) for name in environment}
+        try:
+            os.environ.update(environment)
+            process.start()
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+
 def run_isolated_worker(
     function: Callable[..., T],
     *args: Any,
@@ -657,7 +689,7 @@ def run_isolated_worker(
     process_started = False
     try:
         try:
-            process.start()
+            start_process_with_environment(process, {})
             process_started = True
         except Exception as exc:  # pragma: no cover - depends on multiprocessing internals
             raise IsolatedWorkerStartError(

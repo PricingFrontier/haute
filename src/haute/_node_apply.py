@@ -84,7 +84,6 @@ def resolve_api_input_from_config(
     base_dir: str | Path | None = None,
     profile: str | None = None,
     columns: frozenset[str] | set[str] | None = None,
-    validate_columns: frozenset[str] | set[str] | None = None,
     port_columns: Mapping[str, frozenset[str] | set[str] | None] | None = None,
 ) -> _Frame | dict[str, _Frame]:
     """Load an API input from its current inline config or JSON sidecar."""
@@ -115,7 +114,6 @@ def resolve_api_input_from_config(
         {"sourceType": "flat_file", **config_with_anchored_path},
         profile=profile,
         columns=columns,
-        validate_columns=validate_columns,
     )
 
 

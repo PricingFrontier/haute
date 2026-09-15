@@ -722,34 +722,17 @@ def _score_graph_lazy(
                 _execution_profile: str | None = _profile,
                 _required_columns: frozenset[str] | set[str] | None = _required,
             ) -> _Frame:
-                from haute._builders import _source_scan_projection
-                from haute._io import _select_columns
-                from haute._user_exec import _exec_user_code
+                from haute._builders import apply_source_scan
 
-                preserves_projection = projection.source_user_code_preserves_column_projection(
-                    _code_value
-                )
-                projected = _source_scan_projection(
-                    _execution_profile,
-                    _required_columns if preserves_projection else None,
-                    _config,
+                return apply_source_scan(
+                    pl.scan_parquet(_path),
+                    profile=_execution_profile,
+                    required_output_columns=_required_columns,
+                    config=_config,
+                    code=_code_value,
+                    preamble_ns=_preamble_ns,
                     node_id=_node_id,
                 )
-                frame = pl.scan_parquet(_path)
-                frame = _select_columns(
-                    frame,
-                    None if projected.columns is None else tuple(projected.columns),
-                    validate_columns=tuple(projected.validate_columns),
-                )
-                if _code_value:
-                    return _exec_user_code(
-                        _code_value,
-                        ["df"],
-                        (frame,),
-                        extra_ns=_preamble_ns,
-                        alias_first_input_as_df=True,
-                    )
-                return frame
 
             return func_name, bundled_snapshot_input, True
 

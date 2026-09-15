@@ -38,6 +38,7 @@ from haute._worker_isolation import (
     address_space_caps_supported,
     create_worker_queue,
     process_memory_caps_supported,
+    start_process_with_environment,
 )
 
 SCHEMA_VERSION = 1
@@ -365,7 +366,7 @@ def run_worker_protocol(
     )
     try:
         try:
-            process.start()
+            start_process_with_environment(process, {})
         except Exception as exc:  # pragma: no cover - multiprocessing dependent
             raise IsolatedWorkerStartError(f"Failed to start isolated worker: {exc}") from exc
         rss_watchdog = _create_worker_rss_watchdog(

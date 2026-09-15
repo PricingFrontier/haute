@@ -121,6 +121,45 @@ def _record_source_scan_projection_evidence(
         )
 
 
+def apply_source_scan(
+    frame: pl.LazyFrame,
+    *,
+    profile: str | None,
+    required_output_columns: frozenset[str] | set[str] | None,
+    config: Mapping[str, Any],
+    code: str,
+    preamble_ns: dict[str, Any] | None,
+    node_id: str,
+) -> _Frame:
+    """Project an opened source scan, then run its post-load code.
+
+    ``selected_columns`` is deliberately absent here: the executor applies it
+    once, after this call, in every profile.  The physical scan carries planner
+    demand only, and that demand is pushed down only when the node has no
+    post-load code or that code is projection-transparent — otherwise the code
+    may consume or produce columns the demand set never named.
+    """
+    demanded = (
+        required_output_columns
+        if projection.source_user_code_preserves_column_projection(code)
+        else None
+    )
+    projected = _source_scan_projection(profile, demanded, config, node_id=node_id)
+    frame = _select_columns(
+        frame,
+        None if projected.columns is None else tuple(projected.columns),
+    )
+    if code:
+        return _exec_user_code(
+            code,
+            ["df"],
+            (frame,),
+            extra_ns=preamble_ns,
+            alias_first_input_as_df=True,
+        )
+    return frame
+
+
 def _allow_empty_source_path(profile: str | None) -> bool:
     return profile in {None, ExecutionProfile.PREVIEW_EAGER.value}
 
@@ -396,7 +435,6 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             base_dir=_configured_pipeline_dir(),
             profile=_profile,
             columns=projected.columns,
-            validate_columns=projected.validate_columns,
             port_columns=_port_columns,
         )
 
@@ -407,7 +445,6 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     code = str(config.get("code") or "").strip()
-    code_preserves_projection = projection.source_user_code_preserves_column_projection(code)
     preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
     def data_input_fn(
@@ -422,32 +459,19 @@ def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             # An unsaved, freshly-dropped editor node may preview empty. Strict
             # persisted validation still rejects this shape on save.
             return pl.LazyFrame()
-        demanded_columns = _columns if code_preserves_projection else None
-        projected = _source_scan_projection(
-            _profile,
-            demanded_columns,
-            _config,
+        return apply_source_scan(
+            resolve_data_input(
+                _config,
+                base_dir=_configured_pipeline_dir(),
+                profile=_profile,
+            ),
+            profile=_profile,
+            required_output_columns=_columns,
+            config=_config,
+            code=code,
+            preamble_ns=preamble,
             node_id=_node_id,
         )
-        frame = resolve_data_input(
-            _config,
-            base_dir=_configured_pipeline_dir(),
-            profile=_profile,
-        )
-        frame = _select_columns(
-            frame,
-            None if projected.columns is None else tuple(projected.columns),
-            validate_columns=tuple(projected.validate_columns),
-        )
-        if code:
-            return _exec_user_code(
-                code,
-                ["df"],
-                (frame,),
-                extra_ns=preamble,
-                alias_first_input_as_df=True,
-            )
-        return frame
 
     return ctx.func_name, data_input_fn, True
 

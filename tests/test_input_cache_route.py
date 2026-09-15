@@ -894,3 +894,65 @@ def test_a_base_exception_after_the_child_published_is_never_swallowed(
         )
 
     assert store.open_generation(identity).generation_id == published[0]
+
+
+def test_build_identity_names_the_file_execution_opens(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A root-relative locator must name one file at build and at execution.
+
+    The pipeline lives in ``rating/`` while the data sits at the project root.
+    Anchoring the locator to the pipeline directory alone builds a snapshot
+    under an identity execution never looks up, from a stale copy execution
+    never reads — and the freshness signature describes that other file too.
+    """
+    from haute._input_preparation import preparation_base_dir
+    from haute._input_providers import source_cache_identity, source_signature
+    from haute._sandbox import set_project_root
+    from haute._types import GraphNode, NodeData, PipelineGraph
+    from haute.execution import canonical_dataframe_execution_graph
+    from haute.routes import input_cache
+    from haute.schemas import InputCacheSourceRequest
+
+    (tmp_path / "haute.toml").write_text(
+        '[project]\nname = "t"\npipeline = "rating/main.py"\n',
+        encoding="utf-8",
+    )
+    pipeline_dir = tmp_path / "rating"
+    pipeline_dir.mkdir()
+    main_py = pipeline_dir / "main.py"
+    main_py.write_text("", encoding="utf-8")
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "x.csv").write_text("id,value\n1,a\n", encoding="utf-8")
+    (pipeline_dir / "data").mkdir()
+    (pipeline_dir / "data" / "x.csv").write_text("id,value\n9,z\n10,y\n", encoding="utf-8")
+    set_project_root(tmp_path)
+
+    monkeypatch.setattr(input_cache, "_project_root", lambda: tmp_path)
+    monkeypatch.setattr(input_cache, "_pipeline_base_dir", lambda: pipeline_dir)
+
+    raw_config = _file_config("data/x.csv")
+    node = GraphNode(
+        id="src",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(label="x", nodeType="dataInput", config=dict(raw_config)),
+    )
+    graph = PipelineGraph(nodes=[node], edges=[], source_file=str(main_py))
+    [executed_node] = canonical_dataframe_execution_graph(graph).nodes
+    executed_config = dict(executed_node.data.config)
+    execution_base_dir = preparation_base_dir(graph)
+
+    built_config, built_identity = input_cache._safe_config(
+        InputCacheSourceRequest(config=raw_config)
+    )
+
+    assert built_identity == source_cache_identity(
+        executed_config,
+        base_dir=execution_base_dir,
+    )
+    assert source_signature(
+        built_config,
+        base_dir=input_cache._pipeline_base_dir(),
+    ) == source_signature(executed_config, base_dir=execution_base_dir)

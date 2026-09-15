@@ -160,13 +160,21 @@ def _safe_config(
         ) from None
 
     if config["inputType"] in {"file", "lakehouse"}:
+        # Canonicalise, don't merely validate: the snapshot identity, the
+        # freshness signature, and the bytes the build reads all follow this
+        # path. Execution resolves the same locator through this resolver with
+        # these arguments (``canonical_dataframe_execution_graph``), so
+        # anchoring it any other way here would publish a generation under an
+        # identity execution never looks up, built from a file it never reads.
         try:
-            resolve_runtime_file_path(
-                str(config["path"]),
-                pipeline_dir=_pipeline_base_dir(),
-                project_root=_project_root(),
-                prefer="pipeline",
-                enforce_project_root=True,
+            config["path"] = str(
+                resolve_runtime_file_path(
+                    str(config["path"]),
+                    pipeline_dir=_pipeline_base_dir(),
+                    project_root=_project_root(),
+                    prefer="project",
+                    enforce_project_root=True,
+                )
             )
         except RuntimePathError as exc:
             raise runtime_path_http_exception(exc) from None

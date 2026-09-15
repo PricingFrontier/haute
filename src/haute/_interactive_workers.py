@@ -36,6 +36,7 @@ from haute._worker_isolation import (
     _exitcode_looks_memory_limited,
     _terminate_process,
     create_worker_queue,
+    start_process_with_environment,
 )
 
 logger = get_logger(component="interactive_workers")
@@ -45,6 +46,8 @@ InteractiveExecutionMode = Literal["process", "thread"]
 
 _MODE_ENV = "HAUTE_INTERACTIVE_EXECUTION_MODE"
 _COUNT_ENV = "HAUTE_INTERACTIVE_WORKER_COUNT"
+_POLARS_THREADS_ENV = "HAUTE_INTERACTIVE_POLARS_THREADS"
+_DEFAULT_INTERACTIVE_POLARS_THREADS = 8
 _START_TIMEOUT_SECONDS = 30.0
 _DEFAULT_POLL_INTERVAL_SECONDS = 0.05
 
@@ -55,6 +58,22 @@ def resolve_interactive_execution_mode() -> InteractiveExecutionMode:
     if mode not in {"process", "thread"}:
         raise RuntimeError(f"{_MODE_ENV} must be 'process' or 'thread'")
     return cast(InteractiveExecutionMode, mode)
+
+
+def resolve_interactive_polars_threads() -> int:
+    """Return the Polars thread-pool size each interactive worker is capped to.
+
+    Previews are latency-bound by fixed per-request costs, not by join width,
+    while Polars' streaming join reserves build-side memory per thread — so on
+    a many-core host the extra threads buy committed memory rather than speed
+    and push the worker past its native cap. Several interactive workers also
+    share the host with each other and the server, so a full-core pool in each
+    oversubscribes regardless.
+    """
+    return int_env(
+        _POLARS_THREADS_ENV,
+        min(os.cpu_count() or 1, _DEFAULT_INTERACTIVE_POLARS_THREADS),
+    )
 
 
 class InteractiveWorkerError(IsolatedWorkerError):
@@ -319,16 +338,24 @@ class InteractiveWorkerPool:
         self,
         *,
         size: int,
+        polars_threads: int,
         poll_interval_seconds: float = _DEFAULT_POLL_INTERVAL_SECONDS,
         preload_modules: tuple[str, ...] = (),
     ) -> None:
         if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
             raise ValueError("interactive worker pool size must be a positive integer")
+        if (
+            not isinstance(polars_threads, int)
+            or isinstance(polars_threads, bool)
+            or polars_threads <= 0
+        ):
+            raise ValueError("interactive worker polars_threads must be a positive integer")
         if poll_interval_seconds <= 0:
             raise ValueError("poll_interval_seconds must be positive")
         if any(not isinstance(name, str) or not name for name in preload_modules):
             raise ValueError("preload_modules must contain non-empty module names")
         self._size = size
+        self._polars_threads = polars_threads
         self._poll_interval_seconds = poll_interval_seconds
         self._preload_modules = preload_modules
         self._ctx = mp.get_context("spawn")
@@ -480,7 +507,13 @@ class InteractiveWorkerPool:
             args=(request_queue, result_queue, self._preload_modules),
         )
         try:
-            process.start()
+            # Polars reads POLARS_MAX_THREADS only at import, which happens
+            # during the child's module import — before its entrypoint runs —
+            # so the cap has to be in the environment the child inherits.
+            start_process_with_environment(
+                process,
+                {"POLARS_MAX_THREADS": str(self._polars_threads)},
+            )
             self._wait_for_ready(process, result_queue)
         except IsolatedWorkerHostError:
             self._close_unstarted_queues(request_queue, result_queue)
@@ -882,6 +915,7 @@ def interactive_worker_pool() -> InteractiveWorkerPool:
         if _POOL is None:
             _POOL = InteractiveWorkerPool(
                 size=int_env(_COUNT_ENV, 2),
+                polars_threads=resolve_interactive_polars_threads(),
                 preload_modules=("haute.routes.pipeline",),
             )
         return _POOL

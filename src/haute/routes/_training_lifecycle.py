@@ -49,7 +49,14 @@ from haute._worker_protocol import (
     WorkerRequest,
     WorkerResultManifest,
 )
-from haute.errors import BoundedMemoryUnsupportedError, HauteValidationError
+from haute.errors import (
+    BoundedMemoryUnsupportedError,
+    ConfigError,
+    ContractMismatchError,
+    HauteValidationError,
+    ParseError,
+    SchemaMismatchError,
+)
 from haute.execution import (
     AllExceptColumns,
     build_dataframe_execution_cache_request,
@@ -474,6 +481,23 @@ class TrainService:
             raise HTTPException(
                 status_code=422,
                 detail=f"Evaluation preview cannot run in bounded mode: {exc}",
+            ) from exc
+        except (
+            ContractMismatchError,
+            SchemaMismatchError,
+            ParseError,
+            ConfigError,
+            pl.exceptions.PolarsError,
+        ) as exc:
+            # Graph-shape and schema failures raised while the bounded
+            # projection executes are the user's to fix, exactly like the
+            # data-dependent validation failures above: name the cause. A
+            # Polars failure here comes from planning or collecting the
+            # pipeline's own code and data — the preview shows the same
+            # failure as a node error — so it is reported, never a 500.
+            raise HTTPException(
+                status_code=422,
+                detail=f"Evaluation preview failed: {exc}",
             ) from exc
         finally:
             if execution_context is not None:

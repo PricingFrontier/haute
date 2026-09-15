@@ -1100,10 +1100,9 @@ def with_materialisation_boundaries(
 
 @dataclass(frozen=True)
 class SourceScanProjection:
-    """Physical source scan projection plus schema-only validation columns."""
+    """Physical columns a source scan reads, or ``None`` for the full width."""
 
     columns: frozenset[str] | None
-    validate_columns: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -1307,26 +1306,27 @@ def source_scan_projection(
 ) -> SourceScanProjection:
     """Map logical source output demand to physical scan columns.
 
-    Source builders apply ``selected_columns`` before ``column_renames``.
+    The physical scan is driven by planner demand alone.  ``selected_columns``
+    has exactly one interpreter — the executor's post-call filter, which runs
+    after a source node's code in every profile — so it is never pushed into
+    the physical read and never validated against the file schema here.  It
+    still bounds what a source can legitimately be asked for: demand for a
+    logical column the selection excludes is a planning error.
+
     Projection seeds are expressed in post-source logical output names, so a
     demanded logical column such as ``premium`` must be pushed down as its
-    physical input name, for example ``raw_premium``.  Validation columns are
-    checked against the source schema without being read, which lets bounded
-    profiles stay narrow while still failing loudly on stale selections.
+    physical input name, for example ``raw_premium``.
     """
     selected = _strict_string_list(config.get("selected_columns"), key="selected_columns")
     selected_set = frozenset(selected)
     renames = _strict_renames(config)
 
     if required_output_columns is None:
-        return SourceScanProjection(
-            columns=selected_set if selected else None,
-            validate_columns=selected_set,
-        )
+        return SourceScanProjection(columns=None)
 
     required = frozenset(required_output_columns)
     if not required:
-        return SourceScanProjection(columns=frozenset(), validate_columns=selected_set)
+        return SourceScanProjection(columns=frozenset())
 
     reverse: dict[str, str] = {}
     ambiguous_targets: set[str] = set()
@@ -1339,15 +1339,14 @@ def source_scan_projection(
     if renames and not selected:
         rename_outputs = set(reverse) | ambiguous_targets
         if required & rename_outputs:
-            return SourceScanProjection(columns=None, validate_columns=selected_set)
+            return SourceScanProjection(columns=None)
 
     physical: set[str] = set()
     for logical_column in required:
         if logical_column in ambiguous_targets:
-            return SourceScanProjection(
-                columns=selected_set if selected else None,
-                validate_columns=selected_set,
-            )
+            # The demand cannot be mapped to one physical column, so the scan
+            # stays full width; the post-call filter still applies the selection.
+            return SourceScanProjection(columns=None)
         physical_column = reverse.get(logical_column, logical_column)
         if selected and physical_column not in selected_set:
             raise ValueError(
@@ -1356,10 +1355,7 @@ def source_scan_projection(
             )
         physical.add(physical_column)
 
-    return SourceScanProjection(
-        columns=frozenset(physical),
-        validate_columns=selected_set,
-    )
+    return SourceScanProjection(columns=frozenset(physical))
 
 
 def has_configured_column_renames(node: GraphNode) -> bool:

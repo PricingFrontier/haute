@@ -115,7 +115,12 @@ compatibility facade and route own no duplicate state or worker implementation.
   estimate without starting a job. Once the relevant modelling and evaluation fields
   are valid, it also returns a bounded preview of the exact evaluation plan: effective
   development/final-test rows, validation-fit count and row bounds, plus group counts
-  or date ranges when applicable.
+  or date ranges when applicable. A failure raised while that bounded preview executes
+  is the user's to fix and is answered as HTTP 422 `Evaluation preview failed: <reason>`,
+  whether it is data-dependent (an all-null target, an empty partition), a graph-shape
+  or schema failure (a broken node contract, a column no source supplies, an invalid
+  config or parse, any Polars planning or collection failure raised by the pipeline's own
+  code and data), or a bounded-mode refusal; the endpoint never surfaces one as a 500.
 - `POST /api/modelling/export` returns a standalone Python script that trains the
   identical model the "Train" button would, using the same config → kwargs builder as
   live training.

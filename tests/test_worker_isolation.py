@@ -35,6 +35,7 @@ from haute._worker_isolation import (
     process_memory_caps_supported,
     resolve_worker_memory_enforcement,
     run_isolated_worker,
+    start_process_with_environment,
     worker_config_for_memory_policy,
 )
 from haute._worker_protocol import (
@@ -1725,3 +1726,69 @@ def test_running_interpreter_resource_tracker_has_the_private_shape_recovery_nee
         "haute._worker_isolation._reset_resource_tracker is now a no-op on this "
         "interpreter. Find the new layout before relying on the recovery path."
     )
+
+
+class _EnvironmentProbeProcess:
+    """Minimal process stand-in that records the environment it was started in."""
+
+    def __init__(self, *, failure: BaseException | None = None) -> None:
+        self.observed: str | None = None
+        self.failure = failure
+        self.starts = 0
+
+    def start(self) -> None:
+        self.starts += 1
+        self.observed = os.environ.get("POLARS_MAX_THREADS")
+        if self.failure is not None:
+            raise self.failure
+
+
+def test_start_process_with_environment_restores_a_pre_existing_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POLARS_MAX_THREADS", "16")
+    process = _EnvironmentProbeProcess()
+
+    start_process_with_environment(process, {"POLARS_MAX_THREADS": "2"})
+
+    assert process.starts == 1
+    assert process.observed == "2"
+    assert os.environ["POLARS_MAX_THREADS"] == "16"
+
+
+def test_start_process_with_environment_deletes_an_absent_value_when_start_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("POLARS_MAX_THREADS", raising=False)
+    process = _EnvironmentProbeProcess(failure=RuntimeError("spawn refused"))
+
+    with pytest.raises(RuntimeError, match="spawn refused"):
+        start_process_with_environment(process, {"POLARS_MAX_THREADS": "2"})
+
+    assert process.observed == "2"
+    assert "POLARS_MAX_THREADS" not in os.environ
+
+
+def test_every_multiprocessing_spawn_goes_through_the_environment_helper() -> None:
+    """A bare ``process.start()`` could inherit another spawn's environment overrides.
+
+    The overrides are applied to the parent process while ``start()`` runs, so
+    every worker kind must start under the same lock or a training or
+    dispersion worker spawned during an interactive spawn would silently carry
+    the interactive thread cap for its whole life.
+    """
+    import re
+    from pathlib import Path
+
+    import haute
+
+    package_root = Path(haute.__file__).resolve().parent
+    offenders = [
+        f"{path.relative_to(package_root).as_posix()}:{line_number}"
+        for path in sorted(package_root.rglob("*.py"))
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+        if re.search(r"\bprocess\.start\(\)", line)
+    ]
+
+    assert len(offenders) == 1, offenders
+    assert offenders[0].startswith("_worker_isolation.py:"), offenders

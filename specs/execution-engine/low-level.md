@@ -11,7 +11,7 @@
 | `src/haute/_execute_lazy.py` | The shared execution core: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), `_execute_lazy` (lazy plan + structural parquet checkpointing + dataframe-cache seeding), and `_execute_eager_core`/`EagerResult` (eager materialisation and preview error adaptation). |
 | `src/haute/_contracts.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution consumes the shared column-contract model and registry lookup. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution reads the canonical node registry. |
-| `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, profile-independent projection decisions, fan-in edge demands, materialisation/opaque boundaries, source-scan projection, and bounded strategy diagnostics. |
+| `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, profile-independent projection decisions, fan-in edge demands, materialisation/opaque boundaries, demand-only source-scan projection (a node's configured column selection bounds what may be demanded but is never pushed into or validated against a physical read), and bounded strategy diagnostics. |
 | `src/haute/_execution_schemas.py` | Canonical Pydantic API DTOs for execution-strategy diagnostic boundaries, reasons, provenance, bounded collections, calibration, and the versioned diagnostic payload. `src/haute/schemas.py` re-exports the public models so existing imports remain stable. |
 | `src/haute/_column_lineage.py` | Fail-closed AST interpreter for linear Polars frame programs: exact forward schema transfer, per-input backward column demand, and a closed row-effect class (row-preserving, row-non-increasing, bounded-expansion, or unavailable) for the supported operation vocabulary, plus the audited per-namespace registry of `str`/`dt` expression methods whose bare string arguments Polars parses as literals. |
 | `src/haute/_polars_operations.py` | The closed, receiver-aware registry of recognised Polars operations (`PolarsOperation` entries keyed by receiver, namespace, and name) with their class, evidence-backed policy, expansion, chunk-proof status, lineage support, and materialisation memory factor in basis points, plus the lookup helpers the chunk classifier, the lineage/cardinality analyser, and the planner derive their vocabularies from. Import-time validation rejects duplicate keys and class/policy/expansion combinations that contradict each other. |
@@ -30,10 +30,10 @@
 | `src/haute/routes/_isolated_worker_async.py` | Async route bridge for cancellable isolated-worker transactions: runs the blocking supervisor off-loop, propagates route cancellation/timeout without thread-compute fallback, drains the supervisor to termination, preserves the primary failure when cleanup also fails, and provides the shared linearizable cancellation/publication gate. |
 | `src/haute/chunking.py` | `ChunkPlanRequest`/`chunk_plan()` (proves a graph suffix is chunk-safe, sizes chunks from projected target width, and rejects an over-budget single target row), `iter_chunked_frames()`/`run_chunked_reduce()`/`collect_chunked()` (the serial runner), the per-`NodeType` `ChunkCapability` registry, and the receiver-aware AST row-local user-code classifier (`classify_chunk_local_polars_code()` returning a `ChunkLocalDecision`; `is_chunk_local_polars_code()` is its boolean view) with its frame-method, expression-method, namespace-method, and Polars-function allowlists. |
 | `src/haute/_host_memory.py` | Host memory observation: `available_ram_bytes()` (per-platform probes behind one shared result contract, including Linux cgroup v2/v1 headroom clamping resolved at the process's own cgroup with ancestor-min semantics — each probe reports a real measurement or a recorded failure reason, never fabricated capacity) and `available_vram_bytes()` (the first GPU's total VRAM via nvidia-smi — the CatBoost single-device sizing basis — or nothing when no GPU is present; detection failures other than an absent binary are logged with a reason). Owns the nvidia-smi subprocess chokepoint. |
-| `src/haute/_ram_estimate.py` | Workload-side estimation: `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision), `estimate_gpu_vram_bytes()`, and the `MaterialisationEstimate` contract consumed by strategy planning. It imports graph models directly from `_types.py` so admission and route cold imports do not re-enter the execution facade. |
+| `src/haute/_ram_estimate.py` | Workload-side estimation: `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision), `estimate_gpu_vram_bytes()`, and the `MaterialisationEstimate` contract consumed by strategy planning. Its per-estimate graph index canonicalises the submitted graph with the executor's own runtime path resolver (`canonical_dataframe_execution_graph()`) before indexing nodes, so every estimate describes the files execution actually opens rather than a copy a differently anchored relative locator would name. It imports graph models directly from `_types.py` so admission and route cold imports do not re-enter the execution facade. |
 | `src/haute/_cardinality.py` | Pure, overflow-safe join row-bound formulas for every supported join strategy. It validates finite non-negative input bounds and the closed Polars uniqueness contract (`m:m`, `1:1`, `1:m`, `m:1`) and returns both the upper bound and auditable evidence. |
 | `src/haute/_estimate_calibration.py` | Process-local, upward-only per-`ExecutionProfile` calibration of materialisation estimates: conservatively rounds calibrated bytes, ratchets observed underestimates with a capped safety margin, exposes immutable diagnostic state, and clears inherited state after fork. |
-| `src/haute/_interactive_workers.py` | Warm, killable spawn-worker pool for interactive preview and trace execution: validates process/thread mode, runs affinity-bound serialisable jobs, supervises readiness, timeout, cancellation and RSS limits, and replaces failed workers without leaking stale results. |
+| `src/haute/_interactive_workers.py` | Warm, killable spawn-worker pool for interactive preview and trace execution: validates process/thread mode, resolves the per-worker Polars thread cap (`resolve_interactive_polars_threads()`), runs affinity-bound serialisable jobs, supervises readiness, timeout, cancellation and RSS limits, and replaces failed workers without leaking stale results. |
 | `src/haute/_process_memory.py` | Cross-platform process liveness and resident-memory observation: Linux `/proc`, macOS `libproc`, and Windows process-handle probes return an RSS measurement or an explicit unobservable result for supervised-worker enforcement. |
 
 ## Key types and data structures
@@ -396,6 +396,13 @@ are never capped. A materialised node collects its own plan limited to
 `row_limits_by_node[node]`, or `row_limit` when unset, after projection and column-limit
 selection (each frame of a multi-frame node), and a limited collection never feeds a
 consumer: consumers read the node's uncapped plan, which `EagerResult.plans` also exposes.
+
+`selected_columns` has exactly one interpreter: this shared post-call filter, applied to
+every node's output in every execution profile. Source builders never push it into the
+physical read and never validate it against the file schema, so a Data Input's post-load
+code may add or consume any column — a column the code creates can be selected — and a
+stale selection is simply absent from the output rather than fatal, identically in preview
+and bounded profiles. The physical scan projection comes from planner demand only.
 A target-only preview therefore limits only the target with SQL `LIMIT` semantics — Polars
 pushes the slice upstream only where the result is unchanged — a full materialisation
 gives every node its own limited output, and trace passes its head-frame prefixes.
@@ -750,6 +757,26 @@ merely *named* like one of these from another module remains an internal 500.
 defaults to `process`. `thread` exists as an explicit compatibility/test mode and
 retains the documented non-killable timeout semantics—it is never an automatic
 fallback after a process failure.
+
+Each `process`-mode worker caps its own Polars thread pool at
+`HAUTE_INTERACTIVE_POLARS_THREADS`, defaulting to `min(cores, 8)`. An interactive
+preview is latency-bound by fixed per-request costs rather than by join width, while
+Polars' streaming join reserves build-side memory per thread — so on a many-core host
+the extra threads buy committed memory rather than speed and push the worker into its
+native cap. Measured on a 22-core machine, a small preview through three left joins
+committed 4.6 GB at 22 threads and 3.3 GB at 8, with no latency change on either the
+preview or a join-plus-aggregation over ten million rows. Several interactive workers
+also share the host with each other and the server, so a full-core pool in each
+oversubscribes regardless. Polars reads `POLARS_MAX_THREADS` only when it is imported,
+which happens during the child's module import before its entrypoint runs, so the cap
+is placed in the environment the child inherits: `_start_slot` spawns through
+`start_process_with_environment()` in `_worker_isolation.py`, which applies the
+override to the parent's environment under a module-wide spawn lock and restores every
+touched variable before releasing it. The one-shot isolated worker starts through the
+same helper with an empty mapping, so no worker of either kind can inherit another's
+override. The cap is interactive-only: sink, training and optimiser workers and the
+server itself keep full parallelism. `thread` mode cannot cap at all, because it shares
+the server process's already-initialised Polars pool.
 
 ### Assistant interaction
 
@@ -1882,7 +1909,13 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   is proved to sum both ports' widths. This module is under a
   critical coverage gate: estimates protect users from oversized runtime jobs,
   and an untested estimator is how a wrong number reaches a caller that treats
-  "unknown" as "unlimited".
+  "unknown" as "unlimited". Path agreement with the executor is pinned for a
+  project whose pipeline sits below the root: a root-relative `dataInput` or
+  flat-file `apiInput` locator is sized from the project-root file, and where a
+  stale pipeline-relative copy also exists the reported row count is asserted
+  equal to that of the path `canonical_dataframe_execution_graph()` puts on the
+  node, so the test pins "the same file execution opens" rather than a
+  hard-coded preference.
 - **`test_boundary_operator_equivalence.py`** — full-versus-planned equivalence for every
   admitted boundary operator (sort, reverse, shift, `shift`/`diff`/`pct_change` columns, top_k, bottom_k, unique, join inner/left with
   duplicate keys and `validate='m:1'`, join_asof, over, explode under a native cap): each graph
