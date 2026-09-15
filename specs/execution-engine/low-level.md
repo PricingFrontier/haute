@@ -867,9 +867,11 @@ present a structural or schema result as execution evidence.
   a direct string argument, because Polars reads a string held in a variable or iterated
   out of a collection as a column exactly as it reads a literal one (`then(label)`,
   `clip(bound)`, `is_in(levels)`, `sort_by({'b'})`), and a helper assignment, a preamble
-  constant, or an External File's `obj` can hold one. A mapping is always a literal (a struct
-  value or a replacement mapping), and Polars dtype references (`pl.Float64`, a literal dtype
-  call) and lambdas are never strings, so all three stay admitted. Row-count proofs never use the references, so they keep refusing only literal
+  constant, or an External File's `obj` can hold one. A mapping argument is always a literal
+  (a struct value or a replacement mapping), and Polars dtype references (`pl.Float64`, a
+  literal dtype call) and lambdas are never strings, so all three stay admitted; unpacking a
+  mapping with `**` passes its items as ordinary arguments (`sort_by(**{'by': 'b'})`), so a
+  method call that unpacks one is unsupported. Row-count proofs never use the references, so they keep refusing only literal
   string arguments. Output names must be literal in the same way: an `alias` whose argument
   is not a literal string and every `name` or `struct` namespace method other than a literal
   `name.suffix` leave the expression without a provable name, so its operation is
@@ -879,7 +881,9 @@ present a structural or schema result as execution evidence.
   exactly when that output name is. A comparison with a literal scalar on its left
   (`0 < pl.col('a')`) runs as the expression's reflected comparison and keeps the
   expression's name, while reflected arithmetic (`2 * pl.col('a')`) is named `literal`; a
-  comparison whose left operand is neither a literal nor a provable expression is unnamed.
+  comparison whose left operand is neither a literal nor a provable expression is unnamed, and
+  so is a chained comparison, whose scalar prefix can evaluate to `True` and hand back its last
+  comparison (`0 < 1 < pl.col('a')` is named `a`).
   Every name a frame statement uses must resolve to a value the analyser can see: `pl`, an
   input frame or `df`, a preamble `polars.selectors` alias, a lambda's own parameter inside
   its body, an earlier helper assignment whose value uses only literals and such names, or a

@@ -714,6 +714,11 @@ def _referenced_columns(node: ast.AST, *, rows_only: bool = False) -> frozenset[
                 chain_root = chain_root.value
             if _may_evaluate_to_python_string(chain_root):
                 return None
+            if not rows_only and any(keyword.arg is None for keyword in child.keywords):
+                # ``**mapping`` unpacks into ordinary arguments before Polars sees
+                # them, so a literal mapping can still pass a column name
+                # (``sort_by(**{'by': 'b'})``).
+                return None
             is_name_suffix = (
                 method == "suffix"
                 and isinstance(child.func.value, ast.Attribute)
@@ -874,6 +879,10 @@ def _expression_output_name(node: ast.AST) -> str | None:
         # Reflected arithmetic (``2 * pl.col('a')``) is named ``literal`` too.
         return _expression_output_name(node.left)
     if isinstance(node, ast.Compare):
+        if len(node.ops) != 1:
+            # ``0 < 1 < pl.col('a')`` evaluates its scalar prefix to ``True``
+            # and returns the last comparison, which the walk cannot name.
+            return None
         if _is_scalar_literal(node.left):
             # ``0 < pl.col('a')`` runs as the expression's reflected comparison,
             # which keeps the expression's name.

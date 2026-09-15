@@ -662,6 +662,17 @@ def test_a_variable_in_a_selector_predicate_keeps_the_row_count_proof() -> None:
         ("df = rows.filter(pl.col('a').is_between(obj['bound'], 10))", {"a"}, "dynamic_filter"),
         # A set literal is iterated into column expressions just like a list.
         ("df = rows.with_columns(x=pl.col('a').sort_by({'b'}))", {"x"}, "dynamic_with_columns"),
+        # A mapping unpacked with ``**`` becomes ordinary keyword arguments.
+        (
+            "df = rows.with_columns(x=pl.col('a').sort_by(**{'by': 'b'}))",
+            {"x"},
+            "dynamic_with_columns",
+        ),
+        (
+            "df = rows.with_columns(x=pl.col('a').clip(**{'lower_bound': 'b'}))",
+            {"x"},
+            "dynamic_with_columns",
+        ),
     ],
 )
 def test_a_column_name_the_walk_cannot_see_fails_closed(
@@ -740,6 +751,19 @@ def test_an_output_name_the_syntax_cannot_read_fails_closed(
     assert not result.supported
     assert result.reason in {"dynamic_with_columns", "dynamic_select"}
     assert not schema_less.supported
+
+
+def test_a_chained_comparison_is_not_mistaken_for_a_literal_output() -> None:
+    """The scalar prefix is ``True``, so Polars returns ``1 < pl.col('a')``, named ``a``."""
+    code = "df = rows.with_columns(0 < 1 < pl.col('a'))"
+    frame = pl.DataFrame({"a": [1, 2, 3], "literal": [10, 20, 30]})
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
+    assert full.to_dict(as_series=False) == {"a": [False, True, True], "literal": [10, 20, 30]}
+
+    for schema in (frozenset(frame.columns), None):
+        result = analyze_polars_lineage(code, {"rows": schema}, {"literal"})
+        assert not result.supported
+        assert result.reason == "dynamic_with_columns"
 
 
 @pytest.mark.parametrize(
