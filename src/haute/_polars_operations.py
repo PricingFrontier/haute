@@ -684,8 +684,9 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         _ORDER_DEPENDENT,
         _P_BOUNDARY,
         "reads neighbouring rows. materialises: a lag column over the full-width fact "
-        "grows with the input like the frame method, certified by the fresh-process lane "
-        "against the scan control and witnessed by growth at four times the rows; the "
+        "grows with the input through the frame method's shift node, certified by the "
+        "fresh-process lane against the scan control with its growth recorded at four "
+        "times the rows and the shared node witnessed by frame shift and diff; the "
         "certified observed/(width x 3.0) ratio needs no margin",
         memory_evidence="measured",
     ),
