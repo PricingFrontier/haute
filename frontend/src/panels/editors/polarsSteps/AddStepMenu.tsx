@@ -6,30 +6,18 @@ import type { StepKind } from "./types"
 
 type AddableKind = Exclude<StepKind, "source">
 
-/** Chooser order: rows, then columns, then combining, then values. */
-const ORDER: AddableKind[] = [
-  "filter",
-  "sort",
-  "unique",
-  "limit",
-  "with_column",
-  "select",
-  "drop",
-  "rename",
-  "cast",
-  "fill_null",
-  "join",
-  "concat",
-  "group_by",
-  "pivot",
-  "unpivot",
-  "variable",
+/** Chooser sections, in reading order. */
+const GROUPS: Array<{ title: string; kinds: AddableKind[] }> = [
+  { title: "Rows", kinds: ["filter", "sort", "unique", "limit"] },
+  { title: "Columns", kinds: ["with_column", "select", "drop", "rename", "cast", "fill_null"] },
+  { title: "Combine", kinds: ["join", "concat", "group_by", "pivot", "unpivot"] },
+  { title: "Values", kinds: ["variable"] },
 ]
 
 /**
  * The `Add step` control that sits under the last step: a full-width button
- * that opens, in place, a chooser of every step kind by name (what a kind
- * does is its tooltip). Arrow keys move between kinds, Escape closes and
+ * that opens, in place, a chooser of every step kind by name, grouped as
+ * rows, columns, combine and values (what a kind does is its tooltip). Arrow keys move between kinds, Escape closes and
  * returns focus to the button, and choosing a kind hands it back to the editor.
  */
 export default function AddStepMenu({
@@ -46,9 +34,13 @@ export default function AddStepMenu({
   const button = useRef<HTMLButtonElement | null>(null)
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([])
   const wasOpen = useRef(false)
-  const items: StepKindInfo[] = ORDER.map((kind) => STEP_CATALOGUE.find((info) => info.kind === kind)).filter(
-    (info): info is StepKindInfo => info !== undefined,
-  )
+  const sections = GROUPS.map((group) => ({
+    title: group.title,
+    items: group.kinds
+      .map((kind) => STEP_CATALOGUE.find((info) => info.kind === kind))
+      .filter((info): info is StepKindInfo => info !== undefined),
+  }))
+  const items: StepKindInfo[] = sections.flatMap((section) => section.items)
 
   useEffect(() => {
     if (open) itemRefs.current[0]?.focus()
@@ -96,7 +88,7 @@ export default function AddStepMenu({
           id={menuId}
           role="menu"
           aria-label="Add step"
-          className="grid gap-1.5 rounded-lg p-2"
+          className="grid gap-2.5 rounded-lg p-2.5"
           style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }}
         >
           <div className="flex items-center justify-between">
@@ -107,27 +99,40 @@ export default function AddStepMenu({
               <X size={12} aria-hidden="true" />
             </button>
           </div>
-          <div className="flex flex-wrap gap-1.5">
-            {items.map((info, index) => (
-              <button
-                key={info.kind}
-                type="button"
-                role="menuitem"
-                title={info.description}
-                ref={(el) => {
-                  itemRefs.current[index] = el
-                }}
-                onClick={() => {
-                  setOpen(false)
-                  onAdd(info.kind)
-                }}
-                className="add-row-btn focus-ring rounded-md px-2.5 py-1.5 text-xs font-medium"
-                style={{ color: "var(--text-primary)", border: "1px solid var(--border)" }}
-              >
-                {info.label}
-              </button>
-            ))}
-          </div>
+          {sections.map((section) => (
+            <div key={section.title} role="group" aria-label={section.title} className="grid gap-1">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+                  {section.title}
+                </span>
+                <span aria-hidden="true" className="h-px flex-1" style={{ background: "var(--border-subtle)" }} />
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {section.items.map((info) => {
+                  const index = items.indexOf(info)
+                  return (
+                    <button
+                      key={info.kind}
+                      type="button"
+                      role="menuitem"
+                      title={info.description}
+                      ref={(el) => {
+                        itemRefs.current[index] = el
+                      }}
+                      onClick={() => {
+                        setOpen(false)
+                        onAdd(info.kind)
+                      }}
+                      className="add-row-btn focus-ring rounded-full px-2.5 py-1 text-xs font-medium"
+                      style={{ color: "var(--text-primary)", background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
+                    >
+                      {info.label}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>

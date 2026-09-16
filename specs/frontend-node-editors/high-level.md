@@ -210,8 +210,8 @@ uses) that read as plain-English summaries and open one at a time through a
 keyboard-operable disclosure (a new step opens itself; Escape collapses; deleting a card
 moves focus to the next disclosure or to `Add step`), each with delete, move up, and move
 down, an `Add step` button under the last card (under the start card while there are no
-steps) that opens, in place, a chooser of every step kind by name with what the kind does
-as its tooltip (arrow keys move between kinds, Escape closes and returns focus), covering filter, derived
+steps) that opens, in place, a chooser of every step kind by name, sectioned as rows,
+columns, combine and values, with what the kind does as its tooltip (arrow keys move between kinds, Escape closes and returns focus), covering filter, derived
 column, conditional column, window aggregate, select, drop, rename, cast, sort, unique,
 group by, join, concat, pivot, unpivot, fill null, limit, and variable, and per-step forms whose column
 pickers offer upstream columns plus columns derived by earlier steps while accepting free

@@ -113,6 +113,8 @@ describe("PolarsStepsEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add step" }))
     const menu = screen.getByRole("menu", { name: "Add step" })
     expect(within(menu).getAllByRole("menuitem")).toHaveLength(16)
+    expect(within(menu).getAllByRole("group").map((g) => g.getAttribute("aria-label"))).toEqual(["Rows", "Columns", "Combine", "Values"])
+    expect(within(within(menu).getByRole("group", { name: "Combine" })).getAllByRole("menuitem")).toHaveLength(5)
     expect(within(menu).getByRole("menuitem", { name: "Limit rows" })).toHaveAttribute("title", "Keep the first N rows")
     expect(screen.queryByRole("button", { name: "Add step" })).not.toBeInTheDocument()
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Limit rows" }))
