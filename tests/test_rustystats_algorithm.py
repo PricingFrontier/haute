@@ -677,3 +677,129 @@ class TestBuildInteractionsEmptySlots:
         assert _build_interactions([{"factors": ["", ""], "include_main": True}], terms) == []
         assert _build_interactions([{"factors": ["a", ""], "include_main": True}], terms) == []
         assert len(_build_interactions([{"factors": ["a", "b"]}], terms)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Offset → exposure semantics on RustyStats 0.9
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def exposure_df() -> pl.DataFrame:
+    """Poisson counts whose rate scales with an exposure column ``e``."""
+    rng = np.random.default_rng(7)
+    n = 2000
+    x = rng.normal(size=n)
+    e = rng.uniform(0.2, 2.0, size=n)
+    y = rng.poisson(e * np.exp(0.3 + 0.5 * x)).astype(float)
+    return pl.DataFrame({"x": x, "e": e, "y": y})
+
+
+_EXPOSURE_TERMS = {"x": {"type": "linear"}}
+
+
+class TestOffsetExposureSemantics:
+    def _fit(self, algo, df, params):
+        return algo.fit(
+            train_df=df,
+            features=["x"],
+            cat_features=[],
+            target="y",
+            weight=None,
+            params={"terms": _EXPOSURE_TERMS, **params},
+            task="regression",
+            offset="e",
+        )
+
+    def test_builder_maps_offset_to_exposure_for_log_link_and_keeps_offset_otherwise(self):
+        from haute.modelling._rustystats import _build_glm_builder_kwargs
+
+        frame = pl.DataFrame({"y": [1.0], "x": [0.0], "e": [1.0]})
+        log_default = _build_glm_builder_kwargs(
+            target="y",
+            terms=_EXPOSURE_TERMS,
+            data=frame,
+            family="poisson",
+            intercept=True,
+            offset="e",
+        )
+        assert log_default["exposure"] == "e"
+        assert "offset" not in log_default
+
+        explicit_log = _build_glm_builder_kwargs(
+            target="y",
+            terms=_EXPOSURE_TERMS,
+            data=frame,
+            family="gaussian",
+            intercept=True,
+            link="log",
+            offset="e",
+        )
+        assert explicit_log["exposure"] == "e"
+        assert "offset" not in explicit_log
+
+        identity = _build_glm_builder_kwargs(
+            target="y",
+            terms=_EXPOSURE_TERMS,
+            data=frame,
+            family="gaussian",
+            intercept=True,
+            offset="e",
+        )
+        assert identity["offset"] == "e"
+        assert "exposure" not in identity
+
+        no_offset = _build_glm_builder_kwargs(
+            target="y",
+            terms=_EXPOSURE_TERMS,
+            data=frame,
+            family="poisson",
+            intercept=True,
+        )
+        assert "exposure" not in no_offset and "offset" not in no_offset
+
+    def test_log_link_offset_predictions_equal_exp_of_log_exposure_plus_linear_predictor(
+        self, algo, exposure_df
+    ):
+        """Canonical-link path (no explicit link): the offset column is a multiplier."""
+        result = self._fit(algo, exposure_df, {"family": "poisson"})
+        model = result.model
+        coef = dict(zip(model.feature_names, np.asarray(model.coefficients)))
+        head = exposure_df.head(50)
+        preds = algo.predict(model, head, ["x"], offset="e")
+        expected = np.exp(
+            np.log(head["e"].to_numpy()) + coef["Intercept"] + coef["x"] * head["x"].to_numpy()
+        )
+        np.testing.assert_allclose(preds, expected, rtol=1e-9)
+
+        doubled = algo.predict(model, head.with_columns(pl.col("e") * 2.0), ["x"], offset="e")
+        np.testing.assert_allclose(doubled, 2.0 * preds, rtol=1e-9)
+
+    def test_explicit_log_link_on_gaussian_maps_offset_to_exposure(self, algo, exposure_df):
+        """Explicit-link path: gaussian is identity by default, log when asked."""
+        result = self._fit(algo, exposure_df, {"family": "gaussian", "link": "log"})
+        head = exposure_df.head(50)
+        preds = algo.predict(result.model, head, ["x"], offset="e")
+        doubled = algo.predict(
+            result.model, head.with_columns(pl.col("e") * 2.0), ["x"], offset="e"
+        )
+        np.testing.assert_allclose(doubled, 2.0 * preds, rtol=1e-9)
+
+    def test_identity_link_offset_is_additive(self, algo, exposure_df):
+        result = self._fit(algo, exposure_df, {"family": "gaussian"})
+        head = exposure_df.head(50)
+        preds = algo.predict(result.model, head, ["x"], offset="e")
+        shifted = algo.predict(
+            result.model, head.with_columns(pl.col("e") + 1.0), ["x"], offset="e"
+        )
+        np.testing.assert_allclose(shifted, preds + 1.0, rtol=1e-9, atol=1e-9)
+
+    def test_tweedie_boundary_powers_1_and_2_fit_with_extended_tweedie_enabled(
+        self, algo, exposure_df
+    ):
+        # Power 2.0 is the Gamma boundary and requires y > 0; the Poisson
+        # fixture has zeros, so shift the response for this behavioural check.
+        positive_df = exposure_df.with_columns(pl.col("y") + 0.5)
+        for power in (1.0, 2.0):
+            result = self._fit(algo, positive_df, {"family": "tweedie", "var_power": power})
+            assert result.model is not None

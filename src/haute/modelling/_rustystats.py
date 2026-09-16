@@ -136,6 +136,18 @@ def _resolve_glm_terms(
     return terms
 
 
+def _effective_glm_link(family: str, link: str | None) -> str:
+    """Return the link RustyStats will fit: the explicit one, else canonical.
+
+    RustyStats 0.9 exports ``get_default_link`` from ``rustystats.formula``
+    only; every family Haute offers (poisson, gamma, tweedie, gaussian,
+    binomial, quasipoisson, negbinomial) is in its table.
+    """
+    from rustystats.formula import get_default_link
+
+    return link or get_default_link(family)
+
+
 def _build_glm_builder_kwargs(
     *,
     target: str,
@@ -162,6 +174,9 @@ def _build_glm_builder_kwargs(
         kwargs["link"] = link
     if family == "tweedie":
         kwargs["var_power"] = var_power
+        # Haute's slider and gate text offer 1.0 (Poisson) and 2.0 (Gamma)
+        # inclusive; RustyStats 0.9 rejects both endpoints without this flag.
+        kwargs["allow_extended_tweedie"] = True
     if family == "negbinomial" and theta is not None:
         # RustyStats 0.9 refuses a Negative Binomial fit without theta (no
         # silent theta=1.0). The config path gates on an explicit theta
@@ -169,7 +184,16 @@ def _build_glm_builder_kwargs(
         # RustyStats raise for callers that bypass the config gate.
         kwargs["theta"] = float(theta)
     if offset:
-        kwargs["offset"] = offset
+        # Haute's offset column is a multiplier under a log link and additive
+        # otherwise (OFFSET_HELP). RustyStats 0.9 takes ``offset`` verbatim on
+        # the link scale and reserves ``exposure`` for the raw, log-transformed
+        # rate denominator, so route by the effective link. RustyStats stores
+        # the spec on the fitted model and re-reads the column by name at
+        # prediction time, so predict() needs no mapping of its own.
+        if _effective_glm_link(family, link) == "log":
+            kwargs["exposure"] = offset
+        else:
+            kwargs["offset"] = offset
     if weight:
         kwargs["weights"] = weight
     if interactions:
@@ -442,10 +466,10 @@ class GLMAlgorithm(BaseAlgorithm):
         """Generate predictions on the response scale.
 
         When *offset* is set, the offset column is kept in the frame handed
-        to RustyStats, which extracts its fit-time offset column by name and
-        re-applies the exact fit-time transform (exposure columns are
-        log-transformed for log-link families).  Served predictions therefore
-        include the offset effect; a frame without the column raises.
+        to RustyStats, which re-reads its fit-time exposure (log link) or
+        offset (other links) column by name and re-applies the exact
+        fit-time transform. Served predictions therefore include the offset
+        effect; a frame without the column raises.
         """
         columns = list(features)
         if offset:
