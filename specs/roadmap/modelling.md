@@ -499,7 +499,7 @@ unchanged apart from the removed GLM cases.
 **Dependencies:** MOD-T01.
 
 **Evidence:** `frontend/src/panels/modelling/CommonFeatureConfig.tsx`;
-`frontend/src/panels/modelling/GLMFactorConfig.tsx`;
+`frontend/src/panels/modelling/GLMTermsConfig.tsx`;
 `frontend/src/panels/modelling/featureSelection.ts`;
 `frontend/src/utils/trainingObjective.ts`;
 `frontend/src/panels/__tests__/GLMComponents.test.tsx`;
@@ -540,6 +540,6 @@ on a linear main term, trains it, and sees results.
 
 **Dependencies:** MOD-T01, MOD-T02.
 
-**Evidence:** `frontend/src/panels/modelling/GLMFactorConfig.tsx`
-(interactions section); `src/haute/modelling/_rustystats.py`
+**Evidence:** `frontend/src/panels/modelling/glmTerms.ts`
+(interaction slot rules); `src/haute/modelling/_rustystats.py`
 (`_build_interactions`); `frontend/e2e/core-flows.spec.ts`.

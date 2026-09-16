@@ -8,7 +8,6 @@ import { isNumericDtype } from "../../utils/polarsDtypes"
 import {
   finalSelectedFeatureNames,
   roleColumns,
-  type ModellingAlgorithm,
   type ModellingColumn,
 } from "./featureSelection"
 
@@ -16,7 +15,6 @@ type Props = {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   columns: ModellingColumn[]
-  algorithm: ModellingAlgorithm
 }
 
 const MONOTONIC_DIRECTIONS = [
@@ -55,12 +53,7 @@ const EXCLUDE_BUTTON_STYLE = {
   color: "var(--danger)",
 } as const
 
-export function CommonFeatureConfig({
-  config,
-  onUpdate,
-  columns,
-  algorithm,
-}: Props) {
+export function CommonFeatureConfig({ config, onUpdate, columns }: Props) {
   const [filter, setFilter] = useState("")
   const exclude = configField<string[]>(config, "exclude", [])
   const monotone = configField<Record<string, number>>(
@@ -83,7 +76,7 @@ export function CommonFeatureConfig({
   const visible = eligible.filter((column) =>
     column.name.toLowerCase().includes(filter.trim().toLowerCase()),
   )
-  const selectedNames = finalSelectedFeatureNames(config, eligible, algorithm)
+  const selectedNames = finalSelectedFeatureNames(config, eligible, "catboost")
   const includedCount = eligible.filter(
     (column) => !exclude.includes(column.name),
   ).length
@@ -111,9 +104,7 @@ export function CommonFeatureConfig({
     if (excluded) {
       return "Include this feature to set monotonicity."
     }
-    return algorithm === "glm"
-      ? "Add this feature as a GLM factor to set monotonicity."
-      : "Monotonicity is unavailable for this feature."
+    return "Monotonicity is unavailable for this feature."
   }
 
   const requestExclusionUpdate = (nextExclude: string[]) => {

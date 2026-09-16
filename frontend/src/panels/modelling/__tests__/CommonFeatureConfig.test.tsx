@@ -44,7 +44,6 @@ describe("CommonFeatureConfig", () => {
         }}
         onUpdate={onUpdate}
         columns={columns}
-        algorithm="catboost"
       />,
     )
 
@@ -135,7 +134,6 @@ describe("CommonFeatureConfig", () => {
         config={baseConfig}
         onUpdate={onUpdate}
         columns={columns}
-        algorithm="catboost"
       />,
     )
 
@@ -163,7 +161,6 @@ describe("CommonFeatureConfig", () => {
         config={{ ...baseConfig, exclude: [] }}
         onUpdate={onUpdate}
         columns={columns}
-        algorithm="catboost"
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Exclude all features" }))
@@ -177,14 +174,10 @@ describe("CommonFeatureConfig", () => {
       <CommonFeatureConfig
         config={{
           target: "target",
-          terms: {
-            age: { type: "linear" },
-            region: { type: "categorical" },
-          },
+          exclude: ["severity"],
         }}
         onUpdate={vi.fn(() => ({ ok: true as const }))}
         columns={columns}
-        algorithm="glm"
       />,
     )
 
@@ -242,7 +235,6 @@ describe("CommonFeatureConfig", () => {
         }}
         onUpdate={onUpdate}
         columns={columns}
-        algorithm="catboost"
       />,
     )
 
@@ -275,7 +267,6 @@ describe("CommonFeatureConfig", () => {
         config={config}
         onUpdate={onUpdate}
         columns={columns}
-        algorithm="glm"
       />,
     )
 
@@ -295,7 +286,6 @@ describe("CommonFeatureConfig", () => {
         config={{ ...config, exclude: ["age"] }}
         onUpdate={onUpdate}
         columns={columns}
-        algorithm="glm"
       />,
     )
     const dormantUp = screen.getByRole("button", { name: "age: increasing" })
@@ -317,7 +307,6 @@ describe("CommonFeatureConfig", () => {
         config={config}
         onUpdate={onUpdate}
         columns={columns}
-        algorithm="glm"
       />,
     )
     expect(screen.getByRole("button", { name: "age: increasing" })).toBeEnabled()
@@ -325,30 +314,5 @@ describe("CommonFeatureConfig", () => {
       "aria-pressed",
       "true",
     )
-  })
-
-  it("does not ask for confirmation when excluding a GLM column outside final selection", () => {
-    const onUpdate = vi.fn(() => ({ ok: true as const }))
-    const confirmMock = vi.mocked(confirm)
-    render(
-      <CommonFeatureConfig
-        config={{
-          target: "target",
-          terms: { age: { type: "linear" } },
-        }}
-        onUpdate={onUpdate}
-        columns={columns}
-        algorithm="glm"
-      />,
-    )
-
-    fireEvent.click(
-      within(featureRow("severity")).getByRole("button", {
-        name: "severity is included; click to exclude",
-      }),
-    )
-
-    expect(confirmMock).not.toHaveBeenCalled()
-    expect(onUpdate).toHaveBeenCalledWith({ exclude: ["severity"] })
   })
 })

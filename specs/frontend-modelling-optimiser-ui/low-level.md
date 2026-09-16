@@ -32,7 +32,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/utils/configField.ts`, `frontend/src/utils/trainingObjective.ts`, `frontend/src/utils/executionDiagnostics.ts` | Typed config reads/parsing, training-configuration issue derivation with click-time presentation, and structured execution-error/metric display helpers. |
 | `frontend/src/panels/modelling/TargetAndTaskConfig.tsx`, `frontend/src/panels/modelling/CommonFeatureConfig.tsx`, `frontend/src/panels/modelling/SplitAndMetricsConfig.tsx` | CatBoost target/loss/metric controls with loss-derived task compatibility, the common feature/monotonicity browser, and the canonical evaluation editor with exact-plan preview. |
 | `frontend/src/panels/modelling/HyperparametersConfig.tsx`, `frontend/src/panels/modelling/hyperparameters.ts`, `frontend/src/panels/modelling/featureSelection.ts` | Algorithm-neutral fixed-parameter JSON editing, optional bounded CatBoost tuning/search-space editing, and pure parameter/feature transitions. |
-| `frontend/src/panels/modelling/GLMTargetConfig.tsx`, `frontend/src/panels/modelling/GLMFactorConfig.tsx`, `frontend/src/panels/modelling/GLMRegularizationConfig.tsx` | GLM family/dispersion, terms/factors and regularisation controls. |
+| `frontend/src/panels/modelling/GLMTargetConfig.tsx`, `frontend/src/panels/modelling/GLMTermsConfig.tsx`, `frontend/src/panels/modelling/TermCard.tsx`, `frontend/src/panels/modelling/glmTerms.ts`, `frontend/src/panels/modelling/GLMRegularizationConfig.tsx` | GLM family/dispersion, the terms pane with its per-term cards and pure editor transitions, and regularisation controls. |
 | `frontend/src/panels/modelling/TrainingActionsAndResults.tsx`, `frontend/src/panels/modelling/TrainingProgress.tsx` | Train action/result summary and progress. |
 | `frontend/src/panels/modelling/ExportPane.tsx`, `frontend/src/panels/modelling/MlflowExportSection.tsx`, `frontend/src/panels/modelling/ModelFileExportSection.tsx` | The Export pane: the MLflow logging fields, the manual MLflow log action (names the node's destination, disabled with the reason when that destination is unconfigured or no trained model is exportable, always sends `destination`), and the save-model-to-file action. |
 | `frontend/src/panels/modelling/exportReceipts.ts`, `frontend/src/panels/modelling/useTrainedJobRestore.ts` | `useExportReceipts(jobId)` (reads a completed job's export receipts from the status endpoint on mount and on `refresh`), `newOperationId()`, and `useTrainedJobRestore` (after a reload, reads a remembered job's status once to restore its result — current only when the editor's current payload has the same `trainingLineage` — or report it expired). |
@@ -91,12 +91,18 @@ Only a current, accepted save response may acknowledge this revision transition.
    absent, then shows the slider immediately; a previously stored power is preserved and there is
    no intermediate warning-button gate. CatBoost hyperparameters use `config.params` and
    `config.variance_power`; GLM controls write their algorithm fields directly on `config`,
-   including `config.var_power`. `CommonFeatureConfig` uses the shared Polars numeric-dtype
-   classifier and final algorithm selection, so only selected numeric feature cards enable their
-   inline downward/dash/upward selector and can write
+   including `config.var_power`. CatBoost's `CommonFeatureConfig` uses the shared Polars
+   numeric-dtype classifier and final selection, so only selected numeric feature cards enable
+   their inline downward/dash/upward selector and can write
    `monotone_constraints[name] = -1|1`; choosing the dash removes the key. Exclusion changes only
    `exclude`: a stored direction remains selected in the disabled control and becomes active again
-   after re-inclusion. New algorithms receive a canonical random/single-validation evaluation.
+   after re-inclusion. GLM's Features pane is `GLMTermsConfig`: a feature is in the model exactly
+   when it has a term or is a filled interaction factor; each row offers Add term (dtype-default
+   native fit first, then uniquely named `** 2` expression terms), a `TermCard` per term with
+   type, subset parameters, and monotonicity only for linear, B-spline, monotone spline, and
+   expression; bulk Fit all with defaults / Remove all terms; an In model only filter; and the
+   unchanged JSON mode. The GLM pane never writes `exclude`, `monotone_constraints`, or
+   `all_factors`. New algorithms receive a canonical random/single-validation evaluation.
    Later strategy changes replace incompatible keys atomically instead of retaining stale
    group/date/fraction fields.
 2. `useStaleConfigEstimate` receives the RAM request endpoint with graph/source/structural version;
@@ -298,15 +304,13 @@ The behavioural contract is defined in
   identifiers, and active evaluation group/date key are never offered as features. Cleanup returns
   only affected `terms`, `interactions`, and `monotone_constraints` fields for the caller's one
   config update.
-- `TargetAndTaskConfig.tsx` and `GLMTargetConfig.tsx` show read-only algorithm context. The common
-  `CommonFeatureConfig.tsx` browser supplies case-insensitive search, dtype labels, stale
-  exclusion repair, compact single-row per-feature cards with the name/dtype, a
-  Data-Input-Provider-style green/red current-state include/exclude button, and the adjacent
-  final-selection-aware red-down/yellow-neutral/green-up monotonicity selector. Its accessible
-  group label replaces a repeated visible monotonicity label. Matching bulk actions remain
-  search-independent. Feature exclusion writes only `exclude`, without confirmation, so dormant
-  monotonic and GLM settings survive re-inclusion. GLM composes `GLMFactorConfig.tsx` beneath it;
-  explicit-term removal uses the confirmed dependency transition.
+- `TargetAndTaskConfig.tsx` and `GLMTargetConfig.tsx` show read-only algorithm context.
+  `CommonFeatureConfig.tsx` is CatBoost-only: case-insensitive search, dtype labels, stale
+  exclusion repair, compact single-row per-feature cards, the green/red include/exclude button,
+  and the monotonicity selector. `glmTerms.ts` owns every GLM editor transition as a pure
+  config-to-config function (add term, native type switch, field edit, expression rename/edit
+  with grammar and column checks, remove, fit all, remove all, membership, interaction slot rules
+  and writes); `GLMTermsConfig.tsx` and `TermCard.tsx` only render and call it.
   `GLMRegularizationConfig.tsx` is the GLM Params body.
 - `HyperparametersConfig.tsx` owns the algorithm-neutral JSON-object editor, while
   `hyperparameters.ts` owns its formatting, object parsing, and reserved-key merge transitions.
@@ -463,13 +467,14 @@ Verification is deliberately assigned to the owning seams:
 
 - `frontend/src/panels/__tests__/ModellingConfig.test.tsx` and suites under
   `frontend/src/panels/modelling/__tests__/` cover pane content, CatBoost's unified loss picker and
-  loss-derived metric compatibility, both algorithms' common feature browser,
-  role/final-selection filtering, reversible confirmation-free exclusion with dormant
-  settings, unset-only immutable algorithm selection, confirmed explicit-factor dependency
-  cleanup, arbitrary params JSON draft/object validation, click-time aggregate
-  training-validation presentation, canonical evaluation transitions/preview, tuning
-  enablement/search-space drafts, evaluation/result/progress fit counts, result labels, and live
-  progress presentation.
+  loss-derived metric compatibility, CatBoost's common feature browser with reversible
+  confirmation-free exclusion and dormant settings, role/final-selection filtering, unset-only
+  immutable algorithm selection, the GLM terms pane (exact editor-transition payloads in
+  `glmTerms.test.ts`, row tags, expression anchoring and refusal, bulk actions, JSON round-trip,
+  and the never-written CatBoost levers), arbitrary params JSON draft/object validation,
+  click-time aggregate training-validation presentation, canonical evaluation
+  transitions/preview, tuning enablement/search-space drafts, evaluation/result/progress fit
+  counts, result labels, and live progress presentation.
 - `frontend/src/panels/__tests__/NodePanel.test.tsx`,
   `frontend/src/stores/__tests__/useUIStore.test.ts`, and
   `frontend/src/panels/__tests__/PreviewPanelTabs.test.tsx` cover strip gating, per-node memory,

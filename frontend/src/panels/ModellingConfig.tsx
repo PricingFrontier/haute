@@ -35,9 +35,9 @@ import type { OnUpdateConfig } from "./editors"
 import { useGraph } from "./useGraph"
 import { CommonFeatureConfig } from "./modelling/CommonFeatureConfig"
 import { ExportPane } from "./modelling/ExportPane"
-import { GLMFactorConfig } from "./modelling/GLMFactorConfig"
 import { GLMRegularizationConfig } from "./modelling/GLMRegularizationConfig"
 import { GLMTargetConfig } from "./modelling/GLMTargetConfig"
+import { GLMTermsConfig } from "./modelling/GLMTermsConfig"
 import {
   HyperparametersConfig,
 } from "./modelling/HyperparametersConfig"
@@ -289,7 +289,6 @@ export default function ModellingConfig({
   const params = configField<Record<string, unknown>>(config, "params", {})
   const target = configField(config, "target", "")
   const weight = configField(config, "weight", "")
-  const exclude = configField<string[]>(config, "exclude", [])
   const evaluation = configField<Record<string, unknown>>(
     config,
     "evaluation",
@@ -541,7 +540,7 @@ export default function ModellingConfig({
     if (activePane === "target") {
       paneBody = <TargetAndTaskConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} target={target} weight={weight} metrics={metrics} />
     } else if (activePane === "features") {
-      paneBody = <CommonFeatureConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} algorithm="catboost" />
+      paneBody = <CommonFeatureConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
     } else if (activePane === "params") {
       paneBody = (
         <HyperparametersConfig
@@ -572,7 +571,7 @@ export default function ModellingConfig({
   } else if (activePane === "target") {
     paneBody = <GLMTargetConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} onEstimateDispersion={onEstimateDispersion} />
   } else if (activePane === "features") {
-    paneBody = <><CommonFeatureConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} algorithm="glm" /><GLMFactorConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} target={target} weight={weight} exclude={exclude} /></>
+    paneBody = <GLMTermsConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
   } else if (activePane === "params") {
     paneBody = <GLMRegularizationConfig config={config} onUpdate={onUpdate} />
   } else if (activePane === "split") {
