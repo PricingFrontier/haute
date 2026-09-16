@@ -15,6 +15,8 @@ import numpy as np
 import polars as pl
 import pytest
 
+from haute.errors import HauteValidationError
+
 # ---------------------------------------------------------------------------
 # Gap 1: Config key merge
 # ---------------------------------------------------------------------------
@@ -167,6 +169,87 @@ class TestGLMTermsValidation:
 
         with pytest.raises(ValueError, match="ghost"):
             job.run()
+
+    def test_glm_rejects_monotone_constraints_at_construction(self, tmp_path):
+        """monotone_constraints is a CatBoost lever, refused for a GLM job."""
+        from haute.modelling._training_job import TrainingJob
+
+        df = pl.DataFrame({"age": [25, 30, 35, 40, 45], "target": [1.0, 2.0, 3.0, 4.0, 5.0]})
+        with pytest.raises(HauteValidationError, match="CatBoost lever"):
+            TrainingJob(
+                name="test_mono",
+                data=df,
+                target="target",
+                algorithm="glm",
+                params={"family": "gaussian", "terms": {"age": {"type": "linear"}}},
+                monotone_constraints={"age": 1},
+                output_dir=str(tmp_path),
+            )
+
+    def test_glm_evaluation_key_cannot_be_read_by_an_expression_or_interaction(self, tmp_path):
+        """The evaluation key is refused when an interaction factor reads it."""
+        from haute.modelling._training_job import TrainingJob
+
+        df = pl.DataFrame(
+            {"age": [25, 30, 35, 40], "grp": ["a", "b", "a", "b"], "target": [1.0, 2.0, 3.0, 4.0]}
+        )
+        evaluation = {
+            "schema_version": 1,
+            "strategy": "group",
+            "seed": 0,
+            "group_column": "grp",
+            "validation": {"method": "none"},
+        }
+        with pytest.raises(HauteValidationError, match="evaluation key cannot be a GLM term"):
+            TrainingJob(
+                name="t",
+                data=df,
+                target="target",
+                algorithm="glm",
+                params={
+                    "family": "gaussian",
+                    "terms": {"age": {"type": "linear"}},
+                    "interactions": [{"factors": ["age", "grp"], "include_main": True}],
+                },
+                evaluation=evaluation,
+                output_dir=str(tmp_path),
+            )
+
+    def test_glm_contract_keeps_expression_and_interaction_only_columns(self, tmp_path):
+        """Expression identifiers and interaction-only factors survive the
+        final feature contract; the expression key itself is not a column."""
+        pytest.importorskip(
+            "rustystats.formula", reason="rustystats optional dependency not installed"
+        )
+        from haute.modelling._training_job import TrainingJob
+
+        rng = np.random.default_rng(3)
+        n = 300
+        df = pl.DataFrame(
+            {
+                "age": rng.normal(size=n),
+                "income": rng.normal(size=n),
+                "region": rng.choice(["n", "s"], size=n),
+                "target": rng.normal(size=n),
+            }
+        )
+        job = TrainingJob(
+            name="t",
+            data=df,
+            target="target",
+            algorithm="glm",
+            params={
+                "family": "gaussian",
+                "terms": {
+                    "age": {"type": "linear"},
+                    "age_sq": {"type": "expression", "expr": "age ** 2"},
+                },
+                "interactions": [{"factors": ["income", "region"], "include_main": True}],
+            },
+            output_dir=str(tmp_path),
+        )
+        result = job.run()
+        assert set(result.features) >= {"age", "income", "region"}
 
 
 # ---------------------------------------------------------------------------

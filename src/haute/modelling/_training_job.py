@@ -467,6 +467,11 @@ class TrainingJob:
         self.variance_power = variance_power
         self.offset = offset
         self.monotone_constraints = monotone_constraints
+        if self.algorithm == "glm" and monotone_constraints:
+            raise HauteValidationError(
+                "monotone_constraints is a CatBoost lever; GLM monotonicity lives on "
+                "each term's 'monotonicity' key"
+            )
         self.feature_weights = feature_weights
         if split is not None and evaluation is not None:
             raise HauteValidationError("split and evaluation are competing contracts")
@@ -523,8 +528,15 @@ class TrainingJob:
         if evaluation_key:
             if evaluation_key in self.feature_columns:
                 raise HauteValidationError("evaluation key cannot be an explicit feature column")
-            if self.algorithm == "glm" and evaluation_key in (self.params.get("terms") or {}):
-                raise HauteValidationError("evaluation key cannot be a GLM term")
+            if self.algorithm == "glm":
+                from haute.modelling._glm_terms import glm_model_columns
+
+                glm_columns = glm_model_columns(
+                    self.params.get("terms") or {},
+                    self.params.get("interactions") or [],
+                )
+                if evaluation_key in glm_columns:
+                    raise HauteValidationError("evaluation key cannot be a GLM term")
             if evaluation_key not in self.id_columns:
                 self.id_columns.append(evaluation_key)
         from haute.modelling._feature_contract import normalise_categorical_levels
@@ -815,46 +827,43 @@ class TrainingJob:
         if self.algorithm == "glm":
             glm_terms = self.params.get("terms", {})
             if glm_terms:
-                term_names = set(glm_terms)
-                missing = term_names - set(prepared.features)
-                if missing:
-                    raise HauteValidationError(
-                        "GLM terms reference columns not found in training data: "
-                        f"{sorted(missing)}. Available columns: "
-                        f"{prepared.features[:20]}" + ("..." if len(prepared.features) > 20 else "")
-                    )
+                from haute.modelling._glm_terms import validate_glm_model_columns
+
+                model_columns = validate_glm_model_columns(
+                    glm_terms,
+                    self.params.get("interactions") or [],
+                    prepared.features,
+                )
+                keep = set(model_columns)
                 prepared = _PreparedData(
                     data_path=prepared.data_path,
                     owns_tmp=prepared.owns_tmp,
-                    features=[feature for feature in prepared.features if feature in term_names],
-                    cat_features=[
-                        feature for feature in prepared.cat_features if feature in term_names
-                    ],
+                    features=[feature for feature in prepared.features if feature in keep],
+                    cat_features=[feature for feature in prepared.cat_features if feature in keep],
                     total_rows=prepared.total_rows,
                     feature_dtypes={
                         feature: dtype
                         for feature, dtype in prepared.feature_dtypes.items()
-                        if feature in term_names
+                        if feature in keep
                     },
                     categorical_levels={
                         feature: levels
                         for feature, levels in prepared.categorical_levels.items()
-                        if feature in term_names
+                        if feature in keep
                     },
                     target_dtype=prepared.target_dtype,
                     target_null_count=prepared.target_null_count,
                     offset_dtype=prepared.offset_dtype,
                 )
                 report(
-                    f"GLM: using {len(prepared.features)} term features "
+                    f"GLM: using {len(prepared.features)} model columns "
                     f"({len(prepared.cat_features)} categorical)",
                     0.12,
                 )
                 if not prepared.features:
                     raise HauteValidationError(
                         "GLM: no valid features remaining after matching terms to "
-                        "data columns. Check that factor names match the training "
-                        "data."
+                        "data columns. Check that term names match the training data."
                     )
         self._validate_monotone_constraints(prepared)
         return prepared
