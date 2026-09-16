@@ -1871,6 +1871,14 @@ def test_reshaping_and_dtype_selectors_render(kind_step: dict[str, Any], expecte
         ),
         (step("x", "select", columns=["*"]), "not the pattern '*'"),
         (
+            step("x", "sort", keys=[{"column": "*", "descending": False}], nullsLast=False),
+            "not the pattern '*'",
+        ),
+        (
+            window("rn", "row_number", "", ["g"], [("^measure_.*$", False)]),
+            "not the pattern",
+        ),
+        (
             step(
                 "x",
                 "pivot",
@@ -1925,6 +1933,24 @@ def test_reshaping_and_dtype_selectors_reject(kind_step: dict[str, Any], fragmen
         render_polars_steps([source(), kind_step], ["quotes"])
     assert info.value.step_index == 1
     assert fragment in info.value.message
+
+
+def test_pivot_values_are_compared_exactly() -> None:
+    big = 2**53
+    steps = [
+        source("rows"),
+        step(
+            "p",
+            "pivot",
+            index=["g"],
+            on="c",
+            columns=[pivot_column(num(big), "a"), pivot_column(num(big + 1), "b")],
+            values="a",
+            agg="sum",
+        ),
+    ]
+    line = render_polars_steps(steps, ["rows"]).code.splitlines()[1]
+    assert f"== {big})" in line and f"== {big + 1})" in line
 
 
 def _pivot_frame() -> pl.LazyFrame:

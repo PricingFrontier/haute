@@ -721,7 +721,9 @@ class _Renderer:
         for i, entry in enumerate(order_by):
             entry = self._object(entry, f"{label} order {i + 1}")
             self._keys(entry, ("column", "descending"), f"{label} order {i + 1}")
-            columns.append(self._str(entry.get("column"), f"{label} order {i + 1} column"))
+            order_column = self._str(entry.get("column"), f"{label} order {i + 1} column")
+            self._check_column_name(order_column, f"{label} order {i + 1} column")
+            columns.append(order_column)
             flags.append(
                 self._bool(entry.get("descending", False), f"{label} order {i + 1} descending")
             )
@@ -845,7 +847,9 @@ class _Renderer:
         for i, entry in enumerate(keys):
             entry = self._object(entry, f"Sort key {i + 1}")
             self._keys(entry, ("column", "descending"), f"Sort key {i + 1}")
-            columns.append(self._str(entry.get("column"), f"Sort key {i + 1} column"))
+            sort_column = self._str(entry.get("column"), f"Sort key {i + 1} column")
+            self._check_column_name(sort_column, f"Sort key {i + 1} column")
+            columns.append(sort_column)
             descending.append(self._bool(entry.get("descending"), f"Sort key {i + 1} descending"))
         nulls_last = self._bool(step["nullsLast"], "Nulls last")
         return f"df = df.sort({columns!r}, descending={descending!r}, nulls_last={nulls_last!r})"
@@ -937,11 +941,9 @@ class _Renderer:
             if literal_type == "null":
                 raise self.fail(f"Pivot column {i + 1} value cannot be null.")
             types.add(literal_type)
-            # Compare values, not spellings: 1 and 1.0 name the same category.
-            raw = operand.get("value")
-            key: object = raw
-            if literal_type == "number" and isinstance(raw, (int, float)):
-                key = float(raw)
+            # Compare typed values, not spellings: Python already equates 1 and
+            # 1.0 and the signed zeros while keeping large integers exact.
+            key = (literal_type, operand.get("value"))
             if key in seen_values:
                 raise self.fail(f"Pivot column {i + 1} repeats the value {text}.")
             seen_values.add(key)
