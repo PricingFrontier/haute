@@ -255,20 +255,25 @@ function applyPreviewColumnsToNodes(nodes: Node[], nodeId: string, columns: Colu
 
 function applyPreviewSchemaMapsToNodes(nodes: Node[], result: NodeResult, source: string, structuralVersion: number): Node[] {
   const nodeColumns = result.node_columns ?? {}
-  if (Object.keys(nodeColumns).length === 0) return nodes
-  const nodeAvailableColumns = result.node_available_columns ?? {}
   const nodeFrameColumns = result.node_frame_columns ?? {}
+  if (Object.keys(nodeColumns).length === 0 && Object.keys(nodeFrameColumns).length === 0) return nodes
+  const nodeAvailableColumns = result.node_available_columns ?? {}
   const nodeSchemaWarnings = result.node_schema_warnings ?? {}
   return nodes.map((n) => {
     const columns = nodeColumns[n.id]
-    if (!columns) return n
+    const frames = nodeFrameColumns[n.id]
+    if (!columns) {
+      // A submodel occurrence has no flat column list of its own, only its
+      // output ports' columns keyed by handle.
+      return frames ? { ...n, data: { ...n.data, _frameColumns: frames, _columnsSource: source, _columnsStructuralVersion: structuralVersion } } : n
+    }
     return {
       ...n,
       data: {
         ...n.data,
         _columns: columns,
         _availableColumns: nodeAvailableColumns[n.id] ?? columns,
-        _frameColumns: nodeFrameColumns[n.id],
+        _frameColumns: frames,
         _schemaWarnings: nodeSchemaWarnings[n.id] ?? [],
         _columnsSource: source,
         _columnsStructuralVersion: structuralVersion,
