@@ -153,6 +153,10 @@ def _build_interactions(
         factors = [f for f in interaction.get("factors", []) if f]
         if len(factors) < 2:
             continue
+        if len(set(factors)) != len(factors):
+            raise HauteValidationError(
+                f"Interaction {index + 1} names a factor more than once: {factors}"
+            )
         factor_set = frozenset(factors)
         if factor_set in seen_factor_sets:
             raise HauteValidationError(

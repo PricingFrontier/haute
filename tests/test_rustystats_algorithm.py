@@ -204,6 +204,9 @@ class TestBuildInteractionsRejections:
         terms = {"x": {"type": "linear"}, "z": {"type": "linear"}}
         self._reject([{"factors": ["x", "z"]}, {"factors": ["z", "x"]}], terms, [], "duplicates")
 
+    def test_rejects_a_factor_repeated_within_one_card(self):
+        self._reject([{"factors": ["x", "x"]}], {"x": {"type": "linear"}}, [], "more than once")
+
     def test_rejects_monotone_overrides(self):
         self._reject(
             [{"factors": ["x", "c"], "specs": {"x": {"type": "bs", "monotonicity": "increasing"}}}],
