@@ -206,7 +206,7 @@ backend API modules own validation and persistence.
 carries an empty `steps` list, and the editor renders the step builder instead of the code
 box whenever `config.steps` is a list. The builder shows a fixed start-from input selector,
 numbered step cards ("Start from", then Step 1 onwards, the same numbering every message
-uses) that read as plain-English summaries and open one at a time through a
+uses) that read as plain-English summaries while collapsed and open one at a time through a
 keyboard-operable disclosure (a new step opens itself; Escape collapses; deleting a card
 moves focus to the next disclosure or to `Add step`), each with delete, move up, and move
 down, an `Add step` button under the last card (under the start card while there are no
@@ -249,9 +249,8 @@ and an unpivot its index plus the two new columns. Membership lists add every va
 type through an explicit Add action, so a select's default (true, today's date) can
 be added like any other. A locked generated-code panel shows the code the render endpoint returns for
 the current steps and carries the confirmed one-way `Switch to code` action. A step being
-built is not an error yet: while no run has failed on the node, a render problem only shows
-as a muted note that the step is not finished and will be checked when the pipeline runs
-(the switch stays disabled). Once the node's last run has failed (the panel receives the
+built is not an error yet: while no run has failed on the node, a render problem is not
+shown at all (the switch to code simply stays disabled). Once the node's last run has failed (the panel receives the
 run's error message, or its error line), the panel names the failing step without opening
 it or collapsing the card being edited (a "Go to error" action opens it), badges that step,
 and tints the failing and the last execution-error line. Renders are tagged with

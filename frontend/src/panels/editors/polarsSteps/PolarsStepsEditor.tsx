@@ -291,7 +291,6 @@ export default function PolarsStepsEditor({
             code={rendered.code}
             pending={rendered.status === "pending"}
             error={shownError}
-            unfinished={showErrors ? null : renderError}
             errorLine={errorLine}
             onGoToError={goToError}
             switchEnabled={switchAllowed && onReplaceConfig !== undefined}

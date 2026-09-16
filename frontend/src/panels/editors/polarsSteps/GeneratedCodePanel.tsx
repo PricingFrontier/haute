@@ -12,7 +12,6 @@ export default function GeneratedCodePanel({
   code,
   pending,
   error,
-  unfinished = null,
   errorLine,
   onGoToError,
   switchEnabled,
@@ -23,8 +22,6 @@ export default function GeneratedCodePanel({
   pending: boolean
   /** Latest render failure, if any. */
   error: { stepIndex: number | null; message: string } | null
-  /** A step still being built (the render failed, but no run has reported it yet). */
-  unfinished?: { stepIndex: number | null; message: string } | null
   /** 1-based line of the last execution failure, from the preview. */
   errorLine?: number | null
   onGoToError?: (stepIndex: number) => void
@@ -73,11 +70,6 @@ export default function GeneratedCodePanel({
               Go to error
             </button>
           )}
-        </div>
-      )}
-      {!error && unfinished && (
-        <div role="status" className="mx-3 mb-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
-          {unfinished.stepIndex != null ? `${stepDisplayLabel(unfinished.stepIndex)} is not finished yet` : "The steps are not finished yet"}; it will be checked when the pipeline runs.
         </div>
       )}
       <div id={`${id}-body`} hidden={!open}>

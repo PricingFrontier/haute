@@ -7,7 +7,7 @@ export type StepBadge = { tone: "danger" | "warning"; text: string }
 
 /**
  * One step card: a two-row header (number badge, kind label and actions; then
- * the summary) whose title is a native disclosure button, and the form body
+ * the summary while the card is collapsed) whose title is a native disclosure button, and the form body
  * when open. Badges report validation or execution problems without moving
  * the user.
  */
@@ -107,10 +107,13 @@ export default function StepCard({
           </span>
         )}
       </div>
+      {(!open || badge) && (
       <div className="px-3 pb-2 -mt-0.5">
-        <div className="text-[11px] leading-snug line-clamp-2" style={{ color: "var(--text-muted)" }} title={summary}>
-          {summary}
-        </div>
+        {!open && (
+          <div className="text-[11px] leading-snug line-clamp-2" style={{ color: "var(--text-muted)" }} title={summary}>
+            {summary}
+          </div>
+        )}
         {badge && (
           <div
             role="status"
@@ -122,6 +125,7 @@ export default function StepCard({
           </div>
         )}
       </div>
+      )}
       <div id={bodyId} hidden={!open} className="px-3 pb-3">
         {open && <div className="grid gap-2">{children}</div>}
       </div>

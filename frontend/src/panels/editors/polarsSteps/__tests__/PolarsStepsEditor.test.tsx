@@ -148,6 +148,14 @@ describe("PolarsStepsEditor", () => {
     expect(lastSteps(spy)).toEqual([source, filter])
   })
 
+  it("shows a card's summary only while it is collapsed", () => {
+    render(<Harness initial={{ steps: [source, filter, limit] }} inputSources={[quotes]} />)
+    const limitCard = screen.getByRole("button", { name: "Step 2: Limit rows" }).closest("[data-testid='polars-step-card']") as HTMLElement
+    expect(limitCard).toHaveTextContent("5 rows")
+    fireEvent.click(screen.getByRole("button", { name: "Step 2: Limit rows" }))
+    expect(limitCard).not.toHaveTextContent("5 rows")
+  })
+
   it("badges the failing step without moving the user and offers Go to error", async () => {
     mockRender.mockImplementation(async () => ({
       ok: false,
@@ -190,7 +198,8 @@ describe("PolarsStepsEditor", () => {
       message: "Column name must be a non-empty string.",
     }))
     const { rerender } = render(<Harness initial={{ steps: [source, { id: "w", kind: "with_column", name: "", expr: { type: "operand", operand: { kind: "column", name: "premium" } } }] }} inputSources={[quotes]} />)
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Step 1 is not finished yet; it will be checked when the pipeline runs."), { timeout: 5000 })
+    await waitFor(() => expect(mockRender).toHaveBeenCalled(), { timeout: 5000 })
+    expect(screen.queryByRole("status")).not.toBeInTheDocument()
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     expect(screen.queryByText("Column name must be a non-empty string.")).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Switch to code" })).toBeDisabled()
