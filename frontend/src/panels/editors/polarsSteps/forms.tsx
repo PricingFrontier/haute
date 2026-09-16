@@ -3,7 +3,7 @@
  * grids that read as sentences; controls wrap beneath each other at narrow
  * widths so nothing scrolls horizontally in the node panel.
  */
-import { Plus, X } from "lucide-react"
+import { Info, Plus, X } from "lucide-react"
 import { useId, useState, type ReactNode } from "react"
 
 import { ConfigCheckbox } from "../../../components/form"
@@ -214,7 +214,16 @@ function FormulaField({ text, onCommit, variables }: { text: string; onCommit: (
     }
   }
   return (
-    <Field label="Formula">
+    <Field
+      label={
+        <span className="inline-flex items-center gap-1">
+          Formula
+          <span role="img" aria-label={FORMULA_EXAMPLE} title={FORMULA_EXAMPLE} className="cursor-help" style={{ color: "var(--text-muted)" }}>
+            <Info size={11} aria-hidden="true" />
+          </span>
+        </span>
+      }
+    >
       <input
         type="text"
         aria-label="Formula"

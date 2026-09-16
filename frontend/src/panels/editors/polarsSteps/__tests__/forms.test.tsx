@@ -278,6 +278,7 @@ describe("step forms only build schema-valid payloads", () => {
     expect(screen.getByLabelText("Formula")).toHaveValue("")
     expect(screen.getByLabelText("Formula")).not.toHaveAttribute("placeholder")
     expect(screen.getByLabelText("Formula")).toHaveAttribute("title", "example: (premium + commission) * tax / 12")
+    expect(screen.getByRole("img", { name: "example: (premium + commission) * tax / 12" })).toHaveAttribute("title", "example: (premium + commission) * tax / 12")
     fireEvent.change(screen.getByLabelText("Function operand expression type"), { target: { value: "function" } })
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
     expect(latest.expr).toMatchObject({ operand: { kind: "expr", expr: { type: "function", fn: "abs" } } })
