@@ -170,6 +170,60 @@ def test_rendered_code_is_a_fixpoint_of_user_code_extraction() -> None:
     assert extracted == code
 
 
+def test_free_code_renders_multiline_statements_and_tracks_following_steps() -> None:
+    snippet = (
+        "# Adjust the current frame\r\n"
+        "def adjusted(column):\r\n"
+        "    return column * 2\r\n"
+        "\r\n"
+        "df = df.with_columns(\r\n"
+        '    adjusted(pl.col("premium")).alias("gross")\r\n'
+        ")\r\n  "
+    )
+    steps = [source(), step("c", "free_code", code=snippet), step("l", "limit", n=2)]
+    rendered = render_polars_steps(steps, ["quotes"])
+    assert (
+        rendered.code
+        == "df = quotes\n" + snippet.replace("\r\n", "\n").rstrip() + "\ndf = df.head(2)"
+    )
+    assert rendered.step_lines == ((1, 1), (2, 8), (9, 9))
+    assert steps[1]["code"] == snippet
+    body = "\n".join(f"    {line}" for line in rendered.code.splitlines()) + "\n    return df"
+    assert _extract_user_code(body, ["quotes"]) == rendered.code
+
+
+@pytest.mark.parametrize(
+    ("code", "fragment"),
+    [
+        (None, "non-empty string"),
+        ("", "non-empty string"),
+        (" \n\t", "Python statement"),
+        ("# Write code here\n", "Python statement"),
+        ("df = (", "Invalid Python"),
+        ("return df", "Assign the result to df"),
+        ("if True:\n    return df", "Assign the result to df"),
+        ("yield df", "Invalid Python"),
+        ("await df", "Invalid Python"),
+        ("break", "Invalid Python"),
+        ("from __future__ import annotations", "Invalid Python"),
+        ("from math import *", "Invalid Python"),
+        ("global df\ndf = quotes", "Invalid Python"),
+        ("df = df\x00", "Invalid Python"),
+    ],
+)
+def test_free_code_rejects_invalid_snippets(code: object, fragment: str) -> None:
+    with pytest.raises(PolarsStepError, match=fragment) as exc:
+        render_polars_steps([source(), step("c", "free_code", code=code)], ["quotes"])
+    assert exc.value.step_index == 1
+
+
+def test_free_code_validation_never_executes_the_snippet(tmp_path: Path) -> None:
+    marker = tmp_path / "must_not_exist.txt"
+    code = f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')"
+    assert render_polars_steps([source(), step("c", "free_code", code=code)]).code.endswith(code)
+    assert not marker.exists()
+
+
 @pytest.mark.parametrize(
     ("kind_step", "expected"),
     [
@@ -2726,6 +2780,61 @@ def test_codegen_parse_round_trip_reproduces_rendered_code(tmp_path: Path) -> No
     assert "_steps_discarded" not in node.data.config
 
 
+def test_free_code_executes_between_low_code_steps_and_round_trips(tmp_path: Path) -> None:
+    quotes, _rates = _frames(tmp_path)
+    snippet = 'df = df.with_columns(\n    (pl.col("premium") * factor).alias("adjusted")\n)\n'
+    steps = [
+        source(),
+        step("v", "variable", name="factor", value=num(2)),
+        step("c", "free_code", code=snippet),
+        step("sel", "select", columns=["adjusted"]),
+        step("l", "limit", n=2),
+    ]
+    graph = PipelineGraph(nodes=[quotes, _stepped("t", steps)], edges=[make_edge("quotes", "t")])
+    expected_code = render_polars_steps(steps, ["quotes"]).code
+    generated = graph_to_code(graph, pipeline_name="main")
+    _write_sidecars(tmp_path, graph)
+    parsed = parse_pipeline_source(generated, _base_dir=tmp_path)
+    node = next(n for n in parsed.nodes if n.id == "t")
+    assert node.data.config["steps"] == steps
+    assert node.data.config["code"] == expected_code
+    assert "_steps_discarded" not in node.data.config
+    result = execute_graph(parsed, target_node_id="t", execution_context=_capped_context())["t"]
+    assert result.status == "ok", result.error
+    assert [c.name for c in result.columns] == ["adjusted"]
+    original = execute_graph(graph, target_node_id="quotes", execution_context=_capped_context())[
+        "quotes"
+    ]
+    assert result.preview == [{"adjusted": row["premium"] * 2} for row in original.preview[:2]]
+
+
+def test_free_code_round_trip_keeps_helper_returns_and_trailing_comments(tmp_path: Path) -> None:
+    quotes, _rates = _frames(tmp_path)
+    snippet = "def unchanged(frame):\n    return frame\n\ndf = unchanged(df)\n# End\n\n"
+    steps = [source(), step("c", "free_code", code=snippet)]
+    graph = PipelineGraph(nodes=[quotes, _stepped("t", steps)], edges=[make_edge("quotes", "t")])
+    _write_sidecars(tmp_path, graph)
+    parsed = parse_pipeline_source(graph_to_code(graph, pipeline_name="main"), _base_dir=tmp_path)
+    node = next(n for n in parsed.nodes if n.id == "t")
+    assert node.data.config["steps"] == steps
+    assert node.data.config["code"] == render_polars_steps(steps).code
+
+
+@pytest.mark.parametrize(
+    ("snippet", "line"),
+    [("df = df.head(2)\nraise ValueError('free code failed')", 3), ("# Invalid frame\ndf = 1", 4)],
+)
+def test_free_code_runtime_errors_use_rendered_lines(
+    tmp_path: Path, snippet: str, line: int
+) -> None:
+    quotes, _rates = _frames(tmp_path)
+    steps = [source(), step("c", "free_code", code=snippet), step("l", "limit", n=1)]
+    graph = PipelineGraph(nodes=[quotes, _stepped("t", steps)], edges=[make_edge("quotes", "t")])
+    result = execute_graph(graph, target_node_id="t", execution_context=_capped_context())["t"]
+    assert result.status == "error"
+    assert result.error_line == line
+
+
 def test_parse_discards_steps_when_body_was_hand_edited(tmp_path: Path) -> None:
     quotes, rates = _frames(tmp_path)
     graph = PipelineGraph(
@@ -2963,7 +3072,7 @@ def test_flatten_rewrites_stepped_consumer_inputs() -> None:
     )
     consumer = GraphNode(
         id="consumer",
-        data=NodeData(label="Consumer", nodeType="polars", config={"steps": [source("score")]}),
+        data=NodeData(label="Consumer", nodeType="polars", config={"steps": [source("results")]}),
     )
     graph = PipelineGraph(
         nodes=[instance, consumer],
@@ -3024,7 +3133,7 @@ def test_flatten_rewrites_internal_stepped_consumer_and_executes(tmp_path: Path)
         data=NodeData(
             label="Consumer",
             nodeType="polars",
-            config={"steps": [source("score"), step("s2", "select", columns=["premium"])]},
+            config={"steps": [source("result"), step("s2", "select", columns=["premium"])]},
         ),
     )
     graph = PipelineGraph(
@@ -3084,3 +3193,24 @@ def test_render_endpoint_reports_invalid_step_as_data(client: TestClient) -> Non
 
     malformed = client.post("/api/pipeline/polars-steps/render", json={"steps": "nope"})
     assert malformed.status_code == 422
+
+
+def test_render_endpoint_returns_free_code_line_ranges_and_errors(client: TestClient) -> None:
+    steps = [
+        source(),
+        step("c", "free_code", code="df = df.with_columns(\n    pl.lit(1).alias('x')\n)"),
+        step("l", "limit", n=2),
+    ]
+    response = client.post(
+        "/api/pipeline/polars-steps/render", json={"steps": steps, "input_names": ["quotes"]}
+    )
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert response.json()["step_lines"] == [[1, 1], [2, 4], [5, 5]]
+    steps[1]["code"] = "return df"
+    invalid = client.post(
+        "/api/pipeline/polars-steps/render", json={"steps": steps, "input_names": ["quotes"]}
+    )
+    assert invalid.status_code == 200
+    assert invalid.json()["ok"] is False
+    assert invalid.json()["step_index"] == 1

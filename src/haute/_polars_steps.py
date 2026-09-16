@@ -8,11 +8,11 @@ parser validate input references through it, and the render endpoint shows
 its output in the editor. Every consumer therefore executes exactly the same
 program.
 
-Rendering is a pure function of ``(steps, input_names)``. One step renders to
-exactly one statement on exactly one line, so a step's line number is its
-index plus one and the output is a fixpoint of the polars user-code extractor
-(nothing to unwrap, no trailing ``return``, and a leading ``df = <input>``
-line is authored code).
+Rendering is a pure function of ``(steps, input_names)``. Structured steps
+render to one line; free-code steps can span several lines. The renderer
+records each step's inclusive line range. Output is a fixpoint of the polars
+user-code extractor (no node-level ``return``, and the leading
+``df = <input>`` line is authored code).
 
 Validation fails loudly: any malformed, unknown or incomplete field raises
 :class:`PolarsStepError` carrying the offending step index.
@@ -20,6 +20,7 @@ Validation fails loudly: any malformed, unknown or incomplete field raises
 
 from __future__ import annotations
 
+import ast
 import datetime as _dt
 import keyword
 import math
@@ -107,6 +108,7 @@ STEP_KINDS: tuple[str, ...] = (
     "variable",
     "pivot",
     "unpivot",
+    "free_code",
 )
 
 _COMPARISON_OPERATORS: dict[str, str] = {
@@ -250,6 +252,7 @@ _STEP_KEYS: dict[str, frozenset[str]] = {
     "variable": frozenset({"name", "value"}),
     "pivot": frozenset({"index", "on", "columns", "values", "agg"}),
     "unpivot": frozenset({"on", "index", "variableName", "valueName"}),
+    "free_code": frozenset({"code"}),
 }
 
 #: Keys a step may omit; every other key in ``_STEP_KEYS`` is required.
@@ -405,6 +408,7 @@ class _Renderer:
                 step_index=ids.index(duplicates[0]),
             )
         lines: list[str] = []
+        step_lines: list[tuple[int, int]] = []
         for index, step in enumerate(self.steps):
             self.index = index
             kind = step["kind"]
@@ -412,9 +416,39 @@ class _Renderer:
                 raise self.fail("The first step must choose the input to start from.")
             if index > 0 and kind == "source":
                 raise self.fail("Only the first step can choose the input to start from.")
-            lines.append(getattr(self, f"_render_{kind}")(step))
-        step_lines = tuple((i + 1, i + 1) for i in range(len(lines)))
-        return RenderedSteps(code="\n".join(lines), step_lines=step_lines)
+            start = len(lines) + 1
+            lines.extend(getattr(self, f"_render_{kind}")(step).split("\n"))
+            step_lines.append((start, len(lines)))
+        code = "\n".join(lines)
+        if any(step["kind"] == "free_code" for step in self.steps):
+            # Also check the combined function scope: e.g. `global df` after
+            # the source assignment, or imports valid only at module scope.
+            body = "\n".join(f"    {line}" for line in lines)
+            try:
+                compile(f"def _steps():\n{body}\n", "<polars-steps>", "exec", dont_inherit=True)
+            except SyntaxError as exc:
+                line = (exc.lineno or 2) - 1
+                self.index = next(
+                    i for i, (start, end) in enumerate(step_lines) if start <= line <= end
+                )
+                start = step_lines[self.index][0]
+                raise self.fail(f"Invalid Python on line {line - start + 1}: {exc.msg}.") from None
+        return RenderedSteps(code=code, step_lines=tuple(step_lines))
+
+    def _render_free_code(self, step: Mapping[str, Any]) -> str:
+        code = self._str(step["code"], "Code").replace("\r\n", "\n").replace("\r", "\n").rstrip()
+        try:
+            tree = ast.parse(code)
+            if not tree.body:
+                raise self.fail("Write at least one Python statement.")
+            # Compile without running anything. Module scope rejects return,
+            # yield, await and stray loop control, while allowing local helpers.
+            compile(tree, "<polars-step>", "exec", dont_inherit=True)
+        except SyntaxError as exc:
+            if exc.msg == "'return' outside function":
+                raise self.fail("Assign the result to df instead of using return.") from None
+            raise self.fail(f"Invalid Python on line {exc.lineno or 1}: {exc.msg}.") from None
+        return code
 
     # -- field helpers ---------------------------------------------------
 

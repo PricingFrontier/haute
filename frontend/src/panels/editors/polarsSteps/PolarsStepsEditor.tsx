@@ -197,9 +197,16 @@ export default function PolarsStepsEditor({
     onReplaceConfig({ ...rest, code: steps.length === 0 ? "" : rendered.code })
   }
 
+  const currentStepLines = rendered.status === "ok" && rendered.revisionRendered === rendered.revision ? rendered.stepLines : []
+  const runtimeErrorLineFor = (index: number): number | null => {
+    const range = currentStepLines[index]
+    if (errorLine == null || range === undefined) return null
+    const [start, end] = range
+    return errorLine >= start && errorLine <= end ? errorLine - start + 1 : null
+  }
   const badgeFor = (index: number): StepBadge | null => {
     if (shownError?.stepIndex === index) return { tone: "danger", text: shownError.message }
-    if (errorLine != null && errorLine - 1 === index) return { tone: "warning", text: "Failed when the pipeline ran" }
+    if (runtimeErrorLineFor(index) != null) return { tone: "warning", text: "Failed when the pipeline ran" }
     return null
   }
 
@@ -325,6 +332,7 @@ export default function PolarsStepsEditor({
                           variables: variablesBefore(steps, index),
                           inputNames,
                           firstFieldId: `${step.id}-first`,
+                          errorLine: step.kind === "free_code" ? runtimeErrorLineFor(index) : null,
                         }}
                       />
                     </StepCard>
@@ -340,7 +348,7 @@ export default function PolarsStepsEditor({
             code={rendered.code}
             pending={rendered.status === "pending"}
             error={shownError}
-            errorLine={errorLine}
+            errorLine={currentStepLines.length > 0 ? errorLine : null}
             onGoToError={goToError}
             switchEnabled={switchEnabled}
             switchDisabledReason={switchDisabledReason}

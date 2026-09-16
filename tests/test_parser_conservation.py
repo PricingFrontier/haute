@@ -1557,7 +1557,7 @@ class TestPolarsParameterBinding:
         )
         assert regenerated == files
 
-    def test_occurrence_output_parameter_is_the_occurrence_name(
+    def test_occurrence_output_parameter_is_the_public_port_name(
         self,
         tmp_path: Path,
     ) -> None:
@@ -1604,8 +1604,8 @@ class TestPolarsParameterBinding:
                 return pl.LazyFrame({{"x": [1]}})
 
             @pipeline.polars
-            def sink(a: pl.LazyFrame) -> pl.LazyFrame:
-                return a
+            def sink(result: pl.LazyFrame) -> pl.LazyFrame:
+                return result
 
             pipeline.submodel(
                 {child.name!r},
@@ -1639,8 +1639,8 @@ class TestPolarsParameterBinding:
                 return pl.LazyFrame({{"x": [1]}})
 
             @pipeline.polars
-            def sink(Result: pl.LazyFrame) -> pl.LazyFrame:
-                return Result
+            def sink(a: pl.LazyFrame) -> pl.LazyFrame:
+                return a
 
             pipeline.submodel(
                 {child.name!r},
@@ -1657,8 +1657,8 @@ class TestPolarsParameterBinding:
             parse_pipeline_file(parent_invalid)
 
         assert exc_info.value.context["node_id"] == "sink"
-        assert exc_info.value.context["unbound_parameters"] == ["Result"]
-        assert exc_info.value.context["connected_inputs"] == ["a"]
+        assert exc_info.value.context["unbound_parameters"] == ["a"]
+        assert exc_info.value.context["connected_inputs"] == ["result"]
 
     def test_degraded_document_with_parameter_mismatch(
         self,
@@ -1774,8 +1774,8 @@ class TestPolarsParameterBinding:
                 return pl.LazyFrame({{"x": [1]}})
 
             @pipeline.polars
-            def sink(a: pl.LazyFrame) -> pl.LazyFrame:
-                return a
+            def sink(result: pl.LazyFrame) -> pl.LazyFrame:
+                return result
 
             pipeline.submodel(
                 {child_valid.name!r},
@@ -1831,8 +1831,8 @@ class TestPolarsParameterBinding:
                 return pl.LazyFrame({{"x": [1]}})
 
             @pipeline.polars
-            def sink(a: pl.LazyFrame) -> pl.LazyFrame:
-                return a
+            def sink(result: pl.LazyFrame) -> pl.LazyFrame:
+                return result
 
             pipeline.submodel(
                 {child_invalid.name!r},

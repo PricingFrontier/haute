@@ -268,7 +268,7 @@ preserves the
 exception's stable code and named safe fields; malformed or unsupported diagnostic versions
 become diagnostic-unavailable rather than a fabricated success.
 
-**Step rendering.** `POST /api/pipeline/polars-steps/render` accepts a low-code step list
+**Step rendering.** `POST /api/pipeline/polars-steps/render` accepts a step list
 and its input names and returns either the rendered code with each step's line range or
 the failing step index and message. Both outcomes are ordinary responses, so a half-built
 step list shows as an editor message rather than a network error; only a malformed

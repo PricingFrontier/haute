@@ -44,6 +44,7 @@ export const STEP_CATALOGUE: StepKindInfo[] = [
   { kind: "variable", label: "Define variable", description: "Name a value for later steps" },
   { kind: "pivot", label: "Pivot to columns", description: "One column per value of a category" },
   { kind: "unpivot", label: "Unpivot to rows", description: "Stack several columns into name/value rows" },
+  { kind: "free_code", label: "Free code", description: "Run Python statements against the current frame" },
 ]
 
 export const CONDITION_OPERATORS: Array<{ value: ConditionOperator; label: string; takes: "value" | "none" | "values" }> = [
@@ -279,6 +280,8 @@ export function createStep(kind: Exclude<StepKind, "source">, id: string): Step 
       return { id, kind, index: [], on: "", columns: [], values: "", agg: "sum" }
     case "unpivot":
       return { id, kind, on: [], index: [], variableName: "variable", valueName: "value" }
+    case "free_code":
+      return { id, kind, code: "" }
   }
 }
 
@@ -453,6 +456,7 @@ const REQUIRED_FIELDS: Record<StepKind, Array<[string, Shape]>> = {
   variable: [["name", "string"], ["value", "object"]],
   pivot: [["index", "array"], ["on", "string"], ["columns", "array"], ["values", "string"], ["agg", "string"]],
   unpivot: [["on", "array"], ["index", "array"], ["variableName", "string"], ["valueName", "string"]],
+  free_code: [["code", "string"]],
 }
 
 /**

@@ -5,8 +5,8 @@ import { stepDisplayLabel } from "./catalogue"
 
 /**
  * The locked, line-numbered rendering of the current steps. Keeps the last
- * good program while a render is pending, tints the failing step's line and
- * the execution error line, and carries the confirmed switch to code.
+ * good program while a render is pending, tints the execution error line,
+ * shows validation errors, and carries the confirmed switch to code.
  */
 export default function GeneratedCodePanel({
   code,
@@ -32,7 +32,6 @@ export default function GeneratedCodePanel({
   const [open, setOpen] = useState(true)
   const id = useId()
   const lines = code.length > 0 ? code.split("\n") : []
-  const failingLine = error?.stepIndex != null ? error.stepIndex + 1 : null
 
   return (
     <section className="rounded-lg" style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }} aria-labelledby={`${id}-title`}>
@@ -84,7 +83,7 @@ export default function GeneratedCodePanel({
           ) : (
             lines.map((line, index) => {
               const number = index + 1
-              const tone = number === failingLine ? "var(--danger)" : number === errorLine ? "var(--warning)" : null
+              const tone = number === errorLine ? "var(--warning)" : null
               return (
                 <div key={number} className="flex gap-2" style={tone ? { color: tone } : undefined} data-line={number}>
                   <span className="select-none w-5 text-right shrink-0" style={{ color: "var(--text-muted)" }} aria-hidden="true">

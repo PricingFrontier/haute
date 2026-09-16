@@ -71,7 +71,7 @@
   carries one identity: `name` is the input's single name — chip text, code argument, and the
   key persisted contracts use (the live-switch `input_scenario_map`, the instance
   `inputMapping`) — derived per edge by `edgeInputName` (an API-input edge's frame label
-  verbatim; a submodel `out__` edge's input name is the occurrence's name (or `<name>__<port_name>` with several output ports), resolved by the backend identity endpoint from the alias the request carries; else the sanitised source-node
+  verbatim; a submodel `out__` edge's input name is the sanitised public output port name, resolved by the backend identity endpoint; else the sanitised source-node
   label). `sourceLabel` is provenance metadata used only to explain an unresolved source;
   resolved tooltips, removal titles, and selectors identify the edge by `name`, never by the
   source-node label or id;
@@ -620,9 +620,8 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   boundary, or unknown row is an invariant violation and throws rather than falling back to the
   composite node's literal `INPUT` label.
 - `edgeInputName` treats only API-input sources' handles as frame names; a submodel
-  `out__` edge's input name is the occurrence's name (which equals its alias, or `<name>__<port_name>` with several output
-  ports), resolved by the backend identity endpoint from the alias the request carries; and every other
-  node type derives the sanitised source label. Renaming an occurrence renames its alias (the node id follows at Save, when the reparse re-keys it to the name, so `node.id == data.label == config.alias` holds in every parsed document), validates identifier syntax (refusing with `Occurrence names must be identifiers; use "<functionName>".`) and uniqueness among parent nodes (refusing with `"<name>" is already used by another node.`), and rebinds downstream consumers identically via `inputMapping` without editing code.
+  `out__` edge's input name is the sanitised public output port name, resolved by the backend identity endpoint; and every other
+  node type derives the sanitised source label. Renaming an occurrence renames its alias (the node id follows at Save, when the reparse re-keys it to the name, so `node.id == data.label == config.alias` holds in every parsed document), validates identifier syntax (refusing with `Occurrence names must be identifiers; use "<functionName>".`) and uniqueness among parent nodes (refusing with `"<name>" is already used by another node.`), and leaves downstream public port names unchanged.
 - The API-input editor rejects a frame label that fails backend invariant B4 (not an ASCII
   identifier, or a Python hard keyword) at commit time with the same inline validation used
   for blank/duplicate labels (`apiInputLabelIssue` — the exact ASCII mirror) — the label is
@@ -663,7 +662,7 @@ diagnostics; no generic editor fabricates a replacement config.
 - `frontend/src/panels/editors/polarsSteps/__tests__/fields.test.tsx` — column completion matching, keyboard and mouse completion in the column box and chip list, and focus staying in the box through a completion and a commit.
 - `frontend/src/panels/editors/polarsSteps/__tests__/forms.test.tsx` — every step form only produces schema-valid payloads: variable, membership (including switching an empty list to numbers and adding one), string-operator, function-argument, cast, rename, sort, unique, concat, fill-null, group-by, join, pivot and unpivot forms; formula text editing, completion, focus retention and the error note clearing on revert; the structured fallback for a formula holding a window; and the if-then, window and text-join expression editors.
 - `frontend/src/panels/editors/polarsSteps/__tests__/useRenderedSteps.test.ts` — empty, debounced, failed, transport-failed (a list-level error keeping the last code), out-of-order and pending render states.
-- `frontend/e2e/polars-steps.spec.ts` — the browser journey: a new Transform asks for an input, connecting one seeds the start step, a Limit step added from the chooser re-renders the generated code, the preview runs it, Save writes the `config/polars/<name>.json` sidecar and the rendered body, and reopening restores the step cards.
+- `frontend/e2e/polars-steps.spec.ts` — the browser journey: a new Transform asks for an input, connecting one seeds the start step, Limit and multiline Free code steps added from the chooser re-render the generated code, a following Limit step consumes the custom frame, the preview includes its new column, Save writes the `config/polars/<name>.json` sidecar and the rendered body, and reopening restores the step cards and editable snippet.
 - `frontend/src/panels/editors/polarsSteps/__tests__/derivedColumns.test.ts` — column derivation through each step kind.
 - `frontend/src/panels/editors/polarsSteps/__tests__/stepProblem.test.ts` — every malformed persisted step shape (top-level and nested) is reported as a problem, and summaries, column and variable suggestions never throw around it.
 - `frontend/src/__tests__/editors/TransformEditor.test.tsx` — step mode is selected when `config.steps` is a list, and code mode shows the discard notice.
@@ -698,11 +697,14 @@ state, including danger styling and field-level invalid-key borders.
 
 The input-identity work is pinned by `frontend/src/panels/__tests__/NodePanel.test.tsx`
 (`name` derivation for API-frame edges — sole frame included — ordinary sources, and submodel
-`out__` edges whose input name is the occurrence's name (or `<name>__<port_name>` with several output ports), resolved by the backend identity endpoint from the alias the request carries; the `frameUnresolved` warning chip for a
+`out__` edges whose input name is the sanitised public output port name, resolved by the backend identity endpoint; the `frameUnresolved` warning chip for a
 zero-eligible-frame API source; the unresolved→resolved transition under an unchanged name
 string clearing the warning; signature-driven refresh on a frame rename; two frames from one
 API input rendering two distinct, independently removable chips whose names equal the
-generated argument names), by LiveSwitch cases (two frames from one API input render two rows
+generated argument names; exact chip text, tooltip and removal-control names remain
+public frame names after occurrence alias/display-label changes with one or two outputs),
+and by `PolarsStepsEditor.test.tsx` (start-input options, persisted selections, and render
+request input names stay frame-named after source identity changes), by LiveSwitch cases (two frames from one API input render two rows
 with two distinct names and two independent `input_scenario_map` keys; a frame rename migrates
 its map key atomically with the edge rebind; a zero-eligible-frame API `InputSource` renders
 the row's unresolved warning marker/tooltip), by the ApiInputEditor identifier-validation

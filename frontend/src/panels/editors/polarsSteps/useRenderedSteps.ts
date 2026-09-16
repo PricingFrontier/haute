@@ -14,6 +14,8 @@ export type RenderedStepsState = {
   revisionRendered: number
   /** Steps revision the caller is currently editing. */
   revision: number
+  /** Inclusive generated-code line ranges for the successful current render. */
+  stepLines: number[][]
 }
 
 const DEBOUNCE_MS = 250
@@ -42,16 +44,17 @@ export function useRenderedSteps(
     error: null,
     revisionRendered: 0,
     revision: 0,
+    stepLines: [],
   })
 
   useEffect(() => {
     revisionRef.current += 1
     const revision = revisionRef.current
     if (steps.length === 0) {
-      setState({ status: "empty", code: "", error: null, revisionRendered: revision, revision })
+      setState({ status: "empty", code: "", error: null, revisionRendered: revision, revision, stepLines: [] })
       return
     }
-    setState((prev) => ({ ...prev, status: "pending", revision }))
+    setState((prev) => ({ ...prev, status: "pending", revision, stepLines: [] }))
     const controller = new AbortController()
     const timer = setTimeout(() => {
       renderPolarsSteps({ steps, inputNames, signal: controller.signal })
@@ -64,6 +67,7 @@ export function useRenderedSteps(
               error: null,
               revisionRendered: revision,
               revision,
+              stepLines: response.step_lines,
             })
             onRenderedRef.current?.(response.code)
           } else {
@@ -73,6 +77,7 @@ export function useRenderedSteps(
               error: { stepIndex: response.step_index, message: response.message },
               revisionRendered: revision,
               revision,
+              stepLines: [],
             }))
           }
         })
@@ -86,6 +91,7 @@ export function useRenderedSteps(
             error: { stepIndex: null, message: `Could not render steps: ${message}` },
             revisionRendered: revision,
             revision,
+            stepLines: [],
           }))
         })
     }, DEBOUNCE_MS)

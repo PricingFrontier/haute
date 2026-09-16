@@ -96,6 +96,8 @@ export function summarizeStep(step: Step): string {
       return `${step.n} rows`
     case "variable":
       return `${step.name || "?"} = ${operandText(step.value)}`
+    case "free_code":
+      return step.code.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() || "Write Python code"
     case "pivot":
       return `${step.agg} of ${step.values || "?"} by ${step.index.join(", ") || "?"} into ${step.columns.map((c) => c.name || "?").join(", ") || "?"}`
     case "unpivot":

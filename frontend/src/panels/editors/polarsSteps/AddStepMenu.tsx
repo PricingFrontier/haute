@@ -12,12 +12,13 @@ const GROUPS: Array<{ title: string; kinds: AddableKind[] }> = [
   { title: "Columns", kinds: ["with_column", "select", "drop", "rename", "cast", "fill_null"] },
   { title: "Combine", kinds: ["join", "concat", "group_by", "pivot", "unpivot"] },
   { title: "Values", kinds: ["variable"] },
+  { title: "Code", kinds: ["free_code"] },
 ]
 
 /**
  * The `Add step` control that sits under the last step: a full-width button
  * that opens, in place, a chooser of every step kind by name, grouped as
- * rows, columns, combine and values (what a kind does is its tooltip). Arrow keys move between kinds, Escape closes and
+ * rows, columns, combine, values and code (what a kind does is its tooltip). Arrow keys move between kinds, Escape closes and
  * returns focus to the button, and choosing a kind hands it back to the editor.
  */
 export default function AddStepMenu({

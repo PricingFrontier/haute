@@ -229,8 +229,9 @@ walks (collection, load-error protection, and the save-time collision and
 reserved-filename guard) treat a `polars` node as a sidecar owner only while its config
 carries a `steps` list, and the stale-file sweep removes the file when a node stops
 carrying one. One renderer (`src/haute/_polars_steps.py`) validates the closed step
-schema and renders the steps into the function body, one statement per line, raising a
-step-indexed error for any malformed or incomplete step. The vocabulary covers filters
+schema and renders the steps into the function body, recording each step's inclusive
+line range and raising a step-indexed error for any malformed or incomplete step.
+The vocabulary covers filters
 (comparison, null, membership, text and regex operators), derived columns (formulas,
 typed functions over numbers, text, dates and durations, conditionals, window
 aggregates with a partition and an optional in-partition order, and text joins),
@@ -296,6 +297,22 @@ editor-state `_discarded_sidecar` path that the stale-sidecar sweep baseline inc
 the file is retired on the next save, and logs a warning; an empty body with
 unrenderable steps keeps the steps, because that is how an incomplete step list is
 saved. A sidecar whose `steps` value is not a list fails the parse with a `ConfigError`.
+
+A `free_code` step carries a `code` string containing Python statements and can
+appear anywhere after the source step. Its statements run inline, in order with
+the low-code steps: `df` is the current frame, `pl` is available, and earlier
+Define variable values can be used. Assign transformations back to `df`; later
+steps consume that frame. Multiline expressions, comments, local helpers and
+control flow are supported. Blank or comment-only snippets, invalid Python, and
+node-level `return`, `yield`, `await`, or loop control outside a loop fail with the
+offending step index; returns inside helper functions are allowed. Validation
+compiles but never executes authored code. The stored snippet is preserved;
+rendering normalises line endings and removes trailing whitespace so generated
+code round-trips through the existing extractor. Free code shares the existing
+code execution and planning contracts, with no separate evaluator. Input renames
+continue to rewrite structured input fields; authored Python is unchanged. Use
+`df` to operate on the current frame across input renames; direct references to
+other input names in a snippet must be kept in sync by the author.
 
 ## Design rationale
 

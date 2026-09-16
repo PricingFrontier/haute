@@ -160,6 +160,8 @@ export type UnpivotStep = StepBase & {
   valueName: string
 }
 export type VariableStep = StepBase & { kind: "variable"; name: string; value: LiteralOperand }
+/** Authored Python statements run against the current frame. */
+export type FreeCodeStep = StepBase & { kind: "free_code"; code: string }
 
 export type Step =
   | SourceStep
@@ -177,6 +179,7 @@ export type Step =
   | FillNullStep
   | LimitStep
   | VariableStep
+  | FreeCodeStep
   | PivotStep
   | UnpivotStep
 

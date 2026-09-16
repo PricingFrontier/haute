@@ -303,8 +303,9 @@ Tests live under `tests/`, split by concern:
   occurrence, no dangling edge, and every sink computes the generated source rows. The
   `hypothesis.find` negative control rewrites one legal connection into the private form and
   shows the acceptance flip naming exactly that connection. Consumers of an occurrence
-  output name their parameter after the occurrence alias, as codegen emits; a parameter
-  named after the output port's label is rejected with unbound parameters.
+  output name their parameter after the sanitised public output port name, as
+  codegen emits; a parameter named after the occurrence alias is rejected unless
+  explicitly bound through `inputMapping`.
 - **`test_parser_conservation.py`** — regression tests asserting that parsing (and the implicit
   regeneration path) conserves source structure: boilerplate, docstrings, parameter buckets, node
   function shape, alias awareness, implicit-edge dedup, exact node/edge/handle/submodel identity,

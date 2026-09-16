@@ -796,9 +796,9 @@ class TestCollidingPublicNames:
 
 
 class TestGroupingPreservesConsumerBindings:
-    """F13: the occurrence's name is the new physical input; authored code keeps its old name."""
+    """Grouping preserves the frame's public name and the consumer's authored code."""
 
-    def test_grouping_records_the_consumer_binding_through_input_mapping(self):
+    def test_grouping_preserves_the_consumer_input_name(self):
         graph = make_graph(
             {
                 "pipeline_name": "test",
@@ -846,13 +846,13 @@ class TestGroupingPreservesConsumerBindings:
 
         result = create_submodel_graph(graph, ["features", "switch"], "Scoring")
         consumer = result.graph.node_map["consumer"]
-        # The authored code is untouched; the physical input is now the occurrence.
+        # The new public output port keeps the old frame name.
         assert consumer.data.config["code"] == "df = live_switch"
-        assert consumer.data.config["inputMapping"] == {"live_switch": "Scoring"}
+        assert not consumer.data.config.get("inputMapping")
 
         files = graph_to_code_multi(result.graph, pipeline_name="test", source_file="main.py")
         assert "def consumer(live_switch: pl.LazyFrame)" in files["main.py"]
-        assert 'inputMapping={"live_switch": "Scoring"}' in files["main.py"].replace("'", '"')
+        assert 'source_port="live_switch"' in files["main.py"]
 
         # Flattening the grouped graph binds the same frame back to the same name.
         from haute.graph_utils import flatten_graph
@@ -860,4 +860,4 @@ class TestGroupingPreservesConsumerBindings:
         flat = flatten_graph(result.graph)
         flat_consumer = flat.node_map["consumer"]
         assert flat_consumer.data.config["code"] == "df = live_switch"
-        assert list(flat_consumer.data.config["inputMapping"]) == ["live_switch"]
+        assert not flat_consumer.data.config.get("inputMapping")

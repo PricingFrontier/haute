@@ -90,17 +90,47 @@ test.describe("Transform step builder journey", () => {
     await rowLimit.press("Enter")
     await expect(editor.getByTestId("polars-generated-code")).toContainText("df = df.head(3)")
 
+    // Free code uses the current frame, and later low-code steps keep working.
+    await editor.getByRole("button", { name: "Add step" }).click()
+    await editor.getByRole("menuitem", { name: "Free code" }).click()
+    const snippet = 'df = df.with_columns(\n    pl.lit("custom").alias("step_marker")\n)'
+    await editor.locator(".cm-content").fill(snippet)
+    await expect(editor.getByText("df holds the current frame.", { exact: false })).toHaveCount(0)
+    const codeBox = editor.getByTestId("free-code-box")
+    await codeBox.scrollIntoViewIfNeeded()
+    const initialBox = await codeBox.boundingBox()
+    expect(initialBox).not.toBeNull()
+    expect(initialBox!.height).toBeLessThanOrEqual(122)
+    // Drag the native resize handle; CodeMirror fills the expanded box.
+    await page.mouse.move(initialBox!.x + initialBox!.width - 4, initialBox!.y + initialBox!.height - 4)
+    await page.mouse.down()
+    await page.mouse.move(initialBox!.x + initialBox!.width - 4, initialBox!.y + initialBox!.height + 96, { steps: 8 })
+    await page.mouse.up()
+    await expect.poll(async () => (await codeBox.boundingBox())!.height).toBeGreaterThan(200)
+    const expandedBox = (await codeBox.boundingBox())!
+    const editorBox = (await codeBox.locator(".cm-editor").boundingBox())!
+    expect(Math.abs(expandedBox.height - editorBox.height)).toBeLessThanOrEqual(2)
+    await expect(editor.getByTestId("polars-generated-code")).toContainText('pl.lit("custom").alias("step_marker")')
+    await editor.getByRole("button", { name: "Add step" }).click()
+    await editor.getByRole("menuitem", { name: "Limit rows" }).click()
+    await editor.getByLabel("Row limit").fill("2")
+    await editor.getByLabel("Row limit").press("Enter")
+    await expect(editor.getByTestId("polars-generated-code")).toContainText("df = df.head(2)")
+
     // The preview runs the rendered program.
     await page.getByRole("button", { name: "Refresh" }).click()
     const previewTable = page.getByRole("table").first()
     await expect(previewTable).toBeVisible()
     await expect(previewTable.getByRole("cell").first()).toBeVisible()
+    await expect(previewTable.getByRole("columnheader", { name: /step_marker/ })).toBeVisible()
+    await expect(previewTable.getByRole("cell", { name: "custom", exact: true })).toHaveCount(2)
 
     // Saving writes the steps to the node's sidecar and the rendered body to the module.
     await save(page)
     await expect.poll(() => existsSync(sidecarPath)).toBe(true)
     const sidecar = JSON.parse(readFileSync(sidecarPath, "utf8")) as { steps: Array<{ kind: string }> }
-    expect(sidecar.steps.map((step) => step.kind)).toEqual(["source", "limit"])
+    expect(sidecar.steps.map((step) => step.kind)).toEqual(["source", "limit", "free_code", "limit"])
+    expect(sidecar.steps[2]).toMatchObject({ code: snippet })
     const main = readFileSync(mainPath, "utf8")
     expect(main).toContain('config="config/polars/browser_steps.json"')
     expect(main).toContain("def browser_steps(raw_rows: pl.LazyFrame)")
@@ -113,5 +143,8 @@ test.describe("Transform step builder journey", () => {
     await expect(panel).toBeVisible()
     await expect(panel.getByRole("button", { name: "Step 1: Limit rows", exact: true })).toBeVisible()
     await expect(panel.getByTestId("polars-generated-code")).toContainText("df = df.head(3)")
+    await expect(panel.getByRole("button", { name: "Step 3: Limit rows", exact: true })).toBeVisible()
+    await panel.getByRole("button", { name: "Step 2: Free code", exact: true }).click()
+    await expect(panel.locator(".cm-content .cm-line")).toHaveText(snippet.split("\n"))
   })
 })

@@ -327,8 +327,8 @@ export function resolveSubmodelBoundaryNode(
  * API-input frame handles are already canonical names and are returned
  * verbatim, including a stale non-null handle so the UI can identify the
  * unresolved edge. Ordinary sources consume authoritative backend identity
- * metadata. A submodel output uses the authoritative occurrence name (or
- * `<name>__<port name>` with multiple output ports) returned by the backend.
+ * metadata. A submodel output uses the authoritative public output port name
+ * returned by the backend, independent of the occurrence alias or port count.
  */
 export const UNRESOLVED_INPUT_NAME = "<unresolved>"
 

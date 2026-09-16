@@ -298,7 +298,7 @@ must resolve the original pipeline-owned sidecars.
   matching the case-insensitive module no-clobber rule.
 - **Canonical boundary identity and executable naming are separate.** Parent edges
   address only `in__<name>` and `out__<name>` handles. Public input port names
-  and occurrence names provide the executable frame names, internal endpoint ids stay
+  and public output port names provide the executable frame names, internal endpoint ids stay
   definition-private, and public ports have a single name field. Drill-down projects the
   definition contract as one composite Input and one composite Output card.
   Declared outputs remain visible and round-trip without consumers. Draft or
@@ -394,10 +394,8 @@ must resolve the original pipeline-owned sidecars.
 - A downstream node fed across a canonical submodel boundary resolves the
   occurrence's `out__<name>` handle through the referenced definition to
   that public output's internal `{nodeId, handleId}` data source. Its parent
-  input name is the occurrence's own sanitised name (`_sanitize_func_name(alias)`),
-  or `<name>__<port_name>` when the referenced definition declares more than one
-  output port (aliases are unique among a parent's nodes by construction;
-  public ports have one name). See
+  input name is the sanitised public output port name, independent of the
+  occurrence alias and number of outputs. See
   [frontend-node-editors](../frontend-node-editors/high-level.md)
   for chip derivation and [codegen](../codegen/high-level.md) for the backend
   rule.

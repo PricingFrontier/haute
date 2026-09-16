@@ -6,6 +6,12 @@ vi.mock("../../../../api/client", () => ({
   renderPolarsSteps: vi.fn(),
 }))
 
+vi.mock("../../CodeEditor", () => ({
+  CodeEditor: ({ defaultValue, onChange }: { defaultValue: string; onChange: (value: string) => void }) => (
+    <textarea aria-label="Free code" defaultValue={defaultValue} onChange={(event) => onChange(event.target.value)} />
+  ),
+}))
+
 import { renderPolarsSteps } from "../../../../api/client"
 import PolarsStepsEditor from "../PolarsStepsEditor"
 import type { Step } from "../types"
@@ -30,6 +36,7 @@ const filter: Step = {
   conditions: [{ column: "premium", operator: "gt", value: { kind: "literal", type: "number", value: 100 } }],
 }
 const limit: Step = { id: "l", kind: "limit", n: 5 }
+const freeCode: Step = { id: "code", kind: "free_code", code: "# prepare\ndf = df.with_columns(\n  pl.col('premium') * 2\n)" }
 
 function okFor(steps: unknown[]) {
   const code = steps.map((_, i) => (i === 0 ? "df = quotes" : `df = df.step_${i}()`)).join("\n")
@@ -164,8 +171,8 @@ describe("PolarsStepsEditor", () => {
     render(<Harness initial={{ steps: [source] }} inputSources={[quotes, rates]} spy={spy} />)
     fireEvent.click(screen.getByRole("button", { name: "Add step" }))
     const menu = screen.getByRole("menu", { name: "Add step" })
-    expect(within(menu).getAllByRole("menuitem")).toHaveLength(16)
-    expect(within(menu).getAllByRole("group").map((g) => g.getAttribute("aria-label"))).toEqual(["Rows", "Columns", "Combine", "Values"])
+    expect(within(menu).getAllByRole("menuitem")).toHaveLength(17)
+    expect(within(menu).getAllByRole("group").map((g) => g.getAttribute("aria-label"))).toEqual(["Rows", "Columns", "Combine", "Values", "Code"])
     expect(within(within(menu).getByRole("group", { name: "Combine" })).getAllByRole("menuitem")).toHaveLength(5)
     expect(within(menu).getByRole("menuitem", { name: "Limit rows" })).toHaveAttribute("title", "Keep the first N rows")
     expect(screen.queryByRole("button", { name: "Add step" })).not.toBeInTheDocument()
@@ -277,10 +284,59 @@ describe("PolarsStepsEditor", () => {
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Step 1: Column name must be a non-empty string."), { timeout: 5000 })
   })
 
-  it("maps a preview execution line to its step", () => {
+  it("maps a preview execution line to its single-line step", async () => {
     render(<Harness initial={{ steps: [source, filter, limit] }} inputSources={[quotes]} errorLine={3} />)
+    await waitFor(() => expect(mockRender).toHaveBeenCalled(), { timeout: 5000 })
     const limitCard = screen.getByRole("button", { name: "Step 2: Limit rows" }).closest("[data-testid='polars-step-card']")
-    expect(limitCard).toHaveTextContent("Failed when the pipeline ran")
+    await waitFor(() => expect(limitCard).toHaveTextContent("Failed when the pipeline ran"), { timeout: 5000 })
+  })
+
+  it("adds and edits multiline free code as a step, then switches using its rendered text", async () => {
+    mockRender.mockImplementation(async ({ steps }) => ({
+      ok: true,
+      code: (steps as Step[]).map((step) => step.kind === "source" ? "df = quotes" : step.kind === "free_code" ? step.code : "df = df.step()").join("\n"),
+      step_lines: [[1, 1], [2, 5]],
+      step_index: null,
+      message: "",
+    }))
+    const spy = vi.fn()
+    const onReplace = vi.fn()
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true)
+    render(<Harness initial={{ steps: [source] }} inputSources={[quotes]} spy={spy} onReplace={onReplace} />)
+    fireEvent.click(screen.getByRole("button", { name: "Add step" }))
+    fireEvent.click(screen.getByRole("menuitem", { name: "Free code" }))
+    fireEvent.change(screen.getByRole("textbox", { name: "Free code" }), { target: { value: "# prepare\ndf = df.with_columns(\n  pl.col('premium') * 2\n)" } })
+    await waitFor(() => expect(lastSteps(spy)).toEqual([source, expect.objectContaining({ kind: "free_code", code: "# prepare\ndf = df.with_columns(\n  pl.col('premium') * 2\n)" })]), { timeout: 5000 })
+    expect(onReplace).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.getByRole("button", { name: "Switch to code" })).toBeEnabled(), { timeout: 5000 })
+    fireEvent.click(screen.getByRole("button", { name: "Switch to code" }))
+    expect(onReplace).toHaveBeenCalledWith({ code: "df = quotes\n# prepare\ndf = df.with_columns(\n  pl.col('premium') * 2\n)" })
+    confirm.mockRestore()
+  })
+
+  it("maps an execution line in a multiline free-code range to its card, then maps the next range to the following card", async () => {
+    mockRender.mockResolvedValue({
+      ok: true,
+      code: "df = quotes\n# prepare\ndf = df.with_columns(\n  pl.col('premium') * 2\n)\ndf = df.head(5)",
+      step_lines: [[1, 1], [2, 5], [6, 6]],
+      step_index: null,
+      message: "",
+    })
+    const { rerender } = render(<Harness initial={{ steps: [source, freeCode, limit] }} inputSources={[quotes]} errorLine={4} />)
+    await waitFor(() => expect(screen.getByRole("button", { name: "Step 1: Free code" }).closest("[data-testid='polars-step-card']")).toHaveTextContent("Failed when the pipeline ran"), { timeout: 5000 })
+    expect(screen.getByRole("button", { name: "Step 2: Limit rows" }).closest("[data-testid='polars-step-card']")).not.toHaveTextContent("Failed when the pipeline ran")
+    rerender(<Harness initial={{ steps: [source, freeCode, limit] }} inputSources={[quotes]} errorLine={6} />)
+    expect(screen.getByRole("button", { name: "Step 2: Limit rows" }).closest("[data-testid='polars-step-card']")).toHaveTextContent("Failed when the pipeline ran")
+    expect(screen.getByRole("button", { name: "Step 1: Free code" }).closest("[data-testid='polars-step-card']")).not.toHaveTextContent("Failed when the pipeline ran")
+  })
+
+  it("reorders and deletes free code around a regular step", async () => {
+    const spy = vi.fn()
+    render(<Harness initial={{ steps: [source, freeCode, limit] }} inputSources={[quotes]} spy={spy} />)
+    fireEvent.click(screen.getByRole("button", { name: "Move Step 1: Free code down" }))
+    await waitFor(() => expect(lastSteps(spy)).toEqual([source, limit, freeCode]), { timeout: 5000 })
+    fireEvent.click(screen.getByRole("button", { name: "Delete Step 2: Free code" }))
+    await waitFor(() => expect(lastSteps(spy)).toEqual([source, limit]), { timeout: 5000 })
   })
 
   it("switches to code only after a successful render and asks for confirmation", async () => {
@@ -336,12 +392,33 @@ describe("PolarsStepsEditor", () => {
 
   it("writes the chosen start input when the node has several inputs", async () => {
     const spy = vi.fn()
-    render(<Harness initial={{ steps: [] }} inputSources={[quotes, rates]} spy={spy} />)
-    expect(screen.getByLabelText("Start from input")).toHaveValue("")
+    const frames: InputSource[] = ["output_1", "output_2"].map((name) => ({
+      sourceNodeId: "Inputs_alias",
+      sourceLabel: "Inputs display",
+      name,
+      edgeId: `edge_${name}`,
+    }))
+    const { rerender } = render(<Harness initial={{ steps: [] }} inputSources={frames} spy={spy} />)
+    const selector = screen.getByLabelText("Start from input")
+    expect(selector).toHaveValue("")
+    expect(within(selector).getAllByRole("option").map((option) => option.textContent))
+      .toEqual(["Choose an input", "output_1", "output_2"])
     expect(screen.getByRole("button", { name: "Add step" })).toBeDisabled()
-    fireEvent.change(screen.getByLabelText("Start from input"), { target: { value: "rates" } })
-    await waitFor(() => expect(lastSteps(spy)).toEqual([expect.objectContaining({ kind: "source", input: "rates" })]), { timeout: 5000 })
+    fireEvent.change(selector, { target: { value: "output_2" } })
+    await waitFor(() => expect(lastSteps(spy)).toEqual([expect.objectContaining({ kind: "source", input: "output_2" })]), { timeout: 5000 })
+    await waitFor(() => expect(mockRender).toHaveBeenLastCalledWith(expect.objectContaining({
+      steps: [expect.objectContaining({ kind: "source", input: "output_2" })],
+      inputNames: ["output_1", "output_2"],
+    })), { timeout: 5000 })
     expect(screen.getByRole("button", { name: "Add step" })).toBeEnabled()
+
+    rerender(<Harness initial={{ steps: [] }} inputSources={frames.map((frame) => ({
+      ...frame, sourceNodeId: "renamed_alias", sourceLabel: "Renamed display",
+    }))} spy={spy} />)
+    expect(selector).toHaveValue("output_2")
+    expect(within(selector).getAllByRole("option").map((option) => option.textContent))
+      .toEqual(["output_1", "output_2"])
+    expect(lastSteps(spy)).toEqual([expect.objectContaining({ kind: "source", input: "output_2" })])
   })
 
   it("keeps the open card on its step when another card is dragged past it", async () => {

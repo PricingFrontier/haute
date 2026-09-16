@@ -7,6 +7,7 @@ import { Info } from "lucide-react"
 import { useEffect, useId, useRef, useState, type ReactNode } from "react"
 
 import { ConfigCheckbox } from "../../../components/form"
+import { CodeEditor } from "../CodeEditor"
 import { INPUT_STYLE } from "../_shared"
 import { completionMatches } from "./completion"
 import { FormulaError, displayFormula, parseFormula, typedAsFormula } from "./formula"
@@ -83,6 +84,7 @@ import type {
   UniqueStep,
   UnpivotStep,
   VariableStep,
+  FreeCodeStep,
   WithColumnStep,
 } from "./types"
 
@@ -95,6 +97,8 @@ export type StepFormContext = {
   inputNames: string[]
   /** Id of the control to focus when the card opens. */
   firstFieldId: string
+  /** Snippet-relative runtime error line for an authored free-code step. */
+  errorLine?: number | null
 }
 
 type FormProps<S extends Step> = { step: S; onChange: (next: S) => void; ctx: StepFormContext }
@@ -1074,6 +1078,24 @@ function VariableForm({ step, onChange, ctx }: FormProps<VariableStep>) {
   )
 }
 
+function FreeCodeForm({ step, onChange, ctx }: FormProps<FreeCodeStep>) {
+  return (
+    <div
+      data-testid="free-code-box"
+      className="h-[120px] min-h-[120px] resize-y overflow-auto rounded-md [&>div]:h-full [&_.cm-editor]:h-full"
+      style={{ border: "1px solid var(--border)" }}
+    >
+      <CodeEditor
+        defaultValue={step.code}
+        onChange={(code) => onChange({ ...step, code })}
+        errorLine={ctx.errorLine}
+        availableColumns={ctx.columns}
+        placeholder={'df = df.with_columns(pl.col("premium") * 2)'}
+      />
+    </div>
+  )
+}
+
 /** The form for `step`, laid out as a single-column grid. */
 export function StepForm({ step: raw, onChange, ctx }: { step: Step; onChange: (next: Step) => void; ctx: StepFormContext }) {
   const id = useId()
@@ -1110,6 +1132,8 @@ export function StepForm({ step: raw, onChange, ctx }: { step: Step; onChange: (
       return <LimitForm step={step} onChange={onChange} ctx={context} />
     case "variable":
       return <VariableForm step={step} onChange={onChange} ctx={context} />
+    case "free_code":
+      return <FreeCodeForm step={step} onChange={onChange} ctx={context} />
     case "pivot":
       return <PivotForm step={step} onChange={onChange} ctx={context} />
     case "unpivot":

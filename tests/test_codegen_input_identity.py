@@ -86,7 +86,10 @@ def _function_args(code: str, function_name: str) -> list[str]:
     return [argument.arg for argument in function.args.args]
 
 
-def test_generated_params_follow_edge_order_across_all_source_kinds() -> None:
+@pytest.mark.parametrize("output_names", [("output_1",), ("output_1", "output_2")])
+def test_generated_params_follow_edge_order_across_all_source_kinds(
+    output_names: tuple[str, ...],
+) -> None:
     api_input = _node(
         "api",
         "API Input",
@@ -94,7 +97,10 @@ def test_generated_params_follow_edge_order_across_all_source_kinds() -> None:
         _api_config("quotes"),
     )
     ordinary_source = _node("ordinary", "ordinary source", NodeType.CONSTANT)
-    nested_child = _node("child", "nested child source", NodeType.CONSTANT)
+    nested_children = [
+        _node(f"child_{index}", f"internal child {index}", NodeType.CONSTANT)
+        for index in range(len(output_names))
+    ]
     rating_instance = GraphNode(
         id="rating-instance",
         type="submodel",
@@ -120,7 +126,7 @@ def test_generated_params_follow_edge_order_across_all_source_kinds() -> None:
                 "child-edge",
                 "rating-instance",
                 "target",
-                source_port="out__child",
+                source_port="out__output_1",
             ),
         ],
         submodels={
@@ -128,30 +134,46 @@ def test_generated_params_follow_edge_order_across_all_source_kinds() -> None:
                 "definitionId": "rating",
                 "file": "modules/rating.py",
                 "graph": {
-                    "nodes": [nested_child.model_dump(by_alias=True)],
+                    "nodes": [child.model_dump(by_alias=True) for child in nested_children],
                     "edges": [],
                 },
                 "inputPorts": [],
                 "outputPorts": [
                     {
-                        "name": "child",
-                        "source": {"nodeId": "child", "handleId": None},
+                        "name": name,
+                        "source": {"nodeId": child.id, "handleId": None},
                     }
+                    for name, child in zip(output_names, nested_children)
                 ],
             }
         },
     )
 
-    code = graph_to_code_multi(graph, pipeline_name="main")["main.py"]
+    for alias in ("Inputs", "renamed_inputs"):
+        rating_instance.data.label = alias
+        rating_instance.data.config["alias"] = alias
+        code = graph_to_code_multi(graph, pipeline_name="main")["main.py"]
 
-    assert _function_args(code, "combine_inputs") == [
-        "quotes",
-        "ordinary_source",
-        "rating",
-    ]
+        assert _function_args(code, "combine_inputs") == [
+            "quotes",
+            "ordinary_source",
+            "output_1",
+        ]
+        assert f'pipeline.connect("{alias}", "combine_inputs", source_port="output_1")' in code
 
 
-def test_independent_single_output_submodels_remain_composable_by_alias() -> None:
+@pytest.mark.parametrize(
+    ("left_port", "right_port", "expected_names"),
+    [
+        ("left_result", "right_result", ["left_result", "right_result"]),
+        ("result", "result", None),
+    ],
+)
+def test_independent_submodel_outputs_use_public_port_names(
+    left_port: str,
+    right_port: str,
+    expected_names: list[str] | None,
+) -> None:
     left_internal = _node("left-internal", "left implementation", NodeType.CONSTANT)
     right_internal = _node("right-internal", "right implementation", NodeType.CONSTANT)
     left = GraphNode(
@@ -176,13 +198,13 @@ def test_independent_single_output_submodels_remain_composable_by_alias() -> Non
         "consumer",
         "combine outputs",
         NodeType.POLARS,
-        {"code": "df = left.join(right, how='cross')"},
+        {"code": "df = left_result.join(right_result, how='cross')"},
     )
     graph = PipelineGraph(
         nodes=[left, right, consumer],
         edges=[
-            _edge("left-edge", "left-instance", "consumer", source_port="out__result"),
-            _edge("right-edge", "right-instance", "consumer", source_port="out__result"),
+            _edge("left-edge", "left-instance", "consumer", source_port=f"out__{left_port}"),
+            _edge("right-edge", "right-instance", "consumer", source_port=f"out__{right_port}"),
         ],
         submodels={
             "left-definition": {
@@ -191,7 +213,7 @@ def test_independent_single_output_submodels_remain_composable_by_alias() -> Non
                 "graph": {"nodes": [left_internal.model_dump(by_alias=True)], "edges": []},
                 "inputPorts": [],
                 "outputPorts": [
-                    {"name": "result", "source": {"nodeId": "left-internal", "handleId": None}}
+                    {"name": left_port, "source": {"nodeId": "left-internal", "handleId": None}}
                 ],
             },
             "right-definition": {
@@ -200,17 +222,22 @@ def test_independent_single_output_submodels_remain_composable_by_alias() -> Non
                 "graph": {"nodes": [right_internal.model_dump(by_alias=True)], "edges": []},
                 "inputPorts": [],
                 "outputPorts": [
-                    {"name": "result", "source": {"nodeId": "right-internal", "handleId": None}}
+                    {"name": right_port, "source": {"nodeId": "right-internal", "handleId": None}}
                 ],
             },
         },
     )
 
-    assert [name for _edge, name in incoming_edge_bindings(graph, "consumer")] == ["left", "right"]
+    if expected_names is None:
+        with pytest.raises(ParseError, match="Duplicate derived input name"):
+            graph_to_code_multi(graph, pipeline_name="main")
+        return
+
+    assert [name for _edge, name in incoming_edge_bindings(graph, "consumer")] == expected_names
     code = graph_to_code_multi(graph, pipeline_name="main")["main.py"]
-    assert _function_args(code, "combine_outputs") == ["left", "right"]
-    assert 'pipeline.connect("left", "combine_outputs", source_port="result")' in code
-    assert 'pipeline.connect("right", "combine_outputs", source_port="result")' in code
+    assert _function_args(code, "combine_outputs") == expected_names
+    assert 'pipeline.connect("left", "combine_outputs", source_port="left_result")' in code
+    assert 'pipeline.connect("right", "combine_outputs", source_port="right_result")' in code
 
 
 def test_sole_frame_api_input_uses_frame_param_and_explicit_source_port() -> None:

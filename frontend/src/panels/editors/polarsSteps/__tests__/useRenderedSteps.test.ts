@@ -104,7 +104,7 @@ describe("useRenderedSteps", () => {
     expect(onRendered).toHaveBeenCalledWith("df = quotes\ndf = df.head(3)")
   })
 
-  it("keeps the last good code while a newer render is pending", async () => {
+  it("keeps the last good code but clears its ranges while a newer render is pending", async () => {
     mockRender.mockResolvedValueOnce(okResponse("df = quotes"))
     const { result, rerender } = renderHook(({ steps }) => useRenderedSteps(steps, ["quotes"]), {
       initialProps: { steps: one },
@@ -114,14 +114,16 @@ describe("useRenderedSteps", () => {
       await Promise.resolve()
     })
     expect(result.current.status).toBe("ok")
+    expect(result.current.stepLines).toEqual([[1, 1]])
     mockRender.mockReturnValueOnce(deferred().promise)
     rerender({ steps: two })
     expect(result.current.status).toBe("pending")
     expect(result.current.code).toBe("df = quotes")
     expect(result.current.revisionRendered).not.toBe(result.current.revision)
+    expect(result.current.stepLines).toEqual([])
   })
 
-  it("reports a transport failure as a list-level error and keeps the last code", async () => {
+  it("reports a transport failure as a list-level error, keeps the last code, and clears its ranges", async () => {
     mockRender.mockResolvedValueOnce(okResponse("df = quotes"))
     const { result, rerender } = renderHook(({ steps }) => useRenderedSteps(steps, ["quotes"]), { initialProps: { steps: one } })
     await act(async () => {
@@ -129,6 +131,7 @@ describe("useRenderedSteps", () => {
       await Promise.resolve()
     })
     expect(result.current.code).toBe("df = quotes")
+    expect(result.current.stepLines).toEqual([[1, 1]])
     mockRender.mockRejectedValueOnce(new Error("boom"))
     rerender({ steps: two })
     await act(async () => {
@@ -139,5 +142,19 @@ describe("useRenderedSteps", () => {
     expect(result.current.status).toBe("error")
     expect(result.current.error).toEqual({ stepIndex: null, message: "Could not render steps: boom" })
     expect(result.current.code).toBe("df = quotes")
+    expect(result.current.stepLines).toEqual([])
+  })
+
+  it("keeps successful line ranges only for the current revision and clears them for empty steps", async () => {
+    mockRender.mockResolvedValue({ ok: true, code: "df = quotes\ndf = df.with_columns(\n  pl.col('premium')\n)", step_lines: [[1, 1], [2, 4]], step_index: null, message: "" })
+    const { result, rerender } = renderHook(({ steps }) => useRenderedSteps(steps, ["quotes"]), { initialProps: { steps: two } })
+    await act(async () => {
+      vi.advanceTimersByTime(250)
+      await Promise.resolve()
+    })
+    expect(result.current.stepLines).toEqual([[1, 1], [2, 4]])
+    rerender({ steps: [] })
+    expect(result.current.status).toBe("empty")
+    expect(result.current.stepLines).toEqual([])
   })
 })

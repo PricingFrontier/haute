@@ -8,6 +8,9 @@ import type { Step } from "./types"
 
 function applyStep(columns: string[], step: Step): string[] {
   switch (step.kind) {
+    case "free_code":
+      // Authored Python can replace the frame or change its schema arbitrarily.
+      return []
     case "with_column":
       return step.name && !columns.includes(step.name) ? [...columns, step.name] : columns
     case "select":

@@ -40,4 +40,14 @@ describe("columnsBeforeStep", () => {
     ]
     expect(columnsBeforeStep(UPSTREAM, blank, 3)).toEqual(UPSTREAM)
   })
+
+  it("clears schema suggestions after free code because its output is unknown", () => {
+    const withFreeCode: Step[] = [
+      { id: "s", kind: "source", input: "quotes" },
+      { id: "w", kind: "with_column", name: "gross", expr: { type: "operand", operand: { kind: "column", name: "premium" } } },
+      { id: "code", kind: "free_code", code: "df = df.select('replacement')" },
+      { id: "after", kind: "limit", n: 1 },
+    ]
+    expect(columnsBeforeStep(UPSTREAM, withFreeCode, 3)).toEqual([])
+  })
 })

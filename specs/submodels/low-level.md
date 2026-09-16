@@ -114,7 +114,7 @@ Expansion is a pure transform per instance:
    to qualified runtime ids and from each bound public input port id to its
    upstream parent identity. Rewrite cloned child configs through that map.
    Also rewrite remaining parent consumers from the selected occurrence's
-   authored alias (or <alias>__<port_id> when multi-output) to the qualified runtime output source. When
+   public output port name to the qualified runtime output source. When
    this changes the physical name of an ordinary Polars input, preserve the
    public logical name with `inputMapping`. An unbound, ambiguous, or otherwise stale declared reference
    is an error. Unregistered opaque fields are unchanged, never guessed.
@@ -293,10 +293,10 @@ supplies pre-read bytes to authenticate exact caller content against concurrent 
    config is exactly `{definitionId, alias}`. Rewire parent edges only through
    `in__<name>`/`out__<name>` handles, preserving still-hidden authored
    ports in both edge data and deterministic ids. Remaining parent consumers
-   keep the input name they were authored with: the occurrence's name (or
-   `<alias>__<name>` with several output ports) becomes the physical input
-   and the previous name is recorded as the logical name through
-   `inputMapping`, with schema-owned selectors rewritten, exactly as
+   keep the input name they were authored with: the public output port name
+   becomes the physical input. If that changes the name, the previous name
+   is recorded as the logical name through `inputMapping`, with schema-owned
+   selectors rewritten, exactly as
    flattening does across the same boundary (F13).
 8. Return a new parent graph with the prior registry entries preserved plus the
    definition and occurrence. Return `SubmodelGraphResult` metadata for the
@@ -396,8 +396,8 @@ scalar input selectors follow renamed edges. A collision refuses the entire edit
   an edge-join endpoint restores its authored base/join `targetHandle` and
   rewrites the port-id role reference to the bound upstream parent identity.
 - **Outbound edge-join roles survive extraction and flattening.** A remaining
-  edge join fed by one or more selected sources uses the occurrence alias (or
-  <alias>__<port_id> when multi-output) while hierarchical, then qualified
+  edge join fed by one or more selected sources uses the public output port
+  name while hierarchical, then qualified
   runtime source ids after expansion; two outputs of one occurrence never
   collapse to the shared occurrence id.
 - **`_submodel_paths.py` checks the resolved pipeline-relative path before

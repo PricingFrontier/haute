@@ -26,11 +26,18 @@ backend API modules own validation and persistence.
   code**, 1:1 with the generated function signature: an API-input frame edge's chip shows the
   frame label carried on the edge (`quotes` is displayed as `quotes` and callable as `quotes`),
   an ordinary source's chip shows the sanitised node label, and a submodel `out__` edge's input name
-  is the occurrence's name (its alias, or `<name>__<port_name>` with several output ports), resolved by the backend identity endpoint from the alias the request carries. Renaming an occurrence renames its alias and rebinds downstream consumers without code edits. Inside a
+  is the sanitised public output port name, independent of the occurrence alias and
+  number of output ports. Renaming an occurrence leaves its output frame names
+  unchanged. Connections contributing duplicate input names are rejected explicitly.
+  Polars input chips, their tooltips, and connection-removal controls always use
+  this frame name. A source card's display label, occurrence alias, internal child
+  label, or structural handle must never replace a declared frame name, including
+  when only one frame is emitted or an additional output is added.
+  Inside a
   drilled submodel, an edge from the composite Input resolves its row handle to that public
   input port's name; the literal boundary-card label
-  `INPUT` is never presented as the child's argument name. The source
-  node is named in the chip tooltip. Two frames connected from one API input render as two
+  `INPUT` is never presented as the child's argument name. The frame
+  is named in the chip tooltip. Two frames connected from one API input render as two
   distinct, individually removable chips with two distinct names. Live-switch mapping rows and
   output frame blocks present the same names — there is no separate display identity anywhere.
 - Editors retain incomplete persisted rows when they can be repaired (notably API schema and
@@ -310,6 +317,22 @@ Numeric controls parse the complete value, including scientific notation (`1e3`
 commits as 1000). Integer controls reject fractional values instead of truncating;
 empty, non-finite and below-minimum values never replace the committed value and
 report a visible validation error.
+
+The Add step chooser also offers **Free code** in a Code section. Its card embeds
+the shared Python code editor, starts empty, and has no explanatory text below
+the editor. The editor starts at a compact 120px height, can be resized vertically,
+and fills the available height as its box grows. It can
+be edited, reordered and deleted like any other step, and can be followed by
+low-code steps. Column completion uses the columns known before the snippet;
+after arbitrary code the editor does not infer its output schema, so later
+column fields accept names typed by the user. Collapsed cards show the first
+nonblank line of code or a prompt to write code. The render response's inclusive
+line ranges map runtime errors to cards, including steps after multiline
+snippets, and the generated-code panel highlights the runtime error's exact
+line. Validation failures badge the offending card and show an error message;
+their generated code is unavailable. Pending or failed renders do not reuse
+stale line ranges to blame a different current step.
+
 Nodes whose config has no `steps` list render the code box exactly as before.
 
 ## Design rationale
