@@ -110,8 +110,7 @@ export default function PolarsStepsEditor({
   const addStep = (kind: Exclude<StepKind, "source">) => {
     if (!canAdd) return
     const base = steps[0]?.kind === "source" ? steps : [{ id: newStepId(), kind: "source", input: effectiveStart } as Step, ...steps]
-    const firstColumn = columnsBeforeStep(upstream, base, base.length)[0] ?? ""
-    const step = createStep(kind, newStepId(), firstColumn)
+    const step = createStep(kind, newStepId())
     if (step.kind === "join" && inputNames.length > 0) step.input = inputNames.find((name) => name !== effectiveStart) ?? effectiveStart
     setSteps([...base, step])
     setOpenIndex(base.length)

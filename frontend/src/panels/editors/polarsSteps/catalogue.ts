@@ -244,26 +244,26 @@ export function defaultExpr(type: Expr["type"], column = ""): Expr {
 }
 
 /** Build a fresh step of `kind` (never `source`, which the editor seeds itself). */
-export function createStep(kind: Exclude<StepKind, "source">, id: string, firstColumn = ""): Step {
+export function createStep(kind: Exclude<StepKind, "source">, id: string): Step {
   switch (kind) {
     case "filter":
-      return { id, kind, match: "all", conditions: [defaultCondition(firstColumn)] }
+      return { id, kind, match: "all", conditions: [defaultCondition()] }
     case "with_column":
-      return { id, kind, name: "", expr: defaultExpr("operand", firstColumn) }
+      return { id, kind, name: "", expr: defaultExpr("operand") }
     case "select":
       return { id, kind, columns: [] }
     case "drop":
       return { id, kind, columns: [] }
     case "rename":
-      return { id, kind, renames: [{ from: firstColumn, to: "" }] }
+      return { id, kind, renames: [{ from: "", to: "" }] }
     case "cast":
-      return { id, kind, casts: [{ column: firstColumn, dtype: "Float64" }] }
+      return { id, kind, casts: [{ column: "", dtype: "Float64" }] }
     case "sort":
-      return { id, kind, keys: [{ column: firstColumn, descending: false }], nullsLast: false }
+      return { id, kind, keys: [{ column: "", descending: false }], nullsLast: false }
     case "unique":
       return { id, kind, columns: [], keep: "first" }
     case "group_by":
-      return { id, kind, keys: [], aggregations: [{ column: firstColumn, agg: "sum", name: "" }] }
+      return { id, kind, keys: [], aggregations: [{ column: "", agg: "sum", name: "" }] }
     case "join":
       return { id, kind, input: "", how: "left", leftOn: [], rightOn: [], suffix: "_right" }
     case "concat":
@@ -275,7 +275,7 @@ export function createStep(kind: Exclude<StepKind, "source">, id: string, firstC
     case "variable":
       return { id, kind, name: "", value: literal("number", 0) }
     case "pivot":
-      return { id, kind, index: [], on: firstColumn, columns: [], values: "", agg: "sum" }
+      return { id, kind, index: [], on: "", columns: [], values: "", agg: "sum" }
     case "unpivot":
       return { id, kind, on: [], index: [], variableName: "variable", valueName: "value" }
   }

@@ -161,7 +161,7 @@ function nestedExpression(ctx: StepFormContext, depth: number): RenderExpression
         <SelectField
           value={exprTypeValue(expr)}
           options={EXPR_TYPES}
-          onChange={(type) => onChange(defaultExpr(type, ctx.columns[0] ?? ""))}
+          onChange={(type) => onChange(defaultExpr(type))}
           ariaLabel={`${ariaLabel} type`}
         />
       </Field>
@@ -564,7 +564,7 @@ function WindowEditor({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "wi
             />
           )}
           {orderBy.length > 0 && expr.over.length === 0 && <Hint>Ordering needs at least one group column; sort the frame instead.</Hint>}
-          <AddRow label="Add order column" onClick={() => setOrder([...orderBy, { column: ctx.columns[0] ?? "", descending: orderBy[0]?.descending ?? false }])} />
+          <AddRow label="Add order column" onClick={() => setOrder([...orderBy, { column: "", descending: orderBy[0]?.descending ?? false }])} />
         </div>
       </Field>
     </>
@@ -607,7 +607,7 @@ function ConcatEditor({
               )}
             </div>
           ))}
-          <AddRow label="Add part" onClick={() => onChange({ ...expr, parts: [...expr.parts, { kind: "column", name: ctx.columns[0] ?? "" }] })} />
+          <AddRow label="Add part" onClick={() => onChange({ ...expr, parts: [...expr.parts, { kind: "column", name: "" }] })} />
         </div>
       </Field>
       <Field label="Separator">
@@ -627,7 +627,7 @@ function WithColumnForm({ step, onChange, ctx }: FormProps<WithColumnStep>) {
         <SelectField
           value={exprTypeValue(step.expr)}
           options={EXPR_TYPES}
-          onChange={(type) => onChange({ ...step, expr: defaultExpr(type, ctx.columns[0] ?? "") })}
+          onChange={(type) => onChange({ ...step, expr: defaultExpr(type) })}
           ariaLabel="Expression type"
         />
       </Field>
@@ -786,7 +786,7 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx }: { entry: Aggr
         onChange(
           mode === "dtype"
             ? { dtype: "Float64", agg: entry.agg === "len" ? "sum" : entry.agg, suffix: "", ...quantile }
-            : { column: ctx.columns[0] ?? "", agg: entry.agg, name: "", ...quantile },
+            : { column: "", agg: entry.agg, name: "", ...quantile },
         )
       }}
       ariaLabel={`${label} target`}
@@ -847,7 +847,7 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx }: { entry: Aggr
           </div>
         </Field>
       ) : (
-        <AddRow label="Only some rows…" onClick={() => onChange({ ...entry, where: { match: "all", conditions: [defaultCondition(ctx.columns[0] ?? "")] } })} />
+        <AddRow label="Only some rows…" onClick={() => onChange({ ...entry, where: { match: "all", conditions: [defaultCondition()] } })} />
       )}
     </div>
   )
@@ -1010,7 +1010,7 @@ function GroupByForm({ step, onChange, ctx }: FormProps<GroupByStep>) {
               onRemove={step.aggregations.length > 1 ? () => onChange({ ...step, aggregations: step.aggregations.filter((_, i) => i !== index) }) : undefined}
             />
           ))}
-          <AddRow label="Add aggregation" onClick={() => onChange({ ...step, aggregations: [...step.aggregations, { column: ctx.columns[0] ?? "", agg: "sum", name: "" } as ColumnAggregation] })} />
+          <AddRow label="Add aggregation" onClick={() => onChange({ ...step, aggregations: [...step.aggregations, { column: "", agg: "sum", name: "" } as ColumnAggregation] })} />
         </div>
       </Field>
     </>

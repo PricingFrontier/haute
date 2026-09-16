@@ -183,7 +183,7 @@ describe("step forms only build schema-valid payloads", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add order column" }))
     fireEvent.change(screen.getByLabelText("Window order direction"), { target: { value: "desc" } })
     let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
-    expect(latest.expr).toEqual({ type: "window", agg: "row_number", column: "premium", over: ["region"], orderBy: [{ column: "premium", descending: true }] })
+    expect(latest.expr).toEqual({ type: "window", agg: "row_number", column: "premium", over: ["region"], orderBy: [{ column: "", descending: true }] })
     fireEvent.click(screen.getByRole("button", { name: "Remove window order 1" }))
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
     expect(latest.expr).toEqual({ type: "window", agg: "row_number", column: "premium", over: ["region"] })
@@ -212,7 +212,7 @@ describe("step forms only build schema-valid payloads", () => {
     const latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
     expect(latest.expr).toEqual({
       type: "concat",
-      parts: [{ kind: "column", name: "region" }, { kind: "column", name: "premium" }, { kind: "column", name: "premium" }],
+      parts: [{ kind: "column", name: "region" }, { kind: "column", name: "premium" }, { kind: "column", name: "" }],
       separator: "|",
     })
     expect(screen.getByRole("button", { name: "Remove part 3" })).toBeInTheDocument()
@@ -231,7 +231,7 @@ describe("step forms only build schema-valid payloads", () => {
     fireEvent.click(screen.getByRole("button", { name: /Only some rows/ }))
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "group_by" }>
     expect(latest.aggregations[0]).toMatchObject({
-      where: { match: "all", conditions: [{ column: "premium", operator: "eq", value: { kind: "literal", type: "number", value: 0 } }] },
+      where: { match: "all", conditions: [{ column: "", operator: "eq", value: { kind: "literal", type: "number", value: 0 } }] },
     })
     fireEvent.click(screen.getByRole("button", { name: "Aggregate every row" }))
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "group_by" }>
@@ -271,7 +271,7 @@ describe("step forms only build schema-valid payloads", () => {
     let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
     expect(latest.expr).toEqual({
       ...step.expr,
-      operand: { kind: "expr", expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "*", right: { kind: "literal", type: "number", value: 1 }, text: "" } },
+      operand: { kind: "expr", expr: { type: "binary", left: { kind: "column", name: "" }, op: "*", right: { kind: "literal", type: "number", value: 1 }, text: "" } },
     })
     expect(screen.getByRole("group", { name: "Function operand expression" })).toBeInTheDocument()
     // a new formula box starts empty, with an example as its tooltip only
@@ -343,7 +343,7 @@ describe("step forms only build schema-valid payloads", () => {
     expect(optionValues(screen.getByLabelText("Aggregation 1 function"))).not.toContain("len")
     fireEvent.change(screen.getByLabelText("Aggregation 1 target"), { target: { value: "column" } })
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "group_by" }>
-    expect(latest.aggregations[0]).toEqual({ column: "premium", agg: "sum", name: "" })
+    expect(latest.aggregations[0]).toEqual({ column: "", agg: "sum", name: "" })
   })
 
   it("switching an aggregation's target keeps its quantile", () => {
@@ -355,7 +355,7 @@ describe("step forms only build schema-valid payloads", () => {
     expect(latest.aggregations[0]).toEqual({ dtype: "Float64", agg: "quantile", suffix: "", quantile: 0.9 })
     fireEvent.change(screen.getByLabelText("Aggregation 1 target"), { target: { value: "column" } })
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "group_by" }>
-    expect(latest.aggregations[0]).toEqual({ column: "premium", agg: "quantile", name: "", quantile: 0.9 })
+    expect(latest.aggregations[0]).toEqual({ column: "", agg: "quantile", name: "", quantile: 0.9 })
   })
 
   it("changing the pivot value type converts every row and keeps the names", () => {

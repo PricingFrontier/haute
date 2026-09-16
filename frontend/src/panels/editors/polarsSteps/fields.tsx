@@ -504,8 +504,8 @@ export function OperandField({
   const setSource = (next: OperandSource) => {
     if (next === source) return
     if (next === "literal") onChange(defaultLiteral(literalTypes[0] ?? "number"))
-    else if (next === "column") onChange({ kind: "column", name: columns[0] ?? "" })
-    else if (next === "expr") onChange({ kind: "expr", expr: defaultExpr("binary", columns[0] ?? "") })
+    else if (next === "column") onChange({ kind: "column", name: "" })
+    else if (next === "expr") onChange({ kind: "expr", expr: defaultExpr("binary") })
     else onChange({ kind: "variable", name: variables[0] ?? "" })
   }
   return (
@@ -746,7 +746,7 @@ export function ConditionList({
       ))}
       <button
         type="button"
-        onClick={() => onChange([...conditions, { column: columns[0] ?? "", operator: "eq", value: literal("number", 0) }], match)}
+        onClick={() => onChange([...conditions, { column: "", operator: "eq", value: literal("number", 0) }], match)}
         className="add-row-btn focus-ring flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg justify-center"
         style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}
       >
