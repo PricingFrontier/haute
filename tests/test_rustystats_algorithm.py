@@ -552,15 +552,14 @@ _NB_TERMS = {"x1": {"type": "linear"}, "x2": {"type": "linear"}}
 
 
 class TestNegBinomialThetaThreading:
-    def test_unset_theta_is_the_silent_default(self, nb_df):
-        """Pin the failover the gate exists to close: RustyStats does not
-        estimate theta — an unset theta fits bit-identically to theta=1.0."""
-        unset = rs.glm_dict(response="y", terms=_NB_TERMS, data=nb_df, family="negbinomial").fit()
-        explicit = rs.glm_dict(
-            response="y", terms=_NB_TERMS, data=nb_df, family="negbinomial", theta=1.0
-        ).fit()
-        assert list(unset.coefficients) == list(explicit.coefficients)
-        assert float(unset.deviance) == float(explicit.deviance)
+    def test_unset_negbinomial_theta_raises_on_rustystats(self, nb_df):
+        """RustyStats 0.9 refuses a Negative Binomial fit without theta — there
+        is no silent theta=1.0 any more. Haute's gate still requires an explicit
+        value; this pins that the library backs the gate up."""
+        from rustystats.exceptions import ValidationError
+
+        with pytest.raises(ValidationError, match="requires an explicit theta"):
+            rs.glm_dict(response="y", terms=_NB_TERMS, data=nb_df, family="negbinomial").fit()
 
     def test_theta_param_reaches_the_fit(self, algo, nb_df):
         """params["theta"] must change the fitted model — the whole gate is

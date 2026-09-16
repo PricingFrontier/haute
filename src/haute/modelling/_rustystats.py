@@ -163,10 +163,10 @@ def _build_glm_builder_kwargs(
     if family == "tweedie":
         kwargs["var_power"] = var_power
     if family == "negbinomial" and theta is not None:
-        # RustyStats does NOT estimate theta — leaving it unset silently
-        # fits at theta=1.0. The config path gates on an explicit theta
-        # (training_objective_issue); the direct-construction API keeps
-        # the library default for callers that bypass the config gate.
+        # RustyStats 0.9 refuses a Negative Binomial fit without theta (no
+        # silent theta=1.0). The config path gates on an explicit theta
+        # (training_objective_issue); the direct-construction API lets
+        # RustyStats raise for callers that bypass the config gate.
         kwargs["theta"] = float(theta)
     if offset:
         kwargs["offset"] = offset
@@ -216,11 +216,11 @@ def estimate_glm_dispersion(
 ) -> DispersionEstimate:
     """Estimate a GLM dispersion parameter by profile likelihood.
 
-    RustyStats does not estimate Negative Binomial ``theta`` (unset silently
-    fits at 1.0) or Tweedie ``var_power`` (unset silently fits at 1.5), so
-    the config panel offers this estimate as an explicit user action — the
-    resolved value lands in the node config where the training-objective
-    gate requires it, never as a hidden default.
+    RustyStats 0.9 refuses a Negative Binomial fit without ``theta`` and fits
+    Tweedie at ``var_power=1.5`` when unset, so the config panel offers this
+    estimate as an explicit user action — the resolved value lands in the
+    node config where the training-objective gate requires it, never as a
+    hidden default.
 
     Maximises the fitted model's log-likelihood over the single dispersion
     parameter with a bounded 1-D search (deterministic; ~20-30 IRLS fits).
