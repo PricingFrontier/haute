@@ -3,7 +3,7 @@
  * grids that read as sentences; controls wrap beneath each other at narrow
  * widths so nothing scrolls horizontally in the node panel.
  */
-import { Plus, X } from "lucide-react"
+import { Info, Plus, X } from "lucide-react"
 import { useId, useState, type ReactNode } from "react"
 
 import { ConfigCheckbox } from "../../../components/form"
@@ -177,7 +177,14 @@ const EXPR_TYPES: Array<{ value: Expr["type"]; label: string }> = [
   { value: "concat", label: "Join text" },
 ]
 
-const FORMULA_HINT = "Columns by name, numbers, 'text', + - * / // % **, brackets, and functions such as round(x, 2)"
+const FORMULA_HELP = [
+  "Write the formula as you would say it, for example (premium + tax) * 1.05 / 12",
+  "",
+  "Columns: by name, or in backticks if the name has spaces",
+  "Values: numbers, 'text' in quotes, true, false, null, date('2024-01-01')",
+  "Operators: + - * / and // (whole division), % (remainder), ** (power)",
+  "Brackets group; functions such as round(x, 2), abs(x), upper(x)",
+].join("\n")
 
 /**
  * A formula edited as text. The text is parsed on commit into the nested
@@ -214,10 +221,20 @@ function FormulaField({ text, onCommit, variables }: { text: string; onCommit: (
     }
   }
   return (
-    <Field label="Formula">
+    <Field
+      label={
+        <span className="inline-flex items-center gap-1">
+          Formula
+          <span role="img" aria-label="How to write a formula" title={FORMULA_HELP} className="cursor-help" style={{ color: "var(--text-muted)" }}>
+            <Info size={11} aria-hidden="true" />
+          </span>
+        </span>
+      }
+    >
       <input
         type="text"
         aria-label="Formula"
+        title={FORMULA_HELP}
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         onBlur={commit}
@@ -231,9 +248,11 @@ function FormulaField({ text, onCommit, variables }: { text: string; onCommit: (
         style={INPUT_STYLE}
         spellCheck={false}
       />
-      <div className="mt-1">
-        <Hint>{problem ? `Not understood: ${problem}` : FORMULA_HINT}</Hint>
-      </div>
+      {problem && (
+        <div className="mt-1">
+          <Hint>{`Not understood: ${problem}`}</Hint>
+        </div>
+      )}
     </Field>
   )
 }

@@ -40,6 +40,7 @@ describe("formula text", () => {
     expect(withoutFormulaText(parseFormula("premium + (tax * 2)"))).toEqual(binary(col("premium"), "+", ex(binary(col("tax"), "*", num(2)))))
     // stale text that no longer describes the expression is not shown
     const annotated = (text: string): Expr => ({ type: "binary", left: col("premium"), op: "-", right: col("tax"), text })
+    expect(displayFormula(annotated(""))).toBe("")
     expect(displayFormula(annotated("premium + tax"))).toBe("premium - tax")
     expect(displayFormula(annotated("(premium"))).toBe("premium - tax")
   })

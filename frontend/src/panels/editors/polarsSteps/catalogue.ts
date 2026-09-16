@@ -230,7 +230,8 @@ export function defaultExpr(type: Expr["type"], column = ""): Expr {
     case "operand":
       return { type, operand }
     case "binary":
-      return { type, left: operand, op: "*", right: literal("number", 1) }
+      // An empty formula box until something is typed; the placeholder tree keeps the step renderable.
+      return { type, left: operand, op: "*", right: literal("number", 1), text: "" }
     case "function":
       return { type, fn: "abs", operand, args: [] }
     case "conditional":
@@ -316,7 +317,7 @@ function conditionText(condition: Condition): string {
 
 function exprText(expr: Expr): string {
   // A formula typed as text is summarised exactly as typed.
-  if ((expr.type === "binary" || expr.type === "function") && typeof expr.text === "string") return expr.text
+  if ((expr.type === "binary" || expr.type === "function") && typeof expr.text === "string" && expr.text.length > 0) return expr.text
   switch (expr.type) {
     case "operand":
       return operandText(expr.operand)

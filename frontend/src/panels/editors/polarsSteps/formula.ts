@@ -304,6 +304,8 @@ export function withoutFormulaText(expr: Expr): Expr {
  * express the expression.
  */
 export function displayFormula(expr: Expr, variables: readonly string[] = []): string | null {
+  // Empty text is a formula box nothing has been typed into yet.
+  if (expr.type === "binary" && expr.text === "") return ""
   if ((expr.type === "binary" || expr.type === "function") && typeof expr.text === "string") {
     try {
       const reparsed = withoutFormulaText(parseFormula(expr.text, variables))
