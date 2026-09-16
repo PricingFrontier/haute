@@ -8,7 +8,7 @@
 | `frontend/src/panels/useNodePanelSession.ts` | The single module authority for scoped panel UI: a node-keyed reducer owns the active generic tab and dismissed schema-warning identity, while its label-keyed rename session owns pending/error/request-generation state. Keyed scope replacement exposes defaults in the replacement render; asynchronous rename completions apply only while the initiating label session remains mounted and current. |
 | `frontend/src/panels/NodeConfigEditor.tsx` | Pure editor router over node type and supplied graph/config callbacks; owns no node-switch lifecycle state. |
 | `frontend/src/components/PipelineRepairDialog.tsx` | [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)-owned remove-only dry-run and confirmation UI invoked from the unavailable-node inspector. |
-| `frontend/src/panels/PreviewPanelTabs.tsx` | Generic ARIA tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md) and used by the node panel for the five modelling panes and active-training indicator. |
+| `frontend/src/panels/PreviewPanelTabs.tsx` | Generic ARIA tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md) and used by the node panel for algorithm-specific modelling panes and the active-training indicator. |
 | `frontend/src/panels/NodePalette.tsx` | Renders draggable node templates. |
 | `frontend/src/panels/LazyNodeEditors.tsx` | Central dynamic-import registry and loading boundaries for editor bodies. |
 | `frontend/src/panels/PanelShell.tsx`, `frontend/src/panels/PanelHeader.tsx` | Right-panel shell/header used by node, imports and utility authoring views. A shell with no stored width chooses 50% of the available space when it mounts and keeps that established width across unrelated rerenders and viewport changes; an explicit drag updates the shared stored width. |
@@ -763,8 +763,10 @@ cover new/edit/save/reload shapes; there are no migration-specific fixtures.
 The behaviour and non-goals are defined by
 [the modelling/optimiser UI contract](../frontend-modelling-optimiser-ui/high-level.md#modelling-config-panes).
 
-`frontend/src/panels/NodePanel.tsx` renders a six-pane modelling strip (Target, Features, Params,
-Split, Train, Export) with the shared preview tab control and per-node UI-store selection memory. It is
+`frontend/src/panels/NodePanel.tsx` renders a modelling strip with Target, Features, Split, Train,
+and Export; CatBoost additionally has Params between Features and Split. It uses the shared
+preview tab control and per-node UI-store selection memory. A remembered GLM Params selection
+resolves to Target for both the selected tab and editor body, without changing model config. It is
 shown only when the modelling node has a supported
 `catboost` or `glm` algorithm; an unset algorithm leaves the gateway as the only editor content.
 A non-empty unsupported value also suppresses the strip and is handed to the modelling editor's
@@ -779,7 +781,8 @@ previous node's state and progress-only updates do not rerender the panel chrome
 panel keeps the shared `id`/`aria-labelledby` relationship.
 
 `frontend/src/panels/__tests__/NodePanel.test.tsx` proves unset/supported/unsupported-algorithm
-strip gating, all five routes, same-node memory, independent memory for two nodes, plain setup-tab
+strip gating, algorithm-specific routes, retired GLM Params selection, same-node memory,
+independent memory for two nodes, plain setup-tab
 labels, active-indicator routing, and no stale active state after a node change. The generic
 indicator and keyboard
 contract is owned by

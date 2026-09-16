@@ -92,9 +92,10 @@ Verified by building design matrices with `dict_to_parsed_formula` and
   its main effect re-typed to one dummy per distinct value.
 - `linear` on a string column fails inside the design-matrix builder with a
   float-conversion error.
-- `target_encoding` inside a product interaction fails on the real fit path
-  (`ColumnNotFoundError: "TE(d)" not found`) whether or not a main TE term
-  exists.
+- Support for `target_encoding` inside a product interaction depends on the
+  other factor: categorical products fail (`ColumnNotFoundError: "TE(d)"
+  not found`), while linear products can work. Joint target encoding is a
+  separate supported mode and is exposed as described below.
 - `include_main: true` still adds a main effect for every factor, so a
   partially overlapping interaction still duplicates an existing main term.
 - Three or more factors, an expression term on an interacted column, and one
@@ -105,11 +106,93 @@ and rejects the rest before RustyStats sees them.
 
 ### Stored config contract (GLM)
 
+#### Fit controls and encoded interactions (September 2026)
+
+Native fits include `frequency_encoding`, keyed by the source
+column, with no extra parameters. Expression and column ownership rules stay
+the same.
+
+- Main and interaction-local spline cards expose an explicit **Auto / Fixed**
+  df selector. Auto removes `df` (and any explicit `knots`); no `"auto"`
+  string or separate mode field is saved. A newly selected spline is Auto.
+  Fixed writes a numeric df (initially 5, or enough for the current degree).
+  Existing numeric df selects Fixed. Explicit knots also represent a fixed
+  fit and replace the df input with a custom-knots indication.
+- Advanced spline controls expose automatic basis size `k`, interior `knots`
+  for fixed fits, and `boundary_knots`. `df`, `k`, and `knots` are mutually
+  exclusive in builder writes: selecting Auto clears all three, selecting
+  Fixed writes df and clears k/knots, setting k clears df/knots, and setting
+  knots clears df/k. Clearing knots returns to Auto. Boundary knots survive
+  mode changes. Lists must be finite, strictly increasing numbers; boundaries
+  must contain exactly two values. Invalid drafts stay visible with an error
+  and do not overwrite the saved value.
+- Target encoding exposes **Auto / Fixed** prior weight. Auto removes
+  `prior_weight`; an existing upstream `"auto"` also displays Auto. Fixed
+  starts at 1 and accepts nonnegative numbers. The same control is used for
+  joint target encoding. Advanced controls expose positive integer
+  `n_permutations` (upstream default 4). Categorical terms expose optional
+  `levels` as a JSON list of unique strings (quote numeric category labels
+  exactly as represented by the column, such as `"1"` or `"1.0"`). Numeric
+  JSON values are rejected because RustyStats compares string labels and
+  would silently build incorrect indicators. Builder type changes preserve
+  all supported parameters shared by the old and new types.
+- Interaction cards add **Product / Target encoding / Frequency encoding**.
+  Saved `encoding` is absent for Product, or `"target_encoding"` /
+  `"frequency_encoding"`. Joint target encoding also accepts optional
+  `prior_weight` and `n_permutations`. Changing mode clears product `specs`
+  and encoding-only parameters so hidden settings cannot change the fit.
+  Joint encodings combine raw factor values, with no per-factor fit controls;
+  columns with target/frequency-encoded or monotone main terms remain eligible.
+  Product interactions additionally support exactly one target-encoded
+  non-numeric factor with all remaining factors fitted Linear. This applies
+  to explicit slot fits and inherited native target encoding. Categorical,
+  spline, frequency-encoded and additional target-encoded partners are
+  unavailable. Missing slots may be filled later; subsequent feature and fit
+  choices must respect the existing target-encoded factor. Saved incompatible
+  choices stay visible with a warning, never silently rewritten.
+  Target encoding in a Product always includes its target-encoded main effect,
+  even when Include main effects is off; show this fact beside the controls.
+  If the feature already has a native or named target encoding, reuse its
+  settings and identify that term in the UI rather than offering independently
+  adjustable settings. Conflicting saved slot settings are flagged and can be
+  reset to the shared encoding. Otherwise offer the normal prior-weight and
+  permutation controls. The adapter explicitly registers the required encoding
+  in effective terms so both settings are honoured, using a free internal alias
+  with `variable` when another native fit occupies the feature key. User terms
+  and other native fits are preserved. Encoding settings for the same source
+  must agree across all product interactions and existing encodings; mismatches
+  fail before RustyStats. Reject numeric target-encoding slots, unsupported
+  parameters and incompatible partner fits before library invocation.
+  Categorical `levels` apply only to native terms; product
+  categorical overrides must not offer or accept this ignored parameter.
+- The adapter maps `encoding` to RustyStats' interaction-level boolean flag,
+  forwarding target-encoding parameters without inventing defaults. It emits
+  raw factor placeholders with type `linear` and `include_main=False`: the
+  encoding branch reads raw column values, while categorical placeholders
+  would re-type numeric main effects globally. Existing main effects are
+  preserved; Include main effects adds only absent dtype-default terms.
+  Product interactions keep their current materialisation and conflict checks.
+  Duplicate interaction identity is (encoding mode, unordered factor set),
+  allowing different modes over the same factors. Unknown modes, product
+  overrides on joint encodings, and misplaced/invalid encoding parameters
+  fail clearly before fitting, including in saved partial cards.
+  Factor names reserved by RustyStats for interaction settings (`include_main`,
+  `target_encoding`, `frequency_encoding`, `prior_weight`, `n_permutations`)
+  are rejected rather than being overwritten or silently omitted.
+- Acceptance checks cover Auto/Fixed persistence without sentinel values,
+  mutually exclusive spline settings, retained unrelated fields, invalid
+  array drafts, joint-mode transitions, encoded-main column eligibility,
+  mode-aware duplicates, missing-main materialisation, and actual fitting,
+  prediction and save/load for both joint encodings. The backend term-column
+  resolver and parameter contract include frequency encoding. Main and local
+  spline Auto/Fixed fits must demonstrably route smoothing differently.
+
 No schema migration. Haute has no released users, so removed fields are
 dropped outright and stale tests are updated.
 
 - `terms` stays the RustyStats dict `{name: spec}`. A **native** spec
-  (`linear`, `categorical`, `bs`, `ns`, `ms`, `target_encoding`) is keyed by
+  (`linear`, `categorical`, `bs`, `ns`, `ms`, `target_encoding`,
+  `frequency_encoding`) is keyed by
   the column it fits, so each column carries at most one native fit. An
   **expression** spec `{"type": "expression", "expr": ..., "monotonicity"?}`
   is keyed by a user-editable name that is not a column name; a column may
@@ -117,26 +200,40 @@ dropped outright and stale tests are updated.
   is exactly: `x ** n`, `x + y`, `x - y`, `x * y`, `x / y` (where `y` is a
   column or a number), or a bare `x`. Every identifier must be a schema
   column.
-- The builder edits an intentional **subset** of RustyStats' per-type keys:
-  `linear` {monotonicity}; `categorical` {}; `bs` {df, degree,
-  monotonicity}; `ns` {df}; `ms` {df, degree, monotonicity, default
-  `increasing`}; `target_encoding` {prior_weight}; `expression` {expr,
-  monotonicity}. Keys outside the subset that RustyStats accepts (`k`,
-  `knots`, `boundary_knots`, `levels`, `n_permutations`) can be supplied
-  through JSON mode and survive builder edits to other fields; a type switch
-  keeps only the subset for the new type. Term types outside the seven above
-  and the redirecting keys `variable` and `interaction` are rejected by
-  column resolution, because a native key must be the column RustyStats
-  reads. A backend test asserts each subset is contained in RustyStats'
+- Additional fits may also be named `target_encoding` or `frequency_encoding`
+  specs with RustyStats' supported `variable` key pointing to the raw feature.
+  A feature may have one target encoding and one frequency encoding alongside
+  its native fit and expressions. Duplicate encodings of the same type/source
+  are rejected, including duplicates between a native and named encoding.
+  Named encoding keys must not shadow another upstream column. `variable` on
+  other fit types, and the `interaction` redirect key, remain unsupported.
+  Column resolution and model membership follow `variable`, not the alias.
+  A column-key encoding that explicitly repeats its own source in `variable`
+  remains a native term in the editor; adding a term never overwrites it.
+  RustyStats 0.9's `required_columns` reports these aliases; Haute's native
+  model loader resolves them through the saved encoding specs before scoring,
+  retaining other required columns (including exposure/offset). The native
+  RustyStats artifact and library are unchanged.
+- The builder edits RustyStats' per-type keys: `linear` {monotonicity};
+  `categorical` {levels}; `bs` {df, k, degree, monotonicity, knots,
+  boundary_knots}; `ns` {df, k, knots, boundary_knots}; `ms` {df, k, degree,
+  monotonicity, knots, boundary_knots, default monotonicity `increasing`};
+  `target_encoding` {prior_weight, n_permutations, variable}; `frequency_encoding` {variable};
+  `expression` {expr, monotonicity}. A type switch keeps supported shared
+  parameters for the new type. Term types outside the eight above
+  and the redirecting key `interaction` are rejected by column resolution.
+  `variable` is accepted only for the two encoding types; other native keys
+  must be the column RustyStats reads. A backend test asserts each subset is contained in RustyStats'
   `VALID_KEYS` for that type.
 - `interactions` entries are `{"factors": [...], "specs": {factor: spec},
-  "include_main": bool}`. `specs` holds only explicit **overrides**, each
+  "include_main": bool, "encoding"?: mode}`. Product `specs` holds only explicit **overrides**, each
   one of `{"type": "linear"}`, `{"type": "categorical"}`, `{"type": "bs",
   "df"?, "degree"?}`, or `{"type": "ns", "df"?}`. A factor with no entry
   follows its main term, or the dtype default when it has no main term
   (categorical for string dtypes, linear otherwise). Two or more filled
   factors are required; incomplete entries are skipped at train time, as
-  today.
+  today. Encoded modes and their parameters follow the fit-controls contract
+  above and carry no product overrides.
 - `all_factors` is removed from config, backend, validation, and docs.
 - `exclude` and `monotone_constraints` become CatBoost-only levers. The GLM
   pane never writes them; `build_training_job_kwargs` passes `exclude=[]`
@@ -169,13 +266,14 @@ training.
 
 Phase one is schema-free. `glm_model_columns(terms, interactions)` in
 `src/haute/modelling/_rustystats.py` returns the ordered unique identifiers
-the model reads: native term keys, every identifier of each expression term
+the model reads: native term keys, named encoding sources, every identifier of each expression term
 (after the expression passes the grammar above), and every filled
 interaction factor. It raises `HauteValidationError` naming the term when an
 expression fails the grammar, when an expression key collides with a
 native term key or with one of its own identifiers, when a term type is
-outside the seven supported types, or when a term carries `variable` or
-`interaction`. This phase serves the projection demand computed before
+outside the eight supported types, when an encoding type is duplicated for
+one source, or when a term carries `interaction` or an unsupported `variable`
+redirect (anything except target/frequency encoding). This phase serves the projection demand computed before
 graph execution (`_training_required_columns_by_node`) and the
 evaluation-key guard in `TrainingJob` construction, neither of which has a
 schema.
@@ -204,25 +302,29 @@ construction API, each replacing the current `set(terms)` comparison.
 
 ### Interaction building
 
-`_build_interactions(interactions, terms, cat_features)` resolves each
+For Product mode, `_build_interactions(interactions, terms, cat_features)` resolves each
 factor's spec as override, else native main term, else dtype default, and
 then:
 
 - rejects, naming the interaction and factor, an override type outside
-  {`linear`, `categorical`, `bs`, `ns`}; any override carrying
+  {`linear`, `categorical`, `bs`, `ns`, `target_encoding`}; any override carrying
   `monotonicity`; a `categorical` override on a factor whose main term
   exists and is not categorical; a `linear`, `bs`, or `ns` override on a
   string column or on a factor whose main term is categorical; an effective
-  `target_encoding` fit, whether inherited from a main term or written as
-  an override; an effective `ms` fit or a `bs` main term carrying
+  `frequency_encoding` fit; target encoding on a numeric column or alongside
+  any non-Linear partner; an effective `ms` fit or a `bs` main term carrying
   `monotonicity` that is inherited into an interaction (RustyStats rejects
   both, so the slot must override to a plain spline or linear); conflicting
   overrides for one column across cards; and two cards with the same factor
-  set in any order;
+  set and encoding mode in any order;
 - materialises a main effect for every factor that has no main term when its
   card's `include_main` is true, adding the resolved spec to the terms dict
   handed to RustyStats exactly once per column, and always passes
   `include_main: False` to RustyStats, so no main effect is ever duplicated;
+- registers the mandatory Product target-encoded main effect independently
+  of `include_main`, preserving other native fits with a unique encoding alias
+  when needed. Dispersion estimation projects raw encoding sources rather than
+  internal alias names and uses the same resolved terms and interactions;
 - passes an unconstrained spline main term through unchanged (0.9 builds an
   interaction-local spline with the same parameters) and passes the
   override spec verbatim otherwise.
@@ -241,21 +343,48 @@ forwarded to RustyStats.
   "In model only" filter toggle, bulk "Fit all with defaults" and "Remove
   all terms" (the latter confirms once and clears `terms` and
   `interactions`), and the Builder/JSON mode toggle.
-- Row: column name, dtype pill, a muted "Not in model" or "Interaction only"
-  tag where applicable, and an "Add term" button.
-- Term sub-card (shared `TermCard.tsx`): for a native term, a type select
-  over the six native types and the subset parameters for the chosen type
-  (df and degree for `bs`/`ms`, df for `ns`, prior weight for
-  `target_encoding`); for an expression term, a fixed "Expression" label, a
-  name field, and an expression field. Monotonicity uses the existing
+- Feature row: column name, dtype pill, a muted "Not in model", "Interaction
+  only", or "In an expression" tag where applicable, and an Add term button.
+  Terms are directly editable beneath their feature header, with a visible
+  indent. Add term inserts the term in that row without navigating away or
+  changing the search/filter. Other feature rows and interactions remain
+  available in the same pane; there is no Configure or Back navigation.
+- Inline term card (shared `TermCard.tsx`): every term has a visible Fit type
+  selector, even when only one choice remains. Native choices are filtered
+  by dtype: linear and splines for numeric columns; categorical and encodings
+  for non-numeric columns. Explicit Auto / Fixed selectors for spline df
+  and target-encoding prior weight, and Advanced parameters as listed above;
+  for an expression term, labelled name and expression fields. Monotonicity uses the existing
   red-down/yellow-neutral/green-up arrows for `linear`, `bs`, and
   `expression`, and an increasing/decreasing pair for `ms`. Every sub-card
-  has a remove button. Native and expression terms never convert into each
-  other through the type select.
+  has a remove button beside its controls. Cards have no separate "Main term"
+  or "Expression" heading. Fields retain visible labels and 12px controls,
+  with compact widths and padding in a wrapping row. The Advanced toggle sits
+  inline with those controls; expanded settings appear beneath the row and
+  retain unfinished drafts when collapsed. Narrow panes wrap controls without
+  horizontal overflow.
+  Expression name and expression each have a visible label. Additional terms
+  never convert into linear, categorical, or spline fits through the type
+  select. Numeric dtypes are treated as continuous in the feature builder:
+  neither native nor additional selectors offer target/frequency encoding.
+  Their additional terms show Fit type: Expression beside the compact expression
+  fields, even though it is the only choice. Non-numeric features offer target
+  and frequency encoding as additional fits. A saved numeric encoding remains
+  visible until explicitly changed or removed; rendering never rewrites it,
+  and it does not make the other encoding available. Other fits invalid for
+  the dtype and encodings used by another term are omitted from the choices,
+  rather than shown disabled. A card's saved selection stays visible; removing
+  or changing another term immediately refreshes the available choices. Switching an
+  additional type retains its key, preserves only supported parameters, and
+  writes/removes `variable` or `expr` atomically. Encoding cards use the same
+  compact fit/prior/Advanced controls as native cards. Existing expression
+  values are preserved.
 - An expression term is listed under the first eligible column its
-  expression names. Expression terms whose identifiers name no eligible
-  column (possible only via JSON mode) are listed in a trailing "Unresolved
-  expressions" group with a warning; training fails loudly on them.
+  expression names. Additional terms whose sources name no eligible column
+  are listed in a trailing "Unresolved terms" group with a warning and removal
+  controls. Expression name/value repairs persist and re-anchor the card;
+  encoding source repairs use JSON. Unresolved encodings still show their
+  saved fit type. Training fails loudly on unresolved terms.
 - JSON mode is unchanged: the RustyStats `terms` dict, saved on blur.
 
 ### Editor transitions
@@ -271,8 +400,14 @@ nothing.
   `<col>_sq2`, `<col>_sq3`, … skipping names that exist in `terms` or equal
   an eligible column. An expression-only row is reached by adding the
   native term, adding the expression, then removing the native term.
+  Numeric rows retain this expression default. Non-numeric rows add the first
+  unused encoding (target, then frequency), keyed by a collision-free
+  `<column>_te` / `<column>_fe` name with `variable: <column>`. When both encodings
+  are present, Add term is disabled on a non-numeric row with a native term.
+  Removing the original native term leaves additional fits editable under their
+  source feature; the next Add term restores the dtype-default native fit.
 - **Native type switch** to `T`: `terms[col] =` the current spec reduced to
-  `{"type": T}` plus the subset keys for `T` that were present; switching to
+  `{"type": T}` plus the supported keys for `T` that were present; switching to
   `ms` adds `"monotonicity": "increasing"` when absent.
 - **Parameter edit** (df, degree, prior weight, monotonicity): writes that
   key; an emptied numeric field or the neutral arrow deletes the key.
@@ -292,23 +427,47 @@ nothing.
 ### Interactions
 
 `GLMInteractionsConfig.tsx` renders beneath the Features list with the same
-card language. "Add interaction" appends `{"factors": ["", ""],
-"include_main": true}`. Each slot pairs a column select (any eligible column
-not already in that card, excluding columns whose main term is target
-encoding, with the hint "Target-encoded features cannot be interacted in
-RustyStats") with a fit select offering only what RustyStats honours:
+inline card language and modelling colours. Each card names its factors and
+shows its labelled controls and validation warnings directly in the list.
+Use the main-effect cards' compact input sizes, font, spacing and indented
+rows: each factor's Feature and Fit type selectors sit together, followed by
+its parameters and inline Advanced disclosure, wrapping on narrow panes.
+The interaction's Fit type and target-encoding controls share a compact row.
+Fit menus omit unavailable choices rather than disabling them. Interaction
+modes are filtered by selected factor dtypes, encoded native main terms and
+other interactions over the same factor set: joint encodings are offered for
+non-numeric factors, Product filters according to supported per-factor fits, and modes
+already used by another interaction are omitted. Empty slots allow choosing
+a mode first; joint-mode feature menus then omit numeric columns. Keep an
+existing saved selection visible, with the existing validation warnings or
+an inline unavailable-fit warning where needed; rendering never rewrites it.
+"Add interaction" appends `{"factors": ["", ""], "include_main": true}`
+without navigating away. Each card offers Product, Target encoding, or
+Frequency encoding. In Product mode each slot pairs a column select (any
+eligible column not already in that card that can take a supported fit
+alongside its other factors)
+with a fit select offering the supported product fits:
 **As main term** (only when the column has a native term that is not a
 monotone spline; deletes `specs[col]`), **Linear** (numeric columns only;
 writes `specs[col] = {"type": "linear"}`; refused when the main term is
-categorical), **Categorical** (only when the column has no native term or a
-categorical one; writes `specs[col] = {"type": "categorical"}`),
+categorical), **Categorical** (non-numeric columns without a native term,
+or columns with an existing categorical main term;
+writes `specs[col] = {"type": "categorical"}`),
 **B-spline** and **Nat. spline** (numeric columns only; write
 `specs[col] = {"type": "bs"|"ns"}` plus df and, for `bs`, degree fields;
 never a monotonicity control; refused when the main term is categorical).
+**Target enc.** is available for a non-numeric factor only while every other
+picked factor uses Linear; with such a factor selected, partner fit menus
+offer only Linear (and As main when that main fit is Linear). Native target
+encoding can be inherited under the same rule. A frequency-encoded native
+term cannot be inherited in a Product, but its raw non-numeric source can
+use an explicit target-encoding override with Linear partners.
 A column whose main term is a monotone spline, or a B-spline with
 monotonicity, must pick an explicit slot fit; the slot shows "Monotone
 splines cannot be used inside interactions" until it does. A slot with no
-native term and no override shows its dtype default as the effective fit.
+native term and no override selects its dtype default directly in Fit type,
+without persisting an override. As main term names the inherited fit in the
+option label, without a separate Effective fit field.
 Picking a column writes `factors[i]` and deletes any `specs` entry for the
 column it replaced. "+ feature" appends an empty slot; a slot can be
 removed when the card has more than two. The "Include main effects"
@@ -422,7 +581,12 @@ two doc rows named under Test impact.
 `test_glm_model_columns_reads_expression_identifiers_and_interaction_factors`;
 `test_glm_model_columns_rejects_unsupported_expression_grammar`;
 `test_glm_model_columns_rejects_unknown_types_and_redirecting_keys`
-(`variable` on a target-encoding term, `interaction`, `frequency_encoding`);
+(`variable` on a spline term, `interaction`, unknown term types);
+`test_target_and_frequency_encoding_can_share_a_source`;
+`test_encoding_alias_validates_source_instead_of_alias`;
+`test_rejects_duplicate_encoding_for_one_source`;
+`test_multiple_encodings_fit_save_and_score_raw_source`
+(both encoding orders, raw-source-only scoring after save/load, including unseen categories);
 `test_validate_glm_model_columns_rejects_unknown_column_and_column_keyed_expression`;
 `test_resolve_training_input_schema_reflects_added_renamed_and_dropped_columns`
 (source `x, y`; a Polars node adds `x2`, renames `y` to `y2`, and drops a
@@ -492,7 +656,7 @@ re-anchors its card`; `Fit all with defaults adds only missing native
 terms`; `Remove all terms confirms once and clears terms and interactions`;
 `In model only and the count treat interaction-only columns as in the
 model`; `JSON mode round-trips a non-column expression key and lists an
-unresolvable one under Unresolved expressions`; `the GLM pane never writes
+unresolvable one under Unresolved terms`; `the GLM pane never writes
 exclude, monotone_constraints, or all_factors`. The CatBoost pane tests pass
 unchanged apart from the removed GLM cases.
 

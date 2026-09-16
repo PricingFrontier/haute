@@ -655,6 +655,9 @@ def _run_dispersion_process_job(
         prepared = job._prepare_data(progress, execution_context=execution_context)
         features = prepared.features
         cat_features = prepared.cat_features
+        target = str(job_kwargs["target"])
+        weight = job_kwargs.get("weight") or None
+        offset = job_kwargs.get("offset") or None
         raw_terms = train_params.get("terms") or {}
         if raw_terms:
             from haute.modelling._glm_terms import validate_glm_model_columns
@@ -671,14 +674,23 @@ def _run_dispersion_process_job(
             train_params.get("interactions", []) or [],
             terms,
             cat_features,
+            column_names=list(
+                dict.fromkeys(
+                    [
+                        *prepared.features,
+                        target,
+                        *([weight] if weight else []),
+                        *([offset] if offset else []),
+                    ]
+                )
+            ),
         )
-        target = str(job_kwargs["target"])
-        weight = job_kwargs.get("weight") or None
-        offset = job_kwargs.get("offset") or None
+        from haute.modelling._glm_terms import glm_model_columns
+
         needed = list(
             dict.fromkeys(
                 [
-                    *(name for name, spec in terms.items() if spec.get("type") != "expression"),
+                    *glm_model_columns(terms, train_params.get("interactions") or []),
                     *features,
                     target,
                     *([weight] if weight else []),

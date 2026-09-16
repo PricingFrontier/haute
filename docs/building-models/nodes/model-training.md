@@ -248,16 +248,77 @@ device, callbacks, write directories, or random seed.
 
     | Field | Description |
     |---|---|
-    | `terms` | Dict mapping a name to a term spec. A native spec (`"linear"`, `"categorical"`, `"bs"`, `"ns"`, `"ms"`, `"target_encoding"`) is keyed by the column it fits; an `"expression"` spec (`{"type": "expression", "expr": "age ** 2"}`) is keyed by any name that is not a column. `"linear"`, `"bs"`, `"ms"`, and `"expression"` accept `monotonicity` (`"increasing"` or `"decreasing"`). |
+    | `terms` | Dict mapping a name to a term spec. A native spec (`"linear"`, `"categorical"`, `"bs"`, `"ns"`, `"ms"`, `"target_encoding"`, `"frequency_encoding"`) is keyed by the column it fits; an `"expression"` spec (`{"type": "expression", "expr": "age ** 2"}`) is keyed by any name that is not a column. `"linear"`, `"bs"`, `"ms"`, and `"expression"` accept `monotonicity` (`"increasing"` or `"decreasing"`). |
     | `family` | **Required.** Distribution family: `"gaussian"`, `"poisson"`, `"tweedie"`, etc. |
     | `link` | Link function: `"log"`, `"identity"`, etc. Defaults to the canonical link for the family. |
     | `offset` | Offset column. Under a log link it multiplies the prediction (an exposure column: 2× exposure ⇒ 2× expected count); under the identity link it is added. Different from `weight`, which weights the loss. |
-    | `interactions` | Interaction terms  - each has `factors` (two or more feature names), optional `specs` (per-factor fit overrides: `linear`, `categorical`, `bs`, or `ns`), and `include_main` (add a main effect for factors that have none). |
+    | `interactions` | Each has `factors` (two or more feature names) and `include_main` (add missing main effects). Product interactions accept optional `specs` (per-factor overrides: `linear`, `categorical`, `bs`, or `ns`). Set `encoding` to `"target_encoding"` or `"frequency_encoding"` to encode the combination of raw factor values instead. Joint target encoding accepts `prior_weight` and `n_permutations`. |
     | `regularization` | `"ridge"`, `"lasso"`, or `"elastic_net"` |
     | `alpha` | Regularization strength |
     | `l1_ratio` | Elastic net mixing parameter (0 = pure ridge, 1 = pure lasso) |
     | `intercept` | Whether to fit an intercept. Defaults to true. |
     | `var_power` | Variance power for Tweedie distributions |
+
+    The **Target** pane displays **Algorithm Rustystats** and includes the always-visible
+    **Regularization** controls below the target settings. Choose None, Ridge, Lasso, or
+    Elastic Net there; Rustystats has no separate Params pane.
+
+    The **Features** pane shows each feature's terms indented underneath its
+    name. **Add term** inserts a directly editable term in that row, and
+    **Add interaction** adds an editable card below the feature list. Field
+    labels remain visible in compact rows, and the inline **Advanced** control
+    expands additional settings underneath.
+
+    Every term keeps a **Fit type** selector, filtered by the column's dtype
+    and the other terms on that feature, even when only one choice remains.
+    Additional terms offer **Target encoding** and **Frequency encoding** for categorical features,
+    and **Expression** for numeric features. Continuous features do not offer
+    encoding choices. For example, one categorical feature can have both target
+    and frequency encoding. Each encoding is available once per feature; additional spline,
+    linear, and categorical fits are not offered. Existing expressions remain
+    editable.
+
+    Spline editors offer **Auto / Fixed** degrees of freedom. Auto leaves `df`
+    unset, allowing RustyStats to tune smoothing; Fixed saves a numeric `df`.
+    Advanced controls expose the automatic basis size `k`, custom interior
+    `knots`, and `boundary_knots`. The builder keeps `df`, `k`, and `knots`
+    mutually exclusive. Boundary knots can be used with any of these choices.
+
+    Target encoding also offers **Auto / Fixed** prior weight. Auto leaves
+    `prior_weight` unset; Fixed accepts a nonnegative value, including zero.
+    Advanced controls expose `n_permutations` (default 4). Categorical fits
+    can restrict `levels` using an Advanced JSON list of strings. Quote
+    numeric category labels exactly as represented by the column, for example
+    `"1"` for an integer category or `"1.0"` for a decimal category.
+
+    In a **Product** interaction, a categorical feature can use **Target enc.**
+    when every other feature uses **Linear**. Selecting it filters partner
+    choices accordingly. This always includes the target-encoded main effect,
+    even with **Include main effects** off. Existing target-encoding settings
+    for that feature are shared with the interaction; otherwise its prior
+    weight and Advanced permutation settings are editable here.
+
+    To target-encode a combination such as brand and region, select **Target
+    encoding** on the interaction card:
+
+    ```json
+    {
+      "factors": ["brand", "region"],
+      "encoding": "target_encoding",
+      "include_main": false
+    }
+    ```
+
+    This creates one joint encoded term and preserves any existing main
+    terms. Interaction controls use the same compact, indented layout as main
+    effects, with **Fit type** choices filtered to those available for the
+    selected features and existing fits. **Advanced** sits alongside the fit
+    controls. Joint encodings are offered for categorical features and use raw
+    columns, so they have no per-factor fit
+    controls. **Include main effects** adds dtype-default fits only for
+    columns without main terms. Product, target-encoded and frequency-encoded
+    interactions can coexist over the same factors; duplicate interactions
+    within one mode are rejected.
 
 ## Reading the result
 

@@ -134,17 +134,23 @@ result contracts rather than silently charting incorrect values.
 ## Modelling config panes
 
 With a supported algorithm (`catboost` or `glm`) selected, the modelling node
-panel presents six panes — **Target**, **Features**, **Params**, **Split**, **Train**, **Export** — through the
+panel presents **Target**, **Features**, **Split**, **Train**, and **Export** panes. CatBoost also
+has a **Params** pane between Features and Split. Both algorithms use the
 same shared equal-width pane-tab strip the Explore editor uses, hosted by the node panel
 ([frontend-node-editors](../frontend-node-editors/low-level.md#modelling-config-panes))
 and extended with the accessible active-training indicator by
 [frontend-preview-explore](../frontend-preview-explore/low-level.md#modelling-config-panes).
-The active pane is remembered per node in the UI store. Without an algorithm, the existing gateway
+The active pane is remembered per node in the UI store. A remembered GLM Params selection opens
+Target, where its regularization controls now live. Without an algorithm, the existing gateway
 renders alone. A non-empty unsupported algorithm renders an explicit inline diagnostic and no pane
 strip; it never falls through to CatBoost. Pane ownership:
 
 - **Target** — target/weight/offset, a unified loss-function picker and variance power, metrics
-  (CatBoost); family/link/dispersion/intercept/metrics (GLM). CatBoost has no separate task
+  (CatBoost); family/link/dispersion/intercept/metrics and regularization (GLM). GLM's
+  regularization section is always visible, with no collapse control; its Alpha and Elastic Net
+  L1 ratio controls retain their existing conditional visibility and validation. Its read-only
+  algorithm context reads **Algorithm Rustystats**, while the stored algorithm remains `glm`.
+  CatBoost has no separate task
   selector: choosing a loss derives and stores its regression/classification task, every supported
   loss remains visible, and metrics that are incompatible with the selected loss stay visible but
   disabled. Selecting Tweedie directly reveals its variance-power slider; when no prior value is
@@ -198,9 +204,9 @@ strip; it never falls through to CatBoost. Pane ownership:
   complete; it never rewrites an existing evaluation choice. Selecting Fixed parameters removes
   tuning without changing the last valid fixed Parameters JSON.
   The editor component accepts algorithm label/default/reserved-key inputs
-  so another algorithm with a `params` object can reuse it without bespoke controls. GLM Params
-  retains the regularisation controls because GLM's canonical editable fields live at the node
-  top level rather than in `config.params`.
+  so another algorithm with a `params` object can reuse it without bespoke controls. GLM has no
+  Params pane; its Target-pane regularization fields remain at the node top level rather than
+  in `config.params`.
 - **Split** — one canonical version-1 evaluation workflow. It asks how data is
   structured (Random rows, Keep entities together, Respect time order), how candidates
   are validated (Single validation, Cross-validation, No validation), and whether an
@@ -300,8 +306,9 @@ written; the generic section store and any inert in-memory entries need no migra
 
 **Regression evidence.** Suites in
 `frontend/src/panels/__tests__/ModellingConfig.test.tsx` and under
-`frontend/src/panels/modelling/__tests__/` prove: six panes with the ownership above for both
-algorithms and the unsupported-algorithm diagnostic; CatBoost's unified all-loss picker,
+`frontend/src/panels/modelling/__tests__/` prove: six CatBoost panes and five GLM panes with the
+ownership above, always-visible GLM Target regularization, retired GLM Params selection resolving
+to Target, and the unsupported-algorithm diagnostic; CatBoost's unified all-loss picker,
 loss-derived task/default metrics, and visible disabled incompatible metrics; the common searched/dtype-labelled
 feature-card browser for CatBoost and GLM, including current-state per-card toggles and
 search-independent bulk actions; confirmation-free reversible exclusion with dormant monotonic

@@ -568,21 +568,32 @@ def _wrap_catboost(model: CatBoostRegressor | CatBoostClassifier) -> ScoringMode
 def _load_rustystats_model(path: str) -> ScoringModel:
     """Load a RustyStats GLM from a ``.rsglm`` binary file.
 
-    The required-feature list is read straight off the model via
-    ``required_columns`` — RustyStats ships the raw input column names
-    (including expression source columns, offsets, and complement
-    columns) on the model itself, mirroring CatBoost's ``feature_names_``
-    and removing the need for a manual terms-dict / feature-names
-    fallback chain.
+    ``required_columns`` includes expression sources, offsets, and complement
+    columns. RustyStats 0.9 reports named encoding keys there even though its
+    predictor reads their ``variable`` source. Resolve those aliases using
+    the saved terms, preserving the other required inputs and their order.
     """
     import rustystats as rs
 
+    from haute.modelling._glm_terms import ENCODING_TERM_TYPES
+
     with open(path, "rb") as f:
         model = rs.GLMModel.from_bytes(f.read())
+    terms = model.terms_dict
+    aliases = (
+        {
+            name: spec["variable"]
+            for name, spec in terms.items()
+            if spec.get("type") in ENCODING_TERM_TYPES and "variable" in spec
+        }
+        if terms is not None
+        else {}
+    )
+    feature_names = list(dict.fromkeys(aliases.get(name, name) for name in model.required_columns))
     offset_spec = getattr(model, "_offset_spec", None)
     return ScoringModel(
         model=model,
-        feature_names=list(model.required_columns),
+        feature_names=feature_names,
         cat_feature_names=frozenset(),
         flavor="rustystats",
         offset_column=offset_spec if isinstance(offset_spec, str) and offset_spec else None,

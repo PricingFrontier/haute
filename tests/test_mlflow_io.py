@@ -1012,6 +1012,7 @@ def _patch_rustystats(mock_model):
     install the mocked ``rustystats`` module.
     """
     mock_rs = MagicMock()
+    mock_model.terms_dict = {}
     mock_rs.GLMModel.from_bytes.return_value = mock_model
     return mock_rs, patch.dict(sys.modules, {"rustystats": mock_rs})
 
@@ -1024,6 +1025,19 @@ def _write_rsglm(tmp_path, contents=b"fake_bytes"):
 
 
 class TestLoadRustystatsModel:
+    def test_encoding_aliases_resolve_to_unique_raw_columns(self, tmp_path):
+        mock_model = MagicMock()
+        mock_model.required_columns = ["region_fe", "region", "age", "offset", "complement"]
+        _, mods = _patch_rustystats(mock_model)
+        mock_model.terms_dict = {
+            "region_fe": {"type": "frequency_encoding", "variable": "region"},
+            "region": {"type": "target_encoding"},
+            "age_sq": {"type": "expression", "expr": "age ** 2"},
+        }
+        with mods:
+            sm = _load_rustystats_model(_write_rsglm(tmp_path))
+        assert sm.feature_names == ["region", "age", "offset", "complement"]
+
     def test_wraps_model_with_required_columns(self, tmp_path):
         """Happy path: feature_names mirror model.required_columns; flavor is set."""
         model_path = _write_rsglm(tmp_path)

@@ -4,27 +4,32 @@ import {
   addInteraction,
   addSlot,
   addTerm,
+  additionalTypeOptions,
   anchorColumn,
   dtypeDefaultSpec,
   duplicateInteractionIndexes,
   effectiveSlotSpec,
   expressionIdentifiers,
   fitAllWithDefaults,
+  interactionEncodingOptions,
   isExpressionSpec,
   modelMembership,
   nativeTermOf,
+  nativeTypeOptions,
   pickSlotColumn,
   removeSlot,
   removeTerm,
   renameExpression,
   setExpression,
   setIncludeMain,
+  setInteractionEncoding,
+  setInteractionField,
   setSlotOverride,
   setTermField,
-  slotColumnBlockedReason,
   slotFitOptions,
   slotNeedsExplicitFit,
   switchNativeType,
+  switchAdditionalType,
   termsByColumn,
   uniqueExpressionName,
   type InteractionSpec,
@@ -39,6 +44,38 @@ const columns = [
   { name: "region", dtype: "String" },
   { name: "mileage", dtype: "Float64" },
 ]
+
+describe("target-encoding product fits", () => {
+  it("allows one categorical target encoding alongside linear numeric partners", () => {
+    expect(slotFitOptions("String", { type: "categorical" }, [{ type: "linear" }]).map((option) => option.value))
+      .toEqual(["main", "categorical", "target_encoding"])
+    expect(slotFitOptions("Float64", { type: "linear" }, [{ type: "target_encoding" }]).map((option) => option.value))
+      .toEqual(["main", "linear"])
+  })
+
+  it("rejects target encoding with categorical, spline, or a second encoded partner", () => {
+    for (const partner of [{ type: "categorical" }, { type: "bs" }, { type: "target_encoding" }]) {
+      expect(slotFitOptions("String", { type: "categorical" }, [partner]).map((option) => option.value))
+        .not.toContain("target_encoding")
+    }
+    expect(slotFitOptions("Float64", { type: "bs" }, [{ type: "target_encoding" }]).map((option) => option.value))
+      .toEqual(["linear"])
+  })
+
+  it("allows a linear partner only when it is paired with exactly one target encoding", () => {
+    expect(slotFitOptions("Float64", { type: "linear" }, [{ type: "target_encoding" }, { type: "linear" }]).map((option) => option.value))
+      .toEqual(["main", "linear"])
+    expect(slotFitOptions("Float64", { type: "linear" }, [{ type: "target_encoding" }, { type: "categorical" }])).toEqual([])
+    expect(slotFitOptions("Float64", { type: "linear" }, [{ type: "target_encoding" }, { type: "target_encoding" }])).toEqual([])
+  })
+
+  it("permits native target encoding inheritance but frequency encoding only as an explicit target encoding", () => {
+    expect(slotFitOptions("String", { type: "target_encoding" }, [{ type: "linear" }]).map((option) => option.value))
+      .toEqual(["main", "target_encoding"])
+    expect(slotFitOptions("String", { type: "frequency_encoding" }, [{ type: "linear" }]).map((option) => option.value))
+      .toEqual(["target_encoding"])
+  })
+})
 
 describe("expression grammar", () => {
   it.each<[string, string[]]>([
@@ -78,6 +115,51 @@ describe("terms by column", () => {
 })
 
 describe("editor transitions", () => {
+  it("preserves a column-key encoding with an explicit source when adding another term", () => {
+    const spec = { type: "target_encoding", variable: "region" }
+    const terms = { region: spec }
+    expect(nativeTermOf(terms, "region")).toEqual(spec)
+    expect(addTerm(terms, "region", "String", eligible)).toEqual({
+      region: spec,
+      region_fe: { type: "frequency_encoding", variable: "region" },
+    })
+  })
+
+  it("adds each encoding once for a categorical feature and anchors aliases by variable", () => {
+    const native: Terms = { region: { type: "categorical" } }
+    const target = addTerm(native, "region", "String", eligible)
+    const frequency = addTerm(target, "region", "String", eligible)
+    expect(target).toEqual({ region: { type: "categorical" }, region_te: { type: "target_encoding", variable: "region" } })
+    expect(frequency).toEqual({ ...target, region_fe: { type: "frequency_encoding", variable: "region" } })
+    expect(addTerm(frequency, "region", "String", eligible)).toBe(frequency)
+    expect(termsByColumn(removeTerm(frequency, "region"), eligible).byColumn.get("region")?.map((entry) => entry.key)).toEqual(["region_te", "region_fe"])
+    expect(modelMembership(removeTerm(frequency, "region"), [], eligible).inModel).toEqual(new Set(["region"]))
+  })
+
+  it("uses free encoding aliases and excludes duplicate encodings from selectors", () => {
+    const terms: Terms = { region: { type: "categorical" }, region_te: { type: "target_encoding", variable: "region" }, region_fe: { type: "frequency_encoding", variable: "region" } }
+    expect(addTerm({ region: { type: "categorical" }, region_te: { type: "expression", expr: "region" } }, "region", "String", eligible)).toHaveProperty("region_te2")
+    expect(additionalTypeOptions("String", terms, "region", "region_te").map((o) => o.value)).toEqual(["target_encoding"])
+    expect(nativeTypeOptions(terms, "region", "String").map((o) => o.value)).toEqual(["categorical"])
+    expect(nativeTypeOptions({}, "region", "String").map((o) => o.value))
+      .toEqual(["categorical", "target_encoding", "frequency_encoding"])
+  })
+
+  it.each(["Int64", "Float64", "Decimal(12, 2)"])("does not offer encodings for %s", (dtype) => {
+    const terms: Terms = { age: { type: "linear" }, age_sq: { type: "expression", expr: "age ** 3", monotonicity: "increasing" } }
+    expect(additionalTypeOptions(dtype, terms, "age", "age_sq").map((option) => option.value)).toEqual(["expression"])
+    const nativeTypes = nativeTypeOptions(terms, "age", dtype).map((option) => option.value)
+    expect(nativeTypes).toEqual(["linear", "bs", "ns", "ms"])
+    for (const encoding of ["target_encoding", "frequency_encoding"] as const) {
+      expect(switchAdditionalType(terms, "age_sq", "age", dtype, encoding)).toEqual({ ok: false, reason: "Encodings are available only for categorical features." })
+    }
+  })
+
+  it("switches categorical encoding types without retaining target-only settings", () => {
+    const terms: Terms = { region_te: { type: "target_encoding", variable: "region", prior_weight: 10, n_permutations: 3 } }
+    expect(switchAdditionalType(terms, "region_te", "region", "String", "frequency_encoding"))
+      .toEqual({ ok: true, terms: { region_te: { type: "frequency_encoding", variable: "region" } } })
+  })
   it("dtype defaults are categorical for strings and linear otherwise", () => {
     expect(dtypeDefaultSpec("String")).toEqual({ type: "categorical" })
     expect(dtypeDefaultSpec("Utf8")).toEqual({ type: "categorical" })
@@ -106,7 +188,7 @@ describe("editor transitions", () => {
 
   it("type switch keeps only the subset for the new type and ms defaults to increasing", () => {
     const terms: Terms = { age: { type: "bs", df: 5, degree: 2, monotonicity: "increasing", knots: [1, 2] } }
-    expect(switchNativeType(terms, "age", "ns")).toEqual({ age: { type: "ns", df: 5 } })
+    expect(switchNativeType(terms, "age", "ns")).toEqual({ age: { type: "ns", df: 5, knots: [1, 2] } })
     expect(switchNativeType(terms, "age", "linear")).toEqual({ age: { type: "linear", monotonicity: "increasing" } })
     expect(switchNativeType({ age: { type: "linear" } }, "age", "ms")).toEqual({
       age: { type: "ms", monotonicity: "increasing" },
@@ -114,11 +196,18 @@ describe("editor transitions", () => {
     expect(switchNativeType(terms, "age", "categorical")).toEqual({ age: { type: "categorical" } })
   })
 
-  it("field edits write the key and empty values delete it, leaving unknown keys alone", () => {
+  it("field edits keep spline mode fields mutually exclusive and preserve unrelated keys", () => {
     const terms: Terms = { age: { type: "bs", df: 4, knots: [1] } }
     expect(setTermField(terms, "age", "degree", 2)).toEqual({ age: { type: "bs", df: 4, knots: [1], degree: 2 } })
-    expect(setTermField(terms, "age", "df", undefined)).toEqual({ age: { type: "bs", knots: [1] } })
+    expect(setTermField(terms, "age", "df", undefined)).toEqual({ age: { type: "bs" } })
     expect(setTermField(terms, "age", "monotonicity", "")).toEqual({ age: { type: "bs", df: 4, knots: [1] } })
+  })
+
+  it("clears stale spline settings atomically", () => {
+    const terms: Terms = { age: { type: "bs", df: 6, k: 10, knots: [1, 2], boundary_knots: [0, 3], degree: 2 } }
+    expect(setTermField(terms, "age", "df", undefined)).toEqual({ age: { type: "bs", boundary_knots: [0, 3], degree: 2 } })
+    expect(setTermField(terms, "age", "k", 12)).toEqual({ age: { type: "bs", k: 12, boundary_knots: [0, 3], degree: 2 } })
+    expect(setTermField(terms, "age", "knots", [1, 2])).toEqual({ age: { type: "bs", knots: [1, 2], boundary_knots: [0, 3], degree: 2 } })
   })
 
   it("renames an expression unless the name is empty, a column, or another key", () => {
@@ -191,31 +280,57 @@ describe("editor transitions", () => {
 
 describe("interaction slots", () => {
   it("offers only honoured fits per column state", () => {
-    expect(slotFitOptions("Float64", null).map((o) => [o.value, o.disabledReason ?? null])).toEqual([
-      ["main", "No main term"],
-      ["linear", null],
-      ["categorical", null],
-      ["bs", null],
-      ["ns", null],
-    ])
-    expect(slotFitOptions("String", null).map((o) => [o.value, Boolean(o.disabledReason)])).toEqual([
-      ["main", true],
-      ["linear", true],
-      ["categorical", false],
-      ["bs", true],
-      ["ns", true],
-    ])
-    expect(slotFitOptions("Float64", { type: "linear" }).find((o) => o.value === "categorical")?.disabledReason).toMatch(/re-type/)
-    expect(slotFitOptions("String", { type: "categorical" }).find((o) => o.value === "linear")?.disabledReason).toMatch(/string/)
-    expect(slotFitOptions("Float64", { type: "ms", df: 4 }).find((o) => o.value === "main")?.disabledReason).toMatch(/Monotone/)
+    expect(slotFitOptions("Float64", null).map((o) => o.value)).toEqual(["linear", "bs", "ns"])
+    expect(slotFitOptions("String", null).map((o) => o.value)).toEqual(["categorical", "target_encoding"])
+    expect(slotFitOptions("Float64", { type: "linear" }).map((o) => o.value)).toEqual(["main", "linear", "bs", "ns"])
+    expect(slotFitOptions("String", { type: "categorical" }).map((o) => o.value)).toEqual(["main", "categorical", "target_encoding"])
+    expect(slotFitOptions("Float64", { type: "categorical" }).map((o) => o.value)).toEqual(["main", "categorical"])
+    expect(slotFitOptions("Float64", { type: "ms", df: 4 }).map((o) => o.value)).toEqual(["linear", "bs", "ns"])
+    expect(slotFitOptions("String", { type: "target_encoding" }).map((o) => o.value)).toEqual(["main", "target_encoding"])
+    expect(slotFitOptions("String", { type: "frequency_encoding" }).map((o) => o.value)).toEqual(["target_encoding"])
   })
 
-  it("flags monotone main terms and blocks target-encoded columns", () => {
+  it("filters interaction modes by dtype and native encodings while allowing mode-first creation", () => {
+    const available = (factors: string[], terms: Terms = {}) => interactionEncodingOptions(
+      [{ factors, include_main: true }], 0, terms, columns,
+    ).map((option) => option.value)
+    expect(available(["", ""])).toEqual(["product", "target_encoding", "frequency_encoding"])
+    expect(available(["region", ""])).toEqual(["product", "target_encoding", "frequency_encoding"])
+    expect(available(["age", "region"])).toEqual(["product"])
+    expect(interactionEncodingOptions([
+      { factors: ["region", ""], encoding: "target_encoding", include_main: false },
+    ], 0, { region: { type: "frequency_encoding" } }, columns).map((option) => option.value)).toEqual(["product", "target_encoding", "frequency_encoding"])
+  })
+
+  it("ignores hidden joint overrides when deciding whether Product is available", () => {
+    expect(interactionEncodingOptions([
+      { factors: ["age", "region"], encoding: "target_encoding", specs: { age: { type: "linear" } }, include_main: true },
+    ], 0, { age: { type: "bs" }, region: { type: "target_encoding" } }, columns).map((option) => option.value))
+      .toEqual(["target_encoding"])
+  })
+
+  it("omits modes used by another interaction with the same factors regardless of order", () => {
+    const categoryColumns = [...columns, { name: "brand", dtype: "String" }]
+    const interactions: InteractionSpec[] = [
+      { factors: ["brand", "region"], include_main: false },
+      { factors: ["region", "brand"], encoding: "target_encoding", include_main: false },
+      { factors: ["region", "brand"], encoding: "frequency_encoding", include_main: false },
+    ]
+    expect(interactionEncodingOptions(interactions, 0, {}, categoryColumns).map((option) => option.value)).toEqual(["product"])
+    expect(interactionEncodingOptions(interactions, 1, {}, categoryColumns).map((option) => option.value)).toEqual(["target_encoding"])
+    expect(interactionEncodingOptions([...interactions, interactions[0]], 3, {}, categoryColumns).map((option) => option.value)).toEqual(["product"])
+  })
+
+  it("retains a saved numeric joint mode without offering other encodings", () => {
+    expect(interactionEncodingOptions([
+      { factors: ["age", "region"], encoding: "target_encoding", include_main: false },
+    ], 0, {}, columns).map((option) => option.value)).toEqual(["product", "target_encoding"])
+  })
+
+  it("flags monotone main terms", () => {
     expect(slotNeedsExplicitFit({ type: "ms", df: 4 })).toBe(true)
     expect(slotNeedsExplicitFit({ type: "bs", df: 4, monotonicity: "decreasing" })).toBe(true)
     expect(slotNeedsExplicitFit({ type: "bs", df: 4 })).toBe(false)
-    expect(slotColumnBlockedReason({ type: "target_encoding" })).toMatch(/Target-encoded/)
-    expect(slotColumnBlockedReason({ type: "linear" })).toBeNull()
   })
 
   it("resolves the effective slot spec as override, else main, else dtype default", () => {
@@ -247,5 +362,32 @@ describe("interaction slots", () => {
       { factors: ["age", "", ""], include_main: true },
     ]
     expect(duplicateInteractionIndexes(interactions)).toEqual(new Set([1]))
+  })
+
+  it("keys duplicate interactions by encoding mode and clears hidden mode fields", () => {
+    const interactions: InteractionSpec[] = [
+      { factors: ["age", "region"], include_main: true },
+      { factors: ["region", "age"], include_main: true, encoding: "target_encoding" },
+      { factors: ["region", "age"], include_main: true, encoding: "target_encoding" },
+    ]
+    expect(duplicateInteractionIndexes(interactions)).toEqual(new Set([2]))
+    const encoded = setInteractionEncoding([{ factors: ["age", "region"], specs: { age: { type: "bs" } }, prior_weight: 2, n_permutations: 5, include_main: true }], 0, "target_encoding")
+    expect(encoded).toEqual([{ factors: ["age", "region"], encoding: "target_encoding", include_main: true }])
+    expect(setInteractionField(encoded, 0, "prior_weight", 0)).toEqual([{ factors: ["age", "region"], encoding: "target_encoding", prior_weight: 0, include_main: true }])
+    expect(setInteractionField(encoded, 0, "prior_weight", undefined)).toEqual(encoded)
+  })
+
+  it("removes every mode-specific field when returning to Product", () => {
+    const initial: InteractionSpec[] = [{
+      factors: ["age", "region"],
+      encoding: "target_encoding",
+      prior_weight: 0,
+      n_permutations: 4,
+      include_main: true,
+    }]
+    const frequency = setInteractionEncoding(initial, 0, "frequency_encoding")
+    expect(frequency).toEqual([{ factors: ["age", "region"], encoding: "frequency_encoding", include_main: true }])
+    expect(setInteractionEncoding(frequency, 0, "product")).toEqual([{ factors: ["age", "region"], include_main: true }])
+    expect(setInteractionEncoding(initial, 0, "target_encoding")).toEqual(initial)
   })
 })

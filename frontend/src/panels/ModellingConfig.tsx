@@ -570,7 +570,12 @@ export default function ModellingConfig({
       paneBody = exportPane
     }
   } else if (activePane === "target") {
-    paneBody = <GLMTargetConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} onEstimateDispersion={onEstimateDispersion} />
+    paneBody = (
+      <>
+        <GLMTargetConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} onEstimateDispersion={onEstimateDispersion} />
+        <GLMRegularizationConfig config={config} onUpdate={onUpdate} />
+      </>
+    )
   } else if (activePane === "features") {
     paneBody = (
       <>
@@ -578,8 +583,6 @@ export default function ModellingConfig({
         <GLMInteractionsConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
       </>
     )
-  } else if (activePane === "params") {
-    paneBody = <GLMRegularizationConfig config={config} onUpdate={onUpdate} />
   } else if (activePane === "split") {
     paneBody = splitPane
   } else if (activePane === "train") {

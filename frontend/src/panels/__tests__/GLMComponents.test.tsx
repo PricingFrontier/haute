@@ -324,16 +324,10 @@ describe("GLMRegularizationConfig", () => {
 
   beforeEach(() => onUpdate.mockReset())
 
-  it("renders collapsed by default", () => {
+  it("shows controls beneath a noninteractive Regularization heading", () => {
     render(<GLMRegularizationConfig config={{}} onUpdate={onUpdate} />)
-    expect(screen.getByText("Regularization")).toBeTruthy()
-    // Type buttons should NOT be visible (collapsed)
-    expect(screen.queryByRole("button", { name: "None" })).toBeNull()
-  })
-
-  it("expanding shows type toggle buttons", () => {
-    render(<GLMRegularizationConfig config={{}} onUpdate={onUpdate} />)
-    fireEvent.click(screen.getByText("Regularization"))
+    const heading = screen.getByRole("heading", { name: "Regularization" })
+    expect(heading.closest("button")).toBeNull()
     expect(screen.getByRole("button", { name: "None" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "Ridge" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "Lasso" })).toBeTruthy()
@@ -342,38 +336,32 @@ describe("GLMRegularizationConfig", () => {
 
   it("clicking Ridge sets regularization", () => {
     render(<GLMRegularizationConfig config={{}} onUpdate={onUpdate} />)
-    fireEvent.click(screen.getByText("Regularization"))
     fireEvent.click(screen.getByRole("button", { name: "Ridge" }))
     expect(onUpdate).toHaveBeenCalledWith("regularization", "ridge")
   })
 
   it("clicking None clears regularization", () => {
     render(<GLMRegularizationConfig config={{ regularization: "ridge" }} onUpdate={onUpdate} />)
-    fireEvent.click(screen.getByText("Regularization"))
     fireEvent.click(screen.getByRole("button", { name: "None" }))
     expect(onUpdate).toHaveBeenCalledWith("regularization", null)
   })
 
   it("shows alpha input when regularization is active", () => {
     render(<GLMRegularizationConfig config={{ regularization: "ridge" }} onUpdate={onUpdate} />)
-    fireEvent.click(screen.getByText("Regularization"))
     expect(screen.getByText(/Alpha/)).toBeTruthy()
   })
 
   it("L1 ratio controls only appear for elastic_net", () => {
     const { unmount } = render(<GLMRegularizationConfig config={{ regularization: "ridge" }} onUpdate={onUpdate} />)
-    fireEvent.click(screen.getByText("Regularization"))
     expect(screen.queryByText(/L1 ratio/)).toBeNull()
     unmount()
 
     render(<GLMRegularizationConfig config={{ regularization: "elastic_net", l1_ratio: null }} onUpdate={onUpdate} />)
-    fireEvent.click(screen.getByText("Regularization"))
     expect(screen.getAllByText(/L1 ratio/).length).toBeGreaterThan(0)
   })
 
   it("elastic_net gates the L1 ratio until it is set explicitly", () => {
     render(<GLMRegularizationConfig config={{ regularization: "elastic_net" }} onUpdate={onUpdate} />)
-    fireEvent.click(screen.getByText("Regularization"))
     // Unset: the mix must be chosen — a prompt and both collapse shortcuts.
     expect(screen.getByRole("button", { name: /Set L1 ratio mix/ })).toBeTruthy()
     expect(screen.getByRole("button", { name: /Fit Ridge \(0\)/ })).toBeTruthy()
@@ -382,7 +370,6 @@ describe("GLMRegularizationConfig", () => {
 
   it("Fit Ridge / Fit LASSO shortcuts set an explicit L1 ratio", () => {
     render(<GLMRegularizationConfig config={{ regularization: "elastic_net" }} onUpdate={onUpdate} />)
-    fireEvent.click(screen.getByText("Regularization"))
     fireEvent.click(screen.getByRole("button", { name: /Fit Ridge \(0\)/ }))
     expect(onUpdate).toHaveBeenCalledWith("l1_ratio", 0)
     fireEvent.click(screen.getByRole("button", { name: /Fit LASSO \(1\)/ }))
@@ -391,7 +378,6 @@ describe("GLMRegularizationConfig", () => {
 
   it("a set L1 ratio shows the mix slider, not the prompt", () => {
     render(<GLMRegularizationConfig config={{ regularization: "elastic_net", l1_ratio: 0.3 }} onUpdate={onUpdate} />)
-    fireEvent.click(screen.getByText("Regularization"))
     expect(screen.queryByRole("button", { name: /Set L1 ratio mix/ })).toBeNull()
     expect(screen.getByText("0.30")).toBeTruthy()
   })
@@ -642,7 +628,7 @@ describe("ModellingConfig (GLM routing)", () => {
     })
   })
 
-  it("GLM config routes target, features, and regularization to exclusive panes", () => {
+  it("GLM config routes Rustystats target settings and regularization to the Target pane", () => {
     const config = {
       _nodeId: "n1",
       algorithm: "glm",
@@ -660,8 +646,11 @@ describe("ModellingConfig (GLM routing)", () => {
         />
       </GraphProvider>,
     )
+    expect(screen.getByLabelText("Selected algorithm")).toHaveTextContent(/^Algorithm Rustystats$/)
     expect(screen.getByText("Target & Weight")).toBeTruthy()
     expect(screen.getByText("Family")).toBeTruthy()
+    expect(screen.getByText("Regularization")).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Ridge" })).toBeVisible()
     expect(screen.queryByText("Fit all with defaults")).toBeNull()
 
     rerender(
@@ -677,18 +666,7 @@ describe("ModellingConfig (GLM routing)", () => {
     expect(screen.getByText("Features")).toBeTruthy()
     expect(screen.getByText("Fit all with defaults")).toBeTruthy()
     expect(screen.queryByText("Family")).toBeNull()
-
-    rerender(
-      <GraphProvider allNodes={[]} edges={[]}>
-        <ModellingConfig
-          config={config}
-          onUpdate={vi.fn()}
-          upstreamColumns={defaultColumns}
-          activePane="params"
-        />
-      </GraphProvider>,
-    )
-    expect(screen.getByText("Regularization")).toBeTruthy()
+    expect(screen.queryByText("Regularization")).toBeNull()
 
     // Should NOT have CatBoost-specific sections
     expect(screen.queryByRole("button", { name: "regression" })).toBeNull()

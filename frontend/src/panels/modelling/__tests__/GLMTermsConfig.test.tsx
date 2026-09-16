@@ -1,3 +1,4 @@
+import { useState } from "react"
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -21,6 +22,42 @@ function setup(config: Record<string, unknown> = {}) {
 
 function row(name: string) {
   return screen.getByRole("group", { name: `${name} feature` })
+}
+
+function StatefulTermsConfig() {
+  const [config, setConfig] = useState<Record<string, unknown>>({
+    target: "target",
+    algorithm: "glm",
+    terms: { age: { type: "bs", df: 6, degree: 2, boundary_knots: [0, 10] } },
+  })
+  return (
+    <GLMTermsConfig
+      config={config}
+      columns={columns}
+      onUpdate={(keyOrUpdates, value) => {
+        setConfig((current) => (
+          typeof keyOrUpdates === "string"
+            ? { ...current, [keyOrUpdates]: value }
+            : { ...current, ...keyOrUpdates }
+        ))
+        return { ok: true }
+      }}
+    />
+  )
+}
+
+function StatefulInlineTermsConfig({ initialTerms }: { initialTerms: Record<string, unknown> }) {
+  const [config, setConfig] = useState<Record<string, unknown>>({ target: "target", algorithm: "glm", terms: initialTerms })
+  return (
+    <GLMTermsConfig
+      config={config}
+      columns={columns}
+      onUpdate={(keyOrUpdates, value) => {
+        setConfig((current) => typeof keyOrUpdates === "string" ? { ...current, [keyOrUpdates]: value } : { ...current, ...keyOrUpdates })
+        return { ok: true }
+      }}
+    />
+  )
 }
 
 describe("GLMTermsConfig", () => {
@@ -48,6 +85,95 @@ describe("GLMTermsConfig", () => {
     })
   })
 
+  it("adds the unused categorical encoding beneath the same raw feature and then disables Add", () => {
+    render(<StatefulInlineTermsConfig initialTerms={{ region: { type: "categorical" }, region_te: { type: "target_encoding", variable: "region" } }} />)
+    const region = row("region")
+    fireEvent.click(within(region).getByRole("button", { name: "Add region term" }))
+    expect(within(region).getByRole("combobox", { name: "region_fe term type" })).toHaveValue("frequency_encoding")
+    expect(within(region).getByRole("button", { name: "Add region term" })).toBeDisabled()
+    const options = (name: string) => Array.from(within(region).getByRole("combobox", { name }).querySelectorAll("option")).map((option) => option.value)
+    expect(options("region term type")).toEqual(["categorical"])
+    expect(options("region_te term type")).toEqual(["target_encoding"])
+    expect(options("region_fe term type")).toEqual(["frequency_encoding"])
+    fireEvent.click(within(region).getByRole("button", { name: "Remove region_fe term" }))
+    expect(options("region_te term type")).toEqual(["target_encoding", "frequency_encoding"])
+    expect(options("region term type")).toEqual(["categorical", "frequency_encoding"])
+    expect(within(region).getByRole("button", { name: "Add region term" })).toBeEnabled()
+  })
+
+  it("reserves excluded upstream columns when choosing an encoding alias", () => {
+    const onUpdate = vi.fn<OnUpdateConfig>(() => ({ ok: true as const }))
+    render(
+      <GLMTermsConfig
+        config={{ target: "region_te", algorithm: "glm", terms: { region: { type: "categorical" } } }}
+        onUpdate={onUpdate}
+        columns={[...columns, { name: "region_te", dtype: "Float64" }]}
+      />,
+    )
+    fireEvent.click(within(row("region")).getByRole("button", { name: "Add region term" }))
+    expect(onUpdate).toHaveBeenCalledWith("terms", {
+      region: { type: "categorical" },
+      region_te2: { type: "target_encoding", variable: "region" },
+    })
+  })
+
+  it("keeps a filtered fit type selector on every added continuous term", () => {
+    render(<StatefulInlineTermsConfig initialTerms={{ age: { type: "linear" } }} />)
+    fireEvent.change(screen.getByLabelText("Search features"), { target: { value: "ag" } })
+    fireEvent.click(within(row("age")).getByRole("button", { name: "Add age term" }))
+    const native = within(row("age")).getByRole("combobox", { name: "age term type" })
+    const nativeTypes = Array.from(native.querySelectorAll("option")).map((option) => option.value)
+    expect(nativeTypes).toEqual(["linear", "bs", "ns", "ms"])
+    const additional = within(row("age")).getByRole("combobox", { name: "age_sq term type" })
+    expect(additional).toHaveValue("expression")
+    expect(Array.from(additional.querySelectorAll("option")).map((option) => option.value)).toEqual(["expression"])
+    const expression = within(row("age")).getByRole("textbox", { name: "age_sq expression" })
+    fireEvent.change(expression, { target: { value: "age ** 3" } })
+    fireEvent.blur(expression)
+    expect(expression).toHaveValue("age ** 3")
+    expect(screen.getByLabelText("Search features")).toHaveValue("ag")
+  })
+
+  it("preserves saved numeric encodings and allows explicit conversion to an expression", () => {
+    render(<StatefulInlineTermsConfig initialTerms={{ age: { type: "target_encoding" }, age_fe: { type: "frequency_encoding", variable: "age" } }} />)
+    const native = within(row("age")).getByRole("combobox", { name: "age term type" })
+    expect(native).toHaveValue("target_encoding")
+    expect(Array.from(native.querySelectorAll("option")).map((option) => option.value)).not.toContain("frequency_encoding")
+    const additional = within(row("age")).getByRole("combobox", { name: "age_fe term type" })
+    expect(additional).toHaveValue("frequency_encoding")
+    expect(Array.from(additional.querySelectorAll("option")).map((option) => option.value)).toEqual(["expression", "frequency_encoding"])
+    fireEvent.change(additional, { target: { value: "expression" } })
+    expect(within(row("age")).getByRole("textbox", { name: "age_fe expression" })).toHaveValue("age ** 2")
+    expect(native).toHaveValue("target_encoding")
+  })
+
+  it("keeps native and expression controls inline in their feature row while editing", () => {
+    render(<StatefulInlineTermsConfig initialTerms={{ age: { type: "linear" }, age_sq: { type: "expression", expr: "age ** 2" } }} />)
+    const age = row("age")
+    const native = within(age).getByRole("combobox", { name: "age term type" })
+    expect(native).toBeInTheDocument()
+    fireEvent.change(native, { target: { value: "ns" } })
+    expect(native).toHaveValue("ns")
+    const expression = within(age).getByRole("textbox", { name: "age_sq expression" })
+    fireEvent.change(expression, { target: { value: "income * age" } })
+    fireEvent.blur(expression)
+    expect(expression).toHaveValue("income * age")
+    expect(screen.getByLabelText("Search features")).toHaveValue("")
+    expect(row("region")).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /Configure/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Back to features" })).not.toBeInTheDocument()
+  })
+
+  it("adds a term beneath its row without changing the feature filter", () => {
+    render(<StatefulInlineTermsConfig initialTerms={{}} />)
+    fireEvent.change(screen.getByLabelText("Search features"), { target: { value: "g" } })
+    fireEvent.click(within(row("age")).getByRole("button", { name: "Add age term" }))
+    expect(within(row("age")).getByRole("combobox", { name: "age term type" })).toHaveValue("linear")
+    expect(screen.getByLabelText("Search features")).toHaveValue("g")
+    expect(row("region")).toBeInTheDocument()
+    expect(screen.queryByRole("group", { name: "income feature" })).not.toBeInTheDocument()
+  })
+
   it("lists the expression card under its anchor row", () => {
     setup({ terms: { age: { type: "linear" }, age_sq: { type: "expression", expr: "age ** 2" } } })
     expect(within(row("age")).getByRole("textbox", { name: "age_sq expression" })).toBeInTheDocument()
@@ -58,6 +184,14 @@ describe("GLMTermsConfig", () => {
     const onUpdate = setup({ terms: { age: { type: "bs", df: 5, monotonicity: "increasing" } } })
     fireEvent.change(within(row("age")).getByRole("combobox", { name: "age term type" }), { target: { value: "ns" } })
     expect(onUpdate).toHaveBeenCalledWith("terms", { age: { type: "ns", df: 5 } })
+  })
+
+  it("persists spline Auto mode while retaining unrelated controls", () => {
+    render(<StatefulTermsConfig />)
+    fireEvent.change(within(row("age")).getByRole("combobox", { name: "age df mode" }), { target: { value: "auto" } })
+    fireEvent.click(screen.getByRole("button", { name: "JSON" }))
+    const saved = JSON.parse((screen.getByRole("textbox", { name: "Terms JSON" }) as HTMLTextAreaElement).value)
+    expect(saved).toEqual({ age: { type: "bs", degree: 2, boundary_knots: [0, 10] } })
   })
 
   it("ms defaults to increasing", () => {
@@ -164,12 +298,22 @@ describe("GLMTermsConfig", () => {
     expect(row("region")).toBeInTheDocument()
   })
 
-  it("JSON mode round-trips a non-column expression key and lists an unresolvable one", () => {
-    const onUpdate = setup({
-      terms: { age: { type: "linear" }, h2: { type: "expression", expr: "height ** 2" } },
-    })
-    expect(screen.getByText("Unresolved expressions")).toBeInTheDocument()
-    expect(screen.getByRole("textbox", { name: "h2 expression" })).toBeInTheDocument()
+  it("repairs an unresolved expression in place and moves it into its feature row", () => {
+    render(<StatefulInlineTermsConfig initialTerms={{ age: { type: "linear" }, h2: { type: "expression", expr: "height ** 2" } }} />)
+    expect(screen.getByText("Unresolved terms")).toBeInTheDocument()
+    const name = screen.getByRole("textbox", { name: "h2 name" })
+    fireEvent.change(name, { target: { value: "age_sq" } })
+    fireEvent.blur(name)
+    const expression = screen.getByRole("textbox", { name: "age_sq expression" })
+    fireEvent.change(expression, { target: { value: "age ** 2" } })
+    fireEvent.blur(expression)
+    expect(screen.queryByRole("group", { name: "Unresolved terms" })).not.toBeInTheDocument()
+    expect(within(row("age")).getByRole("textbox", { name: "age_sq expression" })).toHaveValue("age ** 2")
+  })
+
+  it("JSON mode round-trips an unresolved expression", () => {
+    const onUpdate = setup({ terms: { age: { type: "linear" }, h2: { type: "expression", expr: "height ** 2" } } })
+    expect(screen.getByText("Unresolved terms")).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "JSON" }))
     const area = screen.getByRole("textbox", { name: "Terms JSON" })
     expect(JSON.parse((area as HTMLTextAreaElement).value)).toEqual({
@@ -179,6 +323,14 @@ describe("GLMTermsConfig", () => {
     fireEvent.change(area, { target: { value: JSON.stringify({ age: { type: "bs", df: 4 } }) } })
     fireEvent.blur(area)
     expect(onUpdate).toHaveBeenCalledWith("terms", { age: { type: "bs", df: 4 } })
+  })
+
+  it("keeps an unresolved encoding visible and removable", () => {
+    const onUpdate = setup({ terms: { bad_target: { type: "target_encoding", variable: "height" } } })
+    expect(screen.getByText("Unresolved terms")).toBeInTheDocument()
+    expect(screen.getByRole("combobox", { name: "bad_target term type" })).toHaveValue("target_encoding")
+    fireEvent.click(screen.getByRole("button", { name: "Remove bad_target term" }))
+    expect(onUpdate).toHaveBeenCalledWith("terms", {})
   })
 
   it.each([
@@ -201,16 +353,16 @@ describe("GLMTermsConfig", () => {
   // still reads as the first one, so the other two pin the no-throw contract
   // for the shapes the JSON guard now keeps out of new configs.
   it.each([
-    ["a type-less object", { df: 3 }],
-    ["a non-string type", { type: 42 }],
-    ["a null entry", null],
-  ])("renders %s from a stale config as a linear card instead of throwing", (_label, spec) => {
+    ["a type-less object", { df: 3 }, { type: "ns", df: 3 }],
+    ["a non-string type", { type: 42 }, { type: "ns" }],
+    ["a null entry", null, { type: "ns" }],
+  ])("renders %s from a stale config as a linear card instead of throwing", (_label, spec, repaired) => {
     const onUpdate = setup({ terms: { age: spec } })
     const select = within(row("age")).getByRole("combobox", { name: "age term type" })
     expect((select as HTMLSelectElement).value).toBe("linear")
-    // Picking a type repairs the entry rather than layering onto the junk.
-    fireEvent.change(select, { target: { value: "categorical" } })
-    expect(onUpdate).toHaveBeenCalledWith("terms", { age: { type: "categorical" } })
+    // Picking a valid fit repairs the type and retains only supported fields.
+    fireEvent.change(select, { target: { value: "ns" } })
+    expect(onUpdate).toHaveBeenCalledWith("terms", { age: repaired })
   })
 
   it("never writes exclude, monotone_constraints, or all_factors", () => {

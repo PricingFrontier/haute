@@ -118,7 +118,7 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
 
   return (
     <div>
-      <p className="text-[10px] mb-1" aria-label="Selected algorithm">Algorithm: <strong>GLM</strong></p>
+      <p className="text-[10px] mb-1" aria-label="Selected algorithm">Algorithm <strong>Rustystats</strong></p>
       <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
         Target & Weight
       </label>

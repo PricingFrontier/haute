@@ -1520,8 +1520,10 @@ function NodePanelContent({
   const activeExplorePane = showExplorePanes ? rememberedExplorePane ?? "code" : "code"
   const algorithm = typeof config.algorithm === "string" ? config.algorithm.toLowerCase() : ""
   const showModellingPanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.MODELLING && (algorithm === "catboost" || algorithm === "glm")
-  const activeModellingPane = showModellingPanes ? rememberedModellingPane ?? "target" : "target"
-  const modellingTabs = MODELLING_PANES.map((pane) => ({
+  const activeModellingPane = showModellingPanes && !(algorithm === "glm" && rememberedModellingPane === "params")
+    ? rememberedModellingPane ?? "target"
+    : "target"
+  const modellingTabs = MODELLING_PANES.filter((pane) => algorithm !== "glm" || pane.key !== "params").map((pane) => ({
     ...pane,
     indicator: pane.key === "train" && hasActiveTrainJob
       ? { kind: "active" as const, label: "Training is running" }

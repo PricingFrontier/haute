@@ -1558,6 +1558,7 @@ describe("ModellingConfig", () => {
     it("keeps the selected algorithm immutable and renders exactly one owning pane for both algorithms", () => {
       for (const algorithm of ["catboost", "glm"] as const) {
         for (const pane of ["target", "features", "params", "split", "train", "export"] as const) {
+          if (algorithm === "glm" && pane === "params") continue
           const { unmount } = renderConfig({ activePane: pane, config: { _nodeId: "node_1", algorithm, target: "loss_ratio", loss_function: "RMSE" } })
           expect(screen.getByRole("tabpanel")).toHaveAttribute("id", `modelling-${pane}-pane`)
           expect(screen.queryByRole("button", { name: "CatBoost" })).toBeNull()

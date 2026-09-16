@@ -70,6 +70,45 @@ class TestAutoTerms:
         assert _auto_terms([], []) == {}
 
 
+@pytest.mark.parametrize(
+    ("primary", "additional"),
+    [("target_encoding", "frequency_encoding"), ("frequency_encoding", "target_encoding")],
+)
+def test_multiple_encodings_fit_save_and_score_raw_source(algo, tmp_path, primary, additional):
+    from haute._mlflow_io import load_local_model
+    from haute.modelling._glm_pyfunc import GLMPyfuncModel
+    from haute.modelling._glm_terms import validate_glm_model_columns
+
+    rng = np.random.default_rng(72)
+    region = rng.choice(["a", "b", "c", "d", "e"], size=500, p=[0.4, 0.25, 0.2, 0.1, 0.05])
+    means = {"a": 1.0, "b": 3.0, "c": 2.0, "d": 5.0, "e": 4.0}
+    df = pl.DataFrame({"region": region, "y": [means[r] for r in region] + rng.normal(size=500)})
+    terms = {
+        "region": {"type": primary},
+        "region_extra": {"type": additional, "variable": "region"},
+    }
+    features = validate_glm_model_columns(terms, [], df.columns)
+    model = algo.fit(
+        train_df=df,
+        features=features,
+        cat_features=["region"],
+        target="y",
+        weight=None,
+        params={"family": "gaussian", "terms": terms},
+        task="regression",
+    ).model
+    assert set(model.feature_names) == {"Intercept", "TE(region)", "FE(region)"}
+    holdout = pl.DataFrame({"region": ["a", "b", "unseen"]})
+    expected = model.predict(holdout)
+    path = tmp_path / "encodings.rsglm"
+    algo.save(model, path)
+    loaded = load_local_model(str(path))
+    assert loaded.feature_names == ["region"]
+    np.testing.assert_allclose(loaded.predict(holdout), expected)
+    # This uses the same projection/scoring path as Model Score and deployment.
+    np.testing.assert_allclose(GLMPyfuncModel(str(path)).predict(holdout), expected)
+
+
 # ---------------------------------------------------------------------------
 # _build_interactions
 # ---------------------------------------------------------------------------
@@ -195,6 +234,359 @@ class TestBuildInteractions:
         )
 
 
+class TestProductTargetEncoding:
+    def test_local_encoding_preserves_native_fits_and_honours_parameters(self, interaction_df):
+        from rustystats.formula import dict_to_parsed_formula
+        from rustystats.interactions import InteractionBuilder
+
+        terms = {"c": {"type": "categorical"}, "x": {"type": "bs", "df": 4}}
+        built, effective = _build_interactions(
+            [
+                {
+                    "factors": ["c", "x"],
+                    "include_main": False,
+                    "specs": {
+                        "c": {"type": "target_encoding", "prior_weight": 0, "n_permutations": 2},
+                        "x": {"type": "linear"},
+                    },
+                }
+            ],
+            terms,
+            ["c"],
+            column_names=[*interaction_df.columns, "c_te"],
+        )
+        assert terms == {"c": {"type": "categorical"}, "x": {"type": "bs", "df": 4}}
+        assert effective == {
+            **terms,
+            "c_te_2": {
+                "type": "target_encoding",
+                "variable": "c",
+                "prior_weight": 0,
+                "n_permutations": 2,
+            },
+        }
+        parsed = dict_to_parsed_formula("y", effective, built)
+        assert len(parsed.target_encoding_terms) == 1
+        assert parsed.target_encoding_terms[0].prior_weight == 0
+        assert parsed.target_encoding_terms[0].n_permutations == 2
+        _, matrix, names = InteractionBuilder(interaction_df).build_design_matrix_from_parsed(
+            parsed
+        )
+        assert "c[T.b]" in names and "bs(x, 2/4)" in names
+        assert names.count("TE(c)") == 1
+        np.testing.assert_allclose(
+            matrix[:, names.index("x:TE(c)")],
+            interaction_df["x"].to_numpy() * matrix[:, names.index("TE(c)")],
+        )
+
+    def test_inherits_encoding_with_multiple_linear_partners(self, interaction_df):
+        from rustystats.formula import dict_to_parsed_formula
+        from rustystats.interactions import InteractionBuilder
+
+        terms = {"c": {"type": "target_encoding", "prior_weight": 2, "n_permutations": 3}}
+        built, effective = _build_interactions(
+            [{"factors": ["c", "x", "z"], "include_main": False}],
+            terms,
+            ["c"],
+        )
+        assert effective == terms
+        parsed = dict_to_parsed_formula("y", effective, built)
+        _, matrix, names = InteractionBuilder(interaction_df).build_design_matrix_from_parsed(
+            parsed
+        )
+        assert set(names) == {"Intercept", "TE(c)", "x:z:TE(c)"}
+        np.testing.assert_allclose(
+            matrix[:, names.index("x:z:TE(c)")],
+            interaction_df["x"].to_numpy()
+            * interaction_df["z"].to_numpy()
+            * matrix[:, names.index("TE(c)")],
+        )
+
+    @pytest.mark.parametrize("include_main", [False, True])
+    def test_encoding_main_is_required_independently_of_include_main(self, include_main):
+        _, effective = _build_interactions(
+            [
+                {
+                    "factors": ["c", "x"],
+                    "include_main": include_main,
+                    "specs": {"c": {"type": "target_encoding"}},
+                }
+            ],
+            {},
+            ["c"],
+        )
+        assert effective["c"] == {"type": "target_encoding"}
+        assert ("x" in effective) is include_main
+
+    @pytest.mark.parametrize("include_main", [False, True])
+    def test_reuses_named_encoding_settings(self, include_main):
+        terms = {
+            "c": {"type": "categorical"},
+            "c_existing": {
+                "type": "target_encoding",
+                "variable": "c",
+                "prior_weight": 7,
+                "n_permutations": 2,
+            },
+        }
+        config = [
+            {
+                "factors": ["c", "x"],
+                "include_main": include_main,
+                "specs": {"c": {"type": "target_encoding"}},
+            }
+        ]
+        _, effective = _build_interactions(config, terms, ["c"])
+        assert effective == ({**terms, "x": {"type": "linear"}} if include_main else terms)
+        config[0]["specs"]["c"]["prior_weight"] = 1
+        with pytest.raises(HauteValidationError, match="target encoding settings.*c_existing"):
+            _build_interactions(config, terms, ["c"])
+
+    def test_named_encoding_without_native_term_is_not_duplicated(self):
+        terms = {"c_existing": {"type": "target_encoding", "variable": "c", "prior_weight": 2}}
+        _, effective = _build_interactions(
+            [
+                {
+                    "factors": ["c", "x"],
+                    "include_main": True,
+                    "specs": {"c": {"type": "target_encoding"}},
+                }
+            ],
+            terms,
+            ["c"],
+        )
+        assert effective == {**terms, "x": {"type": "linear"}}
+
+    @pytest.mark.parametrize("partner", ["categorical", "bs", "ns", "target_encoding"])
+    def test_rejects_non_linear_partners(self, partner):
+        factor = "d" if partner in ("categorical", "target_encoding") else "x"
+        with pytest.raises(HauteValidationError, match="Product target encoding requires"):
+            _build_interactions(
+                [
+                    {
+                        "factors": ["c", factor],
+                        "include_main": False,
+                        "specs": {
+                            "c": {"type": "target_encoding"},
+                            factor: {"type": partner},
+                        },
+                    }
+                ],
+                {},
+                ["c", "d"],
+            )
+
+    def test_rejects_numeric_target_encoding(self):
+        with pytest.raises(HauteValidationError, match="non-numeric"):
+            _build_interactions(
+                [
+                    {
+                        "factors": ["x", "z"],
+                        "specs": {
+                            "x": {"type": "target_encoding"},
+                        },
+                    }
+                ],
+                {},
+                [],
+            )
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {"prior_weight": -1},
+            {"prior_weight": True},
+            {"n_permutations": 0},
+            {"n_permutations": 1.5},
+            {"variable": "d"},
+            {"unknown": 1},
+        ],
+    )
+    def test_rejects_invalid_encoding_parameters(self, extra):
+        with pytest.raises(HauteValidationError):
+            _build_interactions(
+                [
+                    {
+                        "factors": ["c", "x"],
+                        "specs": {
+                            "c": {"type": "target_encoding", **extra},
+                        },
+                    }
+                ],
+                {},
+                ["c"],
+            )
+
+    def test_fit_predict_and_save_load_raw_columns(self, algo, interaction_df, tmp_path):
+        from haute._mlflow_io import load_local_model
+        from haute.modelling._glm_pyfunc import GLMPyfuncModel
+
+        frame = interaction_df.with_columns(pl.lit(1).alias("c_te"))
+        model = algo.fit(
+            train_df=frame,
+            features=["c", "x"],
+            cat_features=["c"],
+            target="y",
+            weight=None,
+            task="regression",
+            params={
+                "family": "poisson",
+                "terms": {
+                    "c": {"type": "categorical"},
+                    "x": {"type": "linear"},
+                },
+                "interactions": [
+                    {
+                        "factors": ["c", "x"],
+                        "include_main": False,
+                        "specs": {
+                            "c": {
+                                "type": "target_encoding",
+                                "prior_weight": 3,
+                                "n_permutations": 2,
+                            },
+                        },
+                    }
+                ],
+            },
+        ).model
+        assert set(model.feature_names) == {
+            "Intercept",
+            "c[T.b]",
+            "c[T.c]",
+            "x",
+            "TE(c)",
+            "x:TE(c)",
+        }
+        assert model.terms_dict["c_te_2"]["n_permutations"] == 2
+        holdout = pl.DataFrame({"c": ["a", "unseen", "b"], "x": [0.1, -0.2, 0.7]})
+        predictions = algo.predict(model, holdout, ["c", "x"])
+        assert np.isfinite(predictions).all()
+        path = tmp_path / "product_te.rsglm"
+        algo.save(model, path)
+        loaded = load_local_model(str(path))
+        assert set(loaded.feature_names) == {"c", "x"}
+        np.testing.assert_allclose(loaded.predict(holdout), predictions)
+        np.testing.assert_allclose(GLMPyfuncModel(str(path)).predict(holdout), predictions)
+
+
+class TestEncodedInteractions:
+    @pytest.mark.parametrize("encoding", ["target_encoding", "frequency_encoding"])
+    def test_maps_raw_factors_without_retyping_main_effects(self, encoding):
+        terms = {"x": {"type": "linear"}, "c": {"type": "target_encoding"}}
+        config = {"factors": ["x", "c"], "encoding": encoding, "include_main": True}
+        params = {"prior_weight": 0, "n_permutations": 2} if encoding == "target_encoding" else {}
+        built, effective = _build_interactions([{**config, **params}], terms, ["c"])
+        assert built == [
+            {
+                "x": {"type": "linear"},
+                "c": {"type": "linear"},
+                encoding: True,
+                "include_main": False,
+                **params,
+            }
+        ]
+        assert effective == terms
+        assert config == {"factors": ["x", "c"], "encoding": encoding, "include_main": True}
+
+    def test_auto_prior_is_omitted_and_missing_main_uses_dtype_default(self):
+        terms = {"x": {"type": "ms", "df": 4}}
+        built, effective = _build_interactions(
+            [
+                {"factors": ["x", "c"], "encoding": "target_encoding", "include_main": True},
+            ],
+            terms,
+            ["c"],
+        )
+        assert "prior_weight" not in built[0]
+        assert "n_permutations" not in built[0]
+        assert effective == {**terms, "c": {"type": "categorical"}}
+
+    def test_duplicate_identity_includes_encoding_mode(self):
+        cards = [
+            {"factors": ["c", "d"], "include_main": False},
+            {"factors": ["d", "c"], "encoding": "target_encoding", "include_main": False},
+            {"factors": ["c", "d"], "encoding": "frequency_encoding", "include_main": False},
+        ]
+        built, effective = _build_interactions(cards, {}, ["c", "d"])
+        assert len(built) == 3
+        assert effective == {}
+        with pytest.raises(HauteValidationError, match="duplicates"):
+            _build_interactions([*cards, {**cards[1], "factors": ["c", "d"]}], {}, ["c", "d"])
+
+    @pytest.mark.parametrize(
+        ("extra", "pattern"),
+        [
+            ({"encoding": "unknown"}, "encoding"),
+            ({"encoding": ["target_encoding"]}, "encoding"),
+            ({"encoding": "target_encoding", "specs": {"c": {"type": "categorical"}}}, "specs"),
+            ({"encoding": "target_encoding", "prior_weight": -1}, "prior_weight"),
+            ({"encoding": "target_encoding", "prior_weight": True}, "prior_weight"),
+            ({"encoding": "target_encoding", "prior_weight": float("nan")}, "prior_weight"),
+            ({"encoding": "target_encoding", "prior_weight": "1"}, "prior_weight"),
+            ({"encoding": "target_encoding", "n_permutations": 0}, "n_permutations"),
+            ({"encoding": "target_encoding", "n_permutations": 1.5}, "n_permutations"),
+            ({"encoding": "target_encoding", "n_permutations": True}, "n_permutations"),
+            ({"encoding": "frequency_encoding", "prior_weight": 1}, "prior_weight"),
+            ({"prior_weight": 1}, "prior_weight"),
+            ({"target_encoding": True}, "target_encoding"),
+        ],
+    )
+    def test_rejects_invalid_settings_even_for_incomplete_cards(self, extra, pattern):
+        with pytest.raises(HauteValidationError, match=pattern):
+            _build_interactions([{"factors": ["", ""], **extra}], {}, [])
+
+    @pytest.mark.parametrize("encoding", ["target_encoding", "frequency_encoding"])
+    def test_fit_predict_and_save_load_joint_encoding(
+        self, encoding, algo, interaction_df, tmp_path
+    ):
+        from haute._mlflow_io import load_local_model
+
+        params = {"prior_weight": 1.0, "n_permutations": 2} if encoding == "target_encoding" else {}
+        model = algo.fit(
+            train_df=interaction_df,
+            features=["x", "c", "d"],
+            cat_features=["c", "d"],
+            target="y",
+            weight=None,
+            task="regression",
+            params={
+                "family": "poisson",
+                "terms": {
+                    "x": {"type": "linear"},
+                    "c": {"type": "target_encoding", "prior_weight": 1.0},
+                    "d": {"type": "frequency_encoding"},
+                },
+                "interactions": [
+                    {"factors": ["c", "d"], "encoding": encoding, "include_main": False, **params},
+                ],
+            },
+        ).model
+        prefix = "TE" if encoding == "target_encoding" else "FE"
+        assert set(model.feature_names) == {"Intercept", "x", "TE(c)", "FE(d)", f"{prefix}(c:d)"}
+        holdout = pl.DataFrame(
+            {"x": [0.1, -0.2, 0.7], "c": ["a", "new", "b"], "d": ["p", "q", "new"]}
+        )
+        predictions = algo.predict(model, holdout, ["x", "c", "d"])
+        assert np.isfinite(predictions).all()
+        path = tmp_path / "joint.rsglm"
+        algo.save(model, path)
+        np.testing.assert_allclose(load_local_model(str(path)).predict(holdout), predictions)
+
+    @pytest.mark.parametrize("encoding", ["target_encoding", "frequency_encoding"])
+    def test_numeric_main_is_not_expanded_to_categories(self, encoding, interaction_df):
+        built, effective = _build_interactions(
+            [
+                {"factors": ["x", "c"], "encoding": encoding, "include_main": False},
+            ],
+            {"x": {"type": "linear"}},
+            ["c"],
+        )
+        names = _design_columns(interaction_df, effective, built)
+        assert len(names) == 3
+        assert names[:2] == ["Intercept", "x"]
+
+
 class TestBuildInteractionsRejections:
     def _reject(self, config, terms, cat_features, pattern):
         with pytest.raises(HauteValidationError, match=pattern):
@@ -206,6 +598,22 @@ class TestBuildInteractionsRejections:
 
     def test_rejects_a_factor_repeated_within_one_card(self):
         self._reject([{"factors": ["x", "x"]}], {"x": {"type": "linear"}}, [], "more than once")
+
+    def test_rejects_reserved_factor_names_in_joint_encoding(self):
+        self._reject(
+            [{"factors": ["x", "c", "include_main"], "encoding": "target_encoding"}],
+            {},
+            ["c"],
+            "reserved.*include_main",
+        )
+
+    def test_rejects_ignored_categorical_level_override(self):
+        self._reject(
+            [{"factors": ["x", "c"], "specs": {"c": {"type": "categorical", "levels": ["a"]}}}],
+            {},
+            ["c"],
+            "levels.*main term",
+        )
 
     def test_rejects_monotone_overrides(self):
         self._reject(
@@ -271,13 +679,21 @@ class TestBuildInteractionsRejections:
             [{"factors": ["d", "c"]}],
             {"d": {"type": "target_encoding"}, "c": {"type": "categorical"}},
             ["c", "d"],
-            "Target-encoded",
+            "Product target encoding requires",
         )
         self._reject(
             [{"factors": ["d", "c"], "specs": {"d": {"type": "target_encoding"}}}],
             {"c": {"type": "categorical"}},
             ["c", "d"],
-            "override type",
+            "Product target encoding requires",
+        )
+
+    def test_rejects_frequency_encoding_in_a_product_interaction(self):
+        self._reject(
+            [{"factors": ["d", "c"]}],
+            {"d": {"type": "frequency_encoding"}, "c": {"type": "categorical"}},
+            ["c", "d"],
+            "Frequency-encoded.*product interactions",
         )
 
     def test_rejects_conflicting_overrides_across_cards(self):
@@ -372,6 +788,56 @@ class TestBuildInteractionsRejections:
 
 
 class TestGLMFit:
+    @pytest.mark.parametrize(
+        ("kind", "interaction"),
+        [
+            ("bs", False),
+            ("ns", False),
+            ("ms", False),
+            ("bs", True),
+            ("ns", True),
+        ],
+    )
+    def test_omitted_df_selects_smoothing_and_numeric_df_selects_fixed(
+        self,
+        kind,
+        interaction,
+        algo,
+        interaction_df,
+    ):
+        for extra in ({}, {"df": 5}):
+            spec = {"type": kind, **extra}
+            terms = {"c": {"type": "categorical"}} if interaction else {"x": spec}
+            interactions = (
+                [{"factors": ["x", "c"], "specs": {"x": spec}, "include_main": False}]
+                if interaction
+                else []
+            )
+            model = algo.fit(
+                train_df=interaction_df,
+                features=["x", "c"],
+                cat_features=["c"],
+                target="y",
+                weight=None,
+                task="regression",
+                params={"family": "gaussian", "terms": terms, "interactions": interactions},
+            ).model
+            assert model.has_smooth_terms() is (not extra)
+            assert np.isfinite(algo.predict(model, interaction_df, ["x", "c"])).all()
+
+    def test_frequency_encoding_native_fit(self, algo, interaction_df):
+        model = algo.fit(
+            train_df=interaction_df,
+            features=["c"],
+            cat_features=["c"],
+            target="y",
+            weight=None,
+            task="regression",
+            params={"family": "poisson", "terms": {"c": {"type": "frequency_encoding"}}},
+        ).model
+        assert model.feature_names == ["Intercept", "FE(c)"]
+        assert np.isfinite(algo.predict(model, interaction_df, ["c"])).all()
+
     def test_fit_poisson_auto_terms(self, algo, sample_df):
         """Fit a Poisson GLM with auto-generated terms."""
         features = ["driver_age", "vehicle_age", "area"]
@@ -1060,11 +1526,12 @@ class TestTermKeySubsets:
 
     HAUTE_SUBSET = {
         "linear": {"type", "monotonicity"},
-        "categorical": {"type"},
-        "bs": {"type", "df", "degree", "monotonicity"},
-        "ns": {"type", "df"},
-        "ms": {"type", "df", "degree", "monotonicity"},
-        "target_encoding": {"type", "prior_weight"},
+        "categorical": {"type", "levels"},
+        "bs": {"type", "df", "k", "degree", "monotonicity", "knots", "boundary_knots"},
+        "ns": {"type", "df", "k", "knots", "boundary_knots"},
+        "ms": {"type", "df", "k", "degree", "monotonicity", "knots", "boundary_knots"},
+        "target_encoding": {"type", "prior_weight", "n_permutations", "variable"},
+        "frequency_encoding": {"type", "variable"},
         "expression": {"type", "expr", "monotonicity"},
     }
 

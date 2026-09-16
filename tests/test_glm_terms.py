@@ -66,10 +66,10 @@ class TestGlmModelColumns:
             glm_model_columns({"age_sq": {"type": "expression", "expr": "log(age)"}}, [])
 
     def test_rejects_unknown_types_and_redirecting_keys(self):
-        with pytest.raises(HauteValidationError, match="frequency_encoding"):
-            glm_model_columns({"region": {"type": "frequency_encoding"}}, [])
+        with pytest.raises(HauteValidationError, match="unknown_fit"):
+            glm_model_columns({"region": {"type": "unknown_fit"}}, [])
         with pytest.raises(HauteValidationError, match="variable"):
-            glm_model_columns({"brand_te": {"type": "target_encoding", "variable": "brand"}}, [])
+            glm_model_columns({"age_spline": {"type": "bs", "variable": "age"}}, [])
         with pytest.raises(HauteValidationError, match="interaction"):
             glm_model_columns(
                 {"brand": {"type": "target_encoding", "interaction": ["brand", "region"]}},
@@ -94,9 +94,66 @@ class TestGlmModelColumns:
         with pytest.raises(HauteValidationError, match="'age_sq'"):
             glm_model_columns({"age_sq": {"type": "expression"}}, [])
 
-    def test_supported_types_are_exactly_the_seven(self):
+    def test_frequency_encoding_reads_its_native_column(self):
+        assert glm_model_columns({"region": {"type": "frequency_encoding"}}, []) == ["region"]
+
+    @pytest.mark.parametrize("encoding", ["target_encoding", "frequency_encoding"])
+    def test_encoding_alias_reads_source_with_or_without_native_term(self, encoding):
+        terms = {"region_encoded": {"type": encoding, "variable": "region"}}
+        assert glm_model_columns(terms, []) == ["region"]
+        terms["region"] = {"type": "categorical"}
+        assert glm_model_columns(terms, []) == ["region"]
+
+    def test_target_and_frequency_encoding_can_share_a_source(self):
+        terms = {
+            "region": {"type": "target_encoding"},
+            "region_fe": {"type": "frequency_encoding", "variable": "region"},
+        }
+        assert glm_model_columns(terms, []) == ["region"]
+
+    @pytest.mark.parametrize("encoding", ["target_encoding", "frequency_encoding"])
+    def test_rejects_duplicate_encoding_for_one_source(self, encoding):
+        with pytest.raises(HauteValidationError, match="duplicates.*region"):
+            glm_model_columns(
+                {
+                    "region": {"type": encoding},
+                    "region_encoded": {"type": encoding, "variable": "region"},
+                },
+                [],
+            )
+
+    @pytest.mark.parametrize("variable", [None, "", 1, ["region"]])
+    def test_rejects_invalid_encoding_source(self, variable):
+        with pytest.raises(HauteValidationError, match="variable.*non-empty string"):
+            glm_model_columns({"encoded": {"type": "target_encoding", "variable": variable}}, [])
+
+    @pytest.mark.parametrize("levels", [[1], ["a", "a"], [], "a"])
+    def test_rejects_invalid_categorical_levels(self, levels):
+        with pytest.raises(HauteValidationError, match="levels.*unique strings"):
+            glm_model_columns({"region": {"type": "categorical", "levels": levels}}, [])
+
+    def test_accepts_categorical_string_labels_including_numeric_labels(self):
+        assert glm_model_columns(
+            {"region": {"type": "categorical", "levels": ["a", "1", "1.0"]}},
+            [],
+        ) == ["region"]
+
+    def test_rejects_invalid_joint_encoding_before_schema_or_fitting(self):
+        with pytest.raises(HauteValidationError, match="encoding"):
+            glm_model_columns({}, [{"factors": ["", ""], "encoding": "invalid"}])
+
+    def test_supported_types_are_exactly_the_eight(self):
         assert SUPPORTED_TERM_TYPES == frozenset(
-            {"linear", "categorical", "bs", "ns", "ms", "target_encoding", "expression"}
+            {
+                "linear",
+                "categorical",
+                "bs",
+                "ns",
+                "ms",
+                "target_encoding",
+                "frequency_encoding",
+                "expression",
+            }
         )
 
 
@@ -128,4 +185,25 @@ class TestValidateGlmModelColumns:
         with pytest.raises(HauteValidationError, match="'x_sq' .*names a column"):
             validate_glm_model_columns(
                 {"x_sq": {"type": "expression", "expr": "age ** 2"}}, [], self.SCHEMA
+            )
+
+    def test_encoding_alias_validates_source_instead_of_alias(self):
+        assert validate_glm_model_columns(
+            {"region_fe": {"type": "frequency_encoding", "variable": "region"}},
+            [],
+            self.SCHEMA,
+        ) == ["region"]
+        with pytest.raises(HauteValidationError, match="not found.*zone"):
+            validate_glm_model_columns(
+                {"region_fe": {"type": "frequency_encoding", "variable": "zone"}},
+                [],
+                self.SCHEMA,
+            )
+
+    def test_encoding_alias_cannot_shadow_another_source_column(self):
+        with pytest.raises(HauteValidationError, match="'age'.*names a column"):
+            validate_glm_model_columns(
+                {"age": {"type": "target_encoding", "variable": "region"}},
+                [],
+                self.SCHEMA,
             )

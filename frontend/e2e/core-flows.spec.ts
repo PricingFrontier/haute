@@ -138,6 +138,7 @@ test.describe("core browser flows", () => {
     await card.getByRole("combobox", { name: "Interaction 1 feature 1" }).selectOption("channel")
     await card.getByRole("combobox", { name: "Interaction 1 feature 2" }).selectOption("mileage")
     await card.getByRole("combobox", { name: "mileage fit in interaction" }).selectOption("bs")
+    await card.getByRole("combobox", { name: "mileage df mode" }).selectOption("fixed")
     await card.getByRole("spinbutton", { name: "mileage df" }).fill("3")
     await expect(card.getByRole("checkbox", { name: "Include main effects" })).toBeChecked()
     // raw_rows exposes id, value, proposer_age, channel, vehicle_age, mileage;

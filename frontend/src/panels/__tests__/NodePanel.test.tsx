@@ -909,7 +909,7 @@ describe("NodePanel", () => {
     expect(screen.getByTestId("ModellingConfig")).toBeInTheDocument()
   })
 
-  it("shows five modelling panes only for supported configured algorithms", () => {
+  it("shows six CatBoost modelling panes only for supported configured algorithms", () => {
     const supported = makeNode({
       id: "model_1",
       data: {
@@ -961,6 +961,33 @@ describe("NodePanel", () => {
     expect(screen.queryByRole("tablist", { name: "Modelling panes" })).toBeNull()
   })
 
+  it.each([undefined, "params"] as const)("shows five GLM modelling panes and maps remembered %s to Target", (rememberedPane) => {
+    useUIStore.setState({
+      modellingPanes: rememberedPane === undefined ? {} : { model_glm: rememberedPane },
+    })
+    const onUpdateNode = vi.fn(() => ({ ok: true as const }))
+    renderPanel({
+      node: makeNode({
+        id: "model_glm",
+        data: {
+          label: "GLM",
+          description: "",
+          nodeType: "modelling",
+          config: { algorithm: "glm", family: "poisson" },
+        },
+      }),
+      onUpdateNode,
+    })
+
+    const tablist = screen.getByRole("tablist", { name: "Modelling panes" })
+    expect(within(tablist).getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "Target", "Features", "Split", "Train", "Export",
+    ])
+    expect(within(tablist).getByRole("tab", { name: "Target" })).toHaveAttribute("aria-selected", "true")
+    expect(modellingConfigProps.at(-1)?.activePane).toBe("target")
+    expect(onUpdateNode).not.toHaveBeenCalled()
+  })
+
   it("remembers the active modelling pane by node", () => {
     renderPanel({
       node: makeNode({
@@ -1008,7 +1035,10 @@ describe("NodePanel", () => {
           },
         }),
       })
-      for (const pane of ["Target", "Features", "Params", "Split"]) {
+      const panes = config.algorithm === "catboost"
+        ? ["Target", "Features", "Params", "Split"]
+        : ["Target", "Features", "Split"]
+      for (const pane of panes) {
         expect(screen.getByRole("tab", { name: pane })).not.toHaveAccessibleDescription()
       }
       expect(screen.queryByText("Needs attention")).not.toBeInTheDocument()

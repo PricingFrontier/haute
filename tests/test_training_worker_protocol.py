@@ -1175,6 +1175,83 @@ def test_dispersion_worker_remains_isolated_and_emits_fit_events(tmp_path: Path)
     assert [event.kind for event in queue.events] == ["progress", "progress", "dispersion_fit"]
 
 
+def test_dispersion_worker_projects_target_encoding_sources(tmp_path: Path) -> None:
+    data = tmp_path / "prepared.parquet"
+    pl.DataFrame(
+        {
+            "c": ["a", "b"],
+            "x": [1.0, 2.0],
+            "y": [3.0, 4.0],
+            "weight": [1.0, 1.0],
+            "offset": [0.0, 0.0],
+        }
+    ).write_parquet(data)
+    queue, captured = _ForwardingQueue(), {}
+
+    class Job:
+        def __init__(self, **_kwargs):
+            pass
+
+        def _prepare_data(self, _progress, **_kwargs):
+            return SimpleNamespace(features=["c", "x"], cat_features=["c"], data_path=data)
+
+    effective_terms = {
+        "c": {"type": "categorical"},
+        "c_te": {"type": "target_encoding", "variable": "c"},
+        "x": {"type": "linear"},
+    }
+
+    def build_interactions(*args, **kwargs):
+        captured["build_args"] = args
+        captured["build_kwargs"] = kwargs
+        return ([{"c": {"type": "categorical"}, "x": {"type": "linear"}}], effective_terms)
+
+    def estimate(**kwargs):
+        captured["estimate"] = kwargs
+        return SimpleNamespace(param="theta", value=1.25, llf=-4.5, n_fits=1)
+
+    request = WorkerRequest(
+        "job-1",
+        "dispersion",
+        {
+            "job_kwargs": {
+                "target": "y",
+                "weight": "weight",
+                "offset": "offset",
+                "params": {
+                    "family": "negbinomial",
+                    "terms": {"c": {"type": "categorical"}, "x": {"type": "linear"}},
+                    "interactions": [{"factors": ["c", "x"]}],
+                },
+            },
+            "param": "theta",
+            "profile": ExecutionProfile.TRAINING_PREP.value,
+            "memory_limit_bytes": None,
+        },
+    )
+    with (
+        patch("haute.modelling.TrainingJob", Job),
+        patch(
+            "haute.modelling._rustystats._resolve_glm_terms",
+            return_value={"c": {"type": "categorical"}, "x": {"type": "linear"}},
+        ),
+        patch("haute.modelling._rustystats._build_interactions", side_effect=build_interactions),
+        patch("haute.modelling._rustystats.estimate_glm_dispersion", side_effect=estimate),
+    ):
+        result = _run_dispersion_process_job(
+            WorkerRuntime(queue, str(tmp_path / "artifacts")), request
+        )
+
+    assert isinstance(result, WorkerResultManifest)
+    assert captured["estimate"]["data"].columns == ["c", "x", "y", "weight", "offset"]
+    assert "c_te" not in captured["estimate"]["data"].columns
+    assert captured["estimate"]["terms"] is effective_terms
+    assert captured["estimate"]["interactions"] == [
+        {"c": {"type": "categorical"}, "x": {"type": "linear"}}
+    ]
+    assert captured["build_kwargs"]["column_names"] == ["c", "x", "y", "weight", "offset"]
+
+
 @pytest.mark.parametrize(
     "worker_request",
     [

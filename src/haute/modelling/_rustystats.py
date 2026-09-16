@@ -23,6 +23,7 @@ from haute.modelling._algorithms import (
     _malloc_trim,
     _mem_checkpoint,
 )
+from haute.modelling._glm_terms import interaction_encoding
 
 logger = get_logger(component="rustystats")
 
@@ -57,7 +58,10 @@ def _auto_terms(
     return terms
 
 
-_INTERACTION_OVERRIDE_TYPES: frozenset[str] = frozenset({"linear", "categorical", "bs", "ns"})
+_INTERACTION_OVERRIDE_TYPES: frozenset[str] = frozenset(
+    {"linear", "categorical", "bs", "ns", "target_encoding"}
+)
+_TARGET_ENCODING_DEFAULTS: dict[str, Any] = {"prior_weight": "auto", "n_permutations": 4}
 
 
 def _dtype_default_spec(is_string: bool) -> dict[str, Any]:
@@ -107,8 +111,8 @@ def _resolve_interaction_factor_spec(
 
     Verified against the installed wheel: interaction-local ``bs``/``ns`` are
     honoured; ``linear`` forces a linear column; ``categorical`` re-types the
-    column globally; monotone splines inside interactions raise; target
-    encoding inside a product interaction fails on the fit path.
+    column globally. Target encoding requires exclusively linear partners,
+    checked once the whole card is resolved in ``_build_interactions``.
     """
     where = f"Interaction {index + 1}, factor {factor!r}"
     if override is not None:
@@ -124,16 +128,41 @@ def _resolve_interaction_factor_spec(
             raise HauteValidationError(
                 f"{where}: monotonicity is not supported inside interactions"
             )
+        if kind == "categorical" and "levels" in override:
+            raise HauteValidationError(
+                f"{where}: levels are supported only on a categorical main term, "
+                "not on product interaction overrides"
+            )
         if kind in ("linear", "bs", "ns") and is_string:
             raise HauteValidationError(f"{where}: {kind!r} cannot be applied to a string column")
+        if kind == "target_encoding":
+            if not is_string:
+                raise HauteValidationError(
+                    f"{where}: target encoding requires a non-numeric factor"
+                )
+            unknown = set(override) - {"type", *_TARGET_ENCODING_DEFAULTS}
+            if unknown:
+                raise HauteValidationError(
+                    f"{where}: unsupported target encoding settings {sorted(unknown)}"
+                )
+            interaction_encoding(
+                {
+                    "encoding": "target_encoding",
+                    **{key: value for key, value in override.items() if key != "type"},
+                },
+                index,
+            )
         _reject_override_against_main(where=where, kind=kind, main=main)
         return dict(override)
     if main is not None:
         kind = main.get("type")
-        if kind == "target_encoding":
+        if kind == "frequency_encoding":
             raise HauteValidationError(
-                f"{where}: Target-encoded features cannot be interacted in RustyStats"
+                f"{where}: Frequency-encoded fits cannot be inherited in product interactions; "
+                "choose a supported override or a joint encoding for the interaction"
             )
+        if kind == "target_encoding" and not is_string:
+            raise HauteValidationError(f"{where}: target encoding requires a non-numeric factor")
         if kind == "ms" or (kind == "bs" and main.get("monotonicity")):
             raise HauteValidationError(
                 f"{where}: Monotone splines cannot be used inside interactions; "
@@ -143,10 +172,57 @@ def _resolve_interaction_factor_spec(
     return _dtype_default_spec(is_string)
 
 
+def _ensure_product_target_encoding(
+    index: int,
+    factor: str,
+    spec: dict[str, Any],
+    terms: dict[str, dict[str, Any]],
+    reserved_names: set[str],
+) -> None:
+    """Register one shared encoding, preserving any different native main fit.
+
+    RustyStats includes this main effect even with include_main=False. Register
+    it explicitly so n_permutations is honoured (the interaction parser itself
+    ignores that setting), and refuse settings an existing encoder would ignore.
+    """
+    existing = [
+        (name, term)
+        for name, term in terms.items()
+        if term.get("type") == "target_encoding" and term.get("variable", name) == factor
+    ]
+    if len(existing) > 1:
+        raise HauteValidationError(f"Multiple target encodings for product factor {factor!r}")
+    if existing:
+        name, encoding = existing[0]
+        for key, default in _TARGET_ENCODING_DEFAULTS.items():
+            if key in spec and spec[key] != encoding.get(key, default):
+                raise HauteValidationError(
+                    f"Interaction {index + 1}, factor {factor!r}: target encoding settings "
+                    f"must match shared term {name!r} ({key})"
+                )
+        return
+    encoding = {
+        "type": "target_encoding",
+        **{key: spec[key] for key in _TARGET_ENCODING_DEFAULTS if key in spec},
+    }
+    name = factor
+    if name in terms:
+        base = f"{factor}_te"
+        name = base
+        suffix = 2
+        while name in terms or name in reserved_names:
+            name = f"{base}_{suffix}"
+            suffix += 1
+        encoding["variable"] = factor
+    terms[name] = encoding
+
+
 def _build_interactions(
     interactions_config: list[dict[str, Any]],
     terms: dict[str, dict[str, Any]],
     cat_features: Iterable[str],
+    *,
+    column_names: Iterable[str] = (),
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     """Convert Haute's interaction format to RustyStats format.
 
@@ -161,15 +237,30 @@ def _build_interactions(
     ones that already exist (rank-deficient design). Unfilled rows (fewer than
     two picked factors) are skipped, as the config panel persists them before
     the user has picked both columns.
+
+    Joint encodings use raw factor values and the interaction-level encoding
+    flag instead of product specs. Their missing main effects use dtype
+    defaults; existing main effects are left intact.
     """
     cat_set = set(cat_features)
+    reserved_names = (
+        set(column_names)
+        | cat_set
+        | {
+            factor
+            for interaction in interactions_config
+            for factor in interaction.get("factors", [])
+            if factor
+        }
+    )
     effective_terms: dict[str, dict[str, Any]] = {name: dict(spec) for name, spec in terms.items()}
-    seen_factor_sets: set[frozenset[str]] = set()
+    seen_factor_sets: set[tuple[str, frozenset[str]]] = set()
     override_by_column: dict[str, dict[str, Any]] = {}
     rs_interactions: list[dict[str, Any]] = []
     resolved_specs: list[tuple[int, str, dict[str, Any]]] = []
 
     for index, interaction in enumerate(interactions_config):
+        encoding = interaction_encoding(interaction, index)
         factors = [f for f in interaction.get("factors", []) if f]
         if len(factors) < 2:
             continue
@@ -178,11 +269,32 @@ def _build_interactions(
                 f"Interaction {index + 1} names a factor more than once: {factors}"
             )
         factor_set = frozenset(factors)
-        if factor_set in seen_factor_sets:
+        identity = (encoding, factor_set)
+        if identity in seen_factor_sets:
             raise HauteValidationError(
-                f"Interaction {index + 1} duplicates another interaction over {sorted(factor_set)}"
+                f"Interaction {index + 1} duplicates another {encoding} interaction "
+                f"over {sorted(factor_set)}"
             )
-        seen_factor_sets.add(factor_set)
+        seen_factor_sets.add(identity)
+
+        if encoding != "product":
+            # RustyStats' encoding branch uses only these column names. A
+            # categorical spec would mark even a numeric column categorical
+            # globally, changing its existing linear main effect. Linear
+            # placeholders keep raw joint encoding independent of main fits.
+            encoded: dict[str, Any] = {factor: {"type": "linear"} for factor in factors}
+            encoded[encoding] = True
+            encoded["include_main"] = False
+            for parameter in ("prior_weight", "n_permutations"):
+                if parameter in interaction:
+                    encoded[parameter] = interaction[parameter]
+            if interaction.get("include_main", True):
+                for factor in factors:
+                    if factor not in effective_terms:
+                        effective_terms[factor] = _dtype_default_spec(factor in cat_set)
+            rs_interactions.append(encoded)
+            continue
+
         specs = interaction.get("specs") or {}
         if not isinstance(specs, dict):
             raise HauteValidationError(f"Interaction {index + 1}: 'specs' must be a mapping")
@@ -207,12 +319,37 @@ def _build_interactions(
             )
             resolved_specs.append((index, factor, rs_int[factor]))
 
+        target_encoded = [
+            factor for factor in factors if rs_int[factor].get("type") == "target_encoding"
+        ]
+        if target_encoded and (
+            len(target_encoded) != 1
+            or any(
+                rs_int[factor].get("type") != "linear"
+                for factor in factors
+                if factor not in target_encoded
+            )
+        ):
+            raise HauteValidationError(
+                f"Interaction {index + 1}: Product target encoding requires exactly one "
+                "target-encoded factor and all other factors fitted Linear"
+            )
+
         if interaction.get("include_main", True):
             for factor in factors:
-                if factor not in effective_terms:
+                if (
+                    factor not in effective_terms
+                    and rs_int[factor].get("type") != "target_encoding"
+                ):
                     effective_terms[factor] = dict(rs_int[factor])
         rs_int["include_main"] = False
         rs_interactions.append(rs_int)
+
+    for card_index, factor, resolved in resolved_specs:
+        if resolved.get("type") == "target_encoding":
+            _ensure_product_target_encoding(
+                card_index, factor, resolved, effective_terms, reserved_names
+            )
 
     # ``include_main`` can materialise a main effect the first pass could not
     # see (it is absent from the user's ``terms``), so re-check every card's
@@ -511,7 +648,9 @@ class GLMAlgorithm(BaseAlgorithm):
 
         # Build RustyStats interactions; materialised main effects join the
         # terms dict so RustyStats never adds (and duplicates) them itself.
-        rs_interactions, terms = _build_interactions(interactions_config, terms, cat_features)
+        rs_interactions, terms = _build_interactions(
+            interactions_config, terms, cat_features, column_names=train_df.columns
+        )
 
         _mem_checkpoint("glm building model")
 

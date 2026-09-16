@@ -32,7 +32,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/utils/configField.ts`, `frontend/src/utils/trainingObjective.ts`, `frontend/src/utils/executionDiagnostics.ts` | Typed config reads/parsing, training-configuration issue derivation with click-time presentation, and structured execution-error/metric display helpers. |
 | `frontend/src/panels/modelling/TargetAndTaskConfig.tsx`, `frontend/src/panels/modelling/CommonFeatureConfig.tsx`, `frontend/src/panels/modelling/SplitAndMetricsConfig.tsx` | CatBoost target/loss/metric controls with loss-derived task compatibility, the common feature/monotonicity browser, and the canonical evaluation editor with exact-plan preview. |
 | `frontend/src/panels/modelling/HyperparametersConfig.tsx`, `frontend/src/panels/modelling/hyperparameters.ts`, `frontend/src/panels/modelling/featureSelection.ts` | Algorithm-neutral fixed-parameter JSON editing, optional bounded CatBoost tuning/search-space editing, and pure parameter/feature transitions. |
-| `frontend/src/panels/modelling/GLMTargetConfig.tsx`, `frontend/src/panels/modelling/GLMTermsConfig.tsx`, `frontend/src/panels/modelling/GLMInteractionsConfig.tsx`, `frontend/src/panels/modelling/TermCard.tsx`, `frontend/src/panels/modelling/glmTerms.ts`, `frontend/src/panels/modelling/GLMRegularizationConfig.tsx` | GLM family/dispersion, the terms pane with its per-term cards, the interaction cards with their per-factor slot fits, pure editor transitions, and regularisation controls. |
+| `frontend/src/panels/modelling/GLMTargetConfig.tsx`, `frontend/src/panels/modelling/GLMTermsConfig.tsx`, `frontend/src/panels/modelling/GLMInteractionsConfig.tsx`, `frontend/src/panels/modelling/TermCard.tsx`, `frontend/src/panels/modelling/glmTerms.ts`, `frontend/src/panels/modelling/GLMRegularizationConfig.tsx` | GLM family/dispersion, feature rows with indented inline term cards, labelled interaction/slot controls, pure editor transitions, and regularisation controls. |
 | `frontend/src/panels/modelling/TrainingActionsAndResults.tsx`, `frontend/src/panels/modelling/TrainingProgress.tsx` | Train action/result summary and progress. |
 | `frontend/src/panels/modelling/ExportPane.tsx`, `frontend/src/panels/modelling/MlflowExportSection.tsx`, `frontend/src/panels/modelling/ModelFileExportSection.tsx` | The Export pane: the MLflow logging fields, the manual MLflow log action (names the node's destination, disabled with the reason when that destination is unconfigured or no trained model is exportable, always sends `destination`), and the save-model-to-file action. |
 | `frontend/src/panels/modelling/exportReceipts.ts`, `frontend/src/panels/modelling/useTrainedJobRestore.ts` | `useExportReceipts(jobId)` (reads a completed job's export receipts from the status endpoint on mount and on `refresh`), `newOperationId()`, and `useTrainedJobRestore` (after a reload, reads a remembered job's status once to restore its result — current only when the editor's current payload has the same `trainingLineage` — or report it expired). |
@@ -74,7 +74,9 @@ Only a current, accepted save response may acknowledge this revision transition.
 ### Modelling
 
 1. `frontend/src/panels/ModellingConfig.tsx` reads graph/source/job state, routes the active
-   Target/Features/Params/Split/Train/Export pane, and passes the shared `onUpdate` contract. It
+   Target/Features/Split/Train/Export pane (plus Params for CatBoost), and passes the shared
+   `onUpdate` contract. GLM Target composes `GLMTargetConfig` and the always-visible
+   `GLMRegularizationConfig`; there is no GLM Params route. It
    hashes the training identity from the config without the export fields
    (`MODELLING_EXPORT_CONFIG_KEYS`: `mlflow_destination`, `mlflow_experiment`,
    `model_export_path`), and the graph's structural fingerprint omits the same keys for modelling
@@ -97,17 +99,56 @@ Only a current, accepted save response may acknowledge this revision transition.
    `monotone_constraints[name] = -1|1`; choosing the dash removes the key. Exclusion changes only
    `exclude`: a stored direction remains selected in the disabled control and becomes active again
    after re-inclusion. GLM's Features pane is `GLMTermsConfig`: a feature is in the model exactly
-   when it has a term or is a filled interaction factor; each row offers Add term (dtype-default
-   native fit first, then uniquely named `** 2` expression terms), a `TermCard` per term with
-   type, subset parameters, and monotonicity only for linear, B-spline, monotone spline, and
+   when it has a term or is a filled interaction factor. Each row offers Add term (dtype-default
+   native fit first, then uniquely named `** 2` expression terms) and renders a `TermCard`
+   per term directly underneath its header, with indentation and no Configure navigation.
+   Adding or editing terms preserves the visible list, search, and membership filter, with
+   type, supported parameters, and monotonicity only for linear, B-spline, monotone spline, and
    expression; bulk Fit all with defaults / Remove all terms; an In model only filter; and the
-   unchanged JSON mode. `GLMInteractionsConfig` renders beneath it: Add interaction appends
+   unchanged JSON mode. Term cards omit redundant headings and use persistent labels,
+   compact 12px controls in wrapping rows, and a remove action beside the controls.
+   Advanced sits inline and reveals extra fields beneath the row while retaining drafts
+   when collapsed. Compact widths and padding preserve the feature indentation.
+   Categorical additional term cards offer Target encoding and Frequency encoding.
+   Encoding choices are restricted to non-numeric features, in both native and
+   additional selectors.
+   Every added term retains its Fit type selector, including numeric additional
+   terms with Expression as their only choice. Invalid dtype choices and
+   encodings already used by other terms are omitted, and choices update when
+   another term changes or is removed. Saved numeric encodings remain visible and can be explicitly
+   changed or removed, without offering new encoding choices. Named encodings store
+   `variable` as their raw source and share the native encoding controls.
+   Encodings already used on that source are unavailable; backend validation
+   rejects duplicates. Non-numeric Add term chooses an unused encoding and is
+   disabled once none remain. Numeric Add term retains the expression default.
+   `GLMInteractionsConfig` renders editable interaction cards beneath the feature list,
+   keeping their controls and validation warnings visible in place. They reuse
+   main-effect compact fields and indented rows, with Feature and Fit type
+   side by side and Advanced inline. Fit menus omit invalid choices by dtype,
+   native main fit and modes already used for the same interaction factors;
+   saved choices remain visible without automatic config writes. Slots without
+   a main term select the dtype default; inherited fits are named in As main term.
+   Add interaction appends
    `{factors: ["", ""], include_main: true}`; each slot pairs a column select (any eligible column
-   not already in the card, excluding target-encoded main terms) with a `TermCard` slot fit of
+   not already in the card, filtered by compatible partner fits) with a `TermCard` slot fit of
    As main term / Linear / Categorical / B-spline / Nat. spline (never monotonicity), stored only
-   as `specs[column]` overrides; a monotone main term forces an explicit slot fit; + feature adds
+   as `specs[column]` overrides; a monotone main term forces an explicit slot fit.
+   Product also allows one non-numeric Target enc. factor with only Linear
+   partners, including inherited target encoding. Partner fit/column changes
+   filter against that rule and retain invalid saved selections with warnings.
+   Target encoding always includes its encoded main effect; the UI explains
+   this even with Include main effects off. Existing native/named encoding
+   settings are shared; otherwise prior weight and permutations are editable.
+   Conflicting saved settings can be reset to the shared encoding. The adapter
+   registers that encoding explicitly so settings survive fit/save/load. + feature adds
    slots and slots can be removed above two; Include main effects appears only while a picked
-   column has no native term; incomplete and duplicate cards are flagged. The GLM pane never
+   column has no native term; incomplete and duplicate cards are flagged. The fit-controls
+   extension in `specs/roadmap/modelling.md` adds explicit Auto / Fixed spline df and
+   target-encoding prior-weight selectors (Auto removes the stored numeric field),
+   frequency-encoding native fits, Advanced per-term parameters, and interaction-level
+   Product / Target encoding / Frequency encoding modes. Encoded modes use raw columns,
+   offer non-numeric eligible factors, hide product fit overrides, and preserve existing main
+   effects. Duplicates are checked within the same encoding mode. The GLM pane never
    writes `exclude` or `monotone_constraints`, and the retired all-features flag no longer
    exists. New algorithms receive a canonical
    random/single-validation evaluation.
@@ -319,7 +360,10 @@ The behavioural contract is defined in
   config-to-config function (add term, native type switch, field edit, expression rename/edit
   with grammar and column checks, remove, fit all, remove all, membership, interaction slot rules
   and writes); `GLMTermsConfig.tsx` and `TermCard.tsx` only render and call it.
-  `GLMRegularizationConfig.tsx` is the GLM Params body.
+  `GLMTargetConfig.tsx` labels the selected algorithm **Algorithm Rustystats**, keeping `glm`
+  as its stored ID. `GLMRegularizationConfig.tsx` is a Target-pane section with a static heading
+  and no disclosure state. Its type controls are always visible; Alpha remains conditional on
+  active regularization, and the existing explicit L1-ratio gate applies only to Elastic Net.
 - `HyperparametersConfig.tsx` owns the algorithm-neutral JSON-object editor, while
   `hyperparameters.ts` owns its formatting, object parsing, and reserved-key merge transitions.
   The editor receives display defaults and reserved keys from its caller, accepts arbitrary
