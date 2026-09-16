@@ -11,6 +11,7 @@ import {
   effectiveSlotSpec,
   slotFitOptions,
   slotNeedsExplicitFit,
+  specType,
   type EditResult,
   type NativeTermType,
   type SlotFit,
@@ -268,7 +269,11 @@ function ExpressionCard({
 
 export function TermCard(props: TermCardProps) {
   if (props.kind === "native") {
-    const { column, spec, onChangeType, onChangeField, onRemove } = props
+    const { column, onChangeType, onChangeField, onRemove } = props
+    // A config saved before the JSON guard can carry an entry with no usable
+    // `type`. Render it as a linear card so the pane stays usable — picking a
+    // type from the select repairs the entry on the next write.
+    const spec: TermSpec = specType(props.spec) === null ? { type: "linear" } : props.spec
     return (
       <div className="flex flex-wrap items-center gap-1.5 rounded-lg px-2 py-1" style={CARD_STYLE}>
         <select

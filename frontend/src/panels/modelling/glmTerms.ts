@@ -53,7 +53,7 @@ export function expressionIdentifiers(expr: string): string[] | null {
  *  build, so nothing here may assume the entry is well formed — a type-less or
  *  non-object entry reads as a native term of unknown type rather than throwing
  *  and taking the whole editor down with it. */
-function specType(spec: TermSpec): string | null {
+export function specType(spec: TermSpec): string | null {
   if (typeof spec !== "object" || spec === null || Array.isArray(spec)) return null
   return typeof spec.type === "string" ? spec.type : null
 }

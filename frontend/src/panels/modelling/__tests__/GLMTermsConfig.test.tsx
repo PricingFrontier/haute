@@ -196,6 +196,23 @@ describe("GLMTermsConfig", () => {
     expect(onUpdate).not.toHaveBeenCalled()
   })
 
+  // The null entry is the one that threw outright, and it is the case that
+  // fails without the render guard; a select whose value matches no option
+  // still reads as the first one, so the other two pin the no-throw contract
+  // for the shapes the JSON guard now keeps out of new configs.
+  it.each([
+    ["a type-less object", { df: 3 }],
+    ["a non-string type", { type: 42 }],
+    ["a null entry", null],
+  ])("renders %s from a stale config as a linear card instead of throwing", (_label, spec) => {
+    const onUpdate = setup({ terms: { age: spec } })
+    const select = within(row("age")).getByRole("combobox", { name: "age term type" })
+    expect((select as HTMLSelectElement).value).toBe("linear")
+    // Picking a type repairs the entry rather than layering onto the junk.
+    fireEvent.change(select, { target: { value: "categorical" } })
+    expect(onUpdate).toHaveBeenCalledWith("terms", { age: { type: "categorical" } })
+  })
+
   it("never writes exclude, monotone_constraints, or all_factors", () => {
     const onUpdate = setup({ exclude: ["age"], monotone_constraints: { age: 1 }, all_factors: true })
     fireEvent.click(within(row("age")).getByRole("button", { name: "Add age term" }))

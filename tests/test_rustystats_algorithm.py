@@ -317,6 +317,35 @@ class TestBuildInteractionsRejections:
         ]
         self._reject(cards, terms, [], "conflicting")
 
+    def test_rejects_inherited_spec_that_conflicts_with_a_main_materialised_by_a_sibling_card(
+        self,
+    ):
+        # Card A materialises a categorical main effect for numeric ``x``
+        # through its own override; card B carries no override, so it inherits
+        # the dtype default and would fit ``x`` linearly against that
+        # categorical main. Only a resolved-spec check sees it — card B has
+        # nothing in ``specs`` for the override pass to look at.
+        terms = {"w": {"type": "linear"}}
+        cards = [
+            {"factors": ["x", "w"], "specs": {"x": {"type": "categorical"}}, "include_main": True},
+            {"factors": ["x", "z"], "include_main": True},
+        ]
+        # Whichever card sits first materialises the main effect, so the other
+        # one is the offender and the message names its conflict. Order decides
+        # the wording, never whether the pair is accepted.
+        self._reject(cards, terms, [], "categorical main term")
+        self._reject(list(reversed(cards)), terms, [], "re-type")
+
+    def test_two_cards_agreeing_on_a_categorical_fit_for_the_same_column_still_build(self):
+        terms = {"w": {"type": "linear"}}
+        cards = [
+            {"factors": ["x", "w"], "specs": {"x": {"type": "categorical"}}, "include_main": True},
+            {"factors": ["x", "z"], "specs": {"x": {"type": "categorical"}}, "include_main": True},
+        ]
+        built, effective = _build_interactions(cards, terms, [])
+        assert effective["x"] == {"type": "categorical"}
+        assert [item["x"] for item in built] == [{"type": "categorical"}] * 2
+
     def test_categorical_override_over_a_materialised_categorical_main_still_builds(
         self, interaction_df
     ):

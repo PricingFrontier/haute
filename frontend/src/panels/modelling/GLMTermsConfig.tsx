@@ -7,6 +7,7 @@ import { roleColumns, type ModellingColumn } from "./featureSelection"
 import {
   addTerm,
   fitAllWithDefaults,
+  isExpressionSpec,
   isTermSpecShape,
   modelMembership,
   removeTerm,
@@ -93,7 +94,9 @@ export function GLMTermsConfig({ config, onUpdate, columns }: Props) {
 
   const renderTermCards = (column: ModellingColumn) =>
     (byColumn.get(column.name) ?? []).map(({ key, spec }) =>
-      spec.type === "expression" ? (
+      // Not `spec.type`: a stale entry can be type-less or null, and reading
+      // through it here used to take the whole builder pane down.
+      isExpressionSpec(spec) ? (
         <TermCard
           key={key}
           kind="expression"

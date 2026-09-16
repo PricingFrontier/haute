@@ -70,13 +70,15 @@ def _reject_override_against_main(
     kind: str,
     main: dict[str, Any] | None,
 ) -> None:
-    """Reject an interaction override that would re-type a column's main effect.
+    """Reject an interaction fit that would re-type a column's main effect.
 
-    Applied twice: once against the user's own ``terms`` while each card is
-    resolved, then again against the materialised ``effective_terms`` once
-    every card is known. The second pass is what makes card order irrelevant —
-    a main effect materialised by one card's ``include_main`` is absent from
-    ``terms``, so the first pass alone lets a sibling card silently re-type it.
+    Applied twice: once to each card's override against the user's own
+    ``terms`` while that card is resolved, then again to every card's
+    *resolved* spec against the materialised ``effective_terms`` once all the
+    cards are known. The second pass is what makes card order irrelevant — a
+    main effect materialised by one card's ``include_main`` is absent from
+    ``terms``, so the first pass alone lets a sibling card silently re-type it,
+    whether that card overrides the column or merely inherits a dtype default.
     """
     if main is None:
         return
@@ -163,8 +165,9 @@ def _build_interactions(
     cat_set = set(cat_features)
     effective_terms: dict[str, dict[str, Any]] = {name: dict(spec) for name, spec in terms.items()}
     seen_factor_sets: set[frozenset[str]] = set()
-    override_by_column: dict[str, tuple[int, dict[str, Any]]] = {}
+    override_by_column: dict[str, dict[str, Any]] = {}
     rs_interactions: list[dict[str, Any]] = []
+    resolved_specs: list[tuple[int, str, dict[str, Any]]] = []
 
     for index, interaction in enumerate(interactions_config):
         factors = [f for f in interaction.get("factors", []) if f]
@@ -189,13 +192,12 @@ def _build_interactions(
             override = specs.get(factor)
             if override is not None:
                 previous = override_by_column.get(factor)
-                if previous is not None and previous[1] != override:
+                if previous is not None and previous != override:
                     raise HauteValidationError(
                         f"Interaction {index + 1}, factor {factor!r}: conflicting overrides "
-                        f"across interactions ({previous[1]} vs {override})"
+                        f"across interactions ({previous} vs {override})"
                     )
-                if previous is None:
-                    override_by_column[factor] = (index, dict(override))
+                override_by_column[factor] = dict(override)
             rs_int[factor] = _resolve_interaction_factor_spec(
                 index=index,
                 factor=factor,
@@ -203,6 +205,7 @@ def _build_interactions(
                 override=override,
                 is_string=factor in cat_set,
             )
+            resolved_specs.append((index, factor, rs_int[factor]))
 
         if interaction.get("include_main", True):
             for factor in factors:
@@ -212,15 +215,15 @@ def _build_interactions(
         rs_interactions.append(rs_int)
 
     # ``include_main`` can materialise a main effect the first pass could not
-    # see (it is absent from the user's ``terms``), so re-check every override
+    # see (it is absent from the user's ``terms``), so re-check every card's
+    # resolved spec — overridden *or* inherited from the dtype default —
     # against the main effect RustyStats will actually receive. Without this a
-    # card ordered after the materialising one re-typed that main effect
-    # silently — and the same two cards were accepted or rejected depending on
-    # the order they happened to sit in.
-    for factor, (override_index, override) in override_by_column.items():
+    # card re-typed a sibling's materialised main effect silently, and the same
+    # two cards were accepted or rejected depending on the order they sat in.
+    for card_index, factor, resolved in resolved_specs:
         _reject_override_against_main(
-            where=f"Interaction {override_index + 1}, factor {factor!r}",
-            kind=str(override.get("type")),
+            where=f"Interaction {card_index + 1}, factor {factor!r}",
+            kind=str(resolved.get("type")),
             main=effective_terms.get(factor),
         )
 
