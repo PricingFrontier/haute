@@ -218,7 +218,6 @@ function FormulaField({ text, onCommit, variables }: { text: string; onCommit: (
       <input
         type="text"
         aria-label="Formula"
-        placeholder={FORMULA_EXAMPLE}
         title={FORMULA_EXAMPLE}
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
