@@ -130,4 +130,17 @@ describe("TermCard slot", () => {
     const select = screen.getByRole("combobox", { name: "age fit in interaction" })
     expect(select).toHaveValue("")
   })
+
+  it("never emits an empty fit from the placeholder", () => {
+    const onChangeFit = vi.fn()
+    render(
+      <TermCard kind="slot" column="age" dtype="Float64" mainSpec={{ type: "ms", df: 4, monotonicity: "increasing" }} override={undefined} onChangeFit={onChangeFit} onChangeField={vi.fn()} />,
+    )
+    const select = screen.getByRole("combobox", { name: "age fit in interaction" })
+    const placeholder = Array.from(select.querySelectorAll("option")).find((o) => o.value === "")
+    expect(placeholder).toBeDisabled()
+    expect(select).toHaveValue("")
+    fireEvent.change(select, { target: { value: "" } })
+    expect(onChangeFit).not.toHaveBeenCalled()
+  })
 })

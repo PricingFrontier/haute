@@ -304,9 +304,15 @@ export function TermCard(props: TermCardProps) {
         className={SELECT_CLASS}
         style={{ ...MODELLING_INPUT_STYLE, minWidth: "120px", borderColor: needsExplicit ? "var(--danger)" : undefined }}
         value={current}
-        onChange={(event) => onChangeFit(event.target.value as SlotFit)}
+        onChange={(event) => {
+          // The placeholder is `disabled`, which stops a user picking it, but a
+          // programmatic change still reaches here — "" is never a SlotFit.
+          if (event.target.value === "") return
+          onChangeFit(event.target.value as SlotFit)
+        }}
       >
-        {needsExplicit && <option value="">Choose a fit…</option>}
+        {/* Disabled so re-picking the placeholder can never emit "" as a fit. */}
+        {needsExplicit && <option value="" disabled>Choose a fit…</option>}
         {options.map((option) => (
           <option key={option.value} value={option.value} disabled={Boolean(option.disabledReason)} title={option.disabledReason}>
             {option.label}
