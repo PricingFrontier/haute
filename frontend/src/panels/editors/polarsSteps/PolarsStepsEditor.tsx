@@ -55,6 +55,7 @@ export default function PolarsStepsEditor({
   inputSources,
   onDeleteInput,
   errorLine,
+  runError,
   upstreamColumns,
 }: {
   config: Record<string, unknown>
@@ -63,6 +64,8 @@ export default function PolarsStepsEditor({
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
   errorLine?: number | null
+  /** The last run's error message for this node; render errors stay quiet until a run has failed. */
+  runError?: string | null
   upstreamColumns?: { name: string; dtype: string }[]
 }) {
   const steps = useMemo(() => readSteps(config) ?? [], [config])
@@ -79,6 +82,10 @@ export default function PolarsStepsEditor({
   })
   const initialError = useMemo(() => parseStepsError(config._steps_error), [config._steps_error])
   const renderError = rendered.error ?? (rendered.status === "ok" || rendered.status === "empty" ? null : initialError)
+  // A step being built is not an error yet: render problems are reported
+  // only once the pipeline has run and failed on this node.
+  const showErrors = runError != null || errorLine != null
+  const shownError = showErrors ? renderError : null
 
   const startInput = steps[0]?.kind === "source" ? steps[0].input : ""
   const effectiveStart = startInput || (inputNames.length === 1 ? inputNames[0] : "")
@@ -148,7 +155,7 @@ export default function PolarsStepsEditor({
   }
 
   const badgeFor = (index: number): StepBadge | null => {
-    if (renderError?.stepIndex === index) return { tone: "danger", text: renderError.message }
+    if (shownError?.stepIndex === index) return { tone: "danger", text: shownError.message }
     if (errorLine != null && errorLine - 1 === index) return { tone: "warning", text: "Failed when the pipeline ran" }
     return null
   }
@@ -309,7 +316,8 @@ export default function PolarsStepsEditor({
           <GeneratedCodePanel
             code={rendered.code}
             pending={rendered.status === "pending"}
-            error={renderError}
+            error={shownError}
+            unfinished={showErrors ? null : renderError}
             errorLine={errorLine}
             onGoToError={goToError}
             switchEnabled={switchAllowed && onReplaceConfig !== undefined}

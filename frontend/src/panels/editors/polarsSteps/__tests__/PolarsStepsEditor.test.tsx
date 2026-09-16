@@ -46,12 +46,14 @@ function Harness({
   inputSources,
   onReplace = vi.fn(),
   errorLine,
+  runError,
   spy,
 }: {
   initial: Record<string, unknown>
   inputSources: InputSource[]
   onReplace?: (config: Record<string, unknown>) => void
   errorLine?: number | null
+  runError?: string | null
   spy?: (key: string, value: unknown) => void
 }) {
   const [config, setConfig] = useState(initial)
@@ -74,6 +76,7 @@ function Harness({
       }}
       inputSources={inputSources}
       errorLine={errorLine}
+      runError={runError}
       upstreamColumns={COLUMNS}
     />
   )
@@ -147,7 +150,7 @@ describe("PolarsStepsEditor", () => {
       step_index: 1,
       message: "Add at least one condition.",
     }))
-    render(<Harness initial={{ steps: [source, filter, limit] }} inputSources={[quotes]} />)
+    render(<Harness initial={{ steps: [source, filter, limit] }} inputSources={[quotes]} runError="This transform has no code yet. Step 1: Add at least one condition." />)
     const limitButton = screen.getByRole("button", { name: "Step 2: Limit rows" })
     fireEvent.click(limitButton)
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Step 1: Add at least one condition."), { timeout: 5000 })
@@ -168,8 +171,25 @@ describe("PolarsStepsEditor", () => {
       step_index: 0,
       message: "Unknown input 'policies'; connected inputs: quotes.",
     }))
-    render(<Harness initial={{ steps: [{ ...source, input: "policies" }, limit] }} inputSources={[quotes]} />)
+    render(<Harness initial={{ steps: [{ ...source, input: "policies" }, limit] }} inputSources={[quotes]} runError="failed" />)
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Start from: Unknown input 'policies'"), { timeout: 5000 })
+  })
+
+  it("keeps a half-built step quiet until the pipeline has run", async () => {
+    mockRender.mockImplementation(async () => ({
+      ok: false,
+      code: "",
+      step_lines: [],
+      step_index: 1,
+      message: "Column name must be a non-empty string.",
+    }))
+    const { rerender } = render(<Harness initial={{ steps: [source, { id: "w", kind: "with_column", name: "", expr: { type: "operand", operand: { kind: "column", name: "premium" } } }] }} inputSources={[quotes]} />)
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Step 1 is not finished yet; it will be checked when the pipeline runs."), { timeout: 5000 })
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(screen.queryByText("Column name must be a non-empty string.")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Switch to code" })).toBeDisabled()
+    rerender(<Harness initial={{ steps: [source, { id: "w", kind: "with_column", name: "", expr: { type: "operand", operand: { kind: "column", name: "premium" } } }] }} inputSources={[quotes]} runError="Step 1: Column name must be a non-empty string." />)
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Step 1: Column name must be a non-empty string."), { timeout: 5000 })
   })
 
   it("maps a preview execution line to its step", () => {

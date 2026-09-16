@@ -17,6 +17,7 @@ export default function TransformEditor({
   inputSources,
   onDeleteInput,
   errorLine,
+  runError,
   upstreamColumns,
 }: {
   config: Record<string, unknown>
@@ -25,6 +26,8 @@ export default function TransformEditor({
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
   errorLine?: number | null
+  /** The last run's error message for this node, if it failed. */
+  runError?: string | null
   upstreamColumns?: { name: string; dtype: string }[]
 }) {
   if (readSteps(config) !== null) {
@@ -36,6 +39,7 @@ export default function TransformEditor({
         inputSources={inputSources}
         onDeleteInput={onDeleteInput}
         errorLine={errorLine}
+        runError={runError}
         upstreamColumns={upstreamColumns}
       />
     )

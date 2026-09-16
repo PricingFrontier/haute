@@ -246,9 +246,13 @@ suffix is never suggested as a column, a pivot suggests its index and output nam
 and an unpivot its index plus the two new columns. Membership lists add every value
 type through an explicit Add action, so a select's default (true, today's date) can
 be added like any other. A locked generated-code panel shows the code the render endpoint returns for
-the current steps, names the failing step without opening it or collapsing the card being
-edited (a "Go to error" action opens it), tints the failing and the last execution-error
-line, and carries the confirmed one-way `Switch to code` action. Renders are tagged with
+the current steps and carries the confirmed one-way `Switch to code` action. A step being
+built is not an error yet: while no run has failed on the node, a render problem only shows
+as a muted note that the step is not finished and will be checked when the pipeline runs
+(the switch stays disabled). Once the node's last run has failed (the panel receives the
+run's error message, or its error line), the panel names the failing step without opening
+it or collapsing the card being edited (a "Go to error" action opens it), badges that step,
+and tints the failing and the last execution-error line. Renders are tagged with
 the steps revision they were requested for, a response for an older revision never
 replaces a newer one, and the switch is enabled only while the step list is empty or the
 latest render succeeded for the current revision; on confirmation it writes that rendered

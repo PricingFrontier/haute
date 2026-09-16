@@ -555,6 +555,7 @@ function NodePropertiesPanel({
               ? previewData.error_line ?? null
               : null
           }
+          runError={previewData?.nodeId === activePanelNodeId ? previewData.error ?? null : null}
           previewRows={
             previewData?.status === "ok" && previewData.nodeId === activePanelNodeId
               ? previewData.preview

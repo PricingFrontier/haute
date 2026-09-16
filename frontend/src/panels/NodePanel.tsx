@@ -50,6 +50,8 @@ type NodePanelProps = {
   dimmed?: boolean
   /** 1-based line number of the error in user code, if any */
   errorLine?: number | null
+  /** The last run's error message for this node, if it failed */
+  runError?: string | null
   /** Preview rows from the current node's preview data (input columns pass through) */
   previewRows?: Record<string, unknown>[]
   /** True while the selected node preview request is still in flight. */
@@ -1328,6 +1330,7 @@ function NodePanelContent({
   onRefreshPreview,
   dimmed,
   errorLine,
+  runError,
   previewRows,
   selectedPreviewLoading = false,
   readOnly = false,
@@ -1558,6 +1561,7 @@ function NodePanelContent({
       onSwapEdgeJoinInputs={onSwapEdgeJoinInputs}
       onShowPivots={() => setExplorePane(node.id, "pivots")}
       errorLine={errorLine}
+      runError={runError}
       previewRows={previewRows}
       selectedPreviewLoading={selectedPreviewLoading}
       loadPivotFilterMembers={loadPivotFilterMembers}
