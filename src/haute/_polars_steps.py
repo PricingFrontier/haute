@@ -42,6 +42,7 @@ __all__ = [
     "JOIN_HOW",
     "LITERAL_TYPES",
     "MAX_EXPR_DEPTH",
+    "PIVOT_AGGREGATIONS",
     "OPERATORS",
     "STEP_KINDS",
     "PolarsStepError",
@@ -96,6 +97,8 @@ STEP_KINDS: tuple[str, ...] = (
     "fill_null",
     "limit",
     "variable",
+    "pivot",
+    "unpivot",
 )
 
 _COMPARISON_OPERATORS: dict[str, str] = {
@@ -150,6 +153,18 @@ WINDOW_ONLY_AGGREGATIONS: tuple[str, ...] = (
     "backward_fill",
 )
 WINDOW_AGGREGATIONS: tuple[str, ...] = (*AGGREGATIONS, *WINDOW_ONLY_AGGREGATIONS)
+#: Aggregates a pivot cell may take; ``count`` is non-null values, ``len`` is rows.
+PIVOT_AGGREGATIONS: tuple[str, ...] = (
+    "sum",
+    "mean",
+    "min",
+    "max",
+    "median",
+    "first",
+    "last",
+    "count",
+    "len",
+)
 JOIN_VALIDATE: tuple[str, ...] = ("1:1", "m:1", "1:m", "m:m")
 #: Join kinds Polars can validate; semi, anti, right and cross joins refuse ``validate``.
 JOIN_VALIDATED_HOW: tuple[str, ...] = ("inner", "left", "full")
@@ -211,8 +226,8 @@ _STEP_KEYS: dict[str, frozenset[str]] = {
     "source": frozenset({"input"}),
     "filter": frozenset({"match", "conditions"}),
     "with_column": frozenset({"name", "expr"}),
-    "select": frozenset({"columns"}),
-    "drop": frozenset({"columns"}),
+    "select": frozenset({"columns", "dtypes"}),
+    "drop": frozenset({"columns", "dtypes"}),
     "rename": frozenset({"renames"}),
     "cast": frozenset({"casts"}),
     "sort": frozenset({"keys", "nullsLast"}),
@@ -223,11 +238,15 @@ _STEP_KEYS: dict[str, frozenset[str]] = {
     "fill_null": frozenset({"columns", "fill"}),
     "limit": frozenset({"n"}),
     "variable": frozenset({"name", "value"}),
+    "pivot": frozenset({"index", "on", "columns", "values", "agg"}),
+    "unpivot": frozenset({"on", "index", "variableName", "valueName"}),
 }
 
 #: Keys a step may omit; every other key in ``_STEP_KEYS`` is required.
 _OPTIONAL_STEP_KEYS: dict[str, frozenset[str]] = {
     "join": frozenset({"validate", "maintainOrder"}),
+    "select": frozenset({"dtypes"}),
+    "drop": frozenset({"dtypes"}),
 }
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -315,6 +334,9 @@ class _Renderer:
         self.variables: set[str] = set()
         self.index = 0
         self.depth = 0
+        # Inside a grouped aggregation's row filter a nested aggregate would
+        # mean the group's value, not the frame's, so nesting is refused there.
+        self.plain_operands = 0
         self.steps: list[dict[str, Any]] = [self._validate_step(i, s) for i, s in enumerate(steps)]
 
     # -- validation ------------------------------------------------------
@@ -376,13 +398,22 @@ class _Renderer:
         return value
 
     def _str_list(self, value: object, label: str, *, allow_empty: bool) -> list[str]:
+        """A list of literal column names (no wildcard or regex patterns)."""
         if not isinstance(value, list) or any(not isinstance(v, str) or not v for v in value):
             raise self.fail(f"{label} must be a list of non-empty strings.")
         if not value and not allow_empty:
             raise self.fail(f"{label} must name at least one column.")
         if len(set(value)) != len(value):
             raise self.fail(f"{label} must not repeat a column.")
+        for name in value:
+            self._check_column_name(name, label)
         return list(value)
+
+    def _check_column_name(self, name: str, label: str) -> None:
+        # Polars reads ``*`` and ``^...$`` as selectors; the lineage model
+        # refuses them in these positions, so the step refuses them first.
+        if name == "*" or (name.startswith("^") and name.endswith("$")):
+            raise self.fail(f"{label} must name a column, not the pattern {name!r}.")
 
     def _choice(self, value: object, choices: Sequence[str], label: str) -> str:
         if not isinstance(value, str) or value not in choices:
@@ -409,7 +440,9 @@ class _Renderer:
         return name
 
     def _column(self, value: object, label: str = "Column") -> str:
-        return f"pl.col({self._str(value, label)!r})"
+        name = self._str(value, label)
+        self._check_column_name(name, label)
+        return f"pl.col({name!r})"
 
     # -- literals and operands -------------------------------------------
 
@@ -459,6 +492,8 @@ class _Renderer:
         if kind == "expr":
             # A nested expression; only a binary needs parentheses, every
             # other type is a call chain or an atom.
+            if self.plain_operands:
+                raise self.fail(f"{label} must be a plain value, column or variable here.")
             self._keys(operand, ("kind", "expr"), label)
             inner = self._object(operand.get("expr"), f"{label} expression")
             rendered_expr = self._expr(inner, f"{label} expression")
@@ -555,25 +590,32 @@ class _Renderer:
         quantile: object = None,
         where: object = None,
     ) -> str:
-        name = self._choice(agg, AGGREGATIONS, f"{label} aggregation")
-        if name == "quantile":
-            if isinstance(quantile, bool) or not isinstance(quantile, (int, float)):
-                raise self.fail(f"{label} quantile needs a number between 0 and 1.")
-            if not 0 <= quantile <= 1:
-                raise self.fail(f"{label} quantile needs a number between 0 and 1.")
-            call = f".quantile({quantile!r}, interpolation='linear')"
-        else:
-            call = f".{name}()"
+        name, call = self._aggregate_call(agg, label, quantile)
         if where is None:
             if name == "len":
                 return "pl.len()"
             return f"{self._column(column, f'{label} column')}{call}"
         where_group = self._object(where, f"{label} where")
         self._keys(where_group, ("match", "conditions"), f"{label} where")
-        predicate = self._conditions(where_group, f"{label} where")
+        self.plain_operands += 1
+        try:
+            predicate = self._conditions(where_group, f"{label} where")
+        finally:
+            self.plain_operands -= 1
         if name == "len":
             return f"({predicate}).sum()"
         return f"{self._column(column, f'{label} column')}.filter({predicate}){call}"
+
+    def _aggregate_call(self, agg: object, label: str, quantile: object) -> tuple[str, str]:
+        """Return the aggregate name and its rendered method call."""
+        name = self._choice(agg, AGGREGATIONS, f"{label} aggregation")
+        if name == "quantile":
+            if isinstance(quantile, bool) or not isinstance(quantile, (int, float)):
+                raise self.fail(f"{label} quantile needs a number between 0 and 1.")
+            if not 0 <= quantile <= 1:
+                raise self.fail(f"{label} quantile needs a number between 0 and 1.")
+            return name, f".quantile({quantile!r}, interpolation='linear')"
+        return name, f".{name}()"
 
     def _expr(self, value: object, label: str) -> str:
         self.depth += 1
@@ -730,13 +772,39 @@ class _Renderer:
         name = self._str(step["name"], "Column name")
         return f"df = df.with_columns(({self._expr(step['expr'], 'Expression')}).alias({name!r}))"
 
+    def _dtype_selectors(self, step: Mapping[str, Any], columns: list[str]) -> list[str]:
+        """Render one ``pl.col(<dtype>)`` per chosen dtype, minus the named columns."""
+        if "dtypes" not in step:
+            return []
+        raw = step["dtypes"]
+        if not isinstance(raw, list) or not all(isinstance(d, str) for d in raw):
+            raise self.fail("Column types must be a list of type names.")
+        dtypes = [self._choice(d, CAST_DTYPES, "Column type") for d in raw]
+        if len(set(dtypes)) != len(dtypes):
+            raise self.fail("Column types must not repeat a type.")
+        exclude = "".join(f"{c!r}, " for c in columns).rstrip(", ")
+        suffix = f".exclude({exclude})" if columns else ""
+        return [f"pl.col(pl.{dtype}){suffix}" for dtype in dtypes]
+
     def _render_select(self, step: Mapping[str, Any]) -> str:
-        columns = self._str_list(step["columns"], "Columns", allow_empty=False)
-        return f"df = df.select({columns!r})"
+        columns = self._str_list(step["columns"], "Columns", allow_empty=True)
+        selectors = self._dtype_selectors(step, columns)
+        if not columns and not selectors:
+            raise self.fail("Name at least one column or column type to keep.")
+        if not selectors:
+            return f"df = df.select({columns!r})"
+        parts = [repr(c) for c in columns] + selectors
+        return f"df = df.select([{', '.join(parts)}])"
 
     def _render_drop(self, step: Mapping[str, Any]) -> str:
-        columns = self._str_list(step["columns"], "Columns", allow_empty=False)
-        return f"df = df.drop({columns!r})"
+        columns = self._str_list(step["columns"], "Columns", allow_empty=True)
+        selectors = self._dtype_selectors(step, columns)
+        if not columns and not selectors:
+            raise self.fail("Name at least one column or column type to drop.")
+        if not selectors:
+            return f"df = df.drop({columns!r})"
+        parts = ([repr(columns)] if columns else []) + selectors
+        return f"df = df.drop({', '.join(parts)})"
 
     def _render_rename(self, step: Mapping[str, Any]) -> str:
         renames = step["renames"]
@@ -797,17 +865,23 @@ class _Renderer:
         names: set[str] = set()
         for i, entry in enumerate(aggregations):
             entry = self._object(entry, f"Aggregation {i + 1}")
+            label = f"Aggregation {i + 1}"
             self._keys(
-                entry, ("column", "agg", "name", "where", "quantile"), f"Aggregation {i + 1}"
+                entry, ("column", "agg", "name", "where", "quantile", "dtype", "suffix"), label
             )
-            name = self._str(entry.get("name"), f"Aggregation {i + 1} name")
+            if "dtype" in entry:
+                rendered.append(self._dtype_aggregate(entry, label))
+                continue
+            if "suffix" in entry:
+                raise self.fail(f"{label} takes a suffix only when it aggregates a column type.")
+            name = self._str(entry.get("name"), f"{label} name")
             if name in names:
                 raise self.fail(f"Aggregation name {name!r} is used more than once.")
             names.add(name)
             aggregate = self._aggregate(
                 entry.get("column"),
                 entry.get("agg"),
-                f"Aggregation {i + 1}",
+                label,
                 quantile=entry.get("quantile"),
                 where=entry.get("where"),
             )
@@ -816,6 +890,85 @@ class _Renderer:
             # A whole-frame summary: one row of aggregates.
             return f"df = df.select([{', '.join(rendered)}])"
         return f"df = df.group_by({keys!r}, maintain_order=True).agg([{', '.join(rendered)}])"
+
+    def _dtype_aggregate(self, entry: Mapping[str, Any], label: str) -> str:
+        """Aggregate every column of one dtype, naming outputs by suffix."""
+        for key in ("column", "name", "where"):
+            if key in entry:
+                raise self.fail(f"{label} aggregates a column type, so it takes no {key}.")
+        dtype = self._choice(entry.get("dtype"), CAST_DTYPES, f"{label} column type")
+        suffix = self._str(entry.get("suffix"), f"{label} suffix")
+        agg = self._choice(entry.get("agg"), AGGREGATIONS, f"{label} aggregation")
+        if agg == "len":
+            raise self.fail(f"{label} counts rows, which needs no column type.")
+        _, call = self._aggregate_call(agg, label, entry.get("quantile"))
+        return f"pl.col(pl.{dtype}){call}.name.suffix({suffix!r})"
+
+    def _render_pivot(self, step: Mapping[str, Any]) -> str:
+        """A fixed-column pivot lowered to a group-by the lineage model proves.
+
+        Each output column aggregates the ``values`` column over the rows
+        whose ``on`` value equals the entry's value, so the result matches
+        ``pivot(on_columns=...)`` cell for cell (an empty cell is 0 for
+        ``sum``/``len``/``count`` and null otherwise, in both).
+        """
+        index = self._str_list(step["index"], "Pivot index", allow_empty=False)
+        on = self._column(step["on"], "Pivot on column")
+        values = self._column(step["values"], "Pivot values column")
+        agg = self._choice(step["agg"], PIVOT_AGGREGATIONS, "Pivot aggregation")
+        entries = step["columns"]
+        if not isinstance(entries, list) or not entries:
+            raise self.fail("Add at least one pivot column.")
+        rendered: list[str] = []
+        names: set[str] = set()
+        seen_values: set[object] = set()
+        types: set[str] = set()
+        for i, raw in enumerate(entries):
+            entry = self._object(raw, f"Pivot column {i + 1}")
+            self._keys(entry, ("value", "name"), f"Pivot column {i + 1}")
+            name = self._str(entry.get("name"), f"Pivot column {i + 1} name")
+            if name in names or name in index:
+                raise self.fail(f"Pivot column name {name!r} is used more than once.")
+            names.add(name)
+            operand = self._object(entry.get("value"), f"Pivot column {i + 1} value")
+            if operand.get("kind") != "literal":
+                raise self.fail(f"Pivot column {i + 1} value must be a plain value.")
+            literal_type, text = self._literal(operand, f"Pivot column {i + 1} value")
+            if literal_type == "null":
+                raise self.fail(f"Pivot column {i + 1} value cannot be null.")
+            types.add(literal_type)
+            # Compare values, not spellings: 1 and 1.0 name the same category.
+            raw = operand.get("value")
+            key: object = raw
+            if literal_type == "number" and isinstance(raw, (int, float)):
+                key = float(raw)
+            if key in seen_values:
+                raise self.fail(f"Pivot column {i + 1} repeats the value {text}.")
+            seen_values.add(key)
+            cell = f"{values}.filter({on} == {text})"
+            call = {"count": ".count()", "len": ".len()"}.get(agg, f".{agg}()")
+            rendered.append(f"{cell}{call}.alias({name!r})")
+        if len(types) != 1:
+            raise self.fail("Pivot column values must all be the same type.")
+        return f"df = df.group_by({index!r}, maintain_order=True).agg([{', '.join(rendered)}])"
+
+    def _render_unpivot(self, step: Mapping[str, Any]) -> str:
+        on = self._str_list(step["on"], "Unpivot columns", allow_empty=False)
+        index = self._str_list(step["index"], "Unpivot index", allow_empty=True)
+        variable = self._str(step["variableName"], "Unpivot name column")
+        value = self._str(step["valueName"], "Unpivot value column")
+        overlap = sorted(set(on) & set(index))
+        if overlap:
+            raise self.fail(f"Columns {overlap!r} cannot be both unpivoted and kept as index.")
+        if variable == value:
+            raise self.fail("The name column and the value column need different names.")
+        for name in (variable, value):
+            if name in index:
+                raise self.fail(f"Output column {name!r} is already an index column.")
+        return (
+            f"df = df.unpivot(on={on!r}, index={index!r}, "
+            f"variable_name={variable!r}, value_name={value!r})"
+        )
 
     def _render_join(self, step: Mapping[str, Any]) -> str:
         other = self._input(step["input"], "Join input")

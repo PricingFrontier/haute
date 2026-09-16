@@ -72,6 +72,7 @@ describe("step forms only build schema-valid payloads", () => {
     expect(input).toHaveAttribute("type", "number")
     fireEvent.change(input, { target: { value: "5" } })
     fireEvent.blur(input)
+    fireEvent.click(screen.getByRole("button", { name: "Filter condition 1 values: add value" }))
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>
     expect(latest.conditions[0].values).toEqual([{ kind: "literal", type: "number", value: 5 }])
     expect(screen.getByLabelText("Filter condition 1 values type")).toHaveValue("number")
@@ -228,9 +229,8 @@ describe("step forms only build schema-valid payloads", () => {
     expect(latest.aggregations[0]).toEqual({ column: "premium", agg: "sum", name: "total" })
     fireEvent.click(screen.getByRole("button", { name: /Only some rows/ }))
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "group_by" }>
-    expect(latest.aggregations[0].where).toEqual({
-      match: "all",
-      conditions: [{ column: "premium", operator: "eq", value: { kind: "literal", type: "number", value: 0 } }],
+    expect(latest.aggregations[0]).toMatchObject({
+      where: { match: "all", conditions: [{ column: "premium", operator: "eq", value: { kind: "literal", type: "number", value: 0 } }] },
     })
     fireEvent.click(screen.getByRole("button", { name: "Aggregate every row" }))
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "group_by" }>
@@ -293,6 +293,125 @@ describe("step forms only build schema-valid payloads", () => {
     const variable: Step = { id: "v", kind: "variable", name: "rate", value: { kind: "literal", type: "number", value: 1 } }
     render(<StepForm step={variable} onChange={vi.fn()} ctx={ctx} />)
     expect(screen.queryByLabelText("Variable value source")).not.toBeInTheDocument()
+  })
+
+  it("membership lists add booleans and other select-typed values through the Add action", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "region", operator: "is_in", values: [] }] }
+    render(<Stateful initial={step} spy={spy} />)
+    fireEvent.change(screen.getByLabelText("Filter condition 1 values type"), { target: { value: "boolean" } })
+    fireEvent.click(screen.getByRole("button", { name: "Filter condition 1 values: add value" }))
+    fireEvent.change(screen.getByLabelText("Filter condition 1 values new value"), { target: { value: "false" } })
+    fireEvent.click(screen.getByRole("button", { name: "Filter condition 1 values: add value" }))
+    const latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>
+    expect(latest.conditions[0].values).toEqual([
+      { kind: "literal", type: "boolean", value: true },
+      { kind: "literal", type: "boolean", value: false },
+    ])
+  })
+
+  it("select and drop take column types alongside named columns", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "s", kind: "select", columns: ["region"] }
+    render(<Stateful initial={step} spy={spy} />)
+    const input = screen.getByLabelText("Keep only types: add")
+    fireEvent.change(input, { target: { value: "Float64" } })
+    fireEvent.keyDown(input, { key: "Enter" })
+    let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "select" }>
+    expect(latest).toEqual({ ...step, dtypes: ["Float64"] })
+    fireEvent.click(screen.getByRole("button", { name: "Remove Float64" }))
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "select" }>
+    expect(latest).toEqual(step)
+  })
+
+  it("a group-by aggregation can target every column of a type, and its row filter has no nesting", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "g", kind: "group_by", keys: ["region"], aggregations: [{ column: "premium", agg: "sum", name: "total" }] }
+    render(<Stateful initial={step} spy={spy} />)
+    fireEvent.click(screen.getByRole("button", { name: /Only some rows/ }))
+    expect(optionValues(screen.getByLabelText("Aggregation 1 filter condition 1 value source"))).toEqual(["literal", "column", "variable"])
+    fireEvent.change(screen.getByLabelText("Aggregation 1 target"), { target: { value: "dtype" } })
+    let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "group_by" }>
+    expect(latest.aggregations[0]).toEqual({ dtype: "Float64", agg: "sum", suffix: "" })
+    fireEvent.change(screen.getByLabelText("Aggregation 1 suffix"), { target: { value: "_total" } })
+    fireEvent.blur(screen.getByLabelText("Aggregation 1 suffix"))
+    fireEvent.change(screen.getByLabelText("Aggregation 1 column type"), { target: { value: "Int64" } })
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "group_by" }>
+    expect(latest.aggregations[0]).toEqual({ dtype: "Int64", agg: "sum", suffix: "_total" })
+    expect(optionValues(screen.getByLabelText("Aggregation 1 function"))).not.toContain("len")
+    fireEvent.change(screen.getByLabelText("Aggregation 1 target"), { target: { value: "column" } })
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "group_by" }>
+    expect(latest.aggregations[0]).toEqual({ column: "premium", agg: "sum", name: "" })
+  })
+
+  it("switching an aggregation's target keeps its quantile", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "g", kind: "group_by", keys: [], aggregations: [{ column: "premium", agg: "quantile", name: "p90", quantile: 0.9 }] }
+    render(<Stateful initial={step} spy={spy} />)
+    fireEvent.change(screen.getByLabelText("Aggregation 1 target"), { target: { value: "dtype" } })
+    let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "group_by" }>
+    expect(latest.aggregations[0]).toEqual({ dtype: "Float64", agg: "quantile", suffix: "", quantile: 0.9 })
+    fireEvent.change(screen.getByLabelText("Aggregation 1 target"), { target: { value: "column" } })
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "group_by" }>
+    expect(latest.aggregations[0]).toEqual({ column: "premium", agg: "quantile", name: "", quantile: 0.9 })
+  })
+
+  it("changing the pivot value type converts every row and keeps the names", () => {
+    const spy = vi.fn()
+    const step: Step = {
+      id: "p",
+      kind: "pivot",
+      index: ["region"],
+      on: "year",
+      columns: [
+        { value: { kind: "literal", type: "text", value: "2024" }, name: "y2024" },
+        { value: { kind: "literal", type: "text", value: "2025" }, name: "y2025" },
+      ],
+      values: "premium",
+      agg: "sum",
+    }
+    render(<Stateful initial={step} spy={spy} />)
+    fireEvent.change(screen.getByLabelText("Pivot column 1 value type"), { target: { value: "number" } })
+    const latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "pivot" }>
+    expect(latest.columns).toEqual([
+      { value: { kind: "literal", type: "number", value: 0 }, name: "y2024" },
+      { value: { kind: "literal", type: "number", value: 0 }, name: "y2025" },
+    ])
+  })
+
+  it("a filter condition may nest six levels, the renderer's limit for that position", () => {
+    let operand: Extract<Step, { kind: "filter" }>["conditions"][number]["value"] = { kind: "literal", type: "number", value: 1 }
+    for (let i = 0; i < 5; i += 1) operand = { kind: "expr", expr: { type: "binary", left: operand, op: "+", right: { kind: "literal", type: "number", value: 1 } } }
+    const step: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "premium", operator: "gt", value: operand }] }
+    render(<StepForm step={step} onChange={vi.fn()} ctx={ctx} />)
+    const sources = screen.getAllByLabelText(/source$/).map((el) => optionValues(el))
+    // five nested levels are open; the innermost operand may still nest once more (level six)
+    expect(sources.filter((s) => s.includes("expr")).length).toBe(sources.length)
+  })
+
+  it("pivot columns pair a value with a suggested name and share one type", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "p", kind: "pivot", index: ["region"], on: "channel", columns: [], values: "premium", agg: "mean" }
+    render(<Stateful initial={step} spy={spy} />)
+    fireEvent.click(screen.getByRole("button", { name: "Add column" }))
+    fireEvent.change(screen.getByLabelText("Pivot column 1 value value"), { target: { value: "web" } })
+    fireEvent.blur(screen.getByLabelText("Pivot column 1 value value"))
+    let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "pivot" }>
+    expect(latest.columns).toEqual([{ value: { kind: "literal", type: "text", value: "web" }, name: "web" }])
+    fireEvent.click(screen.getByRole("button", { name: "Add column" }))
+    expect(optionValues(screen.getByLabelText("Pivot column 1 value type"))).toEqual(["number", "text", "boolean", "date"])
+    expect(screen.queryByLabelText("Pivot column 2 value type")).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText("Pivot column 2 name"), { target: { value: "by_phone" } })
+    fireEvent.blur(screen.getByLabelText("Pivot column 2 name"))
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "pivot" }>
+    expect(latest.columns[1]).toEqual({ value: { kind: "literal", type: "text", value: "" }, name: "by_phone" })
+  })
+
+  it("unpivot keeps index suggestions apart from the stacked columns", () => {
+    const step: Step = { id: "u", kind: "unpivot", on: ["premium"], index: [], variableName: "measure", valueName: "value" }
+    render(<StepForm step={step} onChange={vi.fn()} ctx={ctx} />)
+    expect(screen.getByLabelText("Unpivot name column")).toHaveValue("measure")
+    expect(screen.getByText(/Row order after unpivoting is not guaranteed/)).toBeInTheDocument()
   })
 
   it("text-join parts may be null, like any expression operand", () => {

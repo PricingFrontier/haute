@@ -5,6 +5,7 @@
 import type {
   Aggregation,
   AggregationSpec,
+  PivotAggregation,
   BinaryOperator,
   CastDtype,
   Condition,
@@ -42,6 +43,8 @@ export const STEP_CATALOGUE: StepKindInfo[] = [
   { kind: "fill_null", label: "Fill missing values", description: "Replace nulls with a value or strategy" },
   { kind: "limit", label: "Limit rows", description: "Keep the first N rows" },
   { kind: "variable", label: "Define variable", description: "Name a value for later steps" },
+  { kind: "pivot", label: "Pivot to columns", description: "One column per value of a category" },
+  { kind: "unpivot", label: "Unpivot to rows", description: "Stack several columns into name/value rows" },
 ]
 
 export const CONDITION_OPERATORS: Array<{ value: ConditionOperator; label: string; takes: "value" | "none" | "values" }> = [
@@ -98,6 +101,18 @@ export const WINDOW_ONLY_AGGREGATIONS: Array<{ value: WindowOnlyAggregation; lab
   { value: "backward_fill", label: "fill backward" },
 ]
 export const WINDOW_AGGREGATIONS: Array<{ value: WindowAggregation; label: string }> = [...AGGREGATIONS, ...WINDOW_ONLY_AGGREGATIONS]
+/** Aggregates a pivot cell may take: `count` is non-null values, `len` is rows. */
+export const PIVOT_AGGREGATIONS: Array<{ value: PivotAggregation; label: string }> = [
+  { value: "sum", label: "sum" },
+  { value: "mean", label: "mean" },
+  { value: "min", label: "minimum" },
+  { value: "max", label: "maximum" },
+  { value: "median", label: "median" },
+  { value: "first", label: "first" },
+  { value: "last", label: "last" },
+  { value: "count", label: "count (non-null)" },
+  { value: "len", label: "row count" },
+]
 /** Window aggregates that take no input column. */
 export const COLUMNLESS_AGGREGATIONS: ReadonlySet<WindowAggregation> = new Set<WindowAggregation>(["len", "row_number"])
 
@@ -258,6 +273,10 @@ export function createStep(kind: Exclude<StepKind, "source">, id: string, firstC
       return { id, kind, n: 100 }
     case "variable":
       return { id, kind, name: "", value: literal("number", 0) }
+    case "pivot":
+      return { id, kind, index: [], on: firstColumn, columns: [], values: "", agg: "sum" }
+    case "unpivot":
+      return { id, kind, on: [], index: [], variableName: "variable", valueName: "value" }
   }
 }
 
@@ -277,8 +296,14 @@ function operandText(operand: Operand | undefined): string {
 }
 
 function aggregationText(entry: AggregationSpec): string {
+  if ("dtype" in entry) return `*${entry.suffix || "?"} = ${entry.agg}(every ${entry.dtype})`
   const call = entry.agg === "len" ? "count()" : `${entry.agg}(${entry.column || "?"})`
   return `${entry.name || "?"} = ${call}${entry.where ? " where …" : ""}`
+}
+
+function columnsAndTypesText(columns: string[], dtypes: string[] | undefined): string {
+  const parts = [...columns, ...(dtypes ?? []).map((d) => `every ${d}`)]
+  return parts.join(", ") || "no columns"
 }
 
 function conditionText(condition: Condition): string {
@@ -453,6 +478,8 @@ function exprProblem(value: unknown, where: string, depth = 1): string | null {
   }
 }
 
+const PIVOT_AGGREGATION_VALUES: ReadonlySet<string> = new Set(PIVOT_AGGREGATIONS.map((a) => a.value))
+
 const REQUIRED_FIELDS: Record<StepKind, Array<[string, Shape]>> = {
   source: [["input", "string"]],
   filter: [["match", "string"], ["conditions", "array"]],
@@ -469,6 +496,8 @@ const REQUIRED_FIELDS: Record<StepKind, Array<[string, Shape]>> = {
   fill_null: [["columns", "array"], ["fill", "object"]],
   limit: [["n", "number"]],
   variable: [["name", "string"], ["value", "object"]],
+  pivot: [["index", "array"], ["on", "string"], ["columns", "array"], ["values", "string"], ["agg", "string"]],
+  unpivot: [["on", "array"], ["index", "array"], ["variableName", "string"], ["valueName", "string"]],
 }
 
 /**
@@ -489,11 +518,15 @@ export function stepProblem(step: unknown): string | null {
   }
   switch (kind as StepKind) {
     case "filter":
-      return conditionsProblem(record.conditions, where)
+      return conditionsProblem(record.conditions, where, 0)
     case "with_column":
       return exprProblem(record.expr, where)
     case "select":
     case "drop":
+      return (
+        stringListProblem(record.columns, `${where} columns`)
+        ?? (record.dtypes === undefined ? null : stringListProblem(record.dtypes, `${where} column types`))
+      )
     case "unique":
     case "fill_null":
       return (
@@ -509,9 +542,20 @@ export function stepProblem(step: unknown): string | null {
     case "group_by":
       return (
         stringListProblem(record.keys, `${where} keys`)
-        ?? rowsProblem(record.aggregations, [["column", "string"], ["agg", "string"], ["name", "string"]], `${where} aggregations`)
+        ?? rowsProblem(record.aggregations, [["agg", "string"]], `${where} aggregations`)
         ?? aggregationsProblem(record.aggregations as Array<Record<string, unknown>>, where)
       )
+    case "pivot":
+      return (
+        stringListProblem(record.index, `${where} index`)
+        ?? rowsProblem(record.columns, [["value", "object"], ["name", "string"]], `${where} columns`)
+        ?? (record.columns as Array<Record<string, unknown>>)
+          .map((entry, index) => plainLiteralProblem(entry.value, `${where} column ${index + 1}`))
+          .find((problem) => problem !== null)
+        ?? (PIVOT_AGGREGATION_VALUES.has(record.agg as string) ? null : `${where} has an unsupported aggregate.`)
+      )
+    case "unpivot":
+      return stringListProblem(record.on, `${where} columns`) ?? stringListProblem(record.index, `${where} index`)
     case "join":
       if (record.validate !== undefined && typeof record.validate !== "string") return `${where} has a malformed validation.`
       if (record.maintainOrder !== undefined && typeof record.maintainOrder !== "string") return `${where} has a malformed row order.`
@@ -529,6 +573,12 @@ function aggregationsProblem(entries: Array<Record<string, unknown>>, where: str
   for (const [index, entry] of entries.entries()) {
     const label = `${where} aggregation ${index + 1}`
     if (entry.quantile !== undefined && typeof entry.quantile !== "number") return `${label} has a malformed quantile.`
+    if (entry.dtype !== undefined) {
+      if (typeof entry.dtype !== "string" || typeof entry.suffix !== "string") return `${label} is missing its column type or suffix.`
+      if (entry.column !== undefined || entry.name !== undefined || entry.where !== undefined) return `${label} mixes a column type with a column.`
+      continue
+    }
+    if (typeof entry.column !== "string" || typeof entry.name !== "string") return `${label} is missing "column" or "name".`
     if (entry.where !== undefined) {
       if (!isShape(entry.where, "object")) return `${label} has a malformed row filter.`
       const group = entry.where as Record<string, unknown>
@@ -543,7 +593,7 @@ function aggregationsProblem(entries: Array<Record<string, unknown>>, where: str
 function fillProblem(value: unknown, where: string): string | null {
   if (!isShape(value, "object")) return `${where} is missing its fill.`
   const fill = value as Record<string, unknown>
-  if (fill.kind === "value") return operandProblem(fill.value, `${where} fill`)
+  if (fill.kind === "value") return operandProblem(fill.value, `${where} fill`, 0)
   if (fill.kind === "strategy") return typeof fill.strategy === "string" ? null : `${where} is missing its fill strategy.`
   return `${where} has a malformed fill.`
 }
@@ -555,7 +605,27 @@ function fillProblem(value: unknown, where: string): string | null {
  * concat has a `separator`. Only steps `stepProblem` accepts are canonicalised.
  */
 export function canonicalStep(step: Step): Step {
-  return step.kind === "with_column" ? { ...step, expr: canonicalExpr(step.expr) } : step
+  switch (step.kind) {
+    case "with_column":
+      return { ...step, expr: canonicalExpr(step.expr) }
+    case "filter":
+      return { ...step, conditions: step.conditions.map(canonicalCondition) }
+    case "fill_null":
+      return step.fill.kind === "value" ? { ...step, fill: { kind: "value", value: canonicalOperand(step.fill.value) } } : step
+    case "group_by":
+      return {
+        ...step,
+        aggregations: step.aggregations.map((a) =>
+          "dtype" in a || !a.where ? a : { ...a, where: { ...a.where, conditions: a.where.conditions.map(canonicalCondition) } },
+        ),
+      }
+    default:
+      return step
+  }
+}
+
+function canonicalCondition(condition: Condition): Condition {
+  return condition.value === undefined ? condition : { ...condition, value: canonicalOperand(condition.value) }
 }
 
 function canonicalOperand(operand: Operand): Operand {
@@ -573,7 +643,12 @@ function canonicalExpr(expr: Expr): Expr {
     case "concat":
       return { ...expr, parts: expr.parts.map(canonicalOperand), separator: expr.separator ?? "" }
     case "conditional":
-      return { ...expr, then: canonicalOperand(expr.then), otherwise: canonicalOperand(expr.otherwise) }
+      return {
+        ...expr,
+        conditions: expr.conditions.map(canonicalCondition),
+        then: canonicalOperand(expr.then),
+        otherwise: canonicalOperand(expr.otherwise),
+      }
     case "operand":
       return { ...expr, operand: canonicalOperand(expr.operand) }
     case "binary":
@@ -594,7 +669,7 @@ export function summarizeStep(step: Step): string {
       return `${step.name || "?"} = ${exprText(step.expr)}`
     case "select":
     case "drop":
-      return step.columns.join(", ") || "no columns"
+      return columnsAndTypesText(step.columns, step.dtypes)
     case "rename":
       return step.renames.map((r) => `${r.from || "?"} → ${r.to || "?"}`).join(", ")
     case "cast":
@@ -615,6 +690,10 @@ export function summarizeStep(step: Step): string {
       return `${step.n} rows`
     case "variable":
       return `${step.name || "?"} = ${operandText(step.value)}`
+    case "pivot":
+      return `${step.agg} of ${step.values || "?"} by ${step.index.join(", ") || "?"} into ${step.columns.map((c) => c.name || "?").join(", ") || "?"}`
+    case "unpivot":
+      return `${step.on.join(", ") || "?"} into ${step.variableName || "?"}/${step.valueName || "?"}`
   }
 }
 

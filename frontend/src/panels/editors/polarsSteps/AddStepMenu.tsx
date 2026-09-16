@@ -10,7 +10,7 @@ type AddableKind = Exclude<StepKind, "source">
 const GROUPS: Array<{ title: string; kinds: AddableKind[] }> = [
   { title: "Rows", kinds: ["filter", "sort", "unique", "limit"] },
   { title: "Columns", kinds: ["with_column", "select", "drop", "rename", "cast", "fill_null"] },
-  { title: "Combine", kinds: ["join", "concat", "group_by"] },
+  { title: "Combine", kinds: ["join", "concat", "group_by", "pivot", "unpivot"] },
   { title: "Values", kinds: ["variable"] },
 ]
 

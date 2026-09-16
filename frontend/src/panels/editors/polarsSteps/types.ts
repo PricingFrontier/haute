@@ -87,8 +87,9 @@ export type StepBase = { id: string }
 export type SourceStep = StepBase & { kind: "source"; input: string }
 export type FilterStep = StepBase & { kind: "filter"; match: MatchMode; conditions: Condition[] }
 export type WithColumnStep = StepBase & { kind: "with_column"; name: string; expr: Expr }
-export type SelectStep = StepBase & { kind: "select"; columns: string[] }
-export type DropStep = StepBase & { kind: "drop"; columns: string[] }
+/** Named columns plus every other column of the listed types (at least one of either). */
+export type SelectStep = StepBase & { kind: "select"; columns: string[]; dtypes?: CastDtype[] }
+export type DropStep = StepBase & { kind: "drop"; columns: string[]; dtypes?: CastDtype[] }
 export type RenameStep = StepBase & { kind: "rename"; renames: Array<{ from: string; to: string }> }
 export type CastStep = StepBase & { kind: "cast"; casts: Array<{ column: string; dtype: CastDtype }> }
 export type SortStep = StepBase & {
@@ -97,15 +98,23 @@ export type SortStep = StepBase & {
   nullsLast: boolean
 }
 export type UniqueStep = StepBase & { kind: "unique"; columns: string[]; keep: "first" | "last" | "any" | "none" }
-export type AggregationSpec = {
+export type ColumnAggregation = {
   column: string
   agg: Aggregation
   name: string
   /** The quantile in [0, 1] (`quantile` only). */
   quantile?: number
-  /** Aggregate only the rows matching these conditions. */
+  /** Aggregate only the rows matching these conditions (plain values only, no nested expressions). */
   where?: ConditionGroup
 }
+/** Aggregate every column of one type; outputs are named `<column><suffix>`. */
+export type DtypeAggregation = {
+  dtype: CastDtype
+  agg: Exclude<Aggregation, "len">
+  suffix: string
+  quantile?: number
+}
+export type AggregationSpec = ColumnAggregation | DtypeAggregation
 /** An empty `keys` list summarises the whole frame into one row. */
 export type GroupByStep = StepBase & {
   kind: "group_by"
@@ -131,6 +140,24 @@ export type FillNullStep = StepBase & {
   fill: { kind: "value"; value: Operand } | { kind: "strategy"; strategy: FillStrategy }
 }
 export type LimitStep = StepBase & { kind: "limit"; n: number }
+/** One output column per entry: the `values` aggregate over rows whose `on` column equals `value`. */
+export type PivotColumn = { value: LiteralOperand; name: string }
+export type PivotAggregation = "sum" | "mean" | "min" | "max" | "median" | "first" | "last" | "count" | "len"
+export type PivotStep = StepBase & {
+  kind: "pivot"
+  index: string[]
+  on: string
+  columns: PivotColumn[]
+  values: string
+  agg: PivotAggregation
+}
+export type UnpivotStep = StepBase & {
+  kind: "unpivot"
+  on: string[]
+  index: string[]
+  variableName: string
+  valueName: string
+}
 export type VariableStep = StepBase & { kind: "variable"; name: string; value: LiteralOperand }
 
 export type Step =
@@ -149,6 +176,8 @@ export type Step =
   | FillNullStep
   | LimitStep
   | VariableStep
+  | PivotStep
+  | UnpivotStep
 
 export type StepKind = Step["kind"]
 

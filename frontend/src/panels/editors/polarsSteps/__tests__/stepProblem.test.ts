@@ -88,6 +88,48 @@ describe("stepProblem", () => {
     expect(stepProblem({ id: "f", kind: "filter", match: "all", conditions: [{ column: "a", operator: "gt", value: { kind: "expr", expr: { type: "nope" } } }] })).toMatch(/unknown expression type/)
   })
 
+  it("accepts reshaping steps and dtype selectors and summarises them", () => {
+    const steps: Step[] = [
+      { id: "s", kind: "select", columns: ["region"], dtypes: ["Float64", "Int64"] },
+      { id: "d", kind: "drop", columns: [], dtypes: ["String"] },
+      { id: "g", kind: "group_by", keys: [], aggregations: [{ column: "", agg: "len", name: "n" }, { dtype: "Float64", agg: "mean", suffix: "_mean" }] },
+      { id: "p", kind: "pivot", index: ["region"], on: "channel", columns: [{ value: { kind: "literal", type: "text", value: "web" }, name: "web" }], values: "premium", agg: "mean" },
+      { id: "u", kind: "unpivot", on: ["premium", "sum_insured"], index: ["quote_id"], variableName: "measure", valueName: "value" },
+    ]
+    for (const step of steps) expect(stepProblem(step)).toBeNull()
+    expect(summarizeStep(steps[0])).toBe("region, every Float64, every Int64")
+    expect(summarizeStep(steps[2])).toBe("whole frame: n = count(), *_mean = mean(every Float64)")
+    expect(summarizeStep(steps[3])).toBe("mean of premium by region into web")
+    expect(summarizeStep(steps[4])).toBe("premium, sum_insured into measure/value")
+    expect(columnsBeforeStep(["a", "b"], steps, 5)).toEqual(["quote_id", "measure", "value"])
+    expect(columnsBeforeStep(["a", "b"], [steps[0]], 1)).toEqual(["region", "a", "b"])
+    expect(columnsBeforeStep(["a", "b"], [steps[2]], 1)).toEqual(["n"])
+    expect(columnsBeforeStep(["a", "b"], [steps[3]], 1)).toEqual(["region", "web"])
+    expect(stepProblem({ id: "g", kind: "group_by", keys: [], aggregations: [{ dtype: "Float64", agg: "mean", suffix: "_m", name: "x" }] })).toMatch(/mixes a column type/)
+    expect(stepProblem({ id: "g", kind: "group_by", keys: [], aggregations: [{ agg: "mean", name: "x" }] })).toMatch(/missing "column"/)
+    expect(stepProblem({ id: "p", kind: "pivot", index: [], on: "c", columns: [{ value: col("c"), name: "n" }], values: "a", agg: "sum" })).toMatch(/plain value/)
+    expect(stepProblem({ id: "p", kind: "pivot", index: [], on: "c", columns: [], values: "a", agg: "std" })).toMatch(/unsupported aggregate/)
+    expect(stepProblem({ id: "u", kind: "unpivot", on: "premium", index: [], variableName: "m", valueName: "v" })).toMatch(/missing its "on" setting/)
+  })
+
+  it("counts filter and fill nesting from the nested expression, like the renderer", () => {
+    const nested = (depth: number): Operand => {
+      let operand: Operand = { kind: "literal", type: "number", value: 1 }
+      for (let i = 0; i < depth; i += 1) operand = { kind: "expr", expr: { type: "binary", left: operand, op: "+", right: { kind: "literal", type: "number", value: 1 } } }
+      return operand
+    }
+    const filter = (value: Operand): Step => ({ id: "f", kind: "filter", match: "all", conditions: [{ column: "a", operator: "gt", value }] })
+    const fill = (value: Operand): Step => ({ id: "n", kind: "fill_null", columns: ["a"], fill: { kind: "value", value } })
+    expect(stepProblem(filter(nested(6)))).toBeNull()
+    expect(stepProblem(filter(nested(7)))).toMatch(/nests more than 6 levels/)
+    expect(stepProblem(fill(nested(6)))).toBeNull()
+    expect(stepProblem(fill(nested(7)))).toMatch(/nests more than 6 levels/)
+    // A filter condition value carrying the renderer's columnless-window shorthand is canonicalised.
+    const shorthand = filter({ kind: "expr", expr: { type: "window", agg: "len", over: [] } as never })
+    expect(stepProblem(shorthand)).toBeNull()
+    expect(canonicalStep(shorthand)).toEqual(filter({ kind: "expr", expr: { type: "window", agg: "len", column: "", over: [] } }))
+  })
+
   it("summarises the extended vocabulary in plain words", () => {
     expect(
       summarizeStep({ id: "ow", kind: "with_column", name: "rn", expr: { type: "window", agg: "row_number", column: "", over: ["k"], orderBy: [{ column: "a", descending: true }] } }),
@@ -105,7 +147,7 @@ describe("stepProblem", () => {
   it.each([
     ["function without args", { id: "w", kind: "with_column", name: "n", expr: { type: "function", fn: "round", operand: col("a") } }, /function arguments/],
     ["conditional without conditions", { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", match: "all", then: col("a"), otherwise: col("b") } }, /conditions/],
-    ["aggregation without name", { id: "g", kind: "group_by", keys: ["k"], aggregations: [{ column: "a", agg: "sum" }] }, /missing "name"/],
+    ["aggregation without name", { id: "g", kind: "group_by", keys: ["k"], aggregations: [{ column: "a", agg: "sum" }] }, /missing "column" or "name"/],
     ["filter without conditions", { id: "f", kind: "filter", match: "all" }, /conditions/],
     [
       "membership with an unsupported literal type",

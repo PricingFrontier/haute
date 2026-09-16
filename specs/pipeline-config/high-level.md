@@ -245,7 +245,30 @@ expression (`{"kind": "expr", "expr": ...}`) wherever a value, column or variabl
 accepted, except in membership lists, variable values and function arguments, which
 stay plain values; a nested formula renders in parentheses and nesting is capped at
 six levels (a step's own expression is level one), beyond which the step is refused
-with a message to compute part of the expression in an earlier step. The node data
+with a message to compute part of the expression in an earlier step; inside a
+group-by aggregation's row filter operands stay plain, because a nested aggregate
+there would mean the group's value rather than the frame's. Two reshaping steps
+complete the vocabulary: a fixed-column `pivot` (index columns, the column whose
+values spread out, one entry per output column pairing a plain literal value with an
+output name, the values column, and an aggregate among sum, mean, min, max, median,
+first, last, count of non-null values and row count) is lowered to a maintain-order
+group-by of filtered aggregates rather than Polars' own `pivot`, so the lineage and
+cardinality models prove it and its output schema is fixed by the step (each cell
+matches `pivot(on_columns=...)` value for value: an empty cell is 0 for sum and the
+counts and null otherwise); duplicate values, duplicate or index-colliding names,
+mixed value types and null values are refused; and `unpivot` renders the native
+call with a non-empty literal `on` list, an optional index, and distinct name and
+value columns that must not collide with the index (row order afterwards is
+unspecified, as in Polars). Select and drop take an optional list of column types
+beside the named columns, rendered as one `pl.col(<dtype>)` per type excluding the
+named columns so a column is never projected twice (`df.select(['g',
+pl.col(pl.Float64).exclude('g')])`), and a group-by aggregation may target every
+column of one type instead of a column, naming its outputs by suffix
+(`pl.col(pl.Float64).mean().name.suffix('_mean')`; no row filter, no row count, and
+no uniqueness check on suffixes). Those dtype selections are the closed selector forms
+the lineage model expands from an upstream dtype schema; without one, or after a
+computed column whose dtype is not propagated, lineage fails closed exactly as the
+same hand-written selector would. The node data
 model enforces
 one invariant on construction: a `polars` config that carries `steps` always carries the
 rendering of those steps as its `code`, or an empty `code` plus an editor-state

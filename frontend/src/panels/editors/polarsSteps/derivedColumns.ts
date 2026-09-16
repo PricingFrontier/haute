@@ -11,7 +11,9 @@ function applyStep(columns: string[], step: Step): string[] {
     case "with_column":
       return step.name && !columns.includes(step.name) ? [...columns, step.name] : columns
     case "select":
-      return step.columns.filter((c) => c.length > 0)
+      // A dtype selection is resolved by Polars at run time; every upstream
+      // column might match, so all stay suggested (suggestions only).
+      return step.dtypes?.length ? [...step.columns.filter((c) => c.length > 0), ...columns] : step.columns.filter((c) => c.length > 0)
     case "drop":
       return columns.filter((c) => !step.columns.includes(c))
     case "rename": {
@@ -19,9 +21,14 @@ function applyStep(columns: string[], step: Step): string[] {
       return columns.map((c) => map.get(c) ?? c)
     }
     case "group_by": {
-      const names = step.aggregations.map((a) => a.name).filter((n) => n.length > 0)
+      // A dtype aggregation names its outputs by suffix at run time; a suffix is never a column.
+      const names = step.aggregations.flatMap((a) => ("dtype" in a ? [] : [a.name])).filter((n) => n.length > 0)
       return [...step.keys.filter((k) => k.length > 0), ...names]
     }
+    case "pivot":
+      return [...step.index.filter((k) => k.length > 0), ...step.columns.map((c) => c.name).filter((n) => n.length > 0)]
+    case "unpivot":
+      return [...step.index.filter((k) => k.length > 0), step.variableName, step.valueName].filter((n) => n.length > 0)
     default:
       return columns
   }

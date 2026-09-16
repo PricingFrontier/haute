@@ -437,8 +437,11 @@ export function LiteralListField({
   const type: LiteralType = values[0]?.type ?? chosenType
   const [draft, setDraft] = useState<LiteralOperand>(defaultLiteral(type))
   const current = draft.type === type ? draft : defaultLiteral(type)
-  const add = (item: LiteralOperand) => {
-    onChange([...values, item])
+  // Every type keeps a draft and adds through the explicit action, so the
+  // default of a select (true, today's date) can be added like any other.
+  const add = () => {
+    if (type === "text" && String(current.value).length === 0) return
+    onChange([...values, current])
     setDraft(defaultLiteral(type))
   }
   return (
@@ -463,24 +466,16 @@ export function LiteralListField({
           />
         ))}
         <div className="flex-1 basis-28 min-w-0 flex items-center gap-1">
-          <LiteralValueInput
-            value={current}
-            onChange={(item) => (item.type === "text" ? setDraft(item) : add(item))}
-            ariaLabel={`${ariaLabel} new value`}
-          />
-          {type === "text" && (
-            <button
-              type="button"
-              onClick={() => {
-                if (String(current.value).length > 0) add(current)
-              }}
-              aria-label={`${ariaLabel}: add value`}
-              className="add-row-btn focus-ring p-1 rounded"
-              style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}
-            >
-              <Plus size={12} aria-hidden="true" />
-            </button>
-          )}
+          <LiteralValueInput value={current} onChange={setDraft} ariaLabel={`${ariaLabel} new value`} />
+          <button
+            type="button"
+            onClick={add}
+            aria-label={`${ariaLabel}: add value`}
+            className="add-row-btn focus-ring p-1 rounded"
+            style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}
+          >
+            <Plus size={12} aria-hidden="true" />
+          </button>
         </div>
       </div>
     </div>

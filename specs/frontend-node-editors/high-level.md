@@ -211,7 +211,7 @@ keyboard-operable disclosure (a new step opens itself; Escape collapses; deletin
 moves focus to the next disclosure or to `Add step`), each with delete, move up, and move
 down, a grouped `Add step` menu (rows, columns, combine, values) covering filter, derived
 column, conditional column, window aggregate, select, drop, rename, cast, sort, unique,
-group by, join, concat, fill null, limit, and variable, and per-step forms whose column
+group by, join, concat, pivot, unpivot, fill null, limit, and variable, and per-step forms whose column
 pickers offer upstream columns plus columns derived by earlier steps while accepting free
 text. A window expression offers the plain aggregates plus row number, running total,
 previous value, rank, dense rank and forward/backward fill, an optional in-group order
@@ -232,7 +232,20 @@ but never in a membership list or a variable; function arguments are labelled an
 per function). An operand field also offers an "Expression" source that opens a nested
 editor (the same "Computed as" select and expression form, indented under the field);
 the source is withheld at the renderer's depth cap so the editor never builds a step it
-could not save, and summaries print a nested formula in parentheses. A locked generated-code panel shows the code the render endpoint returns for
+could not save, and summaries print a nested formula in parentheses; a group-by
+aggregation's row filter offers no nested expressions. The Combine group also offers
+"Pivot to columns" (index chips, the spread column, aggregate and values column, and
+one row per output column pairing a typed value with a name the value suggests, all
+rows sharing the first row's type) and "Unpivot to rows" (stacked columns, index
+chips that exclude them, name and value column fields, and a note that row order is
+not guaranteed). Select and drop take column types beside named columns, and an
+aggregation row can target "every column of a type" with a suffix instead of a name
+(row count and row filters are withheld there). Column suggestions treat a dtype
+selection as unresolved: a typed select keeps every upstream column suggested, a
+suffix is never suggested as a column, a pivot suggests its index and output names,
+and an unpivot its index plus the two new columns. Membership lists add every value
+type through an explicit Add action, so a select's default (true, today's date) can
+be added like any other. A locked generated-code panel shows the code the render endpoint returns for
 the current steps, names the failing step without opening it or collapsing the card being
 edited (a "Go to error" action opens it), tints the failing and the last execution-error
 line, and carries the confirmed one-way `Switch to code` action. Renders are tagged with

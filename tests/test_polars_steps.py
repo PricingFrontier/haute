@@ -1579,6 +1579,565 @@ def test_nested_expressions_execute(tmp_path: Path) -> None:
     assert by_id["c2"]["signed"] == 200.0 and by_id["c1"]["signed"] == 800.0
 
 
+# ---------------------------------------------------------------------------
+# Reshaping and dtype selectors
+# ---------------------------------------------------------------------------
+
+
+def pivot_column(value: dict[str, Any], name: str) -> dict[str, Any]:
+    return {"value": value, "name": name}
+
+
+@pytest.mark.parametrize(
+    ("kind_step", "expected"),
+    [
+        (
+            step("x", "select", columns=["region"], dtypes=["Float64", "Int64"]),
+            "df = df.select(['region', pl.col(pl.Float64).exclude('region'), "
+            "pl.col(pl.Int64).exclude('region')])",
+        ),
+        (
+            step("x", "select", columns=[], dtypes=["Float64"]),
+            "df = df.select([pl.col(pl.Float64)])",
+        ),
+        (step("x", "select", columns=["a", "b"]), "df = df.select(['a', 'b'])"),
+        (
+            step("x", "drop", columns=["region"], dtypes=["String"]),
+            "df = df.drop(['region'], pl.col(pl.String).exclude('region'))",
+        ),
+        (
+            step("x", "drop", columns=[], dtypes=["String", "Date"]),
+            "df = df.drop(pl.col(pl.String), pl.col(pl.Date))",
+        ),
+        (
+            step(
+                "x",
+                "group_by",
+                keys=["region"],
+                aggregations=[
+                    {"column": "", "agg": "len", "name": "n"},
+                    {"dtype": "Float64", "agg": "mean", "suffix": "_mean"},
+                    {"dtype": "Int64", "agg": "quantile", "quantile": 0.5, "suffix": "_q"},
+                ],
+            ),
+            "df = df.group_by(['region'], maintain_order=True).agg([pl.len().alias('n'), "
+            "pl.col(pl.Float64).mean().name.suffix('_mean'), "
+            "pl.col(pl.Int64).quantile(0.5, interpolation='linear').name.suffix('_q')])",
+        ),
+        (
+            step(
+                "x",
+                "pivot",
+                index=["region"],
+                on="channel",
+                columns=[pivot_column(text("web"), "web"), pivot_column(text("phone"), "by_phone")],
+                values="premium",
+                agg="mean",
+            ),
+            "df = df.group_by(['region'], maintain_order=True).agg(["
+            "pl.col('premium').filter(pl.col('channel') == 'web').mean().alias('web'), "
+            "pl.col('premium').filter(pl.col('channel') == 'phone').mean().alias('by_phone')])",
+        ),
+        (
+            step(
+                "x",
+                "pivot",
+                index=["region", "fuel"],
+                on="year",
+                columns=[pivot_column(num(2024), "y2024")],
+                values="premium",
+                agg="len",
+            ),
+            "df = df.group_by(['region', 'fuel'], maintain_order=True).agg(["
+            "pl.col('premium').filter(pl.col('year') == 2024).len().alias('y2024')])",
+        ),
+        (
+            step(
+                "x",
+                "unpivot",
+                on=["premium", "sum_insured"],
+                index=["quote_id"],
+                variableName="measure",
+                valueName="value",
+            ),
+            "df = df.unpivot(on=['premium', 'sum_insured'], index=['quote_id'], "
+            "variable_name='measure', value_name='value')",
+        ),
+        (
+            step("x", "unpivot", on=["premium"], index=[], variableName="m", valueName="v"),
+            "df = df.unpivot(on=['premium'], index=[], variable_name='m', value_name='v')",
+        ),
+    ],
+)
+def test_reshaping_and_dtype_selectors_render(kind_step: dict[str, Any], expected: str) -> None:
+    rendered = render_polars_steps([source(), kind_step], ["quotes"])
+    assert rendered.code.splitlines()[1] == expected
+
+
+@pytest.mark.parametrize(
+    ("kind_step", "fragment"),
+    [
+        (step("x", "select", columns=[]), "at least one column or column type"),
+        (step("x", "drop", columns=[], dtypes=[]), "at least one column or column type"),
+        (step("x", "select", columns=["a"], dtypes=["Float64", "Float64"]), "must not repeat"),
+        (step("x", "select", columns=["a"], dtypes=["Enum"]), "must be one of"),
+        (
+            step(
+                "x",
+                "group_by",
+                keys=[],
+                aggregations=[{"dtype": "Float64", "agg": "mean", "name": "m"}],
+            ),
+            "takes no name",
+        ),
+        (
+            step(
+                "x",
+                "group_by",
+                keys=[],
+                aggregations=[
+                    {
+                        "dtype": "Float64",
+                        "agg": "mean",
+                        "suffix": "_m",
+                        "where": {"match": "all", "conditions": [cond("a", "is_null")]},
+                    }
+                ],
+            ),
+            "takes no where",
+        ),
+        (
+            step(
+                "x",
+                "group_by",
+                keys=[],
+                aggregations=[{"dtype": "Float64", "agg": "len", "suffix": "_n"}],
+            ),
+            "counts rows",
+        ),
+        (
+            step(
+                "x",
+                "group_by",
+                keys=[],
+                aggregations=[{"column": "a", "agg": "sum", "name": "s", "suffix": "_s"}],
+            ),
+            "takes a suffix only",
+        ),
+        (
+            step(
+                "x",
+                "group_by",
+                keys=["g"],
+                aggregations=[
+                    {
+                        "column": "a",
+                        "agg": "sum",
+                        "name": "s",
+                        "where": {
+                            "match": "all",
+                            "conditions": [
+                                cond("a", "gt", value=ex(binary(col("a"), "*", num(2)))),
+                            ],
+                        },
+                    }
+                ],
+            ),
+            "plain value, column or variable here",
+        ),
+        (
+            step(
+                "x",
+                "pivot",
+                index=[],
+                on="c",
+                columns=[pivot_column(text("p"), "p")],
+                values="a",
+                agg="sum",
+            ),
+            "at least one column",
+        ),
+        (
+            step("x", "pivot", index=["g"], on="c", columns=[], values="a", agg="sum"),
+            "at least one pivot column",
+        ),
+        (
+            step(
+                "x",
+                "pivot",
+                index=["g"],
+                on="c",
+                columns=[pivot_column(text("p"), "p"), pivot_column(text("q"), "p")],
+                values="a",
+                agg="sum",
+            ),
+            "used more than once",
+        ),
+        (
+            step(
+                "x",
+                "pivot",
+                index=["g"],
+                on="c",
+                columns=[pivot_column(text("p"), "g")],
+                values="a",
+                agg="sum",
+            ),
+            "used more than once",
+        ),
+        (
+            step(
+                "x",
+                "pivot",
+                index=["g"],
+                on="c",
+                columns=[pivot_column(text("p"), "p"), pivot_column(text("p"), "again")],
+                values="a",
+                agg="sum",
+            ),
+            "repeats the value",
+        ),
+        (
+            step(
+                "x",
+                "pivot",
+                index=["g"],
+                on="c",
+                columns=[pivot_column(text("p"), "p"), pivot_column(num(1), "one")],
+                values="a",
+                agg="sum",
+            ),
+            "same type",
+        ),
+        (
+            step(
+                "x",
+                "pivot",
+                index=["g"],
+                on="c",
+                columns=[pivot_column(null(), "n")],
+                values="a",
+                agg="sum",
+            ),
+            "cannot be null",
+        ),
+        (
+            step(
+                "x",
+                "pivot",
+                index=["g"],
+                on="c",
+                columns=[pivot_column(col("c"), "n")],
+                values="a",
+                agg="sum",
+            ),
+            "plain value",
+        ),
+        (
+            step(
+                "x",
+                "pivot",
+                index=["g"],
+                on="c",
+                columns=[pivot_column(text("p"), "p")],
+                values="a",
+                agg="std",
+            ),
+            "must be one of",
+        ),
+        (
+            step("x", "unpivot", on=[], index=[], variableName="m", valueName="v"),
+            "at least one column",
+        ),
+        (
+            step("x", "unpivot", on=["a", "g"], index=["g"], variableName="m", valueName="v"),
+            "both unpivoted and kept as index",
+        ),
+        (
+            step("x", "unpivot", on=["a"], index=["g"], variableName="v", valueName="v"),
+            "different names",
+        ),
+        (
+            step("x", "unpivot", on=["a"], index=["g"], variableName="g", valueName="v"),
+            "already an index column",
+        ),
+        (
+            step("x", "unpivot", on=["*"], index=[], variableName="m", valueName="v"),
+            "not the pattern '*'",
+        ),
+        (
+            step("x", "unpivot", on=["^measure_.*$"], index=[], variableName="m", valueName="v"),
+            "not the pattern",
+        ),
+        (step("x", "select", columns=["*"]), "not the pattern '*'"),
+        (
+            step(
+                "x",
+                "pivot",
+                index=["^g$"],
+                on="c",
+                columns=[pivot_column(text("p"), "p")],
+                values="a",
+                agg="sum",
+            ),
+            "not the pattern",
+        ),
+        (
+            step(
+                "x",
+                "pivot",
+                index=["g"],
+                on="*",
+                columns=[pivot_column(text("p"), "p")],
+                values="a",
+                agg="sum",
+            ),
+            "not the pattern '*'",
+        ),
+        (
+            step(
+                "x",
+                "pivot",
+                index=["g"],
+                on="c",
+                columns=[pivot_column(num(1), "one"), pivot_column(num(1.0), "also_one")],
+                values="a",
+                agg="sum",
+            ),
+            "repeats the value",
+        ),
+        (
+            step(
+                "x",
+                "pivot",
+                index=["g"],
+                on="c",
+                columns=[pivot_column(num(0.0), "zero"), pivot_column(num(-0.0), "neg_zero")],
+                values="a",
+                agg="sum",
+            ),
+            "repeats the value",
+        ),
+    ],
+)
+def test_reshaping_and_dtype_selectors_reject(kind_step: dict[str, Any], fragment: str) -> None:
+    with pytest.raises(PolarsStepError) as info:
+        render_polars_steps([source(), kind_step], ["quotes"])
+    assert info.value.step_index == 1
+    assert fragment in info.value.message
+
+
+def _pivot_frame() -> pl.LazyFrame:
+    return pl.DataFrame(
+        {
+            "g": ["x", "x", "y", "y", "z"],
+            "c": ["p", "q", "p", "p", "q"],
+            "a": [1.0, None, 3.0, 4.0, None],
+        }
+    ).lazy()
+
+
+@pytest.mark.parametrize(
+    "agg", ["sum", "mean", "min", "max", "median", "first", "last", "count", "len"]
+)
+def test_pivot_lowering_matches_native_pivot_cell_for_cell(agg: str) -> None:
+    """Every offered aggregate matches ``LazyFrame.pivot`` (row order aside)."""
+    native_aggregate = {"count": pl.element().count(), "len": pl.element().len()}.get(
+        agg, getattr(pl.element(), agg)()
+    )
+    columns = [pivot_column(text(v), v) for v in ("p", "q", "absent")]
+    steps = [
+        source("rows"),
+        step("p", "pivot", index=["g"], on="c", columns=columns, values="a", agg=agg),
+    ]
+    code = render_polars_steps(steps, ["rows"]).code
+    for frame in (_pivot_frame(), _pivot_frame().head(0)):
+        namespace: dict[str, object] = {"pl": pl, "rows": frame}
+        exec(code, namespace, namespace)  # noqa: S102 - generated step code under test
+        lowered = namespace["df"]
+        assert isinstance(lowered, pl.LazyFrame)
+        native = frame.pivot(
+            on="c",
+            on_columns=["p", "q", "absent"],
+            index="g",
+            values="a",
+            aggregate_function=native_aggregate,
+        ).collect()
+        assert lowered.collect().sort("g").equals(native.sort("g")), agg
+
+
+def test_reshaping_and_dtype_selectors_execute(tmp_path: Path) -> None:
+    policies = _extended_frame(tmp_path)
+    steps = [
+        source("policies"),
+        step(
+            "w",
+            "with_column",
+            name="digit",
+            expr=fn("extract", col("qid"), text("([0-9]+)"), num(1)),
+        ),
+        step("c", "cast", casts=[{"column": "digit", "dtype": "Int64"}]),
+        step("sel", "select", columns=["qid"], dtypes=["Float64", "Int64"]),
+        step(
+            "u",
+            "unpivot",
+            on=["premium", "digit"],
+            index=["qid"],
+            variableName="measure",
+            valueName="value",
+        ),
+        step(
+            "o",
+            "sort",
+            keys=[
+                {"column": "qid", "descending": False},
+                {"column": "measure", "descending": False},
+            ],
+            nullsLast=False,
+        ),
+    ]
+    graph = PipelineGraph(
+        nodes=[policies, _stepped("t", steps)], edges=[make_edge("policies", "t")]
+    )
+    result = execute_graph(graph, target_node_id="t", execution_context=_capped_context())["t"]
+    assert result.status == "ok", result.error
+    assert [c.name for c in result.columns] == ["qid", "measure", "value"]
+    assert {c.name: c.dtype for c in result.columns}["value"] == "Float64"
+    rows = [(r["qid"], r["measure"], r["value"]) for r in result.preview]
+    assert rows[:4] == [
+        ("c1", "digit", 1.0),
+        ("c1", "premium", 800.0),
+        ("c2", "digit", 2.0),
+        ("c2", "premium", 200.0),
+    ]
+    assert len(rows) == 14
+
+    summary_steps = [
+        source("policies"),
+        step("d", "drop", columns=["qid"], dtypes=["String"]),
+        step(
+            "g",
+            "group_by",
+            keys=[],
+            aggregations=[
+                {"column": "", "agg": "len", "name": "n"},
+                {"dtype": "Float64", "agg": "mean", "suffix": "_mean"},
+            ],
+        ),
+    ]
+    graph = PipelineGraph(
+        nodes=[policies, _stepped("s", summary_steps)], edges=[make_edge("policies", "s")]
+    )
+    summary = execute_graph(graph, target_node_id="s", execution_context=_capped_context())["s"]
+    assert summary.status == "ok", summary.error
+    assert summary.preview == [{"n": 7, "premium_mean": 390.0}]
+
+    pivot_steps = [
+        source("policies"),
+        step(
+            "p",
+            "pivot",
+            index=["region"],
+            on="qid",
+            columns=[pivot_column(text("c1"), "c1"), pivot_column(text("c2"), "c2")],
+            values="premium",
+            agg="sum",
+        ),
+    ]
+    graph = PipelineGraph(
+        nodes=[policies, _stepped("p", pivot_steps)], edges=[make_edge("policies", "p")]
+    )
+    pivoted = execute_graph(graph, target_node_id="p", execution_context=_capped_context())["p"]
+    assert pivoted.status == "ok", pivoted.error
+    assert pivoted.preview == [
+        {"region": "north", "c1": 800.0, "c2": 0.0},
+        {"region": "south", "c1": 0.0, "c2": 200.0},
+        {"region": "east", "c1": 0.0, "c2": 0.0},
+    ]
+
+
+def test_generated_reshaping_code_stays_inside_the_lineage_model() -> None:
+    """The renderer's shapes are the ones the classifier proves or bounds."""
+    from haute._column_lineage import analyze_polars_cardinality, analyze_polars_lineage
+
+    schema = {"rows": frozenset({"g", "a", "i", "c"})}
+    dtypes = {"rows": {"g": pl.String(), "a": pl.Float64(), "i": pl.Int64(), "c": pl.String()}}
+
+    def code(*kind_steps: dict[str, Any]) -> str:
+        return render_polars_steps([source("rows"), *kind_steps], ["rows"]).code
+
+    typed_select = code(step("sel", "select", columns=["g"], dtypes=["Float64", "Int64"]))
+    proven = analyze_polars_lineage(typed_select, schema, input_dtypes=dtypes)
+    assert proven.supported and proven.exact_output_columns == {"g", "a", "i"}
+    assert proven.demands_by_input == {"rows": frozenset({"g", "a", "i"})}
+    without_dtypes = analyze_polars_lineage(typed_select, schema)
+    assert not without_dtypes.supported and without_dtypes.reason == "selector_dtypes_unknown"
+
+    typed_drop = code(step("d", "drop", columns=["g"], dtypes=["String"]))
+    dropped = analyze_polars_lineage(typed_drop, schema, input_dtypes=dtypes)
+    assert dropped.supported and dropped.exact_output_columns == {"a", "i"}
+
+    typed_agg = code(
+        step(
+            "g",
+            "group_by",
+            keys=["g"],
+            aggregations=[{"dtype": "Float64", "agg": "mean", "suffix": "_mean"}],
+        )
+    )
+    aggregated = analyze_polars_lineage(typed_agg, schema, input_dtypes=dtypes)
+    assert aggregated.supported and aggregated.exact_output_columns == {"g", "a_mean"}
+    assert aggregated.demands_by_input == {"rows": frozenset({"g", "a"})}
+    # A computed column has no propagated dtype, so a later dtype selector fails closed.
+    after_computed = code(
+        step("w", "with_column", name="b", expr=binary(col("a"), "*", num(2))),
+        step("sel", "select", columns=[], dtypes=["Float64"]),
+    )
+    assert (
+        analyze_polars_lineage(after_computed, schema, input_dtypes=dtypes).reason
+        == "selector_dtypes_unknown"
+    )
+
+    pivot_code = code(
+        step(
+            "p",
+            "pivot",
+            index=["g"],
+            on="c",
+            columns=[pivot_column(text("p"), "p")],
+            values="a",
+            agg="sum",
+        )
+    )
+    pivot_lineage = analyze_polars_lineage(pivot_code, schema)
+    assert pivot_lineage.supported and pivot_lineage.exact_output_columns == {"g", "p"}
+    assert pivot_lineage.demands_by_input == {"rows": frozenset({"g", "c", "a"})}
+    assert analyze_polars_cardinality(pivot_code, {"rows": 100}).output_upper_bound == 100
+
+    unpivot_code = code(
+        step("u", "unpivot", on=["a", "i"], index=["g"], variableName="m", valueName="v"),
+        step("f", "filter", match="all", conditions=[cond("v", "gt", value=num(0))]),
+    )
+    unpivoted = analyze_polars_lineage(unpivot_code, schema)
+    assert unpivoted.supported and unpivoted.exact_output_columns == {"g", "m", "v"}
+    bound = analyze_polars_cardinality(unpivot_code, {"rows": 100})
+    assert bound.supported and bound.output_upper_bound == 200
+
+    nested_window = code(
+        step(
+            "w",
+            "with_column",
+            name="dev",
+            expr=binary(
+                col("a"), "-", ex({"type": "window", "agg": "mean", "column": "a", "over": ["g"]})
+            ),
+        ),
+        step("sel", "select", columns=["dev"]),
+    )
+    windowed = analyze_polars_lineage(nested_window, schema, demanded_output=["dev"])
+    assert windowed.supported and windowed.demands_by_input == {"rows": frozenset({"a", "g"})}
+
+
 def test_join_validation_fails_loudly_on_duplicate_keys(tmp_path: Path) -> None:
     quotes, _rates = _frames(tmp_path)
     dup = tmp_path / "dup_rates.parquet"
