@@ -57,7 +57,9 @@ function tokenize(text: string): Token[] {
     if (/[0-9.]/.test(ch)) {
       const match = /^(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?/.exec(text.slice(i))
       if (!match) throw new FormulaError(`Unexpected "${ch}" at position ${i + 1}.`)
-      tokens.push({ kind: "number", value: Number(match[0]), text: match[0] })
+      const value = Number(match[0])
+      if (!Number.isFinite(value)) throw new FormulaError(`"${match[0]}" is not a finite number.`)
+      tokens.push({ kind: "number", value, text: match[0] })
       i += match[0].length
       continue
     }
@@ -331,10 +333,15 @@ function quoteText(value: string): string {
   return `'${value.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`
 }
 
-function nameText(name: string, variables: ReadonlySet<string>, isVariable: boolean): string {
+function nameText(name: string, variables: ReadonlySet<string>, isVariable: boolean): string | null {
   // A name not yet filled in reads as a placeholder rather than empty backticks.
   if (name.length === 0) return "?"
-  const plain = IDENTIFIER.test(name) && !KEYWORDS.has(name) && (isVariable || !variables.has(name)) && !FUNCTIONS.some((f) => f.value === name)
+  if (name.includes("`")) return null
+  if (isVariable) {
+    if (!variables.has(name) || !IDENTIFIER.test(name) || name === "true" || name === "false" || name === "null") return null
+    return name
+  }
+  const plain = IDENTIFIER.test(name) && !KEYWORDS.has(name) && !variables.has(name)
   return plain ? name : `\`${name}\``
 }
 

@@ -123,6 +123,21 @@ describe("useRenderedSteps", () => {
     expect(result.current.stepLines).toEqual([])
   })
 
+  it("never writes code back after the editor unmounts, even if a response has already escaped cancellation", async () => {
+    const pending = deferred()
+    mockRender.mockReturnValue(pending.promise)
+    const onRendered = vi.fn()
+    const { unmount } = renderHook(() => useRenderedSteps(one, ["quotes"], onRendered))
+    await act(async () => { vi.advanceTimersByTime(250) })
+    unmount()
+    expect(mockRender.mock.calls[0][0].signal?.aborted).toBe(true)
+    await act(async () => {
+      pending.handle.resolve(okResponse("df = quotes"))
+      await Promise.resolve()
+    })
+    expect(onRendered).not.toHaveBeenCalled()
+  })
+
   it("reports a transport failure as a list-level error, keeps the last code, and clears its ranges", async () => {
     mockRender.mockResolvedValueOnce(okResponse("df = quotes"))
     const { result, rerender } = renderHook(({ steps }) => useRenderedSteps(steps, ["quotes"]), { initialProps: { steps: one } })

@@ -703,7 +703,7 @@ string clearing the warning; signature-driven refresh on a frame rename; two fra
 API input rendering two distinct, independently removable chips whose names equal the
 generated argument names; exact chip text, tooltip and removal-control names remain
 public frame names after occurrence alias/display-label changes with one or two outputs),
-and by `PolarsStepsEditor.test.tsx` (start-input options, persisted selections, and render
+and by `frontend/src/panels/editors/polarsSteps/__tests__/PolarsStepsEditor.test.tsx` (start-input options, persisted selections, and render
 request input names stay frame-named after source identity changes), by LiveSwitch cases (two frames from one API input render two rows
 with two distinct names and two independent `input_scenario_map` keys; a frame rename migrates
 its map key atomically with the edge rebind; a zero-eligible-frame API `InputSource` renders

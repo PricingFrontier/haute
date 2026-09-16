@@ -10,6 +10,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+/** Authored transform settings, excluding the caches materialised from steps. */
+export function authoredPolarsConfig(config: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(config.steps)) return config
+  return Object.fromEntries(Object.entries(config).filter(([key]) => key !== "code" && key !== "_steps_error"))
+}
+
 /** Whether `config` belongs to an ordinary (non-instance) stepped transform. */
 export function isSteppedTransformConfig(config: unknown): config is Record<string, unknown> & { steps: unknown[] } {
   return isRecord(config) && !("instanceOf" in config) && Array.isArray(config.steps)

@@ -3,8 +3,8 @@
  *
  * The backend renderer is the single source of truth for what a step list
  * means; these types only describe the JSON the editor writes into
- * `config.steps`. Every step renders to exactly one line of Polars code, so
- * `steps[i]` is line `i + 1` of the generated program.
+ * `config.steps`. Structured steps render to one line; free code can span
+ * several. The renderer supplies each step's inclusive line range.
  */
 
 export type LiteralType = "number" | "text" | "boolean" | "date" | "null"

@@ -59,7 +59,7 @@ export function useRenderedSteps(
     const timer = setTimeout(() => {
       renderPolarsSteps({ steps, inputNames, signal: controller.signal })
         .then((response) => {
-          if (revision !== revisionRef.current) return
+          if (controller.signal.aborted || revision !== revisionRef.current) return
           if (response.ok) {
             setState({
               status: "ok",
@@ -82,7 +82,7 @@ export function useRenderedSteps(
           }
         })
         .catch((err: unknown) => {
-          if (revision !== revisionRef.current) return
+          if (controller.signal.aborted || revision !== revisionRef.current) return
           if (err instanceof DOMException && err.name === "AbortError") return
           const message = err instanceof Error ? err.message : String(err)
           setState((prev) => ({

@@ -231,6 +231,7 @@ carries a `steps` list, and the stale-file sweep removes the file when a node st
 carrying one. One renderer (`src/haute/_polars_steps.py`) validates the closed step
 schema and renders the steps into the function body, recording each step's inclusive
 line range and raising a step-indexed error for any malformed or incomplete step.
+Step-id uniqueness checks for valid lists run in linear time in the number of steps.
 The vocabulary covers filters
 (comparison, null, membership, text and regex operators), derived columns (formulas,
 typed functions over numbers, text, dates and durations, conditionals, window

@@ -84,6 +84,17 @@ describe("formula text", () => {
     expect(parse("`rate` * rate", ["rate"])).toEqual(binary(col("rate"), "*", { kind: "variable", name: "rate" }))
   })
 
+  it("renders names only where the formula grammar can preserve their identity", () => {
+    const parse = (text: string, variables: string[]) => withoutFormulaText(parseFormula(text, variables))
+    expect(formulaText({ type: "operand", operand: { kind: "variable", name: "round" } }, ["round"])).toBe("round")
+    expect(parse("round", ["round"])).toEqual({ type: "operand", operand: { kind: "variable", name: "round" } })
+    expect(formulaText({ type: "operand", operand: { kind: "variable", name: "date" } }, ["date"])).toBe("date")
+    expect(parse("date", ["date"])).toEqual({ type: "operand", operand: { kind: "variable", name: "date" } })
+    expect(formulaText({ type: "operand", operand: { kind: "variable", name: "true" } }, ["true"])).toBeNull()
+    expect(displayFormula(parseFormula("rate + 1", ["rate"]), [])).toBeNull()
+    expect(formulaText({ type: "operand", operand: { kind: "column", name: "has`tick" } })).toBeNull()
+  })
+
   it("parses functions with their typed arguments", () => {
     const parse = (text: string) => withoutFormulaText(parseFormula(text))
     expect(parse("round(premium / 12, 2)")).toEqual({
@@ -106,6 +117,7 @@ describe("formula text", () => {
     ["round(premium)", /takes 2 arguments/],
     ["round(premium, 'x')", /expects a number/],
     ["cast(premium, Enum)", /expects a type/],
+    ["1e999", /finite number/],
     ["'unclosed", /Unclosed quote/],
     ["premium $ 2", /Unexpected "\$"/],
   ])("explains why %s cannot be read", (text, message) => {

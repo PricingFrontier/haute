@@ -606,8 +606,8 @@ class TestGraphStructureConservationGate:
                 return pl.LazyFrame({{"x": [1]}})
 
             @pipeline.polars
-            def sink(child: pl.LazyFrame) -> pl.LazyFrame:
-                return child
+            def sink(result: pl.LazyFrame) -> pl.LazyFrame:
+                return result
 
             pipeline.submodel(
                 {child.name!r},
@@ -696,8 +696,8 @@ class TestGraphStructureConservationGate:
                 return pl.LazyFrame({{"x": [1]}})
 
             @pipeline.polars
-            def sink(ported_child: pl.LazyFrame) -> pl.LazyFrame:
-                return ported_child
+            def sink(quotes: pl.LazyFrame) -> pl.LazyFrame:
+                return quotes
 
             pipeline.submodel(
                 {child.name!r},
@@ -1113,12 +1113,12 @@ class TestPrivateChildEndpoints:
                 return pl.LazyFrame({{"x": [1]}})
 
             @pipeline.polars
-            def sink_a(a: pl.LazyFrame) -> pl.LazyFrame:
-                return a
+            def sink_a(result: pl.LazyFrame) -> pl.LazyFrame:
+                return result
 
             @pipeline.polars
-            def sink_b(b: pl.LazyFrame) -> pl.LazyFrame:
-                return b
+            def sink_b(result: pl.LazyFrame) -> pl.LazyFrame:
+                return result
 
             pipeline.submodel(
                 {child.name!r},
@@ -1168,12 +1168,12 @@ class TestPrivateChildEndpoints:
                 return pl.LazyFrame({{"x": [1]}})
 
             @pipeline.polars
-            def sink_a(a: pl.LazyFrame) -> pl.LazyFrame:
-                return a
+            def sink_a(result: pl.LazyFrame) -> pl.LazyFrame:
+                return result
 
             @pipeline.polars
-            def sink_b(b: pl.LazyFrame) -> pl.LazyFrame:
-                return b
+            def sink_b(result: pl.LazyFrame) -> pl.LazyFrame:
+                return result
 
             pipeline.submodel(
                 {child.name!r},

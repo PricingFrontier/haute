@@ -390,6 +390,35 @@ describe("PolarsStepsEditor", () => {
     confirm.mockRestore()
   })
 
+  it.each([null, { kind: "source", input: "quotes" }, { id: "bad", kind: "source", input: {} }])("keeps an invalid first step visible and deletable: %j", (first) => {
+    const spy = vi.fn()
+    render(<Harness initial={{ steps: [first, limit] }} inputSources={[quotes]} spy={spy} />)
+    expect(screen.getByRole("button", { name: "Invalid start step" })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Delete Invalid start step" }))
+    expect(lastSteps(spy)).toEqual([limit])
+  })
+
+  it.each([[quotes], [quotes, rates]])("repairs a missing start step without dropping the first authored operation (%j)", (...inputSources) => {
+    const spy = vi.fn()
+    render(<Harness initial={{ steps: [filter, limit] }} inputSources={inputSources} spy={spy} />)
+    expect(screen.getByRole("button", { name: "Invalid start step" })).toBeInTheDocument()
+    expect(screen.getByLabelText("Start from input")).toHaveValue("")
+    fireEvent.change(screen.getByLabelText("Start from input"), { target: { value: "quotes" } })
+    expect(lastSteps(spy)).toEqual([expect.objectContaining({ kind: "source", input: "quotes" }), filter, limit])
+    expect(screen.getByRole("button", { name: "Step 1: Filter rows" })).toBeInTheDocument()
+  })
+
+  it("shows a disconnected start input until the user explicitly chooses its replacement", () => {
+    const spy = vi.fn()
+    render(<Harness initial={{ steps: [{ ...source, input: "removed" }, limit] }} inputSources={[quotes]} spy={spy} />)
+    expect(screen.getByLabelText("Start from input")).toHaveValue("removed")
+    expect(screen.getByRole("option", { name: "removed (not connected)" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Add step" })).toBeDisabled()
+    fireEvent.change(screen.getByLabelText("Start from input"), { target: { value: "quotes" } })
+    expect(lastSteps(spy)).toEqual([{ ...source, input: "quotes" }, limit])
+    expect(screen.getByRole("button", { name: "Add step" })).toBeEnabled()
+  })
+
   it("writes the chosen start input when the node has several inputs", async () => {
     const spy = vi.fn()
     const frames: InputSource[] = ["output_1", "output_2"].map((name) => ({

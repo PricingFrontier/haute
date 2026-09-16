@@ -470,6 +470,7 @@ export function stepProblem(step: unknown): string | null {
   const record = step as Record<string, unknown>
   const kind = record.kind
   if (typeof kind !== "string" || !Object.hasOwn(REQUIRED_FIELDS, kind)) return `Unknown step kind ${JSON.stringify(kind)}.`
+  if (typeof record.id !== "string" || record.id.length === 0) return "This step is missing its id."
   const where = `The ${kindLabel(kind as StepKind).toLowerCase()} step`
   for (const [field, shape] of REQUIRED_FIELDS[kind as StepKind]) {
     const problem = fieldProblem(record, field, shape, where)

@@ -357,6 +357,7 @@ const PANEL_CONTEXT_NODE_DATA_KEYS = [
   "func_name",
   "_columns",
   "_availableColumns",
+  "_frameColumns",
   "_schemaWarnings",
 ] as const
 

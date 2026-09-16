@@ -516,7 +516,8 @@ candidate, with the error toast.
 - **Three separate fingerprints at three granularities** — structural,
   panel-context, and persisted — exist so that expensive recomputation only
   happens at the granularity that actually changed. A position drag never
-  rehashes node config; a preview-only field update bumps the panel-context
+  rehashes node config; a preview-only field update (including per-output-handle
+  column schemas) bumps the panel-context
   version (so the inspector panel refreshes) without bumping the structural
   version (so the graph isn't marked "changed" for undo-history purposes
   beyond what's needed). Whole-document loads are deliberate identity

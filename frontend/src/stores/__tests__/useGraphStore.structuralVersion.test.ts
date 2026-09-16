@@ -44,6 +44,28 @@ describe("useGraphStore structuralVersion", () => {
     resetStore()
   })
 
+  it("keeps preview freshness through generated step-code refresh, but invalidates on authored edits", () => {
+    const steps = [{ id: "s", kind: "source", input: "quotes" }]
+    const initial = makeNode("t", "polars", { data: { config: { steps, code: "old code", _steps_error: "old error" } } })
+    const store = useGraphStore.getState()
+    store.setNodesRaw([initial])
+    store.markSaved()
+    const version = useGraphStore.getState().structuralVersion
+    const rendered = { ...initial, data: { ...initial.data, config: { steps, code: "df = quotes" } } }
+
+    store.setNodesAndEdgesAndSubmodels([rendered], [], {})
+
+    expect(useGraphStore.getState().structuralVersion).toBe(version)
+    expect(useGraphStore.getState().dirty).toBe(false)
+    expect(useGraphStore.getState().undoStack).toHaveLength(0)
+
+    const edited = { ...rendered, data: { ...rendered.data, config: { steps: [...steps, { id: "l", kind: "limit", n: 3 }], code: "df = quotes" } } }
+    store.setNodesAndEdgesAndSubmodels([edited], [], {})
+    expect(useGraphStore.getState().structuralVersion).toBe(version + 1)
+    expect(useGraphStore.getState().dirty).toBe(true)
+    expect(useGraphStore.getState().undoStack).toHaveLength(1)
+  })
+
   it("does not bump for position, selection, or preview-only node data changes", () => {
     const store = useGraphStore.getState()
     act(() => {

@@ -87,10 +87,11 @@ export default function PolarsStepsEditor({
   const showErrors = runError != null || errorLine != null
   const shownError = showErrors ? renderError : null
 
-  const startInput = steps[0]?.kind === "source" ? steps[0].input : ""
-  const effectiveStart = startInput || (inputNames.length === 1 ? inputNames[0] : "")
+  const startStep = steps[0]?.kind === "source" && stepProblem(steps[0]) === null ? steps[0] : null
+  const startInput = startStep?.input ?? ""
+  const effectiveStart = startInput || (steps.length === 0 && inputNames.length === 1 ? inputNames[0] : "")
   const hasInputs = inputNames.length > 0
-  const canAdd = hasInputs && effectiveStart.length > 0
+  const canAdd = inputNames.includes(effectiveStart)
 
   const focusDisclosure = (index: number | null) => {
     const target = index === null ? addButton.current : disclosures.current.get(index) ?? addButton.current
@@ -98,8 +99,11 @@ export default function PolarsStepsEditor({
   }
 
   const setStart = (input: string) => {
-    const source: Step = { id: steps[0]?.kind === "source" ? steps[0].id : newStepId(), kind: "source", input }
+    const source: Step = { id: startStep?.id ?? newStepId(), kind: "source", input }
     setSteps(steps[0]?.kind === "source" ? [source, ...steps.slice(1)] : [source, ...steps])
+    if (steps.length > 0 && steps[0]?.kind !== "source") {
+      setOpenIndex((current) => current === null ? null : current + 1)
+    }
   }
 
   // As soon as the start input is known (chosen, or the node's only input),
@@ -215,7 +219,8 @@ export default function PolarsStepsEditor({
     requestAnimationFrame(() => focusDisclosure(index === 0 ? 0 : index))
   }
 
-  const stepCards = steps.slice(1)
+  const cardOffset = startStep === null ? 0 : 1
+  const stepCards = steps.slice(cardOffset)
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-y-auto px-3 py-2 gap-2" data-testid="polars-steps-editor">
@@ -266,6 +271,11 @@ export default function PolarsStepsEditor({
                   Choose an input
                 </option>
               )}
+              {effectiveStart !== "" && !inputNames.includes(effectiveStart) && (
+                <option value={effectiveStart} disabled>
+                  {effectiveStart} (not connected)
+                </option>
+              )}
               {inputNames.map((name) => (
                 <option key={name} value={name}>
                   {name}
@@ -282,22 +292,21 @@ export default function PolarsStepsEditor({
           {stepCards.length > 0 && (
             <div className="grid gap-1.5" role="list" aria-label="Steps">
               {stepCards.map((step, offset) => {
-                const index = offset + 1
+                const index = offset + cardOffset
                 const open = openIndex === index
-                const problem = stepProblem(step)
+                const problem = stepProblem(step) ?? (index === 0 ? "Choose the input to start from above." : null)
                 const key = typeof step?.id === "string" && step.id ? step.id : `invalid-${index}`
                 if (problem !== null) {
                   return (
                     <div key={key} role="listitem">
                       <StepCard
-                        label="Invalid step"
-                        number={index}
+                        label={index === 0 ? "Invalid start step" : "Invalid step"}
+                        number={index === 0 ? null : index}
                         summary={problem}
                         open={false}
                         onToggle={() => undefined}
                         onDelete={() => deleteStep(index)}
-                        badge={{ tone: "danger", text: "This step cannot be edited here. Delete it, or switch to code to keep it." }}
-                        drag={dragFor(index)}
+                        badge={{ tone: "danger", text: "This step cannot be edited here. Delete it to repair the step list." }}
                       />
                     </div>
                   )
@@ -324,7 +333,7 @@ export default function PolarsStepsEditor({
                         else disclosures.current.delete(index)
                       }}
                     >
-                      <StepForm
+                      {open && <StepForm
                         step={step}
                         onChange={(next) => updateStep(index, next)}
                         ctx={{
@@ -334,7 +343,7 @@ export default function PolarsStepsEditor({
                           firstFieldId: `${step.id}-first`,
                           errorLine: step.kind === "free_code" ? runtimeErrorLineFor(index) : null,
                         }}
-                      />
+                      />}
                     </StepCard>
                   </div>
                 )

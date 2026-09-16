@@ -255,7 +255,14 @@ and the catalogue's functions with plain-value arguments); the text is parsed in
 nested expression schema on commit and kept on the expression as typed, so brackets and
 spacing survive collapsing and reopening the card and the card summary shows the same
 text (text that no longer describes the expression is replaced by a fresh rendering);
-a bare value or a function typed as a formula stays a formula in the editor; a new formula box starts empty
+a bare value or a function typed as a formula stays a formula in the editor. Column
+completion preserves column identity when a name is also a literal keyword or an
+earlier variable, by inserting a backticked name. Variables named after functions
+remain variable references; names the formula grammar cannot represent remain in
+the structured editor. Removing or reordering a variable definition must not
+turn its remaining references into columns when a formula is edited. Non-finite
+numeric literals are rejected before a formula
+can replace the last valid expression. A new formula box starts empty
 (a placeholder tree keeps the step renderable until something is typed) with an example
 formula as a tooltip on the box and on an info icon beside its label; as a name is typed the
 columns and earlier variables starting with it are listed under the box (Up/Down move, Tab
@@ -293,12 +300,15 @@ run's error message, or its error line), the panel names the failing step withou
 it or collapsing the card being edited (a "Go to error" action opens it), badges that step,
 and tints the failing and the last execution-error line. Renders are tagged with
 the steps revision they were requested for, a response for an older revision never
-replaces a newer one, and the switch is enabled only while the step list is empty or the
+replaces a newer one, and a response after the editor unmounts never writes code
+back to the graph. Column and variable suggestions are computed only for the
+open card. The switch is enabled only while the step list is empty or the
 latest render succeeded for the current revision; on confirmation it writes that rendered
 code (or empty code for an empty list) into `code` and removes `steps`. After each
 successful render the rendered code is also written into `code` so read-only views stay
-current. This generated cache update creates no undo entry, preserves redo, and does
-not dirty the document: one step edit is one undo action. Undo/redo re-renders the
+current. This generated cache update creates no undo entry, preserves redo, does
+not dirty the document, and does not invalidate execution previews. Authored step
+changes still invalidate execution previews. One step edit is one undo action. Undo/redo re-renders the
 restored steps, and an obsolete render must not replace their code. As soon as the
 start input is known (chosen in the selector, or the node's only
 connected input) the start step is written to the config, so the node renders
@@ -311,7 +321,13 @@ A node whose steps were discarded on load shows the discard reason above the cod
 A persisted step whose shape the forms cannot edit (an unknown kind or a missing
 setting, including a kind named after an inherited JavaScript object property)
 renders as an invalid card that can only be deleted, never crashes the editor,
-and is skipped by column and variable suggestions; the backend already keeps such a list
+and remains visible even in the first position where the start step belongs.
+Choosing a start input repairs that position without dropping an existing
+non-source step. An invalid existing start prompts for an input even when only
+one is connected; a persisted input that is no longer connected remains visible
+as unavailable until another input is chosen. Adding steps requires a connected
+start input. A missing step id is an invalid persisted shape. Invalid steps
+are skipped by column and variable suggestions; the backend already keeps such a list
 behind an incomplete body. A membership list keeps its chosen value type while empty.
 Numeric controls parse the complete value, including scientific notation (`1e3`
 commits as 1000). Integer controls reject fractional values instead of truncating;

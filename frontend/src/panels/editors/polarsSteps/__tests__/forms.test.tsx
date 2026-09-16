@@ -37,6 +37,19 @@ function optionValues(select: HTMLElement): string[] {
 describe("step forms only build schema-valid payloads", () => {
   afterEach(cleanup)
 
+  it("keeps variable references structured after their definition is removed or moved later", () => {
+    const step: Step = { id: "w", kind: "with_column", name: "total", expr: parseFormula("rate + 1", ["rate"]) }
+    const onChange = vi.fn()
+    const { rerender } = render(<StepForm step={step} onChange={onChange} ctx={ctx} />)
+    expect(screen.getByRole("combobox", { name: "Formula" })).toHaveValue("rate + 1")
+
+    rerender(<StepForm step={step} onChange={onChange} ctx={{ ...ctx, variables: [] }} />)
+
+    expect(screen.queryByRole("combobox", { name: "Formula" })).not.toBeInTheDocument()
+    expect(screen.getByLabelText("Left operand variable")).toHaveValue("")
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it.each([0, 1, MAX_EXPR_DEPTH - 1])("keeps an over-depth formula editable under %i enclosing expressions", (enclosing) => {
     const spy = vi.fn()
     let expr: Expr = parseFormula("premium + 1")
@@ -503,6 +516,54 @@ describe("step forms only build schema-valid payloads", () => {
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
     fireEvent.keyDown(input, { key: "Enter" })
     expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ expr: expect.objectContaining({ text: "premium_net * ra" }) }))
+  })
+
+  it("completes colliding columns as columns and plain variables as variables", () => {
+    const spy = vi.fn()
+    const step: Step = {
+      id: "w",
+      kind: "with_column",
+      name: "x",
+      expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "+", right: { kind: "literal", type: "number", value: 1 }, text: "" },
+    }
+    const formulaCtx: StepFormContext = { ...ctx, columns: ["true", "rate"], variables: ["rate", "rate_var"] }
+    render(<StepForm step={step} onChange={spy} ctx={formulaCtx} />)
+    const input = screen.getByRole("combobox", { name: "Formula" })
+
+    fireEvent.change(input, { target: { value: "tr" } })
+    fireEvent.keyDown(input, { key: "Tab" })
+    expect(input).toHaveValue("`true`")
+    fireEvent.keyDown(input, { key: "Enter" })
+    expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ expr: { type: "operand", operand: { kind: "column", name: "true" }, text: "`true`" } }))
+
+    fireEvent.change(input, { target: { value: "ra" } })
+    fireEvent.keyDown(input, { key: "Tab" })
+    expect(input).toHaveValue("`rate`")
+    fireEvent.keyDown(input, { key: "Enter" })
+    expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ expr: { type: "operand", operand: { kind: "column", name: "rate" }, text: "`rate`" } }))
+
+    fireEvent.change(input, { target: { value: "rate_v" } })
+    fireEvent.keyDown(input, { key: "Tab" })
+    expect(input).toHaveValue("rate_var")
+    fireEvent.keyDown(input, { key: "Enter" })
+    expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ expr: { type: "operand", operand: { kind: "variable", name: "rate_var" }, text: "rate_var" } }))
+  })
+
+  it("keeps the last expression when a formula number is non-finite", () => {
+    const spy = vi.fn()
+    const step: Step = {
+      id: "w",
+      kind: "with_column",
+      name: "x",
+      expr: { type: "operand", operand: { kind: "column", name: "premium" }, text: "premium" },
+    }
+    render(<Stateful initial={step} spy={spy} />)
+    const input = screen.getByRole("combobox", { name: "Formula" })
+    fireEvent.change(input, { target: { value: "1e999" } })
+    fireEvent.keyDown(input, { key: "Enter" })
+    expect(input).toHaveValue("1e999")
+    expect(screen.getByRole("alert")).toHaveTextContent(/finite number/)
+    expect(spy).not.toHaveBeenCalled()
   })
 
   it("a bare column name typed as a formula stays in the formula box", () => {

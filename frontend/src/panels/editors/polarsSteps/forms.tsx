@@ -10,7 +10,7 @@ import { ConfigCheckbox } from "../../../components/form"
 import { CodeEditor } from "../CodeEditor"
 import { INPUT_STYLE } from "../_shared"
 import { completionMatches } from "./completion"
-import { FormulaError, displayFormula, parseFormula, typedAsFormula } from "./formula"
+import { FormulaError, displayFormula, formulaText, parseFormula, typedAsFormula } from "./formula"
 import {
   AGGREGATIONS,
   BINARY_OPERATORS,
@@ -198,14 +198,17 @@ function exprTypeValue(expr: Expr): Expr["type"] {
 }
 
 const WORD_BEFORE_CARET = /[A-Za-z_][A-Za-z0-9_]*$/
-const IDENTIFIER_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
-
 /** Names starting with the word being typed, columns first then variables. */
 function completionsFor(draft: string, caret: number, names: string[]): { prefix: string; matches: string[] } {
   const match = WORD_BEFORE_CARET.exec(draft.slice(0, caret))
   if (!match) return { prefix: "", matches: [] }
   const prefix = match[0]
   return { prefix, matches: completionMatches(names, prefix) }
+}
+
+function completionText(name: string, columns: string[], variables: string[]): string | null {
+  const operand = columns.includes(name) ? { kind: "column" as const, name } : { kind: "variable" as const, name }
+  return formulaText({ type: "operand", operand }, variables)
 }
 
 /**
@@ -230,7 +233,8 @@ function FormulaField({ text, onCommit, variables, columns, depth }: { text: str
   }
   const input = useRef<HTMLInputElement | null>(null)
   const pendingCaret = useRef<number | null>(null)
-  const { prefix, matches: candidates } = completionsFor(draft, caret, [...columns, ...variables])
+  const { prefix, matches } = completionsFor(draft, caret, [...columns, ...variables])
+  const candidates = matches.filter((name) => completionText(name, columns, variables) !== null)
   const completion = useCompletionList(candidates)
 
   useEffect(() => {
@@ -258,7 +262,8 @@ function FormulaField({ text, onCommit, variables, columns, depth }: { text: str
     }
   }
   const complete = (name: string) => {
-    const insert = IDENTIFIER_NAME.test(name) ? name : `\`${name}\``
+    const insert = completionText(name, columns, variables)
+    if (insert === null) return
     const before = draft.slice(0, caret - prefix.length)
     const after = draft.slice(caret)
     setDraft(`${before}${insert}${after}`)

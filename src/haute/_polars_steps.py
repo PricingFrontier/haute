@@ -25,6 +25,7 @@ import datetime as _dt
 import keyword
 import math
 import re
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -309,7 +310,7 @@ def rename_step_inputs(steps: object, renames: Mapping[str, str]) -> list[dict[s
     renamed = {name: renames.get(name, name) for name in referenced}
     targets = list(renamed.values())
     if len(set(targets)) != len(targets):
-        duplicates = sorted({t for t in targets if targets.count(t) > 1})
+        duplicates = sorted(name for name, count in Counter(targets).items() if count > 1)
         raise PolarsStepError(
             f"Renaming inputs would make {duplicates!r} refer to more than one input."
         )
@@ -401,7 +402,7 @@ class _Renderer:
         if not self.steps:
             raise PolarsStepError("Choose the input to start from.")
         ids = [s["id"] for s in self.steps]
-        duplicates = sorted({i for i in ids if ids.count(i) > 1})
+        duplicates = sorted(step_id for step_id, count in Counter(ids).items() if count > 1)
         if duplicates:
             raise PolarsStepError(
                 f"Step ids must be unique; {duplicates!r} repeat.",
