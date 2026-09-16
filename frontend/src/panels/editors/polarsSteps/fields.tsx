@@ -6,11 +6,12 @@
  * only produce payloads the backend schema accepts.
  */
 import { Plus, X } from "lucide-react"
-import { useId, useState, type KeyboardEvent, type ReactNode } from "react"
+import { useId, useState, type ReactNode } from "react"
 
 import { CommittedTextField } from "../../../components/form"
 import { INPUT_STYLE } from "../_shared"
 import { CONDITION_OPERATORS, LIST_LITERAL_TYPES, LITERAL_TYPES, defaultExpr, defaultLiteral, literal } from "./catalogue"
+import { completionMatches } from "./completion"
 import type { Condition, Expr, LiteralOperand, LiteralType, MatchMode, Operand } from "./types"
 
 export const CONTROL_CLASS = "focus-ring w-full min-w-0 px-2 py-1.5 text-xs rounded-md"
@@ -146,8 +147,161 @@ export function NumberField({
   )
 }
 
-/** A combobox over the suggested columns that accepts any typed name. */
-export function ColumnPicker({
+/** The dropdown of completions under a text box; the box owns the keyboard. */
+export function CompletionList({
+  id,
+  matches,
+  activeIndex,
+  onPick,
+  onHover,
+  label = "Matching columns",
+}: {
+  id: string
+  matches: string[]
+  activeIndex: number
+  onPick: (name: string) => void
+  onHover: (index: number) => void
+  label?: string
+}) {
+  if (matches.length === 0) return null
+  return (
+    <ul
+      id={id}
+      role="listbox"
+      aria-label={label}
+      className="absolute left-0 right-0 z-20 mt-1 max-h-48 overflow-y-auto rounded-md p-1 shadow-lg"
+      style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-bright)" }}
+    >
+      {matches.map((name, index) => (
+        <li
+          key={name}
+          id={`${id}-${index}`}
+          role="option"
+          aria-selected={index === activeIndex}
+          onMouseDown={(event) => {
+            event.preventDefault()
+            onPick(name)
+          }}
+          onMouseEnter={() => onHover(index)}
+          className="cursor-pointer rounded px-2 py-1 text-xs font-mono"
+          style={{ color: "var(--text-primary)", background: index === activeIndex ? "var(--chrome-hover)" : "transparent" }}
+        >
+          {name}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/**
+ * A text box that completes column names: the names starting with what is
+ * typed are listed beneath (every name while the box is empty), Up/Down move
+ * through them, Tab or a click completes the name, Escape closes the list,
+ * and Enter or leaving the box commits what was typed.
+ */
+function CompletingInput({
+  draft,
+  onDraftChange,
+  onCommit,
+  onAccept,
+  suggestions,
+  exclude = [],
+  ariaLabel,
+  placeholder,
+  id,
+  autoFocus,
+  className = "",
+}: {
+  draft: string
+  onDraftChange: (next: string) => void
+  onCommit: (draft: string) => void
+  onAccept: (name: string) => void
+  suggestions: string[]
+  exclude?: string[]
+  ariaLabel: string
+  placeholder?: string
+  id?: string
+  autoFocus?: boolean
+  className?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const [active, setActive] = useState(0)
+  const listId = useId()
+  const matches = open ? completionMatches(suggestions, draft.trim(), exclude) : []
+  const activeIndex = Math.min(active, Math.max(matches.length - 1, 0))
+  const accept = (name: string) => {
+    setOpen(false)
+    onAccept(name)
+  }
+  return (
+    <div className={`relative ${className}`}>
+      <input
+        id={id}
+        type="text"
+        role="combobox"
+        aria-label={ariaLabel}
+        aria-autocomplete="list"
+        aria-expanded={matches.length > 0}
+        aria-controls={listId}
+        aria-activedescendant={matches.length > 0 ? `${listId}-${activeIndex}` : undefined}
+        value={draft}
+        placeholder={placeholder}
+        autoFocus={autoFocus}
+        autoComplete="off"
+        spellCheck={false}
+        onChange={(event) => {
+          onDraftChange(event.target.value)
+          setOpen(true)
+          setActive(0)
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => {
+          setOpen(false)
+          onCommit(draft)
+        }}
+        onKeyDown={(event) => {
+          if (matches.length > 0 && event.key === "ArrowDown") {
+            event.preventDefault()
+            setActive((activeIndex + 1) % matches.length)
+          } else if (matches.length > 0 && event.key === "ArrowUp") {
+            event.preventDefault()
+            setActive((activeIndex - 1 + matches.length) % matches.length)
+          } else if (matches.length > 0 && event.key === "Tab") {
+            event.preventDefault()
+            accept(matches[activeIndex])
+          } else if (open && event.key === "Escape") {
+            event.preventDefault()
+            event.stopPropagation()
+            setOpen(false)
+          } else if (event.key === "Enter") {
+            event.preventDefault()
+            setOpen(false)
+            onCommit(draft)
+          }
+        }}
+        className={`${CONTROL_CLASS} font-mono`}
+        style={INPUT_STYLE}
+      />
+      <CompletionList id={listId} matches={matches} activeIndex={activeIndex} onPick={accept} onHover={setActive} />
+    </div>
+  )
+}
+
+/** A column-name box that completes from the suggested columns and accepts any typed name. */
+export function ColumnPicker(props: {
+  value: string
+  onCommit: (next: string) => void
+  suggestions: string[]
+  ariaLabel: string
+  placeholder?: string
+  id?: string
+  autoFocus?: boolean
+}) {
+  // Re-keyed by the committed value so the draft follows outside changes.
+  return <ColumnPickerDraft key={props.value} {...props} />
+}
+
+function ColumnPickerDraft({
   value,
   onCommit,
   suggestions,
@@ -164,27 +318,26 @@ export function ColumnPicker({
   id?: string
   autoFocus?: boolean
 }) {
-  const listId = useId()
+  const [draft, setDraft] = useState(value)
+  const commit = (next: string) => {
+    const trimmed = next.trim()
+    if (trimmed !== value) onCommit(trimmed)
+  }
   return (
-    <>
-      <CommittedTextField
-        id={id}
-        type="text"
-        list={listId}
-        aria-label={ariaLabel}
-        value={value}
-        onCommit={(next) => onCommit(next.trim())}
-        placeholder={placeholder}
-        autoFocus={autoFocus}
-        className={`${CONTROL_CLASS} font-mono`}
-        style={INPUT_STYLE}
-      />
-      <datalist id={listId}>
-        {suggestions.map((name) => (
-          <option key={name} value={name} />
-        ))}
-      </datalist>
-    </>
+    <CompletingInput
+      draft={draft}
+      onDraftChange={setDraft}
+      onCommit={commit}
+      onAccept={(name) => {
+        setDraft(name)
+        commit(name)
+      }}
+      suggestions={suggestions}
+      ariaLabel={ariaLabel}
+      placeholder={placeholder}
+      id={id}
+      autoFocus={autoFocus}
+    />
   )
 }
 
@@ -199,7 +352,7 @@ function Chip({ label, onRemove, removeLabel }: { label: string; onRemove: () =>
   )
 }
 
-/** An ordered list of column names as chips, with a picker to add one. */
+/** An ordered list of column names as chips, with a completing box to add one. */
 export function ColumnListField({
   columns,
   onChange,
@@ -214,17 +367,10 @@ export function ColumnListField({
   placeholder?: string
 }) {
   const [draft, setDraft] = useState("")
-  const listId = useId()
-  const add = () => {
-    const name = draft.trim()
+  const add = (raw: string) => {
+    const name = raw.trim()
     if (name && !columns.includes(name)) onChange([...columns, name])
     setDraft("")
-  }
-  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Enter") {
-      event.preventDefault()
-      add()
-    }
   }
   return (
     <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={ariaLabel}>
@@ -236,25 +382,17 @@ export function ColumnListField({
           onRemove={() => onChange(columns.filter((c) => c !== name))}
         />
       ))}
-      <input
-        type="text"
-        list={listId}
-        aria-label={`${ariaLabel}: add`}
-        value={draft}
+      <CompletingInput
+        draft={draft}
+        onDraftChange={setDraft}
+        onCommit={add}
+        onAccept={add}
+        suggestions={suggestions}
+        exclude={columns}
+        ariaLabel={`${ariaLabel}: add`}
         placeholder={placeholder}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={add}
-        onKeyDown={onKeyDown}
-        className={`${CONTROL_CLASS} font-mono flex-1 basis-28`}
-        style={INPUT_STYLE}
+        className="flex-1 basis-28 min-w-0"
       />
-      <datalist id={listId}>
-        {suggestions
-          .filter((name) => !columns.includes(name))
-          .map((name) => (
-            <option key={name} value={name} />
-          ))}
-      </datalist>
     </div>
   )
 }

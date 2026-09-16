@@ -8,6 +8,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react"
 
 import { ConfigCheckbox } from "../../../components/form"
 import { INPUT_STYLE } from "../_shared"
+import { completionMatches } from "./completion"
 import { FormulaError, displayFormula, parseFormula, typedAsFormula } from "./formula"
 import {
   AGGREGATIONS,
@@ -34,6 +35,7 @@ import {
   CONTROL_CLASS,
   ColumnListField,
   ColumnPicker,
+  CompletionList,
   ConditionList,
   Field,
   LiteralValueInput,
@@ -199,16 +201,13 @@ function exprTypeValue(expr: Expr): Expr["type"] {
 
 const WORD_BEFORE_CARET = /[A-Za-z_][A-Za-z0-9_]*$/
 const IDENTIFIER_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
-const MAX_COMPLETIONS = 8
 
 /** Names starting with the word being typed, columns first then variables. */
 function completionsFor(draft: string, caret: number, names: string[]): { prefix: string; matches: string[] } {
   const match = WORD_BEFORE_CARET.exec(draft.slice(0, caret))
   if (!match) return { prefix: "", matches: [] }
   const prefix = match[0]
-  const lower = prefix.toLowerCase()
-  const matches = names.filter((name, index) => names.indexOf(name) === index && name.toLowerCase().startsWith(lower) && name !== prefix)
-  return { prefix, matches: matches.slice(0, MAX_COMPLETIONS) }
+  return { prefix, matches: completionMatches(names, prefix) }
 }
 
 /**
@@ -317,36 +316,7 @@ function FormulaField({ text, onCommit, variables, columns }: { text: string; on
             <Hint>No column names known yet: run the step above to load them.</Hint>
           </div>
         )}
-        {showList && (
-          <ul
-            id={listId}
-            role="listbox"
-            aria-label="Matching columns"
-            className="absolute left-0 right-0 z-20 mt-1 max-h-48 overflow-y-auto rounded-md p-1 shadow-lg"
-            style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-bright)" }}
-          >
-            {matches.map((name, index) => (
-              <li
-                key={name}
-                id={`${listId}-${index}`}
-                role="option"
-                aria-selected={index === activeIndex}
-                onMouseDown={(event) => {
-                  event.preventDefault()
-                  complete(name)
-                }}
-                onMouseEnter={() => setActive(index)}
-                className="cursor-pointer rounded px-2 py-1 text-xs font-mono"
-                style={{
-                  color: "var(--text-primary)",
-                  background: index === activeIndex ? "var(--chrome-hover)" : "transparent",
-                }}
-              >
-                {name}
-              </li>
-            ))}
-          </ul>
-        )}
+        <CompletionList id={listId} matches={matches} activeIndex={activeIndex} onPick={complete} onHover={setActive} />
       </div>
       {problem && (
         <div className="mt-1">

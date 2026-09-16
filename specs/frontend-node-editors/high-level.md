@@ -217,7 +217,10 @@ column, conditional column, window aggregate, select, drop, rename, cast, sort, 
 group by, join, concat, pivot, unpivot, fill null, limit, and variable, and per-step forms whose column
 pickers offer upstream columns (for an edge from a multi-output producer such as a submodel,
 the columns of that output handle as recorded by the last preview) plus columns derived by
-earlier steps while accepting free text. A window expression offers the plain aggregates plus row number, running total,
+earlier steps while accepting free text: every column box lists the names starting with
+what is typed beneath it (all of them while the box is empty), Up/Down move through them,
+Tab or a click completes the name, Escape closes the list, and Enter or leaving the box
+keeps what was typed. A window expression offers the plain aggregates plus row number, running total,
 previous value, rank, dense rank and forward/backward fill, an optional in-group order
 (one direction, with a hint that ordering needs a group column), a rank direction, and a
 quantile; a text-join expression lists two or more parts and a separator; a group-by
