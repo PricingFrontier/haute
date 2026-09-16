@@ -260,6 +260,8 @@ export interface NodeResult {
   node_statuses?: Record<string, BackendNodeStatus>
   node_columns?: Record<string, ColumnInfo[]>
   node_available_columns?: Record<string, ColumnInfo[]>
+  /** Per-output-handle columns of every multi-frame producer the preview ran. */
+  node_frame_columns?: Record<string, Record<string, ColumnInfo[]>>
   node_schema_warnings?: Record<string, SchemaWarning[]>
   execution_metrics?: ExecutionMetrics | null
 }

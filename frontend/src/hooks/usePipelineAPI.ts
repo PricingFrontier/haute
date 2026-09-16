@@ -243,6 +243,7 @@ function applyPreviewColumnsToNodes(nodes: Node[], nodeId: string, columns: Colu
           ...n.data,
           _columns: columns,
           _availableColumns: result.available_columns ?? columns,
+          _frameColumns: result.frame_columns ?? result.node_frame_columns?.[nodeId],
           _schemaWarnings: result.schema_warnings ?? [],
           _columnsSource: source,
           _columnsStructuralVersion: structuralVersion,
@@ -256,6 +257,7 @@ function applyPreviewSchemaMapsToNodes(nodes: Node[], result: NodeResult, source
   const nodeColumns = result.node_columns ?? {}
   if (Object.keys(nodeColumns).length === 0) return nodes
   const nodeAvailableColumns = result.node_available_columns ?? {}
+  const nodeFrameColumns = result.node_frame_columns ?? {}
   const nodeSchemaWarnings = result.node_schema_warnings ?? {}
   return nodes.map((n) => {
     const columns = nodeColumns[n.id]
@@ -266,6 +268,7 @@ function applyPreviewSchemaMapsToNodes(nodes: Node[], result: NodeResult, source
         ...n.data,
         _columns: columns,
         _availableColumns: nodeAvailableColumns[n.id] ?? columns,
+        _frameColumns: nodeFrameColumns[n.id],
         _schemaWarnings: nodeSchemaWarnings[n.id] ?? [],
         _columnsSource: source,
         _columnsStructuralVersion: structuralVersion,

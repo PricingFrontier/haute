@@ -2375,6 +2375,7 @@ describe("usePipelineAPI", () => {
         { name: "region", dtype: "str" },
       ],
       schema_warnings: [{ column: "region", status: "missing" }],
+      frame_columns: { output_1: [{ name: "premium", dtype: "f64" }], output_2: [{ name: "claims", dtype: "i64" }] },
       preview: [{ premium: 120.5 }],
       row_count: 1,
       column_count: 1,
@@ -2417,6 +2418,10 @@ describe("usePipelineAPI", () => {
       { name: "region", dtype: "str" },
     ])
     expect(state.nodes[0].data._schemaWarnings).toEqual([{ column: "region", status: "missing" }])
+    expect(state.nodes[0].data._frameColumns).toEqual({
+      output_1: [{ name: "premium", dtype: "f64" }],
+      output_2: [{ name: "claims", dtype: "i64" }],
+    })
     expect(state.nodes[0].data._columnsStructuralVersion).toBe(structuralVersion)
     expect(state.undoStack).toHaveLength(0)
     expect(state.redoStack).toHaveLength(0)

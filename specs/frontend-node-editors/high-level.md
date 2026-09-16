@@ -215,8 +215,9 @@ steps) that opens, in place, a chooser of every step kind by name, sectioned as 
 columns, combine and values, with what the kind does as its tooltip (arrow keys move between kinds, Escape closes and returns focus), covering filter, derived
 column, conditional column, window aggregate, select, drop, rename, cast, sort, unique,
 group by, join, concat, pivot, unpivot, fill null, limit, and variable, and per-step forms whose column
-pickers offer upstream columns plus columns derived by earlier steps while accepting free
-text. A window expression offers the plain aggregates plus row number, running total,
+pickers offer upstream columns (for an edge from a multi-output producer such as a submodel,
+the columns of that output handle as recorded by the last preview) plus columns derived by
+earlier steps while accepting free text. A window expression offers the plain aggregates plus row number, running total,
 previous value, rank, dense rank and forward/backward fill, an optional in-group order
 (one direction, with a hint that ordering needs a group column), a rank direction, and a
 quantile; a text-join expression lists two or more parts and a separator; a group-by

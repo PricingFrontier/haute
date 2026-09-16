@@ -527,13 +527,24 @@ function InstancePanel({
 
 type ColumnInfo = { name: string; dtype: string }
 
+/**
+ * The columns an edge carries: the source's columns for the output handle
+ * the edge leaves from (a submodel output), else the source's columns.
+ */
+function edgeSourceColumns(edge: SimpleEdge, nodeMap: Record<string, SimpleNode>): ColumnInfo[] | undefined {
+  const data = nodeMap[edge.source]?.data as Record<string, unknown> | undefined
+  const frames = data?._frameColumns as Record<string, ColumnInfo[]> | undefined
+  const handle = edge.sourceHandle
+  if (handle && frames?.[handle]) return frames[handle]
+  return data?._columns as ColumnInfo[] | undefined
+}
+
 /** Collect upstream columns from already-filtered incoming edges. */
 function collectColumnsFromEdges(edges: SimpleEdge[], nodeMap: Record<string, SimpleNode>): ColumnInfo[] {
   const cols: ColumnInfo[] = []
   const seen = new Set<string>()
   edges.forEach(e => {
-    const src = nodeMap[e.source]
-    const srcCols = (src?.data as Record<string, unknown>)?._columns as ColumnInfo[] | undefined
+    const srcCols = edgeSourceColumns(e, nodeMap)
     if (srcCols) srcCols.forEach(c => { if (!seen.has(c.name)) { seen.add(c.name); cols.push(c) } })
   })
   return cols
@@ -545,11 +556,7 @@ function columnsSignature(columns: ColumnInfo[] | undefined): string {
 
 function upstreamColumnsSignature(edges: SimpleEdge[], nodeMap: Record<string, SimpleNode>): string {
   return edges
-    .map((edge) => {
-      const src = nodeMap[edge.source]
-      const srcCols = (src?.data as Record<string, unknown> | undefined)?._columns as ColumnInfo[] | undefined
-      return `${edge.source}\u0003${columnsSignature(srcCols)}`
-    })
+    .map((edge) => `${edge.source}\u0003${edge.sourceHandle ?? ""}\u0003${columnsSignature(edgeSourceColumns(edge, nodeMap))}`)
     .join("\u0004")
 }
 
@@ -660,6 +667,7 @@ function UnknownNodeTypeDiagnostic({
 const CACHED_PREVIEW_KEYS: readonly (keyof HauteNodeData)[] = [
   "_columns",
   "_availableColumns",
+  "_frameColumns",
   "_schemaWarnings",
   "_columnsSource",
   "_columnsStructuralVersion",
