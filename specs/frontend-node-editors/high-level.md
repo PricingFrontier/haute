@@ -209,7 +209,9 @@ numbered step cards ("Start from", then Step 1 onwards, the same numbering every
 uses) that read as plain-English summaries and open one at a time through a
 keyboard-operable disclosure (a new step opens itself; Escape collapses; deleting a card
 moves focus to the next disclosure or to `Add step`), each with delete, move up, and move
-down, a grouped `Add step` menu (rows, columns, combine, values) covering filter, derived
+down, an `Add step` button under the last card (under the start card while there are no
+steps) that opens, in place, a chooser of every step kind by name with what the kind does
+as its tooltip (arrow keys move between kinds, Escape closes and returns focus), covering filter, derived
 column, conditional column, window aggregate, select, drop, rename, cast, sort, unique,
 group by, join, concat, pivot, unpivot, fill null, limit, and variable, and per-step forms whose column
 pickers offer upstream columns plus columns derived by earlier steps while accepting free
@@ -260,8 +262,7 @@ code (or empty code for an empty list) into `code` and removes `steps`. After ea
 successful render the rendered code is also written into `code` so read-only views stay
 current. As soon as the start input is known (chosen in the selector, or the node's only
 connected input) the start step is written to the config, so the node renders
-`df = <input>` and can be previewed before any step is added. An empty step list offers
-quick-add buttons for the most common first steps. A
+`df = <input>` and can be previewed before any step is added. A
 node without inputs cannot add steps and is told to connect an input or switch to code,
 with the switch offered there. Renaming an upstream node rewrites the input references
 inside a stepped transform's steps instead of recording an `inputMapping` binding on it.

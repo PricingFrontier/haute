@@ -19,8 +19,6 @@ function newStepId(): string {
   return `s${Date.now().toString(36)}${stepCounter.toString(36)}`
 }
 
-const QUICK_ADD: Array<Exclude<StepKind, "source">> = ["filter", "with_column", "group_by"]
-
 const SWITCH_CONFIRMATION =
   "Switch this transform to code? The steps are removed and the generated code becomes editable. This cannot be undone."
 
@@ -171,11 +169,8 @@ export default function PolarsStepsEditor({
     <div className="flex-1 flex flex-col min-h-0 overflow-y-auto px-3 py-2 gap-2" data-testid="polars-steps-editor">
       <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
 
-      <div className="flex items-center justify-between gap-3 shrink-0">
-        <div className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-secondary)" }}>
-          Steps
-        </div>
-        <AddStepMenu onAdd={addStep} disabled={!canAdd} buttonRef={(el) => (addButton.current = el)} />
+      <div className="text-[11px] font-bold uppercase tracking-[0.08em] shrink-0" style={{ color: "var(--text-secondary)" }}>
+        Steps
       </div>
 
       {!hasInputs ? (
@@ -230,25 +225,7 @@ export default function PolarsStepsEditor({
             )}
           </div>
 
-          {stepCards.length === 0 ? (
-            <EmptyBox>
-              <span>Add your first step</span>
-              <div className="flex flex-wrap justify-center gap-1.5">
-                {QUICK_ADD.map((kind) => (
-                  <button
-                    key={kind}
-                    type="button"
-                    disabled={!canAdd}
-                    onClick={() => addStep(kind)}
-                    className="add-row-btn focus-ring rounded-md px-2.5 py-1.5 text-xs font-medium disabled:opacity-50"
-                    style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}
-                  >
-                    {kindLabel(kind)}
-                  </button>
-                ))}
-              </div>
-            </EmptyBox>
-          ) : (
+          {stepCards.length > 0 && (
             <div className="grid gap-1.5" role="list" aria-label="Steps">
               {stepCards.map((step, offset) => {
                 const index = offset + 1
@@ -307,6 +284,8 @@ export default function PolarsStepsEditor({
               })}
             </div>
           )}
+
+          <AddStepMenu onAdd={addStep} disabled={!canAdd} buttonRef={(el) => (addButton.current = el)} />
 
           <GeneratedCodePanel
             code={rendered.code}

@@ -89,16 +89,17 @@ describe("PolarsStepsEditor", () => {
   })
   afterEach(cleanup)
 
-  it("seeds the start input and offers quick-add buttons for the first step", async () => {
+  it("seeds the start input and adds the first step from the chooser under it", async () => {
     const spy = vi.fn()
     render(<Harness initial={{ steps: [] }} inputSources={[quotes]} spy={spy} />)
     expect(screen.getByLabelText("Start from input")).toHaveValue("quotes")
-    expect(screen.getByText("Add your first step")).toBeInTheDocument()
+    expect(screen.queryByRole("list", { name: "Steps" })).not.toBeInTheDocument()
     // The only input is written as the start step at once, so the node
     // already renders `df = quotes` and can be previewed.
     await waitFor(() => expect(spy).toHaveBeenCalledWith("steps", [expect.objectContaining({ kind: "source", input: "quotes" })]), { timeout: 5000 })
     await waitFor(() => expect(spy).toHaveBeenCalledWith("code", "df = quotes"), { timeout: 5000 })
-    fireEvent.click(screen.getByRole("button", { name: "Filter rows" }))
+    fireEvent.click(screen.getByRole("button", { name: "Add step" }))
+    fireEvent.click(screen.getByRole("menuitem", { name: "Filter rows" }))
     await waitFor(() => expect(lastSteps(spy)).toHaveLength(2), { timeout: 5000 })
     const steps = lastSteps(spy) as Step[]
     expect(steps[0]).toMatchObject({ kind: "source", input: "quotes" })
@@ -106,13 +107,16 @@ describe("PolarsStepsEditor", () => {
     expect(screen.getByRole("button", { name: "Step 1: Filter rows" })).toHaveAttribute("aria-expanded", "true")
   })
 
-  it("adds a step from the grouped menu and writes the rendered code into the config", async () => {
+  it("adds a step from the inline chooser, whose tooltips explain each kind, and writes the rendered code into the config", async () => {
     const spy = vi.fn()
     render(<Harness initial={{ steps: [source] }} inputSources={[quotes, rates]} spy={spy} />)
     fireEvent.click(screen.getByRole("button", { name: "Add step" }))
     const menu = screen.getByRole("menu", { name: "Add step" })
-    expect(within(menu).getByRole("group", { name: "Combine" })).toBeInTheDocument()
-    fireEvent.click(within(menu).getByRole("menuitem", { name: /Limit rows/ }))
+    expect(within(menu).getAllByRole("menuitem")).toHaveLength(16)
+    expect(within(menu).getByRole("menuitem", { name: "Limit rows" })).toHaveAttribute("title", "Keep the first N rows")
+    expect(screen.queryByRole("button", { name: "Add step" })).not.toBeInTheDocument()
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Limit rows" }))
+    expect(screen.getByRole("button", { name: "Add step" })).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole("button", { name: "Step 1: Limit rows" })).toBeInTheDocument(), { timeout: 5000 })
     await waitFor(() => expect(spy).toHaveBeenCalledWith("code", "df = quotes\ndf = df.step_1()"), { timeout: 5000 })
     expect(screen.getByTestId("polars-generated-code")).toHaveTextContent("df = df.step_1()")
@@ -242,7 +246,7 @@ describe("PolarsStepsEditor", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true)
     render(<Harness initial={{ steps: [] }} inputSources={[]} onReplace={onReplace} />)
     expect(screen.getByText(/Connect an input to start building steps/)).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Add step" })).toBeDisabled()
+    expect(screen.queryByRole("button", { name: "Add step" })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Switch to code" }))
     expect(onReplace).toHaveBeenCalledWith({ code: "" })
     expect(mockRender).not.toHaveBeenCalled()
