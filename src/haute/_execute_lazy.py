@@ -999,20 +999,31 @@ def _runtime_lineage_demands(
 
 
 def _runtime_projectable_source_ids(
-    parent_ids: Iterable[str],
+    demands_by_edge: Mapping[projection_planner.ProjectionEdgeKey, Iterable[str]],
     node_map: Mapping[str, GraphNode],
 ) -> frozenset[str]:
-    """Return source parents whose lazy scans can absorb an edge projection."""
+    """Return source parents whose lazy scans can absorb their runtime edge demand."""
     source_types = {NodeType.API_INPUT, NodeType.DATA_INPUT, NodeType.EXTERNAL_FILE}
+    demand_by_parent: dict[str, set[str]] = {}
+    for edge_key, columns in demands_by_edge.items():
+        demand_by_parent.setdefault(edge_key.source, set()).update(columns)
     projectable: set[str] = set()
-    for parent_id in parent_ids:
+    for parent_id, demand in demand_by_parent.items():
         parent = node_map[parent_id]
         if parent.data.nodeType not in source_types:
             continue
         code = parent.data.config.get("code")
         if not isinstance(code, str) or not code.strip():
             projectable.add(parent_id)
-        elif projection_planner.source_user_code_preserves_column_projection(code):
+        elif (
+            projection_planner.source_user_code_scan_columns(
+                parent.data.config,
+                code,
+                demand,
+                source_columns=None,
+            )
+            is not None
+        ):
             projectable.add(parent_id)
     return frozenset(projectable)
 
@@ -1621,7 +1632,7 @@ def _execute_lazy(
                     public_projection_plan,
                     demands_by_edge=runtime_edge_demands,
                     resolved_parent_ids=_runtime_projectable_source_ids(
-                        (key.source for key in runtime_edge_demands),
+                        runtime_edge_demands,
                         node_map,
                     ),
                     relevant_edges=relevant_edges,
@@ -2498,7 +2509,7 @@ def _execute_eager_core(
                     ):
                         assert execution_context is not None
                         resolved_parent_ids = _runtime_projectable_source_ids(
-                            (key.source for key in runtime_edge_demands),
+                            runtime_edge_demands,
                             node_map,
                         )
                         recorded_runtime_edge_demands.update(
