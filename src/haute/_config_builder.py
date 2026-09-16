@@ -33,6 +33,7 @@ from haute._explore_charts import validate_explore_charts
 from haute._explore_overview import validate_explore_overview
 from haute._explore_pivots import validate_explore_pivot_state
 from haute._logging import get_logger
+from haute._polars_steps import PolarsStepError, render_polars_steps
 from haute._types import (
     COLUMN_CONFIG_KEYS,
     MODEL_SCORE_CONFIG_KEYS,
@@ -371,6 +372,61 @@ def _sidecar_required_error(node_type: NodeType, func_name: str) -> ConfigError:
     )
 
 
+def _reconcile_polars_steps(
+    config: dict[str, Any],
+    param_names: list[str],
+    config_ref: str,
+    func_name: str,
+) -> dict[str, Any]:
+    """Keep a polars sidecar's ``steps`` only while they still render the body.
+
+    The ``.py`` body is the runtime truth. A body that differs from the
+    rendering of the persisted steps was edited by hand, so the steps are
+    discarded and the node becomes code-only: the config is marked with an
+    editor-state ``_steps_discarded`` reason and the sidecar path is kept in
+    ``_discarded_sidecar`` so the next save retires the file. An empty body
+    with unrenderable steps is how an incomplete step list is saved, so it
+    keeps its steps.
+    """
+    if "steps" not in config:
+        return config
+    steps = config["steps"]
+    if not isinstance(steps, list):
+        raise ConfigError(
+            "Polars sidecar 'steps' must be a list.",
+            func_name=func_name,
+            config_path=config_ref,
+        )
+    if config.get("inputMapping") is not None and not config.get("instanceOf"):
+        raise ConfigError(
+            "A stepped transform addresses its inputs by their edge names and "
+            "cannot carry inputMapping.",
+            func_name=func_name,
+            config_path=config_ref,
+        )
+    body_code = str(config.get("code") or "")
+    try:
+        rendered = render_polars_steps(steps, param_names).code
+    except PolarsStepError as exc:
+        if not body_code:
+            return config
+        reason = f"the steps cannot be rendered ({exc})"
+    else:
+        if rendered == body_code:
+            return config
+        reason = "the function body no longer matches the rendered steps"
+    reconciled = {k: v for k, v in config.items() if k != "steps"}
+    reconciled["_steps_discarded"] = f"Steps were discarded because {reason}."
+    reconciled["_discarded_sidecar"] = config_ref
+    logger.warning(
+        "polars_steps_discarded",
+        func_name=func_name,
+        config_path=config_ref,
+        reason=reason,
+    )
+    return reconciled
+
+
 def _resolve_node_config(
     decorator_kwargs: dict[str, Any],
     body: str,
@@ -437,6 +493,8 @@ def _resolve_node_config(
             ) from exc
         # Code lives in the .py function body, not in the JSON file.
         config = _attach_code_from_body(loaded, node_type, body, param_names)
+        if node_type == NodeType.POLARS:
+            config = _reconcile_polars_steps(config, param_names, normalised_ref, func_name)
     elif has_config_folder(node_type):
         raise _sidecar_required_error(node_type, func_name)
     else:

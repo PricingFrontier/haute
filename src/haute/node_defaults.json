@@ -7,7 +7,7 @@
   "explore": {},
   "externalFile": {"path": "", "fileType": "pickle", "code": ""},
   "constant": {"values": [{"name": "constant_1", "value": "1.0"}]},
-  "polars": {},
+  "polars": {"steps": []},
   "edgeJoin": {"how": "left", "suffix": "_right"},
   "banding": {"factors": [{"banding": "continuous", "column": "", "outputColumn": "", "rules": [], "default": null}]},
   "scenarioExpander": {},

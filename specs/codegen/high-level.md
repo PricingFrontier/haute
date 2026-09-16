@@ -218,6 +218,16 @@ Out of scope (owned by neighbouring components):
   source edit, an unparseable emitted file — raises rather than degrading to a
   partial or passthrough result. See Failure model.
 
+**Stepped transforms.** When a transform config carries `steps`, `_gen_transform` renders
+the body with the shared step renderer against the generated parameter names instead of
+`config["code"]`, references the node's `config/polars/<name>.json` sidecar through the
+decorator `config=` keyword, and on a render failure emits the same incomplete placeholder
+body that a code-less transform emits; the save warning for incomplete transforms then
+names the failing step. A stepped original that also carries `inputMapping` is rejected
+with a `ConfigError`. Generating, parsing, and extracting a stepped transform reproduces
+the rendered code exactly, which is what lets the parser tell a hand-edited body from a
+rendered one.
+
 ## Design rationale
 
 - **Text generation with a structured mutation boundary.** Bodies are built from format

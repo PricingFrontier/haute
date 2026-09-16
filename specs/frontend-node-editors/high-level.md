@@ -202,6 +202,41 @@ backend API modules own validation and persistence.
   Input uses `tables`. Editors do not detect, upgrade, or mirror historical
   working-copy formats.
 
+**Transform step builder.** A new Transform node starts in step mode: its default config
+carries an empty `steps` list, and the editor renders the step builder instead of the code
+box whenever `config.steps` is a list. The builder shows a fixed start-from input selector,
+numbered step cards ("Start from", then Step 1 onwards, the same numbering every message
+uses) that read as plain-English summaries and open one at a time through a
+keyboard-operable disclosure (a new step opens itself; Escape collapses; deleting a card
+moves focus to the next disclosure or to `Add step`), each with delete, move up, and move
+down, a grouped `Add step` menu (rows, columns, combine, values) covering filter, derived
+column, conditional column, window aggregate, select, drop, rename, cast, sort, unique,
+group by, join, concat, fill null, limit, and variable, and per-step forms whose column
+pickers offer upstream columns plus columns derived by earlier steps while accepting free
+text. A value in a condition or expression is a typed literal, a column, or a variable
+defined by an earlier variable step, and each field offers only the sources and literal
+types the step schema accepts there (string operators take text values only; a variable
+holds a number, text or true/false; function arguments are labelled and typed per
+function). A locked generated-code panel shows the code the render endpoint returns for
+the current steps, names the failing step without opening it or collapsing the card being
+edited (a "Go to error" action opens it), tints the failing and the last execution-error
+line, and carries the confirmed one-way `Switch to code` action. Renders are tagged with
+the steps revision they were requested for, a response for an older revision never
+replaces a newer one, and the switch is enabled only while the step list is empty or the
+latest render succeeded for the current revision; on confirmation it writes that rendered
+code (or empty code for an empty list) into `code` and removes `steps`. After each
+successful render the rendered code is also written into `code` so read-only views stay
+current. An empty step list offers quick-add buttons for the most common first steps. A
+node without inputs cannot add steps and is told to connect an input or switch to code,
+with the switch offered there. Renaming an upstream node rewrites the input references
+inside a stepped transform's steps instead of recording an `inputMapping` binding on it.
+A node whose steps were discarded on load shows the discard reason above the code box.
+A persisted step whose shape the forms cannot edit (an unknown kind or a missing
+setting) renders as an invalid card that can only be deleted, never crashes the editor,
+and is skipped by column and variable suggestions; the backend already keeps such a list
+behind an incomplete body. A membership list keeps its chosen value type while empty.
+Nodes whose config has no `steps` list render the code box exactly as before.
+
 ## Design rationale
 
 The UI uses specialised editors rather than one schema-driven form because graph node contracts

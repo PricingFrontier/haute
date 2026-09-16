@@ -280,6 +280,24 @@ def _examples():
         node = next(node for node in variant.nodes if node.data.nodeType == node_type)
         node.data.config = {**config, "contract": "opaque", **deepcopy(_SHARED_COLUMN_CONFIG)}
         yield f"{node_type.value}-variant-{index}", variant
+    # A stepped transform persists its steps in the optional polars sidecar and
+    # regenerates its body from them; the sidecar must survive save -> parse.
+    variant = graph.model_copy(deep=True)
+    polars = next(node for node in variant.nodes if node.data.nodeType == NodeType.POLARS)
+    upstream_id = next(edge.source for edge in variant.edges if edge.target == polars.id)
+    upstream = next(node for node in variant.nodes if node.id == upstream_id)
+    stepped = polars.with_config(
+        {
+            "steps": [
+                {"id": "s", "kind": "source", "input": _sanitize_func_name(upstream.data.label)},
+                {"id": "l", "kind": "limit", "n": 5},
+            ],
+            "contract": "opaque",
+            **deepcopy(_SHARED_COLUMN_CONFIG),
+        }
+    )
+    variant.nodes[variant.nodes.index(polars)] = stepped
+    yield "polars-steps", variant
     # A registered source names a version or an alias, never both.
     for node_type in (NodeType.MODEL_SCORE, NodeType.OPTIMISER_APPLY):
         variant = graph.model_copy(deep=True)

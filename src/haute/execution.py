@@ -229,8 +229,7 @@ def canonical_dataframe_execution_graph(graph: PipelineGraph) -> PipelineGraph:
                     resolved_config[key] = resolved
                     node_changed = True
         if node_changed:
-            data = node.data.model_copy(update={"config": resolved_config})
-            nodes.append(node.model_copy(update={"data": data}))
+            nodes.append(node.with_config(resolved_config))
             changed = True
         else:
             nodes.append(node)

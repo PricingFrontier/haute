@@ -502,7 +502,11 @@ def _validator_issues(
                     )
                 elif value["name"]:
                     names.add(value["name"])
-    if node_type is NodeType.POLARS and (
+    if node_type is NodeType.POLARS and isinstance(config.get("steps"), list):
+        steps_error = config.get("_steps_error")
+        if steps_error:
+            issues.append(_issue("steps", "incomplete", str(steps_error)))
+    elif node_type is NodeType.POLARS and (
         not isinstance(config.get("code"), str) or not config["code"].strip()
     ):
         issues.append(_issue("code", "required", "Polars code must be non-empty."))

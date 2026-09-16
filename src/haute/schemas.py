@@ -774,6 +774,30 @@ class NodeResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class PolarsStepsRenderRequest(BaseModel):
+    """Render a low-code Transform step list to Polars code."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    steps: list[dict[str, Any]]
+    input_names: list[str] = Field(default_factory=list)
+
+
+class PolarsStepsRenderResponse(BaseModel):
+    """Either the rendered code with per-step line ranges or the failing step.
+
+    A step validation failure is data (``ok`` false with ``step_index`` and
+    ``message``), never a transport error, so a half-built step list renders
+    as an editor message rather than a failed request.
+    """
+
+    ok: bool
+    code: str = ""
+    step_lines: list[list[int]] = Field(default_factory=list)
+    step_index: int | None = None
+    message: str = ""
+
+
 class PreviewNodeRequest(BaseModel):
     graph: Graph
     node_id: str

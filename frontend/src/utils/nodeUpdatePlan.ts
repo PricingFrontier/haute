@@ -9,6 +9,7 @@ import {
 } from "./apiInputPorts"
 import { attachEditorEdgeIdentities } from "./editorIdentities"
 import { NODE_TYPES } from "./nodeTypes"
+import { renameStepInputs } from "./polarsStepInputs"
 
 type RenamePair = { from: string; to: string }
 
@@ -262,11 +263,51 @@ function targetInputCollision(affected: AffectedRenameTarget): string | null {
   return null
 }
 
+function isSteppedOrdinaryTransform(node: Node): boolean {
+  if (node.data.nodeType !== NODE_TYPES.POLARS) return false
+  const config = (node.data.config ?? {}) as Record<string, unknown>
+  if ("instanceOf" in config) return false
+  return Array.isArray(config.steps)
+}
+
 function isCodedOrdinaryTransform(node: Node): boolean {
   if (node.data.nodeType !== NODE_TYPES.POLARS) return false
   const config = (node.data.config ?? {}) as Record<string, unknown>
   if ("instanceOf" in config) return false
+  // A stepped transform's `code` is the rendering of its steps; renames
+  // rewrite the step references instead of recording an inputMapping.
+  if (Array.isArray(config.steps)) return false
   return typeof config.code === "string" && config.code.trim().length > 0
+}
+
+/**
+ * A stepped ordinary transform addresses its inputs by their current edge
+ * names inside `config.steps` (`source.input`, `join.input`, `concat.inputs`).
+ * A rename rewrites those references so the re-rendered code follows the edge;
+ * it never adds `inputMapping` to a stepped transform.
+ */
+function rewriteSteppedTransformInputs(
+  changes: MappingChanges,
+  affected: AffectedRenameTarget,
+): NodeUpdatePlanFailure | null {
+  const { scope, target, pairs } = affected
+  if (!isSteppedOrdinaryTransform(target)) return null
+  const label = String(target.data.label ?? target.id)
+  const edgeCollision = targetInputCollision(affected)
+  if (edgeCollision !== null) {
+    return { ok: false, error: `Target "${label}" already has an input named "${edgeCollision}".` }
+  }
+  const scopeChanges = changes.get(scope) ?? new Map<string, Record<string, unknown>>()
+  const config = scopeChanges.get(target.id) ?? ((target.data.config ?? {}) as Record<string, unknown>)
+  const renamed = renameStepInputs(config.steps as unknown[], new Map(pairs.map(({ from, to }) => [from, to])))
+  if (!renamed.ok) {
+    const duplicate = /"([^"]+)"/.exec(renamed.error)?.[1] ?? ""
+    return { ok: false, error: `Target "${label}" already has an input named "${duplicate}".` }
+  }
+  if (!renamed.changed) return null
+  scopeChanges.set(target.id, { ...config, steps: renamed.steps })
+  changes.set(scope, scopeChanges)
+  return null
 }
 
 /**
@@ -374,6 +415,8 @@ function collectMappingChanges(
       if (failure) return failure
       const bindingFailure = preserveCodedTransformBindings(changes, affected)
       if (bindingFailure) return bindingFailure
+      const stepFailure = rewriteSteppedTransformInputs(changes, affected)
+      if (stepFailure) return stepFailure
       for (const field of ["data_input", "banding_source", "ratebook_input"] as const) {
         const scalarFailure = applyConfigMapping(changes, affected.scope, affected.target, field, affected.pairs, false)
         if (scalarFailure) return scalarFailure

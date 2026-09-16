@@ -1,4 +1,5 @@
 import type { Edge, Node, XYPosition } from "@xyflow/react"
+import { isSteppedTransformConfig, renameStepInputs } from "./polarsStepInputs"
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import { NODE_TYPES } from "./nodeTypes"
 import { appEdge, appNode, selectOnlyNode } from "./flowElements"
@@ -377,6 +378,8 @@ function assertDownstreamInputMappingCanBeRewritten(
   if (!target) return
 
   const config = { ...(target.data.config as Record<string, unknown> | undefined) }
+  // A stepped transform rewrites its step references in place (no mapping).
+  if (isSteppedTransformConfig(config)) return
   const rawInputMapping = config.inputMapping
   if (rawInputMapping !== undefined && !isRecord(rawInputMapping)) {
     throw new Error("Cannot rewrite a malformed inputMapping; expected an object")
@@ -412,6 +415,15 @@ function rewriteDownstreamInputMapping(
   if (node.id !== targetEdge.target) return node
 
   const config = { ...(node.data.config as Record<string, unknown> | undefined) }
+  if (isSteppedTransformConfig(config)) {
+    // A stepped transform addresses inputs by edge name inside its steps and
+    // never carries inputMapping, so the join name replaces the old input
+    // reference directly.
+    const renamed = renameStepInputs(config.steps, new Map([[oldCurrentInputName, newCurrentInputName]]))
+    if (!renamed.ok) throw new Error(`Cannot rewrite stepped transform inputs: ${renamed.error}`)
+    if (!renamed.changed) return node
+    return { ...node, data: { ...node.data, config: { ...config, steps: renamed.steps } } }
+  }
   const rawInputMapping = config.inputMapping
   if (rawInputMapping !== undefined && !isRecord(rawInputMapping)) {
     throw new Error("Cannot rewrite a malformed inputMapping; expected an object")
