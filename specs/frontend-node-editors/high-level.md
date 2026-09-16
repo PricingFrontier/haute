@@ -243,7 +243,9 @@ spacing survive collapsing and reopening the card and the card summary shows the
 text (text that no longer describes the expression is replaced by a fresh rendering);
 a function typed as a formula stays a formula in the editor; a new formula box starts empty
 (a placeholder tree keeps the step renderable until something is typed) with an example
-formula as a tooltip on the box and on an info icon beside its label; text that cannot be read
+formula as a tooltip on the box and on an info icon beside its label; as a name is typed the
+columns and earlier variables starting with it are listed under the box (Up/Down move, Tab
+or a click completes the name, backticked when it is not an identifier, Escape closes); text that cannot be read
 keeps the last good expression and explains why in a muted note, and an expression text cannot express (one
 holding a window, conditional or text join) is edited in the structured
 left/operator/right form instead. An operand field also offers an "Expression" source that

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, cleanup, fireEvent } from "@testing-library/react"
+import { render, screen, cleanup, fireEvent, within } from "@testing-library/react"
 import { useState } from "react"
 
 import { summarizeStep } from "../catalogue"
@@ -440,6 +440,43 @@ describe("step forms only build schema-valid payloads", () => {
     expect(screen.getByText(/Not understood: Missing a closing bracket/)).toBeInTheDocument()
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
     expect(latest.expr).toMatchObject({ type: "function", fn: "round", text: "round((premium + 1), 2)" })
+  })
+
+  it("completes column names in the formula box with the arrow keys and Tab", () => {
+    const spy = vi.fn()
+    const step: Step = {
+      id: "w",
+      kind: "with_column",
+      name: "x",
+      expr: { type: "binary", left: { kind: "column", name: "a" }, op: "+", right: { kind: "literal", type: "number", value: 1 }, text: "" },
+    }
+    const wide: StepFormContext = { ...ctx, columns: ["premium", "premium_net", "region", "rate"], variables: ["rate_var"] }
+    render(
+      <StepForm
+        step={step}
+        onChange={(next) => {
+          spy(next)
+        }}
+        ctx={wide}
+      />,
+    )
+    const input = screen.getByRole("combobox", { name: "Formula" })
+    fireEvent.change(input, { target: { value: "pre" } })
+    const list = screen.getByRole("listbox", { name: "Matching columns" })
+    expect(within(list).getAllByRole("option").map((o) => o.textContent)).toEqual(["premium", "premium_net"])
+    expect(within(list).getByRole("option", { name: "premium" })).toHaveAttribute("aria-selected", "true")
+    fireEvent.keyDown(input, { key: "ArrowDown" })
+    expect(within(list).getByRole("option", { name: "premium_net" })).toHaveAttribute("aria-selected", "true")
+    fireEvent.keyDown(input, { key: "Tab" })
+    expect(input).toHaveValue("premium_net")
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
+    // keeps typing: the word under the caret drives the list, variables included
+    fireEvent.change(input, { target: { value: "premium_net * ra" } })
+    expect(within(screen.getByRole("listbox")).getAllByRole("option").map((o) => o.textContent)).toEqual(["rate", "rate_var"])
+    fireEvent.keyDown(input, { key: "Escape" })
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
+    fireEvent.keyDown(input, { key: "Enter" })
+    expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ expr: expect.objectContaining({ text: "premium_net * ra" }) }))
   })
 
   it("pivot columns pair a value with a suggested name and share one type", () => {

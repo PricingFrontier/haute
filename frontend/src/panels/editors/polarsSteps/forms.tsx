@@ -4,7 +4,7 @@
  * widths so nothing scrolls horizontally in the node panel.
  */
 import { Info, Plus, X } from "lucide-react"
-import { useId, useState, type ReactNode } from "react"
+import { useEffect, useId, useRef, useState, type ReactNode } from "react"
 
 import { ConfigCheckbox } from "../../../components/form"
 import { INPUT_STYLE } from "../_shared"
@@ -189,7 +189,7 @@ const FORMULA_EXAMPLE = "example: (premium + commission) * tax / 12"
 function FormulaEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "binary" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
   const text = displayFormula(expr, ctx.variables)
   if (text === null) return <StructuredFormula expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
-  return <FormulaField key={text} text={text} onCommit={onChange} variables={ctx.variables} />
+  return <FormulaField key={text} text={text} onCommit={onChange} variables={ctx.variables} columns={ctx.columns} />
 }
 
 /** A function typed as a formula stays a formula in the editor and the "Computed as" select. */
@@ -201,10 +201,48 @@ function exprTypeValue(expr: Expr): Expr["type"] {
   return typedAsFormula(expr) ? "binary" : expr.type
 }
 
-function FormulaField({ text, onCommit, variables }: { text: string; onCommit: (next: Expr) => void; variables: string[] }) {
+const WORD_BEFORE_CARET = /[A-Za-z_][A-Za-z0-9_]*$/
+const IDENTIFIER_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
+const MAX_COMPLETIONS = 8
+
+/** Names starting with the word being typed, columns first then variables. */
+function completionsFor(draft: string, caret: number, names: string[]): { prefix: string; matches: string[] } {
+  const match = WORD_BEFORE_CARET.exec(draft.slice(0, caret))
+  if (!match) return { prefix: "", matches: [] }
+  const prefix = match[0]
+  const lower = prefix.toLowerCase()
+  const matches = names.filter((name, index) => names.indexOf(name) === index && name.toLowerCase().startsWith(lower) && name !== prefix)
+  return { prefix, matches: matches.slice(0, MAX_COMPLETIONS) }
+}
+
+/**
+ * The formula text box. As you type a name, the columns (and earlier
+ * variables) starting with it are listed underneath; Up/Down move through
+ * them, Tab or a click completes the name, Escape closes the list. Enter
+ * and leaving the box commit the formula.
+ */
+function FormulaField({ text, onCommit, variables, columns }: { text: string; onCommit: (next: Expr) => void; variables: string[]; columns: string[] }) {
   const [draft, setDraft] = useState(text)
+  const [caret, setCaret] = useState(text.length)
   const [problem, setProblem] = useState<string | null>(null)
+  const [listOpen, setListOpen] = useState(false)
+  const [active, setActive] = useState(0)
+  const input = useRef<HTMLInputElement | null>(null)
+  const pendingCaret = useRef<number | null>(null)
+  const listId = useId()
+  const { prefix, matches } = listOpen ? completionsFor(draft, caret, [...columns, ...variables]) : { prefix: "", matches: [] }
+  const showList = matches.length > 0
+  const activeIndex = Math.min(active, Math.max(matches.length - 1, 0))
+
+  useEffect(() => {
+    if (pendingCaret.current !== null && input.current) {
+      input.current.setSelectionRange(pendingCaret.current, pendingCaret.current)
+      pendingCaret.current = null
+    }
+  })
+
   const commit = () => {
+    setListOpen(false)
     if (draft.trim() === text) return
     try {
       onCommit(parseFormula(draft, variables))
@@ -213,6 +251,16 @@ function FormulaField({ text, onCommit, variables }: { text: string; onCommit: (
       setProblem(error instanceof FormulaError ? error.message : "The formula could not be read.")
     }
   }
+  const complete = (name: string) => {
+    const insert = IDENTIFIER_NAME.test(name) ? name : `\`${name}\``
+    const before = draft.slice(0, caret - prefix.length)
+    const after = draft.slice(caret)
+    setDraft(`${before}${insert}${after}`)
+    setCaret(before.length + insert.length)
+    pendingCaret.current = before.length + insert.length
+    setListOpen(false)
+  }
+
   return (
     <Field
       label={
@@ -224,23 +272,81 @@ function FormulaField({ text, onCommit, variables }: { text: string; onCommit: (
         </span>
       }
     >
-      <input
-        type="text"
-        aria-label="Formula"
-        title={FORMULA_EXAMPLE}
-        value={draft}
-        onChange={(event) => setDraft(event.target.value)}
-        onBlur={commit}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.preventDefault()
-            commit()
-          }
-        }}
-        className={`${CONTROL_CLASS} font-mono`}
-        style={INPUT_STYLE}
-        spellCheck={false}
-      />
+      <div className="relative">
+        <input
+          ref={input}
+          type="text"
+          role="combobox"
+          aria-label="Formula"
+          aria-autocomplete="list"
+          aria-expanded={showList}
+          aria-controls={listId}
+          aria-activedescendant={showList ? `${listId}-${activeIndex}` : undefined}
+          title={FORMULA_EXAMPLE}
+          value={draft}
+          onChange={(event) => {
+            setDraft(event.target.value)
+            setCaret(event.target.selectionStart ?? event.target.value.length)
+            setListOpen(true)
+            setActive(0)
+          }}
+          onSelect={(event) => setCaret((event.target as HTMLInputElement).selectionStart ?? draft.length)}
+          onBlur={commit}
+          onKeyDown={(event) => {
+            if (showList && event.key === "ArrowDown") {
+              event.preventDefault()
+              setActive((activeIndex + 1) % matches.length)
+            } else if (showList && event.key === "ArrowUp") {
+              event.preventDefault()
+              setActive((activeIndex - 1 + matches.length) % matches.length)
+            } else if (showList && event.key === "Tab") {
+              event.preventDefault()
+              complete(matches[activeIndex])
+            } else if (showList && event.key === "Escape") {
+              event.preventDefault()
+              event.stopPropagation()
+              setListOpen(false)
+            } else if (event.key === "Enter") {
+              event.preventDefault()
+              commit()
+            }
+          }}
+          className={`${CONTROL_CLASS} font-mono`}
+          style={INPUT_STYLE}
+          spellCheck={false}
+          autoComplete="off"
+        />
+        {showList && (
+          <ul
+            id={listId}
+            role="listbox"
+            aria-label="Matching columns"
+            className="absolute left-0 right-0 z-20 mt-1 max-h-48 overflow-y-auto rounded-md p-1 shadow-lg"
+            style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-bright)" }}
+          >
+            {matches.map((name, index) => (
+              <li
+                key={name}
+                id={`${listId}-${index}`}
+                role="option"
+                aria-selected={index === activeIndex}
+                onMouseDown={(event) => {
+                  event.preventDefault()
+                  complete(name)
+                }}
+                onMouseEnter={() => setActive(index)}
+                className="cursor-pointer rounded px-2 py-1 text-xs font-mono"
+                style={{
+                  color: "var(--text-primary)",
+                  background: index === activeIndex ? "var(--chrome-hover)" : "transparent",
+                }}
+              >
+                {name}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
       {problem && (
         <div className="mt-1">
           <Hint>{`Not understood: ${problem}`}</Hint>
@@ -353,7 +459,7 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
 function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: (next: Expr) => void; ctx: StepFormContext; depth?: number }) {
   const renderExpression = nestedExpression(ctx, depth + 1)
   const typedText = typedAsFormula(expr) ? displayFormula(expr, ctx.variables) : null
-  if (typedText !== null) return <FormulaField key={typedText} text={typedText} onCommit={onChange} variables={ctx.variables} />
+  if (typedText !== null) return <FormulaField key={typedText} text={typedText} onCommit={onChange} variables={ctx.variables} columns={ctx.columns} />
   const operandProps = {
     sources: [...ALL_SOURCES],
     literalTypes: [...ALL_TYPES],
