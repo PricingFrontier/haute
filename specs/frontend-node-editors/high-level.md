@@ -202,7 +202,8 @@ backend API modules own validation and persistence.
   Input uses `tables`. Editors do not detect, upgrade, or mirror historical
   working-copy formats.
 
-**Transform step builder.** A new Transform node starts in step mode: its default config
+**Transform step builder.** A Transform node's config tab is labelled "Polars" (its config is
+its steps or code). A new Transform node starts in step mode: its default config
 carries an empty `steps` list, and the editor renders the step builder instead of the code
 box whenever `config.steps` is a list. The builder shows a fixed start-from input selector,
 numbered step cards ("Start from", then Step 1 onwards, the same numbering every message

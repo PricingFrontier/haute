@@ -1132,9 +1132,11 @@ type NodeEditorTabStripProps = {
   tabs: NodePanelTab[]
   activeTab: NodePanelTab
   onSelect: (tab: NodePanelTab) => void
+  /** What the config tab is called for this node; a Transform's config is its Polars steps or code. */
+  configLabel?: string
 }
 
-function NodeEditorTabStrip({ visible, tabs, activeTab, onSelect }: NodeEditorTabStripProps) {
+function NodeEditorTabStrip({ visible, tabs, activeTab, onSelect, configLabel = "config" }: NodeEditorTabStripProps) {
   if (!visible) return null
   return (
     <div className="flex shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
@@ -1158,7 +1160,7 @@ function NodeEditorTabStrip({ visible, tabs, activeTab, onSelect }: NodeEditorTa
                   borderBottom: "2px solid transparent",
                 }}
           >
-            {tab === "polars" ? "Polars" : tab}
+            {tab === "polars" ? "Polars" : tab === "config" ? configLabel : tab}
           </button>
         )
       })}
@@ -1618,6 +1620,7 @@ function NodePanelContent({
         tabs={editorTabs}
         activeTab={activeTab}
         onSelect={selectTab}
+        configLabel={nodeType === NODE_TYPES.POLARS ? "Polars" : undefined}
       />
 
       {showExplorePanes && (
