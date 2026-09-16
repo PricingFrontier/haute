@@ -7,7 +7,7 @@ delegates to RustyStats for fitting, prediction, and serialization.
 from __future__ import annotations
 
 import gc
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -57,50 +57,139 @@ def _auto_terms(
     return terms
 
 
+_INTERACTION_OVERRIDE_TYPES: frozenset[str] = frozenset({"linear", "categorical", "bs", "ns"})
+
+
+def _dtype_default_spec(is_string: bool) -> dict[str, Any]:
+    return {"type": "categorical"} if is_string else {"type": "linear"}
+
+
+def _resolve_interaction_factor_spec(
+    *,
+    index: int,
+    factor: str,
+    main: dict[str, Any] | None,
+    override: Any,
+    is_string: bool,
+) -> dict[str, Any]:
+    """Return the spec RustyStats 0.9 will honour for one interaction factor.
+
+    Verified against the installed wheel: interaction-local ``bs``/``ns`` are
+    honoured; ``linear`` forces a linear column; ``categorical`` re-types the
+    column globally; monotone splines inside interactions raise; target
+    encoding inside a product interaction fails on the fit path.
+    """
+    where = f"Interaction {index + 1}, factor {factor!r}"
+    if override is not None:
+        if not isinstance(override, dict):
+            raise HauteValidationError(f"{where}: override must be a mapping with a 'type'")
+        kind = override.get("type")
+        if kind not in _INTERACTION_OVERRIDE_TYPES:
+            raise HauteValidationError(
+                f"{where}: override type {kind!r} is not allowed inside an interaction; "
+                f"use one of {sorted(_INTERACTION_OVERRIDE_TYPES)}"
+            )
+        if "monotonicity" in override:
+            raise HauteValidationError(
+                f"{where}: monotonicity is not supported inside interactions"
+            )
+        if kind == "categorical" and main is not None and main.get("type") != "categorical":
+            raise HauteValidationError(
+                f"{where}: a categorical override would re-type the column's "
+                f"{main.get('type')!r} main effect; keep the main term categorical or "
+                "choose another fit"
+            )
+        if kind in ("linear", "bs", "ns"):
+            if is_string:
+                raise HauteValidationError(
+                    f"{where}: {kind!r} cannot be applied to a string column"
+                )
+            if main is not None and main.get("type") == "categorical":
+                raise HauteValidationError(
+                    f"{where}: {kind!r} cannot be applied over a categorical main term"
+                )
+        return dict(override)
+    if main is not None:
+        kind = main.get("type")
+        if kind == "target_encoding":
+            raise HauteValidationError(
+                f"{where}: Target-encoded features cannot be interacted in RustyStats"
+            )
+        if kind == "ms" or (kind == "bs" and main.get("monotonicity")):
+            raise HauteValidationError(
+                f"{where}: Monotone splines cannot be used inside interactions; "
+                "give the interaction slot a plain spline or linear fit"
+            )
+        return dict(main)
+    return _dtype_default_spec(is_string)
+
+
 def _build_interactions(
     interactions_config: list[dict[str, Any]],
     terms: dict[str, dict[str, Any]],
-) -> list[dict[str, Any]]:
+    cat_features: Iterable[str],
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     """Convert Haute's interaction format to RustyStats format.
 
-    Haute stores: ``[{"factors": ["a", "b"], "include_main": true}]``
-    RustyStats wants: ``[{"a": {"type": "..."}, "b": {"type": "..."}, "include_main": false}]``
+    Haute stores ``[{"factors": ["a", "b"], "specs": {"a": {...}}, "include_main": true}]``.
+    RustyStats wants ``[{"a": {...}, "b": {...}, "include_main": false}]``.
 
-    Each factor's term spec is inherited from the main terms dict.
-
-    Note: ``include_main`` is forced to ``False`` when ALL interaction
-    factors already appear in the main ``terms`` dict (which is the
-    normal case in Haute).  RustyStats' ``include_main: True`` *adds*
-    the main effects to the design matrix — duplicating them when
-    they're already present as standalone terms causes perfect
-    collinearity and a singular matrix error.
+    Each factor's spec is its override, else its main term, else the dtype
+    default. Missing main effects requested through ``include_main`` are
+    materialised into the returned terms dict exactly once per column and
+    RustyStats always receives ``include_main=False``, because its own
+    ``include_main=True`` adds a main effect for *every* factor and duplicates
+    ones that already exist (rank-deficient design). Unfilled rows (fewer than
+    two picked factors) are skipped, as the config panel persists them before
+    the user has picked both columns.
     """
+    cat_set = set(cat_features)
+    effective_terms: dict[str, dict[str, Any]] = {name: dict(spec) for name, spec in terms.items()}
+    seen_factor_sets: set[frozenset[str]] = set()
+    override_by_column: dict[str, dict[str, Any]] = {}
     rs_interactions: list[dict[str, Any]] = []
-    for interaction in interactions_config:
-        # The config panel's "+ Add" creates {"factors": ["", ""]} until the
-        # user picks both columns — unset slots must not count towards the
-        # two-factor minimum or the fit crashes on a phantom interaction.
+
+    for index, interaction in enumerate(interactions_config):
         factors = [f for f in interaction.get("factors", []) if f]
         if len(factors) < 2:
             continue
+        factor_set = frozenset(factors)
+        if factor_set in seen_factor_sets:
+            raise HauteValidationError(
+                f"Interaction {index + 1} duplicates another interaction over {sorted(factor_set)}"
+            )
+        seen_factor_sets.add(factor_set)
+        specs = interaction.get("specs") or {}
+        if not isinstance(specs, dict):
+            raise HauteValidationError(f"Interaction {index + 1}: 'specs' must be a mapping")
+
         rs_int: dict[str, Any] = {}
         for factor in factors:
-            if factor in terms:
-                rs_int[factor] = dict(terms[factor])
-            else:
-                # Fallback: categorical for unknown factors
-                rs_int[factor] = {"type": "categorical"}
+            override = specs.get(factor)
+            if override is not None:
+                previous = override_by_column.get(factor)
+                if previous is not None and previous != override:
+                    raise HauteValidationError(
+                        f"Interaction {index + 1}, factor {factor!r}: conflicting overrides "
+                        f"across interactions ({previous} vs {override})"
+                    )
+                override_by_column[factor] = dict(override)
+            rs_int[factor] = _resolve_interaction_factor_spec(
+                index=index,
+                factor=factor,
+                main=terms.get(factor),
+                override=override,
+                is_string=factor in cat_set,
+            )
 
-        # Only set include_main=True when at least one factor is NOT
-        # already in the main terms dict (otherwise it causes singularity).
-        all_in_terms = all(f in terms for f in factors)
-        if all_in_terms:
-            rs_int["include_main"] = False
-        else:
-            rs_int["include_main"] = interaction.get("include_main", True)
-
+        if interaction.get("include_main", True):
+            for factor in factors:
+                if factor not in effective_terms:
+                    effective_terms[factor] = dict(rs_int[factor])
+        rs_int["include_main"] = False
         rs_interactions.append(rs_int)
-    return rs_interactions
+
+    return rs_interactions, effective_terms
 
 
 def _align_coefs_and_names(
@@ -123,15 +212,12 @@ def _resolve_glm_terms(
 
     Shared by ``GLMAlgorithm.fit`` and the dispersion-estimation service so
     an estimate is always profiled on exactly the design training would use.
-    Auto-generates a term per column when the user opted into "all features"
-    (``all_factors``), or — for the direct-construction API that bypasses the
-    config gate — when no terms are specified. The config path
-    (``build_training_job_kwargs``) already refuses empty terms without
-    ``all_factors``, so via the UI this only ever runs as an explicit choice.
+    The config path (``build_training_job_kwargs``) refuses empty terms; the
+    direct-construction API that bypasses that gate still auto-builds one
+    term per column so library-level callers keep working.
     """
     terms: dict[str, dict[str, Any]] = params.get("terms", {})
-    all_factors = bool(params.get("all_factors", False))
-    if all_factors or not terms:
+    if not terms:
         return _auto_terms(features, cat_features)
     return terms
 
@@ -385,17 +471,9 @@ class GLMAlgorithm(BaseAlgorithm):
                 msg="feature_weights is not supported by RustyStats GLM and will be ignored",
             )
 
-        # Apply monotone constraints from the top-level config
-        if monotone_constraints:
-            for feat, direction in monotone_constraints.items():
-                if feat in terms:
-                    if direction > 0:
-                        terms[feat]["monotonicity"] = "increasing"
-                    elif direction < 0:
-                        terms[feat]["monotonicity"] = "decreasing"
-
-        # Build RustyStats interactions
-        rs_interactions = _build_interactions(interactions_config, terms)
+        # Build RustyStats interactions; materialised main effects join the
+        # terms dict so RustyStats never adds (and duplicates) them itself.
+        rs_interactions, terms = _build_interactions(interactions_config, terms, cat_features)
 
         _mem_checkpoint("glm building model")
 

@@ -1163,7 +1163,7 @@ def test_dispersion_worker_remains_isolated_and_emits_fit_events(tmp_path: Path)
     with (
         patch("haute.modelling.TrainingJob", Job),
         patch("haute.modelling._rustystats._resolve_glm_terms", return_value=["x"]),
-        patch("haute.modelling._rustystats._build_interactions", return_value=[]),
+        patch("haute.modelling._rustystats._build_interactions", return_value=([], {})),
         patch("haute.modelling._rustystats.estimate_glm_dispersion", side_effect=estimate),
         patch("haute._polars_utils.streaming_collect", return_value=frame),
     ):

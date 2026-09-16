@@ -668,9 +668,10 @@ def _run_dispersion_process_job(
             cat_features = [feature for feature in cat_features if feature in term_names]
 
         terms = _resolve_glm_terms(train_params, features, cat_features)
-        interactions = _build_interactions(
+        interactions, terms = _build_interactions(
             train_params.get("interactions", []) or [],
             terms,
+            cat_features,
         )
         target = str(job_kwargs["target"])
         weight = job_kwargs.get("weight") or None

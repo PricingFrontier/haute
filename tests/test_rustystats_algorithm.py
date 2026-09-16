@@ -15,6 +15,7 @@ import pytest
 rs = pytest.importorskip("rustystats", reason="rustystats not installed")
 
 
+from haute.errors import HauteValidationError  # noqa: E402 - import after importorskip guard
 from haute.modelling._rustystats import (  # noqa: E402 - import after importorskip guard
     GLMAlgorithm,
     _auto_terms,
@@ -74,44 +75,218 @@ class TestAutoTerms:
 # ---------------------------------------------------------------------------
 
 
-class TestBuildInteractions:
-    def test_basic_interaction(self):
-        terms = {
-            "age": {"type": "linear"},
-            "region": {"type": "categorical"},
+def _design_columns(df: pl.DataFrame, terms, interactions) -> list[str]:
+    """Column names RustyStats will actually fit for this dict spec."""
+    from rustystats.formula import dict_to_parsed_formula
+    from rustystats.interactions import InteractionBuilder
+
+    parsed = dict_to_parsed_formula("y", terms, interactions, intercept=True)
+    _y, _design, names = InteractionBuilder(df).build_design_matrix_from_parsed(parsed)
+    return list(names)
+
+
+@pytest.fixture()
+def interaction_df() -> pl.DataFrame:
+    rng = np.random.default_rng(0)
+    n = 400
+    return pl.DataFrame(
+        {
+            "x": rng.normal(size=n),
+            "z": rng.normal(size=n),
+            "w": rng.normal(size=n),
+            "c": rng.choice(["a", "b", "c"], size=n),
+            "d": rng.choice(["p", "q"], size=n),
+            "y": rng.poisson(2.0, size=n).astype(float),
         }
+    )
+
+
+class TestBuildInteractions:
+    def test_inherits_main_terms_and_never_asks_rustystats_for_main_effects(self):
+        terms = {"age": {"type": "linear"}, "region": {"type": "categorical"}}
         config = [{"factors": ["age", "region"], "include_main": True}]
-        result = _build_interactions(config, terms)
-        assert len(result) == 1
-        assert result[0]["age"] == {"type": "linear"}
-        assert result[0]["region"] == {"type": "categorical"}
-        # include_main is forced to False when all factors are already in terms
-        # (avoids duplicate main effects causing singularity)
-        assert result[0]["include_main"] is False
+        built, effective = _build_interactions(config, terms, ["region"])
+        assert built == [
+            {"age": {"type": "linear"}, "region": {"type": "categorical"}, "include_main": False}
+        ]
+        assert effective == terms
 
-    def test_include_main_when_factor_not_in_terms(self):
-        terms = {"age": {"type": "linear"}}
-        config = [{"factors": ["age", "region"], "include_main": True}]
-        result = _build_interactions(config, terms)
-        assert len(result) == 1
-        # region is NOT in terms, so include_main stays True
-        assert result[0]["include_main"] is True
+    def test_materialises_a_missing_main_effect_once_and_never_duplicates(self, interaction_df):
+        terms = {"x": {"type": "linear"}}
+        config = [
+            {"factors": ["x", "z"], "include_main": True},
+            {"factors": ["z", "w"], "include_main": True},
+        ]
+        built, effective = _build_interactions(config, terms, [])
+        assert effective == {
+            "x": {"type": "linear"},
+            "z": {"type": "linear"},
+            "w": {"type": "linear"},
+        }
+        assert all(item["include_main"] is False for item in built)
+        assert _design_columns(interaction_df, effective, built) == [
+            "Intercept",
+            "x",
+            "z",
+            "w",
+            "x:z",
+            "z:w",
+        ]
 
-    def test_interaction_skips_single_factor(self):
-        terms = {"age": {"type": "linear"}}
-        config = [{"factors": ["age"], "include_main": True}]
-        result = _build_interactions(config, terms)
-        assert result == []
+    def test_include_main_false_leaves_a_factor_without_main_effect(self, interaction_df):
+        terms = {"x": {"type": "linear"}}
+        built, effective = _build_interactions(
+            [{"factors": ["x", "z"], "include_main": False}], terms, []
+        )
+        assert effective == terms
+        assert _design_columns(interaction_df, effective, built) == ["Intercept", "x", "x:z"]
 
-    def test_unknown_factor_gets_categorical_fallback(self):
-        terms = {"age": {"type": "linear"}}
-        config = [{"factors": ["age", "unknown"], "include_main": False}]
-        result = _build_interactions(config, terms)
-        assert result[0]["unknown"] == {"type": "categorical"}
-        assert result[0]["include_main"] is False
+    def test_dtype_default_for_a_factor_with_no_main_term(self):
+        built, _effective = _build_interactions(
+            [{"factors": ["x", "d"], "include_main": False}], {}, ["d"]
+        )
+        assert built[0]["x"] == {"type": "linear"}
+        assert built[0]["d"] == {"type": "categorical"}
+
+    def test_local_spline_override_produces_interaction_local_basis(self, interaction_df):
+        terms = {"x": {"type": "bs", "df": 4}, "c": {"type": "categorical"}}
+        config = [
+            {
+                "factors": ["x", "c"],
+                "specs": {"x": {"type": "bs", "df": 6}},
+                "include_main": False,
+            }
+        ]
+        built, effective = _build_interactions(config, terms, ["c"])
+        assert built[0]["x"] == {"type": "bs", "df": 6}
+        names = _design_columns(interaction_df, effective, built)
+        assert "bs(x, 2/4)" in names and "bs(x, 4/4)" in names
+        assert "c[T.b]:bs(x, 2/6)" in names and "c[T.b]:bs(x, 6/6)" in names
+
+    def test_linear_override_on_spline_main_forces_linear_column(self, interaction_df):
+        terms = {"x": {"type": "bs", "df": 4}, "c": {"type": "categorical"}}
+        config = [
+            {"factors": ["x", "c"], "specs": {"x": {"type": "linear"}}, "include_main": False}
+        ]
+        built, effective = _build_interactions(config, terms, ["c"])
+        names = _design_columns(interaction_df, effective, built)
+        assert "c[T.b]:x" in names and "c[T.b]:bs(x, 2/4)" not in names
+
+    def test_unconstrained_spline_main_is_inherited_unchanged(self):
+        terms = {"x": {"type": "ns", "df": 3}, "c": {"type": "categorical"}}
+        built, _ = _build_interactions([{"factors": ["x", "c"]}], terms, ["c"])
+        assert built[0]["x"] == {"type": "ns", "df": 3}
+
+    def test_skips_unfilled_and_single_factor_rows(self):
+        terms = {"a": {"type": "linear"}, "b": {"type": "categorical"}}
+
+        def built(config):
+            return _build_interactions(config, terms, ["b"])[0]
+
+        assert built([{"factors": ["", ""], "include_main": True}]) == []
+        assert built([{"factors": ["a", ""], "include_main": True}]) == []
+        assert built([{"factors": ["a"], "include_main": True}]) == []
+        assert len(built([{"factors": ["a", "b"]}])) == 1
 
     def test_empty_interactions(self):
-        assert _build_interactions([], {"a": {"type": "linear"}}) == []
+        assert _build_interactions([], {"a": {"type": "linear"}}, []) == (
+            [],
+            {"a": {"type": "linear"}},
+        )
+
+
+class TestBuildInteractionsRejections:
+    def _reject(self, config, terms, cat_features, pattern):
+        with pytest.raises(HauteValidationError, match=pattern):
+            _build_interactions(config, terms, cat_features)
+
+    def test_rejects_duplicate_factor_sets_in_any_order(self):
+        terms = {"x": {"type": "linear"}, "z": {"type": "linear"}}
+        self._reject([{"factors": ["x", "z"]}, {"factors": ["z", "x"]}], terms, [], "duplicates")
+
+    def test_rejects_monotone_overrides(self):
+        self._reject(
+            [{"factors": ["x", "c"], "specs": {"x": {"type": "bs", "monotonicity": "increasing"}}}],
+            {"c": {"type": "categorical"}},
+            ["c"],
+            "monotonicity",
+        )
+        self._reject(
+            [{"factors": ["x", "c"], "specs": {"x": {"type": "ms", "df": 4}}}],
+            {"c": {"type": "categorical"}},
+            ["c"],
+            "override type",
+        )
+
+    def test_rejects_categorical_retype_of_a_non_categorical_main_term(self):
+        self._reject(
+            [{"factors": ["x", "c"], "specs": {"x": {"type": "categorical"}}}],
+            {"x": {"type": "linear"}, "c": {"type": "categorical"}},
+            ["c"],
+            "re-type",
+        )
+
+    def test_rejects_linear_and_spline_on_string_or_categorical_main(self):
+        self._reject(
+            [{"factors": ["d", "c"], "specs": {"d": {"type": "linear"}}}],
+            {"c": {"type": "categorical"}},
+            ["c", "d"],
+            "string column",
+        )
+        self._reject(
+            [{"factors": ["x", "c"], "specs": {"c": {"type": "bs", "df": 4}}}],
+            {"x": {"type": "linear"}, "c": {"type": "categorical"}},
+            ["c"],
+            "string column",
+        )
+        # A numeric column the user chose to fit categorically is not a string
+        # column, so it reaches the categorical-main-term branch instead.
+        self._reject(
+            [{"factors": ["x", "band"], "specs": {"band": {"type": "bs", "df": 4}}}],
+            {"x": {"type": "linear"}, "band": {"type": "categorical"}},
+            [],
+            "categorical main term",
+        )
+
+    def test_rejects_inherited_monotone_spline_and_effective_target_encoding(self):
+        self._reject(
+            [{"factors": ["x", "c"]}],
+            {"x": {"type": "ms", "df": 4}, "c": {"type": "categorical"}},
+            ["c"],
+            "Monotone",
+        )
+        self._reject(
+            [{"factors": ["x", "c"]}],
+            {
+                "x": {"type": "bs", "df": 4, "monotonicity": "increasing"},
+                "c": {"type": "categorical"},
+            },
+            ["c"],
+            "Monotone",
+        )
+        self._reject(
+            [{"factors": ["d", "c"]}],
+            {"d": {"type": "target_encoding"}, "c": {"type": "categorical"}},
+            ["c", "d"],
+            "Target-encoded",
+        )
+        self._reject(
+            [{"factors": ["d", "c"], "specs": {"d": {"type": "target_encoding"}}}],
+            {"c": {"type": "categorical"}},
+            ["c", "d"],
+            "override type",
+        )
+
+    def test_rejects_conflicting_overrides_across_cards(self):
+        self._reject(
+            [
+                {"factors": ["x", "c"], "specs": {"x": {"type": "bs", "df": 4}}},
+                {"factors": ["x", "d"], "specs": {"x": {"type": "bs", "df": 6}}},
+            ],
+            {"c": {"type": "categorical"}, "d": {"type": "categorical"}},
+            ["c", "d"],
+            "conflicting",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -665,18 +840,6 @@ class TestEstimateGlmDispersion:
             estimate_glm_dispersion(
                 data=nb_df, terms=_NB_TERMS, target="y", family="poisson", param="theta"
             )
-
-
-class TestBuildInteractionsEmptySlots:
-    def test_unfilled_interaction_row_is_skipped(self):
-        """The config panel's "+ Add" persists {"factors": ["", ""]} until both
-        columns are picked; such rows must not reach RustyStats (they crash the
-        fit — and the dispersion estimate — with "Interaction must have at
-        least 2 variables")."""
-        terms = {"a": {"type": "linear"}, "b": {"type": "categorical"}}
-        assert _build_interactions([{"factors": ["", ""], "include_main": True}], terms) == []
-        assert _build_interactions([{"factors": ["a", ""], "include_main": True}], terms) == []
-        assert len(_build_interactions([{"factors": ["a", "b"]}], terms)) == 1
 
 
 # ---------------------------------------------------------------------------
