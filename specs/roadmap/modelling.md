@@ -4,7 +4,7 @@
 
 The modelling node's GLM configuration surface: how a feature enters a GLM,
 how each fit (term) is configured, and how interactions declare their own
-fits. Current behaviour is specified in
+fits, on RustyStats 0.9.0. Current behaviour is specified in
 [the modelling specification](../modelling/low-level.md) and
 [the modelling UI specification](../frontend-modelling-optimiser-ui/low-level.md).
 CatBoost configuration is out of scope; its Features pane keeps the current
@@ -14,11 +14,12 @@ include/exclude cards and monotonicity arrows unchanged.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
+| MOD-T00 | Planned | P1 | RustyStats 0.9.0 upgrade that keeps log-link exposure semantics bit-identical and pins the new theta and Tweedie-power behaviour. |
 | MOD-T01 | Planned | P2 | GLM backend resolves model columns from terms and interactions, builds interactions without duplicated or re-typed main effects, ignores CatBoost-only levers, and drops the `all_factors` flag. |
 | MOD-T02 | Planned | P2 | One GLM Features list where a feature enters the model only through its terms. |
-| MOD-T03 | Planned | P2 | Interaction cards that pick two or more features and choose, per factor, the fit RustyStats will actually honour inside the interaction. |
+| MOD-T03 | Planned | P2 | Interaction cards that pick two or more features and choose, per factor, the fit RustyStats 0.9.0 honours inside the interaction, including interaction-local splines. |
 
-## Design (approved 16 September 2026; revised after Codex plan review)
+## Design (approved 16 September 2026; revised after Codex plan review and for RustyStats 0.9.0)
 
 ### Problem
 
@@ -45,16 +46,45 @@ main term and reuse that fit. Several latent defects sit in the same code:
   removed term blocks training as an unknown feature
   (`_validate_monotone_constraints`).
 
-### What RustyStats 0.7 honours inside an interaction
+### RustyStats 0.9.0 upgrade facts
+
+The project moves from `rustystats>=0.7.0,<0.8` to `>=0.9.0,<0.10`
+(numpy follows RustyStats' `numpy<2.4` pin down to 2.3.x). Verified on the
+installed 0.9.0 wheel:
+
+- **Offset semantics changed.** 0.7 log-transformed a string `offset` for
+  log-link families, which is exactly what Haute's offset column means
+  (`OFFSET_HELP`: a multiplier under a log link, additive under identity).
+  0.9 takes `offset` verbatim on the link scale and adds `exposure=` for the
+  raw positive rate denominator, log-transformed and reused as the
+  exposure-weighted target-encoding denominator. Passing Haute's offset as
+  `offset` on 0.9 would silently change every Poisson, Gamma, and Tweedie
+  rate model. No existing test pins the multiplier semantics: the whole
+  GLM-related suite passes on 0.9.0 except one theta test.
+- **Unset Negative Binomial theta now raises** instead of silently fitting
+  at `theta=1.0`; `theta="estimate"` profiles it on the plain GLM path.
+  Haute's theta gate and dispersion estimator keep working; the test
+  `test_unset_theta_is_the_silent_default` pins the old failover and fails.
+- **Tweedie powers outside `1 < p < 2` are rejected** unless
+  `allow_extended_tweedie=True`. Haute's slider offers 1.0 to 2.0 inclusive
+  and its gate text calls 1 Poisson and 2 Gamma.
+- `glm_dict` gains `input_transforms`; term `VALID_KEYS` and the expression
+  grammar are unchanged from 0.7.
+
+### What RustyStats 0.9.0 honours inside an interaction
 
 Verified by building design matrices with `dict_to_parsed_formula` and
-`InteractionBuilder.build_design_matrix_from_parsed` on the installed
-package:
+`InteractionBuilder.build_design_matrix_from_parsed`, and by a real
+`glm_dict(...).fit().predict(...)`, on the installed 0.9.0 package:
 
-- A factor's spline expansion comes from its **main** term. A spline spec
-  inside an interaction is parsed and discarded: `bs(df=6)` in the
-  interaction with a `bs(df=4)` main term used `df=4`; without a main spline
-  the factor entered the interaction linearly.
+- **Interaction-local splines are honoured** (new in 0.9). `bs(df=6)` inside
+  an interaction with a `bs(df=4)` main term produced `c[T.b]:bs(x, k/6)`
+  columns beside `bs(x, k/4)` main columns; `ns` behaves the same; a
+  continuous × continuous card with two local splines produced the full
+  tensor of basis products; fit and prediction on new data succeed.
+- **Monotone splines inside an interaction are rejected by RustyStats**
+  (`ms`, or `bs` with `monotonicity`): "Monotone fixed-df splines are not
+  supported inside interactions".
 - `linear` in an interaction forces a linear column even when the main term
   is a spline (`force_linear`).
 - `categorical` in an interaction marks the column categorical globally: a
@@ -65,6 +95,8 @@ package:
 - `target_encoding` inside a product interaction fails on the real fit path
   (`ColumnNotFoundError: "TE(d)" not found`) whether or not a main TE term
   exists.
+- `include_main: true` still adds a main effect for every factor, so a
+  partially overlapping interaction still duplicates an existing main term.
 - Three or more factors, an expression term on an interacted column, and one
   column shared by two interactions all build correctly.
 
@@ -81,7 +113,7 @@ dropped outright and stale tests are updated.
   the column it fits, so each column carries at most one native fit. An
   **expression** spec `{"type": "expression", "expr": ..., "monotonicity"?}`
   is keyed by a user-editable name that is not a column name; a column may
-  carry any number of expression fits. The RustyStats 0.7 expression grammar
+  carry any number of expression fits. The RustyStats expression grammar
   is exactly: `x ** n`, `x + y`, `x - y`, `x * y`, `x / y` (where `y` is a
   column or a number), or a bare `x`. Every identifier must be a schema
   column.
@@ -99,7 +131,8 @@ dropped outright and stale tests are updated.
   `VALID_KEYS` for that type.
 - `interactions` entries are `{"factors": [...], "specs": {factor: spec},
   "include_main": bool}`. `specs` holds only explicit **overrides**, each
-  `{"type": "linear"}` or `{"type": "categorical"}`. A factor with no entry
+  one of `{"type": "linear"}`, `{"type": "categorical"}`, `{"type": "bs",
+  "df"?, "degree"?}`, or `{"type": "ns", "df"?}`. A factor with no entry
   follows its main term, or the dtype default when it has no main term
   (categorical for string dtypes, linear otherwise). Two or more filled
   factors are required; incomplete entries are skipped at train time, as
@@ -115,6 +148,12 @@ dropped outright and stale tests are updated.
   as empty; and `TrainingJob` construction rejects a GLM job that carries
   `monotone_constraints` with a message naming the per-term `monotonicity`
   key as the GLM lever.
+- `offset` keeps its meaning. The adapter maps it to RustyStats `exposure=`
+  when the effective link is `log` and to `offset=` otherwise. At fit and
+  dispersion estimation the effective link is the explicit `link`, else
+  `rustystats.formula.get_default_link(family)` (not exported at the package
+  root on 0.9.0); at prediction it is the fitted model's resolved
+  `model.link`, so the two paths cannot disagree.
 
 ### Model membership
 
@@ -170,19 +209,23 @@ factor's spec as override, else native main term, else dtype default, and
 then:
 
 - rejects, naming the interaction and factor, an override type outside
-  {`linear`, `categorical`}; a `categorical` override on a factor whose main
-  term exists and is not categorical; a `linear` override on a string
-  column or on a factor whose main term is categorical; an effective
+  {`linear`, `categorical`, `bs`, `ns`}; any override carrying
+  `monotonicity`; a `categorical` override on a factor whose main term
+  exists and is not categorical; a `linear`, `bs`, or `ns` override on a
+  string column or on a factor whose main term is categorical; an effective
   `target_encoding` fit, whether inherited from a main term or written as
-  an override; conflicting overrides for one column across cards; and two
-  cards with the same factor set in any order;
+  an override; an effective `ms` fit or a `bs` main term carrying
+  `monotonicity` that is inherited into an interaction (RustyStats rejects
+  both, so the slot must override to a plain spline or linear); conflicting
+  overrides for one column across cards; and two cards with the same factor
+  set in any order;
 - materialises a main effect for every factor that has no main term when its
   card's `include_main` is true, adding the resolved spec to the terms dict
   handed to RustyStats exactly once per column, and always passes
   `include_main: False` to RustyStats, so no main effect is ever duplicated;
-- passes a spline main term through unchanged (RustyStats reuses the main
-  spline) and passes `{"type": "linear"}` for a linear override on a spline
-  main term.
+- passes an unconstrained spline main term through unchanged (0.9 builds an
+  interaction-local spline with the same parameters) and passes the
+  override spec verbatim otherwise.
 
 Tests assert the resulting **design columns** through
 `dict_to_parsed_formula` and `InteractionBuilder`, not merely the arguments
@@ -253,30 +296,37 @@ card language. "Add interaction" appends `{"factors": ["", ""],
 "include_main": true}`. Each slot pairs a column select (any eligible column
 not already in that card, excluding columns whose main term is target
 encoding, with the hint "Target-encoded features cannot be interacted in
-RustyStats 0.7") with a fit select offering only what RustyStats
-honours: **As main term** (only when the column has a native term; deletes
-`specs[col]`), **Linear** (numeric columns only; writes `specs[col] =
-{"type": "linear"}`; refused when the main term is categorical), and
-**Categorical** (only when the column has no native term or a categorical
-one; writes `specs[col] = {"type": "categorical"}`). A slot with no native
-term and no override shows its dtype default as the effective fit. Picking
-a column writes `factors[i]` and deletes any `specs` entry for the column it
-replaced. "+ feature" appends an empty slot; a slot can be removed when the
-card has more than two. The "Include main effects" checkbox appears only
-while at least one picked column has no native term, with the help text
-"Adds a main effect for factors that have none; factors with a term already
-keep it". A card with fewer than two picked columns shows "Pick at least
-two features" and is ignored at train time. A card whose factor set equals
-another card's shows "Duplicate interaction" and training rejects it.
-Removing a card removes its entry.
+RustyStats") with a fit select offering only what RustyStats honours:
+**As main term** (only when the column has a native term that is not a
+monotone spline; deletes `specs[col]`), **Linear** (numeric columns only;
+writes `specs[col] = {"type": "linear"}`; refused when the main term is
+categorical), **Categorical** (only when the column has no native term or a
+categorical one; writes `specs[col] = {"type": "categorical"}`),
+**B-spline** and **Nat. spline** (numeric columns only; write
+`specs[col] = {"type": "bs"|"ns"}` plus df and, for `bs`, degree fields;
+never a monotonicity control; refused when the main term is categorical).
+A column whose main term is a monotone spline, or a B-spline with
+monotonicity, must pick an explicit slot fit; the slot shows "Monotone
+splines cannot be used inside interactions" until it does. A slot with no
+native term and no override shows its dtype default as the effective fit.
+Picking a column writes `factors[i]` and deletes any `specs` entry for the
+column it replaced. "+ feature" appends an empty slot; a slot can be
+removed when the card has more than two. The "Include main effects"
+checkbox appears only while at least one picked column has no native term,
+with the help text "Adds a main effect for factors that have none; factors
+with a term already keep it". A card with fewer than two picked columns
+shows "Pick at least two features" and is ignored at train time. A card
+whose factor set equals another card's shows "Duplicate interaction" and
+training rejects it. Removing a card removes its entry.
 
 ### Test impact
 
 - `specs/modelling/low-level.md`: the "Modelling-node algorithm config"
   bullet (GLM keys, `specs` overrides, `exclude` no longer narrowing GLM),
-  the `monotone_constraints` bullet (CatBoost-only, GLM rejection), and the
+  the `monotone_constraints` bullet (CatBoost-only, GLM rejection), the
+  offset sentence (exposure mapping by effective link), and the
   `_build_interactions` bullets (materialised main effects, rejected
-  combinations, design-column tests).
+  combinations, local splines, design-column tests).
 - `specs/frontend-modelling-optimiser-ui/low-level.md`: the
   `CommonFeatureConfig`/`GLMFactorConfig` bullet, the Features-pane
   sentences in the numbered overview, and the Testing bullet that currently
@@ -289,9 +339,55 @@ Removing a card removes its entry.
 
 ## Planned improvements
 
-Delivery order is `MOD-T01` → `MOD-T02` → `MOD-T03`. The three packages ship
-on one pull request; one Codex review and one Playwright run happen after
-the third package, not per package.
+Delivery order is `MOD-T00` → `MOD-T01` → `MOD-T02` → `MOD-T03`. The four
+packages ship on one pull request; one Codex review and one Playwright run
+happen after the fourth package, not per package.
+
+### MOD-T00 — RustyStats 0.9.0 upgrade
+**Why:** 0.9.0 honours interaction-local splines, which the terms design
+needs, but it also redefines `offset`, raises on an unset Negative Binomial
+theta, and rejects boundary Tweedie powers, and Haute's suite pins none of
+the exposure semantics.
+
+**Plan:** Pin `rustystats>=0.9.0,<0.10` in `pyproject.toml` and `uv.lock`.
+In `_build_glm_builder_kwargs` and the GLM predict path of
+`src/haute/modelling/_rustystats.py`, resolve the effective link (explicit
+`link`, else `rustystats.formula.get_default_link(family)` at build time;
+the fitted `model.link` at prediction time) and pass Haute's offset column
+as `exposure=` for `log` and as `offset=` otherwise; keep the column in the
+prediction frame either way. Pass `allow_extended_tweedie=True` in the
+builder, because 0.9.0 rejects `var_power` of exactly 1.0 and 2.0 without
+it and Haute's slider and gate text offer both. Replace
+`test_unset_theta_is_the_silent_default` with a test that an unset theta
+raises on 0.9.0 and update the theta gate text in `training_objective_issue`
+and `trainingObjective.ts` from "would silently fit at theta=1.0" to
+"RustyStats refuses to fit without it". Update the comment at
+`_rustystats.py:447` and the offset sentence of `specs/modelling/low-level.md`.
+
+**Acceptance:** Named scenarios:
+`test_log_link_offset_predictions_equal_exp_of_log_exposure_plus_linear_predictor`
+(Poisson with an exposure column and **no explicit `link`**, so the
+canonical-link path is exercised: fitted predictions equal
+`exp(log(e) + Xβ)` to 1e-9, and doubling `e` doubles the prediction);
+`test_explicit_identity_link_on_poisson_treats_offset_additively` (the
+explicit-link path); `test_identity_link_offset_is_additive` (Gaussian:
+prediction shifts by exactly the offset);
+`test_predict_uses_fitted_model_link_for_offset_mapping`;
+`test_dispersion_estimate_uses_exposure_for_log_link` (the dispersion
+builder receives `exposure=`, not `offset=`);
+`test_exported_glm_script_keeps_exposure_semantics`;
+`test_unset_negbinomial_theta_raises_on_rustystats`;
+`test_tweedie_boundary_powers_1_and_2_fit_with_extended_tweedie_enabled`.
+The full backend suite and the frontend unit suite pass on 0.9.0.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/modelling/_rustystats.py` (`_build_glm_builder_kwargs`,
+`GLMAlgorithm.predict`); `tests/test_rustystats_algorithm.py`
+(`TestNegBinomialThetaThreading`, the exposure-as-offset fit at line 177);
+`frontend/src/panels/modelling/OffsetFieldLabel.tsx` (`OFFSET_HELP`);
+`.venv/Lib/site-packages/rustystats/formula.py` (`glm_dict` docstring,
+`_process_offset`).
 
 ### MOD-T01 — GLM backend term contract
 **Why:** The backend assumes every term key is a column, duplicates main
@@ -342,19 +438,21 @@ rejected before execution on both the training and dispersion routes);
 include_main; expected design columns exactly
 `[Intercept, x, z, w, x:z, z:w]`);
 `test_build_interactions_rejects_duplicate_factor_sets_in_any_order`;
-`test_build_interactions_rejects_spline_override_categorical_retype_and_linear_on_string`;
-`test_build_interactions_rejects_effective_target_encoding_inherited_or_overridden`;
+`test_build_interactions_rejects_monotone_overrides_categorical_retype_and_linear_on_string`;
+`test_build_interactions_rejects_inherited_monotone_spline_and_effective_target_encoding`;
+`test_build_interactions_local_spline_override_produces_interaction_local_basis`
+(main `bs(x, df=4)`, override `bs(df=6)`: design columns contain
+`bs(x, k/4)` main columns and `c[T.*]:bs(x, k/6)` interaction columns);
 `test_build_interactions_linear_override_on_spline_main_forces_linear_column`;
 `test_glm_ignores_exclude_and_rejects_monotone_constraints`;
 `test_training_and_dispersion_sinks_keep_excluded_glm_term_columns`;
 `test_all_factors_is_gone` (grep-level assertion over `src/`, `tests/`,
 `specs/`, `docs/`); and an end-to-end fit in
 `tests/test_glm_integration.py` of a native term, an expression term keyed
-by a non-column name, and an interaction with a materialised main effect,
-whose exported script trains identically.
+by a non-column name, and an interaction with a materialised main effect
+and a local spline, whose exported script trains identically.
 
-**Dependencies:** RustyStats 0.7 dict API (`glm_dict`), its expression
-grammar, and the interaction behaviours verified above.
+**Dependencies:** MOD-T00; the interaction behaviours verified above.
 
 **Evidence:** `src/haute/modelling/_rustystats.py`;
 `src/haute/modelling/_train_config.py`;
@@ -370,15 +468,15 @@ Nat. spline monotonicity toggle produces a fit-time error.
 
 **Plan:** Add `frontend/src/panels/modelling/GLMTermsConfig.tsx`,
 `TermCard.tsx`, and pure helpers in `glmTerms.ts` (dtype default spec,
-per-type subset table, expression grammar check and identifier extraction,
-expression anchoring, unique expression naming, model membership, every
-editor transition as a pure config-to-config function). Compose it as the
-GLM Features pane in `ModellingConfig.tsx`. Delete `GLMFactorConfig.tsx`
-and `cleanupFeatureDependencies`; make `CommonFeatureConfig` CatBoost-only;
-make `finalSelectedFeatureNames` return columns with a term or a filled
-interaction factor for GLM; update the `glm-factor-selection` message in
-`trainingObjective.ts`. Update the UI spec sections named under Test
-impact.
+per-type subset table, expression grammar check and identifier
+extraction, expression anchoring, unique expression naming, model
+membership, every editor transition as a pure config-to-config function).
+Compose it as the GLM Features pane in `ModellingConfig.tsx`. Delete
+`GLMFactorConfig.tsx` and `cleanupFeatureDependencies`; make
+`CommonFeatureConfig` CatBoost-only; make `finalSelectedFeatureNames` return
+columns with a term or a filled interaction factor for GLM; update the
+`glm-factor-selection` message in `trainingObjective.ts`. Update the UI
+spec sections named under Test impact.
 
 **Acceptance:** Named scenarios in `glmTerms.test.ts` (one per editor
 transition, asserting the exact config payload, including
@@ -409,31 +507,36 @@ unchanged apart from the removed GLM cases.
 
 ### MOD-T03 — Interaction cards
 **Why:** Interactions can only pair columns that already have a main term
-and cannot choose a linear or categorical fit inside the interaction,
-although RustyStats honours both.
+and cannot choose a linear, categorical, or spline fit inside the
+interaction, although RustyStats 0.9.0 honours all three.
 
 **Plan:** Add `frontend/src/panels/modelling/GLMInteractionsConfig.tsx`
 rendering beneath `GLMTermsConfig`, with slot rules and writes exactly as
-in the Interactions section, and slot-availability helpers in `glmTerms.ts`.
-Update the interactions sentences of
+in the Interactions section, reusing `TermCard` in a slot mode that offers
+linear, categorical, B-spline, and Nat. spline with df and degree fields
+and no monotonicity control, and slot-availability helpers in
+`glmTerms.ts`. Update the interactions sentences of
 `specs/frontend-modelling-optimiser-ui/low-level.md`.
 
 **Acceptance:** Named scenarios in `GLMInteractionsConfig.test.tsx`: `Add
 interaction appends two empty slots with include_main true`; `picking a
 column writes factors[i] and no specs entry`; `As main term is offered only
-for columns with a native term`; `Linear is refused for string columns and
-categorical main terms`; `Categorical is refused for non-categorical main
-terms`; `choosing an override writes only specs[col] and As main term
-deletes it`; `replacing a slot's column deletes the old override`; `+
-feature adds a third slot and a slot can be removed only above two`;
-`Include main effects appears only while a picked column has no native
-term`; `a card with one column shows the incomplete note`; `the same column
-cannot be picked twice in one card`; `columns with a target-encoding main
-term are not offered in slots`; `a card duplicating another's factor set
-shows Duplicate interaction`; `removing a card removes its entry`. A
-final Playwright pass through `frontend/e2e/core-flows.spec.ts` configures a
-GLM with one native term, one expression term, and one interaction using a
-linear override on a spline main term, trains it, and sees results.
+for columns with a non-monotone native term`; `Linear and splines are
+refused for string columns and categorical main terms`; `Categorical is
+refused for non-categorical main terms`; `B-spline override writes type, df
+and degree and never monotonicity`; `a monotone-spline main term forces an
+explicit slot fit with the hint`; `choosing an override writes only
+specs[col] and As main term deletes it`; `replacing a slot's column deletes
+the old override`; `+ feature adds a third slot and a slot can be removed
+only above two`; `Include main effects appears only while a picked column
+has no native term`; `a card with one column shows the incomplete note`;
+`the same column cannot be picked twice in one card`; `columns with a
+target-encoding main term are not offered in slots`; `a card duplicating
+another's factor set shows Duplicate interaction`; `removing a card removes
+its entry`. A final Playwright pass through
+`frontend/e2e/core-flows.spec.ts` configures a GLM with one native term,
+one expression term, and one interaction using a local B-spline override
+on a linear main term, trains it, and sees results.
 
 **Dependencies:** MOD-T01, MOD-T02.
 
