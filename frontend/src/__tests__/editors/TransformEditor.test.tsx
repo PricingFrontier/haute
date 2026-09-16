@@ -14,6 +14,10 @@ vi.mock("../../panels/editors/_shared", async () => {
   }
 })
 
+vi.mock("../../api/client", () => ({
+  renderPolarsSteps: vi.fn(),
+}))
+
 vi.mock("../../panels/editors/CodeEditor", () => ({
   CodeEditor: ({ defaultValue, onChange, placeholder }: { defaultValue: string; onChange?: (v: string) => void; placeholder?: string }) => (
     <textarea
@@ -178,5 +182,25 @@ describe("TransformEditor", () => {
     )
     expect(screen.getByText("quotes")).toBeTruthy()
     expect(screen.getByText("Input")).toBeTruthy()
+  })
+})
+
+describe("TransformEditor mode selection", () => {
+  it("selects step mode when config.steps is a list", () => {
+    render(<TransformEditor config={{ steps: [] }} onUpdate={vi.fn()} inputSources={[]} />)
+    expect(screen.getByTestId("polars-steps-editor")).toBeInTheDocument()
+    expect(screen.queryByText("Polars Code")).not.toBeInTheDocument()
+  })
+
+  it("keeps code mode without steps and shows the discard notice", () => {
+    render(
+      <TransformEditor
+        config={{ code: "df = quotes", _steps_discarded: "Steps were discarded because the body changed." }}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+      />,
+    )
+    expect(screen.getByText("Polars Code")).toBeInTheDocument()
+    expect(screen.getByTestId("polars-steps-discarded")).toHaveTextContent("Steps were discarded")
   })
 })

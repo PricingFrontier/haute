@@ -9,6 +9,7 @@ FastAPI endpoint validation.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from enum import StrEnum
 from functools import cached_property
 from typing import (
@@ -206,9 +207,15 @@ COLUMN_CONFIG_KEYS: tuple[str, ...] = (
 
 
 class TransformConfig(TypedDict, total=False):
-    """Config for transform nodes."""
+    """Config for transform nodes.
+
+    ``steps`` is the low-code step list persisted in the node's optional
+    ``config/polars/<name>.json`` sidecar; ``code`` is always its rendering
+    when it is present (see ``NodeData``).
+    """
 
     code: str
+    steps: list[dict[str, Any]]
     instanceOf: str
     inputMapping: dict[str, str]
     selected_columns: list[str]
@@ -871,6 +878,37 @@ class NodeData(BaseModel):
     nodeType: NodeType = NodeType.POLARS  # noqa: N815 — matches React Flow frontend convention
     config: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def _materialise_polars_steps(self) -> Self:
+        """Keep ``code`` equal to the rendering of ``steps`` on a stepped transform.
+
+        Every consumer of a transform reads ``config["code"]``; a stepped node
+        therefore never carries any other program than its rendered steps. A
+        step list that cannot be rendered materialises as empty code plus an
+        editor-state ``_steps_error`` message, so consumers see an incomplete
+        transform exactly as they see a code-less one. In-process config
+        replacement must go through ``GraphNode.with_config`` so this
+        validator runs; ``model_copy`` does not validate.
+        """
+        if self.nodeType != NodeType.POLARS or "steps" not in self.config:
+            return self
+        from haute._polars_steps import PolarsStepError, render_polars_steps
+
+        steps = self.config["steps"]
+        if not isinstance(steps, list):
+            raise ValueError("Transform steps must be a list.")
+        config = dict(self.config)
+        try:
+            rendered = render_polars_steps(steps)
+        except PolarsStepError as exc:
+            config["code"] = ""
+            config["_steps_error"] = str(exc)
+        else:
+            config["code"] = rendered.code
+            config.pop("_steps_error", None)
+        self.config = config
+        return self
+
 
 class GraphNode(BaseModel):
     """A single node in the React Flow graph."""
@@ -879,6 +917,16 @@ class GraphNode(BaseModel):
     type: str = "pipelineNode"
     position: dict[str, float] = Field(default_factory=lambda: {"x": 0.0, "y": 0.0})
     data: NodeData = Field(default_factory=NodeData)
+
+    def with_config(self, config: Mapping[str, Any]) -> GraphNode:
+        """Return a copy carrying ``config``, re-running node data validation."""
+        data = NodeData(
+            label=self.data.label,
+            description=self.data.description,
+            nodeType=self.data.nodeType,
+            config=deepcopy(dict(config)),
+        )
+        return self.model_copy(update={"data": data})
 
 
 class GraphEdge(BaseModel):

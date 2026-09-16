@@ -220,6 +220,39 @@ instead of being re-executed as a bare `return` statement.
 There is no generated-code-only rebasing of `data/foo.parquet` beneath the
 pipeline module directory.
 
+**Stepped transforms.** A `polars` transform may be authored as an ordered list of
+low-code steps instead of hand-written code. The steps live in the node's optional
+`config/polars/<name>.json` sidecar, which the generated decorator references with
+`config=`; a `@pipeline.polars` function without `config=` is a code-only transform
+and has no sidecar. The `polars` folder is the one optional sidecar folder: the sidecar
+walks (collection, load-error protection, and the save-time collision and
+reserved-filename guard) treat a `polars` node as a sidecar owner only while its config
+carries a `steps` list, and the stale-file sweep removes the file when a node stops
+carrying one. One renderer (`src/haute/_polars_steps.py`) validates the closed step
+schema and renders the steps into the function body, one statement per line, raising a
+step-indexed error for any malformed or incomplete step. The node data model enforces
+one invariant on construction: a `polars` config that carries `steps` always carries the
+rendering of those steps as its `code`, or an empty `code` plus an editor-state
+`_steps_error` message when they cannot be rendered, so every consumer that reads
+transform code (execution, chunk planning, projection, estimation, tracing, codegen)
+sees the same program without knowing about steps and a stale `code` in a browser
+payload is overwritten on ingress; in-process config replacement uses the validated
+`GraphNode.with_config` helper rather than an unvalidated model copy so the invariant
+also holds after assistant and submodel operations. A stepped original transform
+addresses its inputs by their current edge names and never carries `inputMapping` (a
+config with both fails loudly); an instance of a stepped transform keeps its own
+`inputMapping`, and submodel flattening rewrites the input references inside a stepped
+transform's steps instead of recording a mapping. When a polars sidecar is referenced,
+parsing loads it, renders its steps against the function's parameter names, and
+compares the result with the code extracted from the body before the node model is
+built: an identical body keeps the node in step mode; a different body, or a body that
+is not empty while the steps cannot be rendered, discards the steps (the body was edited
+by hand), marks the config with an editor-state `_steps_discarded` reason and an
+editor-state `_discarded_sidecar` path that the stale-sidecar sweep baseline includes so
+the file is retired on the next save, and logs a warning; an empty body with
+unrenderable steps keeps the steps, because that is how an incomplete step list is
+saved. A sidecar whose `steps` value is not a list fails the parse with a `ConfigError`.
+
 ## Design rationale
 
 The component leans hard on failing loudly rather than guessing: duplicate node names,

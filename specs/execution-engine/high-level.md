@@ -468,6 +468,16 @@ running heavy work in a child process the parent can kill on timeout or memory l
   positional in mechanism, but because each name derives from its own edge, edge
   reordering can never re-mean a name.
 
+**Stepped transforms.** A stepped transform reaches the executor with its `code` already
+materialised from `steps` by the node data model, so chunk planning, projection, and every
+other reader classify the rendered program. The transform builder additionally validates
+the steps against the input names the code will execute with (the bound source names plus
+the original names an instance aliases) and builds the same incomplete function that a
+code-less transform builds, carrying the step-indexed message, when validation or
+rendering fails; a stepped original carrying `inputMapping` is rejected. The rendered
+code executes through the same sandboxed path as hand-written code, and execution errors
+keep reporting the failing line so the editor can name the failing step.
+
 ## Design rationale
 
 - **Two execution strategies, one shared node-building step.** Eager execution

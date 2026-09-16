@@ -213,8 +213,7 @@ def _apply_update_node(
             config.pop(key, None)
         else:
             config[key] = value
-    data = node.data.model_copy(update={"config": config})
-    _replace_node(graph, index, node.model_copy(update={"data": data}))
+    _replace_node(graph, index, node.with_config(config))
 
 
 def _apply_rename_node(

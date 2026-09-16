@@ -1418,17 +1418,42 @@ class SavePipelineService:
         node so the user is not surprised by that later.
         """
         from haute._builders import resolve_instance_node
+        from haute._graph_utils import edge_input_name
+        from haute._polars_steps import PolarsStepError, render_polars_steps
 
         scoped_graphs = [graph, *self._iter_embedded_submodel_graphs(graph)]
         for scoped_graph in scoped_graphs:
             node_map = {node.id: node for node in scoped_graph.nodes}
             upstream_counts: dict[str, int] = {}
+            incoming: dict[str, list] = {}
             for edge in scoped_graph.edges:
                 upstream_counts[edge.target] = upstream_counts.get(edge.target, 0) + 1
+                incoming.setdefault(edge.target, []).append(edge)
 
             for node in scoped_graph.nodes:
                 resolved_node = resolve_instance_node(node, node_map)
                 if resolved_node.data.nodeType != NodeType.POLARS:
+                    continue
+                steps = resolved_node.data.config.get("steps")
+                if isinstance(steps, list) and not resolved_node.data.config.get("instanceOf"):
+                    problem = resolved_node.data.config.get("_steps_error")
+                    if problem is None:
+                        names = [
+                            edge_input_name(edge, node_map[edge.source], submodels=graph.submodels)
+                            for edge in incoming.get(node.id, [])
+                            if edge.source in node_map
+                        ]
+                        try:
+                            render_polars_steps(steps, names)
+                        except PolarsStepError as exc:
+                            problem = str(exc)
+                    if problem is not None:
+                        label = node.data.label or node.id
+                        warnings.append(
+                            f"Transform node {label!r} has an incomplete step list "
+                            f"({problem}). It will save, but running the pipeline will "
+                            "fail until the step is completed."
+                        )
                     continue
                 if str(resolved_node.data.config.get("code") or "").strip():
                     continue
@@ -1534,6 +1559,18 @@ class SavePipelineService:
             self._stage_write(out_path, json_content, touched)
 
     @staticmethod
+    def _discarded_sidecars_recursive(graph: PipelineGraph) -> list[str]:
+        """Relative sidecar paths recorded as ``_discarded_sidecar`` by the parser."""
+        found: list[str] = []
+        scoped = [graph, *SavePipelineService._iter_embedded_submodel_graphs(graph)]
+        for scoped_graph in scoped:
+            for node in scoped_graph.nodes:
+                rel = node.data.config.get("_discarded_sidecar")
+                if isinstance(rel, str) and rel:
+                    found.append(rel.replace("\\", "/"))
+        return found
+
+    @staticmethod
     def _iter_embedded_submodel_graphs(graph: PipelineGraph) -> Iterator[PipelineGraph]:
         for definition in (graph.submodels or {}).values():
             yield definition.graph
@@ -1570,8 +1607,8 @@ class SavePipelineService:
     def _validate_unique_config_paths_in_graph(graph: PipelineGraph) -> None:
         from haute._config_io import (
             config_path_for_node,
-            has_config_folder,
             is_windows_reserved_filename,
+            node_emits_sidecar,
         )
 
         # Compare paths casefolded: labels differing only in case (``Foo`` /
@@ -1592,7 +1629,7 @@ class SavePipelineService:
         reserved: set[str] = set()
         for node in graph.nodes:
             nt = node.data.nodeType
-            if not has_config_folder(nt):
+            if not node_emits_sidecar(node):
                 continue
             if node.data.config.get("instanceOf"):
                 continue
@@ -1762,7 +1799,16 @@ class SavePipelineService:
             )
             return {}
         try:
-            return self._collect_node_configs_recursive(disk_graph)
+            prev = self._collect_node_configs_recursive(disk_graph)
+            # A polars sidecar whose steps were discarded on parse (the body
+            # was hand-edited) is no longer collected from the graph, but this
+            # pipeline still owns the file: keep it in the baseline so the
+            # stale sweep retires it.
+            for rel in self._discarded_sidecars_recursive(disk_graph):
+                path = (self._pipeline_root / rel).resolve()
+                if rel not in prev and path.is_relative_to(self._pipeline_root) and path.is_file():
+                    prev[rel] = path.read_text(encoding="utf-8")
+            return prev
         except HTTPException as exc:
             logger.warning(
                 "stale_cleanup_baseline_unavailable",

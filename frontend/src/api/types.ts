@@ -1887,3 +1887,16 @@ export interface GitMilestoneFork {
   working: GitRemoteLeg
   message: string
 }
+
+/** Result of rendering a low-code Transform step list to Polars code. A step
+ *  validation failure is data (`ok: false` with the failing step index and
+ *  message), never a transport error. */
+export interface PolarsStepsRenderResponse {
+  ok: boolean
+  code: string
+  /** 1-based inclusive `[start, end]` line range per step. */
+  step_lines: number[][]
+  /** Zero-based index of the failing step; null for a list-level problem. */
+  step_index: number | null
+  message: string
+}

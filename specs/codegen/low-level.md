@@ -254,6 +254,13 @@ binding a value, so a preamble global named `df` cannot mask a missing user
 assignment. User code must start from the input it means by name
 (`df = quotes.join(regions, ...)`), and reading `df` before assigning it is a
 `NameError` at run time, in the generated module and canvas execution alike.
+
+A stepped transform (`config["steps"]` is a list) has its body rendered by
+`_polars_steps.render_polars_steps` against the logical parameter names, one
+statement per line with a leading `df = <input>`, and its decorator carries
+`config="config/polars/<func>.json"` so the parser reloads the steps. A render
+failure emits the incomplete placeholder body (the save warns which step is
+incomplete); `steps` together with `inputMapping` on an original is a `ConfigError`.
 A node with NO code cannot run at
 all — there is no implicit single-input passthrough; codegen emits the
 `NotImplementedError` placeholder and the executor installs the matching
@@ -410,6 +417,8 @@ preamble global, matching the generated function's local assignment.
 | Any emitted file fails `ast.parse` | `ConfigError` | `codegen._assert_emitted_files_parse` |
 | `polars` transform has no code (any source count) | No error — emits a `NotImplementedError`-raising placeholder so the graph still saves; fails at run time, warned at save time | `_codegen_builders._gen_transform`, `_save_pipeline._validate_transforms_are_runnable` |
 | `polars` transform with executable code and an input named `df` | `ConfigError` (node id/label) | `_codegen_builders._gen_transform` |
+| stepped `polars` transform whose steps cannot be rendered | No error — incomplete placeholder body, warned at save time with the step index | `_codegen_builders._gen_transform`, `_save_pipeline._validate_transforms_are_runnable` |
+| stepped `polars` original carrying `inputMapping` | `ConfigError` (node id/label) | `_codegen_builders._gen_transform` |
 | `edgeJoin` codegen called with `!= 2` sources | `ConfigError` | `_codegen_builders._gen_edge_join` |
 | `Explore` node with `!= 1` incoming edge | `ParseError` | `_codegen_builders._gen_explore` |
 | Codegen dispatched on a `SUBMODEL`/`SUBMODEL_PORT` occurrence | `RuntimeError` | `_codegen_builders._gen_submodel_placeholder_unreachable` |
@@ -425,6 +434,7 @@ file tree on disk.
 ## Testing
 
 - `tests/test_codegen_input_identity.py` — graph-to-source tests pin edge-derived input names as generated Python parameters and persisted `connect` metadata.
+- `tests/test_polars_steps.py::test_codegen_parse_round_trip_reproduces_rendered_code` — a stepped transform's generated module parses back to the rendered code and its steps; `test_stepped_original_rejects_input_mapping` covers the `inputMapping` rejection.
 - `tests/test_rename_stable_binding.py` — executes a coded transform before and after the rename shape the editor produces (edge renamed, `inputMapping` recording the logical name) with equal rows, shows the unmapped shape failing on the old name, and round-trips the mapping through codegen and the parser.
 
 Tests live under `tests/`, organised roughly one file per concern rather

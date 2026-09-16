@@ -42,6 +42,7 @@ from haute._graph_utils import (
     duplicate_input_names,
     resolve_input_mapping_names,
 )
+from haute._polars_steps import PolarsStepError, render_polars_steps
 from haute._rating import _normalise_combined_outputs
 from haute._rating_step_config import normalise_rating_tables
 from haute._registry import (
@@ -912,11 +913,27 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
     code = str(config.get("code") or "").strip()
     input_mapping = config.get("inputMapping")
+    steps = config.get("steps")
+    if isinstance(steps, list) and input_mapping is not None:
+        raise ConfigError(
+            "A stepped transform addresses its inputs by their edge names and "
+            "cannot carry inputMapping.",
+            node_id=node.id,
+            node_label=node.data.label,
+        )
     logical_source_names = (
         resolve_input_mapping_names(source_names, input_mapping)
         if input_mapping is not None
         else source_names
     )
+    if isinstance(steps, list):
+        # The sidecar owns the steps; the body is their rendering against the
+        # generated parameter names, or the incomplete placeholder when they
+        # cannot be rendered yet (the save warns which step is incomplete).
+        try:
+            code = render_polars_steps(steps, logical_source_names).code
+        except PolarsStepError:
+            code = ""
     if code and ("df" in source_names or "df" in logical_source_names):
         raise ConfigError(
             "Polars input name 'df' conflicts with the reserved output name; rename the "
@@ -930,6 +947,9 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
         # ``resolve_input_mapping_names`` validated the persisted value before
         # it reaches source interpolation.
         decorator_args.append(f"inputMapping={input_mapping!r}")
+    if isinstance(steps, list):
+        sidecar = config_path_for_node(NodeType.POLARS, func_name).as_posix()
+        decorator_args.append(f"config={_safe_path(sidecar)}")
     decorator = (
         f"@pipeline.polars({', '.join(decorator_args)})" if decorator_args else "@pipeline.polars"
     )

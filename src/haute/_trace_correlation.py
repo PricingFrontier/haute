@@ -2107,10 +2107,12 @@ class RowScopeResolver:
 
             builder = child
             if code:
-                config = {key: value for key, value in child.data.config.items() if key != "code"}
-                builder = child.model_copy(
-                    update={"data": child.data.model_copy(update={"config": config})}
-                )
+                config = {
+                    key: value
+                    for key, value in child.data.config.items()
+                    if key not in ("code", "steps")
+                }
+                builder = child.with_config(config)
             produced, _referenced = projection_contract(builder).to_tuple()
             if produced is None:
                 return None

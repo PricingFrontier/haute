@@ -18,6 +18,7 @@ from haute._config_io import (
     config_path_for_node,
     find_config_by_func_name,
     has_config_folder,
+    has_optional_config_folder,
     is_windows_reserved_filename,
     load_node_config,
     remove_config_file,
@@ -90,10 +91,19 @@ class TestConfigPathForNode:
             p = config_path_for_node(nt, "test_node")
             assert p == Path(f"config/{folder}/test_node.json")
 
-    @pytest.mark.parametrize("node_type", [NodeType.POLARS, NodeType.EXPLORE])
+    @pytest.mark.parametrize("node_type", [NodeType.EDGE_JOIN, NodeType.EXPLORE])
     def test_no_config_folder_type_raises(self, node_type):
         with pytest.raises(ValueError, match="No config folder"):
             config_path_for_node(node_type, "my_transform")
+
+    def test_polars_sidecar_is_optional(self):
+        # A stepped transform owns ``config/polars/<name>.json``; a code-only
+        # transform has no sidecar, so the folder is optional for the type.
+        assert config_path_for_node(NodeType.POLARS, "my_transform") == Path(
+            "config/polars/my_transform.json"
+        )
+        assert not has_config_folder(NodeType.POLARS)
+        assert has_optional_config_folder(NodeType.POLARS)
 
 
 # ---------------------------------------------------------------------------

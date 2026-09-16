@@ -160,7 +160,7 @@ export function NodeConfigEditor({
       return <ConstantEditor config={config} onUpdate={onUpdateConfig} />
 
     case NODE_TYPES.POLARS:
-      return <TransformEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} upstreamColumns={upstreamColumns} />
+      return <TransformEditor config={config} onUpdate={onUpdateConfig} onReplaceConfig={onReplaceConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} upstreamColumns={upstreamColumns} />
 
     case NODE_TYPES.EDGE_JOIN:
       return <EdgeJoinEditor config={config} onUpdate={onUpdateConfig} nodeId={node.id} accentColor={accentColor} onDeleteInput={onDeleteEdge} onSwapInputs={onSwapEdgeJoinInputs ? () => onSwapEdgeJoinInputs(node.id) : undefined} />
