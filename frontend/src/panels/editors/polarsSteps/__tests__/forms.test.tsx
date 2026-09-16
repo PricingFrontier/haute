@@ -93,7 +93,7 @@ describe("step forms only build schema-valid payloads", () => {
     cleanup()
     render(<StepForm step={next} onChange={onChange} ctx={ctx} />)
     expect(screen.queryByLabelText("Filter condition 1 value type")).not.toBeInTheDocument()
-    expect(optionValues(screen.getByLabelText("Filter condition 1 value source"))).toEqual(["literal", "column", "variable"])
+    expect(optionValues(screen.getByLabelText("Filter condition 1 value source"))).toEqual(["literal", "column", "variable", "expr"])
   })
 
   it("function arguments are labelled and typed per function", () => {
@@ -261,6 +261,40 @@ describe("step forms only build schema-valid payloads", () => {
     expect(screen.queryByLabelText("Join validation")).not.toBeInTheDocument()
   })
 
+  it("an operand can become a nested expression with its own editor", () => {
+    const spy = vi.fn()
+    const step: Step = {
+      id: "w",
+      kind: "with_column",
+      name: "rate",
+      expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "/", right: { kind: "literal", type: "number", value: 1 } },
+    }
+    render(<Stateful initial={step} spy={spy} />)
+    expect(optionValues(screen.getByLabelText("Right operand source"))).toEqual(["literal", "column", "variable", "expr"])
+    fireEvent.change(screen.getByLabelText("Right operand source"), { target: { value: "expr" } })
+    let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toEqual({
+      ...step.expr,
+      right: { kind: "expr", expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "*", right: { kind: "literal", type: "number", value: 1 } } },
+    })
+    expect(screen.getByRole("group", { name: "Right operand expression" })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText("Right operand expression type"), { target: { value: "function" } })
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toMatchObject({ right: { kind: "expr", expr: { type: "function", fn: "abs" } } })
+    // The deepest level the renderer accepts offers no further nesting.
+    cleanup()
+    let operand: Extract<Step, { kind: "with_column" }>["expr"] = { type: "binary", left: { kind: "column", name: "premium" }, op: "+", right: { kind: "literal", type: "number", value: 1 } }
+    for (let i = 0; i < 5; i += 1) operand = { type: "binary", left: { kind: "expr", expr: operand }, op: "+", right: { kind: "literal", type: "number", value: 1 } }
+    render(<StepForm step={{ id: "d", kind: "with_column", name: "deep", expr: operand }} onChange={vi.fn()} ctx={ctx} />)
+    const sources = screen.getAllByLabelText(/source$/).map((el) => optionValues(el))
+    expect(sources.some((s) => s.includes("expr"))).toBe(true)
+    expect(sources.filter((s) => !s.includes("expr")).length).toBeGreaterThan(0)
+    cleanup()
+    const variable: Step = { id: "v", kind: "variable", name: "rate", value: { kind: "literal", type: "number", value: 1 } }
+    render(<StepForm step={variable} onChange={vi.fn()} ctx={ctx} />)
+    expect(screen.queryByLabelText("Variable value source")).not.toBeInTheDocument()
+  })
+
   it("text-join parts may be null, like any expression operand", () => {
     const step: Step = {
       id: "w",
@@ -280,6 +314,6 @@ describe("step forms only build schema-valid payloads", () => {
       conditions: [{ column: "premium", operator: "gt", value: { kind: "literal", type: "number", value: 1 } }],
     }
     render(<StepForm step={step} onChange={vi.fn()} ctx={{ ...ctx, variables: [] }} />)
-    expect(optionValues(screen.getByLabelText("Filter condition 1 value source"))).toEqual(["literal", "column"])
+    expect(optionValues(screen.getByLabelText("Filter condition 1 value source"))).toEqual(["literal", "column", "expr"])
   })
 })

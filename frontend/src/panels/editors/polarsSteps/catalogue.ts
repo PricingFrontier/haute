@@ -131,6 +131,8 @@ export const LITERAL_TYPES: Array<{ value: LiteralType; label: string }> = [
   { value: "date", label: "date" },
   { value: "null", label: "missing (null)" },
 ]
+/** How deep expressions may nest as operands; a step's expression is depth 1 (mirrors the renderer). */
+export const MAX_EXPR_DEPTH = 6
 /** Literal types a membership list accepts: the renderer refuses null members. */
 export const LIST_LITERAL_TYPES = LITERAL_TYPES.filter((t) => t.value !== "null")
 
@@ -266,6 +268,7 @@ export function kindLabel(kind: StepKind): string {
 
 function operandText(operand: Operand | undefined): string {
   if (!operand) return "?"
+  if (operand.kind === "expr") return operand.expr.type === "binary" ? `(${exprText(operand.expr)})` : exprText(operand.expr)
   if (operand.kind === "column") return operand.name || "?"
   if (operand.kind === "variable") return operand.name || "?"
   if (operand.type === "null") return "null"
@@ -343,17 +346,24 @@ function literalProblem(operand: Record<string, unknown>, where: string): string
   return null
 }
 
-function operandProblem(value: unknown, where: string): string | null {
+function operandProblem(value: unknown, where: string, depth = 1): string | null {
   if (!isShape(value, "object")) return `${where} is missing its value.`
   const operand = value as Record<string, unknown>
   if (operand.kind === "literal") return literalProblem(operand, where)
   if (operand.kind === "column" || operand.kind === "variable") {
     return typeof operand.name === "string" ? null : `${where} has a malformed value.`
   }
+  if (operand.kind === "expr") return exprProblem(operand.expr, `${where} expression`, depth + 1)
   return `${where} has a malformed value.`
 }
 
-function conditionsProblem(value: unknown, where: string): string | null {
+/** A literal-only operand position (membership lists, variables, function arguments). */
+function plainLiteralProblem(value: unknown, where: string): string | null {
+  if (!isShape(value, "object") || (value as Record<string, unknown>).kind !== "literal") return `${where} must be a plain value.`
+  return literalProblem(value as Record<string, unknown>, where)
+}
+
+function conditionsProblem(value: unknown, where: string, depth = 1): string | null {
   if (!Array.isArray(value)) return `${where} is missing its conditions.`
   for (const [index, raw] of value.entries()) {
     if (!isShape(raw, "object")) return `${where} condition ${index + 1} is malformed.`
@@ -362,7 +372,7 @@ function conditionsProblem(value: unknown, where: string): string | null {
       return `${where} condition ${index + 1} is malformed.`
     }
     if (condition.value !== undefined) {
-      const problem = operandProblem(condition.value, `${where} condition ${index + 1}`)
+      const problem = operandProblem(condition.value, `${where} condition ${index + 1}`, depth)
       if (problem) return problem
     }
     if (condition.values !== undefined) {
@@ -394,25 +404,26 @@ function stringListProblem(value: unknown, where: string): string | null {
   return Array.isArray(value) && value.every((v) => typeof v === "string") ? null : `${where} must list column names.`
 }
 
-function exprProblem(value: unknown, where: string): string | null {
+function exprProblem(value: unknown, where: string, depth = 1): string | null {
   if (!isShape(value, "object")) return `${where} is missing its expression.`
+  if (depth > MAX_EXPR_DEPTH) return `${where} nests more than ${MAX_EXPR_DEPTH} levels deep.`
   const expr = value as Record<string, unknown>
   switch (expr.type) {
     case "operand":
-      return operandProblem(expr.operand, where)
+      return operandProblem(expr.operand, where, depth)
     case "binary":
       if (typeof expr.op !== "string") return `${where} is missing its operator.`
-      return operandProblem(expr.left, `${where} left side`) ?? operandProblem(expr.right, `${where} right side`)
+      return operandProblem(expr.left, `${where} left side`, depth) ?? operandProblem(expr.right, `${where} right side`, depth)
     case "function":
       if (typeof expr.fn !== "string") return `${where} is missing its function.`
-      if (!Array.isArray(expr.args) || expr.args.some((a) => operandProblem(a, where) !== null)) return `${where} has malformed function arguments.`
-      return operandProblem(expr.operand, where)
+      if (!Array.isArray(expr.args) || expr.args.some((a) => plainLiteralProblem(a, where) !== null)) return `${where} has malformed function arguments.`
+      return operandProblem(expr.operand, where, depth)
     case "conditional":
       if (typeof expr.match !== "string") return `${where} is missing its match mode.`
       return (
-        conditionsProblem(expr.conditions, where)
-        ?? operandProblem(expr.then, `${where} then branch`)
-        ?? operandProblem(expr.otherwise, `${where} otherwise branch`)
+        conditionsProblem(expr.conditions, where, depth)
+        ?? operandProblem(expr.then, `${where} then branch`, depth)
+        ?? operandProblem(expr.otherwise, `${where} otherwise branch`, depth)
       )
     case "window": {
       // The renderer ignores `column` for columnless aggregates, defaults an
@@ -433,7 +444,7 @@ function exprProblem(value: unknown, where: string): string | null {
       if (expr.separator !== undefined && typeof expr.separator !== "string") return `${where} has a malformed separator.`
       if (!Array.isArray(expr.parts)) return `${where} is missing its parts.`
       for (const [index, part] of expr.parts.entries()) {
-        const problem = operandProblem(part, `${where} part ${index + 1}`)
+        const problem = operandProblem(part, `${where} part ${index + 1}`, depth)
         if (problem) return problem
       }
       return null
@@ -508,7 +519,7 @@ export function stepProblem(step: unknown): string | null {
     case "concat":
       return stringListProblem(record.inputs, `${where} inputs`)
     case "variable":
-      return operandProblem(record.value, where)
+      return plainLiteralProblem(record.value, where)
     default:
       return null
   }
@@ -544,26 +555,32 @@ function fillProblem(value: unknown, where: string): string | null {
  * concat has a `separator`. Only steps `stepProblem` accepts are canonicalised.
  */
 export function canonicalStep(step: Step): Step {
-  if (step.kind !== "with_column") return step
-  const expr = step.expr
-  if (expr.type === "window") {
-    const orderBy = expr.orderBy?.map((k) => ({ column: k.column, descending: k.descending ?? false }))
-    return { ...step, expr: { ...expr, column: expr.column ?? "", ...(orderBy ? { orderBy } : {}) } }
-  }
-  if (expr.type === "concat") {
-    return { ...step, expr: { ...expr, parts: expr.parts.map(canonicalOperand), separator: expr.separator ?? "" } }
-  }
-  if (expr.type === "conditional") {
-    return { ...step, expr: { ...expr, then: canonicalOperand(expr.then), otherwise: canonicalOperand(expr.otherwise) } }
-  }
-  if (expr.type === "operand") return { ...step, expr: { ...expr, operand: canonicalOperand(expr.operand) } }
-  if (expr.type === "binary") return { ...step, expr: { ...expr, left: canonicalOperand(expr.left), right: canonicalOperand(expr.right) } }
-  return step
+  return step.kind === "with_column" ? { ...step, expr: canonicalExpr(step.expr) } : step
 }
 
 function canonicalOperand(operand: Operand): Operand {
   if (operand.kind === "literal" && operand.type === "null" && operand.value !== null) return literal("null", null)
+  if (operand.kind === "expr") return { kind: "expr", expr: canonicalExpr(operand.expr) }
   return operand
+}
+
+function canonicalExpr(expr: Expr): Expr {
+  switch (expr.type) {
+    case "window": {
+      const orderBy = expr.orderBy?.map((k) => ({ column: k.column, descending: k.descending ?? false }))
+      return { ...expr, column: expr.column ?? "", ...(orderBy ? { orderBy } : {}) }
+    }
+    case "concat":
+      return { ...expr, parts: expr.parts.map(canonicalOperand), separator: expr.separator ?? "" }
+    case "conditional":
+      return { ...expr, then: canonicalOperand(expr.then), otherwise: canonicalOperand(expr.otherwise) }
+    case "operand":
+      return { ...expr, operand: canonicalOperand(expr.operand) }
+    case "binary":
+      return { ...expr, left: canonicalOperand(expr.left), right: canonicalOperand(expr.right) }
+    case "function":
+      return { ...expr, operand: canonicalOperand(expr.operand) }
+  }
 }
 
 /** One line describing the step for its card header. */

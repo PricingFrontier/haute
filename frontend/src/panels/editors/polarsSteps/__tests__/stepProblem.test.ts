@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import { columnsBeforeStep } from "../derivedColumns"
 import { canonicalStep, stepProblem, summarizeStep, variablesBefore } from "../catalogue"
-import type { Step } from "../types"
+import type { Operand, Step } from "../types"
 
 const col = (name: string) => ({ kind: "column" as const, name })
 
@@ -64,6 +64,28 @@ describe("stepProblem", () => {
     expect(stepProblem({ id: "r", kind: "with_column", name: "s", expr: { type: "window", agg: "sum", column: "a", over: [], orderBy: [{ column: "a", descending: "yes" }] } })).toMatch(
       /malformed direction/,
     )
+  })
+
+  it("accepts nested expressions up to the renderer's depth and refuses them in literal-only positions", () => {
+    const nested = (depth: number): Operand => {
+      let operand: Operand = { kind: "literal", type: "number", value: 1 }
+      for (let i = 0; i < depth; i += 1) operand = { kind: "expr", expr: { type: "binary", left: operand, op: "+", right: { kind: "literal", type: "number", value: 1 } } }
+      return operand
+    }
+    const withOperand = (operand: Operand): Step => ({ id: "w", kind: "with_column", name: "n", expr: { type: "operand", operand } })
+    expect(stepProblem(withOperand(nested(5)))).toBeNull()
+    expect(stepProblem(withOperand(nested(6)))).toMatch(/nests more than 6 levels/)
+    const ratio: Step = {
+      id: "r",
+      kind: "with_column",
+      name: "rate",
+      expr: { type: "function", fn: "round", operand: { kind: "expr", expr: { type: "binary", left: col("a"), op: "/", right: col("b") } }, args: [{ kind: "literal", type: "number", value: 3 }] },
+    }
+    expect(stepProblem(ratio)).toBeNull()
+    expect(summarizeStep(ratio)).toBe("rate = round((a / b), 3)")
+    expect(stepProblem({ id: "v", kind: "variable", name: "x", value: nested(1) })).toMatch(/plain value/)
+    expect(stepProblem({ id: "f", kind: "with_column", name: "n", expr: { type: "function", fn: "round", operand: col("a"), args: [nested(1)] } })).toMatch(/function arguments/)
+    expect(stepProblem({ id: "f", kind: "filter", match: "all", conditions: [{ column: "a", operator: "gt", value: { kind: "expr", expr: { type: "nope" } } }] })).toMatch(/unknown expression type/)
   })
 
   it("summarises the extended vocabulary in plain words", () => {

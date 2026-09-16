@@ -240,7 +240,13 @@ and quantiles (an empty key list summarises the whole frame), joins with optiona
 key-cardinality validation (inner, left and full joins only, as Polars refuses it
 elsewhere) and output-order control, concat, fill-null, limit, and
 node-local variables; a null literal renders as `pl.lit(None)` in expression position
-and is refused in membership lists and variables. The node data model enforces
+and is refused in membership lists and variables. An operand may itself be a nested
+expression (`{"kind": "expr", "expr": ...}`) wherever a value, column or variable is
+accepted, except in membership lists, variable values and function arguments, which
+stay plain values; a nested formula renders in parentheses and nesting is capped at
+six levels (a step's own expression is level one), beyond which the step is refused
+with a message to compute part of the expression in an earlier step. The node data
+model enforces
 one invariant on construction: a `polars` config that carries `steps` always carries the
 rendering of those steps as its `code`, or an empty `code` plus an editor-state
 `_steps_error` message when they cannot be rendered, so every consumer that reads

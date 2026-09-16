@@ -1341,6 +1341,244 @@ def test_extended_vocabulary_executes(tmp_path: Path) -> None:
     assert [row["qid"] for row in unique.preview] == ["c4"]
 
 
+# ---------------------------------------------------------------------------
+# Nested expressions
+# ---------------------------------------------------------------------------
+
+
+def ex(expr: dict[str, Any]) -> dict[str, Any]:
+    return {"kind": "expr", "expr": expr}
+
+
+def binary(left: dict[str, Any], op: str, right: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "binary", "left": left, "op": op, "right": right}
+
+
+def fn(name: str, operand: dict[str, Any], *args: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "function", "fn": name, "operand": operand, "args": list(args)}
+
+
+@pytest.mark.parametrize(
+    ("kind_step", "expected"),
+    [
+        (
+            step(
+                "x",
+                "with_column",
+                name="rate",
+                expr=fn(
+                    "round",
+                    ex(binary(ex(binary(num(1000), "*", col("premium"))), "/", col("sum_insured"))),
+                    num(3),
+                ),
+            ),
+            "df = df.with_columns((((pl.lit(1000) * pl.col('premium')) / pl.col('sum_insured'))"
+            ".round(3)).alias('rate'))",
+        ),
+        (
+            step(
+                "x",
+                "with_column",
+                name="dev",
+                expr=binary(
+                    col("premium"),
+                    "-",
+                    ex({"type": "window", "agg": "mean", "column": "premium", "over": ["region"]}),
+                ),
+            ),
+            "df = df.with_columns((pl.col('premium') - pl.col('premium').mean().over(['region']))"
+            ".alias('dev'))",
+        ),
+        (
+            step(
+                "x",
+                "with_column",
+                name="size",
+                expr=fn(
+                    "abs",
+                    ex(
+                        {
+                            "type": "conditional",
+                            "match": "all",
+                            "conditions": [cond("region", "eq", value=text("north"))],
+                            "then": col("premium"),
+                            "otherwise": ex(binary(col("premium"), "*", num(-1))),
+                        }
+                    ),
+                ),
+            ),
+            "df = df.with_columns((pl.when((pl.col('region') == 'north')).then(pl.col('premium'))"
+            ".otherwise((pl.col('premium') * -1)).abs()).alias('size'))",
+        ),
+        (
+            step(
+                "x",
+                "filter",
+                match="all",
+                conditions=[
+                    cond("premium", "gt", value=ex(binary(col("sum_insured"), "*", num(0.01))))
+                ],
+            ),
+            "df = df.filter((pl.col('premium') > (pl.col('sum_insured') * 0.01)))",
+        ),
+        (
+            step(
+                "x",
+                "with_column",
+                name="key",
+                expr={
+                    "type": "concat",
+                    "parts": [ex(fn("upper", col("region"))), col("north")],
+                    "separator": "-",
+                },
+            ),
+            "df = df.with_columns((pl.concat_str([pl.col('region').str.to_uppercase(), "
+            "pl.col('north')], separator='-')).alias('key'))",
+        ),
+        (
+            step(
+                "x",
+                "fill_null",
+                columns=["premium"],
+                fill={"kind": "value", "value": ex(binary(col("sum_insured"), "*", num(0.02)))},
+            ),
+            "df = df.with_columns(pl.col(['premium']).fill_null((pl.col('sum_insured') * 0.02)))",
+        ),
+        (
+            step(
+                "x",
+                "with_column",
+                name="v",
+                expr={"type": "operand", "operand": ex({"type": "operand", "operand": num(2)})},
+            ),
+            "df = df.with_columns((pl.lit(2)).alias('v'))",
+        ),
+    ],
+)
+def test_nested_expressions_render(kind_step: dict[str, Any], expected: str) -> None:
+    rendered = render_polars_steps([source(), kind_step], ["quotes"])
+    assert rendered.code.splitlines()[1] == expected
+
+
+def _nested(depth: int) -> dict[str, Any]:
+    operand: dict[str, Any] = num(1)
+    for _ in range(depth):
+        operand = ex(binary(operand, "+", num(1)))
+    return {"type": "operand", "operand": operand}
+
+
+@pytest.mark.parametrize(
+    ("kind_step", "fragment"),
+    [
+        (step("x", "with_column", name="d", expr=_nested(6)), "nest more than 6 levels"),
+        (
+            step(
+                "x",
+                "filter",
+                match="all",
+                conditions=[cond("region", "is_in", values=[ex(binary(num(1), "+", num(1)))])],
+            ),
+            "must be plain values",
+        ),
+        (step("x", "variable", name="v", value=ex(binary(num(1), "+", num(1)))), "plain value"),
+        (
+            step(
+                "x",
+                "with_column",
+                name="r",
+                expr=fn("round", col("premium"), ex(binary(num(1), "+", num(1)))),
+            ),
+            "must be a plain value",
+        ),
+        (
+            step(
+                "x", "with_column", name="r", expr={"type": "operand", "operand": {"kind": "expr"}}
+            ),
+            "expression must be an object",
+        ),
+        (
+            step(
+                "x",
+                "with_column",
+                name="r",
+                expr={"type": "operand", "operand": {"kind": "expr", "expr": {"type": "nope"}}},
+            ),
+            "Unknown expression type",
+        ),
+    ],
+)
+def test_nested_expressions_reject(kind_step: dict[str, Any], fragment: str) -> None:
+    with pytest.raises(PolarsStepError) as info:
+        render_polars_steps([source(), kind_step], ["quotes"])
+    assert info.value.step_index == 1
+    assert fragment in info.value.message
+
+
+def test_nesting_depth_counts_from_the_step_expression() -> None:
+    # Depth 5 below the top-level expression is the deepest allowed.
+    render_polars_steps([source(), step("x", "with_column", name="d", expr=_nested(5))], ["quotes"])
+
+
+def test_nested_expressions_execute(tmp_path: Path) -> None:
+    policies = _extended_frame(tmp_path)
+    steps = [
+        source("policies"),
+        step(
+            "a",
+            "with_column",
+            name="dev",
+            expr=binary(
+                col("premium"),
+                "-",
+                ex({"type": "window", "agg": "mean", "column": "premium", "over": ["region"]}),
+            ),
+        ),
+        step(
+            "b",
+            "with_column",
+            name="per_mille",
+            expr=fn(
+                "round",
+                ex(binary(ex(binary(num(1000), "*", col("premium"))), "/", num(3))),
+                num(1),
+            ),
+        ),
+        step(
+            "c",
+            "with_column",
+            name="signed",
+            expr=fn(
+                "abs",
+                ex(
+                    {
+                        "type": "conditional",
+                        "match": "all",
+                        "conditions": [cond("region", "eq", value=text("north"))],
+                        "then": col("premium"),
+                        "otherwise": ex(binary(col("premium"), "*", num(-1))),
+                    }
+                ),
+            ),
+        ),
+        step(
+            "d",
+            "filter",
+            match="all",
+            conditions=[cond("premium", "ge", value=ex(binary(col("dev"), "+", num(100))))],
+        ),
+    ]
+    graph = PipelineGraph(
+        nodes=[policies, _stepped("t", steps)], edges=[make_edge("policies", "t")]
+    )
+    result = execute_graph(graph, target_node_id="t", execution_context=_capped_context())["t"]
+    assert result.status == "ok", result.error
+    by_id = {row["qid"]: row for row in result.preview}
+    # north mean is 550 (800, 50, 800); rows keep premium >= dev + 100
+    assert set(by_id) == {"c1", "c2", "c3", "c6", "cx"}
+    assert by_id["c1"]["dev"] == 250.0 and by_id["c1"]["per_mille"] == 266666.7
+    assert by_id["c2"]["signed"] == 200.0 and by_id["c1"]["signed"] == 800.0
+
+
 def test_join_validation_fails_loudly_on_duplicate_keys(tmp_path: Path) -> None:
     quotes, _rates = _frames(tmp_path)
     dup = tmp_path / "dup_rates.parquet"

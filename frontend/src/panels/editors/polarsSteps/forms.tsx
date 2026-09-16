@@ -18,6 +18,7 @@ import {
   JOIN_MAINTAIN_ORDER,
   JOIN_VALIDATE,
   JOIN_VALIDATED_HOW,
+  MAX_EXPR_DEPTH,
   WINDOW_AGGREGATIONS,
   canonicalStep,
   defaultArgFor,
@@ -35,6 +36,7 @@ import {
   OperandField,
   SelectField,
   TextField,
+  type RenderExpression,
 } from "./fields"
 import type {
   AggregationSpec,
@@ -123,7 +125,32 @@ function FilterForm({ step, onChange, ctx }: FormProps<FilterStep>) {
       columns={ctx.columns}
       variables={ctx.variables}
       ariaLabel="Filter"
+      renderExpression={nestedExpression(ctx)}
     />
+  )
+}
+
+/**
+ * The nested-expression editor an operand field opens for its "Expression"
+ * source: the same type select and editor as a step's expression, recursing
+ * through `ExprEditor`.
+ */
+function nestedExpression(ctx: StepFormContext, depth = 2): RenderExpression | undefined {
+  // The renderer refuses deeper nesting, and a refused step cannot be edited
+  // here, so the editor never offers a level it could not save.
+  if (depth > MAX_EXPR_DEPTH) return undefined
+  return (expr, onChange, ariaLabel) => (
+    <>
+      <Field label="Computed as">
+        <SelectField
+          value={expr.type}
+          options={EXPR_TYPES}
+          onChange={(type) => onChange(defaultExpr(type, ctx.columns[0] ?? ""))}
+          ariaLabel={`${ariaLabel} type`}
+        />
+      </Field>
+      <ExprEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
+    </>
   )
 }
 
@@ -213,8 +240,15 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
   )
 }
 
-function ExprEditor({ expr, onChange, ctx }: { expr: Expr; onChange: (next: Expr) => void; ctx: StepFormContext }) {
-  const operandProps = { sources: [...ALL_SOURCES], literalTypes: [...ALL_TYPES], columns: ctx.columns, variables: ctx.variables }
+function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: (next: Expr) => void; ctx: StepFormContext; depth?: number }) {
+  const renderExpression = nestedExpression(ctx, depth + 1)
+  const operandProps = {
+    sources: [...ALL_SOURCES],
+    literalTypes: [...ALL_TYPES],
+    columns: ctx.columns,
+    variables: ctx.variables,
+    renderExpression,
+  }
   switch (expr.type) {
     case "operand":
       return (
@@ -267,6 +301,7 @@ function ExprEditor({ expr, onChange, ctx }: { expr: Expr; onChange: (next: Expr
               columns={ctx.columns}
               variables={ctx.variables}
               ariaLabel="If"
+              renderExpression={renderExpression}
             />
           </Field>
           <Field label="Then">
@@ -280,7 +315,7 @@ function ExprEditor({ expr, onChange, ctx }: { expr: Expr; onChange: (next: Expr
     case "window":
       return <WindowEditor expr={expr} onChange={onChange} ctx={ctx} />
     case "concat":
-      return <ConcatEditor expr={expr} onChange={onChange} ctx={ctx} />
+      return <ConcatEditor expr={expr} onChange={onChange} ctx={ctx} renderExpression={renderExpression} />
   }
 }
 
@@ -359,7 +394,17 @@ function WindowEditor({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "wi
   )
 }
 
-function ConcatEditor({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "concat" }>; onChange: (next: Expr) => void; ctx: StepFormContext }) {
+function ConcatEditor({
+  expr,
+  onChange,
+  ctx,
+  renderExpression,
+}: {
+  expr: Extract<Expr, { type: "concat" }>
+  onChange: (next: Expr) => void
+  ctx: StepFormContext
+  renderExpression?: RenderExpression
+}) {
   const setPart = (index: number, next: Operand) =>
     onChange({ ...expr, parts: expr.parts.map((p, i) => (i === index ? next : p)) })
   return (
@@ -377,6 +422,7 @@ function ConcatEditor({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "co
                   columns={ctx.columns}
                   variables={ctx.variables}
                   ariaLabel={`Part ${index + 1}`}
+                  renderExpression={renderExpression}
                 />
               </div>
               {expr.parts.length > 2 && (
@@ -568,6 +614,7 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx }: { entry: Aggr
               columns={ctx.columns}
               variables={ctx.variables}
               ariaLabel={`Aggregation ${index + 1} filter`}
+              renderExpression={nestedExpression(ctx)}
             />
             <button
               type="button"
@@ -723,6 +770,7 @@ function FillNullForm({ step, onChange, ctx }: FormProps<FillNullStep>) {
           columns={ctx.columns}
           variables={ctx.variables}
           ariaLabel="Fill value"
+          renderExpression={nestedExpression(ctx)}
         />
       ) : (
         <SelectField

@@ -41,6 +41,7 @@ __all__ = [
     "FUNCTIONS",
     "JOIN_HOW",
     "LITERAL_TYPES",
+    "MAX_EXPR_DEPTH",
     "OPERATORS",
     "STEP_KINDS",
     "PolarsStepError",
@@ -171,6 +172,8 @@ CAST_DTYPES: tuple[str, ...] = (
     "Categorical",
 )
 LITERAL_TYPES: tuple[str, ...] = ("number", "text", "boolean", "date", "null")
+#: How deep expressions may nest as operands; a with_column expression is depth 1.
+MAX_EXPR_DEPTH = 6
 
 #: ``fn -> (argument literal types, render template)``. ``{r}`` is the
 #: receiver rendered in expression position; ``{0}``/``{1}`` are bare literals.
@@ -311,6 +314,7 @@ class _Renderer:
         self.input_names = None if input_names is None else frozenset(input_names)
         self.variables: set[str] = set()
         self.index = 0
+        self.depth = 0
         self.steps: list[dict[str, Any]] = [self._validate_step(i, s) for i, s in enumerate(steps)]
 
     # -- validation ------------------------------------------------------
@@ -452,6 +456,13 @@ class _Renderer:
             if literal_type == "date" or (not expr and literal_type != "null"):
                 return rendered
             return f"pl.lit({rendered})"
+        if kind == "expr":
+            # A nested expression; only a binary needs parentheses, every
+            # other type is a call chain or an atom.
+            self._keys(operand, ("kind", "expr"), label)
+            inner = self._object(operand.get("expr"), f"{label} expression")
+            rendered_expr = self._expr(inner, f"{label} expression")
+            return f"({rendered_expr})" if inner.get("type") == "binary" else rendered_expr
         if kind == "variable":
             self._keys(operand, ("kind", "name"), label)
             name = self._str(operand.get("name"), f"{label} variable")
@@ -565,6 +576,18 @@ class _Renderer:
         return f"{self._column(column, f'{label} column')}.filter({predicate}){call}"
 
     def _expr(self, value: object, label: str) -> str:
+        self.depth += 1
+        try:
+            if self.depth > MAX_EXPR_DEPTH:
+                raise self.fail(
+                    f"Expressions nest more than {MAX_EXPR_DEPTH} levels deep; "
+                    "compute part of the expression in an earlier step."
+                )
+            return self._expr_body(value, label)
+        finally:
+            self.depth -= 1
+
+    def _expr_body(self, value: object, label: str) -> str:
         expr = self._object(value, label)
         kind = expr.get("type")
         if kind == "operand":

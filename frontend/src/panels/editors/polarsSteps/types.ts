@@ -17,7 +17,9 @@ export type LiteralOperand = {
 
 export type ColumnOperand = { kind: "column"; name: string }
 export type VariableOperand = { kind: "variable"; name: string }
-export type Operand = LiteralOperand | ColumnOperand | VariableOperand
+/** A nested expression; allowed wherever an operand is, except membership lists, variables and function arguments. */
+export type ExprOperand = { kind: "expr"; expr: Expr }
+export type Operand = LiteralOperand | ColumnOperand | VariableOperand | ExprOperand
 
 export type ConditionOperator =
   | "eq" | "ne" | "gt" | "ge" | "lt" | "le"

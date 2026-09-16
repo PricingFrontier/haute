@@ -229,7 +229,10 @@ defined by an earlier variable step, and each field offers only the sources and 
 types the step schema accepts there (string operators take text values only; a variable
 holds a number, text or true/false; a `null` literal is offered for expression operands
 but never in a membership list or a variable; function arguments are labelled and typed
-per function). A locked generated-code panel shows the code the render endpoint returns for
+per function). An operand field also offers an "Expression" source that opens a nested
+editor (the same "Computed as" select and expression form, indented under the field);
+the source is withheld at the renderer's depth cap so the editor never builds a step it
+could not save, and summaries print a nested formula in parentheses. A locked generated-code panel shows the code the render endpoint returns for
 the current steps, names the failing step without opening it or collapsing the card being
 edited (a "Go to error" action opens it), tints the failing and the last execution-error
 line, and carries the confirmed one-way `Switch to code` action. Renders are tagged with

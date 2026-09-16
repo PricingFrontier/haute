@@ -10,8 +10,8 @@ import { useId, useState, type KeyboardEvent, type ReactNode } from "react"
 
 import { CommittedTextField } from "../../../components/form"
 import { INPUT_STYLE } from "../_shared"
-import { CONDITION_OPERATORS, LIST_LITERAL_TYPES, LITERAL_TYPES, defaultLiteral, literal } from "./catalogue"
-import type { Condition, LiteralOperand, LiteralType, MatchMode, Operand } from "./types"
+import { CONDITION_OPERATORS, LIST_LITERAL_TYPES, LITERAL_TYPES, defaultExpr, defaultLiteral, literal } from "./catalogue"
+import type { Condition, Expr, LiteralOperand, LiteralType, MatchMode, Operand } from "./types"
 
 export const CONTROL_CLASS = "focus-ring w-full min-w-0 px-2 py-1.5 text-xs rounded-md"
 const CHIP_STYLE = { background: "var(--chrome-hover)", color: "var(--text-primary)", border: "1px solid var(--border)" }
@@ -327,13 +327,17 @@ export function LiteralValueInput({
   }
 }
 
-export type OperandSource = "literal" | "column" | "variable"
-const SOURCE_LABELS: Record<OperandSource, string> = { literal: "Value", column: "Column", variable: "Variable" }
+export type OperandSource = "literal" | "column" | "variable" | "expr"
+const SOURCE_LABELS: Record<OperandSource, string> = { literal: "Value", column: "Column", variable: "Variable", expr: "Expression" }
+
+/** Renders a nested expression editor for an operand; supplied by the forms so fields need not import them. */
+export type RenderExpression = (expr: Expr, onChange: (next: Expr) => void, ariaLabel: string) => ReactNode
 
 /**
  * One operand: a source select (only the allowed sources, Variable only when a
- * variable exists), then the matching input. Literal types are limited to
- * `literalTypes`; the type select appears only when more than one is allowed.
+ * variable exists, Expression only when `renderExpression` is given), then
+ * the matching input. Literal types are limited to `literalTypes`; the type
+ * select appears only when more than one is allowed.
  */
 export function OperandField({
   value,
@@ -343,6 +347,7 @@ export function OperandField({
   columns,
   variables,
   ariaLabel,
+  renderExpression,
 }: {
   value: Operand
   onChange: (next: Operand) => void
@@ -351,13 +356,18 @@ export function OperandField({
   columns: string[]
   variables: string[]
   ariaLabel: string
+  renderExpression?: RenderExpression
 }) {
-  const allowedSources = sources.filter((s) => s !== "variable" || variables.length > 0)
+  const allowedSources: OperandSource[] = [
+    ...sources.filter((s) => s !== "variable" || variables.length > 0),
+    ...(renderExpression ? (["expr"] as const) : []),
+  ]
   const source: OperandSource = value.kind
   const setSource = (next: OperandSource) => {
     if (next === source) return
     if (next === "literal") onChange(defaultLiteral(literalTypes[0] ?? "number"))
     else if (next === "column") onChange({ kind: "column", name: columns[0] ?? "" })
+    else if (next === "expr") onChange({ kind: "expr", expr: defaultExpr("binary", columns[0] ?? "") })
     else onChange({ kind: "variable", name: variables[0] ?? "" })
   }
   return (
@@ -402,6 +412,11 @@ export function OperandField({
           />
         )}
       </div>
+      {value.kind === "expr" && renderExpression && (
+        <div className="basis-full grid gap-1.5 pl-2 ml-0.5" style={{ borderLeft: "2px solid var(--border)" }} role="group" aria-label={`${ariaLabel} expression`}>
+          {renderExpression(value.expr, (expr) => onChange({ kind: "expr", expr }), `${ariaLabel} expression`)}
+        </div>
+      )}
     </div>
   )
 }
@@ -483,6 +498,7 @@ export function ConditionRow({
   columns,
   variables,
   ariaLabel,
+  renderExpression,
 }: {
   condition: Condition
   onChange: (next: Condition) => void
@@ -490,6 +506,7 @@ export function ConditionRow({
   columns: string[]
   variables: string[]
   ariaLabel: string
+  renderExpression?: RenderExpression
 }) {
   const takes = CONDITION_OPERATORS.find((o) => o.value === condition.operator)?.takes ?? "value"
   const textOnly = isStringOperator(condition.operator)
@@ -533,6 +550,7 @@ export function ConditionRow({
           columns={columns}
           variables={variables}
           ariaLabel={`${ariaLabel} value`}
+          renderExpression={renderExpression}
         />
       )}
       {takes === "values" && (
@@ -554,6 +572,7 @@ export function ConditionList({
   columns,
   variables,
   ariaLabel,
+  renderExpression,
 }: {
   conditions: Condition[]
   match: MatchMode
@@ -561,6 +580,7 @@ export function ConditionList({
   columns: string[]
   variables: string[]
   ariaLabel: string
+  renderExpression?: RenderExpression
 }) {
   return (
     <div className="grid gap-1.5">
@@ -586,6 +606,7 @@ export function ConditionList({
           columns={columns}
           variables={variables}
           ariaLabel={`${ariaLabel} condition ${index + 1}`}
+          renderExpression={renderExpression}
           onChange={(next) => onChange(conditions.map((c, i) => (i === index ? next : c)), match)}
           onRemove={conditions.length > 1 ? () => onChange(conditions.filter((_, i) => i !== index), match) : undefined}
         />
