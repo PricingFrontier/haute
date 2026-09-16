@@ -43,6 +43,7 @@ export default function StepCard({
   const bodyId = `${id}-body`
   const accent = NODE_GROUP_COLORS.transform
   const borderColour = badge ? `var(--${badge.tone})` : open ? accent : "var(--border)"
+  // The number badge is visual; the accessible name keeps the step number.
   const title = number === null ? label : `Step ${number}: ${label}`
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -66,6 +67,7 @@ export default function StepCard({
           ref={disclosureRef}
           aria-expanded={open}
           aria-controls={bodyId}
+          aria-label={title}
           onClick={onToggle}
           className="focus-ring flex-1 min-w-0 flex items-center gap-2 text-left rounded-md px-1 py-0.5"
         >
@@ -79,7 +81,7 @@ export default function StepCard({
             </span>
           )}
           <span className="text-xs font-semibold truncate" style={{ color: open ? accent : "var(--text-primary)" }}>
-            {title}
+            {label}
           </span>
           <span className="ml-auto shrink-0" style={{ color: "var(--text-muted)" }} aria-hidden="true">
             {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
