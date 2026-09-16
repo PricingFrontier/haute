@@ -5,11 +5,12 @@ import { NODE_GROUP_COLORS } from "../../../theme/colors"
 import { InputSourcesBar, INPUT_STYLE } from "../_shared"
 import type { InputSource, OnReplaceConfig, OnUpdateConfig } from "../_shared"
 import AddStepMenu from "./AddStepMenu"
-import { createStep, kindLabel, stepDisplayLabel, stepProblem, summarizeStep, variablesBefore } from "./catalogue"
+import { createStep, kindLabel, stepDisplayLabel, stepProblem, variablesBefore } from "./catalogue"
 import { columnsBeforeStep } from "./derivedColumns"
 import { StepForm } from "./forms"
 import GeneratedCodePanel from "./GeneratedCodePanel"
 import StepCard, { type StepBadge, type StepDrag } from "./StepCard"
+import { summarizeStep } from "./summary"
 import { readSteps, type Step, type StepKind } from "./types"
 import { useRenderedSteps } from "./useRenderedSteps"
 
@@ -70,7 +71,8 @@ export default function PolarsStepsEditor({
   const inputNames = useMemo(() => inputSources.map((source) => source.name), [inputSources])
   const upstream = useMemo(() => (upstreamColumns ?? []).map((c) => c.name), [upstreamColumns])
   const [openIndex, setOpenIndex] = useState<number | null>(null)
-  const disclosures = useRef(new Map<number, HTMLButtonElement>())
+  // The start card's select and every step card's disclosure button, by schema index.
+  const disclosures = useRef(new Map<number, HTMLElement>())
   const addButton = useRef<HTMLButtonElement | null>(null)
 
   const setSteps = useCallback((next: Step[]) => onUpdate("steps", next), [onUpdate])
@@ -184,6 +186,7 @@ export default function PolarsStepsEditor({
       : renderError
         ? `Fix ${renderError.stepIndex != null ? stepDisplayLabel(renderError.stepIndex) : "the steps"} first`
         : "Rendering…"
+  const switchEnabled = switchAllowed && onReplaceConfig !== undefined
   const switchToCode = () => {
     if (!switchAllowed || !onReplaceConfig) return
     if (!window.confirm(SWITCH_CONFIRMATION)) return
@@ -221,7 +224,9 @@ export default function PolarsStepsEditor({
           <button
             type="button"
             onClick={switchToCode}
-            className="focus-ring inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium"
+            disabled={!switchEnabled}
+            title={switchEnabled ? "Replace the steps with editable code" : switchDisabledReason}
+            className="focus-ring inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
             style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}
           >
             <Code size={12} aria-hidden="true" />
@@ -241,7 +246,7 @@ export default function PolarsStepsEditor({
             </span>
             <select
               ref={(el) => {
-                if (el) disclosures.current.set(0, el as unknown as HTMLButtonElement)
+                if (el) disclosures.current.set(0, el)
               }}
               aria-label="Start from input"
               value={effectiveStart}
@@ -337,7 +342,7 @@ export default function PolarsStepsEditor({
             error={shownError}
             errorLine={errorLine}
             onGoToError={goToError}
-            switchEnabled={switchAllowed && onReplaceConfig !== undefined}
+            switchEnabled={switchEnabled}
             switchDisabledReason={switchDisabledReason}
             onSwitchToCode={switchToCode}
           />

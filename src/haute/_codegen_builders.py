@@ -42,7 +42,11 @@ from haute._graph_utils import (
     duplicate_input_names,
     resolve_input_mapping_names,
 )
-from haute._polars_steps import PolarsStepError, render_polars_steps
+from haute._polars_steps import (
+    STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
+    PolarsStepError,
+    render_polars_steps,
+)
 from haute._rating import _normalise_combined_outputs
 from haute._rating_step_config import normalise_rating_tables
 from haute._registry import (
@@ -916,8 +920,7 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
     steps = config.get("steps")
     if isinstance(steps, list) and input_mapping is not None:
         raise ConfigError(
-            "A stepped transform addresses its inputs by their edge names and "
-            "cannot carry inputMapping.",
+            STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
             node_id=node.id,
             node_label=node.data.label,
         )

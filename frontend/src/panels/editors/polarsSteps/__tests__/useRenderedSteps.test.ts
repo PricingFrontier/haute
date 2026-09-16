@@ -120,4 +120,24 @@ describe("useRenderedSteps", () => {
     expect(result.current.code).toBe("df = quotes")
     expect(result.current.revisionRendered).not.toBe(result.current.revision)
   })
+
+  it("reports a transport failure as a list-level error and keeps the last code", async () => {
+    mockRender.mockResolvedValueOnce(okResponse("df = quotes"))
+    const { result, rerender } = renderHook(({ steps }) => useRenderedSteps(steps, ["quotes"]), { initialProps: { steps: one } })
+    await act(async () => {
+      vi.advanceTimersByTime(250)
+      await Promise.resolve()
+    })
+    expect(result.current.code).toBe("df = quotes")
+    mockRender.mockRejectedValueOnce(new Error("boom"))
+    rerender({ steps: two })
+    await act(async () => {
+      vi.advanceTimersByTime(250)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(result.current.status).toBe("error")
+    expect(result.current.error).toEqual({ stepIndex: null, message: "Could not render steps: boom" })
+    expect(result.current.code).toBe("df = quotes")
+  })
 })

@@ -29,7 +29,8 @@ export function referencedStepInputs(steps: unknown[]): string[] {
   return seen
 }
 
-export type StepInputRename = { ok: true; steps: unknown[]; changed: boolean } | { ok: false; error: string }
+/** A failed rename names the input two references would share. */
+export type StepInputRename = { ok: true; steps: unknown[]; changed: boolean } | { ok: false; duplicate: string }
 
 /**
  * Map every input reference through `renames`. Fails when two distinct
@@ -41,8 +42,8 @@ export function renameStepInputs(steps: unknown[], renames: ReadonlyMap<string, 
   const before = referencedStepInputs(steps)
   const after = new Set(before.map((name) => rename(name) as string))
   if (after.size !== before.length) {
-    const duplicate = before.map((name) => rename(name) as string).find((name, index, all) => all.indexOf(name) !== index)
-    return { ok: false, error: `input "${duplicate}" would be referenced by more than one input` }
+    const duplicate = before.map((name) => rename(name) as string).find((name, index, all) => all.indexOf(name) !== index) ?? ""
+    return { ok: false, duplicate }
   }
   let changed = false
   const next = steps.map((raw) => {

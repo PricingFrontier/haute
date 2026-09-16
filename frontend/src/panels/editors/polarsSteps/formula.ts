@@ -332,11 +332,14 @@ function quoteText(value: string): string {
 }
 
 function nameText(name: string, variables: ReadonlySet<string>, isVariable: boolean): string {
+  // A name not yet filled in reads as a placeholder rather than empty backticks.
+  if (name.length === 0) return "?"
   const plain = IDENTIFIER.test(name) && !KEYWORDS.has(name) && (isVariable || !variables.has(name)) && !FUNCTIONS.some((f) => f.value === name)
   return plain ? name : `\`${name}\``
 }
 
-function literalText(operand: LiteralOperand): string {
+/** A literal in formula notation: `12`, `'north'`, `true`, `null`, `date('2024-01-01')`. */
+export function literalText(operand: LiteralOperand): string {
   switch (operand.type) {
     case "number":
       return String(operand.value)

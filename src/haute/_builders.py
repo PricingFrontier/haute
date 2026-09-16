@@ -61,7 +61,11 @@ from haute._output_assembler import (
     OutputMappingSchemaError,
     is_active_mapping_entry,
 )
-from haute._polars_steps import PolarsStepError, render_polars_steps
+from haute._polars_steps import (
+    STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
+    PolarsStepError,
+    render_polars_steps,
+)
 from haute._rating import (
     _apply_banding_factors,
     _apply_rating_step_outputs,
@@ -1132,11 +1136,7 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         # ``NodeData``); validate the input references against the names the
         # code will execute with so an unknown input names its step.
         if _in_map is not None and not config.get("instanceOf"):
-            raise ConfigError(
-                "A stepped transform addresses its inputs by their edge names and "
-                "cannot carry inputMapping.",
-                node_id=ctx.node.id,
-            )
+            raise ConfigError(STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE, node_id=ctx.node.id)
         problem = config.get("_steps_error")
         if problem is None:
             names = set(_src_names)

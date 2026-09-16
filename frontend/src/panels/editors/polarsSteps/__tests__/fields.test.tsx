@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, cleanup, fireEvent, within } from "@testing-library/react"
+import { useState } from "react"
 
 import { completionMatches } from "../completion"
 import { ColumnListField, ColumnPicker } from "../fields"
@@ -75,5 +76,23 @@ describe("column-name completion", () => {
     fireEvent.change(input, { target: { value: "r" } })
     fireEvent.mouseDown(within(screen.getByRole("listbox")).getByRole("option", { name: "Rate" }))
     expect(onCommit).toHaveBeenLastCalledWith("Rate")
+  })
+
+  it("keeps focus in the box through a completion and a commit", () => {
+    function Picker() {
+      const [value, setValue] = useState("")
+      return <ColumnPicker value={value} onCommit={setValue} suggestions={COLUMNS} ariaLabel="Probe" />
+    }
+    render(<Picker />)
+    const input = screen.getByRole("combobox", { name: "Probe" })
+    input.focus()
+    fireEvent.change(input, { target: { value: "pre" } })
+    fireEvent.keyDown(input, { key: "Tab" })
+    expect(input).toHaveValue("premium")
+    expect(document.activeElement).toBe(input)
+    fireEvent.change(input, { target: { value: "typed" } })
+    fireEvent.keyDown(input, { key: "Enter" })
+    expect(input).toHaveValue("typed")
+    expect(document.activeElement).toBe(input)
   })
 })

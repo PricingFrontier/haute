@@ -221,7 +221,7 @@ the columns of that output handle as recorded by the last preview) plus columns 
 earlier steps while accepting free text: every column box lists the names starting with
 what is typed beneath it (all of them while the box is empty), Up/Down move through them,
 Tab or a click completes the name, Escape closes the list, and Enter or leaving the box
-keeps what was typed. A window expression offers the plain aggregates plus row number, running total,
+keeps what was typed; the box keeps keyboard focus through a completion or a commit. A window expression offers the plain aggregates plus row number, running total,
 previous value, rank, dense rank and forward/backward fill, an optional in-group order
 (one direction, with a hint that ordering needs a group column), a rank direction, and a
 quantile; a text-join expression lists two or more parts and a separator; a group-by
@@ -252,13 +252,15 @@ formula as a tooltip on the box and on an info icon beside its label; as a name 
 columns and earlier variables starting with it are listed under the box (Up/Down move, Tab
 or a click completes the name, backticked when it is not an identifier, Escape closes; while
 no upstream column names are known a note says to run the step above); text that cannot be read
-keeps the last good expression and explains why in a muted note, and an expression text cannot express (one
+keeps the last good expression and explains why in a muted note (the note clears as soon as the box
+holds the committed formula again, and the box keeps focus after a commit), and an expression text cannot express (one
 holding a window, conditional or text join) is edited in the structured
 left/operator/right form instead. An operand field also offers an "Expression" source that
 opens a nested editor (the same "Computed as" select and expression form, indented under
 the field); the source is withheld at the renderer's depth cap of twelve so the editor
-never builds a step it could not save, and summaries print a nested formula in
-parentheses; a group-by
+never builds a step it could not save, and summaries print a value or formula in formula notation
+(quoted text, `date('...')`, brackets only where re-parsing needs them, `?` for a name not yet
+filled in) and describe windows, conditionals and text joins in words; a group-by
 aggregation's row filter offers no nested expressions. The Combine group also offers
 "Pivot to columns" (index chips, the spread column, aggregate and values column, and
 one row per output column pairing a typed value with a name the value suggests, all
@@ -287,7 +289,8 @@ current. As soon as the start input is known (chosen in the selector, or the nod
 connected input) the start step is written to the config, so the node renders
 `df = <input>` and can be previewed before any step is added. A
 node without inputs cannot add steps and is told to connect an input or switch to code,
-with the switch offered there. Renaming an upstream node rewrites the input references
+with the switch offered there under the same rule as the code panel's (disabled, with the
+reason as its tooltip, while persisted steps cannot render). Renaming an upstream node rewrites the input references
 inside a stepped transform's steps instead of recording an `inputMapping` binding on it.
 A node whose steps were discarded on load shows the discard reason above the code box.
 A persisted step whose shape the forms cannot edit (an unknown kind or a missing

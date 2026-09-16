@@ -8,8 +8,6 @@ export type RenderedStepsState = {
    *  render is in flight, `ok` / `error` for the latest completed render. */
   status: "empty" | "pending" | "ok" | "error"
   code: string
-  /** Per-step 1-based inclusive line ranges for the last successful render. */
-  stepLines: number[][]
   /** The failing step and message of the latest render, when it failed. */
   error: { stepIndex: number | null; message: string } | null
   /** Steps revision the current `code`/`error` describe. */
@@ -41,7 +39,6 @@ export function useRenderedSteps(
   const [state, setState] = useState<RenderedStepsState>({
     status: steps.length === 0 ? "empty" : "pending",
     code: "",
-    stepLines: [],
     error: null,
     revisionRendered: 0,
     revision: 0,
@@ -51,7 +48,7 @@ export function useRenderedSteps(
     revisionRef.current += 1
     const revision = revisionRef.current
     if (steps.length === 0) {
-      setState({ status: "empty", code: "", stepLines: [], error: null, revisionRendered: revision, revision })
+      setState({ status: "empty", code: "", error: null, revisionRendered: revision, revision })
       return
     }
     setState((prev) => ({ ...prev, status: "pending", revision }))
@@ -64,7 +61,6 @@ export function useRenderedSteps(
             setState({
               status: "ok",
               code: response.code,
-              stepLines: response.step_lines,
               error: null,
               revisionRendered: revision,
               revision,

@@ -957,11 +957,9 @@ def _occurrence_output_columns(
     when the source is multi-frame), so the editor can offer them downstream.
     """
     columns_by_occurrence: dict[str, dict[str, list[ColumnInfo]]] = {}
-    try:
-        instances = resolve_submodel_instances(authored)
-    except Exception:  # noqa: BLE001 - an unresolvable occurrence simply reports nothing
-        return columns_by_occurrence
-    for instance_id, instance in instances.items():
+    # The preview has already flattened this graph, so every occurrence
+    # resolves; a failure here is a defect and must surface.
+    for instance_id, instance in resolve_submodel_instances(authored).items():
         ports: dict[str, list[ColumnInfo]] = {}
         for port in instance.definition.output_ports:
             result = results.get(qualified_runtime_node_id(instance_id, port.source.node_id))

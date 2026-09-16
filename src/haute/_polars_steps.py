@@ -44,6 +44,7 @@ __all__ = [
     "MAX_EXPR_DEPTH",
     "PIVOT_AGGREGATIONS",
     "OPERATORS",
+    "STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE",
     "STEP_KINDS",
     "PolarsStepError",
     "RenderedSteps",
@@ -52,6 +53,14 @@ __all__ = [
     "render_polars_steps",
     "validate_polars_steps",
 ]
+
+
+#: Why a stepped original transform refuses ``inputMapping``: its steps name
+#: their inputs by edge name, so a rename rewrites the steps instead.
+STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE = (
+    "A stepped transform addresses its inputs by their edge names and cannot carry "
+    "inputMapping."
+)
 
 
 class PolarsStepError(ValueError):

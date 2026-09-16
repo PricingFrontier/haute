@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, cleanup, fireEvent, within } from "@testing-library/react"
 import { useState } from "react"
 
-import { summarizeStep } from "../catalogue"
+import { summarizeStep } from "../summary"
 import { StepForm, type StepFormContext } from "../forms"
 import type { Step } from "../types"
 
@@ -555,5 +555,156 @@ describe("step forms only build schema-valid payloads", () => {
     }
     render(<StepForm step={step} onChange={vi.fn()} ctx={{ ...ctx, variables: [] }} />)
     expect(optionValues(screen.getByLabelText("Filter condition 1 value source"))).toEqual(["literal", "column", "expr"])
+  })
+
+  it("keeps focus in the formula box after Enter and clears the error once the text is the committed formula again", () => {
+    const step: Step = {
+      id: "w",
+      kind: "with_column",
+      name: "x",
+      expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "*", right: { kind: "literal", type: "number", value: 1 }, text: "" },
+    }
+    render(<Stateful initial={step} spy={vi.fn()} />)
+    const input = screen.getByLabelText("Formula")
+    input.focus()
+    fireEvent.change(input, { target: { value: "premium * 2" } })
+    fireEvent.keyDown(input, { key: "Enter" })
+    expect(input).toHaveValue("premium * 2")
+    expect(document.activeElement).toBe(input)
+    fireEvent.change(input, { target: { value: "premium * (" } })
+    fireEvent.keyDown(input, { key: "Enter" })
+    expect(screen.getByText(/Not understood/)).toBeInTheDocument()
+    fireEvent.change(input, { target: { value: "premium * 2" } })
+    fireEvent.keyDown(input, { key: "Enter" })
+    expect(screen.queryByText(/Not understood/)).not.toBeInTheDocument()
+    expect(document.activeElement).toBe(input)
+  })
+
+  it("rename rows pick a source column, take a new name, and can be added and removed", () => {
+    const spy = vi.fn()
+    render(<Stateful initial={{ id: "r", kind: "rename", renames: [{ from: "", to: "" }] }} spy={spy} />)
+    expect(screen.queryByRole("button", { name: "Remove rename 1" })).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText("Rename 1 from"), { target: { value: "premium" } })
+    fireEvent.keyDown(screen.getByLabelText("Rename 1 from"), { key: "Enter" })
+    fireEvent.change(screen.getByLabelText("Rename 1 to"), { target: { value: "net" } })
+    fireEvent.blur(screen.getByLabelText("Rename 1 to"))
+    expect(spy).toHaveBeenLastCalledWith({ id: "r", kind: "rename", renames: [{ from: "premium", to: "net" }] })
+    fireEvent.click(screen.getByRole("button", { name: "Add rename" }))
+    expect(screen.getByRole("group", { name: "Rename 2" })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Remove rename 2" }))
+    expect(spy).toHaveBeenLastCalledWith({ id: "r", kind: "rename", renames: [{ from: "premium", to: "net" }] })
+    expect(summarizeStep(spy.mock.calls.at(-1)?.[0] as Step)).toBe("premium → net")
+  })
+
+  it("cast rows pair a column with a type and can be added", () => {
+    const spy = vi.fn()
+    render(<Stateful initial={{ id: "c", kind: "cast", casts: [{ column: "premium", dtype: "Float64" }] }} spy={spy} />)
+    fireEvent.change(screen.getByLabelText("Cast 1 type"), { target: { value: "Int64" } })
+    expect(spy).toHaveBeenLastCalledWith({ id: "c", kind: "cast", casts: [{ column: "premium", dtype: "Int64" }] })
+    fireEvent.click(screen.getByRole("button", { name: "Add column" }))
+    expect(spy).toHaveBeenLastCalledWith({ id: "c", kind: "cast", casts: [{ column: "premium", dtype: "Int64" }, { column: "", dtype: "Float64" }] })
+    expect(screen.getByRole("button", { name: "Remove cast 1" })).toBeInTheDocument()
+  })
+
+  it("sort keys take a direction and nulls-last, and can be added and removed", () => {
+    const spy = vi.fn()
+    render(<Stateful initial={{ id: "s", kind: "sort", keys: [{ column: "premium", descending: false }], nullsLast: false }} spy={spy} />)
+    fireEvent.change(screen.getByLabelText("Sort key 1 direction"), { target: { value: "desc" } })
+    expect(spy).toHaveBeenLastCalledWith({ id: "s", kind: "sort", keys: [{ column: "premium", descending: true }], nullsLast: false })
+    fireEvent.click(screen.getByLabelText("Missing values last"))
+    expect(spy).toHaveBeenLastCalledWith({ id: "s", kind: "sort", keys: [{ column: "premium", descending: true }], nullsLast: true })
+    fireEvent.click(screen.getByRole("button", { name: "Add sort column" }))
+    expect(screen.getByRole("group", { name: "Sort key 2" })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Remove sort key 2" }))
+    expect(spy).toHaveBeenLastCalledWith({ id: "s", kind: "sort", keys: [{ column: "premium", descending: true }], nullsLast: true })
+  })
+
+  it("unique takes its key columns as chips and a keep policy", () => {
+    const spy = vi.fn()
+    render(<Stateful initial={{ id: "u", kind: "unique", columns: [], keep: "first" }} spy={spy} />)
+    fireEvent.change(screen.getByLabelText("Keep"), { target: { value: "none" } })
+    expect(spy).toHaveBeenLastCalledWith({ id: "u", kind: "unique", columns: [], keep: "none" })
+    const add = screen.getByRole("combobox", { name: "Unique by (empty = all columns): add" })
+    fireEvent.change(add, { target: { value: "region" } })
+    fireEvent.keyDown(add, { key: "Enter" })
+    expect(spy).toHaveBeenLastCalledWith({ id: "u", kind: "unique", columns: ["region"], keep: "none" })
+  })
+
+  it("concat appends the ticked inputs in tick order and chooses how columns line up", () => {
+    const spy = vi.fn()
+    render(<Stateful initial={{ id: "a", kind: "concat", inputs: [], how: "vertical" }} spy={spy} />)
+    fireEvent.click(screen.getByLabelText("rates"))
+    fireEvent.click(screen.getByLabelText("quotes"))
+    expect(spy).toHaveBeenLastCalledWith({ id: "a", kind: "concat", inputs: ["rates", "quotes"], how: "vertical" })
+    fireEvent.change(screen.getByLabelText("Concat type"), { target: { value: "diagonal" } })
+    expect(spy).toHaveBeenLastCalledWith({ id: "a", kind: "concat", inputs: ["rates", "quotes"], how: "diagonal" })
+    fireEvent.click(screen.getByLabelText("rates"))
+    expect(spy).toHaveBeenLastCalledWith({ id: "a", kind: "concat", inputs: ["quotes"], how: "diagonal" })
+  })
+
+  it("fill null takes a value of any source, or a strategy", () => {
+    const spy = vi.fn()
+    render(<Stateful initial={{ id: "n", kind: "fill_null", columns: [], fill: { kind: "value", value: { kind: "literal", type: "number", value: 0 } } }} spy={spy} />)
+    expect(optionValues(screen.getByLabelText("Fill value source"))).toEqual(["literal", "column", "variable", "expr"])
+    expect(optionValues(screen.getByLabelText("Fill value type"))).toEqual(["number", "text", "boolean", "date"])
+    fireEvent.change(screen.getByLabelText("Fill value source"), { target: { value: "column" } })
+    expect(spy).toHaveBeenLastCalledWith({ id: "n", kind: "fill_null", columns: [], fill: { kind: "value", value: { kind: "column", name: "" } } })
+    fireEvent.change(screen.getByLabelText("Fill kind"), { target: { value: "strategy" } })
+    expect(spy).toHaveBeenLastCalledWith({ id: "n", kind: "fill_null", columns: [], fill: { kind: "strategy", strategy: "forward" } })
+    fireEvent.change(screen.getByLabelText("Fill strategy"), { target: { value: "mean" } })
+    expect(spy).toHaveBeenLastCalledWith({ id: "n", kind: "fill_null", columns: [], fill: { kind: "strategy", strategy: "mean" } })
+    expect(summarizeStep(spy.mock.calls.at(-1)?.[0] as Step)).toBe("all columns with mean")
+  })
+
+  it("a formula holding a window is edited in the structured left/operator/right form", () => {
+    const spy = vi.fn()
+    const step: Step = {
+      id: "w",
+      kind: "with_column",
+      name: "share",
+      expr: {
+        type: "binary",
+        left: { kind: "expr", expr: { type: "window", agg: "sum", column: "premium", over: ["region"] } },
+        op: "/",
+        right: { kind: "literal", type: "number", value: 12 },
+      },
+    }
+    render(<Stateful initial={step} spy={spy} />)
+    expect(screen.queryByLabelText("Formula")).not.toBeInTheDocument()
+    expect(screen.getByLabelText("Left operand source")).toHaveValue("expr")
+    expect(screen.getByLabelText("Window aggregate")).toHaveValue("sum")
+    fireEvent.change(screen.getByLabelText("Operator"), { target: { value: "*" } })
+    const latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toMatchObject({ type: "binary", op: "*" })
+    expect(summarizeStep(latest)).toBe("share = sum of premium over region * 12")
+  })
+
+  it("an if-then expression edits its conditions and both branches", () => {
+    const spy = vi.fn()
+    const step: Step = {
+      id: "b",
+      kind: "with_column",
+      name: "band",
+      expr: {
+        type: "conditional",
+        match: "all",
+        conditions: [{ column: "premium", operator: "gt", value: { kind: "literal", type: "number", value: 100 } }],
+        then: { kind: "literal", type: "text", value: "high" },
+        otherwise: { kind: "literal", type: "text", value: "low" },
+      },
+    }
+    render(<Stateful initial={step} spy={spy} />)
+    expect(screen.getByLabelText("Expression type")).toHaveValue("conditional")
+    expect(screen.getByLabelText("If condition 1 column")).toHaveValue("premium")
+    fireEvent.change(screen.getByLabelText("Then value value"), { target: { value: "top" } })
+    fireEvent.blur(screen.getByLabelText("Then value value"))
+    expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>).expr).toMatchObject({ then: { kind: "literal", type: "text", value: "top" } })
+    fireEvent.change(screen.getByLabelText("Otherwise value source"), { target: { value: "column" } })
+    expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>).expr).toMatchObject({ otherwise: { kind: "column", name: "" } })
+    fireEvent.click(screen.getByRole("button", { name: "Add condition" }))
+    const latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toMatchObject({ type: "conditional", conditions: [expect.anything(), { column: "", operator: "eq" }] })
+    expect(screen.getByLabelText("If match")).toHaveValue("all")
+    expect(summarizeStep(latest)).toBe("band = if premium is greater than 100 and ? equals 0 then 'top' else ?")
   })
 })

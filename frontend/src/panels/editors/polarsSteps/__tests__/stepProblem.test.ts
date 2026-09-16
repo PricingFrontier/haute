@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest"
 
 import { columnsBeforeStep } from "../derivedColumns"
-import { canonicalStep, stepProblem, summarizeStep, variablesBefore } from "../catalogue"
+import { canonicalStep, stepProblem, variablesBefore } from "../catalogue"
+import { summarizeStep } from "../summary"
 import type { Operand, Step } from "../types"
 
 const col = (name: string) => ({ kind: "column" as const, name })
@@ -82,7 +83,7 @@ describe("stepProblem", () => {
       expr: { type: "function", fn: "round", operand: { kind: "expr", expr: { type: "binary", left: col("a"), op: "/", right: col("b") } }, args: [{ kind: "literal", type: "number", value: 3 }] },
     }
     expect(stepProblem(ratio)).toBeNull()
-    expect(summarizeStep(ratio)).toBe("rate = round((a / b), 3)")
+    expect(summarizeStep(ratio)).toBe("rate = round(a / b, 3)")
     expect(stepProblem({ id: "v", kind: "variable", name: "x", value: nested(1) })).toMatch(/plain value/)
     expect(stepProblem({ id: "f", kind: "with_column", name: "n", expr: { type: "function", fn: "round", operand: col("a"), args: [nested(1)] } })).toMatch(/function arguments/)
     expect(stepProblem({ id: "f", kind: "filter", match: "all", conditions: [{ column: "a", operator: "gt", value: { kind: "expr", expr: { type: "nope" } } }] })).toMatch(/unknown expression type/)

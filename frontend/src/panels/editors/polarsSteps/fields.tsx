@@ -3,19 +3,23 @@
  * Enter; selects commit immediately. Column controls are comboboxes over the
  * suggested columns that accept free text. The operand control is
  * constrained per field (allowed sources and literal types) so a form can
- * only produce payloads the backend schema accepts.
+ * only produce payloads the backend schema accepts. Row lists, bordered row
+ * groups, direction and quantile controls live here too so every form lays
+ * out its repeated rows the same way.
  */
 import { Plus, X } from "lucide-react"
-import { useId, useState, type ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 
 import { CommittedTextField } from "../../../components/form"
 import { INPUT_STYLE } from "../_shared"
-import { CONDITION_OPERATORS, LIST_LITERAL_TYPES, LITERAL_TYPES, defaultExpr, defaultLiteral, literal } from "./catalogue"
+import { CONDITION_OPERATORS, LIST_LITERAL_TYPES, LITERAL_TYPES, defaultCondition, defaultExpr, defaultLiteral, literal } from "./catalogue"
 import { completionMatches } from "./completion"
+import { useCompletionList } from "./useCompletionList"
 import type { Condition, Expr, LiteralOperand, LiteralType, MatchMode, Operand } from "./types"
 
 export const CONTROL_CLASS = "focus-ring w-full min-w-0 px-2 py-1.5 text-xs rounded-md"
 const CHIP_STYLE = { background: "var(--chrome-hover)", color: "var(--text-primary)", border: "1px solid var(--border)" }
+const ADD_BUTTON_STYLE = { color: "var(--text-secondary)", border: "1px solid var(--border)" }
 
 export function FieldLabel({ children, htmlFor }: { children: ReactNode; htmlFor?: string }) {
   return (
@@ -36,6 +40,15 @@ export function Field({ label, children, htmlFor }: { label?: ReactNode; childre
       {label !== undefined && <FieldLabel htmlFor={htmlFor}>{label}</FieldLabel>}
       {children}
     </div>
+  )
+}
+
+/** A muted one-line note under a control. */
+export function Hint({ children }: { children: string }) {
+  return (
+    <p className="text-[11px] m-0" style={{ color: "var(--text-muted)" }}>
+      {children}
+    </p>
   )
 }
 
@@ -147,6 +160,115 @@ export function NumberField({
   )
 }
 
+/** Ascending/descending as a select; `labels` renames the two directions. */
+export function DirectionSelect({
+  descending,
+  onChange,
+  ariaLabel,
+  labels = ["ascending", "descending"],
+}: {
+  descending: boolean
+  onChange: (descending: boolean) => void
+  ariaLabel: string
+  labels?: [string, string]
+}) {
+  return (
+    <SelectField
+      value={descending ? "desc" : "asc"}
+      options={[
+        { value: "asc", label: labels[0] },
+        { value: "desc", label: labels[1] },
+      ]}
+      onChange={(dir) => onChange(dir === "desc")}
+      ariaLabel={ariaLabel}
+    />
+  )
+}
+
+/** The quantile of a `quantile` aggregate, clamped to [0, 1]. */
+export function QuantileField({ value, onChange, ariaLabel }: { value: number | undefined; onChange: (quantile: number) => void; ariaLabel: string }) {
+  return (
+    <Field label="Quantile (0 to 1)">
+      <NumberField value={value ?? 0.5} min={0} onCommit={(quantile) => onChange(Math.min(1, Math.max(0, quantile)))} ariaLabel={ariaLabel} />
+    </Field>
+  )
+}
+
+/** The full-width "add a row" action under a list. */
+export function AddRow({ onClick, label }: { onClick: () => void; label: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="add-row-btn focus-ring flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg justify-center"
+      style={ADD_BUTTON_STYLE}
+    >
+      <Plus size={12} aria-hidden="true" />
+      {label}
+    </button>
+  )
+}
+
+/** The icon-only remove action at the end of a row. */
+export function RowRemove({ onClick, label }: { onClick: () => void; label: string }) {
+  return (
+    <button type="button" onClick={onClick} aria-label={label} className="icon-danger-btn focus-ring p-1 rounded shrink-0">
+      <X size={12} aria-hidden="true" />
+    </button>
+  )
+}
+
+/** A bordered group of controls that belong to one row (a condition, an aggregation). */
+export function RowGroup({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="grid gap-1.5 p-2 rounded-md" style={{ border: "1px solid var(--border-subtle)" }} role="group" aria-label={label}>
+      {children}
+    </div>
+  )
+}
+
+/**
+ * An editable list of rows: each row is a wrapping flex line named
+ * `<label> <n>` with a remove action while more than `min` rows remain,
+ * anything passed as children sits between the rows and the add action.
+ */
+export function RowList<T>({
+  rows,
+  onChange,
+  label,
+  addLabel,
+  create,
+  min = 1,
+  renderRow,
+  children,
+}: {
+  rows: T[]
+  onChange: (rows: T[]) => void
+  /** Accessible name prefix for the rows ("Sort key" names "Sort key 1" and "Remove sort key 1"). */
+  label: string
+  addLabel: string
+  create: () => T
+  /** Rows that stay without a remove action. */
+  min?: number
+  renderRow: (row: T, set: (next: T) => void, index: number) => ReactNode
+  children?: ReactNode
+}) {
+  return (
+    <div className="grid gap-1.5">
+      {rows.map((row, index) => (
+        <div key={index} className="flex flex-wrap items-center gap-1.5" role="group" aria-label={`${label} ${index + 1}`}>
+          {renderRow(row, (next) => onChange(rows.map((r, i) => (i === index ? next : r))), index)}
+          {rows.length > min && (
+            <RowRemove label={`Remove ${label.toLowerCase()} ${index + 1}`} onClick={() => onChange(rows.filter((_, i) => i !== index))} />
+          )}
+        </div>
+      ))}
+      {children}
+      <AddRow label={addLabel} onClick={() => onChange([...rows, create()])} />
+    </div>
+  )
+}
+
 /** The dropdown of completions under a text box; the box owns the keyboard. */
 export function CompletionList({
   id,
@@ -224,13 +346,9 @@ function CompletingInput({
   autoFocus?: boolean
   className?: string
 }) {
-  const [open, setOpen] = useState(false)
-  const [active, setActive] = useState(0)
-  const listId = useId()
-  const matches = open ? completionMatches(suggestions, draft.trim(), exclude) : []
-  const activeIndex = Math.min(active, Math.max(matches.length - 1, 0))
+  const completion = useCompletionList(completionMatches(suggestions, draft.trim(), exclude))
   const accept = (name: string) => {
-    setOpen(false)
+    completion.hide()
     onAccept(name)
   }
   return (
@@ -238,70 +356,42 @@ function CompletingInput({
       <input
         id={id}
         type="text"
-        role="combobox"
         aria-label={ariaLabel}
-        aria-autocomplete="list"
-        aria-expanded={matches.length > 0}
-        aria-controls={listId}
-        aria-activedescendant={matches.length > 0 ? `${listId}-${activeIndex}` : undefined}
         value={draft}
         placeholder={placeholder}
         autoFocus={autoFocus}
-        autoComplete="off"
-        spellCheck={false}
+        {...completion.inputProps}
         onChange={(event) => {
           onDraftChange(event.target.value)
-          setOpen(true)
-          setActive(0)
+          completion.show()
         }}
-        onFocus={() => setOpen(true)}
+        onFocus={completion.show}
         onBlur={() => {
-          setOpen(false)
+          completion.hide()
           onCommit(draft)
         }}
         onKeyDown={(event) => {
-          if (matches.length > 0 && event.key === "ArrowDown") {
+          if (completion.onKeyDown(event, accept)) return
+          if (event.key === "Enter") {
             event.preventDefault()
-            setActive((activeIndex + 1) % matches.length)
-          } else if (matches.length > 0 && event.key === "ArrowUp") {
-            event.preventDefault()
-            setActive((activeIndex - 1 + matches.length) % matches.length)
-          } else if (matches.length > 0 && event.key === "Tab") {
-            event.preventDefault()
-            accept(matches[activeIndex])
-          } else if (open && event.key === "Escape") {
-            event.preventDefault()
-            event.stopPropagation()
-            setOpen(false)
-          } else if (event.key === "Enter") {
-            event.preventDefault()
-            setOpen(false)
+            completion.hide()
             onCommit(draft)
           }
         }}
         className={`${CONTROL_CLASS} font-mono`}
         style={INPUT_STYLE}
       />
-      <CompletionList id={listId} matches={matches} activeIndex={activeIndex} onPick={accept} onHover={setActive} />
+      <CompletionList {...completion.listProps} onPick={accept} />
     </div>
   )
 }
 
-/** A column-name box that completes from the suggested columns and accepts any typed name. */
-export function ColumnPicker(props: {
-  value: string
-  onCommit: (next: string) => void
-  suggestions: string[]
-  ariaLabel: string
-  placeholder?: string
-  id?: string
-  autoFocus?: boolean
-}) {
-  // Re-keyed by the committed value so the draft follows outside changes.
-  return <ColumnPickerDraft key={props.value} {...props} />
-}
-
-function ColumnPickerDraft({
+/**
+ * A column-name box that completes from the suggested columns and accepts
+ * any typed name. The draft follows the committed value when it changes from
+ * outside, without remounting the box, so focus survives a commit.
+ */
+export function ColumnPicker({
   value,
   onCommit,
   suggestions,
@@ -319,6 +409,11 @@ function ColumnPickerDraft({
   autoFocus?: boolean
 }) {
   const [draft, setDraft] = useState(value)
+  const [seen, setSeen] = useState(value)
+  if (value !== seen) {
+    setSeen(value)
+    setDraft(value)
+  }
   const commit = (next: string) => {
     const trimmed = next.trim()
     if (trimmed !== value) onCommit(trimmed)
@@ -489,8 +584,8 @@ export function OperandField({
 }: {
   value: Operand
   onChange: (next: Operand) => void
-  sources: OperandSource[]
-  literalTypes: LiteralType[]
+  sources: readonly OperandSource[]
+  literalTypes: readonly LiteralType[]
   columns: string[]
   variables: string[]
   ariaLabel: string
@@ -605,13 +700,7 @@ export function LiteralListField({
         ))}
         <div className="flex-1 basis-28 min-w-0 flex items-center gap-1">
           <LiteralValueInput value={current} onChange={setDraft} ariaLabel={`${ariaLabel} new value`} />
-          <button
-            type="button"
-            onClick={add}
-            aria-label={`${ariaLabel}: add value`}
-            className="add-row-btn focus-ring p-1 rounded"
-            style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}
-          >
+          <button type="button" onClick={add} aria-label={`${ariaLabel}: add value`} className="add-row-btn focus-ring p-1 rounded" style={ADD_BUTTON_STYLE}>
             <Plus size={12} aria-hidden="true" />
           </button>
         </div>
@@ -655,7 +744,7 @@ export function ConditionRow({
     onChange(next)
   }
   return (
-    <div className="grid gap-1.5 p-2 rounded-md" style={{ border: "1px solid var(--border-subtle)" }} role="group" aria-label={ariaLabel}>
+    <RowGroup label={ariaLabel}>
       <div className="flex flex-wrap items-center gap-1.5">
         <div className="flex-1 basis-28 min-w-0">
           <ColumnPicker
@@ -668,11 +757,7 @@ export function ConditionRow({
         <div className="flex-1 basis-32 min-w-0">
           <SelectField value={condition.operator} options={OPERATOR_OPTIONS} onChange={setOperator} ariaLabel={`${ariaLabel} operator`} />
         </div>
-        {onRemove && (
-          <button type="button" onClick={onRemove} aria-label={`Remove ${ariaLabel}`} className="icon-danger-btn focus-ring p-1 rounded">
-            <X size={12} aria-hidden="true" />
-          </button>
-        )}
+        {onRemove && <RowRemove label={`Remove ${ariaLabel}`} onClick={onRemove} />}
       </div>
       {takes === "value" && (
         <OperandField
@@ -693,7 +778,7 @@ export function ConditionRow({
           ariaLabel={`${ariaLabel} values`}
         />
       )}
-    </div>
+    </RowGroup>
   )
 }
 
@@ -744,15 +829,7 @@ export function ConditionList({
           onRemove={conditions.length > 1 ? () => onChange(conditions.filter((_, i) => i !== index), match) : undefined}
         />
       ))}
-      <button
-        type="button"
-        onClick={() => onChange([...conditions, { column: "", operator: "eq", value: literal("number", 0) }], match)}
-        className="add-row-btn focus-ring flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg justify-center"
-        style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}
-      >
-        <Plus size={12} aria-hidden="true" />
-        Add condition
-      </button>
+      <AddRow label="Add condition" onClick={() => onChange([...conditions, defaultCondition()], match)} />
     </div>
   )
 }

@@ -3,7 +3,7 @@
  * grids that read as sentences; controls wrap beneath each other at narrow
  * widths so nothing scrolls horizontally in the node panel.
  */
-import { Info, Plus, X } from "lucide-react"
+import { Info } from "lucide-react"
 import { useEffect, useId, useRef, useState, type ReactNode } from "react"
 
 import { ConfigCheckbox } from "../../../components/form"
@@ -15,6 +15,7 @@ import {
   BINARY_OPERATORS,
   CAST_DTYPES,
   COLUMNLESS_AGGREGATIONS,
+  DTYPE_OPTIONS,
   FILL_STRATEGIES,
   FUNCTIONS,
   JOIN_HOW,
@@ -32,19 +33,28 @@ import {
   literal,
 } from "./catalogue"
 import {
+  AddRow,
   CONTROL_CLASS,
   ColumnListField,
   ColumnPicker,
   CompletionList,
   ConditionList,
+  DirectionSelect,
   Field,
+  Hint,
   LiteralValueInput,
   NumberField,
   OperandField,
+  QuantileField,
+  RowGroup,
+  RowList,
+  RowRemove,
   SelectField,
   TextField,
+  type OperandSource,
   type RenderExpression,
 } from "./fields"
+import { useCompletionList } from "./useCompletionList"
 import type {
   AggregationSpec,
   CastDtype,
@@ -62,8 +72,8 @@ import type {
   JoinValidate,
   LimitStep,
   LiteralOperand,
+  LiteralType,
   Operand,
-  OrderKey,
   PivotStep,
   RenameStep,
   SelectStep,
@@ -88,45 +98,26 @@ export type StepFormContext = {
 
 type FormProps<S extends Step> = { step: S; onChange: (next: S) => void; ctx: StepFormContext }
 
-const ALL_SOURCES = ["literal", "column", "variable"] as const
+const ALL_SOURCES: readonly OperandSource[] = ["literal", "column", "variable"]
 /** Literal types a stored value may take (fills, concat parts). */
-const VALUE_TYPES = ["number", "text", "boolean", "date"] as const
+const VALUE_TYPES: readonly LiteralType[] = ["number", "text", "boolean", "date"]
 /** Literal types an expression operand may take: also `null`, for a missing result. */
-const ALL_TYPES = [...VALUE_TYPES, "null"] as const
+const ALL_TYPES: readonly LiteralType[] = [...VALUE_TYPES, "null"]
 
 /** A copy of `value` without `keys`, so an optional setting can be cleared. */
 function omitKeys<T extends object>(value: T, keys: string[]): T {
   return Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key))) as T
 }
 
-function Hint({ children }: { children: string }) {
-  return (
-    <p className="text-[11px] m-0" style={{ color: "var(--text-muted)" }}>
-      {children}
-    </p>
-  )
+/** `entry` with a new aggregate: a quantile setting only ever belongs to `quantile`. */
+function withAggregate<T extends { agg: string; quantile?: number }>(entry: T, agg: T["agg"]): T {
+  const next = omitKeys({ ...entry, agg }, ["quantile"])
+  return agg === "quantile" ? { ...next, quantile: 0.5 } : next
 }
 
-function RowRemove({ onClick, label }: { onClick: () => void; label: string }) {
-  return (
-    <button type="button" onClick={onClick} aria-label={label} className="icon-danger-btn focus-ring p-1 rounded shrink-0">
-      <X size={12} aria-hidden="true" />
-    </button>
-  )
-}
-
-function AddRow({ onClick, label }: { onClick: () => void; label: string }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="add-row-btn focus-ring flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg justify-center"
-      style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}
-    >
-      <Plus size={12} aria-hidden="true" />
-      {label}
-    </button>
-  )
+/** Props of an operand field that may hold any source and literal type, nesting an expression at `depth`. */
+function anyOperand(ctx: StepFormContext, depth: number) {
+  return { sources: ALL_SOURCES, literalTypes: ALL_TYPES, columns: ctx.columns, variables: ctx.variables, renderExpression: nestedExpression(ctx, depth) }
 }
 
 function FilterForm({ step, onChange, ctx }: FormProps<FilterStep>) {
@@ -157,14 +148,7 @@ function nestedExpression(ctx: StepFormContext, depth: number): RenderExpression
   if (depth > MAX_EXPR_DEPTH) return undefined
   return (expr, onChange, ariaLabel) => (
     <>
-      <Field label="Computed as">
-        <SelectField
-          value={exprTypeValue(expr)}
-          options={EXPR_TYPES}
-          onChange={(type) => onChange(defaultExpr(type))}
-          ariaLabel={`${ariaLabel} type`}
-        />
-      </Field>
+      <ExprTypeSelect expr={expr} onChange={onChange} ariaLabel={`${ariaLabel} type`} />
       <ExprEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
     </>
   )
@@ -179,6 +163,15 @@ const EXPR_TYPES: Array<{ value: Expr["type"]; label: string }> = [
   { value: "concat", label: "Join text" },
 ]
 
+/** The "Computed as" select: choosing a type starts a fresh expression of that type. */
+function ExprTypeSelect({ expr, onChange, ariaLabel }: { expr: Expr; onChange: (next: Expr) => void; ariaLabel: string }) {
+  return (
+    <Field label="Computed as">
+      <SelectField value={exprTypeValue(expr)} options={EXPR_TYPES} onChange={(type) => onChange(defaultExpr(type))} ariaLabel={ariaLabel} />
+    </Field>
+  )
+}
+
 const FORMULA_EXAMPLE = "example: (premium + commission) * tax / 12"
 
 /**
@@ -191,7 +184,7 @@ const FORMULA_EXAMPLE = "example: (premium + commission) * tax / 12"
 function FormulaEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "binary" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
   const text = displayFormula(expr, ctx.variables)
   if (text === null) return <StructuredFormula expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
-  return <FormulaField key={text} text={text} onCommit={onChange} variables={ctx.variables} columns={ctx.columns} />
+  return <FormulaField text={text} onCommit={onChange} variables={ctx.variables} columns={ctx.columns} />
 }
 
 /** A value or function typed as a formula stays a formula in the editor and the "Computed as" select. */
@@ -214,20 +207,25 @@ function completionsFor(draft: string, caret: number, names: string[]): { prefix
  * The formula text box. As you type a name, the columns (and earlier
  * variables) starting with it are listed underneath; Up/Down move through
  * them, Tab or a click completes the name, Escape closes the list. Enter
- * and leaving the box commit the formula.
+ * and leaving the box commit the formula. The draft follows `text` when it
+ * changes from outside, without remounting the box, so focus survives a
+ * commit.
  */
 function FormulaField({ text, onCommit, variables, columns }: { text: string; onCommit: (next: Expr) => void; variables: string[]; columns: string[] }) {
   const [draft, setDraft] = useState(text)
   const [caret, setCaret] = useState(text.length)
   const [problem, setProblem] = useState<string | null>(null)
-  const [listOpen, setListOpen] = useState(false)
-  const [active, setActive] = useState(0)
+  const [seenText, setSeenText] = useState(text)
+  if (text !== seenText) {
+    setSeenText(text)
+    setDraft(text)
+    setCaret(Math.min(caret, text.length))
+    setProblem(null)
+  }
   const input = useRef<HTMLInputElement | null>(null)
   const pendingCaret = useRef<number | null>(null)
-  const listId = useId()
-  const { prefix, matches } = listOpen ? completionsFor(draft, caret, [...columns, ...variables]) : { prefix: "", matches: [] }
-  const showList = matches.length > 0
-  const activeIndex = Math.min(active, Math.max(matches.length - 1, 0))
+  const { prefix, matches: candidates } = completionsFor(draft, caret, [...columns, ...variables])
+  const completion = useCompletionList(candidates)
 
   useEffect(() => {
     if (pendingCaret.current !== null && input.current) {
@@ -237,8 +235,12 @@ function FormulaField({ text, onCommit, variables, columns }: { text: string; on
   })
 
   const commit = () => {
-    setListOpen(false)
-    if (draft.trim() === text) return
+    completion.hide()
+    if (draft.trim() === text) {
+      // Back at the committed formula: whatever failed to parse is gone.
+      setProblem(null)
+      return
+    }
     try {
       onCommit(parseFormula(draft, variables))
       setProblem(null)
@@ -253,7 +255,7 @@ function FormulaField({ text, onCommit, variables, columns }: { text: string; on
     setDraft(`${before}${insert}${after}`)
     setCaret(before.length + insert.length)
     pendingCaret.current = before.length + insert.length
-    setListOpen(false)
+    completion.hide()
   }
 
   return (
@@ -271,52 +273,33 @@ function FormulaField({ text, onCommit, variables, columns }: { text: string; on
         <input
           ref={input}
           type="text"
-          role="combobox"
           aria-label="Formula"
-          aria-autocomplete="list"
-          aria-expanded={showList}
-          aria-controls={listId}
-          aria-activedescendant={showList ? `${listId}-${activeIndex}` : undefined}
           title={FORMULA_EXAMPLE}
           value={draft}
+          {...completion.inputProps}
           onChange={(event) => {
             setDraft(event.target.value)
             setCaret(event.target.selectionStart ?? event.target.value.length)
-            setListOpen(true)
-            setActive(0)
+            completion.show()
           }}
           onSelect={(event) => setCaret((event.target as HTMLInputElement).selectionStart ?? draft.length)}
           onBlur={commit}
           onKeyDown={(event) => {
-            if (showList && event.key === "ArrowDown") {
-              event.preventDefault()
-              setActive((activeIndex + 1) % matches.length)
-            } else if (showList && event.key === "ArrowUp") {
-              event.preventDefault()
-              setActive((activeIndex - 1 + matches.length) % matches.length)
-            } else if (showList && event.key === "Tab") {
-              event.preventDefault()
-              complete(matches[activeIndex])
-            } else if (showList && event.key === "Escape") {
-              event.preventDefault()
-              event.stopPropagation()
-              setListOpen(false)
-            } else if (event.key === "Enter") {
+            if (completion.onKeyDown(event, complete)) return
+            if (event.key === "Enter") {
               event.preventDefault()
               commit()
             }
           }}
           className={`${CONTROL_CLASS} font-mono`}
           style={INPUT_STYLE}
-          spellCheck={false}
-          autoComplete="off"
         />
-        {listOpen && prefix.length > 0 && columns.length === 0 && !showList && (
+        {completion.open && prefix.length > 0 && columns.length === 0 && completion.matches.length === 0 && (
           <div role="status" className="mt-1">
             <Hint>No column names known yet: run the step above to load them.</Hint>
           </div>
         )}
-        <CompletionList id={listId} matches={matches} activeIndex={activeIndex} onPick={complete} onHover={setActive} />
+        <CompletionList {...completion.listProps} onPick={complete} />
       </div>
       {problem && (
         <div className="mt-1">
@@ -328,13 +311,7 @@ function FormulaField({ text, onCommit, variables, columns }: { text: string; on
 }
 
 function StructuredFormula({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "binary" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
-  const operandProps = {
-    sources: [...ALL_SOURCES],
-    literalTypes: [...ALL_TYPES],
-    columns: ctx.columns,
-    variables: ctx.variables,
-    renderExpression: nestedExpression(ctx, depth + 1),
-  }
+  const operandProps = anyOperand(ctx, depth + 1)
   return (
     <>
       <Field label="Left">
@@ -381,12 +358,7 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
         if (arg === "dtype") {
           return (
             <Field key={index} label={label}>
-              <SelectField
-                value={String(value.value) as (typeof CAST_DTYPES)[number]}
-                options={CAST_DTYPES.map((d) => ({ value: d, label: d }))}
-                onChange={(dtype) => set(literal("text", dtype))}
-                ariaLabel={label}
-              />
+              <SelectField value={String(value.value) as CastDtype} options={DTYPE_OPTIONS} onChange={(dtype) => set(literal("text", dtype))} ariaLabel={label} />
             </Field>
           )
         }
@@ -428,16 +400,9 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
 }
 
 function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: (next: Expr) => void; ctx: StepFormContext; depth?: number }) {
-  const renderExpression = nestedExpression(ctx, depth + 1)
   const typedText = typedAsFormula(expr) ? displayFormula(expr, ctx.variables) : null
-  if (typedText !== null) return <FormulaField key={typedText} text={typedText} onCommit={onChange} variables={ctx.variables} columns={ctx.columns} />
-  const operandProps = {
-    sources: [...ALL_SOURCES],
-    literalTypes: [...ALL_TYPES],
-    columns: ctx.columns,
-    variables: ctx.variables,
-    renderExpression,
-  }
+  if (typedText !== null) return <FormulaField text={typedText} onCommit={onChange} variables={ctx.variables} columns={ctx.columns} />
+  const operandProps = anyOperand(ctx, depth + 1)
   switch (expr.type) {
     case "operand":
       return (
@@ -478,7 +443,7 @@ function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: 
               columns={ctx.columns}
               variables={ctx.variables}
               ariaLabel="If"
-              renderExpression={renderExpression}
+              renderExpression={operandProps.renderExpression}
             />
           </Field>
           <Field label="Then">
@@ -492,15 +457,14 @@ function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: 
     case "window":
       return <WindowEditor expr={expr} onChange={onChange} ctx={ctx} />
     case "concat":
-      return <ConcatEditor expr={expr} onChange={onChange} ctx={ctx} renderExpression={renderExpression} />
+      return <ConcatEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
   }
 }
 
 function WindowEditor({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "window" }>; onChange: (next: Expr) => void; ctx: StepFormContext }) {
   const isRank = expr.agg === "rank" || expr.agg === "dense_rank"
   const orderBy = expr.orderBy ?? []
-  const setOrder = (next: OrderKey[]) => onChange(next.length ? { ...expr, orderBy: next } : omitKeys(expr, ["orderBy"]))
-  const setOrderKey = (index: number, next: OrderKey) => setOrder(orderBy.map((k, i) => (i === index ? next : k)))
+  const setOrder = (next: typeof orderBy) => onChange(next.length ? { ...expr, orderBy: next } : omitKeys(expr, ["orderBy"]))
   return (
     <>
       <Field label="Aggregate">
@@ -508,10 +472,8 @@ function WindowEditor({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "wi
           value={expr.agg}
           options={WINDOW_AGGREGATIONS}
           onChange={(agg) => {
-            const next = omitKeys({ ...expr, agg }, ["descending", "quantile"])
-            if (agg === "quantile") next.quantile = 0.5
-            if (agg === "rank" || agg === "dense_rank") next.descending = false
-            onChange(next)
+            const next = omitKeys(withAggregate(expr, agg), ["descending"])
+            onChange(agg === "rank" || agg === "dense_rank" ? { ...next, descending: false } : next)
           }}
           ariaLabel="Window aggregate"
         />
@@ -521,94 +483,61 @@ function WindowEditor({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "wi
           <ColumnPicker value={expr.column} onCommit={(column) => onChange({ ...expr, column })} suggestions={ctx.columns} ariaLabel="Window column" />
         </Field>
       )}
-      {expr.agg === "quantile" && (
-        <Field label="Quantile (0 to 1)">
-          <NumberField value={expr.quantile ?? 0.5} min={0} onCommit={(quantile) => onChange({ ...expr, quantile: Math.min(1, Math.max(0, quantile)) })} ariaLabel="Window quantile" />
-        </Field>
-      )}
+      {expr.agg === "quantile" && <QuantileField value={expr.quantile} onChange={(quantile) => onChange({ ...expr, quantile })} ariaLabel="Window quantile" />}
       {isRank && (
         <Field label="Rank order">
-          <SelectField
-            value={expr.descending ? "desc" : "asc"}
-            options={[
-              { value: "asc", label: "smallest first" },
-              { value: "desc", label: "largest first" },
-            ]}
-            onChange={(dir) => onChange({ ...expr, descending: dir === "desc" })}
-            ariaLabel="Rank order"
-          />
+          <DirectionSelect descending={expr.descending ?? false} onChange={(descending) => onChange({ ...expr, descending })} ariaLabel="Rank order" labels={["smallest first", "largest first"]} />
         </Field>
       )}
       <Field label="Over (per group of; empty = all rows)">
         <ColumnListField columns={expr.over} onChange={(over) => onChange({ ...expr, over })} suggestions={ctx.columns} ariaLabel="Window over" />
       </Field>
       <Field label="Order rows within each group by">
-        <div className="grid gap-1.5">
-          {orderBy.map((entry, index) => (
-            <div key={index} className="flex flex-wrap items-center gap-1.5" role="group" aria-label={`Window order ${index + 1}`}>
-              <div className="flex-1 basis-28 min-w-0">
-                <ColumnPicker value={entry.column} onCommit={(column) => setOrderKey(index, { ...entry, column })} suggestions={ctx.columns} ariaLabel={`Window order ${index + 1} column`} />
-              </div>
-              <RowRemove label={`Remove window order ${index + 1}`} onClick={() => setOrder(orderBy.filter((_, i) => i !== index))} />
+        <RowList
+          rows={orderBy}
+          onChange={setOrder}
+          label="Window order"
+          addLabel="Add order column"
+          min={0}
+          create={() => ({ column: "", descending: orderBy[0]?.descending ?? false })}
+          renderRow={(entry, set, index) => (
+            <div className="flex-1 basis-28 min-w-0">
+              <ColumnPicker value={entry.column} onCommit={(column) => set({ ...entry, column })} suggestions={ctx.columns} ariaLabel={`Window order ${index + 1} column`} />
             </div>
-          ))}
+          )}
+        >
           {orderBy.length > 0 && (
-            <SelectField
-              value={orderBy[0].descending ? "desc" : "asc"}
-              options={[
-                { value: "asc", label: "ascending" },
-                { value: "desc", label: "descending" },
-              ]}
-              onChange={(dir) => setOrder(orderBy.map((k) => ({ ...k, descending: dir === "desc" })))}
+            <DirectionSelect
+              descending={orderBy[0].descending}
+              onChange={(descending) => setOrder(orderBy.map((k) => ({ ...k, descending })))}
               ariaLabel="Window order direction"
             />
           )}
           {orderBy.length > 0 && expr.over.length === 0 && <Hint>Ordering needs at least one group column; sort the frame instead.</Hint>}
-          <AddRow label="Add order column" onClick={() => setOrder([...orderBy, { column: "", descending: orderBy[0]?.descending ?? false }])} />
-        </div>
+        </RowList>
       </Field>
     </>
   )
 }
 
-function ConcatEditor({
-  expr,
-  onChange,
-  ctx,
-  renderExpression,
-}: {
-  expr: Extract<Expr, { type: "concat" }>
-  onChange: (next: Expr) => void
-  ctx: StepFormContext
-  renderExpression?: RenderExpression
-}) {
-  const setPart = (index: number, next: Operand) =>
-    onChange({ ...expr, parts: expr.parts.map((p, i) => (i === index ? next : p)) })
+function ConcatEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "concat" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
+  const operandProps = anyOperand(ctx, depth + 1)
   return (
     <>
       <Field label="Parts, in order">
-        <div className="grid gap-1.5">
-          {expr.parts.map((part, index) => (
-            <div key={index} className="flex flex-wrap items-center gap-1.5" role="group" aria-label={`Part ${index + 1}`}>
-              <div className="flex-1 basis-40 min-w-0">
-                <OperandField
-                  value={part}
-                  onChange={(next) => setPart(index, next)}
-                  sources={[...ALL_SOURCES]}
-                  literalTypes={[...ALL_TYPES]}
-                  columns={ctx.columns}
-                  variables={ctx.variables}
-                  ariaLabel={`Part ${index + 1}`}
-                  renderExpression={renderExpression}
-                />
-              </div>
-              {expr.parts.length > 2 && (
-                <RowRemove label={`Remove part ${index + 1}`} onClick={() => onChange({ ...expr, parts: expr.parts.filter((_, i) => i !== index) })} />
-              )}
+        <RowList
+          rows={expr.parts}
+          onChange={(parts) => onChange({ ...expr, parts })}
+          label="Part"
+          addLabel="Add part"
+          min={2}
+          create={(): Operand => ({ kind: "column", name: "" })}
+          renderRow={(part, set, index) => (
+            <div className="flex-1 basis-40 min-w-0">
+              <OperandField value={part} onChange={set} ariaLabel={`Part ${index + 1}`} {...operandProps} />
             </div>
-          ))}
-          <AddRow label="Add part" onClick={() => onChange({ ...expr, parts: [...expr.parts, { kind: "column", name: "" }] })} />
-        </div>
+          )}
+        />
       </Field>
       <Field label="Separator">
         <TextField value={expr.separator} onCommit={(separator) => onChange({ ...expr, separator })} ariaLabel="Separator" mono />
@@ -623,20 +552,13 @@ function WithColumnForm({ step, onChange, ctx }: FormProps<WithColumnStep>) {
       <Field label="Column name" htmlFor={ctx.firstFieldId}>
         <TextField id={ctx.firstFieldId} value={step.name} onCommit={(name) => onChange({ ...step, name })} ariaLabel="Column name" placeholder="new_column" mono />
       </Field>
-      <Field label="Computed as">
-        <SelectField
-          value={exprTypeValue(step.expr)}
-          options={EXPR_TYPES}
-          onChange={(type) => onChange({ ...step, expr: defaultExpr(type) })}
-          ariaLabel="Expression type"
-        />
-      </Field>
+      <ExprTypeSelect expr={step.expr} onChange={(expr) => onChange({ ...step, expr })} ariaLabel="Expression type" />
       <ExprEditor expr={step.expr} onChange={(expr) => onChange({ ...step, expr })} ctx={ctx} />
     </>
   )
 }
 
-function ColumnsForm<S extends SelectStep | UniqueStep | FillNullStep>({
+function ColumnsForm<S extends Step & { columns: string[] }>({
   step,
   onChange,
   ctx,
@@ -649,102 +571,90 @@ function ColumnsForm<S extends SelectStep | UniqueStep | FillNullStep>({
   )
 }
 
-const DTYPE_SUGGESTIONS: string[] = [...CAST_DTYPES]
 const isCastDtype = (value: string): value is CastDtype => (CAST_DTYPES as string[]).includes(value)
 
 /** Named columns plus "every column of type": select and drop share it. */
 function ColumnsAndTypesForm<S extends SelectStep | DropStep>({ step, onChange, ctx, label }: FormProps<S> & { label: string }) {
-  const dtypes = step.dtypes ?? []
+  const dtypes: string[] = step.dtypes ?? []
   const setTypes = (next: string[]) => {
     const kept = next.filter(isCastDtype)
     onChange(kept.length ? { ...step, dtypes: kept } : omitKeys(step, ["dtypes"]))
   }
   return (
     <>
-      <Field label={label}>
-        <ColumnListField columns={step.columns} onChange={(columns) => onChange({ ...step, columns })} suggestions={ctx.columns} ariaLabel={label} />
-      </Field>
+      <ColumnsForm step={step} onChange={onChange} ctx={ctx} label={label} />
       <Field label="And every other column of type">
-        <ColumnListField columns={dtypes} onChange={setTypes} suggestions={DTYPE_SUGGESTIONS.filter((d) => !(dtypes as string[]).includes(d))} ariaLabel={`${label} types`} placeholder="add type" />
+        <ColumnListField columns={dtypes} onChange={setTypes} suggestions={CAST_DTYPES.filter((d) => !dtypes.includes(d))} ariaLabel={`${label} types`} placeholder="add type" />
       </Field>
     </>
   )
 }
 
 function RenameForm({ step, onChange, ctx }: FormProps<RenameStep>) {
-  const set = (index: number, next: { from: string; to: string }) =>
-    onChange({ ...step, renames: step.renames.map((r, i) => (i === index ? next : r)) })
   return (
-    <>
-      {step.renames.map((entry, index) => (
-        <div key={index} className="flex flex-wrap items-center gap-1.5" role="group" aria-label={`Rename ${index + 1}`}>
+    <RowList
+      rows={step.renames}
+      onChange={(renames) => onChange({ ...step, renames })}
+      label="Rename"
+      addLabel="Add rename"
+      create={() => ({ from: "", to: "" })}
+      renderRow={(entry, set, index) => (
+        <>
           <div className="flex-1 basis-28 min-w-0">
-            <ColumnPicker value={entry.from} onCommit={(from) => set(index, { ...entry, from })} suggestions={ctx.columns} ariaLabel={`Rename ${index + 1} from`} placeholder="from" />
+            <ColumnPicker value={entry.from} onCommit={(from) => set({ ...entry, from })} suggestions={ctx.columns} ariaLabel={`Rename ${index + 1} from`} placeholder="from" />
           </div>
           <span className="text-xs" style={{ color: "var(--text-muted)" }} aria-hidden="true">→</span>
           <div className="flex-1 basis-28 min-w-0">
-            <TextField value={entry.to} onCommit={(to) => set(index, { ...entry, to })} ariaLabel={`Rename ${index + 1} to`} placeholder="to" mono />
+            <TextField value={entry.to} onCommit={(to) => set({ ...entry, to })} ariaLabel={`Rename ${index + 1} to`} placeholder="to" mono />
           </div>
-          {step.renames.length > 1 && (
-            <RowRemove label={`Remove rename ${index + 1}`} onClick={() => onChange({ ...step, renames: step.renames.filter((_, i) => i !== index) })} />
-          )}
-        </div>
-      ))}
-      <AddRow label="Add rename" onClick={() => onChange({ ...step, renames: [...step.renames, { from: "", to: "" }] })} />
-    </>
+        </>
+      )}
+    />
   )
 }
 
 function CastForm({ step, onChange, ctx }: FormProps<CastStep>) {
-  const set = (index: number, next: CastStep["casts"][number]) =>
-    onChange({ ...step, casts: step.casts.map((c, i) => (i === index ? next : c)) })
   return (
-    <>
-      {step.casts.map((entry, index) => (
-        <div key={index} className="flex flex-wrap items-center gap-1.5" role="group" aria-label={`Cast ${index + 1}`}>
+    <RowList
+      rows={step.casts}
+      onChange={(casts) => onChange({ ...step, casts })}
+      label="Cast"
+      addLabel="Add column"
+      create={(): CastStep["casts"][number] => ({ column: "", dtype: "Float64" })}
+      renderRow={(entry, set, index) => (
+        <>
           <div className="flex-1 basis-28 min-w-0">
-            <ColumnPicker value={entry.column} onCommit={(column) => set(index, { ...entry, column })} suggestions={ctx.columns} ariaLabel={`Cast ${index + 1} column`} />
+            <ColumnPicker value={entry.column} onCommit={(column) => set({ ...entry, column })} suggestions={ctx.columns} ariaLabel={`Cast ${index + 1} column`} />
           </div>
           <div className="flex-1 basis-28 min-w-0">
-            <SelectField value={entry.dtype} options={CAST_DTYPES.map((d) => ({ value: d, label: d }))} onChange={(dtype) => set(index, { ...entry, dtype })} ariaLabel={`Cast ${index + 1} type`} />
+            <SelectField value={entry.dtype} options={DTYPE_OPTIONS} onChange={(dtype) => set({ ...entry, dtype })} ariaLabel={`Cast ${index + 1} type`} />
           </div>
-          {step.casts.length > 1 && (
-            <RowRemove label={`Remove cast ${index + 1}`} onClick={() => onChange({ ...step, casts: step.casts.filter((_, i) => i !== index) })} />
-          )}
-        </div>
-      ))}
-      <AddRow label="Add column" onClick={() => onChange({ ...step, casts: [...step.casts, { column: "", dtype: "Float64" }] })} />
-    </>
+        </>
+      )}
+    />
   )
 }
 
 function SortForm({ step, onChange, ctx }: FormProps<SortStep>) {
-  const set = (index: number, next: SortStep["keys"][number]) =>
-    onChange({ ...step, keys: step.keys.map((k, i) => (i === index ? next : k)) })
   return (
     <>
-      {step.keys.map((entry, index) => (
-        <div key={index} className="flex flex-wrap items-center gap-1.5" role="group" aria-label={`Sort key ${index + 1}`}>
-          <div className="flex-1 basis-28 min-w-0">
-            <ColumnPicker value={entry.column} onCommit={(column) => set(index, { ...entry, column })} suggestions={ctx.columns} ariaLabel={`Sort key ${index + 1} column`} />
-          </div>
-          <div className="flex-1 basis-28 min-w-0">
-            <SelectField
-              value={entry.descending ? "desc" : "asc"}
-              options={[
-                { value: "asc", label: "ascending" },
-                { value: "desc", label: "descending" },
-              ]}
-              onChange={(dir) => set(index, { ...entry, descending: dir === "desc" })}
-              ariaLabel={`Sort key ${index + 1} direction`}
-            />
-          </div>
-          {step.keys.length > 1 && (
-            <RowRemove label={`Remove sort key ${index + 1}`} onClick={() => onChange({ ...step, keys: step.keys.filter((_, i) => i !== index) })} />
-          )}
-        </div>
-      ))}
-      <AddRow label="Add sort column" onClick={() => onChange({ ...step, keys: [...step.keys, { column: "", descending: false }] })} />
+      <RowList
+        rows={step.keys}
+        onChange={(keys) => onChange({ ...step, keys })}
+        label="Sort key"
+        addLabel="Add sort column"
+        create={() => ({ column: "", descending: false })}
+        renderRow={(entry, set, index) => (
+          <>
+            <div className="flex-1 basis-28 min-w-0">
+              <ColumnPicker value={entry.column} onCommit={(column) => set({ ...entry, column })} suggestions={ctx.columns} ariaLabel={`Sort key ${index + 1} column`} />
+            </div>
+            <div className="flex-1 basis-28 min-w-0">
+              <DirectionSelect descending={entry.descending} onChange={(descending) => set({ ...entry, descending })} ariaLabel={`Sort key ${index + 1} direction`} />
+            </div>
+          </>
+        )}
+      />
       <ConfigCheckbox checked={step.nullsLast} onChange={(nullsLast) => onChange({ ...step, nullsLast })} label="Missing values last" />
     </>
   )
@@ -771,60 +681,56 @@ function UniqueForm({ step, onChange, ctx }: FormProps<UniqueStep>) {
   )
 }
 
+/** The "a column" / "every column of a type" choice at the head of an aggregation row. */
+function AggregationTargetSelect({ entry, onChange, ariaLabel }: { entry: AggregationSpec; onChange: (next: AggregationSpec) => void; ariaLabel: string }) {
+  const mode = "dtype" in entry ? "dtype" : "column"
+  return (
+    <div className="basis-40 grow-0 min-w-0">
+      <SelectField
+        value={mode}
+        options={[
+          { value: "column", label: "a column" },
+          { value: "dtype", label: "every column of a type" },
+        ]}
+        onChange={(next) => {
+          if (next === mode) return
+          const quantile = entry.agg === "quantile" ? { quantile: entry.quantile ?? 0.5 } : {}
+          onChange(
+            next === "dtype"
+              ? { dtype: "Float64", agg: entry.agg === "len" ? "sum" : entry.agg, suffix: "", ...quantile }
+              : { column: "", agg: entry.agg, name: "", ...quantile },
+          )
+        }}
+        ariaLabel={ariaLabel}
+      />
+    </div>
+  )
+}
+
 function AggregationRow({ entry, index, onChange, onRemove, ctx }: { entry: AggregationSpec; index: number; onChange: (next: AggregationSpec) => void; onRemove?: () => void; ctx: StepFormContext }) {
   const label = `Aggregation ${index + 1}`
-  const modeSelect = (
-    <SelectField
-      value={"dtype" in entry ? "dtype" : "column"}
-      options={[
-        { value: "column", label: "a column" },
-        { value: "dtype", label: "every column of a type" },
-      ]}
-      onChange={(mode) => {
-        if (mode === ("dtype" in entry ? "dtype" : "column")) return
-        const quantile = entry.agg === "quantile" ? { quantile: entry.quantile ?? 0.5 } : {}
-        onChange(
-          mode === "dtype"
-            ? { dtype: "Float64", agg: entry.agg === "len" ? "sum" : entry.agg, suffix: "", ...quantile }
-            : { column: "", agg: entry.agg, name: "", ...quantile },
-        )
-      }}
-      ariaLabel={`${label} target`}
-    />
-  )
-  if ("dtype" in entry) return <DtypeAggregationRow entry={entry} label={label} modeSelect={modeSelect} onChange={onChange} onRemove={onRemove} />
+  const remove = onRemove && <RowRemove label={`Remove aggregation ${index + 1}`} onClick={onRemove} />
+  const target = <AggregationTargetSelect entry={entry} onChange={onChange} ariaLabel={`${label} target`} />
+  if ("dtype" in entry) return <DtypeAggregationRow entry={entry} label={label} target={target} remove={remove} onChange={onChange} />
   return (
-    <div className="grid gap-1.5 p-2 rounded-md" style={{ border: "1px solid var(--border-subtle)" }} role="group" aria-label={label}>
+    <RowGroup label={label}>
       <div className="flex flex-wrap items-center gap-1.5">
-        <div className="basis-40 grow-0 min-w-0">{modeSelect}</div>
+        {target}
         <div className="flex-1 basis-28 min-w-0">
-          <TextField value={entry.name} onCommit={(name) => onChange({ ...entry, name })} ariaLabel={`Aggregation ${index + 1} name`} placeholder="output name" mono />
+          <TextField value={entry.name} onCommit={(name) => onChange({ ...entry, name })} ariaLabel={`${label} name`} placeholder="output name" mono />
         </div>
         <span className="text-xs" style={{ color: "var(--text-muted)" }} aria-hidden="true">=</span>
         <div className="flex-1 basis-28 min-w-0">
-          <SelectField
-            value={entry.agg}
-            options={AGGREGATIONS}
-            onChange={(agg) => {
-              const next = omitKeys({ ...entry, agg }, ["quantile"])
-              if (agg === "quantile") next.quantile = 0.5
-              onChange(next)
-            }}
-            ariaLabel={`Aggregation ${index + 1} function`}
-          />
+          <SelectField value={entry.agg} options={AGGREGATIONS} onChange={(agg) => onChange(withAggregate(entry, agg))} ariaLabel={`${label} function`} />
         </div>
         {entry.agg !== "len" && (
           <div className="flex-1 basis-28 min-w-0">
-            <ColumnPicker value={entry.column} onCommit={(column) => onChange({ ...entry, column })} suggestions={ctx.columns} ariaLabel={`Aggregation ${index + 1} column`} placeholder="of column" />
+            <ColumnPicker value={entry.column} onCommit={(column) => onChange({ ...entry, column })} suggestions={ctx.columns} ariaLabel={`${label} column`} placeholder="of column" />
           </div>
         )}
-        {onRemove && <RowRemove label={`Remove aggregation ${index + 1}`} onClick={onRemove} />}
+        {remove}
       </div>
-      {entry.agg === "quantile" && (
-        <Field label="Quantile (0 to 1)">
-          <NumberField value={entry.quantile ?? 0.5} min={0} onCommit={(quantile) => onChange({ ...entry, quantile: Math.min(1, Math.max(0, quantile)) })} ariaLabel={`Aggregation ${index + 1} quantile`} />
-        </Field>
-      )}
+      {entry.agg === "quantile" && <QuantileField value={entry.quantile} onChange={(quantile) => onChange({ ...entry, quantile })} ariaLabel={`${label} quantile`} />}
       {entry.where ? (
         <Field label="Only rows where">
           <div className="grid gap-1.5">
@@ -834,7 +740,7 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx }: { entry: Aggr
               onChange={(conditions, match) => onChange({ ...entry, where: { match, conditions } })}
               columns={ctx.columns}
               variables={ctx.variables}
-              ariaLabel={`Aggregation ${index + 1} filter`}
+              ariaLabel={`${label} filter`}
             />
             <button
               type="button"
@@ -849,60 +755,47 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx }: { entry: Aggr
       ) : (
         <AddRow label="Only some rows…" onClick={() => onChange({ ...entry, where: { match: "all", conditions: [defaultCondition()] } })} />
       )}
-    </div>
+    </RowGroup>
   )
 }
+
+const DTYPE_AGGREGATIONS = AGGREGATIONS.filter((a) => a.value !== "len") as Array<{ value: DtypeAggregation["agg"]; label: string }>
+const EVERY_DTYPE_OPTIONS = DTYPE_OPTIONS.map((option) => ({ ...option, label: `every ${option.value}` }))
 
 function DtypeAggregationRow({
   entry,
   label,
-  modeSelect,
+  target,
+  remove,
   onChange,
-  onRemove,
 }: {
   entry: DtypeAggregation
   label: string
-  modeSelect: ReactNode
+  target: ReactNode
+  remove: ReactNode
   onChange: (next: AggregationSpec) => void
-  onRemove?: () => void
 }) {
-  const aggregations = AGGREGATIONS.filter((a) => a.value !== "len") as Array<{ value: DtypeAggregation["agg"]; label: string }>
   return (
-    <div className="grid gap-1.5 p-2 rounded-md" style={{ border: "1px solid var(--border-subtle)" }} role="group" aria-label={label}>
+    <RowGroup label={label}>
       <div className="flex flex-wrap items-center gap-1.5">
-        <div className="basis-40 grow-0 min-w-0">{modeSelect}</div>
+        {target}
         <div className="flex-1 basis-28 min-w-0">
-          <SelectField
-            value={entry.agg}
-            options={aggregations}
-            onChange={(agg) => {
-              const next = omitKeys({ ...entry, agg }, ["quantile"])
-              if (agg === "quantile") next.quantile = 0.5
-              onChange(next)
-            }}
-            ariaLabel={`${label} function`}
-          />
+          <SelectField value={entry.agg} options={DTYPE_AGGREGATIONS} onChange={(agg) => onChange(withAggregate(entry, agg))} ariaLabel={`${label} function`} />
         </div>
         <div className="flex-1 basis-28 min-w-0">
-          <SelectField value={entry.dtype} options={CAST_DTYPES.map((d) => ({ value: d, label: `every ${d}` }))} onChange={(dtype) => onChange({ ...entry, dtype })} ariaLabel={`${label} column type`} />
+          <SelectField value={entry.dtype} options={EVERY_DTYPE_OPTIONS} onChange={(dtype) => onChange({ ...entry, dtype })} ariaLabel={`${label} column type`} />
         </div>
-        {onRemove && <RowRemove label={`Remove aggregation ${label.slice("Aggregation ".length)}`} onClick={onRemove} />}
+        {remove}
       </div>
       <Field label="Output name suffix (added to each column name)">
         <TextField value={entry.suffix} onCommit={(suffix) => onChange({ ...entry, suffix })} ariaLabel={`${label} suffix`} placeholder="_mean" mono />
       </Field>
-      {entry.agg === "quantile" && (
-        <Field label="Quantile (0 to 1)">
-          <NumberField value={entry.quantile ?? 0.5} min={0} onCommit={(quantile) => onChange({ ...entry, quantile: Math.min(1, Math.max(0, quantile)) })} ariaLabel={`${label} quantile`} />
-        </Field>
-      )}
-    </div>
+      {entry.agg === "quantile" && <QuantileField value={entry.quantile} onChange={(quantile) => onChange({ ...entry, quantile })} ariaLabel={`${label} quantile`} />}
+    </RowGroup>
   )
 }
 
 function PivotForm({ step, onChange, ctx }: FormProps<PivotStep>) {
-  const setColumn = (index: number, next: PivotStep["columns"][number]) =>
-    onChange({ ...step, columns: step.columns.map((c, i) => (i === index ? next : c)) })
   const type = step.columns[0]?.value.type ?? "text"
   return (
     <>
@@ -927,9 +820,15 @@ function PivotForm({ step, onChange, ctx }: FormProps<PivotStep>) {
         </div>
       </div>
       <Field label="New columns (one per value)">
-        <div className="grid gap-1.5">
-          {step.columns.map((entry, index) => (
-            <div key={index} className="flex flex-wrap items-center gap-1.5" role="group" aria-label={`Pivot column ${index + 1}`}>
+        <RowList
+          rows={step.columns}
+          onChange={(columns) => onChange({ ...step, columns })}
+          label="Pivot column"
+          addLabel="Add column"
+          min={0}
+          create={() => ({ value: defaultLiteral(type), name: "" })}
+          renderRow={(entry, set, index) => (
+            <>
               <div className="flex-1 basis-28 min-w-0">
                 <OperandField
                   value={entry.value}
@@ -941,7 +840,7 @@ function PivotForm({ step, onChange, ctx }: FormProps<PivotStep>) {
                       return
                     }
                     const name = entry.name || (value.type === "text" ? String(value.value) : entry.name)
-                    setColumn(index, { value, name })
+                    set({ value, name })
                   }}
                   sources={["literal"]}
                   literalTypes={index === 0 ? ["text", "number", "boolean", "date"] : [type]}
@@ -952,13 +851,11 @@ function PivotForm({ step, onChange, ctx }: FormProps<PivotStep>) {
               </div>
               <span className="text-xs" style={{ color: "var(--text-muted)" }} aria-hidden="true">→</span>
               <div className="flex-1 basis-28 min-w-0">
-                <TextField value={entry.name} onCommit={(name) => setColumn(index, { ...entry, name })} ariaLabel={`Pivot column ${index + 1} name`} placeholder="column name" mono />
+                <TextField value={entry.name} onCommit={(name) => set({ ...entry, name })} ariaLabel={`Pivot column ${index + 1} name`} placeholder="column name" mono />
               </div>
-              <RowRemove label={`Remove pivot column ${index + 1}`} onClick={() => onChange({ ...step, columns: step.columns.filter((_, i) => i !== index) })} />
-            </div>
-          ))}
-          <AddRow label="Add column" onClick={() => onChange({ ...step, columns: [...step.columns, { value: defaultLiteral(type), name: "" }] })} />
-        </div>
+            </>
+          )}
+        />
       </Field>
     </>
   )
@@ -1122,8 +1019,8 @@ function FillNullForm({ step, onChange, ctx }: FormProps<FillNullStep>) {
         <OperandField
           value={step.fill.value}
           onChange={(value) => onChange({ ...step, fill: { kind: "value", value } })}
-          sources={[...ALL_SOURCES]}
-          literalTypes={[...VALUE_TYPES]}
+          sources={ALL_SOURCES}
+          literalTypes={VALUE_TYPES}
           columns={ctx.columns}
           variables={ctx.variables}
           ariaLabel="Fill value"

@@ -281,4 +281,48 @@ describe("PolarsStepsEditor", () => {
     expect(mockRender).not.toHaveBeenCalled()
     confirm.mockRestore()
   })
+
+  it("writes the chosen start input when the node has several inputs", async () => {
+    const spy = vi.fn()
+    render(<Harness initial={{ steps: [] }} inputSources={[quotes, rates]} spy={spy} />)
+    expect(screen.getByLabelText("Start from input")).toHaveValue("")
+    expect(screen.getByRole("button", { name: "Add step" })).toBeDisabled()
+    fireEvent.change(screen.getByLabelText("Start from input"), { target: { value: "rates" } })
+    await waitFor(() => expect(lastSteps(spy)).toEqual([expect.objectContaining({ kind: "source", input: "rates" })]), { timeout: 5000 })
+    expect(screen.getByRole("button", { name: "Add step" })).toBeEnabled()
+  })
+
+  it("keeps the open card on its step when another card is dragged past it", async () => {
+    const spy = vi.fn()
+    const cast: Step = { id: "c", kind: "cast", casts: [{ column: "premium", dtype: "Float64" }] }
+    render(<Harness initial={{ steps: [source, filter, limit, cast] }} inputSources={[quotes]} spy={spy} />)
+    fireEvent.click(screen.getByRole("button", { name: "Step 2: Limit rows" }))
+    const cardOf = (name: string) => screen.getByRole("button", { name }).closest("[data-testid='polars-step-card']") as HTMLElement
+    const header = screen.getByRole("button", { name: "Step 1: Filter rows" }).parentElement as HTMLElement
+    const dataTransfer = { setData: vi.fn(), effectAllowed: "", dropEffect: "" }
+    fireEvent.dragStart(header, { dataTransfer })
+    fireEvent.dragOver(cardOf("Step 3: Change types"), { dataTransfer })
+    fireEvent.drop(cardOf("Step 3: Change types"), { dataTransfer })
+    await waitFor(() => expect(lastSteps(spy)).toEqual([source, limit, cast, filter]), { timeout: 5000 })
+    expect(screen.getByRole("button", { name: "Step 1: Limit rows" })).toHaveAttribute("aria-expanded", "true")
+    expect(screen.getByRole("button", { name: "Step 3: Filter rows" })).toHaveAttribute("aria-expanded", "false")
+  })
+
+  it("disables the switch to code in the no-input state while the persisted steps cannot render", async () => {
+    mockRender.mockImplementation(async () => ({
+      ok: false,
+      code: "",
+      step_lines: [],
+      step_index: 0,
+      message: "Unknown input 'quotes'; connected inputs: none.",
+    }))
+    const onReplace = vi.fn()
+    render(<Harness initial={{ steps: [source] }} inputSources={[]} onReplace={onReplace} />)
+    const button = screen.getByRole("button", { name: "Switch to code" })
+    expect(button).toBeDisabled()
+    await waitFor(() => expect(button).toHaveAttribute("title", "Fix Start from first"), { timeout: 5000 })
+    expect(button).toBeDisabled()
+    fireEvent.click(button)
+    expect(onReplace).not.toHaveBeenCalled()
+  })
 })

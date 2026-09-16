@@ -33,7 +33,11 @@ from haute._explore_charts import validate_explore_charts
 from haute._explore_overview import validate_explore_overview
 from haute._explore_pivots import validate_explore_pivot_state
 from haute._logging import get_logger
-from haute._polars_steps import PolarsStepError, render_polars_steps
+from haute._polars_steps import (
+    STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
+    PolarsStepError,
+    render_polars_steps,
+)
 from haute._types import (
     COLUMN_CONFIG_KEYS,
     MODEL_SCORE_CONFIG_KEYS,
@@ -399,8 +403,7 @@ def _reconcile_polars_steps(
         )
     if config.get("inputMapping") is not None and not config.get("instanceOf"):
         raise ConfigError(
-            "A stepped transform addresses its inputs by their edge names and "
-            "cannot carry inputMapping.",
+            STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
             func_name=func_name,
             config_path=config_ref,
         )

@@ -300,10 +300,7 @@ function rewriteSteppedTransformInputs(
   const scopeChanges = changes.get(scope) ?? new Map<string, Record<string, unknown>>()
   const config = scopeChanges.get(target.id) ?? ((target.data.config ?? {}) as Record<string, unknown>)
   const renamed = renameStepInputs(config.steps as unknown[], new Map(pairs.map(({ from, to }) => [from, to])))
-  if (!renamed.ok) {
-    const duplicate = /"([^"]+)"/.exec(renamed.error)?.[1] ?? ""
-    return { ok: false, error: `Target "${label}" already has an input named "${duplicate}".` }
-  }
+  if (!renamed.ok) return { ok: false, error: `Target "${label}" already has an input named "${renamed.duplicate}".` }
   if (!renamed.changed) return null
   scopeChanges.set(target.id, { ...config, steps: renamed.steps })
   changes.set(scope, scopeChanges)

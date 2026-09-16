@@ -420,7 +420,7 @@ function rewriteDownstreamInputMapping(
     // never carries inputMapping, so the join name replaces the old input
     // reference directly.
     const renamed = renameStepInputs(config.steps, new Map([[oldCurrentInputName, newCurrentInputName]]))
-    if (!renamed.ok) throw new Error(`Cannot rewrite stepped transform inputs: ${renamed.error}`)
+    if (!renamed.ok) throw new Error(`Cannot rewrite stepped transform inputs: "${renamed.duplicate}" would be referenced by more than one input`)
     if (!renamed.changed) return node
     return { ...node, data: { ...node.data, config: { ...config, steps: renamed.steps } } }
   }
