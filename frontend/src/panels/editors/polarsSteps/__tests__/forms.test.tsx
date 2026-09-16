@@ -274,11 +274,9 @@ describe("step forms only build schema-valid payloads", () => {
       operand: { kind: "expr", expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "*", right: { kind: "literal", type: "number", value: 1 }, text: "" } },
     })
     expect(screen.getByRole("group", { name: "Function operand expression" })).toBeInTheDocument()
-    // a new formula box starts empty; the help lives in a tooltip
+    // a new formula box starts empty, with an example as its placeholder
     expect(screen.getByLabelText("Formula")).toHaveValue("")
-    expect(screen.getByLabelText("Formula")).toHaveAttribute("title", expect.stringContaining("Brackets group"))
-    expect(screen.getByLabelText("How to write a formula")).toBeInTheDocument()
-    expect(screen.queryByText(/Columns: by name/)).not.toBeInTheDocument()
+    expect(screen.getByLabelText("Formula")).toHaveAttribute("placeholder", "example: (premium + commission) * tax / 12")
     fireEvent.change(screen.getByLabelText("Function operand expression type"), { target: { value: "function" } })
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
     expect(latest.expr).toMatchObject({ operand: { kind: "expr", expr: { type: "function", fn: "abs" } } })

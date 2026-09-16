@@ -209,7 +209,8 @@ numbered step cards ("Start from", then Step 1 onwards, the same numbering every
 uses) that read as plain-English summaries while collapsed and open one at a time through a
 keyboard-operable disclosure (a new step opens itself; Escape collapses; deleting a card
 moves focus to the next disclosure or to `Add step`), each with delete, move up, and move
-down, an `Add step` button under the last card (under the start card while there are no
+down, and each draggable by its header (a hand cursor; dropping on another card puts the
+step there and the open card follows its step), an `Add step` button under the last card (under the start card while there are no
 steps) that opens, in place, a chooser of every step kind by name, sectioned as rows,
 columns, combine and values, with what the kind does as its tooltip (arrow keys move between kinds, Escape closes and returns focus), covering filter, derived
 column, conditional column, window aggregate, select, drop, rename, cast, sort, unique,
@@ -241,8 +242,8 @@ nested expression schema on commit and kept on the expression as typed, so brack
 spacing survive collapsing and reopening the card and the card summary shows the same
 text (text that no longer describes the expression is replaced by a fresh rendering);
 a function typed as a formula stays a formula in the editor; a new formula box starts empty
-(a placeholder tree keeps the step renderable until something is typed) and the syntax help
-is a tooltip on the box and on an info icon beside its label; text that cannot be read
+(a placeholder tree keeps the step renderable until something is typed) with an example
+formula as its placeholder; text that cannot be read
 keeps the last good expression and explains why in a muted note, and an expression text cannot express (one
 holding a window, conditional or text join) is edited in the structured
 left/operator/right form instead. An operand field also offers an "Expression" source that

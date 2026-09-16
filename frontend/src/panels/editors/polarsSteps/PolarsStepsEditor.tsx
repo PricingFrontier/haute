@@ -9,7 +9,7 @@ import { createStep, kindLabel, stepDisplayLabel, stepProblem, summarizeStep, va
 import { columnsBeforeStep } from "./derivedColumns"
 import { StepForm } from "./forms"
 import GeneratedCodePanel from "./GeneratedCodePanel"
-import StepCard, { type StepBadge } from "./StepCard"
+import StepCard, { type StepBadge, type StepDrag } from "./StepCard"
 import { readSteps, type Step, type StepKind } from "./types"
 import { useRenderedSteps } from "./useRenderedSteps"
 
@@ -134,6 +134,49 @@ export default function PolarsStepsEditor({
     setOpenIndex((current) => (current === index ? target : current === target ? index : current))
   }
 
+  // Drag a card by its header and drop it on another card to put it there.
+  const [dragIndex, setDragIndex] = useState<number | null>(null)
+  const [dropIndex, setDropIndex] = useState<number | null>(null)
+  const reorder = (from: number, to: number) => {
+    if (from === to || from < 1 || to < 1 || from >= steps.length || to >= steps.length) return
+    const next = [...steps]
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved)
+    setSteps(next)
+    setOpenIndex((current) => {
+      if (current === null) return null
+      if (current === from) return to
+      if (from < current && current <= to) return current - 1
+      if (to <= current && current < from) return current + 1
+      return current
+    })
+  }
+  const dragFor = (index: number): StepDrag => ({
+    onStart: (event) => {
+      event.dataTransfer?.setData("text/plain", String(index))
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move"
+      setDragIndex(index)
+    },
+    onOver: (event) => {
+      if (dragIndex === null) return
+      event.preventDefault()
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move"
+      if (dropIndex !== index) setDropIndex(index)
+    },
+    onDrop: (event) => {
+      event.preventDefault()
+      if (dragIndex !== null) reorder(dragIndex, index)
+      setDragIndex(null)
+      setDropIndex(null)
+    },
+    onEnd: () => {
+      setDragIndex(null)
+      setDropIndex(null)
+    },
+    target: dropIndex === index && dragIndex !== null && dragIndex !== index,
+    dragging: dragIndex === index,
+  })
+
   const switchAllowed =
     steps.length === 0 || (rendered.status === "ok" && rendered.revisionRendered === rendered.revision)
   const switchDisabledReason =
@@ -243,6 +286,7 @@ export default function PolarsStepsEditor({
                         onToggle={() => undefined}
                         onDelete={() => deleteStep(index)}
                         badge={{ tone: "danger", text: "This step cannot be edited here. Delete it, or switch to code to keep it." }}
+                        drag={dragFor(index)}
                       />
                     </div>
                   )
@@ -262,6 +306,7 @@ export default function PolarsStepsEditor({
                       onMoveUp={index > 1 ? () => move(index, -1) : undefined}
                       onMoveDown={index < steps.length - 1 ? () => move(index, 1) : undefined}
                       onDelete={() => deleteStep(index)}
+                      drag={dragFor(index)}
                       badge={badgeFor(index)}
                       disclosureRef={(el) => {
                         if (el) disclosures.current.set(index, el)

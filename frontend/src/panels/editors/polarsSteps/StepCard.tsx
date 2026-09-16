@@ -1,5 +1,5 @@
 import { AlertTriangle, ChevronDown, ChevronUp, MoveDown, MoveUp, Trash2 } from "lucide-react"
-import { useId, type KeyboardEvent, type ReactNode } from "react"
+import { useId, type DragEvent, type KeyboardEvent, type ReactNode } from "react"
 
 import { NODE_GROUP_COLORS } from "../../../theme/colors"
 
@@ -9,8 +9,20 @@ export type StepBadge = { tone: "danger" | "warning"; text: string }
  * One step card: a two-row header (number badge, kind label and actions; then
  * the summary while the card is collapsed) whose title is a native disclosure button, and the form body
  * when open. Badges report validation or execution problems without moving
- * the user.
+ * the user. A card with a `drag` handler can be picked up by its header
+ * (the cursor becomes a hand) and dropped on another card to reorder.
  */
+export type StepDrag = {
+  onStart: (event: DragEvent<HTMLElement>) => void
+  onOver: (event: DragEvent<HTMLElement>) => void
+  onDrop: (event: DragEvent<HTMLElement>) => void
+  onEnd: () => void
+  /** Another card is being held over this one. */
+  target: boolean
+  /** This card is the one being dragged. */
+  dragging: boolean
+}
+
 export default function StepCard({
   label,
   number,
@@ -24,6 +36,7 @@ export default function StepCard({
   children,
   disclosureRef,
   onEscape,
+  drag,
 }: {
   label: string
   /** Display number, or null for the fixed start card. */
@@ -38,11 +51,12 @@ export default function StepCard({
   children?: ReactNode
   disclosureRef?: (element: HTMLButtonElement | null) => void
   onEscape?: () => void
+  drag?: StepDrag
 }) {
   const id = useId()
   const bodyId = `${id}-body`
   const accent = NODE_GROUP_COLORS.transform
-  const borderColour = badge ? `var(--${badge.tone})` : open ? accent : "var(--border)"
+  const borderColour = badge ? `var(--${badge.tone})` : open || drag?.target ? accent : "var(--border)"
   // The number badge is visual; the accessible name keeps the step number.
   const title = number === null ? label : `Step ${number}: ${label}`
 
@@ -57,11 +71,25 @@ export default function StepCard({
     <div
       data-testid="polars-step-card"
       data-state={open ? "open" : "closed"}
+      data-drop-target={drag?.target ? "true" : undefined}
       className="rounded-lg transition-colors"
-      style={{ background: "var(--bg-input)", border: `1px solid ${borderColour}` }}
+      style={{
+        background: "var(--bg-input)",
+        border: `1px solid ${borderColour}`,
+        opacity: drag?.dragging ? 0.5 : 1,
+        boxShadow: drag?.target ? `0 -2px 0 0 ${accent}` : undefined,
+      }}
       onKeyDown={onKeyDown}
+      onDragOver={drag?.onOver}
+      onDrop={drag?.onDrop}
     >
-      <div className="flex items-center gap-1.5 px-2 py-1.5">
+      <div
+        className={`flex items-center gap-1.5 px-2 py-1.5 ${drag ? "cursor-grab active:cursor-grabbing" : ""}`}
+        draggable={drag !== undefined}
+        onDragStart={drag?.onStart}
+        onDragEnd={drag?.onEnd}
+        title={drag ? "Drag to reorder" : undefined}
+      >
         <button
           type="button"
           ref={disclosureRef}
@@ -83,25 +111,25 @@ export default function StepCard({
           <span className="text-xs font-semibold truncate" style={{ color: open ? accent : "var(--text-primary)" }}>
             {label}
           </span>
-          <span className="ml-auto shrink-0" style={{ color: "var(--text-muted)" }} aria-hidden="true">
-            {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          <span className="ml-auto shrink-0" style={{ color: "var(--text-secondary)" }} aria-hidden="true">
+            {open ? <ChevronUp size={17} strokeWidth={2.25} /> : <ChevronDown size={17} strokeWidth={2.25} />}
           </span>
         </button>
         {(onMoveUp || onMoveDown || onDelete) && (
           <span className="flex items-center gap-0.5 shrink-0">
             {onMoveUp && (
-              <button type="button" onClick={onMoveUp} aria-label={`Move ${title} up`} className="focus-ring p-1 rounded" style={{ color: "var(--text-muted)" }}>
-                <MoveUp size={12} aria-hidden="true" />
+              <button type="button" onClick={onMoveUp} aria-label={`Move ${title} up`} className="focus-ring p-1 rounded" style={{ color: "var(--text-secondary)" }}>
+                <MoveUp size={14} aria-hidden="true" />
               </button>
             )}
             {onMoveDown && (
-              <button type="button" onClick={onMoveDown} aria-label={`Move ${title} down`} className="focus-ring p-1 rounded" style={{ color: "var(--text-muted)" }}>
-                <MoveDown size={12} aria-hidden="true" />
+              <button type="button" onClick={onMoveDown} aria-label={`Move ${title} down`} className="focus-ring p-1 rounded" style={{ color: "var(--text-secondary)" }}>
+                <MoveDown size={14} aria-hidden="true" />
               </button>
             )}
             {onDelete && (
-              <button type="button" onClick={onDelete} aria-label={`Delete ${title}`} className="icon-danger-btn focus-ring p-1 rounded">
-                <Trash2 size={12} aria-hidden="true" />
+              <button type="button" onClick={onDelete} aria-label={`Delete ${title}`} className="icon-danger-btn focus-ring p-1 rounded" style={{ color: "var(--text-secondary)" }}>
+                <Trash2 size={15} aria-hidden="true" />
               </button>
             )}
           </span>

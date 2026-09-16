@@ -156,6 +156,24 @@ describe("PolarsStepsEditor", () => {
     expect(limitCard).not.toHaveTextContent("5 rows")
   })
 
+  it("reorders steps by dragging a card onto another", async () => {
+    const spy = vi.fn()
+    const cast: Step = { id: "c", kind: "cast", casts: [{ column: "premium", dtype: "Float64" }] }
+    render(<Harness initial={{ steps: [source, filter, limit, cast] }} inputSources={[quotes]} spy={spy} />)
+    const cardOf = (name: string) => screen.getByRole("button", { name }).closest("[data-testid='polars-step-card']") as HTMLElement
+    const header = screen.getByRole("button", { name: "Step 3: Change types" }).parentElement as HTMLElement
+    expect(header).toHaveAttribute("draggable", "true")
+    expect(header).toHaveAttribute("title", "Drag to reorder")
+    const dataTransfer = { setData: vi.fn(), effectAllowed: "", dropEffect: "" }
+    fireEvent.dragStart(header, { dataTransfer })
+    fireEvent.dragOver(cardOf("Step 1: Filter rows"), { dataTransfer })
+    expect(cardOf("Step 1: Filter rows")).toHaveAttribute("data-drop-target", "true")
+    fireEvent.drop(cardOf("Step 1: Filter rows"), { dataTransfer })
+    await waitFor(() => expect(lastSteps(spy)).toEqual([source, cast, filter, limit]), { timeout: 5000 })
+    expect(screen.getByRole("button", { name: "Step 1: Change types" })).toBeInTheDocument()
+    expect(screen.queryByText("[data-drop-target='true']")).not.toBeInTheDocument()
+  })
+
   it("badges the failing step without moving the user and offers Go to error", async () => {
     mockRender.mockImplementation(async () => ({
       ok: false,
