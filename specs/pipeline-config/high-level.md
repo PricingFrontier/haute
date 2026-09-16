@@ -243,8 +243,11 @@ node-local variables; a null literal renders as `pl.lit(None)` in expression pos
 and is refused in membership lists and variables. An operand may itself be a nested
 expression (`{"kind": "expr", "expr": ...}`) wherever a value, column or variable is
 accepted, except in membership lists, variable values and function arguments, which
-stay plain values; a nested formula renders in parentheses and nesting is capped at
-six levels (a step's own expression is level one), beyond which the step is refused
+stay plain values; a nested formula is bracketed only where Python's left-to-right
+evaluation needs it (a left operand only when its operator is weaker than the
+parent's, a right operand and either side of `**` always, and anywhere outside a
+formula), so a chain of terms reads flat, and nesting is capped at twelve levels (a
+step's own expression is level one), beyond which the step is refused
 with a message to compute part of the expression in an earlier step; inside a
 group-by aggregation's row filter operands stay plain, because a nested aggregate
 there would mean the group's value rather than the frame's. Two reshaping steps

@@ -73,8 +73,8 @@ describe("stepProblem", () => {
       return operand
     }
     const withOperand = (operand: Operand): Step => ({ id: "w", kind: "with_column", name: "n", expr: { type: "operand", operand } })
-    expect(stepProblem(withOperand(nested(5)))).toBeNull()
-    expect(stepProblem(withOperand(nested(6)))).toMatch(/nests more than 6 levels/)
+    expect(stepProblem(withOperand(nested(11)))).toBeNull()
+    expect(stepProblem(withOperand(nested(12)))).toMatch(/nests more than 12 levels/)
     const ratio: Step = {
       id: "r",
       kind: "with_column",
@@ -120,10 +120,10 @@ describe("stepProblem", () => {
     }
     const filter = (value: Operand): Step => ({ id: "f", kind: "filter", match: "all", conditions: [{ column: "a", operator: "gt", value }] })
     const fill = (value: Operand): Step => ({ id: "n", kind: "fill_null", columns: ["a"], fill: { kind: "value", value } })
-    expect(stepProblem(filter(nested(6)))).toBeNull()
-    expect(stepProblem(filter(nested(7)))).toMatch(/nests more than 6 levels/)
-    expect(stepProblem(fill(nested(6)))).toBeNull()
-    expect(stepProblem(fill(nested(7)))).toMatch(/nests more than 6 levels/)
+    expect(stepProblem(filter(nested(12)))).toBeNull()
+    expect(stepProblem(filter(nested(13)))).toMatch(/nests more than 12 levels/)
+    expect(stepProblem(fill(nested(12)))).toBeNull()
+    expect(stepProblem(fill(nested(13)))).toMatch(/nests more than 12 levels/)
     // A filter condition value carrying the renderer's columnless-window shorthand is canonicalised.
     const shorthand = filter({ kind: "expr", expr: { type: "window", agg: "len", over: [] } as never })
     expect(stepProblem(shorthand)).toBeNull()

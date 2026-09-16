@@ -263,32 +263,29 @@ describe("step forms only build schema-valid payloads", () => {
 
   it("an operand can become a nested expression with its own editor", () => {
     const spy = vi.fn()
-    const step: Step = {
-      id: "w",
-      kind: "with_column",
-      name: "rate",
-      expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "/", right: { kind: "literal", type: "number", value: 1 } },
-    }
+    const step: Step = { id: "w", kind: "with_column", name: "size", expr: { type: "function", fn: "abs", operand: { kind: "column", name: "premium" }, args: [] } }
     render(<Stateful initial={step} spy={spy} />)
-    expect(optionValues(screen.getByLabelText("Right operand source"))).toEqual(["literal", "column", "variable", "expr"])
-    fireEvent.change(screen.getByLabelText("Right operand source"), { target: { value: "expr" } })
+    expect(optionValues(screen.getByLabelText("Function operand source"))).toEqual(["literal", "column", "variable", "expr"])
+    fireEvent.change(screen.getByLabelText("Function operand source"), { target: { value: "expr" } })
     let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
     expect(latest.expr).toEqual({
       ...step.expr,
-      right: { kind: "expr", expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "*", right: { kind: "literal", type: "number", value: 1 } } },
+      operand: { kind: "expr", expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "*", right: { kind: "literal", type: "number", value: 1 } } },
     })
-    expect(screen.getByRole("group", { name: "Right operand expression" })).toBeInTheDocument()
-    fireEvent.change(screen.getByLabelText("Right operand expression type"), { target: { value: "function" } })
+    expect(screen.getByRole("group", { name: "Function operand expression" })).toBeInTheDocument()
+    expect(screen.getByLabelText("Formula")).toHaveValue("premium * 1")
+    fireEvent.change(screen.getByLabelText("Function operand expression type"), { target: { value: "function" } })
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
-    expect(latest.expr).toMatchObject({ right: { kind: "expr", expr: { type: "function", fn: "abs" } } })
+    expect(latest.expr).toMatchObject({ operand: { kind: "expr", expr: { type: "function", fn: "abs" } } })
     // The deepest level the renderer accepts offers no further nesting.
     cleanup()
-    let operand: Extract<Step, { kind: "with_column" }>["expr"] = { type: "binary", left: { kind: "column", name: "premium" }, op: "+", right: { kind: "literal", type: "number", value: 1 } }
-    for (let i = 0; i < 5; i += 1) operand = { type: "binary", left: { kind: "expr", expr: operand }, op: "+", right: { kind: "literal", type: "number", value: 1 } }
-    render(<StepForm step={{ id: "d", kind: "with_column", name: "deep", expr: operand }} onChange={vi.fn()} ctx={ctx} />)
+    let nested: Extract<Step, { kind: "with_column" }>["expr"] = { type: "function", fn: "abs", operand: { kind: "column", name: "premium" }, args: [] }
+    for (let i = 0; i < 11; i += 1) nested = { type: "function", fn: "abs", operand: { kind: "expr", expr: nested }, args: [] }
+    render(<StepForm step={{ id: "d", kind: "with_column", name: "deep", expr: nested }} onChange={vi.fn()} ctx={ctx} />)
     const sources = screen.getAllByLabelText(/source$/).map((el) => optionValues(el))
-    expect(sources.some((s) => s.includes("expr"))).toBe(true)
-    expect(sources.filter((s) => !s.includes("expr")).length).toBeGreaterThan(0)
+    expect(sources).toHaveLength(12)
+    expect(sources.filter((s) => s.includes("expr"))).toHaveLength(11)
+    // Variables and function arguments stay plain values.
     cleanup()
     const variable: Step = { id: "v", kind: "variable", name: "rate", value: { kind: "literal", type: "number", value: 1 } }
     render(<StepForm step={variable} onChange={vi.fn()} ctx={ctx} />)
@@ -379,14 +376,52 @@ describe("step forms only build schema-valid payloads", () => {
     ])
   })
 
-  it("a filter condition may nest six levels, the renderer's limit for that position", () => {
-    let operand: Extract<Step, { kind: "filter" }>["conditions"][number]["value"] = { kind: "literal", type: "number", value: 1 }
-    for (let i = 0; i < 5; i += 1) operand = { kind: "expr", expr: { type: "binary", left: operand, op: "+", right: { kind: "literal", type: "number", value: 1 } } }
-    const step: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "premium", operator: "gt", value: operand }] }
+  it("a filter condition may nest twelve levels, the renderer's limit for that position", () => {
+    let nested: Extract<Step, { kind: "with_column" }>["expr"] = { type: "function", fn: "abs", operand: { kind: "column", name: "premium" }, args: [] }
+    for (let i = 0; i < 11; i += 1) nested = { type: "function", fn: "abs", operand: { kind: "expr", expr: nested }, args: [] }
+    const step: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "premium", operator: "gt", value: { kind: "expr", expr: nested } }] }
     render(<StepForm step={step} onChange={vi.fn()} ctx={ctx} />)
     const sources = screen.getAllByLabelText(/source$/).map((el) => optionValues(el))
-    // five nested levels are open; the innermost operand may still nest once more (level six)
-    expect(sources.filter((s) => s.includes("expr")).length).toBe(sources.length)
+    // the condition value plus twelve function operands; only the innermost, at level twelve, cannot nest further
+    expect(sources).toHaveLength(13)
+    expect(sources.filter((s) => s.includes("expr"))).toHaveLength(12)
+  })
+
+  it("a formula is edited as text and parsed into the nested schema", () => {
+    const spy = vi.fn()
+    const step: Step = {
+      id: "w",
+      kind: "with_column",
+      name: "rate",
+      expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "/", right: { kind: "literal", type: "number", value: 12 } },
+    }
+    render(<Stateful initial={step} spy={spy} />)
+    expect(optionValues(screen.getByLabelText("Expression type"))[0]).toBe("operand")
+    const input = screen.getByLabelText("Formula")
+    expect(input).toHaveValue("premium / 12")
+    fireEvent.change(input, { target: { value: "(premium + rate) * 1.05 / 12" } })
+    fireEvent.blur(input)
+    let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toEqual({
+      type: "binary",
+      left: {
+        kind: "expr",
+        expr: {
+          type: "binary",
+          left: { kind: "expr", expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "+", right: { kind: "variable", name: "rate" } } },
+          op: "*",
+          right: { kind: "literal", type: "number", value: 1.05 },
+        },
+      },
+      op: "/",
+      right: { kind: "literal", type: "number", value: 12 },
+    })
+    expect(screen.getByLabelText("Formula")).toHaveValue("(premium + rate) * 1.05 / 12")
+    fireEvent.change(screen.getByLabelText("Formula"), { target: { value: "(premium + 1" } })
+    fireEvent.keyDown(screen.getByLabelText("Formula"), { key: "Enter" })
+    expect(screen.getByText(/Not understood: Missing a closing bracket/)).toBeInTheDocument()
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toMatchObject({ op: "/" })
   })
 
   it("pivot columns pair a value with a suggested name and share one type", () => {

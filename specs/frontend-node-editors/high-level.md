@@ -231,10 +231,20 @@ defined by an earlier variable step, and each field offers only the sources and 
 types the step schema accepts there (string operators take text values only; a variable
 holds a number, text or true/false; a `null` literal is offered for expression operands
 but never in a membership list or a variable; function arguments are labelled and typed
-per function). An operand field also offers an "Expression" source that opens a nested
-editor (the same "Computed as" select and expression form, indented under the field);
-the source is withheld at the renderer's depth cap so the editor never builds a step it
-could not save, and summaries print a nested formula in parentheses; a group-by
+per function). "Computed as" offers Value first (a new column starts as a plain value), then
+Formula, Function, If-then, Window and Join text. A formula is edited as text
+(`(premium + tax) * 1.05 / 12`, `round(premium / sum_insured * 1000, 3)`: columns by name or
+in backticks, earlier variables by name, quoted text, `true`/`false`/`null`,
+`date('YYYY-MM-DD')`, Python operator precedence with `**` right-associative, brackets,
+and the catalogue's functions with plain-value arguments); the text is parsed into the
+nested expression schema on commit, text that cannot be read keeps the last good
+expression and explains why in a muted note, and an expression text cannot express (one
+holding a window, conditional or text join) is edited in the structured
+left/operator/right form instead. An operand field also offers an "Expression" source that
+opens a nested editor (the same "Computed as" select and expression form, indented under
+the field); the source is withheld at the renderer's depth cap of twelve so the editor
+never builds a step it could not save, and summaries print a nested formula in
+parentheses; a group-by
 aggregation's row filter offers no nested expressions. The Combine group also offers
 "Pivot to columns" (index chips, the spread column, aggregate and values column, and
 one row per output column pairing a typed value with a name the value suggests, all

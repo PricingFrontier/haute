@@ -188,7 +188,9 @@ CAST_DTYPES: tuple[str, ...] = (
 )
 LITERAL_TYPES: tuple[str, ...] = ("number", "text", "boolean", "date", "null")
 #: How deep expressions may nest as operands; a with_column expression is depth 1.
-MAX_EXPR_DEPTH = 6
+#: A formula chain nests one level per operator, so a dozen terms fit.
+MAX_EXPR_DEPTH = 12
+_PRECEDENCE: dict[str, int] = {"+": 1, "-": 1, "*": 2, "/": 2, "//": 2, "%": 2, "**": 3}
 
 #: ``fn -> (argument literal types, render template)``. ``{r}`` is the
 #: receiver rendered in expression position; ``{0}``/``{1}`` are bare literals.
@@ -324,6 +326,27 @@ def _step_input_references(step: Mapping[str, Any]) -> list[str]:
     if kind == "concat":
         return list(step["inputs"])
     return []
+
+
+def _needs_parentheses(child_op: object, parent: tuple[str, str] | None) -> bool:
+    """Whether a nested formula must be bracketed inside its parent formula.
+
+    A left operand binds first anyway, so it needs brackets only when its
+    operator is weaker than the parent's (``(a + b) * c``). A right operand is
+    always bracketed: dropping them would re-associate the evaluation
+    (``a - (b + c)``, ``a * (b // c)``) or, for floats, change rounding.
+    ``**`` is bracketed on both sides. Outside a formula (a function receiver,
+    a conditional branch, a value position) a nested formula is always
+    bracketed.
+    """
+    if parent is None or not isinstance(child_op, str):
+        return True
+    parent_op, side = parent
+    if child_op not in _PRECEDENCE or parent_op not in _PRECEDENCE:
+        return True
+    if "**" in (child_op, parent_op) or side == "right":
+        return True
+    return _PRECEDENCE[child_op] < _PRECEDENCE[parent_op]
 
 
 class _Renderer:
@@ -477,8 +500,20 @@ class _Renderer:
             raise self.fail(f"{label} {value!r} is not a real date.") from None
         return literal_type, f"pl.lit({value!r}).str.to_date()"
 
-    def _operand(self, value: object, label: str, *, expr: bool) -> str:
-        """Render an operand in value position (bare) or expression position."""
+    def _operand(
+        self,
+        value: object,
+        label: str,
+        *,
+        expr: bool,
+        parent: tuple[str, str] | None = None,
+    ) -> str:
+        """Render an operand in value position (bare) or expression position.
+
+        ``parent`` names the enclosing formula operator and side (``"left"`` or
+        ``"right"``) so a nested formula is parenthesised only where Python's
+        left-to-right evaluation would otherwise change it.
+        """
         operand = self._object(value, label)
         kind = operand.get("kind")
         if kind == "column":
@@ -497,7 +532,9 @@ class _Renderer:
             self._keys(operand, ("kind", "expr"), label)
             inner = self._object(operand.get("expr"), f"{label} expression")
             rendered_expr = self._expr(inner, f"{label} expression")
-            return f"({rendered_expr})" if inner.get("type") == "binary" else rendered_expr
+            if inner.get("type") != "binary" or _needs_parentheses(inner.get("op"), parent):
+                return f"({rendered_expr})" if inner.get("type") == "binary" else rendered_expr
+            return rendered_expr
         if kind == "variable":
             self._keys(operand, ("kind", "name"), label)
             name = self._str(operand.get("name"), f"{label} variable")
@@ -638,8 +675,12 @@ class _Renderer:
         if kind == "binary":
             self._keys(expr, ("type", "left", "op", "right"), label)
             op = self._choice(expr.get("op"), BINARY_OPERATORS, f"{label} operator")
-            left = self._operand(expr.get("left"), f"{label} left operand", expr=True)
-            right = self._operand(expr.get("right"), f"{label} right operand", expr=False)
+            left = self._operand(
+                expr.get("left"), f"{label} left operand", expr=True, parent=(op, "left")
+            )
+            right = self._operand(
+                expr.get("right"), f"{label} right operand", expr=False, parent=(op, "right")
+            )
             return f"{left} {op} {right}"
         if kind == "function":
             self._keys(expr, ("type", "fn", "operand", "args"), label)

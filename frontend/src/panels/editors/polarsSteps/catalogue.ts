@@ -147,7 +147,7 @@ export const LITERAL_TYPES: Array<{ value: LiteralType; label: string }> = [
   { value: "null", label: "missing (null)" },
 ]
 /** How deep expressions may nest as operands; a step's expression is depth 1 (mirrors the renderer). */
-export const MAX_EXPR_DEPTH = 6
+export const MAX_EXPR_DEPTH = 12
 /** Literal types a membership list accepts: the renderer refuses null members. */
 export const LIST_LITERAL_TYPES = LITERAL_TYPES.filter((t) => t.value !== "null")
 
@@ -248,7 +248,7 @@ export function createStep(kind: Exclude<StepKind, "source">, id: string, firstC
     case "filter":
       return { id, kind, match: "all", conditions: [defaultCondition(firstColumn)] }
     case "with_column":
-      return { id, kind, name: "", expr: defaultExpr("binary", firstColumn) }
+      return { id, kind, name: "", expr: defaultExpr("operand", firstColumn) }
     case "select":
       return { id, kind, columns: [] }
     case "drop":

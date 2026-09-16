@@ -4,9 +4,11 @@
  * widths so nothing scrolls horizontally in the node panel.
  */
 import { Plus, X } from "lucide-react"
-import { useId, type ReactNode } from "react"
+import { useId, useState, type ReactNode } from "react"
 
 import { ConfigCheckbox } from "../../../components/form"
+import { INPUT_STYLE } from "../_shared"
+import { FormulaError, formulaText, parseFormula } from "./formula"
 import {
   AGGREGATIONS,
   BINARY_OPERATORS,
@@ -29,6 +31,7 @@ import {
   literal,
 } from "./catalogue"
 import {
+  CONTROL_CLASS,
   ColumnListField,
   ColumnPicker,
   ConditionList,
@@ -166,13 +169,88 @@ function nestedExpression(ctx: StepFormContext, depth: number): RenderExpression
 }
 
 const EXPR_TYPES: Array<{ value: Expr["type"]; label: string }> = [
+  { value: "operand", label: "Value" },
   { value: "binary", label: "Formula" },
   { value: "function", label: "Function" },
   { value: "conditional", label: "If-then" },
   { value: "window", label: "Window" },
   { value: "concat", label: "Join text" },
-  { value: "operand", label: "Value" },
 ]
+
+const FORMULA_HINT = "Columns by name, numbers, 'text', + - * / // % **, brackets, and functions such as round(x, 2)"
+
+/**
+ * A formula edited as text. The text is parsed on commit into the nested
+ * expression schema; text that cannot be read keeps the draft and the last
+ * good expression, and says why. An expression the text cannot express (one
+ * holding a window, conditional or text join) falls back to the structured
+ * left/operator/right form.
+ */
+function FormulaEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "binary" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
+  const text = formulaText(expr, ctx.variables)
+  if (text === null) return <StructuredFormula expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
+  return <FormulaField key={text} text={text} onCommit={onChange} variables={ctx.variables} />
+}
+
+function FormulaField({ text, onCommit, variables }: { text: string; onCommit: (next: Expr) => void; variables: string[] }) {
+  const [draft, setDraft] = useState(text)
+  const [problem, setProblem] = useState<string | null>(null)
+  const commit = () => {
+    if (draft.trim() === text) return
+    try {
+      onCommit(parseFormula(draft, variables))
+      setProblem(null)
+    } catch (error) {
+      setProblem(error instanceof FormulaError ? error.message : "The formula could not be read.")
+    }
+  }
+  return (
+    <Field label="Formula">
+      <input
+        type="text"
+        aria-label="Formula"
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault()
+            commit()
+          }
+        }}
+        className={`${CONTROL_CLASS} font-mono`}
+        style={INPUT_STYLE}
+        spellCheck={false}
+      />
+      <div className="mt-1">
+        <Hint>{problem ? `Not understood: ${problem}` : FORMULA_HINT}</Hint>
+      </div>
+    </Field>
+  )
+}
+
+function StructuredFormula({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "binary" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
+  const operandProps = {
+    sources: [...ALL_SOURCES],
+    literalTypes: [...ALL_TYPES],
+    columns: ctx.columns,
+    variables: ctx.variables,
+    renderExpression: nestedExpression(ctx, depth + 1),
+  }
+  return (
+    <>
+      <Field label="Left">
+        <OperandField value={expr.left} onChange={(left) => onChange({ ...expr, left })} ariaLabel="Left operand" {...operandProps} />
+      </Field>
+      <Field label="Operator">
+        <SelectField value={expr.op} options={BINARY_OPERATORS} onChange={(op) => onChange({ ...expr, op })} ariaLabel="Operator" />
+      </Field>
+      <Field label="Right">
+        <OperandField value={expr.right} onChange={(right) => onChange({ ...expr, right })} ariaLabel="Right operand" {...operandProps} />
+      </Field>
+    </>
+  )
+}
 
 const ARG_LABELS: Record<string, string[]> = {
   round: ["Decimal places"],
@@ -268,19 +346,7 @@ function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: 
         </Field>
       )
     case "binary":
-      return (
-        <>
-          <Field label="Left">
-            <OperandField value={expr.left} onChange={(left) => onChange({ ...expr, left })} ariaLabel="Left operand" {...operandProps} />
-          </Field>
-          <Field label="Operator">
-            <SelectField value={expr.op} options={BINARY_OPERATORS} onChange={(op) => onChange({ ...expr, op })} ariaLabel="Operator" />
-          </Field>
-          <Field label="Right">
-            <OperandField value={expr.right} onChange={(right) => onChange({ ...expr, right })} ariaLabel="Right operand" {...operandProps} />
-          </Field>
-        </>
-      )
+      return <FormulaEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
     case "function":
       return (
         <>

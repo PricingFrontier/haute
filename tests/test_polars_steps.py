@@ -1372,7 +1372,7 @@ def fn(name: str, operand: dict[str, Any], *args: dict[str, Any]) -> dict[str, A
                     num(3),
                 ),
             ),
-            "df = df.with_columns((((pl.lit(1000) * pl.col('premium')) / pl.col('sum_insured'))"
+            "df = df.with_columns(((pl.lit(1000) * pl.col('premium') / pl.col('sum_insured'))"
             ".round(3)).alias('rate'))",
         ),
         (
@@ -1470,7 +1470,7 @@ def _nested(depth: int) -> dict[str, Any]:
 @pytest.mark.parametrize(
     ("kind_step", "fragment"),
     [
-        (step("x", "with_column", name="d", expr=_nested(6)), "nest more than 6 levels"),
+        (step("x", "with_column", name="d", expr=_nested(12)), "nest more than 12 levels"),
         (
             step(
                 "x",
@@ -1515,8 +1515,95 @@ def test_nested_expressions_reject(kind_step: dict[str, Any], fragment: str) -> 
 
 
 def test_nesting_depth_counts_from_the_step_expression() -> None:
-    # Depth 5 below the top-level expression is the deepest allowed.
-    render_polars_steps([source(), step("x", "with_column", name="d", expr=_nested(5))], ["quotes"])
+    # Depth 11 below the top-level expression is the deepest allowed.
+    render_polars_steps(
+        [source(), step("x", "with_column", name="d", expr=_nested(11))], ["quotes"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("expr", "expected"),
+    [
+        # a left operand binds first: brackets only when it is weaker
+        (
+            binary(ex(binary(col("a"), "+", col("b"))), "*", col("c")),
+            "(pl.col('a') + pl.col('b')) * pl.col('c')",
+        ),
+        (
+            binary(ex(binary(col("a"), "*", col("b"))), "+", col("c")),
+            "pl.col('a') * pl.col('b') + pl.col('c')",
+        ),
+        (
+            binary(ex(binary(col("a"), "+", col("b"))), "-", col("c")),
+            "pl.col('a') + pl.col('b') - pl.col('c')",
+        ),
+        (
+            binary(ex(binary(col("a"), "/", col("b"))), "*", col("c")),
+            "pl.col('a') / pl.col('b') * pl.col('c')",
+        ),
+        # a right operand is always bracketed: evaluation order must not change
+        (
+            binary(col("a"), "-", ex(binary(col("b"), "+", col("c")))),
+            "pl.col('a') - (pl.col('b') + pl.col('c'))",
+        ),
+        (
+            binary(col("a"), "*", ex(binary(col("b"), "//", col("c")))),
+            "pl.col('a') * (pl.col('b') // pl.col('c'))",
+        ),
+        (
+            binary(col("a"), "+", ex(binary(col("b"), "+", col("c")))),
+            "pl.col('a') + (pl.col('b') + pl.col('c'))",
+        ),
+        # power is bracketed on both sides
+        (
+            binary(ex(binary(col("a"), "**", num(2))), "*", col("c")),
+            "(pl.col('a') ** 2) * pl.col('c')",
+        ),
+        (
+            binary(ex(binary(col("a"), "*", col("b"))), "**", num(2)),
+            "(pl.col('a') * pl.col('b')) ** 2",
+        ),
+        # a long left-leaning chain reads flat
+        (
+            binary(ex(binary(ex(binary(col("a"), "+", col("b"))), "+", col("c"))), "+", col("d")),
+            "pl.col('a') + pl.col('b') + pl.col('c') + pl.col('d')",
+        ),
+    ],
+)
+def test_nested_formulas_are_bracketed_only_where_evaluation_needs_it(
+    expr: dict[str, Any], expected: str
+) -> None:
+    rendered = render_polars_steps(
+        [source(), step("x", "with_column", name="v", expr=expr)], ["quotes"]
+    )
+    assert rendered.code.splitlines()[1] == f"df = df.with_columns(({expected}).alias('v'))"
+
+
+def test_bracketing_preserves_values_on_execution(tmp_path: Path) -> None:
+    policies = _extended_frame(tmp_path)
+    steps = [
+        source("policies"),
+        step("f", "filter", match="all", conditions=[cond("premium", "is_not_null")]),
+        step(
+            "w",
+            "with_column",
+            name="v",
+            # (premium + 1) * 2 - premium // 3 = premium * 2 + 2 - premium // 3
+            expr=binary(
+                ex(binary(ex(binary(col("premium"), "+", num(1))), "*", num(2))),
+                "-",
+                ex(binary(col("premium"), "//", num(3))),
+            ),
+        ),
+    ]
+    graph = PipelineGraph(
+        nodes=[policies, _stepped("t", steps)], edges=[make_edge("policies", "t")]
+    )
+    result = execute_graph(graph, target_node_id="t", execution_context=_capped_context())["t"]
+    assert result.status == "ok", result.error
+    assert [row["v"] for row in result.preview] == [
+        (p + 1) * 2 - p // 3 for p in (50.0, 800.0, 200.0, 800.0, 100.0)
+    ]
 
 
 def test_nested_expressions_execute(tmp_path: Path) -> None:
