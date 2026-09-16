@@ -28,7 +28,6 @@ from haute.modelling._tuning import TuningConfig
 # CatBoost receives ``params`` verbatim as constructor kwargs.
 GLM_CONFIG_KEYS: tuple[str, ...] = (
     "terms",
-    "all_factors",
     "family",
     "link",
     "interactions",
@@ -159,34 +158,10 @@ def _excluded_feature_names(config: Mapping[str, Any]) -> set[str]:
 def _effective_glm_params(config: Mapping[str, Any]) -> dict[str, Any]:
     """Project stored GLM config into the settings active for this fit.
 
-    Excluded feature settings remain in node config so the editor can restore them,
-    but they must not reach RustyStats while the feature is dormant.
+    ``exclude`` is a CatBoost lever; a GLM feature is in the model exactly
+    when it has a term or is an interaction factor, so nothing is narrowed.
     """
-    params = {key: config[key] for key in GLM_CONFIG_KEYS if key in config}
-    excluded = _excluded_feature_names(config)
-    if not excluded:
-        return params
-
-    terms = params.get("terms")
-    if isinstance(terms, Mapping):
-        params["terms"] = {name: term for name, term in terms.items() if name not in excluded}
-
-    interactions = params.get("interactions")
-    if isinstance(interactions, list):
-        params["interactions"] = [
-            interaction
-            for interaction in interactions
-            if not (
-                isinstance(interaction, Mapping)
-                and isinstance(interaction.get("factors"), list)
-                and any(
-                    isinstance(factor, str) and factor in excluded
-                    for factor in interaction["factors"]
-                )
-            )
-        ]
-
-    return params
+    return {key: config[key] for key in GLM_CONFIG_KEYS if key in config}
 
 
 def _effective_monotone_constraints(config: Mapping[str, Any]) -> Any:
@@ -236,12 +211,11 @@ def training_objective_issue(config: Mapping[str, Any]) -> str | None:
                 "to fit without it."
             )
         terms = effective_glm.get("terms")
-        all_factors = effective_glm.get("all_factors")
-        if not terms and not all_factors:
+        if not terms:
             return (
-                "GLM config has no factors. Add factors or tick 'All features' "
-                "— an empty factor set would silently auto-build a term for "
-                "every column."
+                "GLM config has no terms. Add a term to at least one feature — "
+                "an empty term set would silently auto-build a term for every "
+                "column."
             )
         regularization = effective_glm.get("regularization")
         l1_ratio = effective_glm.get("l1_ratio")
@@ -309,7 +283,7 @@ def build_training_job_kwargs(
         objective — an unset loss/family, or an unset objective parameter
         that would fall through to a library/literal failover (Tweedie
         variance power, Negative Binomial theta, elastic-net L1 ratio,
-        empty GLM factor set). Such a
+        empty GLM term set). Such a
         job/script trains a plausible-looking wrong model, so it must fail at
         build time, not at training time.
     """
@@ -356,7 +330,7 @@ def build_training_job_kwargs(
         "data": data,
         "target": target,
         "weight": config.get("weight") or None,
-        "exclude": config.get("exclude", []),
+        "exclude": [] if algorithm == "glm" else config.get("exclude", []),
         "feature_columns": config.get("feature_columns") or None,
         "fold_column": config.get("fold_column") or None,
         "id_columns": config.get("id_columns") or None,
@@ -371,7 +345,9 @@ def build_training_job_kwargs(
         "loss_function": config.get("loss_function") or None,
         "variance_power": variance_power,
         "offset": config.get("offset") or None,
-        "monotone_constraints": _effective_monotone_constraints(config),
+        "monotone_constraints": (
+            None if algorithm == "glm" else _effective_monotone_constraints(config)
+        ),
         "feature_weights": config.get("feature_weights") or None,
         "categorical_levels": config.get("categorical_levels") or None,
         "mlflow_destination": destination,

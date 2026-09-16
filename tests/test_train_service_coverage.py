@@ -382,7 +382,7 @@ class TestStartGlmMergeAndKeepColumns:
             "algorithm": "glm",
             "family": "poisson",
             "link": "log",
-            "all_factors": True,
+            "terms": {"age": {"type": "linear"}},
             "weight": "exposure",
             "offset": "log_exp",
             "feature_columns": ["x1"],

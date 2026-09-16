@@ -671,7 +671,7 @@ describe("ModellingConfig", () => {
       expect(trainBtn.nextElementSibling).toBe(banner)
       expect(banner).toHaveTextContent("Select a target column.")
       expect(banner).toHaveTextContent("Choose a GLM distribution family")
-      expect(banner).toHaveTextContent("Add factors or tick 'All features'")
+      expect(banner).toHaveTextContent("Add a term to at least one feature")
       expect(mockTrainModel).not.toHaveBeenCalled()
     })
 
@@ -729,7 +729,7 @@ describe("ModellingConfig", () => {
       expect(screen.getByRole("alert")).toHaveTextContent("Choose a GLM distribution family")
     })
 
-    it("surfaces an empty factor set only after Train is pressed (glm)", () => {
+    it("surfaces an empty term set only after Train is pressed (glm)", () => {
       renderConfig({
         config: {
           _nodeId: "node_1",
@@ -741,9 +741,9 @@ describe("ModellingConfig", () => {
       })
       const trainBtn = screen.getByRole("button", { name: /Train Model/ })
       expect(trainBtn).toBeEnabled()
-      expect(screen.queryByText(/Add factors or tick 'All features'/)).not.toBeInTheDocument()
+      expect(screen.queryByText(/Add a term to at least one feature/)).not.toBeInTheDocument()
       fireEvent.click(trainBtn)
-      expect(screen.getByRole("alert")).toHaveTextContent("Add factors or tick 'All features'")
+      expect(screen.getByRole("alert")).toHaveTextContent("Add a term to at least one feature")
     })
 
     it("surfaces missing Tweedie variance power only after Train is pressed (glm)", () => {
@@ -754,7 +754,7 @@ describe("ModellingConfig", () => {
           task: "regression",
           algorithm: "glm",
           family: "tweedie",
-          all_factors: true,
+          terms: { age: { type: "linear" } },
         },
       })
       const trainBtn = screen.getByRole("button", { name: /Train Model/ })
@@ -774,7 +774,7 @@ describe("ModellingConfig", () => {
           task: "regression",
           algorithm: "glm",
           family: "negbinomial",
-          all_factors: true,
+          terms: { age: { type: "linear" } },
         },
       })
       const trainBtn = screen.getByRole("button", { name: /Train Model/ })
@@ -792,7 +792,7 @@ describe("ModellingConfig", () => {
           task: "regression",
           algorithm: "glm",
           family: "negbinomial",
-          all_factors: true,
+          terms: { age: { type: "linear" } },
           theta: 2.5,
         },
       })
@@ -808,7 +808,7 @@ describe("ModellingConfig", () => {
           task: "regression",
           algorithm: "glm",
           family: "poisson",
-          all_factors: true,
+          terms: { age: { type: "linear" } },
           regularization: "elastic_net",
         },
       })
@@ -827,7 +827,7 @@ describe("ModellingConfig", () => {
           task: "regression",
           algorithm: "glm",
           family: "poisson",
-          all_factors: true,
+          terms: { age: { type: "linear" } },
         },
       })
       const trainBtn = screen.getByRole("button", { name: /Train Model/ })

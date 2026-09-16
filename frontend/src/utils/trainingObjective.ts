@@ -240,11 +240,11 @@ export function trainingConfigurationIssues(
       && !Array.isArray(terms)
       && Object.keys(terms).length > 0
     )
-    if (!hasTerms && !config.all_factors) {
+    if (!hasTerms) {
       issues.push({
         code: "glm-factor-selection",
         message:
-          "Add factors or tick 'All features' — an empty factor set would " +
+          "Add a term to at least one feature — an empty term set would " +
           "silently auto-build a term for every column.",
       })
     }

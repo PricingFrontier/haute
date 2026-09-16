@@ -100,7 +100,7 @@ def test_builder_rejects_tuning_for_glm() -> None:
                 "target": "y",
                 "algorithm": "glm",
                 "family": "poisson",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "metrics": ["gini", "poisson_deviance"],
                 "evaluation": EVALUATION,
                 "tuning": TUNING,

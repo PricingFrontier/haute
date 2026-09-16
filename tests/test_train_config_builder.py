@@ -80,7 +80,10 @@ class TestBuildTrainParams:
         assert params["var_power"] == 1.5
         assert params["offset"] == "log_exposure"
 
-    def test_glm_excluded_feature_settings_are_dormant_and_reversible(self):
+    def test_glm_exclude_does_not_narrow_terms_or_interactions(self):
+        """``exclude`` is a CatBoost lever. A GLM feature is in the model
+        exactly when it has a term or is an interaction factor, so a stale
+        exclusion must never silently drop a configured term."""
         config = {
             "algorithm": "glm",
             "exclude": ["age"],
@@ -95,23 +98,9 @@ class TestBuildTrainParams:
             "family": "poisson",
         }
 
-        dormant = build_train_params(config)
-        assert dormant["terms"] == {"region": {"type": "categorical"}}
-        assert dormant["interactions"] == [
-            {"factors": ["region", "severity"], "include_main": False}
-        ]
-        assert config["terms"] == {
-            "age": {"type": "linear"},
-            "region": {"type": "categorical"},
-        }
-
-        restored = build_train_params({**config, "exclude": []})
-        assert restored["terms"] == config["terms"]
-        assert restored["interactions"] == config["interactions"]
-
-        explicitly_retained = build_train_params({**config, "feature_columns": ["age", "region"]})
-        assert explicitly_retained["terms"] == config["terms"]
-        assert explicitly_retained["interactions"] == config["interactions"]
+        params = build_train_params(config)
+        assert params["terms"] == config["terms"]
+        assert params["interactions"] == config["interactions"]
 
     def test_glm_missing_keys_are_skipped_not_defaulted(self):
         config = {"algorithm": "glm", "family": "tweedie"}
@@ -131,7 +120,6 @@ class TestBuildTrainParams:
     def test_glm_config_keys_complete(self):
         assert set(GLM_CONFIG_KEYS) == {
             "terms",
-            "all_factors",
             "family",
             "link",
             "interactions",
@@ -337,20 +325,6 @@ class TestBuildTrainingJobKwargs:
         )
         assert all_dormant["monotone_constraints"] is None
 
-    def test_glm_rejects_when_every_configured_term_is_excluded(self):
-        with pytest.raises(TrainingConfigError, match="GLM config has no factors"):
-            build_training_job_kwargs(
-                {
-                    "target": "y",
-                    "algorithm": "glm",
-                    "family": "poisson",
-                    "terms": {"age": {"type": "linear"}},
-                    "exclude": ["age"],
-                    "evaluation": MINIMAL_EVALUATION,
-                },
-                data="d.parquet",
-            )
-
     def test_empty_string_optionals_normalised_to_none(self):
         """Live training passes ``config.get(k) or None`` — empty strings from
         UI configs must not become real column names."""
@@ -425,7 +399,7 @@ class TestExplicitObjectiveRequired:
                 "target": "y",
                 "algorithm": "glm",
                 "family": "gamma",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
@@ -554,7 +528,7 @@ class TestDefaultMetricsDerivation:
                 "target": "y",
                 "algorithm": "glm",
                 "family": family,
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "var_power": 1.5,
                 "theta": 1.5,
                 "evaluation": MINIMAL_EVALUATION,
@@ -596,7 +570,7 @@ class TestDefaultMetricsDerivation:
             "task": "regression",
             "algorithm": "glm",
             "family": "binomial",
-            "all_factors": True,
+            "terms": {"age": {"type": "linear"}},
         }
         assert effective_metrics(binomial_glm) == ["auc", "logloss"]
         assert effective_metrics(
@@ -691,7 +665,7 @@ class TestFailoverGates:
                     "target": "y",
                     "algorithm": "glm",
                     "family": "tweedie",
-                    "all_factors": True,
+                    "terms": {"age": {"type": "linear"}},
                 },
                 data="d",
             )
@@ -702,7 +676,7 @@ class TestFailoverGates:
                 "target": "y",
                 "algorithm": "glm",
                 "family": "tweedie",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "var_power": 1.6,
                 "evaluation": MINIMAL_EVALUATION,
             },
@@ -720,7 +694,7 @@ class TestFailoverGates:
                     "target": "y",
                     "algorithm": "glm",
                     "family": "negbinomial",
-                    "all_factors": True,
+                    "terms": {"age": {"type": "linear"}},
                 },
                 data="d",
             )
@@ -731,7 +705,7 @@ class TestFailoverGates:
                 "target": "y",
                 "algorithm": "glm",
                 "family": "negbinomial",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "theta": 2.5,
                 "evaluation": MINIMAL_EVALUATION,
             },
@@ -747,7 +721,7 @@ class TestFailoverGates:
                 "target": "y",
                 "algorithm": "glm",
                 "family": "quasipoisson",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
@@ -803,38 +777,17 @@ class TestFailoverGates:
         # adapter maps it to RustyStats exposure= under a log link.
         assert "offset='exposure'" in script
 
-    # -- GLM factor set ---------------------------------------------------
+    # -- GLM term set -----------------------------------------------------
 
-    def test_glm_empty_terms_without_all_factors_fails_loud(self):
-        with pytest.raises(TrainingConfigError, match="factor"):
-            build_training_job_kwargs(
-                {"target": "y", "algorithm": "glm", "family": "poisson"}, data="d"
-            )
-        with pytest.raises(TrainingConfigError, match="factor"):
-            build_training_job_kwargs(
-                {
-                    "target": "y",
-                    "algorithm": "glm",
-                    "family": "poisson",
-                    "terms": {},
-                },
-                data="d",
-            )
+    def test_glm_empty_terms_fails_loud(self):
+        for config in (
+            {"target": "y", "algorithm": "glm", "family": "poisson"},
+            {"target": "y", "algorithm": "glm", "family": "poisson", "terms": {}},
+        ):
+            with pytest.raises(TrainingConfigError, match="Add a term to at least one feature"):
+                build_training_job_kwargs(config, data="d")
 
-    def test_glm_all_factors_is_an_explicit_choice(self):
-        kwargs = build_training_job_kwargs(
-            {
-                "target": "y",
-                "algorithm": "glm",
-                "family": "poisson",
-                "all_factors": True,
-                "evaluation": MINIMAL_EVALUATION,
-            },
-            data="d",
-        )
-        assert kwargs["params"]["all_factors"] is True
-
-    def test_glm_configured_terms_pass_without_all_factors(self):
+    def test_glm_configured_terms_pass(self):
         kwargs = build_training_job_kwargs(
             {
                 "target": "y",
@@ -846,6 +799,46 @@ class TestFailoverGates:
             data="d",
         )
         assert kwargs["params"]["terms"] == {"age": {"type": "linear"}}
+        assert "all_factors" not in kwargs["params"]
+
+    def test_glm_ignores_exclude_and_clears_monotone_constraints(self):
+        kwargs = build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "poisson",
+                "terms": {"age": {"type": "linear"}, "region": {"type": "categorical"}},
+                "interactions": [{"factors": ["age", "region"], "include_main": True}],
+                "exclude": ["age"],
+                "monotone_constraints": {"age": 1},
+                "evaluation": MINIMAL_EVALUATION,
+            },
+            data="d",
+        )
+        assert kwargs["exclude"] == []
+        assert kwargs["monotone_constraints"] is None
+        assert kwargs["params"]["terms"] == {
+            "age": {"type": "linear"},
+            "region": {"type": "categorical"},
+        }
+        assert kwargs["params"]["interactions"] == [
+            {"factors": ["age", "region"], "include_main": True}
+        ]
+
+    def test_catboost_keeps_exclude_and_monotone_constraints(self):
+        kwargs = build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "catboost",
+                "loss_function": "RMSE",
+                "exclude": ["age"],
+                "monotone_constraints": {"age": 1, "income": -1},
+                "evaluation": MINIMAL_EVALUATION,
+            },
+            data="d",
+        )
+        assert kwargs["exclude"] == ["age"]
+        assert kwargs["monotone_constraints"] == {"income": -1}
 
     # -- Elastic-net mixing weight ----------------------------------------
 
@@ -856,7 +849,7 @@ class TestFailoverGates:
                     "target": "y",
                     "algorithm": "glm",
                     "family": "poisson",
-                    "all_factors": True,
+                    "terms": {"age": {"type": "linear"}},
                     "regularization": "elastic_net",
                 },
                 data="d",
@@ -868,7 +861,7 @@ class TestFailoverGates:
                 "target": "y",
                 "algorithm": "glm",
                 "family": "poisson",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "regularization": "elastic_net",
                 "l1_ratio": 0.0,
                 "evaluation": MINIMAL_EVALUATION,
@@ -883,7 +876,7 @@ class TestFailoverGates:
                 "target": "y",
                 "algorithm": "glm",
                 "family": "poisson",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "regularization": "ridge",
                 "evaluation": MINIMAL_EVALUATION,
             },

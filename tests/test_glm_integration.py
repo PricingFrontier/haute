@@ -90,7 +90,6 @@ class TestGLMConfigKeyMerge:
 
         expected = {
             "terms",
-            "all_factors",
             "family",
             "link",
             "interactions",

@@ -969,7 +969,11 @@ describe("NodePanel", () => {
           label: "ML",
           description: "",
           nodeType: "modelling",
-          config: { algorithm: "glm", family: "poisson", all_factors: true },
+          config: {
+            algorithm: "glm",
+            family: "poisson",
+            terms: { age: { type: "linear" } },
+          },
         },
       }),
     })
@@ -987,7 +991,7 @@ describe("NodePanel", () => {
       {
         algorithm: "glm",
         family: "poisson",
-        all_factors: true,
+        terms: { age: { type: "linear" } },
         regularization: "elastic_net",
       },
     ]

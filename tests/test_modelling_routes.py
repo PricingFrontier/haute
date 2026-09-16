@@ -2757,7 +2757,7 @@ class TestValidateConfig:
                 "algorithm": "glm",
                 "family": "poisson",
                 "link": "log",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "evaluation": _random_evaluation_config(),
             }
         )
@@ -2770,7 +2770,7 @@ class TestValidateConfig:
                 "algorithm": "glm",
                 "family": "poisson",
                 "link": "log",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "params": {"family": "binomial", "link": "identity"},
                 "evaluation": _random_evaluation_config(),
             }
@@ -2815,8 +2815,8 @@ class TestValidateConfig:
         assert exc_info.value.status_code == 400
         assert "family" in exc_info.value.detail.lower()
 
-    def test_glm_empty_factors_without_all_raises_400(self):
-        """An empty factor set must not silently auto-term over every column."""
+    def test_glm_empty_terms_raises_400(self):
+        """An empty term set must not silently auto-term over every column."""
         with pytest.raises(HTTPException) as exc_info:
             TrainService._validate_config(
                 {
@@ -2826,7 +2826,7 @@ class TestValidateConfig:
                 }
             )
         assert exc_info.value.status_code == 400
-        assert "factor" in exc_info.value.detail.lower()
+        assert "add a term to at least one feature" in exc_info.value.detail.lower()
 
     def test_glm_tweedie_without_variance_power_raises_400(self):
         with pytest.raises(HTTPException) as exc_info:
@@ -2835,7 +2835,7 @@ class TestValidateConfig:
                     "target": "y",
                     "algorithm": "glm",
                     "family": "tweedie",
-                    "all_factors": True,
+                    "terms": {"age": {"type": "linear"}},
                 }
             )
         assert exc_info.value.status_code == 400
@@ -2848,7 +2848,7 @@ class TestValidateConfig:
                     "target": "y",
                     "algorithm": "glm",
                     "family": "poisson",
-                    "all_factors": True,
+                    "terms": {"age": {"type": "linear"}},
                     "regularization": "elastic_net",
                 }
             )
@@ -2874,7 +2874,7 @@ class TestValidateConfig:
                 "algorithm": "glm",
                 "family": "gaussian",
                 "link": "",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "evaluation": _random_evaluation_config(),
             }
         )
@@ -3067,7 +3067,7 @@ class TestDispersionEstimateEndpoint:
         assert "negbinomial" in resp.json()["detail"]
 
     def test_estimate_rejected_when_rest_of_objective_incomplete(self, client, nb_training_data):
-        """The profile is conditional on the design, so the factor gate still
+        """The profile is conditional on the design, so the term gate still
         applies — only the parameter being estimated is stubbed."""
         graph = _make_negbinomial_graph(nb_training_data, terms=None)
         resp = client.post(
@@ -3075,7 +3075,7 @@ class TestDispersionEstimateEndpoint:
             json={"graph": graph, "node_id": "train", "param": "theta"},
         )
         assert resp.status_code == 400
-        assert "factor" in resp.json()["detail"].lower()
+        assert "add a term to at least one feature" in resp.json()["detail"].lower()
 
     def test_estimate_rejected_for_unknown_param(self, client, nb_training_data):
         graph = _make_negbinomial_graph(nb_training_data)
