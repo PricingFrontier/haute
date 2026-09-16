@@ -131,6 +131,7 @@ from haute.routes._training_preparation import (
     _seeded_training_sample,
     _training_projection_keep_columns,
     _training_required_columns_by_node,
+    _training_sink_exclusions,
     create_training_parquet_path,
     prepare_training_data_worker,
 )
@@ -561,7 +562,7 @@ class TrainService:
                 preamble_ns,
                 row_limit,
                 job_id,
-                exclude=config.get("exclude") or None,
+                exclude=_training_sink_exclusions(config),
                 keep_columns=_training_projection_keep_columns(config),
                 required_columns_by_node=_training_required_columns_by_node(node_id, config),
                 execution_context=execution_context,
@@ -712,7 +713,6 @@ class TrainService:
             row_limit = _clamp_row_limit(row_limit, config.get("row_limit"))
             row_limit = min(row_limit or _DISPERSION_ESTIMATE_ROW_CAP, _DISPERSION_ESTIMATE_ROW_CAP)
 
-            excluded = config.get("exclude", [])
             keep_cols = _training_projection_keep_columns(config)
             required_columns_by_node = _training_required_columns_by_node(
                 body.node_id,
@@ -734,7 +734,7 @@ class TrainService:
                 preamble_ns,
                 row_limit,
                 job_id,
-                exclude=excluded or None,
+                exclude=_training_sink_exclusions(config),
                 keep_columns=keep_cols,
                 required_columns_by_node=required_columns_by_node,
                 execution_context=execution_context,

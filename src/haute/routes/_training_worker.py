@@ -657,15 +657,14 @@ def _run_dispersion_process_job(
         cat_features = prepared.cat_features
         raw_terms = train_params.get("terms") or {}
         if raw_terms:
-            term_names = set(raw_terms)
-            missing = term_names - set(features)
-            if missing:
-                raise HauteValidationError(
-                    "GLM terms reference columns not present in the training data: "
-                    f"{sorted(missing)}."
-                )
-            features = [feature for feature in features if feature in term_names]
-            cat_features = [feature for feature in cat_features if feature in term_names]
+            from haute.modelling._glm_terms import validate_glm_model_columns
+
+            model_columns = validate_glm_model_columns(
+                raw_terms, train_params.get("interactions") or [], features
+            )
+            keep = set(model_columns)
+            features = [feature for feature in features if feature in keep]
+            cat_features = [feature for feature in cat_features if feature in keep]
 
         terms = _resolve_glm_terms(train_params, features, cat_features)
         interactions, terms = _build_interactions(
@@ -679,7 +678,8 @@ def _run_dispersion_process_job(
         needed = list(
             dict.fromkeys(
                 [
-                    *terms,
+                    *(name for name, spec in terms.items() if spec.get("type") != "expression"),
+                    *features,
                     target,
                     *([weight] if weight else []),
                     *([offset] if offset else []),

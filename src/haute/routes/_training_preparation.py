@@ -41,6 +41,7 @@ from haute.execution import (
     execute_lazy_graph,
 )
 from haute.graph_utils import NodeType
+from haute.modelling._glm_terms import glm_model_columns, validate_glm_model_columns
 from haute.modelling._train_config import (
     build_train_params,
 )
@@ -192,13 +193,27 @@ def _clamp_row_limit(
 
 
 def _glm_training_term_columns(config: dict[str, Any]) -> frozenset[str] | None:
+    """Columns a GLM reads: native keys, expression identifiers, interaction factors."""
     if str(config.get("algorithm", "catboost")).lower() != "glm":
         return None
-    raw_terms = build_train_params(config).get("terms")
+    params = build_train_params(config)
+    raw_terms = params.get("terms")
     if not isinstance(raw_terms, dict) or not raw_terms:
         return None
-    terms = frozenset(name for name in raw_terms if isinstance(name, str) and name)
-    return terms or None
+    columns = glm_model_columns(raw_terms, params.get("interactions") or [])
+    return frozenset(columns) or None
+
+
+def _training_sink_exclusions(config: Mapping[str, Any]) -> list[str] | None:
+    """Columns the training sink may drop.
+
+    GLM membership is decided by terms and interaction factors, so a GLM never
+    drops anything by ``exclude``; CatBoost keeps its configured exclusions.
+    """
+    if str(config.get("algorithm", "catboost")).lower() == "glm":
+        return None
+    excluded = _string_list_config(config, "exclude")
+    return excluded or None
 
 
 def _string_list_config(config: Mapping[str, Any], key: str) -> list[str]:
@@ -309,7 +324,8 @@ def _build_training_feature_selection(
 
     explicit_features = _string_list_config(config, "feature_columns")
     term_columns = _glm_training_term_columns(dict(config))
-    configured_exclusions = set(_string_list_config(config, "exclude"))
+    is_glm = str(config.get("algorithm", "catboost")).lower() == "glm"
+    configured_exclusions = set() if is_glm else set(_string_list_config(config, "exclude"))
     if explicit_features:
         mode = "explicit"
         missing_features = [column for column in explicit_features if column not in schema_set]
@@ -321,12 +337,8 @@ def _build_training_feature_selection(
         features = explicit_features
     elif term_columns is not None:
         mode = "glm_terms"
-        missing_terms = sorted(term_columns - schema_set)
-        if missing_terms:
-            raise HauteValidationError(
-                "GLM terms reference columns not found in training data: "
-                f"{missing_terms}. Available columns: {schema}"
-            )
+        params = build_train_params(config)
+        validate_glm_model_columns(params["terms"], params.get("interactions") or [], schema)
         features = [column for column in schema if column in term_columns]
     else:
         mode = "all_except"
@@ -425,6 +437,39 @@ def _training_required_columns_by_node(
     columns.update(_training_required_metadata_columns(config))
 
     return {node_id: frozenset(columns)}
+
+
+def resolve_training_input_schema(
+    graph: PipelineGraph,
+    node_id: str,
+    preamble_ns: dict[str, Any] | None,
+    source: str,
+) -> list[str]:
+    """Exact, unprojected column names arriving at the modelling node.
+
+    Builds the lazy plan through the shared engine in ``schema_only`` mode (the
+    same mode the chunk planner and the assistant use) and reads
+    ``collect_schema()``; no frame is collected and no projection demand is
+    applied, so Polars transforms that add, rename, or drop columns are
+    reflected exactly and unused upstream columns are retained.
+    """
+    from haute.executor import _build_node_fn
+
+    frames, _order, _parents, _id_to_name = execute_lazy_graph(
+        graph,
+        _build_node_fn,
+        target_node_id=node_id,
+        preamble_ns=preamble_ns,
+        source=source,
+        schema_only=True,
+    )
+    frame = frames.get(node_id)
+    if frame is None:
+        raise HauteValidationError(
+            f"No training data arrives at modelling node {node_id!r}. "
+            "Make sure an upstream data source is connected and producing data."
+        )
+    return list(frame.collect_schema().names())
 
 
 def _declared_categorical_levels_for_training(

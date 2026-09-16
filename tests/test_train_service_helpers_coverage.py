@@ -270,7 +270,8 @@ class TestTrainingRequiredColumnsByNode:
     def test_returns_none_without_target(self) -> None:
         assert _training_required_columns_by_node("n", {"algorithm": "catboost"}) is None
 
-    def test_glm_demand_omits_dormant_excluded_terms(self) -> None:
+    def test_glm_demand_keeps_every_term_column_despite_a_stale_exclude(self) -> None:
+        """``exclude`` is a CatBoost lever: it never narrows a GLM's demand."""
         demand = _training_required_columns_by_node(
             "n",
             {
@@ -281,7 +282,7 @@ class TestTrainingRequiredColumnsByNode:
             },
         )
 
-        assert demand == {"n": frozenset({"target", "region"})}
+        assert demand == {"n": frozenset({"target", "age", "region"})}
 
 
 class TestTrainingFeatureSelection:
@@ -373,7 +374,7 @@ class TestTrainingFeatureSelection:
         assert diagnostic.features.items == ["feature_b", "feature_a"]
         assert diagnostic.excluded_columns.items[-1].reason == "not_in_formula"
 
-        dormant = _build_training_feature_selection(
+        stale_exclude = _build_training_feature_selection(
             {
                 "algorithm": "glm",
                 "target": "target",
@@ -382,10 +383,9 @@ class TestTrainingFeatureSelection:
             },
             ["feature_b", "target", "feature_a", "unused"],
         )
-        assert dormant.features.items == ["feature_b"]
-        assert [(item.column, item.reason) for item in dormant.excluded_columns.items] == [
+        assert stale_exclude.features.items == ["feature_b", "feature_a"]
+        assert [(item.column, item.reason) for item in stale_exclude.excluded_columns.items] == [
             ("target", "target"),
-            ("feature_a", "configured_exclusion"),
             ("unused", "not_in_formula"),
         ]
 

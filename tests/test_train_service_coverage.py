@@ -464,8 +464,9 @@ class TestStartGlmMergeAndKeepColumns:
         # the contract; assert order-independently.
         keep = captured["keep_columns"]
         assert set(keep) == {"loss", "exposure", "log_exp", "x1"}
-        # The excluded column is forwarded as the exclude list.
-        assert captured["exclude"] == ["junk", "x1"]
+        # A GLM feature is in the model exactly when it has a term or is an
+        # interaction factor, so the sink is never asked to drop by `exclude`.
+        assert captured["exclude"] is None
 
     def test_start_stamps_explicit_timeout_before_preparation(self):
         from haute.routes._job_store import JobStore
