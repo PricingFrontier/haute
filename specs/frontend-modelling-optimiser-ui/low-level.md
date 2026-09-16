@@ -108,7 +108,8 @@ Only a current, accepted save response may acknowledge this revision transition.
    as `specs[column]` overrides; a monotone main term forces an explicit slot fit; + feature adds
    slots and slots can be removed above two; Include main effects appears only while a picked
    column has no native term; incomplete and duplicate cards are flagged. The GLM pane never
-   writes `exclude`, `monotone_constraints`, or `all_factors`. New algorithms receive a canonical
+   writes `exclude` or `monotone_constraints`, and the retired all-features flag no longer
+   exists. New algorithms receive a canonical
    random/single-validation evaluation.
    Later strategy changes replace incompatible keys atomically instead of retaining stale
    group/date/fraction fields.
