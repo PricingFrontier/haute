@@ -969,3 +969,46 @@ class TestOffsetExposureSemantics:
         for power in (1.0, 2.0):
             result = self._fit(algo, positive_df, {"family": "tweedie", "var_power": power})
             assert result.model is not None
+
+
+# ---------------------------------------------------------------------------
+# Term key subsets
+# ---------------------------------------------------------------------------
+
+
+class TestTermKeySubsets:
+    """Haute edits a deliberate subset of the keys RustyStats accepts.
+
+    The subset is what the node UI exposes and what the backend round-trips;
+    the rest of ``VALID_KEYS`` stays RustyStats' business. Pinning it here
+    catches a RustyStats release that renames or drops a key Haute writes.
+    """
+
+    HAUTE_SUBSET = {
+        "linear": {"type", "monotonicity"},
+        "categorical": {"type"},
+        "bs": {"type", "df", "degree", "monotonicity"},
+        "ns": {"type", "df"},
+        "ms": {"type", "df", "degree", "monotonicity"},
+        "target_encoding": {"type", "prior_weight"},
+        "expression": {"type", "expr", "monotonicity"},
+    }
+
+    def test_haute_edits_a_subset_of_rustystats_valid_keys(self):
+        """The frontend's TERM_TYPE_PROPS mirrors HAUTE_SUBSET (frontend plan Task F1)."""
+        import inspect
+
+        from rustystats import formula
+
+        # ``VALID_KEYS`` is a local literal inside a function in the installed
+        # wheel, so it has to be read out of the module source.
+        source = inspect.getsource(formula)
+        start = source.index("VALID_KEYS = {")
+        last_entry = source.index("}", source.index('"expression"', start))
+        end = source.index("}", last_entry + 1) + 1
+        namespace: dict[str, object] = {}
+        exec(source[start:end], namespace)  # noqa: S102 - reading a literal from the installed wheel
+        valid_keys = namespace["VALID_KEYS"]
+        assert set(self.HAUTE_SUBSET) <= set(valid_keys)
+        for term_type, keys in self.HAUTE_SUBSET.items():
+            assert keys <= valid_keys[term_type], term_type

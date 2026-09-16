@@ -3025,6 +3025,113 @@ class TestGlmInputSchemaGate:
 
 
 # ---------------------------------------------------------------------------
+# GLM sink exclusions
+# ---------------------------------------------------------------------------
+
+
+def _inline_sink_service(monkeypatch: pytest.MonkeyPatch):
+    """Inline-protocol service plus the supervisor threads it launches."""
+    from haute.routes._job_store import JobStore
+    from tests.test_training_worker_protocol import _inline_protocol_runner
+
+    store = JobStore()
+    service = TrainService(store, protocol_runner=_inline_protocol_runner)
+    launched: list = []
+    launch_protocol = service._supervisor.launch_protocol
+
+    def capture_launch(*args, **kwargs):
+        thread = launch_protocol(*args, **kwargs)
+        launched.append(thread)
+        return thread
+
+    monkeypatch.setattr(service._supervisor, "launch_protocol", capture_launch)
+    return service, launched
+
+
+def _spy_on_sink_exclusions(monkeypatch: pytest.MonkeyPatch) -> list[list[str] | None]:
+    """Record the ``exclude`` argument every ``_execute_and_sink`` call receives."""
+    captured: list[list[str] | None] = []
+    original = TrainService._execute_and_sink
+
+    def spy(self, body, preamble_ns, row_limit, job_id, **kwargs):
+        captured.append(kwargs.get("exclude"))
+        return original(self, body, preamble_ns, row_limit, job_id, **kwargs)
+
+    monkeypatch.setattr(TrainService, "_execute_and_sink", spy)
+    return captured
+
+
+_GLM_STALE_EXCLUDE_CONFIG: dict = {
+    "algorithm": "glm",
+    "target": "y",
+    "terms": {"x": {"type": "linear"}},
+    "exclude": ["x"],
+}
+
+
+class TestGlmSinkExclusions:
+    """A GLM's column membership comes from its terms and interactions, so the
+    training and dispersion sinks never drop a column by ``exclude`` — a stale
+    entry left behind by a CatBoost run must not delete a live GLM term."""
+
+    def test_training_sink_keeps_excluded_glm_term_columns(
+        self, glm_collision_data, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
+        captured = _spy_on_sink_exclusions(monkeypatch)
+        from haute.schemas import TrainRequest
+        from tests.test_training_worker_protocol import _SuccessfulTrainingJob
+
+        body = TrainRequest(
+            graph=_glm_schema_gate_graph(
+                glm_collision_data,
+                {
+                    **_GLM_STALE_EXCLUDE_CONFIG,
+                    "family": "gaussian",
+                    "evaluation": _random_evaluation_config(),
+                },
+            ),
+            node_id="train",
+        )
+        service, launched = _inline_sink_service(monkeypatch)
+
+        with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
+            response = service.start(body)
+            service._join_preparation(response.job_id)
+            for thread in launched:
+                thread.join(timeout=10)
+
+        assert captured == [None]
+
+    def test_dispersion_sink_keeps_excluded_glm_term_columns(
+        self, glm_collision_data, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
+        captured = _spy_on_sink_exclusions(monkeypatch)
+        from haute.schemas import DispersionEstimateRequest
+
+        body = DispersionEstimateRequest(
+            graph=_glm_schema_gate_graph(
+                glm_collision_data,
+                {
+                    **_GLM_STALE_EXCLUDE_CONFIG,
+                    "family": "tweedie",
+                    "evaluation": _random_evaluation_config(),
+                },
+            ),
+            node_id="train",
+            param="var_power",
+        )
+        service, launched = _inline_sink_service(monkeypatch)
+
+        service.start_dispersion_estimate(body)
+        for thread in launched:
+            thread.join(timeout=10)
+
+        assert captured == [None]
+
+
+# ---------------------------------------------------------------------------
 # _validate_glm_family_link unit tests
 # ---------------------------------------------------------------------------
 
