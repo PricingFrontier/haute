@@ -1531,6 +1531,11 @@ def test_formula_text_annotation_is_kept_but_never_rendered() -> None:
         rendered.code.splitlines()[1]
         == "df = df.with_columns(((pl.col('a') - pl.col('b')).abs()).alias('v'))"
     )
+    bare = {"type": "operand", "operand": col("a"), "text": "a"}
+    rendered = render_polars_steps(
+        [source(), step("x", "with_column", name="v", expr=bare)], ["quotes"]
+    )
+    assert rendered.code.splitlines()[1] == "df = df.with_columns((pl.col('a')).alias('v'))"
     with pytest.raises(PolarsStepError, match="formula text must be a string"):
         render_polars_steps(
             [

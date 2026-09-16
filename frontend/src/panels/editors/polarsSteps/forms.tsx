@@ -8,7 +8,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react"
 
 import { ConfigCheckbox } from "../../../components/form"
 import { INPUT_STYLE } from "../_shared"
-import { FormulaError, displayFormula, parseFormula } from "./formula"
+import { FormulaError, displayFormula, parseFormula, typedAsFormula } from "./formula"
 import {
   AGGREGATIONS,
   BINARY_OPERATORS,
@@ -192,11 +192,7 @@ function FormulaEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { t
   return <FormulaField key={text} text={text} onCommit={onChange} variables={ctx.variables} columns={ctx.columns} />
 }
 
-/** A function typed as a formula stays a formula in the editor and the "Computed as" select. */
-function typedAsFormula(expr: Expr): expr is Extract<Expr, { type: "function" }> {
-  return expr.type === "function" && typeof expr.text === "string"
-}
-
+/** A value or function typed as a formula stays a formula in the editor and the "Computed as" select. */
 function exprTypeValue(expr: Expr): Expr["type"] {
   return typedAsFormula(expr) ? "binary" : expr.type
 }
@@ -316,6 +312,11 @@ function FormulaField({ text, onCommit, variables, columns }: { text: string; on
           spellCheck={false}
           autoComplete="off"
         />
+        {listOpen && prefix.length > 0 && columns.length === 0 && !showList && (
+          <div role="status" className="mt-1">
+            <Hint>No column names known yet: run the step above to load them.</Hint>
+          </div>
+        )}
         {showList && (
           <ul
             id={listId}

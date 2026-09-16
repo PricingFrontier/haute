@@ -276,7 +276,17 @@ function describe(token: Token): string {
  */
 export function parseFormula(text: string, variables: readonly string[] = []): Expr {
   const expr = new Parser(tokenize(text), new Set(variables)).parse()
-  return expr.type === "binary" || expr.type === "function" ? { ...expr, text: text.trim() } : expr
+  return isFormulaType(expr) ? { ...expr, text: text.trim() } : expr
+}
+
+/** Expression types a formula can produce and therefore carry the typed text. */
+function isFormulaType(expr: Expr): expr is Extract<Expr, { type: "operand" | "binary" | "function" }> {
+  return expr.type === "operand" || expr.type === "binary" || expr.type === "function"
+}
+
+/** Whether the expression was typed as a formula (it carries its text). */
+export function typedAsFormula(expr: Expr): boolean {
+  return isFormulaType(expr) && typeof expr.text === "string"
 }
 
 /** Deep copy of an expression with every `text` annotation removed. */
@@ -288,7 +298,7 @@ export function withoutFormulaText(expr: Expr): Expr {
     case "function":
       return { type: "function", fn: expr.fn, operand: strip(expr.operand), args: expr.args }
     case "operand":
-      return { ...expr, operand: strip(expr.operand) }
+      return { type: "operand", operand: strip(expr.operand) }
     case "conditional":
       return { ...expr, then: strip(expr.then), otherwise: strip(expr.otherwise) }
     case "concat":
@@ -306,7 +316,7 @@ export function withoutFormulaText(expr: Expr): Expr {
 export function displayFormula(expr: Expr, variables: readonly string[] = []): string | null {
   // Empty text is a formula box nothing has been typed into yet.
   if (expr.type === "binary" && expr.text === "") return ""
-  if ((expr.type === "binary" || expr.type === "function") && typeof expr.text === "string") {
+  if (isFormulaType(expr) && typeof expr.text === "string") {
     try {
       const reparsed = withoutFormulaText(parseFormula(expr.text, variables))
       if (JSON.stringify(reparsed) === JSON.stringify(withoutFormulaText(expr))) return expr.text

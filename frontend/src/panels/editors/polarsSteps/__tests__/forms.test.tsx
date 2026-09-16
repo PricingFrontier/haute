@@ -479,6 +479,37 @@ describe("step forms only build schema-valid payloads", () => {
     expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ expr: expect.objectContaining({ text: "premium_net * ra" }) }))
   })
 
+  it("a bare column name typed as a formula stays in the formula box", () => {
+    const spy = vi.fn()
+    const step: Step = {
+      id: "w",
+      kind: "with_column",
+      name: "x",
+      expr: { type: "binary", left: { kind: "column", name: "a" }, op: "+", right: { kind: "literal", type: "number", value: 1 }, text: "" },
+    }
+    render(<Stateful initial={step} spy={spy} />)
+    const input = screen.getByRole("combobox", { name: "Formula" })
+    fireEvent.change(input, { target: { value: "premium" } })
+    fireEvent.blur(input)
+    const latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toEqual({ type: "operand", operand: { kind: "column", name: "premium" }, text: "premium" })
+    expect(screen.getByLabelText("Expression type")).toHaveValue("binary")
+    expect(screen.getByRole("combobox", { name: "Formula" })).toHaveValue("premium")
+  })
+
+  it("says when no column names are known yet", () => {
+    const step: Step = {
+      id: "w",
+      kind: "with_column",
+      name: "x",
+      expr: { type: "binary", left: { kind: "column", name: "a" }, op: "+", right: { kind: "literal", type: "number", value: 1 }, text: "" },
+    }
+    render(<StepForm step={step} onChange={vi.fn()} ctx={{ ...ctx, columns: [], variables: [] }} />)
+    fireEvent.change(screen.getByRole("combobox", { name: "Formula" }), { target: { value: "tot" } })
+    expect(screen.getByText(/No column names known yet/)).toBeInTheDocument()
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
+  })
+
   it("pivot columns pair a value with a suggested name and share one type", () => {
     const spy = vi.fn()
     const step: Step = { id: "p", kind: "pivot", index: ["region"], on: "channel", columns: [], values: "premium", agg: "mean" }

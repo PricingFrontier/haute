@@ -675,7 +675,8 @@ class _Renderer:
         expr = self._object(value, label)
         kind = expr.get("type")
         if kind == "operand":
-            self._keys(expr, ("type", "operand"), label)
+            self._keys(expr, ("type", "operand", "text"), label)
+            self._formula_text(expr, label)
             return self._operand(expr.get("operand"), f"{label} operand", expr=True)
         if kind == "binary":
             self._keys(expr, ("type", "left", "op", "right", "text"), label)

@@ -243,7 +243,7 @@ node-local variables; a null literal renders as `pl.lit(None)` in expression pos
 and is refused in membership lists and variables. An operand may itself be a nested
 expression (`{"kind": "expr", "expr": ...}`) wherever a value, column or variable is
 accepted, except in membership lists, variable values and function arguments, which
-stay plain values; a formula or function expression may carry a `text` annotation (the
+stay plain values; a value, formula or function expression may carry a `text` annotation (the
 formula exactly as the editor's user typed it, kept for display and never rendered); a
 nested formula is bracketed only where Python's left-to-right
 evaluation needs it (a left operand only when its operator is weaker than the

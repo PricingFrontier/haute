@@ -64,7 +64,7 @@ export type OrderKey = { column: string; descending: boolean }
 export type ConditionGroup = { match: MatchMode; conditions: Condition[] }
 
 export type Expr =
-  | { type: "operand"; operand: Operand }
+  | { type: "operand"; operand: Operand; text?: string }
   /** `text` is the formula exactly as typed, kept for display; the renderer ignores it. */
   | { type: "binary"; left: Operand; op: BinaryOperator; right: Operand; text?: string }
   | { type: "function"; fn: FunctionName; operand: Operand; args: LiteralOperand[]; text?: string }

@@ -52,8 +52,11 @@ describe("formula text", () => {
     expect(parse("a - b - c")).toEqual(binary(ex(binary(col("a"), "-", col("b"))), "-", col("c")))
     expect(parse("a ** b ** c")).toEqual(binary(col("a"), "**", ex(binary(col("b"), "**", col("c")))))
     expect(parse("-premium")).toEqual(binary(num(0), "-", col("premium")))
-    expect(parseFormula("premium")).toEqual({ type: "operand", operand: col("premium") })
-    expect(parseFormula("1")).toEqual({ type: "operand", operand: num(1) })
+    expect(parse("premium")).toEqual({ type: "operand", operand: col("premium") })
+    expect(parse("1")).toEqual({ type: "operand", operand: num(1) })
+    // a bare value typed as a formula still carries its text, so it stays a formula
+    expect(parseFormula(" premium ")).toEqual({ type: "operand", operand: col("premium"), text: "premium" })
+    expect(displayFormula(parseFormula("total_premium"))).toBe("total_premium")
   })
 
   it("reads defined variables as variables and everything else as columns", () => {

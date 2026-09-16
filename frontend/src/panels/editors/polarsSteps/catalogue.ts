@@ -317,7 +317,7 @@ function conditionText(condition: Condition): string {
 
 function exprText(expr: Expr): string {
   // A formula typed as text is summarised exactly as typed.
-  if ((expr.type === "binary" || expr.type === "function") && typeof expr.text === "string" && expr.text.length > 0) return expr.text
+  if ((expr.type === "operand" || expr.type === "binary" || expr.type === "function") && typeof expr.text === "string" && expr.text.length > 0) return expr.text
   switch (expr.type) {
     case "operand":
       return operandText(expr.operand)
@@ -438,6 +438,7 @@ function exprProblem(value: unknown, where: string, depth = 1): string | null {
   const expr = value as Record<string, unknown>
   switch (expr.type) {
     case "operand":
+      if (expr.text !== undefined && typeof expr.text !== "string") return `${where} has malformed formula text.`
       return operandProblem(expr.operand, where, depth)
     case "binary":
       if (typeof expr.op !== "string") return `${where} is missing its operator.`
