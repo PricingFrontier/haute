@@ -94,8 +94,16 @@ def resolve_editor_identity(
     if kind == NodeType.SUBMODEL:
         if not isinstance(alias, str) or not alias:
             raise ValueError(f"Submodel node {label!r} requires an alias.")
+    out_handles = [h for h in handles if h.startswith("out__")]
+    output_port_count = len(out_handles)
     mapping = {
-        handle: executable_input_name(node_type=kind, label=label, source_handle=handle)
+        handle: executable_input_name(
+            node_type=kind,
+            label=label,
+            source_handle=handle,
+            alias=alias,
+            output_port_count=output_port_count if kind == NodeType.SUBMODEL else None,
+        )
         for handle in handles
     }
     return ResolvedEditorIdentity(

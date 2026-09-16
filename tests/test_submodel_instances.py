@@ -719,7 +719,7 @@ def test_flatten_rewrites_public_output_label_to_exact_internal_source_name() ->
             _node(
                 "consumer",
                 NodeType.OPTIMISER_APPLY,
-                config={"ratebook_input": "results"},
+                config={"ratebook_input": "score"},
             ),
         ],
         edges=[
@@ -760,7 +760,7 @@ def test_flatten_rewrites_public_output_source_port_in_multi_frame_mapping() -> 
                 config={
                     "outputMapping": [
                         {
-                            "source_port": "results",
+                            "source_port": "score",
                             "source_column": "premium",
                             "output_path": "$.premium",
                             "enabled": True,
@@ -899,7 +899,7 @@ def test_flatten_preserves_public_output_label_for_ordinary_polars_code() -> Non
                 "consumer",
                 NodeType.POLARS,
                 label="Consumer",
-                config={"code": "df = results"},
+                config={"code": "df = score"},
             ),
         ],
         edges=[
@@ -915,10 +915,10 @@ def test_flatten_preserves_public_output_label_for_ordinary_polars_code() -> Non
 
     result = flatten_graph(graph)
 
-    assert result.node_map["consumer"].data.config["inputMapping"] == {"results": "Internal_Output"}
+    assert result.node_map["consumer"].data.config["inputMapping"] == {"score": "Internal_Output"}
     generated = graph_to_code_multi(result, pipeline_name="main")["main.py"]
-    assert "def Consumer(results: pl.LazyFrame)" in generated
-    assert "df = results" in generated
+    assert "def Consumer(score: pl.LazyFrame)" in generated
+    assert "df = score" in generated
 
 
 def test_flatten_preserves_public_input_label_for_polars_instances() -> None:

@@ -58,8 +58,7 @@ __all__ = [
 #: Why a stepped original transform refuses ``inputMapping``: its steps name
 #: their inputs by edge name, so a rename rewrites the steps instead.
 STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE = (
-    "A stepped transform addresses its inputs by their edge names and cannot carry "
-    "inputMapping."
+    "A stepped transform addresses its inputs by their edge names and cannot carry inputMapping."
 )
 
 

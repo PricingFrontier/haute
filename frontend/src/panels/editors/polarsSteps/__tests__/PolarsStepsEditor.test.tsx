@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-library/react"
+import { render, screen, cleanup, fireEvent, waitFor, within, act } from "@testing-library/react"
 import { useState } from "react"
 
 vi.mock("../../../../api/client", () => ({
@@ -10,6 +10,8 @@ import { renderPolarsSteps } from "../../../../api/client"
 import PolarsStepsEditor from "../PolarsStepsEditor"
 import type { Step } from "../types"
 import type { InputSource } from "../../_shared"
+import useGraphStore, { resetGraphStoreForTests } from "../../../../stores/useGraphStore"
+import { makeNode } from "../../../../test-utils/factories"
 
 const mockRender = vi.mocked(renderPolarsSteps)
 
@@ -82,12 +84,62 @@ function Harness({
   )
 }
 
+/** The real graph transaction used by node-panel config updates. */
+function HistoryHarness() {
+  const node = useGraphStore((state) => state.nodes[0])
+  return <PolarsStepsEditor
+    config={node.data.config as Record<string, unknown>}
+    inputSources={[quotes]}
+    onUpdate={(keyOrUpdates, value) => {
+      const state = useGraphStore.getState()
+      const updates = typeof keyOrUpdates === "string" ? { [keyOrUpdates]: value } : keyOrUpdates
+      state.setNodesAndEdgesAndSubmodels(
+        state.nodes.map((current) => ({ ...current, data: { ...current.data, config: { ...(current.data.config as object), ...updates } } })),
+        state.edges,
+        state.submodels,
+      )
+      return { ok: true }
+    }}
+  />
+}
+
 describe("PolarsStepsEditor", () => {
   beforeEach(() => {
+    resetGraphStoreForTests()
     mockRender.mockReset()
     mockRender.mockImplementation(async ({ steps }) => okFor(steps))
   })
   afterEach(cleanup)
+
+  it.each([false, true])("keeps one undo per step edit and preserves redo after rendering (pending prior edit: %s)", async (pendingPriorEdit) => {
+    const codeFor = (n: number) => `df = quotes\ndf = df.head(${n})`
+    mockRender.mockImplementation(async ({ steps }) => ({ ...okFor(steps), code: codeFor((steps[1] as Extract<Step, { kind: "limit" }>).n) }))
+    useGraphStore.getState().setNodesRaw([makeNode("transform", "polars", { data: { config: { steps: [source, { ...limit, n: 10 }], code: codeFor(10) } } })])
+    useGraphStore.getState().markSaved()
+    render(<HistoryHarness />)
+    await waitFor(() => expect(mockRender).toHaveBeenCalled(), { timeout: 5000 })
+    fireEvent.click(screen.getByRole("button", { name: "Step 1: Limit rows" }))
+    const field = screen.getByRole("spinbutton", { name: "Row limit" })
+    if (pendingPriorEdit) {
+      fireEvent.change(field, { target: { value: "15" } })
+      fireEvent.blur(field)
+    }
+    fireEvent.change(field, { target: { value: "20" } })
+    fireEvent.blur(field)
+    const current = () => useGraphStore.getState().nodes[0].data.config as { code: string; steps: Step[] }
+    await waitFor(() => expect(current().code).toBe(codeFor(20)), { timeout: 5000 })
+    expect(useGraphStore.getState().undoStack).toHaveLength(pendingPriorEdit ? 2 : 1)
+    await act(() => useGraphStore.getState().undo())
+    const restored = pendingPriorEdit ? 15 : 10
+    expect(field).toHaveValue(restored)
+    await waitFor(() => expect(current().code).toBe(codeFor(restored)), { timeout: 5000 })
+    expect(useGraphStore.getState().redoStack).toHaveLength(1)
+    expect(useGraphStore.getState().dirty).toBe(pendingPriorEdit)
+    await act(() => useGraphStore.getState().redo())
+    expect(field).toHaveValue(20)
+    await waitFor(() => expect(current().code).toBe(codeFor(20)), { timeout: 5000 })
+    expect(useGraphStore.getState().undoStack).toHaveLength(pendingPriorEdit ? 2 : 1)
+  })
 
   it("seeds the start input and adds the first step from the chooser under it", async () => {
     const spy = vi.fn()

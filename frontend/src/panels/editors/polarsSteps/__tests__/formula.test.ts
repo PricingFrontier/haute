@@ -6,7 +6,7 @@ import type { Expr, Operand } from "../types"
 const col = (name: string): Operand => ({ kind: "column", name })
 const num = (value: number): Operand => ({ kind: "literal", type: "number", value })
 const ex = (expr: Expr): Operand => ({ kind: "expr", expr })
-const binary = (left: Operand, op: Extract<Expr, { type: "binary" }>["op"], right: Operand): Expr => ({ type: "binary", left, op, right })
+const binary = (left: Operand, op: Extract<Expr, { type: "binary" }>["op"], right: Operand): Extract<Expr, { type: "binary" }> => ({ type: "binary", left, op, right })
 
 describe("formula text", () => {
   it.each([
@@ -51,12 +51,28 @@ describe("formula text", () => {
     expect(parse("(premium + tax) * 2")).toEqual(binary(ex(binary(col("premium"), "+", col("tax"))), "*", num(2)))
     expect(parse("a - b - c")).toEqual(binary(ex(binary(col("a"), "-", col("b"))), "-", col("c")))
     expect(parse("a ** b ** c")).toEqual(binary(col("a"), "**", ex(binary(col("b"), "**", col("c")))))
+    expect(parse("-2 ** 2")).toEqual(binary(num(0), "-", ex(binary(num(2), "**", num(2)))))
+    expect(parse("-premium ** 2")).toEqual(binary(num(0), "-", ex(binary(col("premium"), "**", num(2)))))
+    expect(parse("(-2) ** 2")).toEqual(binary(num(-2), "**", num(2)))
+    expect(parse("2 ** -2")).toEqual(binary(num(2), "**", num(-2)))
+    expect(parse("2 ** -2 ** 2")).toEqual(binary(num(2), "**", ex(binary(num(0), "-", ex(binary(num(2), "**", num(2)))))))
     expect(parse("-premium")).toEqual(binary(num(0), "-", col("premium")))
     expect(parse("premium")).toEqual({ type: "operand", operand: col("premium") })
     expect(parse("1")).toEqual({ type: "operand", operand: num(1) })
     // a bare value typed as a formula still carries its text, so it stays a formula
     expect(parseFormula(" premium ")).toEqual({ type: "operand", operand: col("premium"), text: "premium" })
     expect(displayFormula(parseFormula("total_premium"))).toBe("total_premium")
+  })
+
+  it("renders negative bases with brackets so their trees survive a reparse", () => {
+    const negativeBase = binary(num(-2), "**", num(2))
+    const wrappedNegativeBase = binary(ex({ type: "operand", operand: num(-2) }), "**", num(2))
+    const doublyWrappedNegativeBase = binary(ex({ type: "operand", operand: ex({ type: "operand", operand: num(-2) }) }), "**", num(2))
+    expect(formulaText(negativeBase)).toBe("(-2) ** 2")
+    expect(formulaText(wrappedNegativeBase)).toBe("(-2) ** 2")
+    expect(formulaText(doublyWrappedNegativeBase)).toBe("(-2) ** 2")
+    expect(withoutFormulaText(parseFormula(formulaText(negativeBase)!))).toEqual(negativeBase)
+    expect(displayFormula({ ...negativeBase, text: "-2 ** 2" })).toBe("(-2) ** 2")
   })
 
   it("reads defined variables as variables and everything else as columns", () => {

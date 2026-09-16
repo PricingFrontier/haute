@@ -3,7 +3,7 @@ import { render, screen, cleanup, fireEvent, within } from "@testing-library/rea
 import { useState } from "react"
 
 import { completionMatches } from "../completion"
-import { ColumnListField, ColumnPicker } from "../fields"
+import { ColumnListField, ColumnPicker, NumberField } from "../fields"
 
 const COLUMNS = ["premium", "premium_net", "region", "Rate"]
 
@@ -94,5 +94,44 @@ describe("column-name completion", () => {
     fireEvent.keyDown(input, { key: "Enter" })
     expect(input).toHaveValue("typed")
     expect(document.activeElement).toBe(input)
+  })
+})
+
+describe("number fields", () => {
+  afterEach(cleanup)
+
+  it("validates the whole value before committing and recovers after a valid edit", () => {
+    const onCommit = vi.fn()
+    const { rerender } = render(<NumberField value={2} integer min={1} onCommit={onCommit} ariaLabel="Count" />)
+    const input = screen.getByRole("spinbutton", { name: "Count" })
+    const reject = (value: string) => {
+      fireEvent.change(input, { target: { value } })
+      fireEvent.blur(input)
+      expect(onCommit).not.toHaveBeenCalled()
+      expect(input).toHaveAttribute("aria-invalid", "true")
+      expect(screen.getByRole("alert")).toBeInTheDocument()
+    }
+    reject("1.5")
+    rerender(<NumberField value={3} integer min={1} onCommit={onCommit} ariaLabel="Count" />)
+    expect(input).not.toHaveAttribute("aria-invalid")
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    reject("")
+    reject("Infinity")
+    reject("0")
+    fireEvent.change(input, { target: { value: "1e3" } })
+    fireEvent.blur(input)
+    expect(onCommit).toHaveBeenCalledWith(1000)
+    rerender(<NumberField value={1000} integer min={1} onCommit={onCommit} ariaLabel="Count" />)
+    expect(input).not.toHaveAttribute("aria-invalid")
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
+  it("accepts decimals when the field is not an integer", () => {
+    const onCommit = vi.fn()
+    render(<NumberField value={2} onCommit={onCommit} ariaLabel="Rate" />)
+    const input = screen.getByRole("spinbutton", { name: "Rate" })
+    fireEvent.change(input, { target: { value: "1.5" } })
+    fireEvent.blur(input)
+    expect(onCommit).toHaveBeenCalledWith(1.5)
   })
 })

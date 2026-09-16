@@ -400,6 +400,10 @@ def _reset_node(
                 node_type=source.node_type,
                 label=source.label,
                 source_handle=edge.source_handle,
+                alias=(source.config or {}).get("alias"),
+                output_port_count=len(source.source_handle_input_names)
+                if source.node_type == NodeType.SUBMODEL
+                else None,
             )
         )
     if len(set(source_names)) != len(source_names):

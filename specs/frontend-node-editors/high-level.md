@@ -241,7 +241,9 @@ per function). "Computed as" offers Value first (a new column starts as a plain 
 Formula, Function, If-then, Window and Join text. A formula is edited as text
 (`(premium + tax) * 1.05 / 12`, `round(premium / sum_insured * 1000, 3)`: columns by name or
 in backticks, earlier variables by name, quoted text, `true`/`false`/`null`,
-`date('YYYY-MM-DD')`, Python operator precedence with `**` right-associative, brackets,
+`date('YYYY-MM-DD')`, Python operator precedence with `**` right-associative (power
+binds before a leading sign, while negative exponents are accepted: `-2 ** 2` is
+`-(2 ** 2)`, `(-2) ** 2` is distinct, and `2 ** -2` is valid), brackets,
 and the catalogue's functions with plain-value arguments); the text is parsed into the
 nested expression schema on commit and kept on the expression as typed, so brackets and
 spacing survive collapsing and reopening the card and the card summary shows the same
@@ -258,7 +260,10 @@ holding a window, conditional or text join) is edited in the structured
 left/operator/right form instead. An operand field also offers an "Expression" source that
 opens a nested editor (the same "Computed as" select and expression form, indented under
 the field); the source is withheld at the renderer's depth cap of twelve so the editor
-never builds a step it could not save, and summaries print a value or formula in formula notation
+never builds a step it could not save. Formula commits obey the same cap, including
+their enclosing expression depth: an over-depth draft stays editable with an inline
+error and leaves the last valid expression unchanged. Summaries print a value or
+formula in formula notation
 (quoted text, `date('...')`, brackets only where re-parsing needs them, `?` for a name not yet
 filled in) and describe windows, conditionals and text joins in words; a group-by
 aggregation's row filter offers no nested expressions. The Combine group also offers
@@ -285,7 +290,10 @@ replaces a newer one, and the switch is enabled only while the step list is empt
 latest render succeeded for the current revision; on confirmation it writes that rendered
 code (or empty code for an empty list) into `code` and removes `steps`. After each
 successful render the rendered code is also written into `code` so read-only views stay
-current. As soon as the start input is known (chosen in the selector, or the node's only
+current. This generated cache update creates no undo entry, preserves redo, and does
+not dirty the document: one step edit is one undo action. Undo/redo re-renders the
+restored steps, and an obsolete render must not replace their code. As soon as the
+start input is known (chosen in the selector, or the node's only
 connected input) the start step is written to the config, so the node renders
 `df = <input>` and can be previewed before any step is added. A
 node without inputs cannot add steps and is told to connect an input or switch to code,
@@ -294,9 +302,14 @@ reason as its tooltip, while persisted steps cannot render). Renaming an upstrea
 inside a stepped transform's steps instead of recording an `inputMapping` binding on it.
 A node whose steps were discarded on load shows the discard reason above the code box.
 A persisted step whose shape the forms cannot edit (an unknown kind or a missing
-setting) renders as an invalid card that can only be deleted, never crashes the editor,
+setting, including a kind named after an inherited JavaScript object property)
+renders as an invalid card that can only be deleted, never crashes the editor,
 and is skipped by column and variable suggestions; the backend already keeps such a list
 behind an incomplete body. A membership list keeps its chosen value type while empty.
+Numeric controls parse the complete value, including scientific notation (`1e3`
+commits as 1000). Integer controls reject fractional values instead of truncating;
+empty, non-finite and below-minimum values never replace the committed value and
+report a visible validation error.
 Nodes whose config has no `steps` list render the code box exactly as before.
 
 ## Design rationale

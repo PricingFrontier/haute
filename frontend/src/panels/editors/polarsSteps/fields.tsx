@@ -8,7 +8,7 @@
  * out its repeated rows the same way.
  */
 import { Plus, X } from "lucide-react"
-import { useState, type ReactNode } from "react"
+import { useId, useState, type ReactNode } from "react"
 
 import { CommittedTextField } from "../../../components/form"
 import { INPUT_STYLE } from "../_shared"
@@ -141,22 +141,51 @@ export function NumberField({
   min?: number
   id?: string
 }) {
+  const [error, setError] = useState<string | null>(null)
+  const [seenValue, setSeenValue] = useState(value)
+  if (seenValue !== value) {
+    setSeenValue(value)
+    setError(null)
+  }
+  const errorId = useId()
   return (
-    <CommittedTextField
-      id={id}
-      type="number"
-      inputMode={integer ? "numeric" : "decimal"}
-      step={integer ? 1 : "any"}
-      min={min}
-      aria-label={ariaLabel}
-      value={String(value)}
-      onCommit={(text) => {
-        const parsed = integer ? Number.parseInt(text, 10) : Number.parseFloat(text)
-        if (Number.isFinite(parsed)) onCommit(parsed)
-      }}
-      className={`${CONTROL_CLASS} font-mono`}
-      style={INPUT_STYLE}
-    />
+    <div>
+      <CommittedTextField
+        id={id}
+        type="number"
+        inputMode={integer ? "numeric" : "decimal"}
+        step={integer ? 1 : "any"}
+        min={min}
+        aria-label={ariaLabel}
+        aria-invalid={error !== null ? true : undefined}
+        aria-describedby={error === null ? undefined : errorId}
+        value={String(value)}
+        onCommit={(text) => {
+          let nextError: string | null = null
+          const parsed = text.trim() === "" ? Number.NaN : Number(text)
+          if (!Number.isFinite(parsed)) {
+            nextError = "Enter a finite number."
+          } else if (integer && !Number.isInteger(parsed)) {
+            nextError = "Enter a whole number."
+          } else if (min !== undefined && parsed < min) {
+            nextError = `Enter a value of at least ${min}.`
+          }
+          if (nextError !== null) {
+            setError(nextError)
+            return
+          }
+          setError(null)
+          onCommit(parsed)
+        }}
+        className={`${CONTROL_CLASS} font-mono`}
+        style={INPUT_STYLE}
+      />
+      {error !== null && (
+        <p id={errorId} role="alert" className="text-[11px] mt-1 mb-0" style={{ color: "var(--danger-text)" }}>
+          {error}
+        </p>
+      )}
+    </div>
   )
 }
 

@@ -174,6 +174,14 @@ describe("stepProblem", () => {
     ["aggregation with a malformed row filter", { id: "g", kind: "group_by", keys: [], aggregations: [{ column: "a", agg: "sum", name: "s", where: { match: "all" } }] }, /filter is missing its conditions/],
     ["join with a malformed validation", { id: "j", kind: "join", input: "r", how: "left", leftOn: [], rightOn: [], suffix: "", validate: 1 }, /malformed validation/],
     ["unknown kind", { id: "x", kind: "explode" }, /Unknown step kind/],
+    ["prototype kind", { id: "x", kind: "constructor" }, /Unknown step kind/],
+    ["prototype kind toString", { id: "x", kind: "toString" }, /Unknown step kind/],
+    ["prototype kind __proto__", { id: "x", kind: "__proto__" }, /Unknown step kind/],
+    [
+      "prototype literal type",
+      { id: "f", kind: "filter", match: "all", conditions: [{ column: "a", operator: "eq", value: { kind: "literal", type: "constructor", value: 1 } }] },
+      /unsupported value type/,
+    ],
     ["not an object", "nope", /not an object/],
   ])("rejects %s without throwing anywhere downstream", (_label, step, pattern) => {
     expect(stepProblem(step)).toMatch(pattern)

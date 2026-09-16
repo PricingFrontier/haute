@@ -5,6 +5,11 @@ serialization, undo/redo cloning and dirty-state fingerprints. In particular,
 `__proto__`, `constructor`, and underscore-prefixed column names are own data
 properties, never prototype setters or editor metadata inside config payloads.
 Changing only such a field must change the persisted fingerprint.
+For a Polars config carrying `steps`, `code` and `_steps_error` are derived from
+those steps, so only these two fields are omitted from dirty fingerprints (also
+inside definitions). Request payloads and history snapshots still retain them.
+An atomic graph commit with an unchanged authored fingerprint updates live state
+without pushing history or clearing redo; this includes generated step-code refreshes.
 
 ## Module map
 
@@ -165,7 +170,7 @@ A successful frame stores both `instanceId` and `definitionId`; failure leaves
 the current view unchanged. Synthetic canonical Input/Output nodes retain that
 `definitionId` marker. Drilled Input edges contribute the sanitised public
 input label to child configs/codegen, while a parent edge sourced from an
-occurrence contributes the sanitised public output port name. Public port ids remain
+occurrence contributes the occurrence alias (or <alias>__<port_id> when declaring more than one output port). Public port ids remain
 structural handle identities in both views.
 
 Shared-definition save performs an interface diff by immutable port id and

@@ -116,7 +116,7 @@ def test_update_then_reset_demo_preserves_child_and_exposes_consumer(tmp_path):
     assert reset_plan.response.warnings
     reset_result = _apply(tmp_path, reset, reset_plan)
     assert reset_result.document.load_status == "ready"
-    assert "def Polars_3(output_1: pl.LazyFrame)" in parent.read_text()
+    assert "def Polars_3(Inputs: pl.LazyFrame)" in parent.read_text()
     assert "df = live_switch" not in parent.read_text()
     assert 'pipeline.connect("Inputs", "Polars_3", source_port="output_1")' in parent.read_text()
     assert (tmp_path / "modules/Inputs.py").read_bytes() == child_after_update

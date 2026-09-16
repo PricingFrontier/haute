@@ -198,7 +198,7 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
     }
     assert payload["identities"][1]["config_reference"].startswith("config/quote_input/")
     assert payload["identities"][2]["source_handle_input_names"] == {
-        "out__written_premium": "written_premium"
+        "out__written_premium": "pricing"
     }
 
 
@@ -1021,7 +1021,7 @@ def test_ready_document_revision_authenticates_strictly_parsed_child_bytes(
     assert document.source_revision != changed_on_disk
 
 
-def test_ready_document_exposes_submodel_output_port_as_executable_name(
+def test_ready_document_exposes_submodel_occurrence_alias_as_executable_name(
     tmp_path: Path,
 ) -> None:
     from haute._pipeline_recovery import load_pipeline_editor_document
@@ -1061,8 +1061,8 @@ def test_ready_document_exposes_submodel_output_port_as_executable_name(
             return None
 
         @pipeline.polars
-        def consumer(output_1):
-            return output_1
+        def consumer(unrelated_alias):
+            return unrelated_alias
 
         pipeline.submodel(
             "modules/child.py",
@@ -1077,11 +1077,11 @@ def test_ready_document_exposes_submodel_output_port_as_executable_name(
 
     assert document.load_status == "ready"
     occurrence = next(node for node in document.nodes if node.authored_id == "unrelated_alias")
-    assert occurrence.source_handle_input_names == {"out__output_1": "output_1"}
+    assert occurrence.source_handle_input_names == {"out__output_1": "unrelated_alias"}
     output_edge = next(
         edge for edge in document.edges if edge.source_recovery_id == occurrence.recovery_id
     )
-    assert output_edge.input_name == "output_1"
+    assert output_edge.input_name == "unrelated_alias"
     assert document.submodels is not None
     child_ports = document.submodels["child-definition"].input_ports
     assert [port["name"] for port in child_ports] == ["input_1"]

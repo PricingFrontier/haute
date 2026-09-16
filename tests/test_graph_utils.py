@@ -510,7 +510,7 @@ class TestResolveOrigSourceNames:
 
 
 class TestExecutableInputNameSubmodelOccurrence:
-    def test_output_is_named_by_its_port_whatever_the_alias(self):
+    def test_single_output_occurrence_returns_alias(self):
         from haute._graph_utils import executable_input_name
         from haute._types import NodeType
 
@@ -518,10 +518,12 @@ class TestExecutableInputNameSubmodelOccurrence:
             node_type=NodeType.SUBMODEL,
             label="pricing",
             source_handle="out__quotes",
+            alias="pricing",
+            output_port_count=1,
         )
-        assert name == "quotes"
+        assert name == "pricing"
 
-    def test_every_port_of_a_multi_output_occurrence_keeps_its_own_name(self):
+    def test_multi_output_occurrence_returns_alias_and_sanitized_port(self):
         from haute._graph_utils import executable_input_name
         from haute._types import NodeType
 
@@ -529,35 +531,60 @@ class TestExecutableInputNameSubmodelOccurrence:
             node_type=NodeType.SUBMODEL,
             label="pricing",
             source_handle="out__written_premium",
+            alias="pricing",
+            output_port_count=2,
         )
         second = executable_input_name(
             node_type=NodeType.SUBMODEL,
             label="pricing",
             source_handle="out__loss_ratio",
+            alias="pricing",
+            output_port_count=2,
         )
-        assert first == "written_premium"
-        assert second == "loss_ratio"
+        assert first == "pricing__written_premium"
+        assert second == "pricing__loss_ratio"
 
-    def test_port_name_is_sanitised(self):
-        from haute._graph_utils import _sanitize_func_name, executable_input_name
+    def test_alias_sanitisation(self):
+        from haute._graph_utils import executable_input_name
         from haute._types import NodeType
 
         name = executable_input_name(
             node_type=NodeType.SUBMODEL,
-            label="pricing",
-            source_handle="out__written premium",
+            label="my_submodel_1",
+            source_handle="out__quotes",
+            alias="my_submodel_1",
+            output_port_count=1,
         )
-        assert name == _sanitize_func_name("written premium")
+        assert name == "my_submodel_1"
 
-    def test_handle_must_use_the_out_prefix(self):
+    def test_missing_alias_raises_value_error_naming_node(self):
         from haute._graph_utils import executable_input_name
         from haute._types import NodeType
 
-        with pytest.raises(ValueError, match="out__<name>"):
+        with pytest.raises(
+            ValueError, match="Submodel node 'Pricing' requires an occurrence alias"
+        ):
             executable_input_name(
                 node_type=NodeType.SUBMODEL,
                 label="Pricing",
-                source_handle="quotes",
+                source_handle="out__quotes",
+                alias=None,
+                output_port_count=1,
+            )
+
+    def test_missing_count_raises_value_error_naming_node(self):
+        from haute._graph_utils import executable_input_name
+        from haute._types import NodeType
+
+        with pytest.raises(
+            ValueError, match="Submodel node 'Pricing' requires an output port count"
+        ):
+            executable_input_name(
+                node_type=NodeType.SUBMODEL,
+                label="Pricing",
+                source_handle="out__quotes",
+                alias="pricing",
+                output_port_count=None,
             )
 
     def test_ordinary_node_named_like_port_label_is_unaffected(self):

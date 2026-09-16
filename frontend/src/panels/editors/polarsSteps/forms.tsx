@@ -30,6 +30,7 @@ import {
   defaultCondition,
   defaultExpr,
   defaultLiteral,
+  exprProblem,
   literal,
 } from "./catalogue"
 import {
@@ -184,7 +185,7 @@ const FORMULA_EXAMPLE = "example: (premium + commission) * tax / 12"
 function FormulaEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "binary" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
   const text = displayFormula(expr, ctx.variables)
   if (text === null) return <StructuredFormula expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
-  return <FormulaField text={text} onCommit={onChange} variables={ctx.variables} columns={ctx.columns} />
+  return <FormulaField text={text} onCommit={onChange} variables={ctx.variables} columns={ctx.columns} depth={depth} />
 }
 
 /** A value or function typed as a formula stays a formula in the editor and the "Computed as" select. */
@@ -211,7 +212,8 @@ function completionsFor(draft: string, caret: number, names: string[]): { prefix
  * changes from outside, without remounting the box, so focus survives a
  * commit.
  */
-function FormulaField({ text, onCommit, variables, columns }: { text: string; onCommit: (next: Expr) => void; variables: string[]; columns: string[] }) {
+function FormulaField({ text, onCommit, variables, columns, depth }: { text: string; onCommit: (next: Expr) => void; variables: string[]; columns: string[]; depth: number }) {
+  const problemId = useId()
   const [draft, setDraft] = useState(text)
   const [caret, setCaret] = useState(text.length)
   const [problem, setProblem] = useState<string | null>(null)
@@ -242,7 +244,10 @@ function FormulaField({ text, onCommit, variables, columns }: { text: string; on
       return
     }
     try {
-      onCommit(parseFormula(draft, variables))
+      const expr = parseFormula(draft, variables)
+      const invalid = exprProblem(expr, "The formula", depth)
+      if (invalid) throw new FormulaError(`${invalid} Compute part of it in an earlier step.`)
+      onCommit(expr)
       setProblem(null)
     } catch (error) {
       setProblem(error instanceof FormulaError ? error.message : "The formula could not be read.")
@@ -274,6 +279,8 @@ function FormulaField({ text, onCommit, variables, columns }: { text: string; on
           ref={input}
           type="text"
           aria-label="Formula"
+          aria-invalid={problem !== null || undefined}
+          aria-describedby={problem ? problemId : undefined}
           title={FORMULA_EXAMPLE}
           value={draft}
           {...completion.inputProps}
@@ -302,7 +309,7 @@ function FormulaField({ text, onCommit, variables, columns }: { text: string; on
         <CompletionList {...completion.listProps} onPick={complete} />
       </div>
       {problem && (
-        <div className="mt-1">
+        <div id={problemId} role="alert" className="mt-1">
           <Hint>{`Not understood: ${problem}`}</Hint>
         </div>
       )}
@@ -401,7 +408,7 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
 
 function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: (next: Expr) => void; ctx: StepFormContext; depth?: number }) {
   const typedText = typedAsFormula(expr) ? displayFormula(expr, ctx.variables) : null
-  if (typedText !== null) return <FormulaField text={typedText} onCommit={onChange} variables={ctx.variables} columns={ctx.columns} />
+  if (typedText !== null) return <FormulaField text={typedText} onCommit={onChange} variables={ctx.variables} columns={ctx.columns} depth={depth} />
   const operandProps = anyOperand(ctx, depth + 1)
   switch (expr.type) {
     case "operand":

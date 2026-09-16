@@ -12,6 +12,7 @@ import pytest
 
 import haute._codegen_builders as codegen_builders
 from haute._codegen_builders import _build_params
+from haute._graph_utils import incoming_edge_bindings
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code, graph_to_code_multi
 from haute.errors import ParseError
@@ -146,8 +147,70 @@ def test_generated_params_follow_edge_order_across_all_source_kinds() -> None:
     assert _function_args(code, "combine_inputs") == [
         "quotes",
         "ordinary_source",
-        "child",
+        "rating",
     ]
+
+
+def test_independent_single_output_submodels_remain_composable_by_alias() -> None:
+    left_internal = _node("left-internal", "left implementation", NodeType.CONSTANT)
+    right_internal = _node("right-internal", "right implementation", NodeType.CONSTANT)
+    left = GraphNode(
+        id="left-instance",
+        type="submodel",
+        data=NodeData(
+            label="left",
+            nodeType=NodeType.SUBMODEL,
+            config={"definitionId": "left-definition", "alias": "left"},
+        ),
+    )
+    right = GraphNode(
+        id="right-instance",
+        type="submodel",
+        data=NodeData(
+            label="right",
+            nodeType=NodeType.SUBMODEL,
+            config={"definitionId": "right-definition", "alias": "right"},
+        ),
+    )
+    consumer = _node(
+        "consumer",
+        "combine outputs",
+        NodeType.POLARS,
+        {"code": "df = left.join(right, how='cross')"},
+    )
+    graph = PipelineGraph(
+        nodes=[left, right, consumer],
+        edges=[
+            _edge("left-edge", "left-instance", "consumer", source_port="out__result"),
+            _edge("right-edge", "right-instance", "consumer", source_port="out__result"),
+        ],
+        submodels={
+            "left-definition": {
+                "definitionId": "left-definition",
+                "file": "modules/left.py",
+                "graph": {"nodes": [left_internal.model_dump(by_alias=True)], "edges": []},
+                "inputPorts": [],
+                "outputPorts": [
+                    {"name": "result", "source": {"nodeId": "left-internal", "handleId": None}}
+                ],
+            },
+            "right-definition": {
+                "definitionId": "right-definition",
+                "file": "modules/right.py",
+                "graph": {"nodes": [right_internal.model_dump(by_alias=True)], "edges": []},
+                "inputPorts": [],
+                "outputPorts": [
+                    {"name": "result", "source": {"nodeId": "right-internal", "handleId": None}}
+                ],
+            },
+        },
+    )
+
+    assert [name for _edge, name in incoming_edge_bindings(graph, "consumer")] == ["left", "right"]
+    code = graph_to_code_multi(graph, pipeline_name="main")["main.py"]
+    assert _function_args(code, "combine_outputs") == ["left", "right"]
+    assert 'pipeline.connect("left", "combine_outputs", source_port="result")' in code
+    assert 'pipeline.connect("right", "combine_outputs", source_port="result")' in code
 
 
 def test_sole_frame_api_input_uses_frame_param_and_explicit_source_port() -> None:

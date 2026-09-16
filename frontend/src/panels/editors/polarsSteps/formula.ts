@@ -150,20 +150,20 @@ class Parser {
   }
 
   private multiplicative(): Expr {
-    let left = this.power()
+    let left = this.unary()
     while (this.isOp(this.peek(), "*", "/", "//", "%")) {
       const op = (this.take() as Extract<Token, { kind: "op" }>).value
-      const right = this.power()
+      const right = this.unary()
       left = { type: "binary", left: asOperand(left), op, right: asOperand(right) }
     }
     return left
   }
 
   private power(): Expr {
-    const base = this.unary()
+    const base = this.primary()
     if (this.isOp(this.peek(), "**")) {
       this.take()
-      const exponent = this.power()
+      const exponent = this.unary()
       return { type: "binary", left: asOperand(base), op: "**", right: asOperand(exponent) }
     }
     return base
@@ -182,7 +182,7 @@ class Parser {
       this.take()
       return this.unary()
     }
-    return this.primary()
+    return this.power()
   }
 
   private primary(): Expr {
@@ -356,13 +356,16 @@ export function literalText(operand: LiteralOperand): string {
 
 function operandText(operand: Operand, variables: ReadonlySet<string>, parent: { op: BinaryOperator; side: "left" | "right" } | null): string | null {
   switch (operand.kind) {
-    case "literal":
-      return literalText(operand)
+    case "literal": {
+      const text = literalText(operand)
+      return parent?.op === "**" && parent.side === "left" && operand.type === "number" && Number(operand.value) < 0 ? `(${text})` : text
+    }
     case "column":
       return nameText(operand.name, variables, false)
     case "variable":
       return nameText(operand.name, variables, true)
     case "expr": {
+      if (operand.expr.type === "operand") return operandText(operand.expr.operand, variables, parent)
       const inner = exprText(operand.expr, variables)
       if (inner === null) return null
       if (operand.expr.type !== "binary") return inner

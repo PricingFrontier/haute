@@ -316,7 +316,7 @@ const LITERAL_VALUE_SHAPE: Record<LiteralType, Shape> = {
 
 function literalProblem(operand: Record<string, unknown>, where: string): string | null {
   const type = operand.type
-  if (typeof type !== "string" || !(type in LITERAL_VALUE_SHAPE)) return `${where} has an unsupported value type.`
+  if (typeof type !== "string" || !Object.hasOwn(LITERAL_VALUE_SHAPE, type)) return `${where} has an unsupported value type.`
   // The renderer accepts a null literal with no value field at all.
   if (type === "null" && operand.value === undefined) return null
   if (!isShape(operand.value, LITERAL_VALUE_SHAPE[type as LiteralType])) return `${where} has a malformed value.`
@@ -381,7 +381,7 @@ function stringListProblem(value: unknown, where: string): string | null {
   return Array.isArray(value) && value.every((v) => typeof v === "string") ? null : `${where} must list column names.`
 }
 
-function exprProblem(value: unknown, where: string, depth = 1): string | null {
+export function exprProblem(value: unknown, where: string, depth = 1): string | null {
   if (!isShape(value, "object")) return `${where} is missing its expression.`
   if (depth > MAX_EXPR_DEPTH) return `${where} nests more than ${MAX_EXPR_DEPTH} levels deep.`
   const expr = value as Record<string, unknown>
@@ -465,7 +465,7 @@ export function stepProblem(step: unknown): string | null {
   if (!isShape(step, "object")) return "This step is not an object."
   const record = step as Record<string, unknown>
   const kind = record.kind
-  if (typeof kind !== "string" || !(kind in REQUIRED_FIELDS)) return `Unknown step kind ${JSON.stringify(kind)}.`
+  if (typeof kind !== "string" || !Object.hasOwn(REQUIRED_FIELDS, kind)) return `Unknown step kind ${JSON.stringify(kind)}.`
   const where = `The ${kindLabel(kind as StepKind).toLowerCase()} step`
   for (const [field, shape] of REQUIRED_FIELDS[kind as StepKind]) {
     const problem = fieldProblem(record, field, shape, where)

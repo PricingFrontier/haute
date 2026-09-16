@@ -2963,7 +2963,7 @@ def test_flatten_rewrites_stepped_consumer_inputs() -> None:
     )
     consumer = GraphNode(
         id="consumer",
-        data=NodeData(label="Consumer", nodeType="polars", config={"steps": [source("results")]}),
+        data=NodeData(label="Consumer", nodeType="polars", config={"steps": [source("score")]}),
     )
     graph = PipelineGraph(
         nodes=[instance, consumer],
@@ -3024,7 +3024,7 @@ def test_flatten_rewrites_internal_stepped_consumer_and_executes(tmp_path: Path)
         data=NodeData(
             label="Consumer",
             nodeType="polars",
-            config={"steps": [source("result"), step("s2", "select", columns=["premium"])]},
+            config={"steps": [source("score"), step("s2", "select", columns=["premium"])]},
         ),
     )
     graph = PipelineGraph(

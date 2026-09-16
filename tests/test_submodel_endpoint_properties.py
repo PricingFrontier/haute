@@ -103,16 +103,16 @@ pipeline.submodel(
 )
 """
     ]
-    # A consumer of an occurrence output names its parameter after the public
-    # output port ("result"), exactly as codegen emits it; that is the
+    # A consumer of an occurrence output names its parameter after the occurrence
+    # alias ("a" / "b"), exactly as codegen emits it; that is the
     # physical edge input the executor binds after flattening.
     sink_a_has_input = any("sink_a" in c for c in rendered_connects)
     sink_b_has_input = any("sink_b" in c for c in rendered_connects)
 
-    sink_a_param = "result: pl.LazyFrame" if sink_a_has_input else ""
-    sink_a_body = "return result" if sink_a_has_input else "return pl.LazyFrame()"
-    sink_b_param = "result: pl.LazyFrame" if sink_b_has_input else ""
-    sink_b_body = "return result" if sink_b_has_input else "return pl.LazyFrame()"
+    sink_a_param = "a: pl.LazyFrame" if sink_a_has_input else ""
+    sink_a_body = "return a" if sink_a_has_input else "return pl.LazyFrame()"
+    sink_b_param = "b: pl.LazyFrame" if sink_b_has_input else ""
+    sink_b_body = "return b" if sink_b_has_input else "return pl.LazyFrame()"
 
     sinks = [
         f"""

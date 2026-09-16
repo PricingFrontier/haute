@@ -3,8 +3,10 @@ import { render, screen, cleanup, fireEvent, within } from "@testing-library/rea
 import { useState } from "react"
 
 import { summarizeStep } from "../summary"
+import { MAX_EXPR_DEPTH, stepProblem } from "../catalogue"
+import { parseFormula } from "../formula"
 import { StepForm, type StepFormContext } from "../forms"
-import type { Step } from "../types"
+import type { Expr, Step } from "../types"
 
 /** Keeps the step in state so form edits re-render like the editor does. */
 function Stateful({ initial, spy }: { initial: Step; spy: (next: Step) => void }) {
@@ -34,6 +36,30 @@ function optionValues(select: HTMLElement): string[] {
 
 describe("step forms only build schema-valid payloads", () => {
   afterEach(cleanup)
+
+  it.each([0, 1, MAX_EXPR_DEPTH - 1])("keeps an over-depth formula editable under %i enclosing expressions", (enclosing) => {
+    const spy = vi.fn()
+    let expr: Expr = parseFormula("premium + 1")
+    for (let i = 0; i < enclosing; i += 1) {
+      expr = { type: "function", fn: "abs", operand: { kind: "expr", expr }, args: [] }
+    }
+    render(<Stateful initial={{ id: "w", kind: "with_column", name: "total", expr }} spy={spy} />)
+    const field = screen.getByRole("combobox", { name: "Formula" })
+    const tooDeep = Array(MAX_EXPR_DEPTH + 2 - enclosing).fill("premium").join(" + ")
+    fireEvent.change(field, { target: { value: tooDeep } })
+    fireEvent.blur(field)
+    expect(spy).not.toHaveBeenCalled()
+    expect(field).toHaveValue(tooDeep)
+    expect(screen.getByRole("alert")).toHaveTextContent(/12 levels/)
+
+    const atLimit = Array(MAX_EXPR_DEPTH + 1 - enclosing).fill("premium").join(" + ")
+    fireEvent.change(field, { target: { value: atLimit } })
+    fireEvent.keyDown(field, { key: "Enter" })
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(stepProblem(spy.mock.calls[0][0])).toBeNull()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(field).toHaveValue(atLimit)
+  })
 
   it("variable definitions offer plain values of number, text or true/false only", () => {
     const onChange = vi.fn()
