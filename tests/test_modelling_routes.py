@@ -2923,6 +2923,36 @@ def _glm_schema_gate_graph(data_path: str | None, config: dict):
     return make_graph({"nodes": nodes, "edges": edges})
 
 
+def _glm_transform_gate_graph(data_path: str, code: str, config: dict):
+    """Data Input → Polars → Modelling, with the user's own code in the middle."""
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataInput",
+                        "config": make_ready_file_input_config(data_path),
+                    },
+                },
+                {
+                    "id": "prep",
+                    "data": {"label": "prep", "nodeType": "polars", "config": {"code": code}},
+                },
+                {
+                    "id": "train",
+                    "data": {"label": "train", "nodeType": "modelling", "config": config},
+                },
+            ],
+            "edges": [
+                make_edge("source", "prep").model_dump(),
+                make_edge("prep", "train").model_dump(),
+            ],
+        }
+    )
+
+
 class TestGlmInputSchemaGate:
     """GLM term columns are checked against the exact unprojected input schema
     before a job is created, so a mismatch is a 422 on the request rather than
@@ -3023,6 +3053,57 @@ class TestGlmInputSchemaGate:
         assert "No input data available" in detail
         assert not store.list_jobs()
 
+    @pytest.mark.parametrize(
+        ("code", "error_name"),
+        [
+            ("df = source.with_columns(x2=undefined_name)", "NameError"),
+            ("", "NotImplementedError"),
+        ],
+    )
+    def test_user_transform_error_becomes_422_on_training_and_dispersion_routes(
+        self, glm_collision_data, code, error_name
+    ):
+        """The schema-only build runs the user's own transform code, so any
+        exception that code raises is the user's to fix — a named 422, never a
+        500 that reads as a Haute crash."""
+        from haute.schemas import DispersionEstimateRequest, TrainRequest
+
+        base = {
+            "algorithm": "glm",
+            "target": "y",
+            "terms": {"x": {"type": "linear"}},
+            "evaluation": _random_evaluation_config(),
+        }
+        store, service = self._service()
+
+        with pytest.raises(HTTPException) as raised:
+            service.start(
+                TrainRequest(
+                    graph=_glm_transform_gate_graph(
+                        glm_collision_data, code, {**base, "family": "gaussian"}
+                    ),
+                    node_id="train",
+                )
+            )
+        assert raised.value.status_code == 422
+        assert "could not be resolved" in str(raised.value.detail)
+        assert error_name in str(raised.value.detail)
+
+        with pytest.raises(HTTPException) as raised:
+            service.start_dispersion_estimate(
+                DispersionEstimateRequest(
+                    graph=_glm_transform_gate_graph(
+                        glm_collision_data, code, {**base, "family": "tweedie"}
+                    ),
+                    node_id="train",
+                    param="var_power",
+                )
+            )
+        assert raised.value.status_code == 422
+        assert "could not be resolved" in str(raised.value.detail)
+        assert error_name in str(raised.value.detail)
+        assert not store.list_jobs()
+
 
 # ---------------------------------------------------------------------------
 # GLM sink exclusions
@@ -3048,14 +3129,23 @@ def _inline_sink_service(monkeypatch: pytest.MonkeyPatch):
     return service, launched
 
 
-def _spy_on_sink_exclusions(monkeypatch: pytest.MonkeyPatch) -> list[list[str] | None]:
-    """Record the ``exclude`` argument every ``_execute_and_sink`` call receives."""
-    captured: list[list[str] | None] = []
+def _spy_on_sink_exclusions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[list[str] | None, list[str]]]:
+    """Record each ``_execute_and_sink`` call's ``exclude`` and the columns the
+    real sink actually wrote.
+
+    The real sink runs; its parquet is read here because the caller deletes it
+    (or hands ownership to the worker) as soon as preparation returns. Asserting
+    on ``exclude`` alone would pass even if preparation never produced a frame.
+    """
+    captured: list[tuple[list[str] | None, list[str]]] = []
     original = TrainService._execute_and_sink
 
     def spy(self, body, preamble_ns, row_limit, job_id, **kwargs):
-        captured.append(kwargs.get("exclude"))
-        return original(self, body, preamble_ns, row_limit, job_id, **kwargs)
+        prepared = original(self, body, preamble_ns, row_limit, job_id, **kwargs)
+        captured.append((kwargs.get("exclude"), pl.read_parquet(prepared).columns))
+        return prepared
 
     monkeypatch.setattr(TrainService, "_execute_and_sink", spy)
     return captured
@@ -3101,7 +3191,14 @@ class TestGlmSinkExclusions:
             for thread in launched:
                 thread.join(timeout=10)
 
-        assert captured == [None]
+        assert len(captured) == 1
+        exclude, columns = captured[0]
+        assert exclude is None
+        # ``x`` is the live GLM term the stale ``exclude`` would have dropped.
+        assert "x" in columns and "y" in columns
+        job = service._store.require_job(response.job_id)
+        assert job["status"] == "completed", job
+        assert launched
 
     def test_dispersion_sink_keeps_excluded_glm_term_columns(
         self, glm_collision_data, tmp_path, monkeypatch
@@ -3124,11 +3221,16 @@ class TestGlmSinkExclusions:
         )
         service, launched = _inline_sink_service(monkeypatch)
 
-        service.start_dispersion_estimate(body)
+        response = service.start_dispersion_estimate(body)
         for thread in launched:
             thread.join(timeout=10)
 
-        assert captured == [None]
+        assert len(captured) == 1
+        exclude, columns = captured[0]
+        assert exclude is None
+        assert "x" in columns and "y" in columns
+        job = service._store.require_job(response.job_id)
+        assert job["status"] == "completed", job
 
 
 # ---------------------------------------------------------------------------

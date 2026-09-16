@@ -64,6 +64,35 @@ def _dtype_default_spec(is_string: bool) -> dict[str, Any]:
     return {"type": "categorical"} if is_string else {"type": "linear"}
 
 
+def _reject_override_against_main(
+    *,
+    where: str,
+    kind: str,
+    main: dict[str, Any] | None,
+) -> None:
+    """Reject an interaction override that would re-type a column's main effect.
+
+    Applied twice: once against the user's own ``terms`` while each card is
+    resolved, then again against the materialised ``effective_terms`` once
+    every card is known. The second pass is what makes card order irrelevant —
+    a main effect materialised by one card's ``include_main`` is absent from
+    ``terms``, so the first pass alone lets a sibling card silently re-type it.
+    """
+    if main is None:
+        return
+    main_kind = main.get("type")
+    if kind == "categorical" and main_kind != "categorical":
+        raise HauteValidationError(
+            f"{where}: a categorical override would re-type the column's "
+            f"{main_kind!r} main effect; keep the main term categorical or "
+            "choose another fit"
+        )
+    if kind in ("linear", "bs", "ns") and main_kind == "categorical":
+        raise HauteValidationError(
+            f"{where}: {kind!r} cannot be applied over a categorical main term"
+        )
+
+
 def _resolve_interaction_factor_spec(
     *,
     index: int,
@@ -93,21 +122,9 @@ def _resolve_interaction_factor_spec(
             raise HauteValidationError(
                 f"{where}: monotonicity is not supported inside interactions"
             )
-        if kind == "categorical" and main is not None and main.get("type") != "categorical":
-            raise HauteValidationError(
-                f"{where}: a categorical override would re-type the column's "
-                f"{main.get('type')!r} main effect; keep the main term categorical or "
-                "choose another fit"
-            )
-        if kind in ("linear", "bs", "ns"):
-            if is_string:
-                raise HauteValidationError(
-                    f"{where}: {kind!r} cannot be applied to a string column"
-                )
-            if main is not None and main.get("type") == "categorical":
-                raise HauteValidationError(
-                    f"{where}: {kind!r} cannot be applied over a categorical main term"
-                )
+        if kind in ("linear", "bs", "ns") and is_string:
+            raise HauteValidationError(f"{where}: {kind!r} cannot be applied to a string column")
+        _reject_override_against_main(where=where, kind=kind, main=main)
         return dict(override)
     if main is not None:
         kind = main.get("type")
@@ -146,7 +163,7 @@ def _build_interactions(
     cat_set = set(cat_features)
     effective_terms: dict[str, dict[str, Any]] = {name: dict(spec) for name, spec in terms.items()}
     seen_factor_sets: set[frozenset[str]] = set()
-    override_by_column: dict[str, dict[str, Any]] = {}
+    override_by_column: dict[str, tuple[int, dict[str, Any]]] = {}
     rs_interactions: list[dict[str, Any]] = []
 
     for index, interaction in enumerate(interactions_config):
@@ -172,12 +189,13 @@ def _build_interactions(
             override = specs.get(factor)
             if override is not None:
                 previous = override_by_column.get(factor)
-                if previous is not None and previous != override:
+                if previous is not None and previous[1] != override:
                     raise HauteValidationError(
                         f"Interaction {index + 1}, factor {factor!r}: conflicting overrides "
-                        f"across interactions ({previous} vs {override})"
+                        f"across interactions ({previous[1]} vs {override})"
                     )
-                override_by_column[factor] = dict(override)
+                if previous is None:
+                    override_by_column[factor] = (index, dict(override))
             rs_int[factor] = _resolve_interaction_factor_spec(
                 index=index,
                 factor=factor,
@@ -192,6 +210,19 @@ def _build_interactions(
                     effective_terms[factor] = dict(rs_int[factor])
         rs_int["include_main"] = False
         rs_interactions.append(rs_int)
+
+    # ``include_main`` can materialise a main effect the first pass could not
+    # see (it is absent from the user's ``terms``), so re-check every override
+    # against the main effect RustyStats will actually receive. Without this a
+    # card ordered after the materialising one re-typed that main effect
+    # silently — and the same two cards were accepted or rejected depending on
+    # the order they happened to sit in.
+    for factor, (override_index, override) in override_by_column.items():
+        _reject_override_against_main(
+            where=f"Interaction {override_index + 1}, factor {factor!r}",
+            kind=str(override.get("type")),
+            main=effective_terms.get(factor),
+        )
 
     return rs_interactions, effective_terms
 

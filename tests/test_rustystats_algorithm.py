@@ -291,6 +291,51 @@ class TestBuildInteractionsRejections:
             "conflicting",
         )
 
+    def test_rejects_override_that_retypes_a_materialised_main_effect_in_either_card_order(self):
+        # The first card materialises a linear main effect for x; the second
+        # would re-type that same column to categorical. The main effect is
+        # invisible to ``terms``, so only the effective-terms pass catches it.
+        terms = {"w": {"type": "linear"}}
+        cards = [
+            {"factors": ["x", "z"], "include_main": True},
+            {
+                "factors": ["x", "w"],
+                "specs": {"x": {"type": "categorical"}},
+                "include_main": False,
+            },
+        ]
+        self._reject(cards, terms, [], "re-type")
+        self._reject(list(reversed(cards)), terms, [], "re-type")
+
+    def test_rejects_numeric_override_over_a_materialised_categorical_main(self):
+        # Mirror direction: a card materialises a categorical main effect for a
+        # numeric column, another card fits the same column linearly.
+        terms = {"w": {"type": "linear"}}
+        cards = [
+            {"factors": ["x", "z"], "specs": {"x": {"type": "categorical"}}, "include_main": True},
+            {"factors": ["x", "w"], "specs": {"x": {"type": "linear"}}, "include_main": False},
+        ]
+        self._reject(cards, terms, [], "conflicting")
+
+    def test_categorical_override_over_a_materialised_categorical_main_still_builds(
+        self, interaction_df
+    ):
+        terms = {"w": {"type": "linear"}}
+        cards = [
+            {"factors": ["c", "z"], "include_main": True},
+            {
+                "factors": ["c", "w"],
+                "specs": {"c": {"type": "categorical"}},
+                "include_main": False,
+            },
+        ]
+        built, effective = _build_interactions(cards, terms, ["c"])
+        assert effective["c"] == {"type": "categorical"}
+        names = _design_columns(interaction_df, effective, built)
+        assert "c[T.b]" in names
+        assert "c[T.b]:z" in names
+        assert "c[T.b]:w" in names
+
 
 # ---------------------------------------------------------------------------
 # GLMAlgorithm.fit()

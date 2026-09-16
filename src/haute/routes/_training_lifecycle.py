@@ -1244,6 +1244,27 @@ class TrainService:
                 status_code=422,
                 detail=f"Training input schema could not be resolved: {exc}",
             ) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            # The schema-only build runs the user's own transform code, which
+            # can raise anything at all — an undefined name is a NameError, an
+            # empty transform a NotImplementedError. Those are the user's to
+            # fix exactly like a parse failure, so name the class and the node
+            # in a 422 rather than let an arbitrary exception become a 500.
+            logger.warning(
+                "glm_input_schema_unresolvable",
+                node_id=body.node_id,
+                error=str(exc),
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Training input schema could not be resolved at modelling node "
+                    f"{body.node_id!r}: {type(exc).__name__}: {exc}"
+                ),
+            ) from exc
 
     def _check_no_concurrent_jobs(self) -> None:
         """Reject if a training job is already running."""

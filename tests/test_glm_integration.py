@@ -9,7 +9,8 @@ Covers four critical areas:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import polars as pl
@@ -740,6 +741,68 @@ def _random_evaluation() -> dict[str, object]:
     }
 
 
+# Kwargs ``generate_training_script`` deliberately leaves off the call because
+# ``TrainingJob``'s own default builds the identical job (``exclude or []``
+# makes ``None`` and ``[]`` the same). Anything else the template drops would
+# change the model the script trains.
+_EXPORT_DEFAULTED_KWARGS: dict[str, object] = {
+    "weight": None,
+    "exclude": [],
+    "feature_columns": None,
+    "fold_column": None,
+    "id_columns": None,
+    "tuning": None,
+    "loss_function": None,
+    "variance_power": None,
+    "offset": None,
+    "monotone_constraints": None,
+    "feature_weights": None,
+    "categorical_levels": None,
+    "mlflow_experiment": None,
+    "mlflow_destination": "",
+}
+
+
+def _captured_export_kwargs(script: str) -> dict[str, Any]:
+    """Run a generated script and return the kwargs it hands ``TrainingJob``.
+
+    Searching the script text only proves a token appears somewhere in it.
+    Executing the script against a recording stub proves the exported job is
+    *constructed* with the values live training passes.
+    """
+    captured: dict[str, Any] = {}
+
+    class _RecordingTrainingJob:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        def run(self) -> None:
+            return None
+
+    # Not "__main__", so the script's run-it guard stays shut.
+    namespace: dict[str, Any] = {"__name__": "haute_export_parity_harness"}
+    with patch("haute.modelling.TrainingJob", _RecordingTrainingJob):
+        exec(compile(script, "<export>", "exec"), namespace)
+    assert captured, "the generated script never constructed a TrainingJob"
+    return captured
+
+
+def _assert_export_parity(script: str, expected: dict[str, Any]) -> dict[str, Any]:
+    """Assert the script builds exactly the job ``build_training_job_kwargs`` describes."""
+    captured = _captured_export_kwargs(script)
+    invented = sorted(set(captured) - set(expected))
+    assert invented == [], invented
+    mismatched = {
+        key: (expected[key], captured[key]) for key in captured if captured[key] != expected[key]
+    }
+    assert mismatched == {}, mismatched
+    omitted = {key: expected[key] for key in expected if key not in captured}
+    assert omitted == {
+        key: _EXPORT_DEFAULTED_KWARGS.get(key, "<not a TrainingJob default>") for key in omitted
+    }, omitted
+    return captured
+
+
 class TestGLMTermsEndToEnd:
     """One real fit proves the shipped GLM term contract end to end."""
 
@@ -749,8 +812,9 @@ class TestGLMTermsEndToEnd:
         """A native spline, an expression term, and an interaction whose factor
         carries its own spec all reach the design matrix; the interaction's
         materialised main effect appears exactly once (RustyStats'
-        ``include_main`` would duplicate it), and the exported script carries
-        the same per-factor overrides live training used."""
+        ``include_main`` would duplicate it), and the exported script trains a
+        model whose predictions match the live one to floating-point noise."""
+        from haute._mlflow_io import load_local_model
         from haute.modelling._export import generate_training_script
         from haute.modelling._train_config import build_training_job_kwargs
         from haute.modelling._training_job import TrainingJob
@@ -797,8 +861,64 @@ class TestGLMTermsEndToEnd:
         assert any(":bs(income" in name for name in names), names
         assert sum(name == "region[T.s]" for name in names) == 1, names  # materialised once
 
+        output_dir = tmp_path / "exported"
+        output_dir.mkdir()
+        export_config = {**config, "name": "e2e_export", "output_dir": str(output_dir)}
+        script = generate_training_script(export_config, data_path)
+        captured = _assert_export_parity(
+            script, build_training_job_kwargs(export_config, data=data_path)
+        )
+        assert captured["params"]["terms"] == config["terms"]
+        assert captured["params"]["interactions"] == config["interactions"]
+
+        exported = TrainingJob(**captured).run()
+        assert exported.diagnostics_errors == [], exported.diagnostics_errors
+        assert [row["feature"] for row in exported.glm_coefficients] == names
+        np.testing.assert_allclose(
+            load_local_model(exported.model_path).predict(df),
+            load_local_model(result.model_path).predict(df),
+            rtol=1e-9,
+        )
+
+    def test_exported_script_carries_the_offset_and_its_exposure_scaling(self, tmp_path):
+        """Under the canonical log link an offset is a multiplier, so an export
+        that drops the column silently trains an unexposed model."""
+        from haute._mlflow_io import load_local_model
+        from haute.modelling._export import generate_training_script
+        from haute.modelling._train_config import build_training_job_kwargs
+        from haute.modelling._training_job import TrainingJob
+
+        rng = np.random.default_rng(7)
+        n = 600
+        x = rng.uniform(1.0, 5.0, size=n)
+        exposure = rng.uniform(0.5, 2.0, size=n)
+        y = rng.poisson(exposure * np.exp(-1.0 + 0.3 * x)).astype(float)
+        df = pl.DataFrame({"x": x, "exposure": exposure, "y": y})
+        data_path = _write(df, tmp_path)
+        output_dir = tmp_path / "exported"
+        output_dir.mkdir()
+        config = {
+            "algorithm": "glm",
+            "target": "y",
+            "family": "poisson",
+            "offset": "exposure",
+            "terms": {"x": {"type": "linear"}},
+            "evaluation": _random_evaluation(),
+            "name": "offset_export",
+            "output_dir": str(output_dir),
+        }
+
         script = generate_training_script(config, data_path)
-        assert "'specs': {'income': {'type': 'bs', 'df': 3}}" in script
+        captured = _assert_export_parity(script, build_training_job_kwargs(config, data=data_path))
+        assert captured["offset"] == "exposure"
+
+        exported = TrainingJob(**captured).run()
+        assert exported.diagnostics_errors == [], exported.diagnostics_errors
+        model = load_local_model(exported.model_path)
+        head = df.head(50)
+        predictions = model.predict(head)
+        doubled = model.predict(head.with_columns(pl.col("exposure") * 2.0))
+        np.testing.assert_allclose(doubled, 2.0 * predictions, rtol=1e-9)
 
 
 def test_all_factors_is_gone():

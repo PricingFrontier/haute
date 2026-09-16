@@ -761,6 +761,7 @@ class TestFailoverGates:
 
     def test_exported_glm_script_keeps_exposure_semantics(self):
         from haute.modelling import generate_training_script
+        from tests.test_glm_integration import _captured_export_kwargs
 
         script = generate_training_script(
             {
@@ -774,8 +775,10 @@ class TestFailoverGates:
             "data.parquet",
         )
         # The script hands the same offset column to TrainingJob, whose
-        # adapter maps it to RustyStats exposure= under a log link.
-        assert "offset='exposure'" in script
+        # adapter maps it to RustyStats exposure= under a log link. Run the
+        # script rather than grep it: only the constructed kwargs prove the
+        # exported job is exposed the way live training is.
+        assert _captured_export_kwargs(script)["offset"] == "exposure"
 
     # -- GLM term set -----------------------------------------------------
 

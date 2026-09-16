@@ -130,15 +130,31 @@ describe("GLMTermsConfig", () => {
     expect(onUpdate).toHaveBeenCalledWith({ terms: {}, interactions: [] })
   })
 
-  it("In model only and the count treat interaction-only columns as in the model", () => {
+  it("In model only hides out-of-model rows and keeps interaction-only ones", () => {
     setup({
       terms: { age: { type: "linear" } },
-      interactions: [{ factors: ["region", "income"], include_main: true }],
+      interactions: [{ factors: ["region", "age"], include_main: true }],
     })
-    expect(screen.getByText("3 of 3 in model")).toBeInTheDocument()
+    expect(screen.getByText("2 of 3 in model")).toBeInTheDocument()
     expect(within(row("region")).getByText("Interaction only")).toBeInTheDocument()
+    expect(within(row("income")).getByText("Not in model")).toBeInTheDocument()
+
     fireEvent.click(screen.getByRole("switch", { name: "In model only" }))
+    expect(screen.queryByRole("group", { name: "income feature" })).not.toBeInTheDocument()
     expect(screen.queryByRole("group", { name: "target feature" })).not.toBeInTheDocument()
+    expect(within(row("region")).getByText("Interaction only")).toBeInTheDocument()
+    expect(row("age")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("switch", { name: "In model only" }))
+    expect(row("income")).toBeInTheDocument()
+  })
+
+  it("labels a row read only by an expression as in an expression, not out of the model", () => {
+    setup({ terms: { age: { type: "linear" }, ai: { type: "expression", expr: "age * income" } } })
+    expect(screen.getByText("2 of 3 in model")).toBeInTheDocument()
+    expect(within(row("income")).getByText("In an expression")).toBeInTheDocument()
+    expect(within(row("region")).getByText("Not in model")).toBeInTheDocument()
+    expect(within(row("age")).getByRole("textbox", { name: "ai expression" })).toBeInTheDocument()
   })
 
   it("filters rows by search", () => {
@@ -163,6 +179,21 @@ describe("GLMTermsConfig", () => {
     fireEvent.change(area, { target: { value: JSON.stringify({ age: { type: "bs", df: 4 } }) } })
     fireEvent.blur(area)
     expect(onUpdate).toHaveBeenCalledWith("terms", { age: { type: "bs", df: 4 } })
+  })
+
+  it.each([
+    [JSON.stringify({ bad: null }), 'Term "bad" must be an object with a string "type"'],
+    [JSON.stringify({ bad: { df: 3 } }), 'Term "bad" must be an object with a string "type"'],
+    [JSON.stringify({ bad: [1, 2] }), 'Term "bad" must be an object with a string "type"'],
+  ])("refuses malformed term JSON %s, keeps the draft, and writes nothing", (draft, message) => {
+    const onUpdate = setup({ terms: { age: { type: "linear" } } })
+    fireEvent.click(screen.getByRole("button", { name: "JSON" }))
+    const area = screen.getByRole("textbox", { name: "Terms JSON" })
+    fireEvent.change(area, { target: { value: draft } })
+    fireEvent.blur(area)
+    expect(screen.getByText(message)).toBeInTheDocument()
+    expect((area as HTMLTextAreaElement).value).toBe(draft)
+    expect(onUpdate).not.toHaveBeenCalled()
   })
 
   it("never writes exclude, monotone_constraints, or all_factors", () => {

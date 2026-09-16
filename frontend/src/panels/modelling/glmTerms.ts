@@ -47,8 +47,24 @@ export function expressionIdentifiers(expr: string): string[] | null {
   return identifiers
 }
 
+/** A term's declared type, or null when the entry is not `{ type: string, ... }`.
+ *
+ *  Terms can arrive from a hand-edited JSON dict or a config saved by an older
+ *  build, so nothing here may assume the entry is well formed — a type-less or
+ *  non-object entry reads as a native term of unknown type rather than throwing
+ *  and taking the whole editor down with it. */
+function specType(spec: TermSpec): string | null {
+  if (typeof spec !== "object" || spec === null || Array.isArray(spec)) return null
+  return typeof spec.type === "string" ? spec.type : null
+}
+
 export function isExpressionSpec(spec: TermSpec): boolean {
-  return spec.type === "expression"
+  return specType(spec) === "expression"
+}
+
+/** Whether a JSON terms dict entry is shaped like a term spec. */
+export function isTermSpecShape(spec: unknown): boolean {
+  return specType(spec as TermSpec) !== null
 }
 
 export function dtypeDefaultSpec(dtype: string): TermSpec {
@@ -88,7 +104,8 @@ export function termsByColumn(
 
 export function nativeTermOf(terms: Terms, column: string): TermSpec | null {
   const spec = terms[column]
-  return spec && !isExpressionSpec(spec) ? spec : null
+  if (spec === undefined || spec === null) return null
+  return isExpressionSpec(spec) ? null : spec
 }
 
 export function uniqueExpressionName(

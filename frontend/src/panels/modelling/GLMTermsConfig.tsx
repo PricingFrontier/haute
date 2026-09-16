@@ -7,6 +7,7 @@ import { roleColumns, type ModellingColumn } from "./featureSelection"
 import {
   addTerm,
   fitAllWithDefaults,
+  isTermSpecShape,
   modelMembership,
   removeTerm,
   renameExpression,
@@ -71,6 +72,16 @@ export function GLMTermsConfig({ config, onUpdate, columns }: Props) {
       const parsed = JSON.parse(text)
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
         setJsonError("Must be a JSON object")
+        return
+      }
+      // Every consumer of a terms dict reads `spec.type`, so a malformed entry
+      // written here would break the builder on the next render. Refuse the
+      // whole dict and keep the draft on screen so it can be corrected.
+      const malformed = Object.entries(parsed as Record<string, unknown>).find(
+        ([, spec]) => !isTermSpecShape(spec),
+      )
+      if (malformed) {
+        setJsonError(`Term "${malformed[0]}" must be an object with a string "type"`)
         return
       }
       setJsonError(null)
@@ -185,7 +196,16 @@ export function GLMTermsConfig({ config, onUpdate, columns }: Props) {
         <div className="mt-3 grid gap-1.5">
           {visible.map((column) => {
             const cards = renderTermCards(column)
-            const tag = cards.length > 0 ? null : membership.interactionOnly.has(column.name) ? "Interaction only" : "Not in model"
+            // Membership, not the cards anchored here: an expression naming
+            // this column is anchored under its *first* identifier, so a row
+            // with no cards of its own can still be in the model.
+            const tag = !membership.inModel.has(column.name)
+              ? "Not in model"
+              : cards.length > 0
+                ? null
+                : membership.interactionOnly.has(column.name)
+                  ? "Interaction only"
+                  : "In an expression"
             return (
               <div key={column.name} role="group" aria-label={`${column.name} feature`} className="rounded-lg px-2 py-1.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
                 <div className="flex min-w-0 items-center gap-1.5">

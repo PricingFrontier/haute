@@ -10,7 +10,9 @@ import {
   effectiveSlotSpec,
   expressionIdentifiers,
   fitAllWithDefaults,
+  isExpressionSpec,
   modelMembership,
+  nativeTermOf,
   pickSlotColumn,
   removeSlot,
   removeTerm,
@@ -27,6 +29,7 @@ import {
   uniqueExpressionName,
   type InteractionSpec,
   type Terms,
+  type TermSpec,
 } from "../glmTerms"
 
 const eligible = new Set(["age", "income", "region", "mileage"])
@@ -167,6 +170,22 @@ describe("editor transitions", () => {
       inModel: new Set(["age", "income", "region", "mileage"]),
       interactionOnly: new Set(["region", "mileage"]),
     })
+  })
+
+  it("treats a malformed term entry as a native term of unknown type instead of throwing", () => {
+    const malformed = { bad: null, age: { df: 3 } } as unknown as Terms
+    const { byColumn, unresolved } = termsByColumn(malformed, eligible)
+    expect(unresolved).toEqual([])
+    expect(byColumn.get("bad")).toEqual([{ key: "bad", spec: null }])
+    expect(byColumn.get("age")).toEqual([{ key: "age", spec: { df: 3 } }])
+    expect(modelMembership(malformed, [], eligible)).toEqual({
+      inModel: new Set(["age"]),
+      interactionOnly: new Set(),
+    })
+    expect(nativeTermOf(malformed, "age")).toEqual({ df: 3 })
+    expect(nativeTermOf(malformed, "bad")).toBeNull()
+    expect(isExpressionSpec(null as unknown as TermSpec)).toBe(false)
+    expect(isExpressionSpec([] as unknown as TermSpec)).toBe(false)
   })
 })
 
