@@ -2164,6 +2164,17 @@ def test_generated_reshaping_code_stays_inside_the_lineage_model() -> None:
     assert windowed.supported and windowed.demands_by_input == {"rows": frozenset({"a", "g"})}
 
 
+def test_a_start_only_program_previews_the_input_unchanged(tmp_path: Path) -> None:
+    policies = _extended_frame(tmp_path)
+    graph = PipelineGraph(
+        nodes=[policies, _stepped("t", [source("policies")])], edges=[make_edge("policies", "t")]
+    )
+    result = execute_graph(graph, target_node_id="t", execution_context=_capped_context())["t"]
+    assert result.status == "ok", result.error
+    assert [c.name for c in result.columns] == ["qid", "region", "premium"]
+    assert [row["qid"] for row in result.preview] == ["c3", "c1", "c2", "c4", "c5", "c6", "cx"]
+
+
 def test_join_validation_fails_loudly_on_duplicate_keys(tmp_path: Path) -> None:
     quotes, _rates = _frames(tmp_path)
     dup = tmp_path / "dup_rates.parquet"

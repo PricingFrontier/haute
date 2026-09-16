@@ -254,7 +254,10 @@ replaces a newer one, and the switch is enabled only while the step list is empt
 latest render succeeded for the current revision; on confirmation it writes that rendered
 code (or empty code for an empty list) into `code` and removes `steps`. After each
 successful render the rendered code is also written into `code` so read-only views stay
-current. An empty step list offers quick-add buttons for the most common first steps. A
+current. As soon as the start input is known (chosen in the selector, or the node's only
+connected input) the start step is written to the config, so the node renders
+`df = <input>` and can be previewed before any step is added. An empty step list offers
+quick-add buttons for the most common first steps. A
 node without inputs cannot add steps and is told to connect an input or switch to code,
 with the switch offered there. Renaming an upstream node rewrites the input references
 inside a stepped transform's steps instead of recording an `inputMapping` binding on it.

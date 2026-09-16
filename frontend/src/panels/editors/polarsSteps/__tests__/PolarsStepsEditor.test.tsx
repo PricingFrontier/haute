@@ -91,9 +91,13 @@ describe("PolarsStepsEditor", () => {
     render(<Harness initial={{ steps: [] }} inputSources={[quotes]} spy={spy} />)
     expect(screen.getByLabelText("Start from input")).toHaveValue("quotes")
     expect(screen.getByText("Add your first step")).toBeInTheDocument()
+    // The only input is written as the start step at once, so the node
+    // already renders `df = quotes` and can be previewed.
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("steps", [expect.objectContaining({ kind: "source", input: "quotes" })]), { timeout: 5000 })
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("code", "df = quotes"), { timeout: 5000 })
     fireEvent.click(screen.getByRole("button", { name: "Filter rows" }))
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("steps", expect.any(Array)), { timeout: 5000 })
-    const steps = spy.mock.calls.find((call) => call[0] === "steps")?.[1] as Step[]
+    await waitFor(() => expect(lastSteps(spy)).toHaveLength(2), { timeout: 5000 })
+    const steps = lastSteps(spy) as Step[]
     expect(steps[0]).toMatchObject({ kind: "source", input: "quotes" })
     expect(steps[1]).toMatchObject({ kind: "filter" })
     expect(screen.getByRole("button", { name: "Step 1: Filter rows" })).toHaveAttribute("aria-expanded", "true")

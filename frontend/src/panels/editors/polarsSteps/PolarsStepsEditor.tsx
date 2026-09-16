@@ -1,5 +1,5 @@
 import { Code } from "lucide-react"
-import { useCallback, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { NODE_GROUP_COLORS } from "../../../theme/colors"
 import { InputSourcesBar, INPUT_STYLE } from "../_shared"
@@ -94,6 +94,13 @@ export default function PolarsStepsEditor({
     const source: Step = { id: steps[0]?.kind === "source" ? steps[0].id : newStepId(), kind: "source", input }
     setSteps(steps[0]?.kind === "source" ? [source, ...steps.slice(1)] : [source, ...steps])
   }
+
+  // As soon as the start input is known (chosen, or the node's only input),
+  // the start step is written to the config so the node renders
+  // `df = <input>` and can be previewed before any step is added.
+  useEffect(() => {
+    if (steps.length === 0 && effectiveStart) setSteps([{ id: newStepId(), kind: "source", input: effectiveStart }])
+  }, [steps.length, effectiveStart, setSteps])
 
   const addStep = (kind: Exclude<StepKind, "source">) => {
     if (!canAdd) return
