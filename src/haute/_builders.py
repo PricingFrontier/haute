@@ -13,7 +13,7 @@ the single source of truth shared with ``_codegen_builders.py``.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -100,12 +100,19 @@ def _source_scan_projection(
     columns: frozenset[str] | set[str] | None,
     config: Mapping[str, Any],
     *,
+    code: str,
+    source_columns: Iterable[str] | None,
     node_id: str | None = None,
 ) -> projection.SourceScanProjection:
     if profile in {None, ExecutionProfile.PREVIEW_EAGER.value}:
         projected = projection.SourceScanProjection(columns=None)
     else:
-        projected = projection.source_scan_projection(config, columns)
+        projected = projection.source_scan_projection(
+            config,
+            columns,
+            code=code,
+            source_columns=source_columns,
+        )
     _record_source_scan_projection_evidence(node_id, columns, projected)
     return projected
 
@@ -140,16 +147,18 @@ def apply_source_scan(
 
     ``selected_columns`` is deliberately absent here: the executor applies it
     once, after this call, in every profile.  The physical scan carries planner
-    demand only, and that demand is pushed down only when the node has no
-    post-load code or that code is projection-transparent — otherwise the code
-    may consume or produce columns the demand set never named.
+    demand only, carried back through the post-load code: it reads the columns
+    that code consumes, never the ones it creates, and stays full width when the
+    code is outside the column lineage model.
     """
-    demanded = (
-        required_output_columns
-        if projection.source_user_code_preserves_column_projection(code)
-        else None
+    projected = _source_scan_projection(
+        profile,
+        required_output_columns,
+        config,
+        code=code,
+        source_columns=frame.collect_schema().names(),
+        node_id=node_id,
     )
-    projected = _source_scan_projection(profile, demanded, config, node_id=node_id)
     frame = _select_columns(
         frame,
         None if projected.columns is None else tuple(projected.columns),
@@ -434,7 +443,14 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         _config: dict[str, Any] = config,
         _node_id: str = ctx.node.id,
     ) -> _Frame | dict[str, _Frame]:
-        projected = _source_scan_projection(_profile, _columns, _config, node_id=_node_id)
+        projected = _source_scan_projection(
+            _profile,
+            _columns,
+            _config,
+            code="",
+            source_columns=None,
+            node_id=_node_id,
+        )
         return resolve_api_input_from_config(
             _config,
             base_dir=_configured_pipeline_dir(),

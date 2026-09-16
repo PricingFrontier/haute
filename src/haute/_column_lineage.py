@@ -307,6 +307,12 @@ _LITERAL_STRING_ARGUMENT_METHODS: Mapping[str, frozenset[str]] = MappingProxyTyp
         ),
     }
 )
+# Plain ``Expr`` methods (not on a namespace) whose every argument the pinned
+# Polars parses with ``str_as_lit=True``: a mapping, list, or string passed to
+# them is a literal value, never a column. Audited against the Polars source in
+# ``tests/test_column_lineage.py`` like the registry above; ``sort_by`` and
+# friends stay out because they read strings and collection members as columns.
+_LITERAL_ARGUMENT_EXPRESSION_METHODS = frozenset({"replace", "replace_strict"})
 
 # These expression operations can construct more outer rows than their input
 # frame supplies. The closed list lives in the shared Polars operation registry
@@ -506,6 +512,22 @@ def _has_direct_string_argument(node: ast.AST) -> bool:
     return False
 
 
+def _may_pass_a_string_argument(node: ast.AST) -> bool:
+    """Return whether an expression-method argument could hand Polars a string.
+
+    Polars reads a string held in a variable exactly as it reads a literal
+    one, so a name, attribute, or subscript is treated as string syntax.
+    Polars iterates lists, tuples, and sets into column expressions, so their
+    members are checked too. A mapping is always a literal (a struct value or
+    a replacement mapping), and dtypes and lambdas are never strings.
+    """
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return any(_may_pass_a_string_argument(element) for element in node.elts)
+    if isinstance(node, (ast.Dict, ast.Lambda)) or _is_polars_dtype(node):
+        return False
+    return _may_evaluate_to_python_string(node)
+
+
 def _guarantees_expression(node: ast.AST) -> bool:
     """Whether *node*'s runtime value is certain to be a Polars expression.
 
@@ -672,14 +694,20 @@ def _horizontal_columns(call: ast.Call) -> frozenset[str] | None:
     return frozenset(columns)
 
 
-def _referenced_columns(node: ast.AST) -> frozenset[str] | None:
+def _referenced_columns(node: ast.AST, *, rows_only: bool = False) -> frozenset[str] | None:
     """Return literal column references, rejecting schema selectors.
 
     Beyond ``pl.col``, bare strings read columns wherever the closed model
     knows Polars parses them as one (horizontal helpers, ``pl.when``
     predicates and constraint names). A runtime-formatted string could
     evaluate to any column name, so f-strings reject the whole expression.
+
+    ``rows_only`` is for row-count proofs, which never use the references: a
+    variable that names another column to an expression method changes which
+    column is read but not the row count, so only literal string arguments
+    (whose meaning is still unaudited) are refused there.
     """
+    string_argument = _has_direct_string_argument if rows_only else _may_pass_a_string_argument
     columns: set[str] = set()
     for child in ast.walk(node):
         if isinstance(child, ast.JoinedStr):
@@ -725,13 +753,20 @@ def _referenced_columns(node: ast.AST) -> frozenset[str] | None:
                 chain_root = chain_root.value
             if _may_evaluate_to_python_string(chain_root):
                 return None
+            if not rows_only and any(keyword.arg is None for keyword in child.keywords):
+                # ``**mapping`` unpacks into ordinary arguments before Polars sees
+                # them, so a literal mapping can still pass a column name
+                # (``sort_by(**{'by': 'b'})``).
+                return None
             is_name_suffix = (
                 method == "suffix"
                 and isinstance(child.func.value, ast.Attribute)
                 and child.func.value.attr == "name"
             )
-            is_literal_argument_method = isinstance(child.func.value, ast.Attribute) and (
+            is_literal_argument_method = (
                 method in _LITERAL_STRING_ARGUMENT_METHODS.get(child.func.value.attr, frozenset())
+                if isinstance(child.func.value, ast.Attribute)
+                else method in _LITERAL_ARGUMENT_EXPRESSION_METHODS
             )
             if method == "alias" or is_name_suffix or is_literal_argument_method:
                 continue
@@ -749,10 +784,11 @@ def _referenced_columns(node: ast.AST) -> frozenset[str] | None:
             # strings are literals or column expressions (for example,
             # ``then('backup')`` reads a column while ``str.contains('x')``
             # consumes a literal).  Until a method has an explicit transfer,
-            # rejecting direct string arguments is the only sound choice.
+            # rejecting any argument that can be a string is the only sound
+            # choice.
             literal_keywords = _LITERAL_STRING_KEYWORDS.get(method, frozenset())
             if any(
-                _has_direct_string_argument(argument)
+                string_argument(argument)
                 for argument in [
                     *child.args,
                     *(
@@ -882,14 +918,23 @@ def _alias_name(node: ast.AST) -> str | None:
     return _literal_string(node.args[0])
 
 
+def _is_scalar_literal(node: ast.AST) -> bool:
+    """Whether *node* is a literal scalar, optionally signed (``0``, ``-1``, ``'x'``)."""
+    if isinstance(node, ast.UnaryOp):
+        node = node.operand
+    return isinstance(node, ast.Constant)
+
+
 def _expression_output_name(node: ast.AST) -> str | None:
-    alias = _alias_name(node)
-    if alias is not None:
-        return alias
     column = _pl_col_name(node)
     if column is not None:
         return column
     if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr in _NAME_CHANGING_METHOD_NAMES:
+            # Only a literal ``alias`` names the output; a computed alias or a
+            # ``pipe`` callback renames it to a value the syntax cannot read.
+            return _alias_name(node)
         direct = _polars_call_name(node)
         if direct == "lit":
             return "literal"
@@ -900,23 +945,25 @@ def _expression_output_name(node: ast.AST) -> str | None:
             return first_literal or _expression_output_name(node.args[0])
         if direct == "len":
             return "len"
-        func = node.func
         if (
             isinstance(func, ast.Attribute)
-            and func.attr == "suffix"
             and isinstance(func.value, ast.Attribute)
-            and func.value.attr == "name"
-            and len(node.args) == 1
-            and not node.keywords
+            and func.value.attr in _NAME_CHANGING_NAMESPACE_NAMES
         ):
-            suffix = _literal_string(node.args[0])
-            base_columns = [
-                name
-                for child in ast.walk(func.value.value)
-                if (name := _pl_col_name(child)) is not None
-            ]
-            if suffix is not None and len(base_columns) == 1:
-                return f"{base_columns[0]}{suffix}"
+            # The pinned Polars appends ``name.suffix`` to the output name of the
+            # expression it closes (``pl.col('a').alias('x')`` becomes ``x_s``,
+            # ``pl.lit(1) + pl.col('a')`` becomes ``literal_s``). Every other
+            # ``name`` or ``struct`` method renames or splits the output
+            # unreadably.
+            if func.value.attr != "name" or func.attr != "suffix":
+                return None
+            suffix = (
+                _literal_string(node.args[0]) if len(node.args) == 1 and not node.keywords else None
+            )
+            base = _expression_output_name(func.value.value)
+            if suffix is None or base is None:
+                return None
+            return f"{base}{suffix}"
         # Ordinary expression methods preserve their receiver's root name.
         # Conditional builders (``pl.when(...).then(...).otherwise(...)``)
         # choose a branch name rather than the predicate name and therefore
@@ -933,8 +980,21 @@ def _expression_output_name(node: ast.AST) -> str | None:
         while isinstance(receiver, ast.Attribute):
             receiver = receiver.value
         return _expression_output_name(receiver)
-    if isinstance(node, (ast.BinOp, ast.Compare)):
+    if isinstance(node, ast.BinOp):
+        # Reflected arithmetic (``2 * pl.col('a')``) is named ``literal`` too.
         return _expression_output_name(node.left)
+    if isinstance(node, ast.Compare):
+        if len(node.ops) != 1:
+            # ``0 < 1 < pl.col('a')`` evaluates its scalar prefix to ``True``
+            # and returns the last comparison, which the walk cannot name.
+            return None
+        if _is_scalar_literal(node.left):
+            # ``0 < pl.col('a')`` runs as the expression's reflected comparison,
+            # which keeps the expression's name.
+            return _expression_output_name(node.comparators[0])
+        if _guarantees_expression(node.left):
+            return _expression_output_name(node.left)
+        return None
     if isinstance(node, ast.UnaryOp):
         return _expression_output_name(node.operand)
     if isinstance(node, ast.BoolOp) and node.values:
@@ -1172,14 +1232,14 @@ def _selector_expression_item(
 
 
 def _selector_reference_item(
-    expression: ast.AST, aliases: frozenset[str]
+    expression: ast.AST, aliases: frozenset[str], *, rows_only: bool = False
 ) -> SelectorItem | None | _ParseFailure:
     """Parse a predicate that reads selector columns, or ``None`` without one."""
     nodes = _selector_nodes(expression, aliases)
     if not nodes:
         return None
     substituted = _substitute_selectors(expression, nodes)
-    references = _referenced_columns(substituted)
+    references = _referenced_columns(substituted, rows_only=rows_only)
     if references is None:
         return _ParseFailure("dynamic_filter", "filter")
     selectors = tuple(literal_selector(node, aliases=aliases) for node in nodes)
@@ -1206,7 +1266,7 @@ def _readable_with_selectors(expression: ast.AST, aliases: frozenset[str]) -> bo
         return all(_readable_with_selectors(element, aliases) for element in expression.elts)
     nodes = _selector_nodes(expression, aliases)
     candidate = _substitute_selectors(expression, nodes) if nodes else expression
-    return _referenced_columns(candidate) is not None
+    return _referenced_columns(candidate, rows_only=True) is not None
 
 
 def _normalise_expression_outputs(
@@ -2027,21 +2087,25 @@ def _parse_call_sequence(
                     if _may_evaluate_to_python_string(argument):
                         failed = True
                         break
-                    predicate_item = _selector_reference_item(argument, selector_aliases)
+                    predicate_item = _selector_reference_item(
+                        argument, selector_aliases, rows_only=cardinality_only
+                    )
                     if isinstance(predicate_item, _ParseFailure):
                         return [], predicate_item
                     if predicate_item is not None:
                         predicate_items.append(predicate_item)
                         collected.update(predicate_item.references)
                         continue
-                argument_references = _referenced_columns(argument)
+                argument_references = _referenced_columns(argument, rows_only=cardinality_only)
                 if argument_references is None:
                     failed = True
                     break
                 collected.update(argument_references)
             if not failed:
                 for keyword in call.keywords:
-                    keyword_references = _referenced_columns(keyword.value)
+                    keyword_references = _referenced_columns(
+                        keyword.value, rows_only=cardinality_only
+                    )
                     if keyword_references is None:
                         failed = True
                         break
@@ -2201,12 +2265,27 @@ def _parse_program(
     input_names: frozenset[str],
     cardinality_only: bool = False,
     selector_aliases: frozenset[str] = frozenset(),
+    df_input: str | None = None,
+    value_names: frozenset[str] = frozenset(),
 ) -> LinearFrameProgram | _ParseFailure:
     try:
         tree = ast.parse(code)
     except SyntaxError:
         return _ParseFailure("syntax_error")
 
+    # The input ``df`` holds before the code assigns it: the node's own binding
+    # when it has one, otherwise the sole input. Historical code sometimes spells
+    # a sole input as ``df``; runtime validation remains authoritative, and this
+    # conservative alias keeps projection behavior compatible.
+    implicit_df = df_input
+    if implicit_df is None and len(input_names) == 1:
+        implicit_df = next(iter(input_names))
+    # Names the analyser can see. Anything else (a preamble name, an import, a
+    # builtin) could hold a Polars expression reading columns the walk never
+    # sees, so column lineage refuses a program that uses one. Row counts do
+    # not depend on which columns such an expression reads.
+    resolved = {"pl", "df", *input_names, *selector_aliases, *value_names}
+    unresolved_name: str | None = None
     root_input: str | None = None
     operations: list[LineageOperation] = []
     started_operations = False
@@ -2230,15 +2309,21 @@ def _parse_program(
                 return _ParseFailure("frame_dependent_helper")
             if any(isinstance(child, ast.Call) for child in ast.walk(statement.value)):
                 return _ParseFailure("dynamic_helper")
+            if _first_unresolved_name(statement.value, frozenset(resolved)) is None:
+                resolved.add(target.id)
+            else:
+                resolved.discard(target.id)
             continue
 
+        if not cardinality_only and unresolved_name is None:
+            unresolved_name = _first_unresolved_name(statement.value, frozenset(resolved))
         if isinstance(statement.value, ast.Name):
             if started_operations:
                 return _ParseFailure("unknown_frame_root")
             if statement.value.id in input_names:
                 root_input = statement.value.id
-            elif statement.value.id == "df" and root_input is None and len(input_names) == 1:
-                root_input = next(iter(input_names))
+            elif statement.value.id == "df" and root_input is None and implicit_df is not None:
+                root_input = implicit_df
             elif statement.value.id != "df" or root_input is None:
                 return _ParseFailure("unknown_frame_root")
             continue
@@ -2251,12 +2336,9 @@ def _parse_program(
                 return _ParseFailure("frame_root_reset")
         elif root == "df":
             if root_input is None:
-                if len(input_names) != 1:
+                if implicit_df is None:
                     return _ParseFailure("ambiguous_frame_root")
-                # Historical code sometimes spells the sole input as ``df``.
-                # Runtime validation remains authoritative; retaining this
-                # conservative alias keeps projection behavior compatible.
-                root_input = next(iter(input_names))
+                root_input = implicit_df
         elif root in input_names:
             root_input = root
         else:
@@ -2275,7 +2357,38 @@ def _parse_program(
 
     if root_input is None:
         return _ParseFailure("no_frame_root")
+    if unresolved_name is not None:
+        return _ParseFailure("unresolved_name")
     return LinearFrameProgram(root_input=root_input, operations=tuple(operations))
+
+
+def _first_unresolved_name(node: ast.AST, resolved: frozenset[str]) -> str | None:
+    """Return the first name in *node* outside *resolved*, or ``None``.
+
+    A lambda's own parameters resolve inside its body; its defaults are
+    evaluated where the lambda is written.
+    """
+    if isinstance(node, ast.Name):
+        return None if node.id in resolved else node.id
+    if isinstance(node, ast.Lambda):
+        arguments = node.args
+        for default in [*arguments.defaults, *arguments.kw_defaults]:
+            if default is not None and (found := _first_unresolved_name(default, resolved)):
+                return found
+        parameters = {
+            argument.arg
+            for argument in [
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+                *(extra for extra in (arguments.vararg, arguments.kwarg) if extra is not None),
+            ]
+        }
+        return _first_unresolved_name(node.body, resolved | parameters)
+    for child in ast.iter_child_nodes(node):
+        if (found := _first_unresolved_name(child, resolved)) is not None:
+            return found
+    return None
 
 
 def _rename_schema(
@@ -2360,6 +2473,58 @@ def _ensure_root_carrier(
         carrier = present[0] if present else candidates[0]
         candidates.remove(carrier)
         root_demand.add(carrier)
+
+
+ROW_CARRIER_SCHEMA_UNKNOWN_REASON = "row_carrier_schema_unknown"
+# Operations after which a carrier column of unknown name may be gone: any
+# ``drop`` can name it (strictly or not, even after the code overwrote it), and
+# the others replace every column with named outputs.
+_CARRIER_REMOVING_KINDS = frozenset(
+    {
+        LineageOperationKind.DROP,
+        LineageOperationKind.SELECT,
+        LineageOperationKind.GROUP_BY_AGG,
+        LineageOperationKind.UNPIVOT,
+    }
+)
+
+
+def _step_emptying_an_unknown_root(
+    program: LinearFrameProgram,
+    evaluated: Sequence[_EvaluatedOperation],
+    input_schemas: Mapping[str, frozenset[str] | None],
+    root_demand: frozenset[str],
+    input_dtypes: Mapping[str, Mapping[str, pl.DataType]] | None,
+) -> tuple[str, str] | None:
+    """Return the unsupported reason when a schema-less root can lose its rows.
+
+    Without the root schema no carrier column can be chosen, so the program is
+    re-evaluated over the demanded root columns alone. An empty demand is
+    carried by the one column the edge or scan keeps for it, whose name is
+    unknown, so that carrier only counts until the first operation that could
+    remove it. At the first step where the narrowed frame can have no columns
+    while the full frame is not provably empty, the narrowed run would lose
+    every row.
+    """
+    projected = _evaluate_program(
+        program,
+        {**input_schemas, program.root_input: root_demand},
+        input_dtypes,
+    )
+    if isinstance(projected, _ParseFailure):
+        return "carrier_unresolvable", program.operations[-1].method
+    carrier_kept = not root_demand
+    for full, narrow in zip(evaluated, projected[0], strict=True):
+        if narrow.operation.kind in _CARRIER_REMOVING_KINDS:
+            carrier_kept = False
+        if (
+            not carrier_kept
+            and narrow.after_schema is not None
+            and not narrow.after_schema
+            and full.after_schema != frozenset()
+        ):
+            return ROW_CARRIER_SCHEMA_UNKNOWN_REASON, full.operation.method
+    return None
 
 
 _DtypeMap = dict[str, "pl.DataType | None"]
@@ -2699,21 +2864,43 @@ def analyze_polars_lineage(
     *,
     input_dtypes: Mapping[str, Mapping[str, pl.DataType]] | None = None,
     selector_aliases: frozenset[str] = frozenset(),
+    df_input: str | None = None,
+    value_names: frozenset[str] = frozenset(),
 ) -> ColumnLineageAnalysis:
     """Prove exact output schema and per-input demand for linear Polars code.
 
     ``None`` input schemas are allowed for operations whose ownership does not
     depend on the complete schema.  A join requires exact schemas on both sides
     so collision/suffix ownership can be attributed mechanically.
+
+    ``df_input`` names the input the code sees as ``df`` before assigning it,
+    for nodes whose builder binds their first input frame to ``df``. ``df``
+    is never a join operand, since after the first statement it is the live
+    frame rather than that input.
+
+    ``value_names`` are names the node binds to values that are never Polars
+    expressions or frames (an External File's loaded ``obj``). Every other name
+    the code uses must be an input, ``pl``, a selector alias, a lambda
+    parameter, or a helper built only from those; otherwise the program is
+    ``unresolved_name``.
     """
     if not isinstance(code, str) or not code.strip():
         return _unsupported("empty_code")
     if not inputs or any(not isinstance(name, str) or not name for name in inputs):
         return _unsupported("invalid_inputs")
+    if df_input is not None and df_input not in inputs:
+        return _unsupported("invalid_inputs")
     normalised_inputs = {
         name: None if columns is None else frozenset(columns) for name, columns in inputs.items()
     }
-    program = _parse_program(code, frozenset(normalised_inputs), False, frozenset(selector_aliases))
+    program = _parse_program(
+        code,
+        frozenset(normalised_inputs),
+        False,
+        frozenset(selector_aliases),
+        df_input,
+        frozenset(value_names),
+    )
     if isinstance(program, _ParseFailure):
         return _unsupported(program.reason, program.operation)
     evaluated_result = _evaluate_program(program, normalised_inputs, input_dtypes)
@@ -2835,7 +3022,17 @@ def analyze_polars_lineage(
     # its keys).
     root_demand = demands_by_input[program.root_input]
     root_schema = normalised_inputs.get(program.root_input)
-    if root_schema and not _ensure_root_carrier(
+    if root_schema is None:
+        emptying = _step_emptying_an_unknown_root(
+            program,
+            evaluated,
+            normalised_inputs,
+            frozenset(root_demand),
+            input_dtypes,
+        )
+        if emptying is not None:
+            return _unsupported(*emptying)
+    elif root_schema and not _ensure_root_carrier(
         program,
         evaluated,
         normalised_inputs,

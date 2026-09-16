@@ -13,7 +13,7 @@
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution reads the canonical node registry. |
 | `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, profile-independent projection decisions, fan-in edge demands, materialisation/opaque boundaries, demand-only source-scan projection (a node's configured column selection bounds what may be demanded but is never pushed into or validated against a physical read), and bounded strategy diagnostics. |
 | `src/haute/_execution_schemas.py` | Canonical Pydantic API DTOs for execution-strategy diagnostic boundaries, reasons, provenance, bounded collections, calibration, and the versioned diagnostic payload. `src/haute/schemas.py` re-exports the public models so existing imports remain stable. |
-| `src/haute/_column_lineage.py` | Fail-closed AST interpreter for linear Polars frame programs: exact forward schema transfer, per-input backward column demand, and a closed row-effect class (row-preserving, row-non-increasing, bounded-expansion, or unavailable) for the supported operation vocabulary, plus the audited per-namespace registry of `str`/`dt` expression methods whose bare string arguments Polars parses as literals. |
+| `src/haute/_column_lineage.py` | Fail-closed AST interpreter for linear Polars frame programs: exact forward schema transfer, per-input backward column demand, and a closed row-effect class (row-preserving, row-non-increasing, bounded-expansion, or unavailable) for the supported operation vocabulary, plus the audited per-namespace registry of `str`/`dt` expression methods whose bare string arguments Polars parses as literals and the audited `_LITERAL_ARGUMENT_EXPRESSION_METHODS` registry of plain-expression replacement methods whose arguments it parses as literals. |
 | `src/haute/_polars_operations.py` | The closed, receiver-aware registry of recognised Polars operations (`PolarsOperation` entries keyed by receiver, namespace, and name) with their class, evidence-backed policy, expansion, chunk-proof status, lineage support, and materialisation memory factor in basis points, plus the lookup helpers the chunk classifier, the lineage/cardinality analyser, and the planner derive their vocabularies from. Import-time validation rejects duplicate keys and class/policy/expansion combinations that contradict each other. |
 | `src/haute/_polars_selectors.py` | Literal Polars column selectors: `preamble_selector_aliases` (the preamble's `polars.selectors` import aliases), `literal_selector` (the closed grammar that rebuilds a selector written with literal arguments as the Polars object, accepted only when Polars reports a pure column selection), `selector_root` (the selector a computation starts from), and `expand_literal_selector` (expansion against a column set by Polars, refusing positional selectors and dtype-dependent selectors without every dtype). |
 | `src/haute/_execution_context.py` | `ExecutionContext`, `ExecutionProfile`, `ExecutionCancellationToken`, `ExecutionMetricsRecorder`, deterministic request-local fault points, bounded opt-in terminal telemetry, cancellation-latency evidence, cleanup precedence, and RSS-sampling/memory-pressure-event machinery. Contexts created directly may be unbudgeted; admitted contexts carry the resolved limits. |
@@ -416,7 +416,9 @@ every node's output in every execution profile. Source builders never push it in
 physical read and never validate it against the file schema, so a Data Input's post-load
 code may add or consume any column — a column the code creates can be selected — and a
 stale selection is simply absent from the output rather than fatal, identically in preview
-and bounded profiles. The physical scan projection comes from planner demand only.
+and bounded profiles. The physical scan projection comes from planner demand only, carried
+back through the node's post-load code (see "Data Input post-load code participates in
+projection planning").
 A target-only preview therefore limits only the target with SQL `LIMIT` semantics — Polars
 pushes the slice upstream only where the result is unchanged — a full materialisation
 gives every node its own limited output, and trace passes its head-frame prefixes.
@@ -881,7 +883,40 @@ present a structural or schema result as execution evidence.
   these positions fails closed. `tests/test_column_lineage.py` verifies the
   registry against the
   pinned Polars source, so an upgrade that changes a registered method's string
-  semantics fails the suite instead of silently under-demanding.
+  semantics fails the suite instead of silently under-demanding. The same audit covers
+  `_LITERAL_ARGUMENT_EXPRESSION_METHODS`, the plain-expression `replace` and
+  `replace_strict`, whose mapping, list, and default arguments Polars parses as literals.
+  A non-literal argument — a name, attribute, subscript, or any other value that could
+  evaluate to a Python string, directly or as a member of a list, tuple, or set — counts as
+  a direct string argument, because Polars reads a string held in a variable or iterated
+  out of a collection as a column exactly as it reads a literal one (`then(label)`,
+  `clip(bound)`, `is_in(levels)`, `sort_by({'b'})`), and a helper assignment, a preamble
+  constant, or an External File's `obj` can hold one. A mapping argument is always a literal
+  (a struct value or a replacement mapping), and Polars dtype references (`pl.Float64`, a
+  literal dtype call) and lambdas are never strings, so all three stay admitted; unpacking a
+  mapping with `**` passes its items as ordinary arguments (`sort_by(**{'by': 'b'})`), so a
+  method call that unpacks one is unsupported. Row-count proofs never use the references, so they keep refusing only literal
+  string arguments. Output names must be literal in the same way: an `alias` whose argument
+  is not a literal string and every `name` or `struct` namespace method other than a literal
+  `name.suffix` leave the expression without a provable name, so its operation is
+  unsupported rather than mistaken for a pass-through column. The pinned Polars appends
+  `name.suffix` to the output name of the expression it closes (`pl.col('a').alias('x')`
+  becomes `x_s`, `pl.lit(1) + pl.col('a')` becomes `literal_s`), so the suffix is readable
+  exactly when that output name is. A comparison with a literal scalar on its left
+  (`0 < pl.col('a')`) runs as the expression's reflected comparison and keeps the
+  expression's name, while reflected arithmetic (`2 * pl.col('a')`) is named `literal`; a
+  comparison whose left operand is neither a literal nor a provable expression is unnamed, and
+  so is a chained comparison, whose scalar prefix can evaluate to `True` and hand back its last
+  comparison (`0 < 1 < pl.col('a')` is named `a`).
+  Every name a frame statement uses must resolve to a value the analyser can see: `pl`, an
+  input frame or `df`, a preamble `polars.selectors` alias, a lambda's own parameter inside
+  its body, an earlier helper assignment whose value uses only literals and such names, or a
+  value the node itself binds and declares to the analyser (`value_names`; an External File's
+  `obj`). Any other name — a preamble constant or expression, an imported module, a builtin, a
+  comprehension variable — could hold a Polars expression that reads columns the walk cannot
+  see (`pl.col('premium') * weight` with `weight = pl.col('exposure')` in the preamble), so an
+  otherwise supported program is reported `unresolved_name` and keeps its full-width
+  boundary. Row-count proofs do not apply this rule.
 - **Lineage inputs are incoming edges, not parent node ids.** Each input binding
   carries its complete `ProjectionEdgeKey`, executable `edge_input_name`, and exact
   schema when one is available. Exact API schemas are resolved per source handle;
@@ -927,6 +962,43 @@ present a structural or schema result as execution evidence.
   model is loaded). Columns the code computes are therefore never demanded from the
   parent, and columns it reads are, even when the declared inputs list only model features. Post-code outside the lineage model keeps a
   full-width boundary recorded as `builder_post_code`.
+- **Data Input post-load code participates in projection planning.** A Data Input's `code`
+  runs over its scan as `df`, before `selected_columns` and renames. With a known demand, the
+  planner, source builders, and runtime join refinement share one rule
+  (`source_user_code_scan_columns`) for what the scan must read. Demanded names are first
+  mapped back through the configured renames, because the code produces pre-rename names;
+  row-only slicing (`limit`, `head`, `tail`, `slice`) then passes the demand through unchanged,
+  and any other code is analysed with the same fail-closed column lineage as a Polars node.
+  The scan therefore never reads a column the code creates, and always reads the columns the
+  code consumes — a `filter` predicate column, for example, even under a rows-only demand.
+  The source builder supplies the opened scan's schema to that rule, and a scan under
+  projection-opaque code is narrowed only with it: the known schema lets lineage add a row
+  carrier when the code drops every demanded column (so the frame keeps its height), and lets
+  the rule prove the full pre-shaping output. When the configured selection and renames would
+  collide on that output, the scan stays full width, so the rename error is raised in bounded
+  profiles exactly as in preview, with or without code. Planning and runtime join refinement
+  ask the same rule without a schema, which decides only whether projection is provable; the
+  builder's schema-aware answer can only widen the scan further. Code outside the lineage model
+  (a whole-row `unique()` or `drop_nulls()`, a selector, a helper call) keeps a full-width
+  source scan recorded as `unprojected_streaming_boundary`. An unknown demand leaves the scan
+  full width whatever the code is.
+- **External File code participates in projection planning as a transform.** An External
+  File's `code` runs over its incoming frames with the loaded artifact bound as `obj`. It
+  opens no scan of its own, so its demand is never forced full width the way a source scan's
+  is. With a known demand the planner analyses the code with the same compositional column
+  lineage as a Polars node, over the same incoming-edge bindings (edge input names and
+  `inputMapping` aliases) plus `df`, which the builder binds to the first incoming frame.
+  `obj` is the node's declared value name: the artifact comes from JSON, the restricted
+  unpickler, or a model loader, so it is never a Polars expression or a frame. Code that uses
+  `obj` as a scalar or a literal inside provable expressions (`pl.col('premium') *
+  obj['factor']`, `pl.lit(obj['version'])`) is narrowed, while a model call
+  (`obj.predict(...)`), `obj` supplying a column name, list, or output name
+  (`select(obj['features'])`, `then(obj['name'])`, `alias(obj['name'])`), a join against
+  `obj`, or a preamble name is outside the lineage model and keeps the node's inputs full
+  width under `polars_lineage_unsupported`. A declared
+  concrete contract and configured renames keep their existing precedence, as for a Polars
+  node. The runtime selector and join refinements (`_runtime_lineage_demands`) remain
+  Polars-node rules, so External File code that needs a runtime schema stays full width.
 - **Unowned fan-in never uses ordinary contract algebra.** After the dedicated
   optimiser, edge-join, and compositional Polars fan-in rules have had an
   opportunity to assign columns to individual incoming edges, any remaining node
@@ -986,7 +1058,8 @@ present a structural or schema result as execution evidence.
   `last` as row-count-safe.
 - **Unsupported syntax stays visible.** Non-literal selectors/keys, dataframe-dependent
   helper assignments, unregistered expression functions, string-argument methods
-  outside the audited `str`/`dt` literal-argument registry,
+  outside the audited `str`/`dt` literal-argument registry, non-literal method arguments
+  and output names,
   branches/loops/functions, unsupported join options, schema-
   dependent ownership without an exact schema, and operations without a registered
   transfer return a structured unsupported lineage result. The planner retains the
@@ -1612,7 +1685,16 @@ present a structural or schema result as execution evidence.
   the projected frame has none, adds the first root column present in the full frame at that
   step, in sorted order, repeating until no step is empty; a projected program that cannot be
   evaluated at all is reported unsupported (`carrier_unresolvable`). Demanding an extra
-  column never changes a result, so the rule only widens. Other inputs keep an exact empty
+  column never changes a result, so the rule only widens. Without the root input's schema no
+  carrier can be chosen, so the analyser evaluates the program over the demanded root columns
+  alone and reports `row_carrier_schema_unknown` when a step would leave that frame with no
+  columns while the full frame is not provably empty — a `drop` of every demanded column,
+  typically. An empty demand is carried by the one column the edge or scan keeps for it, but
+  that column's name is unknown, so it counts only until the first `drop` (strict or not,
+  even of a column the code overwrote) or the first `select`, aggregate, or `unpivot`. A Polars node whose parent schema is unknown,
+  builder post-code (always analysed without a schema), External File code, and Data Input
+  post-load code (planned without its scan's schema) therefore keep a full-width boundary for
+  such code rather than losing rows in bounded profiles. Other inputs keep an exact empty
   demand: an unused port has no rows to carry, and the runtime join path (`_execute_lazy.py`)
   keeps its own carrier for an empty-demand edge. Pinned by `tests/test_column_lineage.py`
   (including the drop-everything program the property test falsified) and the
