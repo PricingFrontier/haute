@@ -2881,6 +2881,150 @@ class TestValidateConfig:
 
 
 # ---------------------------------------------------------------------------
+# Synchronous GLM schema gate on /train and /dispersion/estimate
+# ---------------------------------------------------------------------------
+
+
+_GLM_COLLIDING_TERMS: dict = {
+    "x": {"type": "linear"},
+    "x_sq": {"type": "expression", "expr": "x ** 2"},
+}
+
+
+@pytest.fixture()
+def glm_collision_data(tmp_path) -> str:
+    """Source whose unused ``x_sq`` column collides with an expression key."""
+    path = tmp_path / "glm_collision.parquet"
+    pl.DataFrame(
+        {"x": [1.0, 2.0, 3.0], "x_sq": [1.0, 4.0, 9.0], "y": [1.0, 2.0, 3.0]}
+    ).write_parquet(path)
+    return str(path)
+
+
+def _glm_schema_gate_graph(data_path: str | None, config: dict):
+    """Data Input → Modelling graph; ``data_path=None`` leaves the model unfed."""
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    if data_path is not None:
+        nodes.append(
+            {
+                "id": "source",
+                "data": {
+                    "label": "source",
+                    "nodeType": "dataInput",
+                    "config": make_ready_file_input_config(data_path),
+                },
+            }
+        )
+        edges.append(make_edge("source", "train").model_dump())
+    nodes.append(
+        {"id": "train", "data": {"label": "train", "nodeType": "modelling", "config": config}}
+    )
+    return make_graph({"nodes": nodes, "edges": edges})
+
+
+class TestGlmInputSchemaGate:
+    """GLM term columns are checked against the exact unprojected input schema
+    before a job is created, so a mismatch is a 422 on the request rather than
+    a job that fails later during background preparation."""
+
+    def _service(self):
+        from haute.routes._job_store import JobStore
+
+        store = JobStore()
+        return store, TrainService(store)
+
+    def test_training_route_rejects_expression_key_colliding_with_unprojected_column(
+        self, glm_collision_data
+    ):
+        """Upstream has an unused column ``x_sq``; the model keys an expression
+        ``x_sq``. Projection would drop the column, so the gate must see the
+        unprojected schema."""
+        from haute.schemas import TrainRequest
+
+        body = TrainRequest(
+            graph=_glm_schema_gate_graph(
+                glm_collision_data,
+                {
+                    "algorithm": "glm",
+                    "target": "y",
+                    "family": "gaussian",
+                    "terms": _GLM_COLLIDING_TERMS,
+                    "evaluation": _random_evaluation_config(),
+                },
+            ),
+            node_id="train",
+        )
+        store, service = self._service()
+
+        with pytest.raises(HTTPException) as raised:
+            service.start(body)
+
+        assert raised.value.status_code == 422
+        assert "names a column" in str(raised.value.detail)
+        assert not store.list_jobs()
+
+    def test_dispersion_route_rejects_expression_key_colliding_with_unprojected_column(
+        self, glm_collision_data
+    ):
+        """The dispersion route materialises the same frame, so it gates the
+        same way — a 422 before the estimation job exists."""
+        from haute.schemas import DispersionEstimateRequest
+
+        body = DispersionEstimateRequest(
+            graph=_glm_schema_gate_graph(
+                glm_collision_data,
+                {
+                    "algorithm": "glm",
+                    "target": "y",
+                    "family": "tweedie",
+                    "terms": _GLM_COLLIDING_TERMS,
+                    "evaluation": _random_evaluation_config(),
+                },
+            ),
+            node_id="train",
+            param="var_power",
+        )
+        store, service = self._service()
+
+        with pytest.raises(HTTPException) as raised:
+            service.start_dispersion_estimate(body)
+
+        assert raised.value.status_code == 422
+        assert "names a column" in str(raised.value.detail)
+        assert not store.list_jobs()
+
+    def test_training_route_returns_422_when_input_schema_cannot_be_resolved(self):
+        """An unfed modelling node has no schema to check against — an explicit
+        422 naming the cause, never a 500 and never the projected schema."""
+        from haute.schemas import TrainRequest
+
+        body = TrainRequest(
+            graph=_glm_schema_gate_graph(
+                None,
+                {
+                    "algorithm": "glm",
+                    "target": "y",
+                    "family": "gaussian",
+                    "terms": {"x": {"type": "linear"}},
+                    "evaluation": _random_evaluation_config(),
+                },
+            ),
+            node_id="train",
+        )
+        store, service = self._service()
+
+        with pytest.raises(HTTPException) as raised:
+            service.start(body)
+
+        assert raised.value.status_code == 422
+        detail = str(raised.value.detail)
+        assert "Training input schema could not be resolved" in detail
+        assert "No input data available" in detail
+        assert not store.list_jobs()
+
+
+# ---------------------------------------------------------------------------
 # _validate_glm_family_link unit tests
 # ---------------------------------------------------------------------------
 

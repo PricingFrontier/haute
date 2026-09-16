@@ -69,6 +69,7 @@ from haute.modelling._evaluation import (
     EvaluationConfig,
     generate_evaluation_plan,
 )
+from haute.modelling._glm_terms import validate_glm_model_columns
 from haute.modelling._train_config import (
     TrainingConfigError,
     build_train_params,
@@ -134,6 +135,7 @@ from haute.routes._training_preparation import (
     _training_sink_exclusions,
     create_training_parquet_path,
     prepare_training_data_worker,
+    resolve_training_input_schema,
 )
 from haute.routes._training_worker import (
     _assert_json_finite,
@@ -258,6 +260,7 @@ class TrainService:
             config = {**config, "categorical_levels": declared_categorical_levels}
 
         self._validate_config(config)
+        self._validate_glm_input_schema(body, config)
 
         with self._start_lock:
             self._check_no_concurrent_jobs()
@@ -683,6 +686,7 @@ class TrainService:
         node = _find_modelling_node(body.graph, body.node_id)
         config = dict(node.data.config)
         self._validate_dispersion_config(config, body.param)
+        self._validate_glm_input_schema(body, config)
 
         with self._start_lock:
             self._check_no_concurrent_jobs()
@@ -1201,6 +1205,45 @@ class TrainService:
                 )
         except TrainingConfigError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def _validate_glm_input_schema(
+        self,
+        body: TrainRequest | DispersionEstimateRequest,
+        config: Mapping[str, Any],
+    ) -> None:
+        """Reject GLM term/column mismatches against the exact input schema.
+
+        Runs synchronously before a job exists so the caller gets a 422 rather
+        than a job that fails during preparation. The schema is resolved
+        unprojected, so an expression keyed by an upstream column the model
+        never reads is still caught.
+        """
+        if str(config.get("algorithm", "catboost")).lower() != "glm":
+            return
+        params = build_train_params(config)
+        terms = params.get("terms")
+        if not terms:
+            return
+        try:
+            preamble_ns = self._compile_preamble(body.graph)
+            schema = resolve_training_input_schema(
+                body.graph, body.node_id, preamble_ns, body.source
+            )
+            validate_glm_model_columns(terms, params.get("interactions") or [], schema)
+        except HauteValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+            raise contract_error_http_exception(exc) from None
+        except (ParseError, ConfigError, pl.exceptions.PolarsError, ValueError) as exc:
+            # A graph shape the engine cannot resolve (an unfed modelling node
+            # raises a bare ValueError before the resolver's own guard) is the
+            # user's to fix, exactly like a parse or schema failure: name the
+            # cause in a 422 rather than let it escape as a 500. Same reasoning
+            # as evaluation_preview's (TypeError, ValueError) branch above.
+            raise HTTPException(
+                status_code=422,
+                detail=f"Training input schema could not be resolved: {exc}",
+            ) from exc
 
     def _check_no_concurrent_jobs(self) -> None:
         """Reject if a training job is already running."""
