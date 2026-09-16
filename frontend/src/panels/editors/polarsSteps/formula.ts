@@ -269,9 +269,50 @@ function describe(token: Token): string {
   }
 }
 
-/** Parse formula text; throws `FormulaError` with a plain-English message. */
+/**
+ * Parse formula text; throws `FormulaError` with a plain-English message.
+ * A formula or function result carries the trimmed text so the editor and
+ * the card summary show it exactly as typed, brackets and all.
+ */
 export function parseFormula(text: string, variables: readonly string[] = []): Expr {
-  return new Parser(tokenize(text), new Set(variables)).parse()
+  const expr = new Parser(tokenize(text), new Set(variables)).parse()
+  return expr.type === "binary" || expr.type === "function" ? { ...expr, text: text.trim() } : expr
+}
+
+/** Deep copy of an expression with every `text` annotation removed. */
+export function withoutFormulaText(expr: Expr): Expr {
+  const strip = (operand: Operand): Operand => (operand.kind === "expr" ? { kind: "expr", expr: withoutFormulaText(operand.expr) } : operand)
+  switch (expr.type) {
+    case "binary":
+      return { type: "binary", left: strip(expr.left), op: expr.op, right: strip(expr.right) }
+    case "function":
+      return { type: "function", fn: expr.fn, operand: strip(expr.operand), args: expr.args }
+    case "operand":
+      return { ...expr, operand: strip(expr.operand) }
+    case "conditional":
+      return { ...expr, then: strip(expr.then), otherwise: strip(expr.otherwise) }
+    case "concat":
+      return { ...expr, parts: expr.parts.map(strip) }
+    default:
+      return expr
+  }
+}
+
+/**
+ * The text to show for an expression: what was typed, when that still
+ * parses to this expression, else a fresh rendering; null when text cannot
+ * express the expression.
+ */
+export function displayFormula(expr: Expr, variables: readonly string[] = []): string | null {
+  if ((expr.type === "binary" || expr.type === "function") && typeof expr.text === "string") {
+    try {
+      const reparsed = withoutFormulaText(parseFormula(expr.text, variables))
+      if (JSON.stringify(reparsed) === JSON.stringify(withoutFormulaText(expr))) return expr.text
+    } catch {
+      // fall through to a fresh rendering
+    }
+  }
+  return formulaText(expr, variables)
 }
 
 function quoteText(value: string): string {

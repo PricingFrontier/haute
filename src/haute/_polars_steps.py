@@ -654,6 +654,11 @@ class _Renderer:
             return name, f".quantile({quantile!r}, interpolation='linear')"
         return name, f".{name}()"
 
+    def _formula_text(self, expr: Mapping[str, Any], label: str) -> None:
+        """Accept the editor's formula text annotation: display only, never rendered."""
+        if "text" in expr and not isinstance(expr["text"], str):
+            raise self.fail(f"{label} formula text must be a string.")
+
     def _expr(self, value: object, label: str) -> str:
         self.depth += 1
         try:
@@ -673,7 +678,8 @@ class _Renderer:
             self._keys(expr, ("type", "operand"), label)
             return self._operand(expr.get("operand"), f"{label} operand", expr=True)
         if kind == "binary":
-            self._keys(expr, ("type", "left", "op", "right"), label)
+            self._keys(expr, ("type", "left", "op", "right", "text"), label)
+            self._formula_text(expr, label)
             op = self._choice(expr.get("op"), BINARY_OPERATORS, f"{label} operator")
             left = self._operand(
                 expr.get("left"), f"{label} left operand", expr=True, parent=(op, "left")
@@ -683,7 +689,8 @@ class _Renderer:
             )
             return f"{left} {op} {right}"
         if kind == "function":
-            self._keys(expr, ("type", "fn", "operand", "args"), label)
+            self._keys(expr, ("type", "fn", "operand", "args", "text"), label)
+            self._formula_text(expr, label)
             fn = self._choice(expr.get("fn"), tuple(FUNCTIONS), f"{label} function")
             receiver = self._operand(expr.get("operand"), f"{label} operand", expr=True)
             arg_types, template = FUNCTIONS[fn]

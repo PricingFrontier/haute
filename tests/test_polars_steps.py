@@ -1514,6 +1514,38 @@ def test_nested_expressions_reject(kind_step: dict[str, Any], fragment: str) -> 
     assert fragment in info.value.message
 
 
+def test_formula_text_annotation_is_kept_but_never_rendered() -> None:
+    expr = {**binary(col("a"), "+", col("b")), "text": "(a + b)"}
+    rendered = render_polars_steps(
+        [source(), step("x", "with_column", name="v", expr=expr)], ["quotes"]
+    )
+    assert (
+        rendered.code.splitlines()[1]
+        == "df = df.with_columns((pl.col('a') + pl.col('b')).alias('v'))"
+    )
+    fn_expr = {**fn("abs", ex(binary(col("a"), "-", col("b")))), "text": "abs((a - b))"}
+    rendered = render_polars_steps(
+        [source(), step("x", "with_column", name="v", expr=fn_expr)], ["quotes"]
+    )
+    assert (
+        rendered.code.splitlines()[1]
+        == "df = df.with_columns(((pl.col('a') - pl.col('b')).abs()).alias('v'))"
+    )
+    with pytest.raises(PolarsStepError, match="formula text must be a string"):
+        render_polars_steps(
+            [
+                source(),
+                step(
+                    "x",
+                    "with_column",
+                    name="v",
+                    expr={**binary(col("a"), "+", col("b")), "text": 3},
+                ),
+            ],
+            ["quotes"],
+        )
+
+
 def test_nesting_depth_counts_from_the_step_expression() -> None:
     # Depth 11 below the top-level expression is the deepest allowed.
     render_polars_steps(

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, cleanup, fireEvent } from "@testing-library/react"
 import { useState } from "react"
 
+import { summarizeStep } from "../catalogue"
 import { StepForm, type StepFormContext } from "../forms"
 import type { Step } from "../types"
 
@@ -404,6 +405,7 @@ describe("step forms only build schema-valid payloads", () => {
     let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
     expect(latest.expr).toEqual({
       type: "binary",
+      text: "(premium + rate) * 1.05 / 12",
       left: {
         kind: "expr",
         expr: {
@@ -417,11 +419,23 @@ describe("step forms only build schema-valid payloads", () => {
       right: { kind: "literal", type: "number", value: 12 },
     })
     expect(screen.getByLabelText("Formula")).toHaveValue("(premium + rate) * 1.05 / 12")
+    // Redundant brackets survive a collapse and re-open exactly as typed.
+    fireEvent.change(screen.getByLabelText("Formula"), { target: { value: "premium + (rate * 2)" } })
+    fireEvent.blur(screen.getByLabelText("Formula"))
+    expect(screen.getByLabelText("Formula")).toHaveValue("premium + (rate * 2)")
+    expect(summarizeStep(spy.mock.calls.at(-1)?.[0] as Step)).toBe("rate = premium + (rate * 2)")
+    // A function typed as a formula stays a formula.
+    fireEvent.change(screen.getByLabelText("Formula"), { target: { value: "round((premium + 1), 2)" } })
+    fireEvent.blur(screen.getByLabelText("Formula"))
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toMatchObject({ type: "function", fn: "round", text: "round((premium + 1), 2)" })
+    expect(screen.getByLabelText("Expression type")).toHaveValue("binary")
+    expect(screen.getByLabelText("Formula")).toHaveValue("round((premium + 1), 2)")
     fireEvent.change(screen.getByLabelText("Formula"), { target: { value: "(premium + 1" } })
     fireEvent.keyDown(screen.getByLabelText("Formula"), { key: "Enter" })
     expect(screen.getByText(/Not understood: Missing a closing bracket/)).toBeInTheDocument()
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
-    expect(latest.expr).toMatchObject({ op: "/" })
+    expect(latest.expr).toMatchObject({ type: "function", fn: "round", text: "round((premium + 1), 2)" })
   })
 
   it("pivot columns pair a value with a suggested name and share one type", () => {

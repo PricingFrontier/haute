@@ -315,6 +315,8 @@ function conditionText(condition: Condition): string {
 }
 
 function exprText(expr: Expr): string {
+  // A formula typed as text is summarised exactly as typed.
+  if ((expr.type === "binary" || expr.type === "function") && typeof expr.text === "string") return expr.text
   switch (expr.type) {
     case "operand":
       return operandText(expr.operand)
@@ -438,9 +440,11 @@ function exprProblem(value: unknown, where: string, depth = 1): string | null {
       return operandProblem(expr.operand, where, depth)
     case "binary":
       if (typeof expr.op !== "string") return `${where} is missing its operator.`
+      if (expr.text !== undefined && typeof expr.text !== "string") return `${where} has malformed formula text.`
       return operandProblem(expr.left, `${where} left side`, depth) ?? operandProblem(expr.right, `${where} right side`, depth)
     case "function":
       if (typeof expr.fn !== "string") return `${where} is missing its function.`
+      if (expr.text !== undefined && typeof expr.text !== "string") return `${where} has malformed formula text.`
       if (!Array.isArray(expr.args) || expr.args.some((a) => plainLiteralProblem(a, where) !== null)) return `${where} has malformed function arguments.`
       return operandProblem(expr.operand, where, depth)
     case "conditional":

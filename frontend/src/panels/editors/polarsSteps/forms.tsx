@@ -8,7 +8,7 @@ import { useId, useState, type ReactNode } from "react"
 
 import { ConfigCheckbox } from "../../../components/form"
 import { INPUT_STYLE } from "../_shared"
-import { FormulaError, formulaText, parseFormula } from "./formula"
+import { FormulaError, displayFormula, parseFormula } from "./formula"
 import {
   AGGREGATIONS,
   BINARY_OPERATORS,
@@ -157,7 +157,7 @@ function nestedExpression(ctx: StepFormContext, depth: number): RenderExpression
     <>
       <Field label="Computed as">
         <SelectField
-          value={expr.type}
+          value={exprTypeValue(expr)}
           options={EXPR_TYPES}
           onChange={(type) => onChange(defaultExpr(type, ctx.columns[0] ?? ""))}
           ariaLabel={`${ariaLabel} type`}
@@ -187,9 +187,18 @@ const FORMULA_HINT = "Columns by name, numbers, 'text', + - * / // % **, bracket
  * left/operator/right form.
  */
 function FormulaEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "binary" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
-  const text = formulaText(expr, ctx.variables)
+  const text = displayFormula(expr, ctx.variables)
   if (text === null) return <StructuredFormula expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
   return <FormulaField key={text} text={text} onCommit={onChange} variables={ctx.variables} />
+}
+
+/** A function typed as a formula stays a formula in the editor and the "Computed as" select. */
+function typedAsFormula(expr: Expr): expr is Extract<Expr, { type: "function" }> {
+  return expr.type === "function" && typeof expr.text === "string"
+}
+
+function exprTypeValue(expr: Expr): Expr["type"] {
+  return typedAsFormula(expr) ? "binary" : expr.type
 }
 
 function FormulaField({ text, onCommit, variables }: { text: string; onCommit: (next: Expr) => void; variables: string[] }) {
@@ -331,6 +340,8 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
 
 function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: (next: Expr) => void; ctx: StepFormContext; depth?: number }) {
   const renderExpression = nestedExpression(ctx, depth + 1)
+  const typedText = typedAsFormula(expr) ? displayFormula(expr, ctx.variables) : null
+  if (typedText !== null) return <FormulaField key={typedText} text={typedText} onCommit={onChange} variables={ctx.variables} />
   const operandProps = {
     sources: [...ALL_SOURCES],
     literalTypes: [...ALL_TYPES],
@@ -525,7 +536,7 @@ function WithColumnForm({ step, onChange, ctx }: FormProps<WithColumnStep>) {
       </Field>
       <Field label="Computed as">
         <SelectField
-          value={step.expr.type}
+          value={exprTypeValue(step.expr)}
           options={EXPR_TYPES}
           onChange={(type) => onChange({ ...step, expr: defaultExpr(type, ctx.columns[0] ?? "") })}
           ariaLabel="Expression type"

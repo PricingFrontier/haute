@@ -237,8 +237,11 @@ Formula, Function, If-then, Window and Join text. A formula is edited as text
 in backticks, earlier variables by name, quoted text, `true`/`false`/`null`,
 `date('YYYY-MM-DD')`, Python operator precedence with `**` right-associative, brackets,
 and the catalogue's functions with plain-value arguments); the text is parsed into the
-nested expression schema on commit, text that cannot be read keeps the last good
-expression and explains why in a muted note, and an expression text cannot express (one
+nested expression schema on commit and kept on the expression as typed, so brackets and
+spacing survive collapsing and reopening the card and the card summary shows the same
+text (text that no longer describes the expression is replaced by a fresh rendering);
+a function typed as a formula stays a formula in the editor; text that cannot be read
+keeps the last good expression and explains why in a muted note, and an expression text cannot express (one
 holding a window, conditional or text join) is edited in the structured
 left/operator/right form instead. An operand field also offers an "Expression" source that
 opens a nested editor (the same "Computed as" select and expression form, indented under
