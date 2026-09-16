@@ -995,7 +995,7 @@ class TestTermKeySubsets:
     }
 
     def test_haute_edits_a_subset_of_rustystats_valid_keys(self):
-        """The frontend's TERM_TYPE_PROPS mirrors HAUTE_SUBSET (frontend plan Task F1)."""
+        """Mirrors TERM_TYPE_PROPS in frontend/src/panels/modelling/glmTerms.ts."""
         import inspect
 
         from rustystats import formula

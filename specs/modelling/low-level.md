@@ -11,6 +11,7 @@
 | `src/haute/modelling/_evaluation.py` | Strict version-1 evaluation config, exact development/final-test and validation-fit plan generation, plan/result/report codecs, digest linkage, strategy summaries, and validation-row-weighted aggregation. |
 | `src/haute/modelling/_tuning.py` | Strict bounded CatBoost tuning config/search-space validation, seeded trial resolution, winner/tree-count selection, and tuning plan/trials/report codecs. |
 | `src/haute/modelling/_train_config.py` | Single source of truth for modelling-node config → training-job kwargs (`build_training_job_kwargs`, `build_train_params`, `parse_evaluation_config`, `parse_tuning_config`, `training_objective_issue`, `default_metrics`, `effective_metrics`). |
+| `src/haute/modelling/_glm_terms.py` | Pure GLM term contract shared by the config builder, routes, job, and adapter: `SUPPORTED_TERM_TYPES`, the expression grammar (`expression_identifiers`), the schema-free `glm_model_columns()` used for projection demand, and `validate_glm_model_columns()` against a real schema. Imports no RustyStats, so the schema-free half runs during projection planning before any data exists. |
 | `src/haute/modelling/_target_check.py` | `training_target_task_issue()` — data-dependent target-column vs task/metric gate returning an actionable message (or nothing when the pairing is valid), keyed on the effective reported-metric set (explicit config metrics or the objective-implied defaults), shared by the train route's pre-dispatch validation and `TrainingJob._prepare_data`. |
 | `src/haute/modelling/_split.py` | Internal partition-mask execution used by a final or selection fit. Its `SplitConfig` is a private test seam for direct callers exercising the shared partition/fit machinery; it is not a public modelling-node config contract and is not exported. |
 | `src/haute/modelling/_metrics.py` | Primary metric functions and diagnostic data computation (double lift, AvE, residuals, actual-vs-predicted, Lorenz, PDP). |
@@ -111,21 +112,30 @@
 - **Modelling-node algorithm config** — CatBoost constructor hyperparameters are the
   contents of top-level `params`, with CatBoost Tweedie power in top-level
   `variance_power`. GLM configuration is exclusively top-level
-  (`terms`, `all_factors`, `family`, `link`, `interactions`, `regularization`, `alpha`,
+  (`terms`, `family`, `link`, `interactions`, `regularization`, `alpha`,
   `l1_ratio`, `intercept`, `var_power`, `theta`, `offset`); `build_train_params`
-  projects those fields into the `TrainingJob.params` mapping consumed by RustyStats. Terms and
-  interactions that reference a feature made dormant by `exclude` remain stored in node config
-  but are omitted from this effective mapping until that feature is re-included; explicit
+  projects those fields into the `TrainingJob.params` mapping consumed by RustyStats.
+  An interaction entry is
+  `{"factors": [...], "specs": {factor: override}, "include_main": bool}`;
+  `specs` holds only `linear`, `categorical`, `bs`, or `ns` overrides. `exclude` never
+  narrows a GLM: a GLM feature is in the model exactly when it has a term or is a filled
+  interaction factor, and `build_training_job_kwargs` passes `exclude=[]` for GLM. Explicit
   `feature_columns` retains its established precedence over a stale exclusion.
+- **`offset`** — maps to RustyStats `exposure=` when the effective link (explicit
+  `link`, else `rustystats.formula.get_default_link(family)`) is `log`, and to `offset=`
+  otherwise, so the column stays a multiplier under a log link and additive elsewhere;
+  RustyStats re-reads the stored column by name at prediction.
 - **`monotone_constraints`** — the selected MOD-M09 product lever is a mapping from
   configured feature name to the exact integer `-1` or `1` (Boolean and zero are invalid).
-  `build_training_job_kwargs` removes entries named by `exclude` from the effective job mapping
-  without mutating stored config; an empty effective mapping becomes `None`.
-  `_validate_monotone_constraints` runs after GLM term narrowing and before
+  CatBoost only. `build_training_job_kwargs` passes `None` for GLM, and `TrainingJob`
+  rejects a GLM job constructed with the argument; GLM monotonicity lives on each term's
+  `monotonicity` key. For CatBoost, `build_training_job_kwargs` removes entries named by
+  `exclude` from the effective job mapping without mutating stored config; an empty
+  effective mapping becomes `None`. `_validate_monotone_constraints` runs before
   `_split_data`; it requires a mapping with non-empty string keys, rejects names not in
   the final feature list, and accepts only canonical numeric contract dtypes
   (`Int64`/`Float64`). The resulting validated mapping is passed unchanged to
-  CatBoost's feature-index translation or RustyStats term monotonicity.
+  CatBoost's feature-index translation.
 - **CatBoost numeric array handoff** — `_build_pool` calls
   `_prepare_predict_frame(..., flavor="catboost")`, which returns a multi-column
   numeric Polars frame as a Fortran-contiguous `Float32` NumPy matrix and passes it
@@ -1026,21 +1036,28 @@ potentially large copy on its threadpool.
   empty/duplicate/oversized or non-finite candidate lists, reserved orchestration keys,
   impossible/cyclic conditions, or a selection metric outside the configured metrics
   fail before Optuna is created.
-- GLM `terms` naming a column absent from the training data raise before fitting,
-  listing the missing names and a truncated sample of what is available.
-- `_build_interactions` (`_rustystats.py`) filters unset factor slots (`""`) out of an
-  interaction's `factors` list before checking the two-factor minimum. The config
-  panel's "+ Add" control creates `{"factors": ["", ""]}` before the user has picked
-  both columns; filtering unset slots before the minimum check makes such an unfilled
-  row a skip rather than a fit input.
+- GLM model columns (native keys, expression identifiers, interaction factors) are
+  resolved by `glm_model_columns` in `src/haute/modelling/_glm_terms.py` for projection
+  demand and validated by `validate_glm_model_columns` against the exact unprojected input schema
+  (`resolve_training_input_schema`, schema-only lazy build) before a training or
+  dispersion job is created (422), and again against the loaded frame in `TrainingJob`
+  and the dispersion worker.
+- `_build_interactions` (`_rustystats.py`) resolves each factor as override → main term →
+  dtype default, rejects overrides outside {linear, categorical, bs, ns}, any
+  `monotonicity` inside an interaction, categorical overrides that would re-type a
+  non-categorical main effect, numeric fits on string columns or categorical mains,
+  effective target encoding, inherited monotone splines, conflicting overrides across
+  cards, and duplicate factor sets; it materialises missing main effects once into the
+  terms dict and always passes `include_main=False`, because RustyStats' own
+  `include_main=True` duplicates existing main effects. Unset factor slots (`""`) are
+  filtered out before the two-factor minimum, so the config panel's freshly added
+  `{"factors": ["", ""]}` row is a skip rather than a fit input. Tests assert design
+  columns through `dict_to_parsed_formula` and `InteractionBuilder`.
 - A Negative Binomial GLM (`family="negbinomial"`) requires an explicit `theta` before
   training or export can proceed — `training_objective_issue` gates it identically to
   Tweedie's variance power, and RustyStats 0.9 itself refuses to fit without one.
   `estimate_glm_dispersion` exists specifically to give the user a principled value to
   set rather than guessing.
-- GLM interaction terms whose factors are all already present as main terms force
-  `include_main=False` — RustyStats' `include_main=True` would otherwise duplicate the
-  main effect in the design matrix and produce a singular matrix.
 - GLM regularization's internal alpha-search cross-validation fold count is hardcoded to 5
   (`fit_kwargs["cv"] = 5` in `GLMAlgorithm.fit`), matching sklearn's `LassoCV`/`RidgeCV`/
   `ElasticNetCV` default — treated as a numerical implementation detail, not a user-exposed

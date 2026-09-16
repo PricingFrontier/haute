@@ -306,7 +306,7 @@ The behavioural contract is defined in
   group label replaces a repeated visible monotonicity label. Matching bulk actions remain
   search-independent. Feature exclusion writes only `exclude`, without confirmation, so dormant
   monotonic and GLM settings survive re-inclusion. GLM composes `GLMFactorConfig.tsx` beneath it;
-  explicit-term removal and `all_factors` narrowing use the confirmed dependency transition.
+  explicit-term removal uses the confirmed dependency transition.
   `GLMRegularizationConfig.tsx` is the GLM Params body.
 - `HyperparametersConfig.tsx` owns the algorithm-neutral JSON-object editor, while
   `hyperparameters.ts` owns its formatting, object parsing, and reserved-key merge transitions.

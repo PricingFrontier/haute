@@ -238,7 +238,7 @@ device, callbacks, write directories, or random seed.
         "area":         { "type": "categorical" }
       },
       "interactions": [
-        { "factors": ["driver_age", "vehicle_age"], "include_main": true }
+        { "factors": ["driver_age", "vehicle_age"], "specs": {"driver_age": {"type": "bs", "df": 4}}, "include_main": true }
       ],
       "intercept": true,
       "regularization": "ridge",
@@ -248,11 +248,11 @@ device, callbacks, write directories, or random seed.
 
     | Field | Description |
     |---|---|
-    | `terms` | Dict mapping feature names to term specs. Each has a `type` (`"linear"`, `"categorical"`, `"poly"`, `"spline"`) and optional `monotonicity` (`"increasing"` or `"decreasing"`). If omitted, terms are inferred from data types. |
+    | `terms` | Dict mapping a name to a term spec. A native spec (`"linear"`, `"categorical"`, `"bs"`, `"ns"`, `"ms"`, `"target_encoding"`) is keyed by the column it fits; an `"expression"` spec (`{"type": "expression", "expr": "age ** 2"}`) is keyed by any name that is not a column. `"linear"`, `"bs"`, `"ms"`, and `"expression"` accept `monotonicity` (`"increasing"` or `"decreasing"`). |
     | `family` | **Required.** Distribution family: `"gaussian"`, `"poisson"`, `"tweedie"`, etc. |
     | `link` | Link function: `"log"`, `"identity"`, etc. Defaults to the canonical link for the family. |
-    | `offset` | Offset column  - a fixed term added to the linear predictor (e.g. log-exposure in a Poisson frequency model). This is different from `weight`: the `weight` field is an observation weight used in the loss function, so rows with higher weight have more influence on the model. Most frequency models use `weight` for exposure and do not need `offset`. |
-    | `interactions` | Interaction terms  - each has `factors` (list of feature names) and `include_main` (bool) |
+    | `offset` | Offset column. Under a log link it multiplies the prediction (an exposure column: 2× exposure ⇒ 2× expected count); under the identity link it is added. Different from `weight`, which weights the loss. |
+    | `interactions` | Interaction terms  - each has `factors` (two or more feature names), optional `specs` (per-factor fit overrides: `linear`, `categorical`, `bs`, or `ns`), and `include_main` (add a main effect for factors that have none). |
     | `regularization` | `"ridge"`, `"lasso"`, or `"elastic_net"` |
     | `alpha` | Regularization strength |
     | `l1_ratio` | Elastic net mixing parameter (0 = pure ridge, 1 = pure lasso) |

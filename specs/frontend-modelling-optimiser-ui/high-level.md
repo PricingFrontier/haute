@@ -170,12 +170,12 @@ strip; it never falls through to CatBoost. Pane ownership:
   stored constraint), and green upward arrow (`1`). Each choice uses the Provider-style compact
   control, with its soft tinted surface and accent border identifying the selected direction. The
   selector is enabled only for final selected numeric
-  features: included CatBoost features, or included GLM `terms` (all included features when
-  `all_factors` is true). Excluding a feature is immediate and reversible: it does not ask for
+  features: included CatBoost features, or GLM features carrying a `terms`
+  entry. Excluding a feature is immediate and reversible: it does not ask for
   confirmation or delete that feature's monotonic direction, GLM term, or interaction settings.
   The stored direction remains visibly selected in the greyed, disabled control, does not apply while the
   feature is excluded, and becomes active again when the feature is re-included. Explicit GLM term
-  removal or narrowing from `all_factors` remains a confirmed atomic cleanup of dependent terms,
+  removal remains a confirmed atomic cleanup of dependent terms,
   interactions, and monotonic constraints; Cancel preserves every field.
 - **Params** — immediately below the Hyperparameters heading, CatBoost shows a
   Target-style **Parameter strategy** radio group with **Fixed parameters** and

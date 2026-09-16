@@ -799,7 +799,7 @@ class TestFailoverGates:
             data="d",
         )
         assert kwargs["params"]["terms"] == {"age": {"type": "linear"}}
-        assert "all_factors" not in kwargs["params"]
+        assert set(kwargs["params"]) <= set(GLM_CONFIG_KEYS)
 
     def test_glm_ignores_exclude_and_clears_monotone_constraints(self):
         kwargs = build_training_job_kwargs(

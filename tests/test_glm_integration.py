@@ -218,9 +218,6 @@ class TestGLMTermsValidation:
     def test_glm_contract_keeps_expression_and_interaction_only_columns(self, tmp_path):
         """Expression identifiers and interaction-only factors survive the
         final feature contract; the expression key itself is not a column."""
-        pytest.importorskip(
-            "rustystats.formula", reason="rustystats optional dependency not installed"
-        )
         from haute.modelling._training_job import TrainingJob
 
         rng = np.random.default_rng(3)
@@ -720,3 +717,111 @@ class TestNullTargetCleaning:
                 import os
 
                 os.unlink(prepared.data_path)
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: terms, expressions, and interaction specs through one real fit
+# ---------------------------------------------------------------------------
+
+
+def _write(df: pl.DataFrame, tmp_path) -> str:
+    """Write ``df`` where a TrainingJob can read it, returning the path."""
+    path = tmp_path / "training.parquet"
+    df.write_parquet(path)
+    return str(path)
+
+
+def _random_evaluation() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "strategy": "random",
+        "seed": 42,
+        "validation": {"method": "single", "size": 0.2},
+    }
+
+
+class TestGLMTermsEndToEnd:
+    """One real fit proves the shipped GLM term contract end to end."""
+
+    def test_native_expression_and_interaction_with_materialised_main_and_local_spline(
+        self, tmp_path
+    ):
+        """A native spline, an expression term, and an interaction whose factor
+        carries its own spec all reach the design matrix; the interaction's
+        materialised main effect appears exactly once (RustyStats'
+        ``include_main`` would duplicate it), and the exported script carries
+        the same per-factor overrides live training used."""
+        from haute.modelling._export import generate_training_script
+        from haute.modelling._train_config import build_training_job_kwargs
+        from haute.modelling._training_job import TrainingJob
+
+        rng = np.random.default_rng(11)
+        n = 600
+        age = rng.uniform(18, 80, size=n)
+        income = rng.normal(size=n)
+        region = rng.choice(["n", "s", "e"], size=n)
+        y = rng.poisson(np.exp(-1.5 + 0.01 * age + 0.2 * income)).astype(float)
+        df = pl.DataFrame({"age": age, "income": income, "region": region, "y": y})
+        data_path = _write(df, tmp_path)
+        config = {
+            "algorithm": "glm",
+            "target": "y",
+            "family": "poisson",
+            "terms": {
+                "age": {"type": "bs", "df": 4},
+                "age_sq": {"type": "expression", "expr": "age ** 2"},
+            },
+            "interactions": [
+                {
+                    "factors": ["income", "region"],
+                    "specs": {"income": {"type": "bs", "df": 3}},
+                    "include_main": True,
+                }
+            ],
+            "evaluation": _random_evaluation(),
+        }
+        job = TrainingJob(
+            **build_training_job_kwargs(
+                {**config, "name": "e2e", "output_dir": str(tmp_path)}, data=data_path
+            )
+        )
+        result = job.run()
+
+        # The coefficient table names the fitted design columns; an empty table
+        # means a diagnostic failed rather than the fit succeeding quietly.
+        assert result.diagnostics_errors == [], result.diagnostics_errors
+        assert result.glm_coefficients
+        names = [row["feature"] for row in result.glm_coefficients]
+        assert any(name.startswith("bs(age") for name in names), names
+        assert "I(age ** 2)" in names, names
+        assert any(":bs(income" in name for name in names), names
+        assert sum(name == "region[T.s]" for name in names) == 1, names  # materialised once
+
+        script = generate_training_script(config, data_path)
+        assert "'specs': {'income': {'type': 'bs', 'df': 3}}" in script
+
+
+def test_all_factors_is_gone():
+    from pathlib import Path
+
+    this_file = Path(__file__).resolve()
+    root = this_file.parents[1]
+    offenders: list[str] = []
+    for folder, pattern in (
+        ("src", '"all_factors"'),
+        ("tests", '"all_factors"'),
+        ("specs", "all_factors"),
+        ("docs", "all_factors"),
+    ):
+        for path in (root / folder).rglob("*"):
+            if (
+                path.suffix not in {".py", ".md", ".ts", ".tsx"}
+                or "node_modules" in path.parts
+                or "static" in path.parts
+                or path.resolve() == this_file  # this test names the token it forbids
+            ):
+                continue
+            if pattern in path.read_text(encoding="utf-8", errors="ignore"):
+                offenders.append(path.relative_to(root).as_posix())
+    # The roadmap documents the removal by name; everything else must be clean.
+    assert offenders == ["specs/roadmap/modelling.md"], offenders
