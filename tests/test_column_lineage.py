@@ -2302,6 +2302,7 @@ def test_frame_length_range_keeps_cardinality_bounded(expression: str) -> None:
         "pl.int_range(pl.len() - 4294967295)",
         "pl.int_range(pl.len() - 1, pl.len() + 1)",
         "pl.int_range(True, pl.len())",
+        "pl.int_range(pl.lit(1000))",
     ],
 )
 def test_other_int_ranges_stay_unbounded(expression: str) -> None:
@@ -2339,12 +2340,16 @@ def test_horizontal_helper_keywords_cannot_smuggle_columns() -> None:
     assert demanded.supported
     assert demanded.demands_by_input == {"rows": frozenset({"a", "b"})}
 
-    hidden = analyze_polars_lineage(
-        "df = rows.select(pl.max_horizontal('a', ignore_nulls=['b']).alias('x'))",
-        {"rows": frozenset({"a", "b"})},
-    )
-    assert not hidden.supported
-    assert hidden.reason == "dynamic_select"
+    for expression in (
+        "pl.max_horizontal('a', ignore_nulls=['b'])",
+        "pl.concat_str(exprs=column_names)",
+    ):
+        hidden = analyze_polars_lineage(
+            f"df = rows.select({expression}.alias('x'))",
+            {"rows": frozenset({"a", "b"})},
+        )
+        assert not hidden.supported
+        assert hidden.reason == "dynamic_select"
 
 
 def test_ordered_window_keeps_cardinality_bounded() -> None:

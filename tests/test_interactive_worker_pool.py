@@ -562,6 +562,55 @@ def test_worker_death_during_required_rss_sampling_classifies_the_crash(
     assert exc_info.value.terminal_reason == "memory_limited"
 
 
+@pytest.mark.parametrize(
+    ("phase", "poll_interval", "exit_wait"),
+    [("result", 0.1, 0.05), ("release", 0.01, 0.01)],
+)
+def test_worker_teardown_without_rss_waits_briefly_for_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    poll_interval: float,
+    exit_wait: float,
+) -> None:
+    pool = InteractiveWorkerPool(size=1, polars_threads=2, poll_interval_seconds=poll_interval)
+    process = SimpleNamespace(pid=1, exitcode=None)
+    process.is_alive = lambda: process.exitcode is None
+    joins: list[float] = []
+
+    def join(*, timeout: float) -> None:
+        joins.append(timeout)
+        process.exitcode = 87
+
+    process.join = join
+    slot = SimpleNamespace(index=0, process=process, result_queue=_Queue(), closed=False)
+    replaced: list[object] = []
+    monkeypatch.setattr(pool, "_replace_slot", replaced.append)
+    monkeypatch.setattr(pool, "_stop_and_replace", replaced.append)
+    monkeypatch.setattr(worker_mod, "process_rss_bytes", lambda _pid: None)
+    kwargs = {
+        "job_id": "x",
+        "timeout_seconds": 1,
+        "stop_reason": None,
+        "absolute_rss_limit_bytes": 100,
+        "memory_growth_limit_bytes": 100,
+        "require_memory_limit": True,
+    }
+    with pytest.raises(InteractiveWorkerCrashedError) as exc_info:
+        if phase == "result":
+            pool._wait_for_result(slot, **kwargs)
+        else:
+            pool._wait_for_release(
+                slot,
+                **kwargs,
+                deadline=time.monotonic() + 1,
+                sampler_unavailable_logged=False,
+            )
+    assert exc_info.value.exitcode == 87
+    assert exc_info.value.terminal_reason == "error"
+    assert joins == [exit_wait]
+    assert replaced == ([slot] if phase == "result" else [])
+
+
 def test_entrypoint_preload_unpicklable_and_malformed_requests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1445,7 +1494,9 @@ def test_wait_for_result_preserves_remote_error_when_ack_or_release_fails(
 
 def test_wait_and_protocol_error_boundaries(monkeypatch: pytest.MonkeyPatch) -> None:
     pool = InteractiveWorkerPool(size=1, polars_threads=2)
-    process = SimpleNamespace(pid=1, exitcode=None, is_alive=lambda: True)
+    process = SimpleNamespace(
+        pid=1, exitcode=None, is_alive=lambda: True, join=lambda *, timeout: None
+    )
     slot = SimpleNamespace(
         index=3,
         process=process,
@@ -1643,7 +1694,9 @@ def test_wait_for_release_retries_stop_and_rss_sampling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pool = InteractiveWorkerPool(size=1, polars_threads=2, poll_interval_seconds=0.01)
-    process = SimpleNamespace(pid=5, exitcode=None, is_alive=lambda: True)
+    process = SimpleNamespace(
+        pid=5, exitcode=None, is_alive=lambda: True, join=lambda *, timeout: None
+    )
     released = pickle.dumps(("released", "job", "ok", None))
     stop_polls = iter((None, "superseded"))
     pool._wait_for_release(

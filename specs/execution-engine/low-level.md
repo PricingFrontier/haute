@@ -751,9 +751,15 @@ The supervisor starts a request deadline only after its affinity slot is acquire
 polls the result channel, worker liveness, parent cancellation/supersession, and child
 RSS at the configured interval. Timeout, cancellation, supersession, memory excess,
 protocol mismatch, or an unresponsive termination kills and joins that exact worker;
-the slot is synchronously replaced before another request can acquire it. Successful
-results and structured remote errors carry a matching job id. A stale result from a
-previous worker generation is a protocol error, never accepted for a later request.
+the slot is synchronously replaced before another request can acquire it.
+If required RSS sampling becomes unavailable while the process still reports alive,
+the supervisor gives it one bounded exit-observation interval (at most 50 ms) to
+publish its exit status: process teardown can release memory before the exit is
+observable. A confirmed exit retains the crash classification and exit-code memory
+heuristic; a still-live process fails required memory enforcement. This check never
+disables the native memory cap or continues work in an unobservable live worker.
+Successful results and structured remote errors carry a matching job id. A stale result
+from a previous worker generation is a protocol error, never accepted for a later request.
 Pool shutdown signals every in-flight slot; active work is killed and joined at the
 next supervisor poll without starting a replacement, so ASGI teardown cannot wait for
 the request deadline or leave computation behind. Slot cleanup is idempotent across
