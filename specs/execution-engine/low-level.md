@@ -175,7 +175,21 @@
   carry their literal `validate` contract into the shared formulas. `explode`,
   `unpivot` without a literal `on` list (`dynamic_unpivot`), and the audited
   row-expanding expression methods are unavailable because no length evidence
-  exists. Cardinality analysis shares the lineage parser but never an input schema,
+  exists. A top-level Polars constructor inside a `select`/`with_columns`
+  expression is unavailable for the same reason unless it is allow-listed as
+  row-bounded; `pl.int_range` has one algebraic exception. Each positional bound
+  is read as `m * pl.len() + c` (a non-negative int literal, `pl.len()`, or
+  `pl.len()` plus a non-negative int literal; subtraction is never accepted
+  because `pl.len()` is unsigned and `pl.len() - k` wraps past zero rather than
+  clamping), the range has `(m_end - m_start) * pl.len() + (c_end - c_start)`
+  values, and the range keeps the frame's (or the window partition's) bound
+  exactly when `m_end - m_start == 1` and `c_end - c_start <= 0` (the row-number
+  idioms `pl.int_range(pl.len())` and `pl.int_range(1, pl.len() + 1).over(...)`).
+  `pl.int_range(pl.len() + 100)` (a hundred rows more than the input from a
+  `select`), `pl.int_range(pl.len(), 100)`, `pl.int_range(0, pl.len() - 1)`, a
+  literal-only range, any keyword argument (`step`, `dtype`), and any other bound
+  expression keep the constructor's `row_expansion_unbounded` verdict. Cardinality analysis
+  shares the lineage parser but never an input schema,
   so it cannot resolve an omitted `on` list from upstream columns.
 - **Available RAM** (`_host_memory.available_ram_bytes`) — tries the platform
   sources in a fixed order (Linux `/proc/meminfo` `MemAvailable`, POSIX
@@ -855,7 +869,17 @@ present a structural or schema result as execution evidence.
   `str.to_date`, `dt.truncate`, `dt.offset_by`, `dt.convert_time_zone`); the match
   is receiver-aware, so a same-named method on another namespace does not inherit
   it. A method outside the registry with a direct string argument remains
-  unsupported. `tests/test_column_lineage.py` verifies the registry against the
+  unsupported. Configuration keywords are closed in the same way:
+  `_LITERAL_STRING_KEYWORDS` names, per method, the keyword arguments whose
+  string values are settings rather than column references (`rank(method=)`,
+  `fill_null(strategy=)`, `quantile(interpolation=)`), `_LITERAL_HELPER_KEYWORDS`
+  does the same for horizontal helpers (`concat_str(separator=, ignore_nulls=)`),
+  a horizontal helper's `exprs=` keyword names columns exactly as its positional
+  arguments do while any other sequence-valued keyword is refused, and a window
+  `over(...)` accepts `order_by=` partition-order columns together with
+  literal-boolean `descending=`/`nulls_last=` flags; a non-literal value in any of
+  these positions fails closed. `tests/test_column_lineage.py` verifies the
+  registry against the
   pinned Polars source, so an upgrade that changes a registered method's string
   semantics fails the suite instead of silently under-demanding.
 - **Lineage inputs are incoming edges, not parent node ids.** Each input binding
@@ -1746,7 +1770,9 @@ present a structural or schema result as execution evidence.
 - `tests/test_column_renames.py` — column-rename application for configured, empty, missing, and edge-name mappings.
 - `tests/test_compute_needed_columns.py` — topology, contract-algebra, and one-computation-per-node performance invariants for backward needed-column analysis.
 - `tests/test_column_lineage.py` — operation-level schema/demand transfer, the
-  row-effect bound of every accepted operation, the executable audit of the
+  row-effect bound of every accepted operation (including the `pl.len()`-bounded
+  `int_range` acceptance and every other range's rejection, ordered windows, and
+  the configuration-keyword registries), the executable audit of the
   literal-string-argument method registry against the pinned Polars source, and
   differential execution checks: running supported programs against projected
   inputs must equal running the same programs against full-width inputs.

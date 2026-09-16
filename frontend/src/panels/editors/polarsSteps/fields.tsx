@@ -10,7 +10,7 @@ import { useId, useState, type KeyboardEvent, type ReactNode } from "react"
 
 import { CommittedTextField } from "../../../components/form"
 import { INPUT_STYLE } from "../_shared"
-import { CONDITION_OPERATORS, LITERAL_TYPES, defaultLiteral, literal } from "./catalogue"
+import { CONDITION_OPERATORS, LIST_LITERAL_TYPES, LITERAL_TYPES, defaultLiteral, literal } from "./catalogue"
 import type { Condition, LiteralOperand, LiteralType, MatchMode, Operand } from "./types"
 
 export const CONTROL_CLASS = "focus-ring w-full min-w-0 px-2 py-1.5 text-xs rounded-md"
@@ -313,6 +313,17 @@ export function LiteralValueInput({
           style={INPUT_STYLE}
         />
       )
+    case "null":
+      return (
+        <input
+          type="text"
+          readOnly
+          aria-label={ariaLabel}
+          value="null"
+          className={`${CONTROL_CLASS} font-mono`}
+          style={{ ...INPUT_STYLE, color: "var(--text-muted)" }}
+        />
+      )
   }
 }
 
@@ -419,7 +430,7 @@ export function LiteralListField({
     <div className="grid gap-1.5" role="group" aria-label={ariaLabel}>
       <SelectField
         value={type}
-        options={LITERAL_TYPES}
+        options={LIST_LITERAL_TYPES}
         onChange={(next) => {
           setChosenType(next)
           setDraft(defaultLiteral(next))
@@ -462,7 +473,7 @@ export function LiteralListField({
 }
 
 const OPERATOR_OPTIONS = CONDITION_OPERATORS.map((o) => ({ value: o.value, label: o.label }))
-const STRING_OPERATORS = new Set<Condition["operator"]>(["contains", "starts_with", "ends_with"])
+const STRING_OPERATORS = new Set<Condition["operator"]>(["contains", "starts_with", "ends_with", "matches"])
 const isStringOperator = (operator: Condition["operator"]) => STRING_OPERATORS.has(operator)
 
 export function ConditionRow({

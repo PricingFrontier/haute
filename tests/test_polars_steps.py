@@ -568,6 +568,809 @@ def test_rename_step_inputs_rewrites_every_reference_and_rejects_collisions() ->
 
 
 # ---------------------------------------------------------------------------
+# Vocabulary extensions: ordered windows, dates, strings, joins, summaries
+# ---------------------------------------------------------------------------
+
+
+def null() -> dict[str, Any]:
+    return {"kind": "literal", "type": "null"}
+
+
+def window(
+    name: str,
+    agg: str,
+    column: str,
+    over: list[str],
+    order_by: list[tuple[str, bool]] | None = None,
+    descending: bool | None = None,
+) -> dict[str, Any]:
+    expr: dict[str, Any] = {"type": "window", "agg": agg, "column": column, "over": over}
+    if order_by is not None:
+        expr["orderBy"] = [{"column": c, "descending": d} for c, d in order_by]
+    if descending is not None:
+        expr["descending"] = descending
+    return step(f"w_{name}", "with_column", name=name, expr=expr)
+
+
+@pytest.mark.parametrize(
+    ("kind_step", "expected"),
+    [
+        (
+            window(
+                "rn",
+                "row_number",
+                "quote_id",
+                ["region"],
+                [("premium", False), ("quote_id", False)],
+            ),
+            "df = df.with_columns((pl.int_range(1, pl.len() + 1).over(['region'], "
+            "order_by=['premium', 'quote_id'], descending=False)).alias('rn'))",
+        ),
+        (
+            window("cs", "cum_sum", "premium", ["region"], [("quote_id", True)]),
+            "df = df.with_columns((pl.col('premium').cum_sum().over(['region'], "
+            "order_by=['quote_id'], descending=True)).alias('cs'))",
+        ),
+        (
+            window("prev", "shift", "premium", ["region"], [("quote_id", False)]),
+            "df = df.with_columns((pl.col('premium').shift(1).over(['region'], "
+            "order_by=['quote_id'], descending=False)).alias('prev'))",
+        ),
+        (
+            window("rk", "dense_rank", "premium", ["region"], descending=True),
+            "df = df.with_columns((pl.col('premium').rank(method='dense', descending=True)"
+            ".over(['region'])).alias('rk'))",
+        ),
+        (
+            window("ff", "forward_fill", "premium", ["region"], [("quote_id", False)]),
+            "df = df.with_columns((pl.col('premium').fill_null(strategy='forward')"
+            ".over(['region'], "
+            "order_by=['quote_id'], descending=False)).alias('ff'))",
+        ),
+        (
+            window("tot", "sum", "premium", []),
+            "df = df.with_columns((pl.col('premium').sum()).alias('tot'))",
+        ),
+        (window("n", "len", "premium", []), "df = df.with_columns((pl.len()).alias('n'))"),
+        (
+            step(
+                "x",
+                "with_column",
+                name="wd",
+                expr={"type": "function", "fn": "weekday", "operand": col("d"), "args": []},
+            ),
+            "df = df.with_columns((pl.col('d').dt.weekday()).alias('wd'))",
+        ),
+        (
+            step(
+                "x",
+                "with_column",
+                name="r",
+                expr={
+                    "type": "function",
+                    "fn": "offset_by",
+                    "operand": col("d"),
+                    "args": [text("-3y")],
+                },
+            ),
+            "df = df.with_columns((pl.col('d').dt.offset_by('-3y')).alias('r'))",
+        ),
+        (
+            step(
+                "x",
+                "with_column",
+                name="n",
+                expr={"type": "function", "fn": "total_days", "operand": col("d"), "args": []},
+            ),
+            "df = df.with_columns((pl.col('d').dt.total_days()).alias('n'))",
+        ),
+        (
+            step(
+                "x",
+                "with_column",
+                name="p",
+                expr={
+                    "type": "function",
+                    "fn": "split_part",
+                    "operand": col("pc"),
+                    "args": [text(" "), num(0)],
+                },
+            ),
+            "df = df.with_columns((pl.col('pc').str.split(' ').list.get(0, null_on_oob=True))"
+            ".alias('p'))",
+        ),
+        (
+            step(
+                "x",
+                "with_column",
+                name="p",
+                expr={
+                    "type": "function",
+                    "fn": "slice",
+                    "operand": col("pc"),
+                    "args": [num(-3), num(3)],
+                },
+            ),
+            "df = df.with_columns((pl.col('pc').str.slice(-3, 3)).alias('p'))",
+        ),
+        (
+            step(
+                "x",
+                "with_column",
+                name="p",
+                expr={
+                    "type": "function",
+                    "fn": "replace_regex",
+                    "operand": col("pc"),
+                    "args": [text("\\s+"), text("")],
+                },
+            ),
+            "df = df.with_columns((pl.col('pc').str.replace_all('\\\\s+', '')).alias('p'))",
+        ),
+        (
+            step(
+                "x",
+                "with_column",
+                name="p",
+                expr={
+                    "type": "function",
+                    "fn": "extract",
+                    "operand": col("pc"),
+                    "args": [text("^([A-Z]+)"), num(1)],
+                },
+            ),
+            "df = df.with_columns((pl.col('pc').str.extract('^([A-Z]+)', 1)).alias('p'))",
+        ),
+        (
+            step(
+                "x",
+                "with_column",
+                name="p",
+                expr={
+                    "type": "function",
+                    "fn": "try_cast",
+                    "operand": col("pc"),
+                    "args": [text("Int32")],
+                },
+            ),
+            "df = df.with_columns((pl.col('pc').cast(pl.Int32, strict=False)).alias('p'))",
+        ),
+        (
+            step(
+                "x",
+                "with_column",
+                name="k",
+                expr={"type": "concat", "parts": [col("a"), text("-"), col("b")], "separator": ""},
+            ),
+            "df = df.with_columns((pl.concat_str([pl.col('a'), pl.lit('-'), pl.col('b')], "
+            "separator='')).alias('k'))",
+        ),
+        (
+            step(
+                "x",
+                "with_column",
+                name="k",
+                expr={
+                    "type": "conditional",
+                    "match": "all",
+                    "conditions": [cond("a", "eq", value=num(1))],
+                    "then": col("b"),
+                    "otherwise": null(),
+                },
+            ),
+            "df = df.with_columns((pl.when((pl.col('a') == 1)).then(pl.col('b'))"
+            ".otherwise(pl.lit(None))).alias('k'))",
+        ),
+        (
+            step(
+                "x",
+                "filter",
+                match="all",
+                conditions=[cond("pc", "matches", value=text("^[A-Z]{2}"))],
+            ),
+            "df = df.filter((pl.col('pc').str.contains('^[A-Z]{2}')))",
+        ),
+        (
+            step(
+                "x",
+                "group_by",
+                keys=[],
+                aggregations=[
+                    {"column": "a", "agg": "quantile", "name": "p95", "quantile": 0.95},
+                    {"column": "a", "agg": "len", "name": "n"},
+                ],
+            ),
+            "df = df.select([pl.col('a').quantile(0.95, interpolation='linear').alias('p95'), "
+            "pl.len().alias('n')])",
+        ),
+        (
+            step(
+                "x",
+                "group_by",
+                keys=["k"],
+                aggregations=[
+                    {
+                        "column": "a",
+                        "agg": "sum",
+                        "name": "open",
+                        "where": {
+                            "match": "all",
+                            "conditions": [cond("s", "eq", value=text("open"))],
+                        },
+                    },
+                    {
+                        "column": "a",
+                        "agg": "len",
+                        "name": "big",
+                        "where": {
+                            "match": "any",
+                            "conditions": [cond("a", "gt", value=num(9)), cond("s", "is_null")],
+                        },
+                    },
+                ],
+            ),
+            "df = df.group_by(['k'], maintain_order=True).agg([pl.col('a')"
+            ".filter((pl.col('s') == 'open')).sum().alias('open'), "
+            "((pl.col('a') > 9) | (pl.col('s').is_null())).sum().alias('big')])",
+        ),
+        (
+            step(
+                "x",
+                "join",
+                input="rates",
+                how="left",
+                leftOn=["region"],
+                rightOn=["region"],
+                suffix="_r",
+                validate="m:1",
+                maintainOrder="left",
+            ),
+            "df = df.join(rates, left_on=['region'], right_on=['region'], how='left', "
+            "suffix='_r', validate='m:1', maintain_order='left')",
+        ),
+        (
+            step("x", "unique", columns=["a"], keep="none"),
+            "df = df.unique(subset=['a'], keep='none', maintain_order=True)",
+        ),
+        (
+            step(
+                "x",
+                "cast",
+                casts=[{"column": "a", "dtype": "Int8"}, {"column": "b", "dtype": "Float32"}],
+            ),
+            "df = df.with_columns(pl.col('a').cast(pl.Int8), pl.col('b').cast(pl.Float32))",
+        ),
+    ],
+)
+def test_extended_vocabulary_renders(kind_step: dict[str, Any], expected: str) -> None:
+    rendered = render_polars_steps([source(), kind_step], ["quotes", "rates"])
+    assert rendered.code.splitlines()[1] == expected
+
+
+def test_window_quantile_renders() -> None:
+    steps = [
+        source(),
+        step(
+            "w",
+            "with_column",
+            name="p90",
+            expr={
+                "type": "window",
+                "agg": "quantile",
+                "column": "premium",
+                "over": ["region"],
+                "quantile": 0.9,
+            },
+        ),
+    ]
+    assert render_polars_steps(steps, ["quotes"]).code.splitlines()[1] == (
+        "df = df.with_columns((pl.col('premium').quantile(0.9, interpolation='linear')"
+        ".over(['region'])).alias('p90'))"
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind_step", "index", "fragment"),
+    [
+        (
+            window("rn", "row_number", "q", ["r"], [("a", False), ("b", True)]),
+            1,
+            "share one direction",
+        ),
+        (window("rn", "row_number", "q", [], [("a", False)]), 1, "sort the frame instead"),
+        (window("rn", "row_number", "q", ["r"], []), 1, "at least one column"),
+        (
+            step(
+                "x",
+                "with_column",
+                name="k",
+                expr={"type": "concat", "parts": [col("a")], "separator": ""},
+            ),
+            1,
+            "at least two parts",
+        ),
+        (
+            step("x", "filter", match="all", conditions=[cond("a", "is_in", values=[null()])]),
+            1,
+            "cannot include null",
+        ),
+        (step("x", "variable", name="v", value=null()), 1, "number, text or true/false"),
+        (
+            step(
+                "x",
+                "group_by",
+                keys=[],
+                aggregations=[{"column": "a", "agg": "quantile", "name": "q", "quantile": 1.5}],
+            ),
+            1,
+            "between 0 and 1",
+        ),
+        (
+            step(
+                "x",
+                "group_by",
+                keys=[],
+                aggregations=[
+                    {
+                        "column": "a",
+                        "agg": "sum",
+                        "name": "q",
+                        "where": cond("a", "gt", value=num(1)),
+                    }
+                ],
+            ),
+            1,
+            "Unknown field",
+        ),
+        (
+            step(
+                "x",
+                "join",
+                input="rates",
+                how="cross",
+                leftOn=[],
+                rightOn=[],
+                suffix="_r",
+                validate="m:1",
+            ),
+            1,
+            "Only inner, left and full joins can validate",
+        ),
+        (
+            step(
+                "x",
+                "join",
+                input="rates",
+                how="left",
+                leftOn=["r"],
+                rightOn=["r"],
+                suffix="_r",
+                validate="many",
+            ),
+            1,
+            "Join validation",
+        ),
+        (
+            step(
+                "x",
+                "with_column",
+                name="p",
+                expr={
+                    "type": "function",
+                    "fn": "slice",
+                    "operand": col("pc"),
+                    "args": [num(1.5), num(3)],
+                },
+            ),
+            1,
+            "whole number",
+        ),
+        (
+            step(
+                "x",
+                "with_column",
+                name="p",
+                expr={"type": "function", "fn": "offset_by", "operand": col("d"), "args": [num(3)]},
+            ),
+            1,
+            "must be text",
+        ),
+        (
+            step(
+                "x",
+                "with_column",
+                name="p",
+                expr={"type": "function", "fn": "fill_null", "operand": col("d"), "args": [null()]},
+            ),
+            1,
+            "must be a number, text or true/false",
+        ),
+        (
+            step(
+                "j",
+                "join",
+                input="rates",
+                how="semi",
+                leftOn=["region"],
+                rightOn=["region"],
+                suffix="_r",
+                validate="m:1",
+            ),
+            1,
+            "Only inner, left and full joins can validate",
+        ),
+        (
+            step(
+                "j",
+                "join",
+                input="rates",
+                how="cross",
+                leftOn=[],
+                rightOn=[],
+                suffix="_r",
+                validate="m:1",
+            ),
+            1,
+            "Only inner, left and full joins can validate",
+        ),
+    ],
+)
+def test_extended_vocabulary_rejects(kind_step: dict[str, Any], index: int, fragment: str) -> None:
+    with pytest.raises(PolarsStepError) as exc_info:
+        render_polars_steps([source(), kind_step], ["quotes", "rates"])
+    assert exc_info.value.step_index == index
+    assert fragment in exc_info.value.message
+
+
+def _extended_frame(tmp_path: Path) -> GraphNode:
+    """Unsorted partitions, rank ties, interior nulls and an id without a digit."""
+    path = tmp_path / "policies.parquet"
+    pl.DataFrame(
+        {
+            "qid": ["c3", "c1", "c2", "c4", "c5", "c6", "cx"],
+            "region": ["north", "north", "south", "east", "north", "north", "south"],
+            "premium": [50.0, 800.0, 200.0, None, None, 800.0, 100.0],
+        }
+    ).write_parquet(path)
+    return _ready_source("policies", path)
+
+
+def test_extended_vocabulary_executes(tmp_path: Path) -> None:
+    policies = _extended_frame(tmp_path)
+    by_qid = [("qid", False)]
+    steps = [
+        source("policies"),
+        window("rn", "row_number", "", ["region"], by_qid),
+        window("rn_desc", "row_number", "", ["region"], [("qid", True)]),
+        window("cs", "cum_sum", "premium", ["region"], by_qid),
+        window("prev", "shift", "premium", ["region"], by_qid),
+        window("rk", "dense_rank", "premium", ["region"], descending=True),
+        window("rk_asc", "rank", "premium", ["region"]),
+        window("ff", "forward_fill", "premium", ["region"], by_qid),
+        window("bf", "backward_fill", "premium", ["region"], by_qid),
+        window("tot", "sum", "premium", []),
+        step(
+            "w_q",
+            "with_column",
+            name="p25",
+            expr={
+                "type": "window",
+                "agg": "quantile",
+                "column": "premium",
+                "over": ["region"],
+                "quantile": 0.25,
+            },
+        ),
+        step(
+            "w0",
+            "with_column",
+            name="start_date",
+            expr={
+                "type": "operand",
+                "operand": {"kind": "literal", "type": "date", "value": "2025-03-01"},
+            },
+        ),
+        step(
+            "w1",
+            "with_column",
+            name="wd",
+            expr={"type": "function", "fn": "weekday", "operand": col("start_date"), "args": []},
+        ),
+        step(
+            "w2",
+            "with_column",
+            name="renewal",
+            expr={
+                "type": "function",
+                "fn": "offset_by",
+                "operand": col("start_date"),
+                "args": [text("1y")],
+            },
+        ),
+        step(
+            "w3",
+            "with_column",
+            name="_term",
+            expr={"type": "binary", "left": col("renewal"), "op": "-", "right": col("start_date")},
+        ),
+        step(
+            "w4",
+            "with_column",
+            name="term_days",
+            expr={"type": "function", "fn": "total_days", "operand": col("_term"), "args": []},
+        ),
+        step(
+            "w5",
+            "with_column",
+            name="key",
+            expr={"type": "concat", "parts": [col("region"), col("qid")], "separator": "|"},
+        ),
+        step(
+            "w5n",
+            "with_column",
+            name="null_key",
+            expr={"type": "concat", "parts": [col("qid"), null()], "separator": "|"},
+        ),
+        step(
+            "w6",
+            "with_column",
+            name="masked",
+            expr={
+                "type": "conditional",
+                "match": "all",
+                "conditions": [cond("region", "eq", value=text("north"))],
+                "then": col("premium"),
+                "otherwise": null(),
+            },
+        ),
+        step(
+            "w7",
+            "with_column",
+            name="tail",
+            expr={
+                "type": "function",
+                "fn": "slice",
+                "operand": col("qid"),
+                "args": [num(-1), num(1)],
+            },
+        ),
+        step(
+            "w8",
+            "with_column",
+            name="part",
+            expr={
+                "type": "function",
+                "fn": "split_part",
+                "operand": col("key"),
+                "args": [text("|"), num(1)],
+            },
+        ),
+        step(
+            "w8b",
+            "with_column",
+            name="oob",
+            expr={
+                "type": "function",
+                "fn": "split_part",
+                "operand": col("key"),
+                "args": [text("|"), num(5)],
+            },
+        ),
+        step(
+            "w9",
+            "with_column",
+            name="digit",
+            expr={
+                "type": "function",
+                "fn": "extract",
+                "operand": col("qid"),
+                "args": [text("([0-9]+)"), num(1)],
+            },
+        ),
+        step(
+            "w10",
+            "with_column",
+            name="digit_n",
+            expr={
+                "type": "function",
+                "fn": "try_cast",
+                "operand": col("digit"),
+                "args": [text("Int32")],
+            },
+        ),
+        step(
+            "w10b",
+            "with_column",
+            name="tail_n",
+            expr={
+                "type": "function",
+                "fn": "try_cast",
+                "operand": col("tail"),
+                "args": [text("Int32")],
+            },
+        ),
+        step(
+            "w11",
+            "with_column",
+            name="swapped",
+            expr={
+                "type": "function",
+                "fn": "replace",
+                "operand": col("key"),
+                "args": [text("|"), text(".")],
+            },
+        ),
+        step(
+            "w12",
+            "with_column",
+            name="letters",
+            expr={
+                "type": "function",
+                "fn": "replace_regex",
+                "operand": col("qid"),
+                "args": [text("[0-9]"), text("#")],
+            },
+        ),
+        step(
+            "f", "filter", match="all", conditions=[cond("qid", "matches", value=text("^c[0-9x]$"))]
+        ),
+    ]
+    graph = PipelineGraph(
+        nodes=[policies, _stepped("t", steps)],
+        edges=[make_edge("policies", "t")],
+    )
+    result = execute_graph(graph, target_node_id="t", execution_context=_capped_context())["t"]
+    assert result.status == "ok", result.error
+    rows = result.preview
+    assert [row["qid"] for row in rows] == ["c3", "c1", "c2", "c4", "c5", "c6", "cx"]
+    by_id = {row["qid"]: row for row in rows}
+    # north partition in qid order: c1 800, c3 50, c5 null, c6 800; south: c2 200, cx 100
+    north = ["c1", "c3", "c5", "c6"]
+    assert [by_id[i]["rn"] for i in north] == [1, 2, 3, 4]
+    assert [by_id[i]["rn_desc"] for i in north] == [4, 3, 2, 1]
+    assert [by_id[i]["rn"] for i in ("c2", "cx")] == [1, 2] and by_id["c4"]["rn"] == 1
+    assert [by_id[i]["cs"] for i in north] == [800.0, 850.0, None, 1650.0]
+    assert [by_id[i]["prev"] for i in north] == [None, 800.0, 50.0, None]
+    assert [by_id[i]["rk"] for i in north] == [1, 2, None, 1]
+    assert [by_id[i]["rk_asc"] for i in north] == [2, 1, None, 3]
+    assert [by_id[i]["ff"] for i in north] == [800.0, 50.0, 50.0, 800.0]
+    assert [by_id[i]["bf"] for i in north] == [800.0, 50.0, 800.0, 800.0]
+    assert by_id["c4"]["ff"] is None and by_id["c4"]["bf"] is None
+    assert all(row["tot"] == 1950.0 for row in rows)
+    # linear interpolation between 50 and 800 (nearest would give one of them)
+    assert all(by_id[i]["p25"] == 425.0 for i in north)
+    assert all(row["term_days"] in (365, 366) for row in rows)
+    assert by_id["c1"]["wd"] == 6  # 2025-03-01 is a Saturday
+    assert by_id["c2"]["key"] == "south|c2" and by_id["c2"]["part"] == "c2"
+    assert all(row["null_key"] is None for row in rows)
+    assert all(row["oob"] is None for row in rows)
+    assert by_id["c2"]["masked"] is None and by_id["c1"]["masked"] == 800.0
+    assert by_id["c2"]["tail"] == "2" and by_id["cx"]["tail"] == "x"
+    assert by_id["c2"]["swapped"] == "south.c2"
+    assert by_id["c2"]["letters"] == "c#" and by_id["cx"]["letters"] == "cx"
+    dtypes = {c.name: c.dtype for c in result.columns}
+    assert dtypes["digit_n"] == "Int32" and by_id["c2"]["digit_n"] == 2
+    assert by_id["cx"]["digit"] is None and by_id["cx"]["digit_n"] is None
+    # a non-null string that is not a number becomes null instead of failing
+    assert dtypes["tail_n"] == "Int32" and by_id["c2"]["tail_n"] == 2
+    assert by_id["cx"]["tail"] == "x" and by_id["cx"]["tail_n"] is None
+
+    summary_steps = [
+        source("policies"),
+        step(
+            "g",
+            "group_by",
+            keys=[],
+            aggregations=[
+                {"column": "premium", "agg": "quantile", "name": "p25", "quantile": 0.25},
+                {
+                    "column": "premium",
+                    "agg": "sum",
+                    "name": "north_sum",
+                    "where": {
+                        "match": "all",
+                        "conditions": [cond("region", "eq", value=text("north"))],
+                    },
+                },
+                {
+                    "column": "premium",
+                    "agg": "len",
+                    "name": "n_big",
+                    "where": {
+                        "match": "all",
+                        "conditions": [cond("premium", "gt", value=num(100))],
+                    },
+                },
+            ],
+        ),
+    ]
+    grouped_steps = [
+        source("policies"),
+        step(
+            "g",
+            "group_by",
+            keys=["region"],
+            aggregations=[
+                {
+                    "column": "premium",
+                    "agg": "len",
+                    "name": "n_big",
+                    "where": {
+                        "match": "all",
+                        "conditions": [cond("premium", "gt", value=num(100))],
+                    },
+                },
+                {
+                    "column": "premium",
+                    "agg": "max",
+                    "name": "small_max",
+                    "where": {
+                        "match": "all",
+                        "conditions": [cond("premium", "le", value=num(100))],
+                    },
+                },
+            ],
+        ),
+        step("srt", "sort", keys=[{"column": "region", "descending": False}], nullsLast=False),
+    ]
+    graph = PipelineGraph(
+        nodes=[policies, _stepped("s", summary_steps), _stepped("r", grouped_steps)],
+        edges=[make_edge("policies", "s"), make_edge("policies", "r")],
+    )
+    summary = execute_graph(graph, target_node_id="s", execution_context=_capped_context())["s"]
+    assert summary.status == "ok", summary.error
+    # premiums 50, 100, 200, 800, 800: 25th percentile interpolates between 50 and 100
+    assert summary.preview == [{"p25": 100.0, "north_sum": 1650.0, "n_big": 3}]
+    grouped = execute_graph(graph, target_node_id="r", execution_context=_capped_context())["r"]
+    assert grouped.status == "ok", grouped.error
+    assert grouped.preview == [
+        {"region": "east", "n_big": 0, "small_max": None},
+        {"region": "north", "n_big": 2, "small_max": 50.0},
+        {"region": "south", "n_big": 1, "small_max": 100.0},
+    ]
+
+    unique_steps = [
+        source("policies"),
+        step("u", "unique", columns=["region"], keep="none"),
+    ]
+    graph = PipelineGraph(
+        nodes=[policies, _stepped("u", unique_steps)], edges=[make_edge("policies", "u")]
+    )
+    unique = execute_graph(graph, target_node_id="u", execution_context=_capped_context())["u"]
+    assert unique.status == "ok", unique.error
+    assert [row["qid"] for row in unique.preview] == ["c4"]
+
+
+def test_join_validation_fails_loudly_on_duplicate_keys(tmp_path: Path) -> None:
+    quotes, _rates = _frames(tmp_path)
+    dup = tmp_path / "dup_rates.parquet"
+    pl.DataFrame({"region": ["north", "north"], "rate": [1.0, 2.0]}).write_parquet(dup)
+    node = _stepped(
+        "t",
+        [
+            source(),
+            step(
+                "j",
+                "join",
+                input="dup",
+                how="left",
+                leftOn=["region"],
+                rightOn=["region"],
+                suffix="_r",
+                validate="m:1",
+            ),
+        ],
+    )
+    graph = PipelineGraph(
+        nodes=[quotes, _ready_source("dup", dup), node],
+        edges=[make_edge("quotes", "t"), make_edge("dup", "t")],
+    )
+    result = execute_graph(graph, target_node_id="t", execution_context=_capped_context())["t"]
+    assert result.status == "error"
+    assert "m:1" in str(result.error)
+
+
+# ---------------------------------------------------------------------------
 # Materialisation invariant
 # ---------------------------------------------------------------------------
 

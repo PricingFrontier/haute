@@ -30,6 +30,11 @@ from typing import Any
 
 __all__ = [
     "AGGREGATIONS",
+    "JOIN_MAINTAIN_ORDER",
+    "JOIN_VALIDATE",
+    "JOIN_VALIDATED_HOW",
+    "WINDOW_AGGREGATIONS",
+    "WINDOW_ONLY_AGGREGATIONS",
     "BINARY_OPERATORS",
     "CAST_DTYPES",
     "FILL_STRATEGIES",
@@ -106,6 +111,7 @@ _STRING_OPERATORS: dict[str, str] = {
     "contains": "contains",
     "starts_with": "starts_with",
     "ends_with": "ends_with",
+    "matches": "matches",
 }
 OPERATORS: tuple[str, ...] = (
     *_COMPARISON_OPERATORS,
@@ -123,6 +129,7 @@ AGGREGATIONS: tuple[str, ...] = (
     "min",
     "max",
     "median",
+    "quantile",
     "std",
     "var",
     "count",
@@ -131,8 +138,31 @@ AGGREGATIONS: tuple[str, ...] = (
     "last",
     "len",
 )
+#: Window-only aggregates: positional and cumulative values within a partition.
+WINDOW_ONLY_AGGREGATIONS: tuple[str, ...] = (
+    "row_number",
+    "cum_sum",
+    "shift",
+    "rank",
+    "dense_rank",
+    "forward_fill",
+    "backward_fill",
+)
+WINDOW_AGGREGATIONS: tuple[str, ...] = (*AGGREGATIONS, *WINDOW_ONLY_AGGREGATIONS)
+JOIN_VALIDATE: tuple[str, ...] = ("1:1", "m:1", "1:m", "m:m")
+#: Join kinds Polars can validate; semi, anti, right and cross joins refuse ``validate``.
+JOIN_VALIDATED_HOW: tuple[str, ...] = ("inner", "left", "full")
+JOIN_MAINTAIN_ORDER: tuple[str, ...] = ("none", "left", "right", "left_right", "right_left")
 CAST_DTYPES: tuple[str, ...] = (
+    "Int8",
+    "Int16",
+    "Int32",
     "Int64",
+    "UInt8",
+    "UInt16",
+    "UInt32",
+    "UInt64",
+    "Float32",
     "Float64",
     "String",
     "Boolean",
@@ -140,7 +170,7 @@ CAST_DTYPES: tuple[str, ...] = (
     "Datetime",
     "Categorical",
 )
-LITERAL_TYPES: tuple[str, ...] = ("number", "text", "boolean", "date")
+LITERAL_TYPES: tuple[str, ...] = ("number", "text", "boolean", "date", "null")
 
 #: ``fn -> (argument literal types, render template)``. ``{r}`` is the
 #: receiver rendered in expression position; ``{0}``/``{1}`` are bare literals.
@@ -162,6 +192,16 @@ FUNCTIONS: dict[str, tuple[tuple[str, ...], str]] = {
     "year": ((), "{r}.dt.year()"),
     "month": ((), "{r}.dt.month()"),
     "day": ((), "{r}.dt.day()"),
+    "weekday": ((), "{r}.dt.weekday()"),
+    "offset_by": (("text",), "{r}.dt.offset_by({0})"),
+    "total_days": ((), "{r}.dt.total_days()"),
+    "replace": (("text", "text"), "{r}.str.replace({0}, {1}, literal=True)"),
+    "replace_all": (("text", "text"), "{r}.str.replace_all({0}, {1}, literal=True)"),
+    "replace_regex": (("text", "text"), "{r}.str.replace_all({0}, {1})"),
+    "slice": (("int", "integer"), "{r}.str.slice({0}, {1})"),
+    "split_part": (("text", "integer"), "{r}.str.split({0}).list.get({1}, null_on_oob=True)"),
+    "extract": (("text", "integer"), "{r}.str.extract({0}, {1})"),
+    "try_cast": (("dtype",), "{r}.cast(pl.{0}, strict=False)"),
 }
 
 _STEP_KEYS: dict[str, frozenset[str]] = {
@@ -175,11 +215,16 @@ _STEP_KEYS: dict[str, frozenset[str]] = {
     "sort": frozenset({"keys", "nullsLast"}),
     "unique": frozenset({"columns", "keep"}),
     "group_by": frozenset({"keys", "aggregations"}),
-    "join": frozenset({"input", "how", "leftOn", "rightOn", "suffix"}),
+    "join": frozenset({"input", "how", "leftOn", "rightOn", "suffix", "validate", "maintainOrder"}),
     "concat": frozenset({"inputs", "how"}),
     "fill_null": frozenset({"columns", "fill"}),
     "limit": frozenset({"n"}),
     "variable": frozenset({"name", "value"}),
+}
+
+#: Keys a step may omit; every other key in ``_STEP_KEYS`` is required.
+_OPTIONAL_STEP_KEYS: dict[str, frozenset[str]] = {
+    "join": frozenset({"validate", "maintainOrder"}),
 }
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -287,7 +332,7 @@ class _Renderer:
         unknown = sorted(set(step) - allowed)
         if unknown:
             raise self.fail(f"Unknown field(s) {unknown!r} for a {kind} step.")
-        missing = sorted(_STEP_KEYS[kind] - set(step))
+        missing = sorted(_STEP_KEYS[kind] - _OPTIONAL_STEP_KEYS.get(kind, frozenset()) - set(step))
         if missing:
             raise self.fail(f"Missing field(s) {missing!r} for a {kind} step.")
         return dict(step)
@@ -383,6 +428,10 @@ class _Renderer:
             if not isinstance(value, bool):
                 raise self.fail(f"{label} must be true or false.")
             return literal_type, repr(value)
+        if literal_type == "null":
+            if "value" in operand and value is not None:
+                raise self.fail(f"{label} of type null carries no value.")
+            return literal_type, "None"
         if not isinstance(value, str) or not _ISO_DATE.match(value):
             raise self.fail(f"{label} must be a date written as YYYY-MM-DD.")
         try:
@@ -400,7 +449,7 @@ class _Renderer:
             return self._column(operand.get("name"), f"{label} column")
         if kind == "literal":
             literal_type, rendered = self._literal(operand, label)
-            if literal_type == "date" or not expr:
+            if literal_type == "date" or (not expr and literal_type != "null"):
                 return rendered
             return f"pl.lit({rendered})"
         if kind == "variable":
@@ -436,6 +485,8 @@ class _Renderer:
                 return f"{column} {_COMPARISON_OPERATORS[operator]} {operand}"
             if operator == "contains":
                 return f"{column}.str.contains({operand}, literal=True)"
+            if operator == "matches":
+                return f"{column}.str.contains({operand})"
             return f"{column}.str.{_STRING_OPERATORS[operator]}({operand})"
         if operator in _NO_VALUE_OPERATORS:
             if has_value or has_values:
@@ -458,6 +509,8 @@ class _Renderer:
             if operand.get("kind") != "literal":
                 raise self.fail(f"{label} must be plain values.")
             literal_type, text = self._literal(operand, label)
+            if literal_type == "null":
+                raise self.fail(f"{label} cannot include null.")
             types.add(literal_type)
             rendered.append(text)
             if literal_type == "date":
@@ -482,11 +535,34 @@ class _Renderer:
 
     # -- aggregations and expressions ------------------------------------
 
-    def _aggregate(self, column: object, agg: object, label: str) -> str:
+    def _aggregate(
+        self,
+        column: object,
+        agg: object,
+        label: str,
+        *,
+        quantile: object = None,
+        where: object = None,
+    ) -> str:
         name = self._choice(agg, AGGREGATIONS, f"{label} aggregation")
+        if name == "quantile":
+            if isinstance(quantile, bool) or not isinstance(quantile, (int, float)):
+                raise self.fail(f"{label} quantile needs a number between 0 and 1.")
+            if not 0 <= quantile <= 1:
+                raise self.fail(f"{label} quantile needs a number between 0 and 1.")
+            call = f".quantile({quantile!r}, interpolation='linear')"
+        else:
+            call = f".{name}()"
+        if where is None:
+            if name == "len":
+                return "pl.len()"
+            return f"{self._column(column, f'{label} column')}{call}"
+        where_group = self._object(where, f"{label} where")
+        self._keys(where_group, ("match", "conditions"), f"{label} where")
+        predicate = self._conditions(where_group, f"{label} where")
         if name == "len":
-            return "pl.len()"
-        return f"{self._column(column, f'{label} column')}.{name}()"
+            return f"({predicate}).sum()"
+        return f"{self._column(column, f'{label} column')}.filter({predicate}){call}"
 
     def _expr(self, value: object, label: str) -> str:
         expr = self._object(value, label)
@@ -523,11 +599,70 @@ class _Renderer:
             otherwise = self._operand(expr.get("otherwise"), f"{label} otherwise", expr=True)
             return f"pl.when({conditions}).then({then}).otherwise({otherwise})"
         if kind == "window":
-            self._keys(expr, ("type", "agg", "column", "over"), label)
-            over = self._str_list(expr.get("over"), f"{label} over", allow_empty=False)
-            aggregate = self._aggregate(expr.get("column"), expr.get("agg"), label)
-            return f"{aggregate}.over({over!r})"
+            return self._window(expr, label)
+        if kind == "concat":
+            self._keys(expr, ("type", "parts", "separator"), label)
+            parts = expr.get("parts")
+            if not isinstance(parts, list) or len(parts) < 2:
+                raise self.fail(f"{label} concat needs at least two parts.")
+            separator = expr.get("separator", "")
+            if not isinstance(separator, str):
+                raise self.fail(f"{label} separator must be text.")
+            rendered_parts = [
+                self._operand(part, f"{label} part {i + 1}", expr=True)
+                for i, part in enumerate(parts)
+            ]
+            return f"pl.concat_str([{', '.join(rendered_parts)}], separator={separator!r})"
         raise self.fail(f"Unknown expression type {kind!r}.")
+
+    def _window(self, expr: Mapping[str, Any], label: str) -> str:
+        self._keys(
+            expr, ("type", "agg", "column", "over", "orderBy", "descending", "quantile"), label
+        )
+        over = self._str_list(expr.get("over"), f"{label} over", allow_empty=True)
+        agg = self._choice(expr.get("agg"), WINDOW_AGGREGATIONS, f"{label} aggregation")
+        descending = expr.get("descending", False)
+        if not isinstance(descending, bool):
+            raise self.fail(f"{label} descending must be true or false.")
+        if agg == "row_number":
+            # The idiom analysts write; the cardinality classifier recognises
+            # a range bounded by ``pl.len()`` as one value per row.
+            base = "pl.int_range(1, pl.len() + 1)"
+        elif agg in AGGREGATIONS:
+            base = self._aggregate(expr.get("column"), agg, label, quantile=expr.get("quantile"))
+        else:
+            column = self._column(expr.get("column"), f"{label} column")
+            base = {
+                "cum_sum": f"{column}.cum_sum()",
+                "shift": f"{column}.shift(1)",
+                "rank": f"{column}.rank(method='ordinal', descending={descending!r})",
+                "dense_rank": f"{column}.rank(method='dense', descending={descending!r})",
+                "forward_fill": f"{column}.fill_null(strategy='forward')",
+                "backward_fill": f"{column}.fill_null(strategy='backward')",
+            }[agg]
+        order_by = expr.get("orderBy")
+        if order_by is None:
+            if not over:
+                return base
+            return f"{base}.over({over!r})"
+        if not isinstance(order_by, list) or not order_by:
+            raise self.fail(f"{label} order must list at least one column.")
+        if not over:
+            raise self.fail(
+                f"{label} needs partition columns to order within; sort the frame instead."
+            )
+        columns: list[str] = []
+        flags: list[bool] = []
+        for i, entry in enumerate(order_by):
+            entry = self._object(entry, f"{label} order {i + 1}")
+            self._keys(entry, ("column", "descending"), f"{label} order {i + 1}")
+            columns.append(self._str(entry.get("column"), f"{label} order {i + 1} column"))
+            flags.append(
+                self._bool(entry.get("descending", False), f"{label} order {i + 1} descending")
+            )
+        if len(set(flags)) > 1:
+            raise self.fail(f"{label} order columns must all share one direction.")
+        return f"{base}.over({over!r}, order_by={columns!r}, descending={flags[0]!r})"
 
     def _function_arg(self, value: object, expected: str, label: str) -> str:
         operand = self._object(value, label)
@@ -539,12 +674,21 @@ class _Renderer:
             if literal_type != "number" or not isinstance(raw, int) or raw < 0:
                 raise self.fail(f"{label} must be a whole number of zero or more.")
             return rendered
+        if expected == "int":
+            raw = operand.get("value")
+            if literal_type != "number" or not isinstance(raw, int):
+                raise self.fail(f"{label} must be a whole number.")
+            return rendered
         if expected == "number":
             if literal_type != "number":
                 raise self.fail(f"{label} must be a number.")
             return rendered
+        if expected == "text":
+            if literal_type != "text":
+                raise self.fail(f"{label} must be text.")
+            return rendered
         if expected == "scalar":
-            if literal_type == "date":
+            if literal_type in ("date", "null"):
                 raise self.fail(f"{label} must be a number, text or true/false.")
             return rendered
         if literal_type != "text" or operand.get("value") not in CAST_DTYPES:
@@ -617,12 +761,12 @@ class _Renderer:
 
     def _render_unique(self, step: Mapping[str, Any]) -> str:
         columns = self._str_list(step["columns"], "Columns", allow_empty=True)
-        keep = self._choice(step["keep"], ("first", "last", "any"), "Keep")
+        keep = self._choice(step["keep"], ("first", "last", "any", "none"), "Keep")
         subset = repr(columns) if columns else "None"
         return f"df = df.unique(subset={subset}, keep={keep!r}, maintain_order=True)"
 
     def _render_group_by(self, step: Mapping[str, Any]) -> str:
-        keys = self._str_list(step["keys"], "Group keys", allow_empty=False)
+        keys = self._str_list(step["keys"], "Group keys", allow_empty=True)
         aggregations = step["aggregations"]
         if not isinstance(aggregations, list) or not aggregations:
             raise self.fail("Add at least one aggregation.")
@@ -630,15 +774,24 @@ class _Renderer:
         names: set[str] = set()
         for i, entry in enumerate(aggregations):
             entry = self._object(entry, f"Aggregation {i + 1}")
-            self._keys(entry, ("column", "agg", "name"), f"Aggregation {i + 1}")
+            self._keys(
+                entry, ("column", "agg", "name", "where", "quantile"), f"Aggregation {i + 1}"
+            )
             name = self._str(entry.get("name"), f"Aggregation {i + 1} name")
             if name in names:
                 raise self.fail(f"Aggregation name {name!r} is used more than once.")
             names.add(name)
             aggregate = self._aggregate(
-                entry.get("column"), entry.get("agg"), f"Aggregation {i + 1}"
+                entry.get("column"),
+                entry.get("agg"),
+                f"Aggregation {i + 1}",
+                quantile=entry.get("quantile"),
+                where=entry.get("where"),
             )
             rendered.append(f"{aggregate}.alias({name!r})")
+        if not keys:
+            # A whole-frame summary: one row of aggregates.
+            return f"df = df.select([{', '.join(rendered)}])"
         return f"df = df.group_by({keys!r}, maintain_order=True).agg([{', '.join(rendered)}])"
 
     def _render_join(self, step: Mapping[str, Any]) -> str:
@@ -647,15 +800,24 @@ class _Renderer:
         left_on = self._str_list(step["leftOn"], "Left keys", allow_empty=True)
         right_on = self._str_list(step["rightOn"], "Right keys", allow_empty=True)
         suffix = self._str(step["suffix"], "Suffix")
+        extra = ""
+        if "validate" in step:
+            validate = self._choice(step["validate"], JOIN_VALIDATE, "Join validation")
+            if how not in JOIN_VALIDATED_HOW:
+                raise self.fail("Only inner, left and full joins can validate their keys.")
+            extra += f", validate={validate!r}"
+        if "maintainOrder" in step:
+            order = self._choice(step["maintainOrder"], JOIN_MAINTAIN_ORDER, "Join order")
+            extra += f", maintain_order={order!r}"
         if how == "cross":
             if left_on or right_on:
                 raise self.fail("A cross join takes no key columns.")
-            return f"df = df.join({other}, how='cross', suffix={suffix!r})"
+            return f"df = df.join({other}, how='cross', suffix={suffix!r}{extra})"
         if not left_on or len(left_on) != len(right_on):
             raise self.fail("Left and right key lists must be non-empty and the same length.")
         return (
             f"df = df.join({other}, left_on={left_on!r}, right_on={right_on!r}, "
-            f"how={how!r}, suffix={suffix!r})"
+            f"how={how!r}, suffix={suffix!r}{extra})"
         )
 
     def _render_concat(self, step: Mapping[str, Any]) -> str:
@@ -701,7 +863,7 @@ class _Renderer:
         if operand.get("kind") != "literal":
             raise self.fail("A variable holds a plain value.")
         literal_type, rendered = self._literal(operand, "Variable value")
-        if literal_type == "date":
+        if literal_type in ("date", "null"):
             raise self.fail("A variable holds a number, text or true/false.")
         self.variables.add(name)
         return f"{name} = {rendered}"

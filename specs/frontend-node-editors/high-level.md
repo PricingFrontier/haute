@@ -213,11 +213,23 @@ down, a grouped `Add step` menu (rows, columns, combine, values) covering filter
 column, conditional column, window aggregate, select, drop, rename, cast, sort, unique,
 group by, join, concat, fill null, limit, and variable, and per-step forms whose column
 pickers offer upstream columns plus columns derived by earlier steps while accepting free
-text. A value in a condition or expression is a typed literal, a column, or a variable
+text. A window expression offers the plain aggregates plus row number, running total,
+previous value, rank, dense rank and forward/backward fill, an optional in-group order
+(one direction, with a hint that ordering needs a group column), a rank direction, and a
+quantile; a text-join expression lists two or more parts and a separator; a group-by
+aggregation takes an optional quantile and an optional row filter and an empty key list
+summarises the whole frame; a join offers an optional key-cardinality check on inner, left
+and full joins (cleared when the kind changes to any other) and an output row order;
+unique can drop every duplicate. The forms accept the renderer's own shorthand for a
+persisted step (a null literal without a value, a columnless window aggregate without
+a column, an order key without a direction, a text join without a separator) and
+canonicalise it before editing. A value in a
+condition or expression is a typed literal, a column, or a variable
 defined by an earlier variable step, and each field offers only the sources and literal
 types the step schema accepts there (string operators take text values only; a variable
-holds a number, text or true/false; function arguments are labelled and typed per
-function). A locked generated-code panel shows the code the render endpoint returns for
+holds a number, text or true/false; a `null` literal is offered for expression operands
+but never in a membership list or a variable; function arguments are labelled and typed
+per function). A locked generated-code panel shows the code the render endpoint returns for
 the current steps, names the failing step without opening it or collapsing the card being
 edited (a "Go to error" action opens it), tints the failing and the last execution-error
 line, and carries the confirmed one-way `Switch to code` action. Renders are tagged with

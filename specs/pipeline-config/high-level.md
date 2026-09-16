@@ -230,7 +230,17 @@ reserved-filename guard) treat a `polars` node as a sidecar owner only while its
 carries a `steps` list, and the stale-file sweep removes the file when a node stops
 carrying one. One renderer (`src/haute/_polars_steps.py`) validates the closed step
 schema and renders the steps into the function body, one statement per line, raising a
-step-indexed error for any malformed or incomplete step. The node data model enforces
+step-indexed error for any malformed or incomplete step. The vocabulary covers filters
+(comparison, null, membership, text and regex operators), derived columns (formulas,
+typed functions over numbers, text, dates and durations, conditionals, window
+aggregates with a partition and an optional in-partition order, and text joins),
+select, drop, rename, cast (the integer, float, string, boolean, date, datetime and
+categorical dtypes), sort, unique, group-by with optional per-aggregate row filters
+and quantiles (an empty key list summarises the whole frame), joins with optional
+key-cardinality validation (inner, left and full joins only, as Polars refuses it
+elsewhere) and output-order control, concat, fill-null, limit, and
+node-local variables; a null literal renders as `pl.lit(None)` in expression position
+and is refused in membership lists and variables. The node data model enforces
 one invariant on construction: a `polars` config that carries `steps` always carries the
 rendering of those steps as its `code`, or an empty `code` plus an editor-state
 `_steps_error` message when they cannot be rendered, so every consumer that reads

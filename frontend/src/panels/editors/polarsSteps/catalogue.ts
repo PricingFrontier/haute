@@ -4,6 +4,7 @@
  */
 import type {
   Aggregation,
+  AggregationSpec,
   BinaryOperator,
   CastDtype,
   Condition,
@@ -12,11 +13,15 @@ import type {
   FillStrategy,
   FunctionName,
   JoinHow,
+  JoinMaintainOrder,
+  JoinValidate,
   LiteralOperand,
   LiteralType,
   Operand,
   Step,
   StepKind,
+  WindowAggregation,
+  WindowOnlyAggregation,
 } from "./types"
 
 export type StepKindInfo = { kind: Exclude<StepKind, "source">; label: string; description: string }
@@ -53,6 +58,7 @@ export const CONDITION_OPERATORS: Array<{ value: ConditionOperator; label: strin
   { value: "contains", label: "contains text", takes: "value" },
   { value: "starts_with", label: "starts with", takes: "value" },
   { value: "ends_with", label: "ends with", takes: "value" },
+  { value: "matches", label: "matches pattern (regex)", takes: "value" },
 ]
 
 export const BINARY_OPERATORS: Array<{ value: BinaryOperator; label: string }> = [
@@ -71,6 +77,7 @@ export const AGGREGATIONS: Array<{ value: Aggregation; label: string }> = [
   { value: "min", label: "minimum" },
   { value: "max", label: "maximum" },
   { value: "median", label: "median" },
+  { value: "quantile", label: "quantile" },
   { value: "std", label: "standard deviation" },
   { value: "var", label: "variance" },
   { value: "count", label: "count (non-null)" },
@@ -80,18 +87,58 @@ export const AGGREGATIONS: Array<{ value: Aggregation; label: string }> = [
   { value: "len", label: "row count" },
 ]
 
-export const CAST_DTYPES: CastDtype[] = ["Int64", "Float64", "String", "Boolean", "Date", "Datetime", "Categorical"]
+/** Window-only aggregates, offered after the plain ones in a window expression. */
+export const WINDOW_ONLY_AGGREGATIONS: Array<{ value: WindowOnlyAggregation; label: string }> = [
+  { value: "row_number", label: "row number" },
+  { value: "cum_sum", label: "running total" },
+  { value: "shift", label: "previous row's value" },
+  { value: "rank", label: "rank" },
+  { value: "dense_rank", label: "dense rank" },
+  { value: "forward_fill", label: "fill forward" },
+  { value: "backward_fill", label: "fill backward" },
+]
+export const WINDOW_AGGREGATIONS: Array<{ value: WindowAggregation; label: string }> = [...AGGREGATIONS, ...WINDOW_ONLY_AGGREGATIONS]
+/** Window aggregates that take no input column. */
+export const COLUMNLESS_AGGREGATIONS: ReadonlySet<WindowAggregation> = new Set<WindowAggregation>(["len", "row_number"])
+
+export const CAST_DTYPES: CastDtype[] = [
+  "Int8", "Int16", "Int32", "Int64",
+  "UInt8", "UInt16", "UInt32", "UInt64",
+  "Float32", "Float64",
+  "String", "Boolean", "Date", "Datetime", "Categorical",
+]
 export const JOIN_HOW: JoinHow[] = ["inner", "left", "right", "full", "semi", "anti", "cross"]
+/** Join kinds Polars can validate; the renderer refuses `validate` on the others. */
+export const JOIN_VALIDATED_HOW: ReadonlySet<JoinHow> = new Set<JoinHow>(["inner", "left", "full"])
+export const JOIN_VALIDATE: Array<{ value: JoinValidate; label: string }> = [
+  { value: "1:1", label: "one to one" },
+  { value: "m:1", label: "many to one (unique right keys)" },
+  { value: "1:m", label: "one to many (unique left keys)" },
+  { value: "m:m", label: "many to many" },
+]
+export const JOIN_MAINTAIN_ORDER: Array<{ value: JoinMaintainOrder; label: string }> = [
+  { value: "none", label: "any order" },
+  { value: "left", label: "left input order" },
+  { value: "right", label: "right input order" },
+  { value: "left_right", label: "left, then right" },
+  { value: "right_left", label: "right, then left" },
+]
 export const FILL_STRATEGIES: FillStrategy[] = ["forward", "backward", "min", "max", "mean", "zero", "one"]
 export const LITERAL_TYPES: Array<{ value: LiteralType; label: string }> = [
   { value: "number", label: "number" },
   { value: "text", label: "text" },
   { value: "boolean", label: "true/false" },
   { value: "date", label: "date" },
+  { value: "null", label: "missing (null)" },
 ]
+/** Literal types a membership list accepts: the renderer refuses null members. */
+export const LIST_LITERAL_TYPES = LITERAL_TYPES.filter((t) => t.value !== "null")
 
-/** Function argument shapes: what each argument must be, in order. */
-export type FunctionArg = "integer" | "number" | "scalar" | "dtype"
+/**
+ * Function argument shapes: what each argument must be, in order. `integer`
+ * is zero or more; `int` may be negative (a slice start counting from the end).
+ */
+export type FunctionArg = "integer" | "int" | "number" | "scalar" | "dtype" | "text"
 export const FUNCTIONS: Array<{ value: FunctionName; label: string; args: FunctionArg[] }> = [
   { value: "abs", label: "absolute value", args: [] },
   { value: "round", label: "round", args: ["integer"] },
@@ -107,12 +154,22 @@ export const FUNCTIONS: Array<{ value: FunctionName; label: string; args: Functi
   { value: "lower", label: "lower case", args: [] },
   { value: "strip", label: "trim whitespace", args: [] },
   { value: "length", label: "text length", args: [] },
+  { value: "replace", label: "replace first match", args: ["text", "text"] },
+  { value: "replace_all", label: "replace all matches", args: ["text", "text"] },
+  { value: "replace_regex", label: "replace by pattern (regex)", args: ["text", "text"] },
+  { value: "slice", label: "substring", args: ["int", "integer"] },
+  { value: "split_part", label: "split and take part", args: ["text", "integer"] },
+  { value: "extract", label: "extract pattern group (regex)", args: ["text", "integer"] },
   { value: "year", label: "year of date", args: [] },
   { value: "month", label: "month of date", args: [] },
   { value: "day", label: "day of date", args: [] },
+  { value: "weekday", label: "weekday of date (1 = Monday)", args: [] },
+  { value: "offset_by", label: "shift date by", args: ["text"] },
+  { value: "total_days", label: "duration in days", args: [] },
+  { value: "try_cast", label: "cast to type (null on failure)", args: ["dtype"] },
 ]
 
-export function literal(type: LiteralType, value: number | string | boolean): LiteralOperand {
+export function literal(type: LiteralType, value: number | string | boolean | null): LiteralOperand {
   return { kind: "literal", type, value }
 }
 
@@ -126,6 +183,8 @@ export function defaultLiteral(type: LiteralType): LiteralOperand {
       return literal("boolean", true)
     case "date":
       return literal("date", "2026-01-01")
+    case "null":
+      return literal("null", null)
   }
 }
 
@@ -136,12 +195,15 @@ export function defaultCondition(column = ""): Condition {
 export function defaultArgFor(arg: FunctionArg): LiteralOperand {
   switch (arg) {
     case "integer":
+    case "int":
     case "number":
       return literal("number", 0)
     case "scalar":
       return literal("number", 0)
     case "dtype":
       return literal("text", "Float64")
+    case "text":
+      return literal("text", "")
   }
 }
 
@@ -158,6 +220,8 @@ export function defaultExpr(type: Expr["type"], column = ""): Expr {
       return { type, match: "all", conditions: [defaultCondition(column)], then: literal("number", 1), otherwise: literal("number", 0) }
     case "window":
       return { type, agg: "sum", column, over: [] }
+    case "concat":
+      return { type, parts: [operand, { kind: "column", name: "" }], separator: " " }
   }
 }
 
@@ -204,8 +268,14 @@ function operandText(operand: Operand | undefined): string {
   if (!operand) return "?"
   if (operand.kind === "column") return operand.name || "?"
   if (operand.kind === "variable") return operand.name || "?"
+  if (operand.type === "null") return "null"
   if (operand.type === "text") return JSON.stringify(operand.value)
   return String(operand.value)
+}
+
+function aggregationText(entry: AggregationSpec): string {
+  const call = entry.agg === "len" ? "count()" : `${entry.agg}(${entry.column || "?"})`
+  return `${entry.name || "?"} = ${call}${entry.where ? " where …" : ""}`
 }
 
 function conditionText(condition: Condition): string {
@@ -226,15 +296,23 @@ function exprText(expr: Expr): string {
       return `${expr.fn}(${[operandText(expr.operand), ...expr.args.map(operandText)].join(", ")})`
     case "conditional":
       return `if ${expr.conditions.map(conditionText).join(expr.match === "all" ? " and " : " or ")} then ${operandText(expr.then)} else ${operandText(expr.otherwise)}`
-    case "window":
-      return `${expr.agg} of ${expr.column || "?"} over ${expr.over.join(", ") || "?"}`
+    case "window": {
+      const subject = COLUMNLESS_AGGREGATIONS.has(expr.agg) ? expr.agg : `${expr.agg} of ${expr.column || "?"}`
+      const over = expr.over.length ? ` over ${expr.over.join(", ")}` : " over all rows"
+      const order = expr.orderBy?.length ? ` ordered by ${expr.orderBy.map((k) => `${k.column || "?"}${k.descending ? " desc" : ""}`).join(", ")}` : ""
+      return `${subject}${over}${order}`
+    }
+    case "concat":
+      return `join(${expr.parts.map(operandText).join(", ")})`
   }
 }
 
-type Shape = "string" | "number" | "boolean" | "array" | "object"
+type Shape = "string" | "number" | "boolean" | "array" | "object" | "null"
 
 function isShape(value: unknown, shape: Shape): boolean {
   switch (shape) {
+    case "null":
+      return value === null
     case "array":
       return Array.isArray(value)
     case "object":
@@ -253,11 +331,14 @@ const LITERAL_VALUE_SHAPE: Record<LiteralType, Shape> = {
   text: "string",
   boolean: "boolean",
   date: "string",
+  null: "null",
 }
 
 function literalProblem(operand: Record<string, unknown>, where: string): string | null {
   const type = operand.type
   if (typeof type !== "string" || !(type in LITERAL_VALUE_SHAPE)) return `${where} has an unsupported value type.`
+  // The renderer accepts a null literal with no value field at all.
+  if (type === "null" && operand.value === undefined) return null
   if (!isShape(operand.value, LITERAL_VALUE_SHAPE[type as LiteralType])) return `${where} has a malformed value.`
   return null
 }
@@ -333,9 +414,29 @@ function exprProblem(value: unknown, where: string): string | null {
         ?? operandProblem(expr.then, `${where} then branch`)
         ?? operandProblem(expr.otherwise, `${where} otherwise branch`)
       )
-    case "window":
-      if (typeof expr.agg !== "string" || typeof expr.column !== "string") return `${where} is missing its aggregate.`
-      return stringListProblem(expr.over, `${where} over`)
+    case "window": {
+      // The renderer ignores `column` for columnless aggregates, defaults an
+      // order key's `descending` to false, and the forms canonicalise both.
+      if (typeof expr.agg !== "string") return `${where} is missing its aggregate.`
+      const columnless = COLUMNLESS_AGGREGATIONS.has(expr.agg as WindowAggregation)
+      if (typeof expr.column !== "string" && !(columnless && expr.column === undefined)) return `${where} is missing its aggregate.`
+      if (expr.descending !== undefined && typeof expr.descending !== "boolean") return `${where} has a malformed rank direction.`
+      if (expr.quantile !== undefined && typeof expr.quantile !== "number") return `${where} has a malformed quantile.`
+      const over = stringListProblem(expr.over, `${where} over`)
+      if (over || expr.orderBy === undefined) return over
+      const order = rowsProblem(expr.orderBy, [["column", "string"]], `${where} order`)
+      if (order) return order
+      const badDirection = (expr.orderBy as Array<Record<string, unknown>>).some((k) => k.descending !== undefined && typeof k.descending !== "boolean")
+      return badDirection ? `${where} order has a malformed direction.` : null
+    }
+    case "concat":
+      if (expr.separator !== undefined && typeof expr.separator !== "string") return `${where} has a malformed separator.`
+      if (!Array.isArray(expr.parts)) return `${where} is missing its parts.`
+      for (const [index, part] of expr.parts.entries()) {
+        const problem = operandProblem(part, `${where} part ${index + 1}`)
+        if (problem) return problem
+      }
+      return null
     default:
       return `${where} has an unknown expression type.`
   }
@@ -398,8 +499,11 @@ export function stepProblem(step: unknown): string | null {
       return (
         stringListProblem(record.keys, `${where} keys`)
         ?? rowsProblem(record.aggregations, [["column", "string"], ["agg", "string"], ["name", "string"]], `${where} aggregations`)
+        ?? aggregationsProblem(record.aggregations as Array<Record<string, unknown>>, where)
       )
     case "join":
+      if (record.validate !== undefined && typeof record.validate !== "string") return `${where} has a malformed validation.`
+      if (record.maintainOrder !== undefined && typeof record.maintainOrder !== "string") return `${where} has a malformed row order.`
       return stringListProblem(record.leftOn, `${where} left keys`) ?? stringListProblem(record.rightOn, `${where} right keys`)
     case "concat":
       return stringListProblem(record.inputs, `${where} inputs`)
@@ -410,12 +514,56 @@ export function stepProblem(step: unknown): string | null {
   }
 }
 
+function aggregationsProblem(entries: Array<Record<string, unknown>>, where: string): string | null {
+  for (const [index, entry] of entries.entries()) {
+    const label = `${where} aggregation ${index + 1}`
+    if (entry.quantile !== undefined && typeof entry.quantile !== "number") return `${label} has a malformed quantile.`
+    if (entry.where !== undefined) {
+      if (!isShape(entry.where, "object")) return `${label} has a malformed row filter.`
+      const group = entry.where as Record<string, unknown>
+      if (typeof group.match !== "string") return `${label} has a malformed row filter.`
+      const problem = conditionsProblem(group.conditions, `${label} filter`)
+      if (problem) return problem
+    }
+  }
+  return null
+}
+
 function fillProblem(value: unknown, where: string): string | null {
   if (!isShape(value, "object")) return `${where} is missing its fill.`
   const fill = value as Record<string, unknown>
   if (fill.kind === "value") return operandProblem(fill.value, `${where} fill`)
   if (fill.kind === "strategy") return typeof fill.strategy === "string" ? null : `${where} is missing its fill strategy.`
   return `${where} has a malformed fill.`
+}
+
+/**
+ * The step with every optional-on-the-backend field filled in, so forms and
+ * summaries can read canonical shapes: a null literal carries `value: null`,
+ * a window always has a `column` and each order key a `descending`, and a
+ * concat has a `separator`. Only steps `stepProblem` accepts are canonicalised.
+ */
+export function canonicalStep(step: Step): Step {
+  if (step.kind !== "with_column") return step
+  const expr = step.expr
+  if (expr.type === "window") {
+    const orderBy = expr.orderBy?.map((k) => ({ column: k.column, descending: k.descending ?? false }))
+    return { ...step, expr: { ...expr, column: expr.column ?? "", ...(orderBy ? { orderBy } : {}) } }
+  }
+  if (expr.type === "concat") {
+    return { ...step, expr: { ...expr, parts: expr.parts.map(canonicalOperand), separator: expr.separator ?? "" } }
+  }
+  if (expr.type === "conditional") {
+    return { ...step, expr: { ...expr, then: canonicalOperand(expr.then), otherwise: canonicalOperand(expr.otherwise) } }
+  }
+  if (expr.type === "operand") return { ...step, expr: { ...expr, operand: canonicalOperand(expr.operand) } }
+  if (expr.type === "binary") return { ...step, expr: { ...expr, left: canonicalOperand(expr.left), right: canonicalOperand(expr.right) } }
+  return step
+}
+
+function canonicalOperand(operand: Operand): Operand {
+  if (operand.kind === "literal" && operand.type === "null" && operand.value !== null) return literal("null", null)
+  return operand
 }
 
 /** One line describing the step for its card header. */
@@ -439,9 +587,9 @@ export function summarizeStep(step: Step): string {
     case "unique":
       return step.columns.length ? `by ${step.columns.join(", ")}` : "all columns"
     case "group_by":
-      return `by ${step.keys.join(", ") || "?"}: ${step.aggregations.map((a) => `${a.name || "?"} = ${a.agg}(${a.column || "?"})`).join(", ")}`
+      return `${step.keys.length ? `by ${step.keys.join(", ")}` : "whole frame"}: ${step.aggregations.map(aggregationText).join(", ")}`
     case "join":
-      return `${step.how} join ${step.input || "?"} on ${step.leftOn.join(", ") || (step.how === "cross" ? "everything" : "?")}`
+      return `${step.how} join ${step.input || "?"} on ${step.leftOn.join(", ") || (step.how === "cross" ? "everything" : "?")}${step.validate ? ` (${step.validate})` : ""}`
     case "concat":
       return step.inputs.join(", ") || "no inputs"
     case "fill_null":

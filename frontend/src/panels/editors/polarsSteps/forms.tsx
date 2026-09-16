@@ -11,10 +11,17 @@ import {
   AGGREGATIONS,
   BINARY_OPERATORS,
   CAST_DTYPES,
+  COLUMNLESS_AGGREGATIONS,
   FILL_STRATEGIES,
   FUNCTIONS,
   JOIN_HOW,
+  JOIN_MAINTAIN_ORDER,
+  JOIN_VALIDATE,
+  JOIN_VALIDATED_HOW,
+  WINDOW_AGGREGATIONS,
+  canonicalStep,
   defaultArgFor,
+  defaultCondition,
   defaultExpr,
   literal,
 } from "./catalogue"
@@ -30,15 +37,20 @@ import {
   TextField,
 } from "./fields"
 import type {
+  AggregationSpec,
   CastStep,
   ConcatStep,
   Expr,
   FillNullStep,
   FilterStep,
   GroupByStep,
+  JoinMaintainOrder,
   JoinStep,
+  JoinValidate,
   LimitStep,
   LiteralOperand,
+  Operand,
+  OrderKey,
   RenameStep,
   SelectStep,
   SortStep,
@@ -62,7 +74,23 @@ export type StepFormContext = {
 type FormProps<S extends Step> = { step: S; onChange: (next: S) => void; ctx: StepFormContext }
 
 const ALL_SOURCES = ["literal", "column", "variable"] as const
-const ALL_TYPES = ["number", "text", "boolean", "date"] as const
+/** Literal types a stored value may take (fills, concat parts). */
+const VALUE_TYPES = ["number", "text", "boolean", "date"] as const
+/** Literal types an expression operand may take: also `null`, for a missing result. */
+const ALL_TYPES = [...VALUE_TYPES, "null"] as const
+
+/** A copy of `value` without `keys`, so an optional setting can be cleared. */
+function omitKeys<T extends object>(value: T, keys: string[]): T {
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key))) as T
+}
+
+function Hint({ children }: { children: string }) {
+  return (
+    <p className="text-[11px] m-0" style={{ color: "var(--text-muted)" }}>
+      {children}
+    </p>
+  )
+}
 
 function RowRemove({ onClick, label }: { onClick: () => void; label: string }) {
   return (
@@ -104,6 +132,7 @@ const EXPR_TYPES: Array<{ value: Expr["type"]; label: string }> = [
   { value: "function", label: "Function" },
   { value: "conditional", label: "If-then" },
   { value: "window", label: "Window" },
+  { value: "concat", label: "Join text" },
   { value: "operand", label: "Value" },
 ]
 
@@ -112,6 +141,14 @@ const ARG_LABELS: Record<string, string[]> = {
   clip: ["Minimum", "Maximum"],
   fill_null: ["Fill with"],
   cast: ["Type"],
+  try_cast: ["Type"],
+  replace: ["Find", "Replace with"],
+  replace_all: ["Find", "Replace with"],
+  replace_regex: ["Pattern (regex)", "Replace with"],
+  slice: ["Start (negative counts from the end)", "Length"],
+  split_part: ["Split on", "Part (0 = first)"],
+  extract: ["Pattern (regex)", "Group (1 = first)"],
+  offset_by: ["Offset (e.g. 1y, 3mo, 7d)"],
 }
 
 function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "function" }>; onChange: (next: Expr) => void; ctx: StepFormContext }) {
@@ -154,13 +191,20 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
             </Field>
           )
         }
+        if (arg === "text") {
+          return (
+            <Field key={index} label={label}>
+              <TextField value={value.type === "text" ? String(value.value) : ""} onCommit={(text) => set(literal("text", text))} ariaLabel={label} mono />
+            </Field>
+          )
+        }
         return (
           <Field key={index} label={label}>
             <LiteralValueInput
               value={value.type === "number" ? value : literal("number", 0)}
               onChange={set}
               ariaLabel={label}
-              integer={arg === "integer"}
+              integer={arg === "integer" || arg === "int"}
             />
           </Field>
         )
@@ -234,22 +278,120 @@ function ExprEditor({ expr, onChange, ctx }: { expr: Expr; onChange: (next: Expr
         </>
       )
     case "window":
-      return (
-        <>
-          <Field label="Aggregate">
-            <SelectField value={expr.agg} options={AGGREGATIONS} onChange={(agg) => onChange({ ...expr, agg })} ariaLabel="Window aggregate" />
-          </Field>
-          {expr.agg !== "len" && (
-            <Field label="Of column">
-              <ColumnPicker value={expr.column} onCommit={(column) => onChange({ ...expr, column })} suggestions={ctx.columns} ariaLabel="Window column" />
-            </Field>
-          )}
-          <Field label="Over (per group of)">
-            <ColumnListField columns={expr.over} onChange={(over) => onChange({ ...expr, over })} suggestions={ctx.columns} ariaLabel="Window over" />
-          </Field>
-        </>
-      )
+      return <WindowEditor expr={expr} onChange={onChange} ctx={ctx} />
+    case "concat":
+      return <ConcatEditor expr={expr} onChange={onChange} ctx={ctx} />
   }
+}
+
+function WindowEditor({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "window" }>; onChange: (next: Expr) => void; ctx: StepFormContext }) {
+  const isRank = expr.agg === "rank" || expr.agg === "dense_rank"
+  const orderBy = expr.orderBy ?? []
+  const setOrder = (next: OrderKey[]) => onChange(next.length ? { ...expr, orderBy: next } : omitKeys(expr, ["orderBy"]))
+  const setOrderKey = (index: number, next: OrderKey) => setOrder(orderBy.map((k, i) => (i === index ? next : k)))
+  return (
+    <>
+      <Field label="Aggregate">
+        <SelectField
+          value={expr.agg}
+          options={WINDOW_AGGREGATIONS}
+          onChange={(agg) => {
+            const next = omitKeys({ ...expr, agg }, ["descending", "quantile"])
+            if (agg === "quantile") next.quantile = 0.5
+            if (agg === "rank" || agg === "dense_rank") next.descending = false
+            onChange(next)
+          }}
+          ariaLabel="Window aggregate"
+        />
+      </Field>
+      {!COLUMNLESS_AGGREGATIONS.has(expr.agg) && (
+        <Field label="Of column">
+          <ColumnPicker value={expr.column} onCommit={(column) => onChange({ ...expr, column })} suggestions={ctx.columns} ariaLabel="Window column" />
+        </Field>
+      )}
+      {expr.agg === "quantile" && (
+        <Field label="Quantile (0 to 1)">
+          <NumberField value={expr.quantile ?? 0.5} min={0} onCommit={(quantile) => onChange({ ...expr, quantile: Math.min(1, Math.max(0, quantile)) })} ariaLabel="Window quantile" />
+        </Field>
+      )}
+      {isRank && (
+        <Field label="Rank order">
+          <SelectField
+            value={expr.descending ? "desc" : "asc"}
+            options={[
+              { value: "asc", label: "smallest first" },
+              { value: "desc", label: "largest first" },
+            ]}
+            onChange={(dir) => onChange({ ...expr, descending: dir === "desc" })}
+            ariaLabel="Rank order"
+          />
+        </Field>
+      )}
+      <Field label="Over (per group of; empty = all rows)">
+        <ColumnListField columns={expr.over} onChange={(over) => onChange({ ...expr, over })} suggestions={ctx.columns} ariaLabel="Window over" />
+      </Field>
+      <Field label="Order rows within each group by">
+        <div className="grid gap-1.5">
+          {orderBy.map((entry, index) => (
+            <div key={index} className="flex flex-wrap items-center gap-1.5" role="group" aria-label={`Window order ${index + 1}`}>
+              <div className="flex-1 basis-28 min-w-0">
+                <ColumnPicker value={entry.column} onCommit={(column) => setOrderKey(index, { ...entry, column })} suggestions={ctx.columns} ariaLabel={`Window order ${index + 1} column`} />
+              </div>
+              <RowRemove label={`Remove window order ${index + 1}`} onClick={() => setOrder(orderBy.filter((_, i) => i !== index))} />
+            </div>
+          ))}
+          {orderBy.length > 0 && (
+            <SelectField
+              value={orderBy[0].descending ? "desc" : "asc"}
+              options={[
+                { value: "asc", label: "ascending" },
+                { value: "desc", label: "descending" },
+              ]}
+              onChange={(dir) => setOrder(orderBy.map((k) => ({ ...k, descending: dir === "desc" })))}
+              ariaLabel="Window order direction"
+            />
+          )}
+          {orderBy.length > 0 && expr.over.length === 0 && <Hint>Ordering needs at least one group column; sort the frame instead.</Hint>}
+          <AddRow label="Add order column" onClick={() => setOrder([...orderBy, { column: ctx.columns[0] ?? "", descending: orderBy[0]?.descending ?? false }])} />
+        </div>
+      </Field>
+    </>
+  )
+}
+
+function ConcatEditor({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "concat" }>; onChange: (next: Expr) => void; ctx: StepFormContext }) {
+  const setPart = (index: number, next: Operand) =>
+    onChange({ ...expr, parts: expr.parts.map((p, i) => (i === index ? next : p)) })
+  return (
+    <>
+      <Field label="Parts, in order">
+        <div className="grid gap-1.5">
+          {expr.parts.map((part, index) => (
+            <div key={index} className="flex flex-wrap items-center gap-1.5" role="group" aria-label={`Part ${index + 1}`}>
+              <div className="flex-1 basis-40 min-w-0">
+                <OperandField
+                  value={part}
+                  onChange={(next) => setPart(index, next)}
+                  sources={[...ALL_SOURCES]}
+                  literalTypes={[...ALL_TYPES]}
+                  columns={ctx.columns}
+                  variables={ctx.variables}
+                  ariaLabel={`Part ${index + 1}`}
+                />
+              </div>
+              {expr.parts.length > 2 && (
+                <RowRemove label={`Remove part ${index + 1}`} onClick={() => onChange({ ...expr, parts: expr.parts.filter((_, i) => i !== index) })} />
+              )}
+            </div>
+          ))}
+          <AddRow label="Add part" onClick={() => onChange({ ...expr, parts: [...expr.parts, { kind: "column", name: ctx.columns[0] ?? "" }] })} />
+        </div>
+      </Field>
+      <Field label="Separator">
+        <TextField value={expr.separator} onCommit={(separator) => onChange({ ...expr, separator })} ariaLabel="Separator" mono />
+      </Field>
+    </>
+  )
 }
 
 function WithColumnForm({ step, onChange, ctx }: FormProps<WithColumnStep>) {
@@ -374,6 +516,7 @@ function UniqueForm({ step, onChange, ctx }: FormProps<UniqueStep>) {
             { value: "first", label: "first row" },
             { value: "last", label: "last row" },
             { value: "any", label: "any row" },
+            { value: "none", label: "no row (drop every duplicate)" },
           ]}
           onChange={(keep) => onChange({ ...step, keep })}
           ariaLabel="Keep"
@@ -383,34 +526,85 @@ function UniqueForm({ step, onChange, ctx }: FormProps<UniqueStep>) {
   )
 }
 
+function AggregationRow({ entry, index, onChange, onRemove, ctx }: { entry: AggregationSpec; index: number; onChange: (next: AggregationSpec) => void; onRemove?: () => void; ctx: StepFormContext }) {
+  return (
+    <div className="grid gap-1.5 p-2 rounded-md" style={{ border: "1px solid var(--border-subtle)" }} role="group" aria-label={`Aggregation ${index + 1}`}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex-1 basis-28 min-w-0">
+          <TextField value={entry.name} onCommit={(name) => onChange({ ...entry, name })} ariaLabel={`Aggregation ${index + 1} name`} placeholder="output name" mono />
+        </div>
+        <span className="text-xs" style={{ color: "var(--text-muted)" }} aria-hidden="true">=</span>
+        <div className="flex-1 basis-28 min-w-0">
+          <SelectField
+            value={entry.agg}
+            options={AGGREGATIONS}
+            onChange={(agg) => {
+              const next = omitKeys({ ...entry, agg }, ["quantile"])
+              if (agg === "quantile") next.quantile = 0.5
+              onChange(next)
+            }}
+            ariaLabel={`Aggregation ${index + 1} function`}
+          />
+        </div>
+        {entry.agg !== "len" && (
+          <div className="flex-1 basis-28 min-w-0">
+            <ColumnPicker value={entry.column} onCommit={(column) => onChange({ ...entry, column })} suggestions={ctx.columns} ariaLabel={`Aggregation ${index + 1} column`} placeholder="of column" />
+          </div>
+        )}
+        {onRemove && <RowRemove label={`Remove aggregation ${index + 1}`} onClick={onRemove} />}
+      </div>
+      {entry.agg === "quantile" && (
+        <Field label="Quantile (0 to 1)">
+          <NumberField value={entry.quantile ?? 0.5} min={0} onCommit={(quantile) => onChange({ ...entry, quantile: Math.min(1, Math.max(0, quantile)) })} ariaLabel={`Aggregation ${index + 1} quantile`} />
+        </Field>
+      )}
+      {entry.where ? (
+        <Field label="Only rows where">
+          <div className="grid gap-1.5">
+            <ConditionList
+              conditions={entry.where.conditions}
+              match={entry.where.match}
+              onChange={(conditions, match) => onChange({ ...entry, where: { match, conditions } })}
+              columns={ctx.columns}
+              variables={ctx.variables}
+              ariaLabel={`Aggregation ${index + 1} filter`}
+            />
+            <button
+              type="button"
+              onClick={() => onChange(omitKeys(entry, ["where"]))}
+              className="add-row-btn focus-ring px-2.5 py-1.5 text-xs font-medium rounded-lg justify-center"
+              style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}
+            >
+              Aggregate every row
+            </button>
+          </div>
+        </Field>
+      ) : (
+        <AddRow label="Only some rows…" onClick={() => onChange({ ...entry, where: { match: "all", conditions: [defaultCondition(ctx.columns[0] ?? "")] } })} />
+      )}
+    </div>
+  )
+}
+
 function GroupByForm({ step, onChange, ctx }: FormProps<GroupByStep>) {
-  const set = (index: number, next: GroupByStep["aggregations"][number]) =>
+  const set = (index: number, next: AggregationSpec) =>
     onChange({ ...step, aggregations: step.aggregations.map((a, i) => (i === index ? next : a)) })
   return (
     <>
-      <Field label="Group by">
+      <Field label="Group by (empty = summarise the whole frame)">
         <ColumnListField columns={step.keys} onChange={(keys) => onChange({ ...step, keys })} suggestions={ctx.columns} ariaLabel="Group by" />
       </Field>
       <Field label="Aggregations">
         <div className="grid gap-1.5">
           {step.aggregations.map((entry, index) => (
-            <div key={index} className="flex flex-wrap items-center gap-1.5 p-2 rounded-md" style={{ border: "1px solid var(--border-subtle)" }} role="group" aria-label={`Aggregation ${index + 1}`}>
-              <div className="flex-1 basis-28 min-w-0">
-                <TextField value={entry.name} onCommit={(name) => set(index, { ...entry, name })} ariaLabel={`Aggregation ${index + 1} name`} placeholder="output name" mono />
-              </div>
-              <span className="text-xs" style={{ color: "var(--text-muted)" }} aria-hidden="true">=</span>
-              <div className="flex-1 basis-28 min-w-0">
-                <SelectField value={entry.agg} options={AGGREGATIONS} onChange={(agg) => set(index, { ...entry, agg })} ariaLabel={`Aggregation ${index + 1} function`} />
-              </div>
-              {entry.agg !== "len" && (
-                <div className="flex-1 basis-28 min-w-0">
-                  <ColumnPicker value={entry.column} onCommit={(column) => set(index, { ...entry, column })} suggestions={ctx.columns} ariaLabel={`Aggregation ${index + 1} column`} placeholder="of column" />
-                </div>
-              )}
-              {step.aggregations.length > 1 && (
-                <RowRemove label={`Remove aggregation ${index + 1}`} onClick={() => onChange({ ...step, aggregations: step.aggregations.filter((_, i) => i !== index) })} />
-              )}
-            </div>
+            <AggregationRow
+              key={index}
+              entry={entry}
+              index={index}
+              ctx={ctx}
+              onChange={(next) => set(index, next)}
+              onRemove={step.aggregations.length > 1 ? () => onChange({ ...step, aggregations: step.aggregations.filter((_, i) => i !== index) }) : undefined}
+            />
           ))}
           <AddRow label="Add aggregation" onClick={() => onChange({ ...step, aggregations: [...step.aggregations, { column: ctx.columns[0] ?? "", agg: "sum", name: "" }] })} />
         </div>
@@ -419,6 +613,9 @@ function GroupByForm({ step, onChange, ctx }: FormProps<GroupByStep>) {
   )
 }
 
+/** Select value for "this optional setting is not set". */
+const OFF = "off"
+
 function JoinForm({ step, onChange, ctx }: FormProps<JoinStep>) {
   const inputs = ctx.inputNames.map((name) => ({ value: name, label: name }))
   return (
@@ -426,7 +623,12 @@ function JoinForm({ step, onChange, ctx }: FormProps<JoinStep>) {
       <div className="flex flex-wrap items-center gap-1.5">
         <div className="flex-1 basis-24 min-w-0">
           <Field label="Join type">
-            <SelectField value={step.how} options={JOIN_HOW.map((h) => ({ value: h, label: h }))} onChange={(how) => onChange({ ...step, how, ...(how === "cross" ? { leftOn: [], rightOn: [] } : {}) })} ariaLabel="Join type" />
+            <SelectField value={step.how} options={JOIN_HOW.map((h) => ({ value: h, label: h }))} onChange={(how) => {
+              const next = JOIN_VALIDATED_HOW.has(how) ? { ...step, how } : omitKeys({ ...step, how }, ["validate"])
+              onChange(how === "cross" ? { ...next, leftOn: [], rightOn: [] } : next)
+            }}
+            ariaLabel="Join type"
+          />
           </Field>
         </div>
         <div className="flex-1 basis-28 min-w-0">
@@ -443,8 +645,26 @@ function JoinForm({ step, onChange, ctx }: FormProps<JoinStep>) {
           <Field label="Right keys (joined input)">
             <ColumnListField columns={step.rightOn} onChange={(rightOn) => onChange({ ...step, rightOn })} suggestions={ctx.columns} ariaLabel="Right keys" />
           </Field>
+          {JOIN_VALIDATED_HOW.has(step.how) && (
+            <Field label="Check key cardinality (fails the run when violated)">
+              <SelectField
+                value={step.validate ?? OFF}
+                options={[{ value: OFF, label: "no check" }, ...JOIN_VALIDATE]}
+                onChange={(validate) => onChange(validate === OFF ? omitKeys(step, ["validate"]) : { ...step, validate: validate as JoinValidate })}
+                ariaLabel="Join validation"
+              />
+            </Field>
+          )}
         </>
       )}
+      <Field label="Output row order">
+        <SelectField
+          value={step.maintainOrder ?? OFF}
+          options={[{ value: OFF, label: "engine default" }, ...JOIN_MAINTAIN_ORDER]}
+          onChange={(order) => onChange(order === OFF ? omitKeys(step, ["maintainOrder"]) : { ...step, maintainOrder: order as JoinMaintainOrder })}
+          ariaLabel="Join row order"
+        />
+      </Field>
       <Field label="Suffix for clashing column names">
         <TextField value={step.suffix} onCommit={(suffix) => onChange({ ...step, suffix })} ariaLabel="Suffix" mono />
       </Field>
@@ -499,7 +719,7 @@ function FillNullForm({ step, onChange, ctx }: FormProps<FillNullStep>) {
           value={step.fill.value}
           onChange={(value) => onChange({ ...step, fill: { kind: "value", value } })}
           sources={[...ALL_SOURCES]}
-          literalTypes={[...ALL_TYPES]}
+          literalTypes={[...VALUE_TYPES]}
           columns={ctx.columns}
           variables={ctx.variables}
           ariaLabel="Fill value"
@@ -546,9 +766,10 @@ function VariableForm({ step, onChange, ctx }: FormProps<VariableStep>) {
 }
 
 /** The form for `step`, laid out as a single-column grid. */
-export function StepForm({ step, onChange, ctx }: { step: Step; onChange: (next: Step) => void; ctx: StepFormContext }) {
+export function StepForm({ step: raw, onChange, ctx }: { step: Step; onChange: (next: Step) => void; ctx: StepFormContext }) {
   const id = useId()
   const context = { ...ctx, firstFieldId: ctx.firstFieldId || id }
+  const step = canonicalStep(raw)
   switch (step.kind) {
     case "source":
       return null

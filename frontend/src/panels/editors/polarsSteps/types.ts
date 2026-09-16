@@ -7,12 +7,12 @@
  * `steps[i]` is line `i + 1` of the generated program.
  */
 
-export type LiteralType = "number" | "text" | "boolean" | "date"
+export type LiteralType = "number" | "text" | "boolean" | "date" | "null"
 
 export type LiteralOperand = {
   kind: "literal"
   type: LiteralType
-  value: number | string | boolean
+  value: number | string | boolean | null
 }
 
 export type ColumnOperand = { kind: "column"; name: string }
@@ -23,7 +23,7 @@ export type ConditionOperator =
   | "eq" | "ne" | "gt" | "ge" | "lt" | "le"
   | "is_null" | "is_not_null"
   | "is_in" | "not_in"
-  | "contains" | "starts_with" | "ends_with"
+  | "contains" | "starts_with" | "ends_with" | "matches"
 
 export type Condition = {
   column: string
@@ -35,23 +35,50 @@ export type Condition = {
 export type MatchMode = "all" | "any"
 export type BinaryOperator = "+" | "-" | "*" | "/" | "//" | "%" | "**"
 export type Aggregation =
-  | "sum" | "mean" | "min" | "max" | "median" | "std" | "var"
+  | "sum" | "mean" | "min" | "max" | "median" | "quantile" | "std" | "var"
   | "count" | "n_unique" | "first" | "last" | "len"
-export type CastDtype = "Int64" | "Float64" | "String" | "Boolean" | "Date" | "Datetime" | "Categorical"
+/** Positional and cumulative values that only make sense within a window partition. */
+export type WindowOnlyAggregation =
+  | "row_number" | "cum_sum" | "shift" | "rank" | "dense_rank" | "forward_fill" | "backward_fill"
+export type WindowAggregation = Aggregation | WindowOnlyAggregation
+export type CastDtype =
+  | "Int8" | "Int16" | "Int32" | "Int64"
+  | "UInt8" | "UInt16" | "UInt32" | "UInt64"
+  | "Float32" | "Float64"
+  | "String" | "Boolean" | "Date" | "Datetime" | "Categorical"
 export type JoinHow = "inner" | "left" | "right" | "full" | "semi" | "anti" | "cross"
+export type JoinValidate = "1:1" | "m:1" | "1:m" | "m:m"
+export type JoinMaintainOrder = "none" | "left" | "right" | "left_right" | "right_left"
 export type FillStrategy = "forward" | "backward" | "min" | "max" | "mean" | "zero" | "one"
 export type FunctionName =
   | "abs" | "floor" | "ceil" | "sqrt" | "log" | "exp"
   | "round" | "clip" | "fill_null" | "cast"
   | "upper" | "lower" | "strip" | "length"
-  | "year" | "month" | "day"
+  | "replace" | "replace_all" | "replace_regex" | "slice" | "split_part" | "extract"
+  | "year" | "month" | "day" | "weekday" | "offset_by" | "total_days"
+  | "try_cast"
+
+export type OrderKey = { column: string; descending: boolean }
+export type ConditionGroup = { match: MatchMode; conditions: Condition[] }
 
 export type Expr =
   | { type: "operand"; operand: Operand }
   | { type: "binary"; left: Operand; op: BinaryOperator; right: Operand }
   | { type: "function"; fn: FunctionName; operand: Operand; args: LiteralOperand[] }
   | { type: "conditional"; match: MatchMode; conditions: Condition[]; then: Operand; otherwise: Operand }
-  | { type: "window"; agg: Aggregation; column: string; over: string[] }
+  | {
+      type: "window"
+      agg: WindowAggregation
+      column: string
+      over: string[]
+      /** Row order within each partition; needs at least one `over` column. */
+      orderBy?: OrderKey[]
+      /** Rank direction (`rank` and `dense_rank` only). */
+      descending?: boolean
+      /** The quantile in [0, 1] (`quantile` only). */
+      quantile?: number
+    }
+  | { type: "concat"; parts: Operand[]; separator: string }
 
 export type StepBase = { id: string }
 
@@ -64,14 +91,24 @@ export type RenameStep = StepBase & { kind: "rename"; renames: Array<{ from: str
 export type CastStep = StepBase & { kind: "cast"; casts: Array<{ column: string; dtype: CastDtype }> }
 export type SortStep = StepBase & {
   kind: "sort"
-  keys: Array<{ column: string; descending: boolean }>
+  keys: OrderKey[]
   nullsLast: boolean
 }
-export type UniqueStep = StepBase & { kind: "unique"; columns: string[]; keep: "first" | "last" | "any" }
+export type UniqueStep = StepBase & { kind: "unique"; columns: string[]; keep: "first" | "last" | "any" | "none" }
+export type AggregationSpec = {
+  column: string
+  agg: Aggregation
+  name: string
+  /** The quantile in [0, 1] (`quantile` only). */
+  quantile?: number
+  /** Aggregate only the rows matching these conditions. */
+  where?: ConditionGroup
+}
+/** An empty `keys` list summarises the whole frame into one row. */
 export type GroupByStep = StepBase & {
   kind: "group_by"
   keys: string[]
-  aggregations: Array<{ column: string; agg: Aggregation; name: string }>
+  aggregations: AggregationSpec[]
 }
 export type JoinStep = StepBase & {
   kind: "join"
@@ -80,6 +117,10 @@ export type JoinStep = StepBase & {
   leftOn: string[]
   rightOn: string[]
   suffix: string
+  /** Key cardinality Polars checks at run time; absent means unchecked. */
+  validate?: JoinValidate
+  /** Output row order; absent means the engine default. */
+  maintainOrder?: JoinMaintainOrder
 }
 export type ConcatStep = StepBase & { kind: "concat"; inputs: string[]; how: "vertical" | "diagonal" }
 export type FillNullStep = StepBase & {

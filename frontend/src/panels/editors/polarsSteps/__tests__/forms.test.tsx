@@ -134,10 +134,142 @@ describe("step forms only build schema-valid payloads", () => {
       expr: { type: "function", fn: "cast", operand: { kind: "column", name: "premium" }, args: [{ kind: "literal", type: "text", value: "Float64" }] },
     }
     render(<StepForm step={step} onChange={onChange} ctx={ctx} />)
-    expect(optionValues(screen.getByLabelText("Type"))).toEqual(["Int64", "Float64", "String", "Boolean", "Date", "Datetime", "Categorical"])
+    expect(optionValues(screen.getByLabelText("Type"))).toEqual(["Int8", "Int16", "Int32", "Int64", "UInt8", "UInt16", "UInt32", "UInt64", "Float32", "Float64", "String", "Boolean", "Date", "Datetime", "Categorical"])
     fireEvent.change(screen.getByLabelText("Type"), { target: { value: "Int64" } })
     const next = onChange.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
     expect(next.expr).toMatchObject({ fn: "cast", args: [{ kind: "literal", type: "text", value: "Int64" }] })
+  })
+
+  it("membership lists never offer the null type, while expression operands do", () => {
+    const step: Step = {
+      id: "f",
+      kind: "filter",
+      match: "all",
+      conditions: [{ column: "region", operator: "is_in", values: [] }],
+    }
+    render(<StepForm step={step} onChange={vi.fn()} ctx={ctx} />)
+    expect(optionValues(screen.getByLabelText("Filter condition 1 values type"))).toEqual(["number", "text", "boolean", "date"])
+    cleanup()
+    const spy = vi.fn()
+    const conditional: Step = {
+      id: "w",
+      kind: "with_column",
+      name: "masked",
+      expr: {
+        type: "conditional",
+        match: "all",
+        conditions: [{ column: "region", operator: "eq", value: { kind: "literal", type: "text", value: "north" } }],
+        then: { kind: "column", name: "premium" },
+        otherwise: { kind: "literal", type: "number", value: 0 },
+      },
+    }
+    render(<Stateful initial={conditional} spy={spy} />)
+    expect(optionValues(screen.getByLabelText("Otherwise value type"))).toEqual(["number", "text", "boolean", "date", "null"])
+    fireEvent.change(screen.getByLabelText("Otherwise value type"), { target: { value: "null" } })
+    const latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toMatchObject({ otherwise: { kind: "literal", type: "null", value: null } })
+    expect(screen.getByLabelText("Otherwise value value")).toHaveValue("null")
+  })
+
+  it("window expressions offer the window-only aggregates, an in-group order, and a rank direction", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "w", kind: "with_column", name: "rn", expr: { type: "window", agg: "sum", column: "premium", over: ["region"] } }
+    render(<Stateful initial={step} spy={spy} />)
+    expect(optionValues(screen.getByLabelText("Window aggregate"))).toContain("row_number")
+    fireEvent.change(screen.getByLabelText("Window aggregate"), { target: { value: "row_number" } })
+    expect(screen.queryByLabelText("Window column")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Add order column" }))
+    fireEvent.change(screen.getByLabelText("Window order direction"), { target: { value: "desc" } })
+    let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toEqual({ type: "window", agg: "row_number", column: "premium", over: ["region"], orderBy: [{ column: "premium", descending: true }] })
+    fireEvent.click(screen.getByRole("button", { name: "Remove window order 1" }))
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toEqual({ type: "window", agg: "row_number", column: "premium", over: ["region"] })
+    fireEvent.change(screen.getByLabelText("Window aggregate"), { target: { value: "dense_rank" } })
+    fireEvent.change(screen.getByLabelText("Rank order"), { target: { value: "desc" } })
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toEqual({ type: "window", agg: "dense_rank", column: "premium", over: ["region"], descending: true })
+    fireEvent.change(screen.getByLabelText("Window aggregate"), { target: { value: "quantile" } })
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toEqual({ type: "window", agg: "quantile", column: "premium", over: ["region"], quantile: 0.5 })
+  })
+
+  it("text joins keep at least two parts and a separator", () => {
+    const spy = vi.fn()
+    const step: Step = {
+      id: "w",
+      kind: "with_column",
+      name: "key",
+      expr: { type: "concat", parts: [{ kind: "column", name: "region" }, { kind: "column", name: "premium" }], separator: " " },
+    }
+    render(<Stateful initial={step} spy={spy} />)
+    expect(screen.queryByRole("button", { name: "Remove part 1" })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Add part" }))
+    fireEvent.change(screen.getByLabelText("Separator"), { target: { value: "|" } })
+    fireEvent.blur(screen.getByLabelText("Separator"))
+    const latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
+    expect(latest.expr).toEqual({
+      type: "concat",
+      parts: [{ kind: "column", name: "region" }, { kind: "column", name: "premium" }, { kind: "column", name: "premium" }],
+      separator: "|",
+    })
+    expect(screen.getByRole("button", { name: "Remove part 3" })).toBeInTheDocument()
+  })
+
+  it("group-by aggregations take an optional quantile and row filter", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "g", kind: "group_by", keys: [], aggregations: [{ column: "premium", agg: "sum", name: "total" }] }
+    render(<Stateful initial={step} spy={spy} />)
+    fireEvent.change(screen.getByLabelText("Aggregation 1 function"), { target: { value: "quantile" } })
+    let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "group_by" }>
+    expect(latest.aggregations[0]).toEqual({ column: "premium", agg: "quantile", name: "total", quantile: 0.5 })
+    fireEvent.change(screen.getByLabelText("Aggregation 1 function"), { target: { value: "sum" } })
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "group_by" }>
+    expect(latest.aggregations[0]).toEqual({ column: "premium", agg: "sum", name: "total" })
+    fireEvent.click(screen.getByRole("button", { name: /Only some rows/ }))
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "group_by" }>
+    expect(latest.aggregations[0].where).toEqual({
+      match: "all",
+      conditions: [{ column: "premium", operator: "eq", value: { kind: "literal", type: "number", value: 0 } }],
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Aggregate every row" }))
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "group_by" }>
+    expect(latest.aggregations[0]).toEqual({ column: "premium", agg: "sum", name: "total" })
+  })
+
+  it("join validation and row order are optional and cleared for a cross join", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "j", kind: "join", input: "rates", how: "left", leftOn: ["region"], rightOn: ["region"], suffix: "_r" }
+    render(<Stateful initial={step} spy={spy} />)
+    fireEvent.change(screen.getByLabelText("Join validation"), { target: { value: "m:1" } })
+    fireEvent.change(screen.getByLabelText("Join row order"), { target: { value: "left" } })
+    let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "join" }>
+    expect(latest).toEqual({ ...step, validate: "m:1", maintainOrder: "left" })
+    fireEvent.change(screen.getByLabelText("Join validation"), { target: { value: "off" } })
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "join" }>
+    expect(latest).toEqual({ ...step, maintainOrder: "left" })
+    fireEvent.change(screen.getByLabelText("Join validation"), { target: { value: "1:1" } })
+    fireEvent.change(screen.getByLabelText("Join type"), { target: { value: "semi" } })
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "join" }>
+    expect(latest).toEqual({ ...step, how: "semi", maintainOrder: "left" })
+    expect(screen.queryByLabelText("Join validation")).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText("Join type"), { target: { value: "full" } })
+    fireEvent.change(screen.getByLabelText("Join validation"), { target: { value: "1:1" } })
+    fireEvent.change(screen.getByLabelText("Join type"), { target: { value: "cross" } })
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "join" }>
+    expect(latest).toEqual({ ...step, how: "cross", leftOn: [], rightOn: [], maintainOrder: "left" })
+    expect(screen.queryByLabelText("Join validation")).not.toBeInTheDocument()
+  })
+
+  it("text-join parts may be null, like any expression operand", () => {
+    const step: Step = {
+      id: "w",
+      kind: "with_column",
+      name: "key",
+      expr: { type: "concat", parts: [{ kind: "column", name: "region" }, { kind: "literal", type: "text", value: "-" }], separator: "" },
+    }
+    render(<StepForm step={step} onChange={vi.fn()} ctx={ctx} />)
+    expect(optionValues(screen.getByLabelText("Part 2 type"))).toEqual(["number", "text", "boolean", "date", "null"])
   })
 
   it("a variable operand is offered only when an earlier variable exists", () => {
