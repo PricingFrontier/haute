@@ -315,7 +315,7 @@ Tests live under `tests/`, split by concern:
   positional parameters and unconsumed incoming edges with exact diagnostic
   context; verifies that `inputMapping` correctly maps parameters, executes, and
   roundtrips through codegen; confirms consumers of submodel occurrence outputs
-  bind the occurrence's own name; validates that parameter-mismatched pipelines
+  bind the public port name; validates that parameter-mismatched pipelines
   load in degraded mode for editor recovery while rejecting saves with HTTP 409;
   and ensures definition nodes receiving public input ports bind to the sanitised
   port ID.

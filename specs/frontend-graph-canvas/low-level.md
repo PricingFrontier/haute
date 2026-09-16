@@ -165,7 +165,7 @@ A successful frame stores both `instanceId` and `definitionId`; failure leaves
 the current view unchanged. Synthetic canonical Input/Output nodes retain that
 `definitionId` marker. Drilled Input edges contribute the sanitised public
 input label to child configs/codegen, while a parent edge sourced from an
-occurrence contributes the occurrence alias (or <alias>__<port_id> when declaring more than one output port). Public port ids remain
+occurrence contributes the sanitised public output port name. Public port ids remain
 structural handle identities in both views.
 
 Shared-definition save performs an interface diff by immutable port id and

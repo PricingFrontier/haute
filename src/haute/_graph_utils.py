@@ -141,35 +141,6 @@ def _sanitize_identifier_characters(label: str) -> str:
     return "".join(out_chars)
 
 
-def submodel_output_port_count(
-    source_node: GraphNode,
-    submodels: Mapping[str, Any] | None,
-) -> int:
-    """Return the declared output-port count for a submodel occurrence."""
-    definition_id = source_node.data.config.get("definitionId")
-    if not isinstance(definition_id, str) or not definition_id:
-        raise ValueError(f"Submodel node {source_node.id!r} has no canonical definition identity.")
-    if submodels is None:
-        raise ValueError(
-            f"Submodel node {source_node.id!r} requires its definition registry "
-            "to resolve public output ports."
-        )
-    definition = submodels.get(definition_id)
-    if definition is None:
-        raise ValueError(
-            f"Submodel node {source_node.id!r} references missing definition {definition_id!r}."
-        )
-
-    raw_ports = (
-        definition.get("outputPorts")
-        if isinstance(definition, Mapping)
-        else getattr(definition, "output_ports", None)
-    )
-    if not isinstance(raw_ports, list):
-        raise ValueError(f"Submodel definition {definition_id!r} has malformed output ports.")
-    return len(raw_ports)
-
-
 def edge_input_name(
     edge: GraphEdge,
     source_node: GraphNode,
@@ -179,24 +150,18 @@ def edge_input_name(
     """Return the one input name contributed by an incoming edge.
 
     API-input edges use their persisted frame handle verbatim. Submodel
-    outputs use the occurrence's own name (or <alias>__<name> when
-    the referenced definition declares more than one output port). Every
-    ordinary edge uses the sanitised source-node label; source handles on ordinary
-    nodes identify an output port and are not input names.
+    outputs use their public port name. Every ordinary edge uses the
+    sanitised source-node label; source handles on ordinary nodes identify
+    an output port and are not input names.
     """
     node_type = str(source_node.data.nodeType)
     if node_type == "apiInput" and edge.sourceHandle is None:
         raise ValueError(f"apiInput edge {edge.id!r} has no sourceHandle/frame label")
-    alias = source_node.data.config.get("alias") if node_type == "submodel" else None
-    output_port_count = (
-        submodel_output_port_count(source_node, submodels) if node_type == "submodel" else None
-    )
+    del submodels  # the port name needs no definition lookup
     return executable_input_name(
         node_type=source_node.data.nodeType,
         label=source_node.data.label,
         source_handle=edge.sourceHandle,
-        alias=alias,
-        output_port_count=output_port_count,
     )
 
 
@@ -281,15 +246,15 @@ def executable_input_name(
     node_type: object,
     label: str,
     source_handle: str | None,
-    alias: str | None = None,
-    output_port_count: int | None = None,
 ) -> str:
     """Derive one executable input identity without mutating graph data.
 
-    Submodel outputs derive their name from the occurrence's alias
-    (or ``f"{_sanitize_func_name(alias)}__{name}"`` when the definition
-    declares more than one output port). Public submodel input ports derive
-    their name from the sanitised port name (``source_handle``).
+    A frame is named the way the canvas shows it: an API input by its frame
+    handle, a submodel output by its public port name (the ``out__<name>``
+    handle's ``<name>``, sanitised), a public submodel input port by its
+    sanitised port name, and an ordinary node by its sanitised label. The
+    occurrence alias never takes part, so the code a user reads names the
+    same frames the canvas does.
     """
     kind = str(node_type)
     if kind == "apiInput":
@@ -304,15 +269,7 @@ def executable_input_name(
             or len(source_handle) == len(prefix)
         ):
             raise ValueError("Submodel output handles must use the canonical 'out__<name>' form.")
-        if not isinstance(alias, str) or not alias:
-            raise ValueError(f"Submodel node {label!r} requires an occurrence alias.")
-        if output_port_count is None or output_port_count < 1:
-            raise ValueError(f"Submodel node {label!r} requires an output port count.")
-        sanitized_alias = _sanitize_func_name(alias)
-        if output_port_count > 1:
-            port_name = _sanitize_func_name(source_handle[len(prefix) :])
-            return f"{sanitized_alias}__{port_name}"
-        return sanitized_alias
+        return _sanitize_func_name(source_handle[len(prefix) :])
     if kind == "submodelPort":
         if source_handle is None or not isinstance(source_handle, str) or not source_handle:
             raise ValueError("Submodel input identities require a source handle.")
