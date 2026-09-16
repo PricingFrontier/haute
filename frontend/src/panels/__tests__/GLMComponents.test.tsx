@@ -141,7 +141,7 @@ describe("GLMTargetConfig", () => {
     // Every family the backend _VALID_GLM_LINKS validates. Quasi-Poisson's
     // dispersion is estimated from Pearson residuals (no user parameter);
     // Neg. Binomial is offered now its theta gate exists — an explicit theta
-    // is required before training, closing the silent theta=1.0 failover.
+    // is required before training, so RustyStats can never refuse the fit.
     for (const label of [
       "Poisson", "Gamma", "Tweedie", "Gaussian", "Binomial", "Quasi-Poisson",
       "Neg. Binomial",
@@ -194,7 +194,7 @@ describe("GLMTargetConfig", () => {
   it("shows the theta field only when family=negbinomial, empty by default", () => {
     // The gate starts from an empty field: an unselected theta must LOOK
     // unselected — faking a value here would show a chosen dispersion the
-    // config doesn't actually have (RustyStats would silently fit at 1.0).
+    // config doesn't actually have (RustyStats has no default to fall back on).
     const { unmount } = render(<GLMTargetConfig config={baseConfig} onUpdate={onUpdate} columns={defaultColumns} />)
     expect(screen.queryByText(/Dispersion theta/)).toBeNull()
     unmount()

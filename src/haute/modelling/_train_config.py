@@ -232,9 +232,8 @@ def training_objective_issue(config: Mapping[str, Any]) -> str | None:
         if str(family).lower() == "negbinomial" and theta is None:
             return (
                 "Negative Binomial GLM has no dispersion (theta). Set it "
-                "explicitly or estimate it from the data — RustyStats does "
-                "not estimate theta, so an unset value would silently fit "
-                "at theta=1.0."
+                "explicitly or estimate it from the data — RustyStats refuses "
+                "to fit without it."
             )
         terms = effective_glm.get("terms")
         all_factors = effective_glm.get("all_factors")

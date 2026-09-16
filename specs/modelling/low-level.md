@@ -446,7 +446,7 @@ experiment logs nothing.
    invalid family/link combination, a `param` that doesn't belong to the request's GLM
    family (`theta` ⇒ `negbinomial`, `var_power` ⇒ `tweedie`), a missing target column,
    or (via `training_objective_issue`, called with the parameter being estimated
-   stubbed to its RustyStats silent default so its own gate doesn't fire) any other
+   stubbed to a placeholder value so its own gate doesn't fire) any other
    incomplete part of the training objective.
 3. Under `_start_lock`, reject if a job is already running (shared with training —
    `_check_no_concurrent_jobs` does not distinguish job type) and create the job
@@ -460,9 +460,9 @@ experiment logs nothing.
    paying full-data cost per candidate — 200k rows pins a single dispersion scalar far
    tighter than the search's own tolerance.
 5. `_launch_dispersion_background` builds a plain request for a stub `TrainingJob` via
-   `build_training_job_kwargs` with the parameter being estimated set to its RustyStats
-   silent default (`_DISPERSION_PARAM_STUBS`: `theta=1.0`, `var_power=1.5`) so the
-   shared config machinery can run; the stub value never reaches a fit — the search
+   `build_training_job_kwargs` with the parameter being estimated set to a placeholder
+   (`_DISPERSION_PARAM_STUBS`: `theta=1.0`, `var_power=1.5`) so the shared config
+   machinery can run; the stub value never reaches a fit — the search
    overrides it at every candidate. A spawn child then runs `job._prepare_data`
    (identical to training), narrows `features`/`cat_features` to the GLM terms exactly
    as `TrainingJob.run` does, resolves the effective terms via `_resolve_glm_terms`
@@ -1035,7 +1035,7 @@ potentially large copy on its threadpool.
   row a skip rather than a fit input.
 - A Negative Binomial GLM (`family="negbinomial"`) requires an explicit `theta` before
   training or export can proceed — `training_objective_issue` gates it identically to
-  Tweedie's variance power, since RustyStats fits silently at `theta=1.0` if unset.
+  Tweedie's variance power, and RustyStats 0.9 itself refuses to fit without one.
   `estimate_glm_dispersion` exists specifically to give the user a principled value to
   set rather than guessing.
 - GLM interaction terms whose factors are all already present as main terms force

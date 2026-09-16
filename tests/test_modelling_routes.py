@@ -2919,7 +2919,7 @@ class TestValidateGlmFamilyLink:
     def test_negbinomial_accepted(self):
         """Neg. Binomial is offered now its theta gate exists: the training
         objective requires an explicit theta (training_objective_issue), so
-        the silent theta=1.0 failover that held it out of #86 cannot fire.
+        the unset theta that held it out of #86 can never reach a fit.
         RustyStats accepts only log/identity — no sqrt."""
         _validate_glm_family_link("negbinomial", "log")
         _validate_glm_family_link("negbinomial", "identity")
@@ -3027,8 +3027,8 @@ class TestDispersionEstimateEndpoint:
         assert final["n_fits"] > 0
 
     def test_train_negbinomial_without_theta_rejected_400(self, client, nb_training_data):
-        """The re-enabled family keeps the failover closed: an unset theta
-        gates at the route, never falls through to RustyStats' theta=1.0."""
+        """The re-enabled family gates early: an unset theta is a 400 at the
+        route, never a RustyStats refusal from inside a training job."""
         graph = _make_negbinomial_graph(nb_training_data)
         resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
         assert resp.status_code == 400

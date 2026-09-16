@@ -713,7 +713,7 @@ class TestFailoverGates:
     # -- Negative Binomial dispersion (theta) ------------------------------
 
     def test_glm_negbinomial_without_theta_fails_loud(self):
-        """RustyStats does not estimate theta — unset fits silently at 1.0."""
+        """RustyStats does not estimate theta — unset makes it refuse to fit."""
         with pytest.raises(TrainingConfigError, match="theta"):
             build_training_job_kwargs(
                 {
@@ -755,7 +755,7 @@ class TestFailoverGates:
 
     def test_negbinomial_theta_survives_script_export(self):
         """The exported standalone script must carry theta — an export that
-        drops it would train the silent theta=1.0 model the gate forbids."""
+        drops it would hit the RustyStats refusal the gate exists to prevent."""
         from haute.modelling import generate_training_script
 
         script = generate_training_script(
@@ -771,6 +771,37 @@ class TestFailoverGates:
         )
         # params is rendered with repr(), so the key appears single-quoted.
         assert "'theta': 2.5" in script
+
+    def test_glm_negbinomial_theta_gate_names_the_library_refusal(self):
+        with pytest.raises(TrainingConfigError, match="RustyStats refuses to fit without it"):
+            build_training_job_kwargs(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "negbinomial",
+                    "terms": {"age": {"type": "linear"}},
+                    "evaluation": MINIMAL_EVALUATION,
+                },
+                data="d",
+            )
+
+    def test_exported_glm_script_keeps_exposure_semantics(self):
+        from haute.modelling import generate_training_script
+
+        script = generate_training_script(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "poisson",
+                "offset": "exposure",
+                "terms": {"age": {"type": "linear"}},
+                "evaluation": MINIMAL_EVALUATION,
+            },
+            "data.parquet",
+        )
+        # The script hands the same offset column to TrainingJob, whose
+        # adapter maps it to RustyStats exposure= under a log link.
+        assert "offset='exposure'" in script
 
     # -- GLM factor set ---------------------------------------------------
 

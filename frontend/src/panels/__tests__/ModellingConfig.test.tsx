@@ -765,8 +765,8 @@ describe("ModellingConfig", () => {
     })
 
     it("surfaces missing Neg. Binomial theta only after Train is pressed (glm)", () => {
-      // RustyStats does not estimate theta — an unset value would silently
-      // fit at theta=1.0, so the UI must not submit one.
+      // RustyStats does not estimate theta and refuses to fit without it,
+      // so the UI must not submit an unset value.
       renderConfig({
         config: {
           _nodeId: "node_1",

@@ -386,7 +386,7 @@ leak (paths, secrets, raw stderr); the user-message contract adds detail that in
 same error-surface chokepoints.
 
 RustyStats does not estimate either GLM dispersion parameter it accepts as a fit
-argument — an unset Negative Binomial `theta` silently fits at 1.0, an unset Tweedie
+argument — an unset Negative Binomial `theta` makes it refuse to fit, an unset Tweedie
 `var_power` silently fits at 1.5 — so neither can be safely defaulted and both are
 gated by `training_objective_issue`. Because a user still needs *some* principled way to
 choose a value, `estimate_glm_dispersion` (`_rustystats.py`) offers a profile-likelihood

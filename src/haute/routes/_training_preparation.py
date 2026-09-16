@@ -143,7 +143,7 @@ _VALID_GLM_LINKS: dict[str, tuple[str, ...]] = {
     # only log/identity for it — no sqrt.
     "quasipoisson": ("log", "identity"),
     # Negative Binomial's dispersion `theta` is not estimated by RustyStats —
-    # an unset theta silently fits at theta=1.0 — so the training objective
+    # an unset theta makes it refuse to fit — so the training objective
     # gate (training_objective_issue) requires an explicit theta; the config
     # panel offers profile-likelihood estimation on demand. RustyStats accepts
     # only log/identity for it.

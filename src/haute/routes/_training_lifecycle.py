@@ -676,7 +676,8 @@ class TrainService:
         a profile-likelihood search in a supervised spawn worker. The estimate is
         an explicit user action: the resolved value lands in the node config
         where the training-objective gate requires it — never as a hidden
-        default (RustyStats fits silently at theta=1.0 / var_power=1.5).
+        default (RustyStats refuses to fit Negative Binomial without theta and
+        fits Tweedie at var_power=1.5 when unset).
         """
         node = _find_modelling_node(body.graph, body.node_id)
         config = dict(node.data.config)

@@ -228,7 +228,7 @@ export function trainingConfigurationIssues(
           code: "glm-negbin-theta",
           message:
             "Set the Negative Binomial dispersion (theta), or estimate it from " +
-            "the data — an unset value would silently fit at theta=1.0.",
+            "the data — RustyStats refuses to fit without it.",
         })
       }
     }

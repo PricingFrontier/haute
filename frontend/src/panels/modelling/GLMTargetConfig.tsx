@@ -41,10 +41,10 @@ const TWEEDIE_HELP =
 
 const THETA_HELP =
   "Negative Binomial dispersion: variance = mean + mean²/theta (smaller theta " +
-  "= more overdispersion). RustyStats does not estimate theta — leaving it " +
-  "unset would silently fit at theta=1.0, so a choice is required. Estimate " +
-  "profiles the likelihood over theta on the node's training data; the result " +
-  "is filled in for you to accept or adjust."
+  "= more overdispersion). RustyStats does not estimate theta and refuses to " +
+  "fit without it, so a choice is required. Estimate profiles the likelihood " +
+  "over theta on the node's training data; the result is filled in for you to " +
+  "accept or adjust."
 
 const LINK_FUNCTIONS = ["log", "identity", "logit", "inverse", "sqrt", "cloglog", "probit"]
 
@@ -271,8 +271,8 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
           </div>
         )}
 
-        {/* Negative Binomial dispersion — gated: no silent theta=1.0
-            failover. Starts empty; the user types a value or triggers an
+        {/* Negative Binomial dispersion — gated: RustyStats refuses to fit
+            without it. Starts empty; the user types a value or triggers an
             explicit estimate from the training data. */}
         {family === "negbinomial" && (
           <div>
