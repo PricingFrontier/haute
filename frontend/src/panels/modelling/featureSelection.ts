@@ -1,9 +1,8 @@
 import { configField } from "../../utils/configField"
+import { modelMembership, type InteractionSpec, type Terms } from "./glmTerms"
 
 export type ModellingColumn = { name: string; dtype: string }
 export type ModellingAlgorithm = "catboost" | "glm"
-
-type Interaction = { factors?: string[]; [key: string]: unknown }
 
 /** Columns with an active modelling role cannot also be trainable features. */
 export function roleColumns(config: Record<string, unknown>): Set<string> {
@@ -40,62 +39,16 @@ export function finalSelectedFeatureNames(
   eligible: readonly ModellingColumn[],
   algorithm: ModellingAlgorithm,
 ): Set<string> {
+  const eligibleNames = new Set(eligible.map((column) => column.name))
+  if (algorithm === "glm") {
+    const terms = configField<Terms>(config, "terms", {})
+    const interactions = configField<InteractionSpec[]>(config, "interactions", [])
+    return modelMembership(terms, interactions, eligibleNames).inModel
+  }
   const excluded = new Set(configField<string[]>(config, "exclude", []))
-  const terms = configField<Record<string, unknown>>(config, "terms", {})
-  const allFactors = configField(config, "all_factors", false)
-
   return new Set(
     eligible
-      .filter((column) => {
-        if (excluded.has(column.name)) return false
-        if (algorithm === "catboost" || allFactors) return true
-        return Object.hasOwn(terms, column.name)
-      })
+      .filter((column) => !excluded.has(column.name))
       .map((column) => column.name),
   )
-}
-
-/**
- * Return only the dependent fields changed by removing selected features.
- * The caller merges this object into the same atomic config update.
- */
-export function cleanupFeatureDependencies(
-  config: Record<string, unknown>,
-  removed: readonly string[],
-): Record<string, unknown> {
-  const removedSet = new Set(removed)
-  if (removedSet.size === 0) return {}
-
-  const update: Record<string, unknown> = {}
-
-  const monotone = configField<Record<string, number>>(
-    config,
-    "monotone_constraints",
-    {},
-  )
-  if (Object.keys(monotone).some((name) => removedSet.has(name))) {
-    const nextMonotone = Object.fromEntries(
-      Object.entries(monotone).filter(([name]) => !removedSet.has(name)),
-    )
-    update.monotone_constraints =
-      Object.keys(nextMonotone).length > 0 ? nextMonotone : null
-  }
-
-  const terms = configField<Record<string, unknown>>(config, "terms", {})
-  if (Object.keys(terms).some((name) => removedSet.has(name))) {
-    update.terms = Object.fromEntries(
-      Object.entries(terms).filter(([name]) => !removedSet.has(name)),
-    )
-  }
-
-  const interactions = configField<Interaction[]>(config, "interactions", [])
-  const nextInteractions = interactions.filter(
-    (interaction) =>
-      !interaction.factors?.some((factor) => removedSet.has(factor)),
-  )
-  if (nextInteractions.length !== interactions.length) {
-    update.interactions = nextInteractions
-  }
-
-  return update
 }

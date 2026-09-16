@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest"
 
 import {
-  cleanupFeatureDependencies,
   finalSelectedFeatureNames,
   roleColumns,
   type ModellingColumn,
@@ -70,7 +69,7 @@ describe("feature-selection transitions", () => {
     ).toEqual(new Set(["target", "weight", "offset", "fold", "id", "date"]))
   })
 
-  it("derives final selections for CatBoost and both GLM modes", () => {
+  it("derives final selections for CatBoost and GLM", () => {
     const eligible = columns.filter(({ name }) => ["age", "region"].includes(name))
 
     expect(
@@ -79,47 +78,20 @@ describe("feature-selection transitions", () => {
     expect(
       finalSelectedFeatureNames(
         {
-          terms: { region: { type: "categorical" } },
-          exclude: [],
+          terms: { region: { type: "categorical" }, a2: { type: "expression", expr: "age ** 2" } },
+          exclude: ["age"],
         },
         eligible,
         "glm",
       ),
-    ).toEqual(new Set(["region"]))
+    ).toEqual(new Set(["region", "age"]))
     expect(
       finalSelectedFeatureNames(
-        { all_factors: true, exclude: ["age"] },
+        { terms: {}, interactions: [{ factors: ["age", "region"], include_main: true }] },
         eligible,
         "glm",
       ),
-    ).toEqual(new Set(["region"]))
-  })
-
-  it("removes only affected dependency entries", () => {
-    expect(
-      cleanupFeatureDependencies(
-        {
-          monotone_constraints: { age: 1, severity: -1 },
-          terms: {
-            age: { type: "linear" },
-            severity: { type: "linear" },
-          },
-          interactions: [
-            { factors: ["age", "severity"], include_main: true },
-            { factors: ["severity", "region"], include_main: false },
-          ],
-          custom: "untouched",
-        },
-        ["age"],
-      ),
-    ).toEqual({
-      monotone_constraints: { severity: -1 },
-      terms: { severity: { type: "linear" } },
-      interactions: [
-        { factors: ["severity", "region"], include_main: false },
-      ],
-    })
-    expect(cleanupFeatureDependencies({ custom: true }, ["age"])).toEqual({})
+    ).toEqual(new Set(["age", "region"]))
   })
 
 })
