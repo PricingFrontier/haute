@@ -179,7 +179,8 @@ before staging bytes, regardless of the client-posted graph. `POST /api/pipeline
 runs the graph up to one node and returns its schema,
 sample rows, per-node timing/memory, and the columns of every ancestor it ran (a submodel
 occurrence, which the executor only knows by its flattened internals, is reported under its
-own id with one entry per output port keyed like the edges that leave it, ); `POST /api/pipeline/trace` follows one row's values
+own id with one entry per output port keyed like the edges that leave it, `out__<port>`);
+`POST /api/pipeline/trace` follows one row's values
 through every node it passed through and returns typed correlation omissions plus generation
 provenance; `POST /api/pipeline/write-output` explicitly materialises a
 `dataOutput` node, with `overwrite=false` by default. A pre-existing destination returns
