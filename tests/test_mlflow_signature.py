@@ -18,6 +18,7 @@ is implemented (import errors count as failures).
 
 from __future__ import annotations
 
+import os
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -764,6 +765,7 @@ def test_real_mlflow_pyfunc_roundtrip_enforces_temporal_signature(
 ) -> None:
     """A signature built from production dtype descriptors survives log/load/predict."""
     from haute._mlflow_io import _prepare_predict_frame
+    from haute._mlflow_utils import mlflow_fluent_operation
     from haute.modelling._signature import build_signature
     from haute.modelling._training_job import _polars_dtype_name
 
@@ -796,9 +798,13 @@ def test_real_mlflow_pyfunc_roundtrip_enforces_temporal_signature(
     assert not isinstance(pandas_frame["zoned_event_time"].dtype, pd.DatetimeTZDtype)
     assert pandas_frame["zoned_event_time"].iloc[0] == pd.Timestamp("2025-07-02 02:04:05")
     original_tracking_uri = mlflow.get_tracking_uri()
+    original_environment = {
+        name: os.environ.get(name)
+        for name in ("MLFLOW_TRACKING_URI", "MLFLOW_REGISTRY_URI", "MLFLOW_EXPERIMENT_ID")
+    }
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-    mlflow.set_tracking_uri(tmp_path.as_uri())
-    try:
+    with mlflow_fluent_operation():
+        mlflow.set_tracking_uri(tmp_path.as_uri())
         mlflow.set_experiment("temporal-signature")
         with mlflow.start_run() as run:
             mlflow.pyfunc.log_model(
@@ -814,5 +820,5 @@ def test_real_mlflow_pyfunc_roundtrip_enforces_temporal_signature(
         assert set(_input_type_map(model_info.signature).values()) == {DataType.datetime}
         prediction = mlflow.pyfunc.load_model(model_uri).predict(pandas_frame)
         assert prediction["pred"].tolist() == [1.0]
-    finally:
-        mlflow.set_tracking_uri(original_tracking_uri)
+    assert mlflow.get_tracking_uri() == original_tracking_uri
+    assert {name: os.environ.get(name) for name in original_environment} == original_environment
