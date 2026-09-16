@@ -52,9 +52,11 @@ export default function GeneratedCodePanel({
           <span id={`${id}-title`}>Generated code</span>
           {open ? <ChevronUp size={12} aria-hidden="true" /> : <ChevronDown size={12} aria-hidden="true" />}
         </button>
-        <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-          {pending ? "rendering…" : "read-only, updates as you edit"}
-        </span>
+        {pending && (
+          <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+            rendering…
+          </span>
+        )}
       </div>
       {error && (
         <div role="alert" className="mx-3 mb-2 flex flex-wrap items-center gap-2 text-[11px]" style={{ color: "var(--danger)" }}>

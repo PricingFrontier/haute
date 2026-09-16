@@ -172,13 +172,8 @@ export default function PolarsStepsEditor({
       <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
 
       <div className="flex items-center justify-between gap-3 shrink-0">
-        <div>
-          <div className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-secondary)" }}>
-            Steps
-          </div>
-          <div className="mt-0.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
-            Build the transform one step at a time
-          </div>
+        <div className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-secondary)" }}>
+          Steps
         </div>
         <AddStepMenu onAdd={addStep} disabled={!canAdd} buttonRef={(el) => (addButton.current = el)} />
       </div>
