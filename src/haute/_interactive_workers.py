@@ -771,6 +771,12 @@ class InteractiveWorkerPool:
                 # of misreporting a dead child as a lost sampler.
                 return sampler_unavailable_logged
             if require_memory_limit:
+                # Teardown can release the address space before is_alive()
+                # observes an exit. Bound that observation gap to one poll
+                # (at most 50 ms), retaining the native cap while we wait.
+                slot.process.join(timeout=min(self._poll_interval_seconds, 0.05))
+                if not slot.process.is_alive():
+                    return sampler_unavailable_logged
                 raise RuntimeError(
                     "Interactive worker memory enforcement could not sample child RSS"
                 )

@@ -151,6 +151,38 @@ describe("insertEdgeJoinNode", () => {
     })
   })
 
+  it("rewrites a stepped consumer's step references instead of adding inputMapping", () => {
+    const stepped: Node = {
+      ...node("b"),
+      data: {
+        ...node("b").data,
+        config: {
+          steps: [
+            { id: "s", kind: "source", input: "a" },
+            { id: "j", kind: "join", input: "other", how: "left", leftOn: ["k"], rightOn: ["k"], suffix: "_o" },
+          ],
+        },
+      },
+    }
+    const result = insertEdgeJoinNode({
+      nodes: [node("a"), stepped, node("c")],
+      edges: [edge("e-a-b", "a", "b")],
+      targetEdgeId: "e-a-b",
+      connection: { source: "c" },
+      position: { x: 0, y: 0 },
+      idFactory: () => "edgeJoin_1",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const finalized = finalizeInsertion(result, "server_assigned_join")
+    const config = finalized.nodes.find((n) => n.id === "b")?.data.config as Record<string, unknown>
+    expect(config.inputMapping).toBeUndefined()
+    expect(config.steps).toEqual([
+      { id: "s", kind: "source", input: "server_assigned_join" },
+      { id: "j", kind: "join", input: "other", how: "left", leftOn: ["k"], rightOn: ["k"], suffix: "_o" },
+    ])
+  })
+
   it("supports repeated joins on already split segments", () => {
     const first = insertEdgeJoinNode({
       nodes: [node("a"), node("b"), node("c"), node("d")],
@@ -226,7 +258,7 @@ describe("insertEdgeJoinNode", () => {
     })
   })
 
-  it("preserves a collapsed submodel occurrence name as the logical input", () => {
+  it("preserves a collapsed submodel output port name as the logical input", () => {
     const child = node("child_output")
     const occurrence: Node = {
       ...node("pricing_instance"),
@@ -240,7 +272,7 @@ describe("insertEdgeJoinNode", () => {
         },
         _defaultInputName: null,
         _sourceHandleInputNames: {
-          out__written_premium: "pricing_secondary",
+          out__written_premium: "written_premium",
         },
       },
     }
@@ -273,7 +305,7 @@ describe("insertEdgeJoinNode", () => {
     if (!result.ok) return
     const finalized = finalizeInsertion(result, "Edge_Join_1")
     expect(finalized.nodes.find((n) => n.id === "enriched")?.data.config).toMatchObject({
-      inputMapping: { pricing_secondary: "Edge_Join_1" },
+      inputMapping: { written_premium: "Edge_Join_1" },
     })
   })
 

@@ -19,6 +19,13 @@
 | `frontend/src/utils/dataInputMode.ts` | Shared `dataInputIsDirect` derivation mirroring the backend's `data_input_is_direct`; drives the Data Input editor's cache surface and [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)'s `ensureInputSnapshots` orchestration. |
 | `frontend/src/panels/editors/CodeEditor.tsx`, `frontend/src/panels/editors/CodeMirrorEditor.tsx`, `frontend/src/panels/editors/shared/PolarsCodePanel.tsx`, `frontend/src/panels/editors/shared/PathPickerField.tsx` | Code-editor wrappers, Polars-specific panel, and the shared selected-path picker. |
 | `frontend/src/panels/editors/ConstantEditor.tsx`, `frontend/src/panels/editors/TransformEditor.tsx`, `frontend/src/panels/editors/EdgeJoinEditor.tsx`, `frontend/src/panels/editors/LiveSwitchEditor.tsx`, `frontend/src/panels/editors/ScenarioExpanderEditor.tsx` | Editors for scalar, transform, join, conditional-switch and scenario nodes. `EdgeJoinEditor` exposes fixed canvas-derived base/join roles, atomic swap, the seven supported join modes, mutually exclusive same-name/asymmetric key forms, and advanced Polars options. |
+| `frontend/src/panels/editors/polarsSteps/types.ts`, `frontend/src/panels/editors/polarsSteps/catalogue.ts`, `frontend/src/panels/editors/polarsSteps/summary.ts`, `frontend/src/panels/editors/polarsSteps/derivedColumns.ts` | Browser mirror of the low-code step schema (`readSteps`); the step catalogue (kinds, closed vocabularies mirrored from `haute._polars_steps` and held equal by `tests/test_polars_steps_catalogue.py`, default steps, the persisted-step shape check, `stepDisplayLabel`, variables in scope); `summarizeStep`, the card summaries, which print values and formulas through `formula.ts`; and `columnsBeforeStep`, the upstream-plus-derived column suggestions for a step. |
+| `frontend/src/panels/editors/polarsSteps/completion.ts`, `frontend/src/panels/editors/polarsSteps/useCompletionList.ts` | `completionMatches`: the case-insensitive prefix matcher behind every column-name completion list in the step editor (given order kept, exact match and chips already present left out, capped at eight; every name for an empty prefix); and `useCompletionList`, the one keyboard and ARIA state machine (open/close, Up/Down, Tab accepts, Escape closes) shared by the column boxes and the formula box. |
+| `frontend/src/panels/editors/polarsSteps/formula.ts` | Formula text for the step builder: `parseFormula` (tokens, Python precedence with right-associative `**`, brackets, unary minus, columns and backticked names, earlier variables, quoted text, `true`/`false`/`null`, `date('...')`, catalogue functions with typed plain-value arguments) into the nested expression schema with plain-English `FormulaError` messages, and `formulaText` back to text with brackets only where re-parsing needs them, or null for expressions text cannot express. |
+| `frontend/src/panels/editors/polarsSteps/useRenderedSteps.ts` | Debounced, revision-tagged call to the step render endpoint: stale responses are ignored, the last good code survives a pending render, and a successful render for the current revision reports its code to the caller. |
+| `frontend/src/panels/editors/polarsSteps/PolarsStepsEditor.tsx`, `frontend/src/panels/editors/polarsSteps/StepCard.tsx`, `frontend/src/panels/editors/polarsSteps/AddStepMenu.tsx`, `frontend/src/panels/editors/polarsSteps/GeneratedCodePanel.tsx` | The Transform step builder: start card, numbered accordion step cards with move/delete and validation or execution badges, the grouped `Add step` popover, empty and zero-input states, the locked line-numbered generated-code panel with "Go to error", and the confirmed one-way switch to code. |
+| `frontend/src/panels/editors/polarsSteps/fields.tsx`, `frontend/src/panels/editors/polarsSteps/forms.tsx` | Shared step-form controls (column combobox and chip list, whose drafts follow outside changes without remounting so focus survives a commit; per-field constrained operand control; membership literal list; condition rows; `RowList`, `RowGroup`, `AddRow`, `RowRemove`, `DirectionSelect` and `QuantileField`, the one layout for every repeated row) and one form per step kind dispatched by `StepForm`. |
+| `frontend/e2e/polars-steps.spec.ts` | Transform step builder browser journey: a new Transform asks for an input, connecting one seeds the start step, a Limit step added from the chooser re-renders the generated code, the preview runs it, Save writes the `config/polars/<name>.json` sidecar and the rendered body, and reopening restores the step cards. |
 | `frontend/src/panels/editors/ExternalFileEditor.tsx`, `frontend/src/panels/editors/DataInputEditor.tsx`, `frontend/src/panels/editors/DataOutputEditor.tsx` | External-object, grouped tabular input, and grouped tabular output configuration. |
 | `frontend/src/stores/useOutputWriteStore.ts` | Per-node output-write request identity, pending/terminal lifecycle, and overwrite-confirmation state retained across editor remounts. |
 | `frontend/src/panels/editors/_IoFormatEditor.tsx`, `frontend/src/panels/editors/_ioFormats.ts`, `frontend/src/panels/editors/_DatabricksSelector.tsx`, `frontend/src/panels/editors/_InputSnapshotCacheButton.tsx` | Registry-driven IO arguments, mount-refetched capabilities with concurrent-request coalescing, dedicated Databricks browsing, and the shared-button input-snapshot lifecycle. |
@@ -64,7 +71,7 @@
   carries one identity: `name` is the input's single name — chip text, code argument, and the
   key persisted contracts use (the live-switch `input_scenario_map`, the instance
   `inputMapping`) — derived per edge by `edgeInputName` (an API-input edge's frame label
-  verbatim; a submodel `out__` edge's input name is the occurrence's name (or `<name>__<port_name>` with several output ports), resolved by the backend identity endpoint from the alias the request carries; else the sanitised source-node
+  verbatim; a submodel `out__` edge's input name is the sanitised public output port name, resolved by the backend identity endpoint; else the sanitised source-node
   label). `sourceLabel` is provenance metadata used only to explain an unresolved source;
   resolved tooltips, removal titles, and selectors identify the edge by `name`, never by the
   source-node label or id;
@@ -613,9 +620,8 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   boundary, or unknown row is an invariant violation and throws rather than falling back to the
   composite node's literal `INPUT` label.
 - `edgeInputName` treats only API-input sources' handles as frame names; a submodel
-  `out__` edge's input name is the occurrence's name (which equals its alias, or `<name>__<port_name>` with several output
-  ports), resolved by the backend identity endpoint from the alias the request carries; and every other
-  node type derives the sanitised source label. Renaming an occurrence renames its alias (the node id follows at Save, when the reparse re-keys it to the name, so `node.id == data.label == config.alias` holds in every parsed document), validates identifier syntax (refusing with `Occurrence names must be identifiers; use "<functionName>".`) and uniqueness among parent nodes (refusing with `"<name>" is already used by another node.`), and rebinds downstream consumers identically via `inputMapping` without editing code.
+  `out__` edge's input name is the sanitised public output port name, resolved by the backend identity endpoint; and every other
+  node type derives the sanitised source label. Renaming an occurrence renames its alias (the node id follows at Save, when the reparse re-keys it to the name, so `node.id == data.label == config.alias` holds in every parsed document), validates identifier syntax (refusing with `Occurrence names must be identifiers; use "<functionName>".`) and uniqueness among parent nodes (refusing with `"<name>" is already used by another node.`), and leaves downstream public port names unchanged.
 - The API-input editor rejects a frame label that fails backend invariant B4 (not an ASCII
   identifier, or a Python hard keyword) at commit time with the same inline validation used
   for blank/duplicate labels (`apiInputLabelIssue` — the exact ASCII mirror) — the label is
@@ -651,6 +657,15 @@ diagnostics; no generic editor fabricates a replacement config.
 
 ## Testing
 
+- `frontend/src/panels/editors/polarsSteps/__tests__/PolarsStepsEditor.test.tsx` — quick-add seeds the start input, a chosen start input is written when there are several, the grouped menu adds a step and the rendered code is written into the config, one card opens at a time through the disclosure with Escape collapsing, move, delete and drag rewrite the list (the open card following its step), a render error badges its card without moving the user and "Go to error" opens it, source errors read "Start from", execution lines map to steps, the switch waits for a successful render and confirms (in the zero-input state too), a malformed persisted step renders as an invalid card that can be deleted, and a zero-input node switches to empty code.
+- `frontend/src/panels/editors/polarsSteps/__tests__/AddStepMenu.test.tsx` — arrow keys move through the kinds and wrap, Escape closes and returns focus to the button, Close closes without adding, a chosen kind is handed back, and a disabled button stays closed.
+- `frontend/src/panels/editors/polarsSteps/__tests__/fields.test.tsx` — column completion matching, keyboard and mouse completion in the column box and chip list, and focus staying in the box through a completion and a commit.
+- `frontend/src/panels/editors/polarsSteps/__tests__/forms.test.tsx` — every step form only produces schema-valid payloads: variable, membership (including switching an empty list to numbers and adding one), string-operator, function-argument, cast, rename, sort, unique, concat, fill-null, group-by, join, pivot and unpivot forms; formula text editing, completion, focus retention and the error note clearing on revert; the structured fallback for a formula holding a window; and the if-then, window and text-join expression editors.
+- `frontend/src/panels/editors/polarsSteps/__tests__/useRenderedSteps.test.ts` — empty, debounced, failed, transport-failed (a list-level error keeping the last code), out-of-order and pending render states.
+- `frontend/e2e/polars-steps.spec.ts` — the browser journey: a new Transform asks for an input, connecting one seeds the start step, Limit and multiline Free code steps added from the chooser re-render the generated code, a following Limit step consumes the custom frame, the preview includes its new column, Save writes the `config/polars/<name>.json` sidecar and the rendered body, and reopening restores the step cards and editable snippet.
+- `frontend/src/panels/editors/polarsSteps/__tests__/derivedColumns.test.ts` — column derivation through each step kind.
+- `frontend/src/panels/editors/polarsSteps/__tests__/stepProblem.test.ts` — every malformed persisted step shape (top-level and nested) is reported as a problem, and summaries, column and variable suggestions never throw around it.
+- `frontend/src/__tests__/editors/TransformEditor.test.tsx` — step mode is selected when `config.steps` is a list, and code mode shows the discard notice.
 - `frontend/src/panels/editors/shared/__tests__/PolarsCodePanel.test.tsx` — the Polars
   code editor retains its code hint and `return df` footer without displaying a
   trust statement. The execution trust boundary remains documented in
@@ -682,11 +697,14 @@ state, including danger styling and field-level invalid-key borders.
 
 The input-identity work is pinned by `frontend/src/panels/__tests__/NodePanel.test.tsx`
 (`name` derivation for API-frame edges — sole frame included — ordinary sources, and submodel
-`out__` edges whose input name is the occurrence's name (or `<name>__<port_name>` with several output ports), resolved by the backend identity endpoint from the alias the request carries; the `frameUnresolved` warning chip for a
+`out__` edges whose input name is the sanitised public output port name, resolved by the backend identity endpoint; the `frameUnresolved` warning chip for a
 zero-eligible-frame API source; the unresolved→resolved transition under an unchanged name
 string clearing the warning; signature-driven refresh on a frame rename; two frames from one
 API input rendering two distinct, independently removable chips whose names equal the
-generated argument names), by LiveSwitch cases (two frames from one API input render two rows
+generated argument names; exact chip text, tooltip and removal-control names remain
+public frame names after occurrence alias/display-label changes with one or two outputs),
+and by `frontend/src/panels/editors/polarsSteps/__tests__/PolarsStepsEditor.test.tsx` (start-input options, persisted selections, and render
+request input names stay frame-named after source identity changes), by LiveSwitch cases (two frames from one API input render two rows
 with two distinct names and two independent `input_scenario_map` keys; a frame rename migrates
 its map key atomically with the edge rebind; a zero-eligible-frame API `InputSource` renders
 the row's unresolved warning marker/tooltip), by the ApiInputEditor identifier-validation

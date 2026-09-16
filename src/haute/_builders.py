@@ -45,7 +45,7 @@ from haute._edge_join import (
     resolve_edge_join_role_indices,
 )
 from haute._execution_context import ExecutionProfile, current_execution_context
-from haute._graph_utils import _sanitize_func_name
+from haute._graph_utils import _sanitize_func_name, build_instance_mapping
 from haute._io import _select_columns
 from haute._logging import get_logger
 from haute._node_apply import (
@@ -60,6 +60,11 @@ from haute._node_apply import (
 from haute._output_assembler import (
     OutputMappingSchemaError,
     is_active_mapping_entry,
+)
+from haute._polars_steps import (
+    STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
+    PolarsStepError,
+    render_polars_steps,
 )
 from haute._rating import (
     _apply_banding_factors,
@@ -82,7 +87,7 @@ from haute._registry import (
 )
 from haute._types import GraphNode, NodeType, _Frame
 from haute._user_exec import _exec_user_code
-from haute.errors import RatingFactorDtypeContractError
+from haute.errors import ConfigError, RatingFactorDtypeContractError
 
 logger = get_logger(component="executor")
 
@@ -1141,6 +1146,29 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _in_map = dict(config.get("inputMapping", {})) or None
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
+    steps = config.get("steps")
+    if isinstance(steps, list):
+        # ``code`` is already the rendering of ``steps`` (materialised by
+        # ``NodeData``); validate the input references against the names the
+        # code will execute with so an unknown input names its step.
+        if _in_map is not None and not config.get("instanceOf"):
+            raise ConfigError(STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE, node_id=ctx.node.id)
+        problem = config.get("_steps_error")
+        if problem is None:
+            names = set(_src_names)
+            if _orig_src:
+                names.update(build_instance_mapping(_orig_src, _src_names, _in_map))
+            try:
+                render_polars_steps(steps, sorted(names))
+            except PolarsStepError as exc:
+                problem = str(exc)
+        if problem is not None:
+            return (
+                ctx.func_name,
+                _incomplete_transform(f"{INCOMPLETE_TRANSFORM_MESSAGE} {problem}"),
+                incoming_count == 0,
+            )
+
     if code:
 
         def transform_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
@@ -1168,15 +1196,21 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         is_source = incoming_count == 0
         return ctx.func_name, transform_fn, is_source
 
+    # With no upstream, mark the node as a source so the executor invokes the
+    # placeholder instead of failing first with its generic no-input guard.
+    return ctx.func_name, _incomplete_transform(INCOMPLETE_TRANSFORM_MESSAGE), incoming_count == 0
+
+
+def _incomplete_transform(message: str) -> Callable[..., _Frame]:
+    """Build the function a transform without a runnable program executes."""
+
     def incomplete_transform_fn(
         *_dfs_positional: _Frame,
         **_dfs_by_name: _Frame,
     ) -> _Frame:
-        raise NotImplementedError(INCOMPLETE_TRANSFORM_MESSAGE)
+        raise NotImplementedError(message)
 
-    # With no upstream, mark the node as a source so the executor invokes the
-    # placeholder instead of failing first with its generic no-input guard.
-    return ctx.func_name, incomplete_transform_fn, incoming_count == 0
+    return incomplete_transform_fn
 
 
 @_register(NodeType.EDGE_JOIN, opaque=True)

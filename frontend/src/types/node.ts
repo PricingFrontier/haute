@@ -64,6 +64,8 @@ export interface HauteNodeData extends Record<string, unknown> {
   _columns?: ColumnInfo[]
   /** Full column set before selected_columns filtering — set by usePipelineAPI */
   _availableColumns?: ColumnInfo[]
+  /** Columns per output handle for a multi-frame producer (a submodel's outputs) — set by usePipelineAPI */
+  _frameColumns?: Record<string, ColumnInfo[]>
   /** Schema warnings from last preview — set by usePipelineAPI */
   _schemaWarnings?: { column: string; status: string }[]
   /** Active source the column stash (_columns/_availableColumns/_schemaWarnings)

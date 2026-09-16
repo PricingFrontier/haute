@@ -15,6 +15,25 @@ This is the general-purpose node where you write code to shape your data. Joinin
 | `code` | **Required.** Polars transformation code |
 | `selected_columns` | Subset of columns to keep in the output (see [note below](#selected_columns)) |
 
+## Mixing steps with free code
+
+In the step builder, choose **Add step → Code → Free code** to write Python
+between low-code steps. The editor starts with the current frame in `df` and
+Polars available as `pl`. Assign your result back to `df`:
+
+```python
+df = df.with_columns(
+    (pl.col("premium") * 1.05).alias("loaded_premium")
+)
+```
+
+You can add more low-code steps afterwards, or move and delete the free-code
+step like any other. Do not add `return df`: the next step needs to run.
+Variables from earlier **Define variable** steps are available in your code.
+If your code creates columns, type their names into subsequent step fields.
+Use `df` for the current frame so upstream renames keep working; direct input
+names written in free code need to be updated manually when those inputs change.
+
 ## Reading Polars code
 
 If you're coming from Excel or a drag-and-drop pricing tool, the code on this page may look unfamiliar. Here's a quick cheat-sheet  - every concept below maps to something you already know.

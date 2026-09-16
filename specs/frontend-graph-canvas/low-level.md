@@ -5,6 +5,11 @@ serialization, undo/redo cloning and dirty-state fingerprints. In particular,
 `__proto__`, `constructor`, and underscore-prefixed column names are own data
 properties, never prototype setters or editor metadata inside config payloads.
 Changing only such a field must change the persisted fingerprint.
+For a Polars config carrying `steps`, `code` and `_steps_error` are derived from
+those steps, so only these two fields are omitted from dirty fingerprints (also
+inside definitions). Request payloads and history snapshots still retain them.
+An atomic graph commit with an unchanged authored fingerprint updates live state
+without pushing history or clearing redo; this includes generated step-code refreshes.
 
 ## Module map
 
@@ -12,7 +17,7 @@ Changing only such a field must change the persisted fingerprint.
 | --- | --- |
 | `frontend/src/App.tsx` | `FlowEditor` — the canvas composition boundary: wires `<ReactFlow>` event props to interaction hooks, derives and renders the transient edge-join candidate, owns local selection/context-menu/dialog state, picks the active preview pane, adapts the shared Submodel creation policy, owns the Instance toolbar handler, and gates Save/Commit on git working-branch status. Exports `App`, which mounts `FlowEditor` inside `ReactFlowProvider`. |
 | `frontend/src/hooks/useGraphCommitController.ts` | The single state authority for selected-node config and label commits: assigns per-node request generations, captures the graph/document identity fence, resolves prospective node/API-frame identities, invokes the pure preflight planner, and applies one history-aware graph transaction only while the request still owns that fence. |
-| `frontend/src/utils/nodeUpdatePlan.ts` | Pure selected-node update planner: reconciles API-frame handles, migrates dependent mappings, checks post-update input-name collisions, and returns either a complete root-graph/submodel candidate or a typed rejection without mutating the store. |
+| `frontend/src/utils/nodeUpdatePlan.ts` | Pure selected-node update planner: reconciles API-frame handles, migrates dependent mappings (a coded transform gains an `inputMapping` binding; a stepped transform has its `source`/`join`/`concat` input references rewritten in place through `polarsStepInputs.ts` and never gains one), checks post-update input-name collisions, and returns either a complete root-graph/submodel candidate or a typed rejection without mutating the store. `frontend/src/utils/__tests__/nodeUpdatePlan.steps.test.ts` covers the stepped rewrite and its collision rejection. |
 | `frontend/src/nodes/PipelineNode.tsx` | Renders every non-submodel node type at full detail regardless of zoom, plus the edge-join marker variant; computes source/target `Handle` sets, including multi-frame api-input handles (row-mounted through the shared `FramePortRows` component) and edge-join geometry-dependent handle placement; each ordinary card uses one shared default port row with optional `inputs`/target content on the left and its node/output name plus optional source handle on the right; edge-join handles retain their specialised quiet treatment; owns api-input instance-name suppression and the zero-frame "No emitted frames" state. |
 | `frontend/src/nodes/FramePortRows.tsx` | Shared full-detail port-row primitives used by API Input, ordinary Pipeline nodes, the parent Submodel card, and drilled Input/Output boundary cards. `FramePortRows` owns common named-port typography, truncation/title behavior, row-relative source/target handle placement, and the mirrored origin semicircle class/accent for each direction. `DefaultInputPort` owns the canonical target handle and exact muted `inputs` label so it can compose into an ordinary node's shared row; `DefaultInputPortRow` wraps the same content for input-only boundary cards. |
 | `frontend/src/nodes/SubmodelNode.tsx` | Resolves occurrences through `config.definitionId` and the typed definition registry, then keeps the structural `SUBMODEL` marker in the standard accent header treatment and renders the mutable occurrence name as a 13px semibold primary-foreground right-hand header pill, followed by one visible generic `inputs` target plus labelled `out__<name>` rows, a registry-derived accessible child count, and a visible invalid-definition alert. The generic target shares the first output row or falls back to a standalone row. Non-interactive `in__<name>` anchors are co-located beneath it so canonical parent edges retain their named persisted handles without presenting multiple main-canvas input sockets. |
@@ -61,7 +66,8 @@ Changing only such a field must change the persisted fingerprint.
 | `frontend/src/utils/nodeTypes.ts` | Canvas metadata derived from shared `types/node.ts::PIPELINE_NODE_TYPES`: `NODE_TYPE_META` and lookups (`SOURCE_ONLY_TYPES`, `SINK_ONLY_TYPES`, `SINGLETON_TYPES`, `PALETTE_TYPES`, `nodeTypeIcons`/`nodeTypeColors`/`nodeTypeLabels`, `PILL_TYPES`). |
 | `frontend/src/utils/apiInputPorts.ts` | Mirrors backend API-input frame identity and resolves authoritative executable names across ordinary nodes and public submodel labels while retaining public-port ids as boundary handles; also owns label validation, conservative rename updates, and orphan-handle pruning. |
 | `frontend/src/utils/edgeJoinRoles.ts` | Defines edge-join base/join handle roles and maps the rendered bottom join handle onto the canonical join role. |
-| `frontend/src/utils/edgeJoinGraph.ts` | Pure edge-join candidate validation and insertion/rewrite helpers; candidate feedback and release-time insertion share the same validator. |
+| `frontend/src/utils/edgeJoinGraph.ts` | Pure edge-join candidate validation and insertion/rewrite helpers; candidate feedback and release-time insertion share the same validator. A coded downstream transform gains an `inputMapping` binding for the join's name; a stepped downstream transform has its step input references rewritten to the join's name instead and never gains one. |
+| `frontend/src/utils/polarsStepInputs.ts` | Shared helpers for the input references inside a stepped transform's `config.steps` (`isSteppedTransformConfig`, `referencedStepInputs`, `renameStepInputs` with collision rejection), used by the rename planner and Edge Join insertion. |
 | `frontend/src/utils/edgeJoinInsertionFeedback.ts` | Pure render-only Edge Join candidate decoration that preserves edge-array identity when inactive. |
 | `frontend/src/utils/edgeJoinValidation.ts` | Save-time edge-join graph validation and readable warnings. |
 | `frontend/src/utils/nodeTypeRegistry.ts` | React Flow node-type registry built from canonical metadata, shared by editable and read-only canvases. |
@@ -164,7 +170,7 @@ A successful frame stores both `instanceId` and `definitionId`; failure leaves
 the current view unchanged. Synthetic canonical Input/Output nodes retain that
 `definitionId` marker. Drilled Input edges contribute the sanitised public
 input label to child configs/codegen, while a parent edge sourced from an
-occurrence contributes the occurrence alias (or <alias>__<port_id> when declaring more than one output port). Public port ids remain
+occurrence contributes the sanitised public output port name. Public port ids remain
 structural handle identities in both views.
 
 Shared-definition save performs an interface diff by immutable port id and

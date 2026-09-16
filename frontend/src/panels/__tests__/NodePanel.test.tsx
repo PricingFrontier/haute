@@ -1543,6 +1543,21 @@ describe("NodePanel", () => {
         sourceLabel: "Claims Source",
       })
       expect(sources[2].frameUnresolved).not.toBe(true)
+
+      for (const [edgeId, frameName, sourceLabel] of [
+        ["edge_multi", "DriversRaw", "Quote API"],
+        ["edge_single", "vehicles", "Vehicle API"],
+        ["edge_ordinary", "Claims_Source", "Claims Source"],
+      ]) {
+        const chip = screen.getByTestId(`input-source-${edgeId}`)
+        expect(chip.textContent).toBe(frameName)
+        expect(chip).not.toHaveTextContent(sourceLabel)
+        expect(chip).toHaveAttribute("title", `from ${frameName}`)
+        expect(within(chip).getByRole("button", { name: `Remove connection from ${frameName}` }))
+          .toHaveAttribute("title", `Remove connection from ${frameName}`)
+      }
+      expect(screen.queryByText("Quote API")).not.toBeInTheDocument()
+      expect(screen.queryByText("Vehicle API")).not.toBeInTheDocument()
     })
 
     it("renders drilled submodel Input public port ids as input names", () => {
@@ -1605,6 +1620,18 @@ describe("NodePanel", () => {
       ])
       expect(screen.getByTestId("input-source-edge_quote")).toHaveTextContent("quote_info")
       expect(screen.getByTestId("input-source-edge_batch")).toHaveTextContent("nb_batch2")
+      for (const [edgeId, frameName, displayLabel] of [
+        ["edge_quote", "quote_info", "Quote info"],
+        ["edge_batch", "nb_batch2", "NB batch"],
+      ]) {
+        const chip = screen.getByTestId(`input-source-${edgeId}`)
+        expect(chip.textContent).toBe(frameName)
+        expect(chip).not.toHaveTextContent("INPUT")
+        expect(chip).not.toHaveTextContent(displayLabel)
+        expect(chip).toHaveAttribute("title", `from ${frameName}`)
+        expect(within(chip).getByRole("button", { name: `Remove connection from ${frameName}` }))
+          .toHaveAttribute("title", `Remove connection from ${frameName}`)
+      }
     })
 
     it("keeps a dangling apiInput handle verbatim and marks it unresolved", () => {
@@ -1881,62 +1908,105 @@ describe("NodePanel", () => {
       expect(props.onDeleteEdge).toHaveBeenNthCalledWith(2, "edge_drivers")
     })
 
-    it("uses the authoritative occurrence name for a submodel-fed input", () => {
+    it.each([
+      ["one output", ["output_1"]],
+      ["two outputs", ["output_1", "output_2"]],
+    ])("uses authoritative public output frames for a submodel-fed input with %s", (_case, frames) => {
       const target = makeNode({
         id: "target",
         data: { label: "Target", description: "", nodeType: "polars", config: {} },
       })
       const occurrence = makeNode({
-        id: "pricing",
+        id: "inputs_occurrence",
         data: {
-          label: "pricing",
+          label: "Inputs display",
           description: "",
           nodeType: "submodel",
-          config: { definitionId: "pricing", alias: "pricing" },
+          config: { definitionId: "child_definition", alias: "Inputs_alias" },
           _defaultInputName: null,
-          _sourceHandleInputNames: { "out__premium": "pricing" },
+          _sourceHandleInputNames: Object.fromEntries(
+            frames.map((frame) => [`out__${frame}`, frame]),
+          ),
         },
       })
       const child = makeNode({
         id: "child_output",
         data: {
-          label: "Child Output",
+          label: "Internal child",
           description: "",
           nodeType: "polars",
           config: {},
         },
       })
 
-      renderPanel({
+      const edges = frames.map((frame) => ({
+        id: `edge_${frame}`,
+        source: occurrence.id,
+        target: target.id,
+        sourceHandle: `out__${frame}`,
+      }))
+      const { rerender, props } = renderPanel({
         node: target,
         allNodes: [occurrence, target],
-        edges: [
-          {
-            id: "edge_child",
-            source: occurrence.id,
-            target: target.id,
-            sourceHandle: "out__premium",
-          },
-        ],
+        edges,
         submodels: {
-          pricing: makeDefinition("pricing", [child], [], {
-            outputPorts: [
-              {
-                name: "premium",
-                source: { nodeId: "child_output", handleId: null },
-              },
-            ],
+          child_definition: makeDefinition("child_definition", [child], [], {
+            outputPorts: frames.map((frame) => ({
+              name: frame,
+              source: { nodeId: "child_output", handleId: null },
+            })),
           }),
         },
       })
 
-      expect(latestTransformInputSources()).toEqual([
+      expect(latestTransformInputSources()).toEqual(frames.map((frame) =>
         expect.objectContaining({
-          edgeId: "edge_child",
-          name: "pricing",
-          sourceLabel: "pricing",
+          edgeId: `edge_${frame}`,
+          name: frame,
+          sourceLabel: "Inputs display",
         }),
-      ])
+      ))
+      for (const frame of frames) {
+        const chip = screen.getByTestId(`input-source-edge_${frame}`)
+        expect(chip.textContent).toBe(frame)
+        expect(chip).toHaveAttribute("title", `from ${frame}`)
+        expect(within(chip).getByRole("button", { name: `Remove connection from ${frame}` }))
+          .toHaveAttribute("title", `Remove connection from ${frame}`)
+      }
+
+      const renamedOccurrence = makeNode({
+        ...occurrence,
+        data: {
+          ...occurrence.data,
+          label: "Renamed display",
+          config: { definitionId: "child_definition", alias: "Renamed_alias" },
+        },
+      })
+      rerender(
+        <GraphProvider
+          allNodes={[renamedOccurrence, target]}
+          edges={edges}
+          submodels={{
+            child_definition: makeDefinition("child_definition", [child], [], {
+              outputPorts: frames.map((frame) => ({
+                name: frame,
+                source: { nodeId: "child_output", handleId: null },
+              })),
+            }),
+          }}
+        >
+          <NodePanel {...props} />
+        </GraphProvider>,
+      )
+
+      expect(latestTransformInputSources().map((source) => source.name)).toEqual(frames)
+      for (const frame of frames) {
+        const chip = screen.getByTestId(`input-source-edge_${frame}`)
+        expect(chip.textContent).toBe(frame)
+        expect(chip).toHaveAttribute("title", `from ${frame}`)
+        expect(within(chip).getByRole("button", { name: `Remove connection from ${frame}` }))
+          .toHaveAttribute("title", `Remove connection from ${frame}`)
+      }
     })
   })
 

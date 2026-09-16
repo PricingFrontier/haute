@@ -126,7 +126,7 @@ def test_projection_rule_coverage_declares_opaque_node_types_explicitly() -> Non
         assert coverage[node_type].rules == frozenset({"opaque_contract"})
 
 
-def test_projection_resolves_collapsed_submodel_inputs_by_occurrence_name() -> None:
+def test_projection_resolves_collapsed_submodel_inputs_by_public_port_name() -> None:
     graph = make_graph(
         {
             "nodes": [
@@ -148,7 +148,7 @@ def test_projection_resolves_collapsed_submodel_inputs_by_occurrence_name() -> N
                         "label": "consumer",
                         "nodeType": "polars",
                         "config": {
-                            "code": "df = unrelated_alias.select(pl.col('premium'))",
+                            "code": "df = opaque_output_id.select(pl.col('premium'))",
                         },
                     },
                 },
@@ -177,7 +177,7 @@ def test_projection_resolves_collapsed_submodel_inputs_by_occurrence_name() -> N
     )
 
     [edge_reason] = projection.diagnostics.edge_reasons.values()
-    assert edge_reason.details["input_name"] == "unrelated_alias"
+    assert edge_reason.details["input_name"] == "opaque_output_id"
 
 
 def test_live_switch_pruning_uses_collapsed_submodel_public_output_label() -> None:

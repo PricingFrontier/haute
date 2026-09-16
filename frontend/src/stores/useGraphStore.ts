@@ -23,7 +23,8 @@
  *   - History-aware: `setNodes`, `setEdges`, `setPreamble`,
  *     `setNodesAndEdgesAndSubmodels`, and manual `pushSnapshot`. Each captures
  *     the pre-mutation `{nodes, edges, preamble, submodels}` onto `undoStack`
- *     and clears `redoStack`.
+ *     and clears `redoStack`. An atomic graph commit whose authored fingerprint
+ *     is unchanged (such as generated step-code refresh) preserves both stacks.
  *
  *   - Raw: `setNodesRaw`, `setEdgesRaw`, `setSubmodelsRaw`, `setPreambleRaw`.
  *     history push — used for mid-drag position updates (React Flow's
@@ -356,6 +357,7 @@ const PANEL_CONTEXT_NODE_DATA_KEYS = [
   "func_name",
   "_columns",
   "_availableColumns",
+  "_frameColumns",
   "_schemaWarnings",
 ] as const
 
@@ -621,7 +623,6 @@ const useGraphStore = create<GraphStore>()((set, get) => {
 
     setNodesAndEdgesAndSubmodels: (nodesUpdater, edgesUpdater, submodels, preamble) => {
       set((state) => {
-        const undoStack = pushSnapshotInternal()
         const nodes = applyUpdater(state.nodes, nodesUpdater)
         const edges = applyUpdater(state.edges, edgesUpdater)
         const nextPreamble = preamble === undefined ? state.preamble : preamble
@@ -632,9 +633,12 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           submodels,
         )
         const nextFingerprint = computeStructuralFingerprint(nodes, edges, nextPreamble)
+        // A render can refresh generated step code without changing authored
+        // graph state. Apply that cache update without consuming Undo or Redo.
+        const authoredChange = nextPersistedFingerprint !== state.persistedFingerprint
         return {
-          undoStack,
-          redoStack: [],
+          undoStack: authoredChange ? pushSnapshotInternal() : state.undoStack,
+          redoStack: authoredChange ? [] : state.redoStack,
           nodes,
           edges,
           preamble: nextPreamble,

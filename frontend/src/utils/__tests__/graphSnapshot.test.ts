@@ -23,6 +23,37 @@ import {
 } from "../graphSnapshot"
 import useGraphStore from "../../stores/useGraphStore"
 
+describe("stepped transform derived code", () => {
+  it.each([false, true])("excludes generated fields only from dirty fingerprints (inside definition: %s)", (inDefinition) => {
+    const node = {
+      id: "transform", position: { x: 0, y: 0 },
+      data: { nodeType: "polars", config: { steps: [{ id: "s", kind: "source", input: "quotes" }], code: "old", _steps_error: "old error", _authored: "keep" } },
+    } as Node
+    const graph = {
+      nodes: inDefinition ? [] : [node], edges: [], preamble: "",
+      submodels: inDefinition ? { definition: { graph: { nodes: [node], edges: [] } } } : {},
+    }
+    const before = serializeSnapshot(graph)
+    const config = node.data.config as Record<string, unknown>
+    config.code = "df = quotes"
+    delete config._steps_error
+    expect(serializeSnapshot(graph)).toBe(before)
+    expect(JSON.stringify(toCanonicalGraphPayload(graph))).toContain('"code":"df = quotes"')
+    expect(JSON.stringify(cloneGraphSnapshot(graph))).toContain('"code":"df = quotes"')
+    expect(config.code).toBe("df = quotes")
+    config._authored = "changed"
+    expect(serializeSnapshot(graph)).not.toBe(before)
+  })
+
+  it("keeps authored code significant when the node has no steps", () => {
+    const node = { id: "transform", position: { x: 0, y: 0 }, data: { nodeType: "polars", config: { code: "df = quotes" } } } as Node
+    const graph = { nodes: [node], edges: [], preamble: "", submodels: {} }
+    const before = serializeSnapshot(graph)
+    ;(node.data.config as Record<string, unknown>).code = "df = rates"
+    expect(serializeSnapshot(graph)).not.toBe(before)
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Fixtures — between them the two nodes carry all six stripped React Flow UI
 // fields (`selected`, `dragging`, `positionAbsolute`, `measured`, `resizing`,

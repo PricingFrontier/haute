@@ -142,6 +142,7 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "background-jobs-api",
     "explore-eda",
     "optimiser",
+    "polars-steps",
 )
 _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = ()
 _COMPONENT_PACKAGE_HEADING = re.compile(

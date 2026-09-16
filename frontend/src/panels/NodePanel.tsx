@@ -50,6 +50,8 @@ type NodePanelProps = {
   dimmed?: boolean
   /** 1-based line number of the error in user code, if any */
   errorLine?: number | null
+  /** The last run's error message for this node, if it failed */
+  runError?: string | null
   /** Preview rows from the current node's preview data (input columns pass through) */
   previewRows?: Record<string, unknown>[]
   /** True while the selected node preview request is still in flight. */
@@ -525,13 +527,24 @@ function InstancePanel({
 
 type ColumnInfo = { name: string; dtype: string }
 
+/**
+ * The columns an edge carries: the source's columns for the output handle
+ * the edge leaves from (a submodel output), else the source's columns.
+ */
+function edgeSourceColumns(edge: SimpleEdge, nodeMap: Record<string, SimpleNode>): ColumnInfo[] | undefined {
+  const data = nodeMap[edge.source]?.data as Record<string, unknown> | undefined
+  const frames = data?._frameColumns as Record<string, ColumnInfo[]> | undefined
+  const handle = edge.sourceHandle
+  if (handle && frames?.[handle]) return frames[handle]
+  return data?._columns as ColumnInfo[] | undefined
+}
+
 /** Collect upstream columns from already-filtered incoming edges. */
 function collectColumnsFromEdges(edges: SimpleEdge[], nodeMap: Record<string, SimpleNode>): ColumnInfo[] {
   const cols: ColumnInfo[] = []
   const seen = new Set<string>()
   edges.forEach(e => {
-    const src = nodeMap[e.source]
-    const srcCols = (src?.data as Record<string, unknown>)?._columns as ColumnInfo[] | undefined
+    const srcCols = edgeSourceColumns(e, nodeMap)
     if (srcCols) srcCols.forEach(c => { if (!seen.has(c.name)) { seen.add(c.name); cols.push(c) } })
   })
   return cols
@@ -543,11 +556,7 @@ function columnsSignature(columns: ColumnInfo[] | undefined): string {
 
 function upstreamColumnsSignature(edges: SimpleEdge[], nodeMap: Record<string, SimpleNode>): string {
   return edges
-    .map((edge) => {
-      const src = nodeMap[edge.source]
-      const srcCols = (src?.data as Record<string, unknown> | undefined)?._columns as ColumnInfo[] | undefined
-      return `${edge.source}\u0003${columnsSignature(srcCols)}`
-    })
+    .map((edge) => `${edge.source}\u0003${edge.sourceHandle ?? ""}\u0003${columnsSignature(edgeSourceColumns(edge, nodeMap))}`)
     .join("\u0004")
 }
 
@@ -658,6 +667,7 @@ function UnknownNodeTypeDiagnostic({
 const CACHED_PREVIEW_KEYS: readonly (keyof HauteNodeData)[] = [
   "_columns",
   "_availableColumns",
+  "_frameColumns",
   "_schemaWarnings",
   "_columnsSource",
   "_columnsStructuralVersion",
@@ -1122,9 +1132,11 @@ type NodeEditorTabStripProps = {
   tabs: NodePanelTab[]
   activeTab: NodePanelTab
   onSelect: (tab: NodePanelTab) => void
+  /** What the config tab is called for this node; a Transform's config is its Polars steps or code. */
+  configLabel?: string
 }
 
-function NodeEditorTabStrip({ visible, tabs, activeTab, onSelect }: NodeEditorTabStripProps) {
+function NodeEditorTabStrip({ visible, tabs, activeTab, onSelect, configLabel = "config" }: NodeEditorTabStripProps) {
   if (!visible) return null
   return (
     <div className="flex shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
@@ -1148,7 +1160,7 @@ function NodeEditorTabStrip({ visible, tabs, activeTab, onSelect }: NodeEditorTa
                   borderBottom: "2px solid transparent",
                 }}
           >
-            {tab === "polars" ? "Polars" : tab}
+            {tab === "polars" ? "Polars" : tab === "config" ? configLabel : tab}
           </button>
         )
       })}
@@ -1328,6 +1340,7 @@ function NodePanelContent({
   onRefreshPreview,
   dimmed,
   errorLine,
+  runError,
   previewRows,
   selectedPreviewLoading = false,
   readOnly = false,
@@ -1558,6 +1571,7 @@ function NodePanelContent({
       onSwapEdgeJoinInputs={onSwapEdgeJoinInputs}
       onShowPivots={() => setExplorePane(node.id, "pivots")}
       errorLine={errorLine}
+      runError={runError}
       previewRows={previewRows}
       selectedPreviewLoading={selectedPreviewLoading}
       loadPivotFilterMembers={loadPivotFilterMembers}
@@ -1606,6 +1620,7 @@ function NodePanelContent({
         tabs={editorTabs}
         activeTab={activeTab}
         onSelect={selectTab}
+        configLabel={nodeType === NODE_TYPES.POLARS ? "Polars" : undefined}
       />
 
       {showExplorePanes && (

@@ -260,6 +260,8 @@ export interface NodeResult {
   node_statuses?: Record<string, BackendNodeStatus>
   node_columns?: Record<string, ColumnInfo[]>
   node_available_columns?: Record<string, ColumnInfo[]>
+  /** Per-output-handle columns of every multi-frame producer the preview ran. */
+  node_frame_columns?: Record<string, Record<string, ColumnInfo[]>>
   node_schema_warnings?: Record<string, SchemaWarning[]>
   execution_metrics?: ExecutionMetrics | null
 }
@@ -1885,5 +1887,18 @@ export interface GitMilestoneFork {
   status: "would_fork"
   remote: string
   working: GitRemoteLeg
+  message: string
+}
+
+/** Result of rendering a low-code Transform step list to Polars code. A step
+ *  validation failure is data (`ok: false` with the failing step index and
+ *  message), never a transport error. */
+export interface PolarsStepsRenderResponse {
+  ok: boolean
+  code: string
+  /** 1-based inclusive `[start, end]` line range per step. */
+  step_lines: number[][]
+  /** Zero-based index of the failing step; null for a list-level problem. */
+  step_index: number | null
   message: string
 }

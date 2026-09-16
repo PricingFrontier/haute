@@ -204,8 +204,7 @@ def _preserve_consumer_input_names(
     """Keep every remaining consumer bound to the frame it read before grouping.
 
     A consumer of a grouped node used that node's own name as its input; after
-    grouping the same frame arrives from the new occurrence under the
-    occurrence's name (or ``<alias>__<port name>`` with several output ports). The
+    grouping the same frame arrives under its public output port name. If the
     physical name changes, the authored code does not: record the old name as
     the logical name through ``inputMapping`` and rewrite schema-owned
     selectors, exactly as flattening does across the same boundary.

@@ -15,6 +15,7 @@
  */
 
 import { MODELLING_EXPORT_CONFIG_KEYS, MODELLING_NODE_TYPE } from "./modellingExportConfig"
+import { authoredPolarsConfig } from "./polarsStepInputs"
 
 const INPUT_KEYS = ["nodeType", "label", "description", "config", "code", "func_name"] as const
 type InputKey = (typeof INPUT_KEYS)[number]
@@ -25,6 +26,7 @@ const EXPLORE_NODE_TYPE = "explore"
 const objectInputHashCache = new WeakMap<object, string>()
 const exploreConfigInputHashCache = new WeakMap<object, string>()
 const modellingConfigInputHashCache = new WeakMap<object, string>()
+const polarsConfigInputHashCache = new WeakMap<object, string>()
 const nodeDataHashCache = new WeakMap<Record<string, unknown>, string>()
 
 function stringifyInputValue(key: InputKey, value: unknown): string {
@@ -94,6 +96,16 @@ function stringifyModellingConfig(value: unknown): string {
 }
 
 function stringifyNodeInputValue(data: Record<string, unknown>, key: InputKey): string {
+  if (key === "config" && data.nodeType === "polars") {
+    const config = data.config
+    if (config !== null && typeof config === "object" && !Array.isArray(config)) {
+      const cached = polarsConfigInputHashCache.get(config)
+      if (cached !== undefined) return cached
+      const hash = stringifyInputValue(key, authoredPolarsConfig(config as Record<string, unknown>))
+      polarsConfigInputHashCache.set(config, hash)
+      return hash
+    }
+  }
   if (key === "config" && data.nodeType === EXPLORE_NODE_TYPE) {
     return stringifyExploreConfig(data[key])
   }
@@ -115,7 +127,9 @@ function stringifyNodeInputValue(data: Record<string, unknown>, key: InputKey): 
  * does not invalidate cached Explore data. A modelling node's export settings
  * (``MODELLING_EXPORT_CONFIG_KEYS``: MLflow destination and experiment, model
  * file path) are ignored for the same reason: they say where a trained model is
- * published, not what the pipeline computes or how the model trains.
+ * published, not what the pipeline computes or how the model trains. Stepped
+ * transforms hash their authored steps, excluding generated code and its
+ * validation message; refreshing those caches cannot change execution.
  * Result-only keys (_columns, _availableColumns, _schemaWarnings,
  * _status, _traceActive, _traceDimmed, _hoverDimmed, _traceValue,
  * _traceMotionDisabled) are ignored.

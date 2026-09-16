@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useMemo, useState, useRef, lazy, Suspense } from "react"
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import type { ComponentProps, ReactNode } from "react"
 import {
   ReactFlow,
@@ -555,6 +555,7 @@ function NodePropertiesPanel({
               ? previewData.error_line ?? null
               : null
           }
+          runError={previewData?.nodeId === activePanelNodeId ? previewData.error ?? null : null}
           previewRows={
             previewData?.status === "ok" && previewData.nodeId === activePanelNodeId
               ? previewData.preview
@@ -712,13 +713,18 @@ function FlowEditor() {
   const [currentSourceFile, setCurrentSourceFile] = useState<string | null>(null)
   const nodeIdCounter = useRef(0)
 
-  // Keep graphRef in sync so callbacks never see stale state. Cache freshness
-  // is versioned inside useGraphStore, not by an App-level cross-store effect.
-  useEffect(() => {
+  // Keep graphRef in sync so callbacks never see stale state. A layout effect
+  // runs before any descendant's passive effect, so an editor that reacts to
+  // a graph change (a new edge giving a stepped transform its start input) and
+  // commits a node update from its own effect already sees that change; with a
+  // passive effect here the update would replay the edges from before the
+  // change and silently drop the new edge. Cache freshness is versioned inside
+  // useGraphStore, not by an App-level cross-store effect.
+  useLayoutEffect(() => {
     graphRef.current = { nodes, edges }
   }, [nodes, edges])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     submodelsRef.current = submodels
   }, [submodels])
 

@@ -177,7 +177,10 @@ below. Before changing an existing named document, Save and submodel create/diss
 its current on-disk editor state under the shared save lock and reject a non-ready document
 before staging bytes, regardless of the client-posted graph. `POST /api/pipeline/preview`
 runs the graph up to one node and returns its schema,
-sample rows, and per-node timing/memory; `POST /api/pipeline/trace` follows one row's values
+sample rows, per-node timing/memory, and the columns of every ancestor it ran (a submodel
+occurrence, which the executor only knows by its flattened internals, is reported under its
+own id with one entry per output port keyed like the edges that leave it, `out__<port>`);
+`POST /api/pipeline/trace` follows one row's values
 through every node it passed through and returns typed correlation omissions plus generation
 provenance; `POST /api/pipeline/write-output` explicitly materialises a
 `dataOutput` node, with `overwrite=false` by default. A pre-existing destination returns
@@ -264,6 +267,12 @@ records `memory_limited` rather than flattening it to `contract_error`. Every pa
 preserves the
 exception's stable code and named safe fields; malformed or unsupported diagnostic versions
 become diagnostic-unavailable rather than a fabricated success.
+
+**Step rendering.** `POST /api/pipeline/polars-steps/render` accepts a step list
+and its input names and returns either the rendered code with each step's line range or
+the failing step index and message. Both outcomes are ordinary responses, so a half-built
+step list shows as an editor message rather than a network error; only a malformed
+request is a transport error. The endpoint reads and writes no project state.
 
 ## Design rationale
 

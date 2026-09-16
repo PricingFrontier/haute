@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
@@ -60,8 +61,10 @@ from haute._polars_io_registry import (
     format_group,
     validate_data_output_config,
 )
+from haute._polars_steps import PolarsStepError, render_polars_steps
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, temporary_streaming_chunk_size
 from haute._sandbox import _get_project_root
+from haute._submodel_instances import qualified_runtime_node_id, resolve_submodel_instances
 from haute._topo import ancestors
 from haute._types import GraphEdge, GraphNode, NodeData, SubmodelDefinition
 from haute._worker_isolation import (
@@ -134,6 +137,7 @@ from haute.routes._timeouts import (
     run_blocking_with_response_timeout,
 )
 from haute.schemas import (
+    ColumnInfo,
     EditorIdentitiesRequest,
     EditorIdentitiesResponse,
     EditorIdentityResponseNode,
@@ -151,6 +155,8 @@ from haute.schemas import (
     PipelineRepairRecoverApplyRequest,
     PipelineRepairRecoverRequest,
     PipelineSummary,
+    PolarsStepsRenderRequest,
+    PolarsStepsRenderResponse,
     PreviewNodeRequest,
     PreviewNodeResponse,
     ReadJsonRequest,
@@ -220,6 +226,22 @@ async def resolve_pipeline_editor_identities(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return EditorIdentitiesResponse(identities=identities)
+
+
+@router.post("/pipeline/polars-steps/render", response_model=PolarsStepsRenderResponse)
+async def render_polars_steps_endpoint(
+    body: PolarsStepsRenderRequest,
+) -> PolarsStepsRenderResponse:
+    """Render a step list to Polars code without reading or writing project state."""
+    try:
+        rendered = render_polars_steps(body.steps, body.input_names)
+    except PolarsStepError as exc:
+        return PolarsStepsRenderResponse(ok=False, step_index=exc.step_index, message=exc.message)
+    return PolarsStepsRenderResponse(
+        ok=True,
+        code=rendered.code,
+        step_lines=[list(span) for span in rendered.step_lines],
+    )
 
 
 # ── Timeouts (seconds) — resolved per request so env overrides set
@@ -922,6 +944,39 @@ async def read_json_file(body: ReadJsonRequest) -> ReadJsonResponse:
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
 
 
+def _occurrence_output_columns(
+    authored: PipelineGraph,
+    results: Mapping[str, Any],
+) -> dict[str, dict[str, list[ColumnInfo]]]:
+    """Columns of every submodel occurrence's output ports, keyed like its edges.
+
+    The executor runs the flattened graph, so its results are keyed by the
+    cloned internal nodes and never by the occurrence the editor draws. An
+    edge from an occurrence leaves the ``out__<port>`` handle; this maps
+    that handle to the columns of the port's internal source (its frame
+    when the source is multi-frame), so the editor can offer them downstream.
+    """
+    columns_by_occurrence: dict[str, dict[str, list[ColumnInfo]]] = {}
+    # The preview has already flattened this graph, so every occurrence
+    # resolves; a failure here is a defect and must surface.
+    for instance_id, instance in resolve_submodel_instances(authored).items():
+        ports: dict[str, list[ColumnInfo]] = {}
+        for port in instance.definition.output_ports:
+            result = results.get(qualified_runtime_node_id(instance_id, port.source.node_id))
+            if result is None:
+                continue
+            frames = result.frame_columns or {}
+            source_handle = port.source.handle_id
+            columns = frames.get(source_handle) if source_handle else None
+            if columns is None:
+                columns = result.columns
+            if columns:
+                ports[f"out__{port.name}"] = list(columns)
+        if ports:
+            columns_by_occurrence[instance_id] = ports
+    return columns_by_occurrence
+
+
 def _preview_response_from_results(
     graph: PipelineGraph,
     body: PreviewNodeRequest,
@@ -976,6 +1031,8 @@ def _preview_response_from_results(
         for node_id, result in results.items()
         if node_id in node_map and node_id in relevant and result.frame_columns
     }
+    for occurrence_id, ports in _occurrence_output_columns(body.graph, results).items():
+        node_frame_columns[occurrence_id] = {**node_frame_columns.get(occurrence_id, {}), **ports}
     node_schema_warnings = {
         node_id: result.schema_warnings
         for node_id, result in results.items()
