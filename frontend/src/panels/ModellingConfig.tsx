@@ -35,6 +35,7 @@ import type { OnUpdateConfig } from "./editors"
 import { useGraph } from "./useGraph"
 import { CommonFeatureConfig } from "./modelling/CommonFeatureConfig"
 import { ExportPane } from "./modelling/ExportPane"
+import { GLMInteractionsConfig } from "./modelling/GLMInteractionsConfig"
 import { GLMRegularizationConfig } from "./modelling/GLMRegularizationConfig"
 import { GLMTargetConfig } from "./modelling/GLMTargetConfig"
 import { GLMTermsConfig } from "./modelling/GLMTermsConfig"
@@ -571,7 +572,12 @@ export default function ModellingConfig({
   } else if (activePane === "target") {
     paneBody = <GLMTargetConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} onEstimateDispersion={onEstimateDispersion} />
   } else if (activePane === "features") {
-    paneBody = <GLMTermsConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
+    paneBody = (
+      <>
+        <GLMTermsConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
+        <GLMInteractionsConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
+      </>
+    )
   } else if (activePane === "params") {
     paneBody = <GLMRegularizationConfig config={config} onUpdate={onUpdate} />
   } else if (activePane === "split") {

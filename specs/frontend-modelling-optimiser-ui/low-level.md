@@ -32,7 +32,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/utils/configField.ts`, `frontend/src/utils/trainingObjective.ts`, `frontend/src/utils/executionDiagnostics.ts` | Typed config reads/parsing, training-configuration issue derivation with click-time presentation, and structured execution-error/metric display helpers. |
 | `frontend/src/panels/modelling/TargetAndTaskConfig.tsx`, `frontend/src/panels/modelling/CommonFeatureConfig.tsx`, `frontend/src/panels/modelling/SplitAndMetricsConfig.tsx` | CatBoost target/loss/metric controls with loss-derived task compatibility, the common feature/monotonicity browser, and the canonical evaluation editor with exact-plan preview. |
 | `frontend/src/panels/modelling/HyperparametersConfig.tsx`, `frontend/src/panels/modelling/hyperparameters.ts`, `frontend/src/panels/modelling/featureSelection.ts` | Algorithm-neutral fixed-parameter JSON editing, optional bounded CatBoost tuning/search-space editing, and pure parameter/feature transitions. |
-| `frontend/src/panels/modelling/GLMTargetConfig.tsx`, `frontend/src/panels/modelling/GLMTermsConfig.tsx`, `frontend/src/panels/modelling/TermCard.tsx`, `frontend/src/panels/modelling/glmTerms.ts`, `frontend/src/panels/modelling/GLMRegularizationConfig.tsx` | GLM family/dispersion, the terms pane with its per-term cards and pure editor transitions, and regularisation controls. |
+| `frontend/src/panels/modelling/GLMTargetConfig.tsx`, `frontend/src/panels/modelling/GLMTermsConfig.tsx`, `frontend/src/panels/modelling/GLMInteractionsConfig.tsx`, `frontend/src/panels/modelling/TermCard.tsx`, `frontend/src/panels/modelling/glmTerms.ts`, `frontend/src/panels/modelling/GLMRegularizationConfig.tsx` | GLM family/dispersion, the terms pane with its per-term cards, the interaction cards with their per-factor slot fits, pure editor transitions, and regularisation controls. |
 | `frontend/src/panels/modelling/TrainingActionsAndResults.tsx`, `frontend/src/panels/modelling/TrainingProgress.tsx` | Train action/result summary and progress. |
 | `frontend/src/panels/modelling/ExportPane.tsx`, `frontend/src/panels/modelling/MlflowExportSection.tsx`, `frontend/src/panels/modelling/ModelFileExportSection.tsx` | The Export pane: the MLflow logging fields, the manual MLflow log action (names the node's destination, disabled with the reason when that destination is unconfigured or no trained model is exportable, always sends `destination`), and the save-model-to-file action. |
 | `frontend/src/panels/modelling/exportReceipts.ts`, `frontend/src/panels/modelling/useTrainedJobRestore.ts` | `useExportReceipts(jobId)` (reads a completed job's export receipts from the status endpoint on mount and on `refresh`), `newOperationId()`, and `useTrainedJobRestore` (after a reload, reads a remembered job's status once to restore its result — current only when the editor's current payload has the same `trainingLineage` — or report it expired). |
@@ -101,8 +101,15 @@ Only a current, accepted save response may acknowledge this revision transition.
    native fit first, then uniquely named `** 2` expression terms), a `TermCard` per term with
    type, subset parameters, and monotonicity only for linear, B-spline, monotone spline, and
    expression; bulk Fit all with defaults / Remove all terms; an In model only filter; and the
-   unchanged JSON mode. The GLM pane never writes `exclude`, `monotone_constraints`, or
-   `all_factors`. New algorithms receive a canonical random/single-validation evaluation.
+   unchanged JSON mode. `GLMInteractionsConfig` renders beneath it: Add interaction appends
+   `{factors: ["", ""], include_main: true}`; each slot pairs a column select (any eligible column
+   not already in the card, excluding target-encoded main terms) with a `TermCard` slot fit of
+   As main term / Linear / Categorical / B-spline / Nat. spline (never monotonicity), stored only
+   as `specs[column]` overrides; a monotone main term forces an explicit slot fit; + feature adds
+   slots and slots can be removed above two; Include main effects appears only while a picked
+   column has no native term; incomplete and duplicate cards are flagged. The GLM pane never
+   writes `exclude`, `monotone_constraints`, or `all_factors`. New algorithms receive a canonical
+   random/single-validation evaluation.
    Later strategy changes replace incompatible keys atomically instead of retaining stale
    group/date/fraction fields.
 2. `useStaleConfigEstimate` receives the RAM request endpoint with graph/source/structural version;
@@ -299,11 +306,11 @@ The behavioural contract is defined in
   so invalid or incomplete text survives Params unmount without crossing node identity.
   The gateway handles only an unset algorithm; unsupported values render an explicit diagnostic,
   and supported nodes expose no algorithm mutation action.
-- `frontend/src/panels/modelling/featureSelection.ts` owns role exclusion, final algorithm
-  selection and explicit-factor dependency cleanup. The configured target, weight, offset, fold,
-  identifiers, and active evaluation group/date key are never offered as features. Cleanup returns
-  only affected `terms`, `interactions`, and `monotone_constraints` fields for the caller's one
-  config update.
+- `frontend/src/panels/modelling/featureSelection.ts` owns role exclusion and final algorithm
+  selection. The configured target, weight, offset, fold, identifiers, and active evaluation
+  group/date key are never offered as features. Final selection applies CatBoost's `exclude` filter
+  and, for GLM, the `modelMembership` derivation in `glmTerms.ts` over terms and interactions. The
+  module performs no dependency cleanup.
 - `TargetAndTaskConfig.tsx` and `GLMTargetConfig.tsx` show read-only algorithm context.
   `CommonFeatureConfig.tsx` is CatBoost-only: case-insensitive search, dtype labels, stale
   exclusion repair, compact single-row per-feature cards, the green/red include/exclude button,
@@ -471,7 +478,8 @@ Verification is deliberately assigned to the owning seams:
   confirmation-free exclusion and dormant settings, role/final-selection filtering, unset-only
   immutable algorithm selection, the GLM terms pane (exact editor-transition payloads in
   `glmTerms.test.ts`, row tags, expression anchoring and refusal, bulk actions, JSON round-trip,
-  and the never-written CatBoost levers), arbitrary params JSON draft/object validation,
+  and the never-written CatBoost levers) and the interaction cards (slot availability, override
+  writes, duplicate and incomplete flags), arbitrary params JSON draft/object validation,
   click-time aggregate training-validation presentation, canonical evaluation
   transitions/preview, tuning enablement/search-space drafts, evaluation/result/progress fit
   counts, result labels, and live progress presentation.
