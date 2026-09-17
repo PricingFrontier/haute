@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 import polars as pl
 import pytest
+from fastapi import Response
 
 from haute._execution_admission import (
     ExecutionAdmissionError,
@@ -32,6 +33,7 @@ from haute._execution_context import (
     ExecutionTelemetryEvent,
     _bounded_telemetry_attributes,
 )
+from haute._pipeline_recovery import pipeline_document_fingerprint
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.errors import ContractMismatchError, SchemaMismatchError
 from haute.graph_utils import NodeType, _execute_eager_core, _execute_lazy
@@ -2968,11 +2970,15 @@ async def test_get_pipeline_falls_back_after_indexed_and_scanned_load_failures(
     monkeypatch.setattr(pipeline_route, "lookup_pipeline_by_name", lambda _name: indexed)
     monkeypatch.setattr(pipeline_route, "discover_pipelines", lambda: [scanned_bad, scanned_match])
     monkeypatch.setattr(pipeline_route, "load_pipeline_editor_document", load)
+    response = Response()
 
-    result = await pipeline_route.get_pipeline("rating")
+    result = await pipeline_route.get_pipeline("rating", response)
 
     assert result is document
     assert loaded_paths == ["indexed.py", "scanned_bad.py", "scanned_match.py"]
+    assert response.headers[pipeline_route.DOCUMENT_FINGERPRINT_HEADER] == (
+        pipeline_document_fingerprint(document.model_dump(mode="json", by_alias=True))
+    )
 
 
 @pytest.mark.asyncio
@@ -2996,7 +3002,7 @@ async def test_get_pipeline_reraises_indexed_load_error_after_all_candidates_fai
     monkeypatch.setattr(pipeline_route, "load_pipeline_editor_document", load)
 
     with pytest.raises(RuntimeError, match="indexed.py failed"):
-        await pipeline_route.get_pipeline("rating")
+        await pipeline_route.get_pipeline("rating", Response())
 
 
 @pytest.mark.asyncio
@@ -3018,7 +3024,7 @@ async def test_get_first_pipeline_reraises_first_candidate_load_error(
     monkeypatch.setattr(pipeline_route, "load_pipeline_editor_document", load)
 
     with pytest.raises(RuntimeError, match="first.py failed"):
-        await pipeline_route.get_first_pipeline()
+        await pipeline_route.get_first_pipeline(Response())
 
 
 @pytest.mark.asyncio
@@ -3066,10 +3072,15 @@ async def test_get_first_pipeline_keeps_first_authored_empty_document(
     )
     monkeypatch.setattr(pipeline_route, "load_pipeline_editor_document", load)
 
-    result = await pipeline_route.get_first_pipeline()
+    response = Response()
+
+    result = await pipeline_route.get_first_pipeline(response)
 
     assert result is first_document
     assert result.source_file == "empty_first.py"
+    assert response.headers[pipeline_route.DOCUMENT_FINGERPRINT_HEADER] == (
+        pipeline_document_fingerprint(first_document.model_dump(mode="json", by_alias=True))
+    )
 
 
 @pytest.mark.asyncio
