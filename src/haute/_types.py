@@ -107,6 +107,9 @@ class ApiInputConfig(TypedDict, total=False):
 class _DataInputCommon(TypedDict, total=False):
     arguments: dict[str, Any]
     code: str
+    #: Low-code post-load steps (frame mode); ``code`` is their rendering
+    #: whenever they are present (see ``NodeData``).
+    steps: list[dict[str, Any]]
 
 
 class _DataInputPolarsCommon(_DataInputCommon, total=False):
@@ -271,6 +274,7 @@ class ModelScoreConfig(TypedDict, total=False):
     feature_contract_path: str  # local deploy/runtime feature-contract artifact
     categorical_levels: dict[str, list[str | None]]
     code: str  # optional post-processing code
+    steps: list[dict[str, Any]]  # low-code post-scoring steps; ``code`` is their rendering
     instanceOf: str
     inputMapping: dict[str, str]
     mlflow_destination: str  # "databricks" | "server"; absent = the local folder
@@ -328,6 +332,7 @@ class RatingStepConfig(TypedDict, total=False):
     tables: list[RatingTable]
     combinedOutputs: list[RatingCombinedOutput]
     code: str
+    steps: list[dict[str, Any]]  # low-code post-rating steps; ``code`` is their rendering
 
 
 class OutputMappingEntry(TypedDict):
@@ -538,6 +543,7 @@ class ExploreConfig(TypedDict, total=False):
     """Config for explore nodes."""
 
     code: str
+    steps: list[dict[str, Any]]  # low-code steps over df, persisted as a decorator argument
     overview: ExploreOverviewConfig
     pivot_formulas: list[ExplorePivotFormula]
     pivots: list[ExplorePivotPersistedConfig]
@@ -554,6 +560,9 @@ class ExternalFileConfig(TypedDict, total=False):
     fileType: str  # "pickle" | "json" | "joblib" | "catboost"
     modelClass: str  # "classifier" | "regressor" (catboost only)
     code: str
+    steps: list[
+        dict[str, Any]
+    ]  # low-code steps over df (the first input) and obj; ``code`` is their rendering
 
 
 class LiveSwitchConfig(TypedDict, total=False):
@@ -686,9 +695,10 @@ class ScenarioExpanderConfig(TypedDict, total=False):
     column_name: str  # name of the new value column (e.g. "scenario_value")
     min_value: float  # start of linspace
     max_value: float  # end of linspace
-    steps: int  # number of steps
+    stepCount: int  # number of grid values; required, no absent-key default
     step_column: str  # name of the 0-based step index column (e.g. "scenario_index")
     code: str  # optional Polars transformation code (post-expansion)
+    steps: list[dict[str, Any]]  # low-code post-expansion steps; ``code`` is their rendering
 
 
 # ---------------------------------------------------------------------------
@@ -854,7 +864,7 @@ SCENARIO_EXPANDER_CONFIG_KEYS: tuple[str, ...] = (
     "column_name",
     "min_value",
     "max_value",
-    "steps",
+    "stepCount",
     "step_column",
 )
 
@@ -886,27 +896,41 @@ class NodeData(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _materialise_polars_steps(self) -> Self:
-        """Keep ``code`` equal to the rendering of ``steps`` on a stepped transform.
+    def _materialise_steps(self) -> Self:
+        """Keep ``code`` equal to the rendering of ``steps`` on a stepped node.
 
-        Every consumer of a transform reads ``config["code"]``; a stepped node
-        therefore never carries any other program than its rendered steps. A
-        step list that cannot be rendered materialises as empty code plus an
-        editor-state ``_steps_error`` message, so consumers see an incomplete
-        transform exactly as they see a code-less one. In-process config
-        replacement must go through ``GraphNode.with_config`` so this
-        validator runs; ``model_copy`` does not validate.
+        Every consumer of a node's program reads ``config["code"]``; a stepped
+        node therefore never carries any other program than its rendered
+        steps. A step list that cannot be rendered materialises as empty code
+        plus an editor-state ``_steps_error`` message, so consumers see an
+        incomplete node exactly as they see a code-less one. The render mode
+        comes from ``STEPPED_NODE_TYPES``; a ``steps`` key on a node type
+        outside that table (a Scenario Expander's grid size) is left alone.
+        In-process config replacement must go through ``GraphNode.with_config``
+        so this validator runs; ``model_copy`` does not validate.
         """
-        if self.nodeType != NodeType.POLARS or "steps" not in self.config:
+        if "steps" not in self.config:
             return self
-        from haute._polars_steps import PolarsStepError, render_polars_steps
+        from haute._polars_steps import (
+            STEPPED_NODE_TYPES,
+            PolarsStepError,
+            render_polars_steps,
+        )
 
+        surface = STEPPED_NODE_TYPES.get(self.nodeType)
+        if surface is None:
+            return self
         steps = self.config["steps"]
         if not isinstance(steps, list):
-            raise ValueError("Transform steps must be a list.")
+            raise ValueError("Steps must be a list.")
         config = dict(self.config)
+        # A surface whose code sees only df has no eligible input names, so a
+        # join or concat is refused here already; an `edges` surface's names
+        # are only known to the graph, so its references are checked at build
+        # time against the connected edges.
+        input_names: list[str] | None = [] if surface.inputs == "none" else None
         try:
-            rendered = render_polars_steps(steps)
+            rendered = render_polars_steps(steps, input_names, start=surface.start)
         except PolarsStepError as exc:
             config["code"] = ""
             config["_steps_error"] = str(exc)

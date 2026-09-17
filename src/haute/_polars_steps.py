@@ -28,9 +28,20 @@ import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Literal
+
+from haute._types import NodeType
 
 __all__ = [
+    "STEPPED_NODE_TYPES",
+    "STEP_STARTS",
+    "StepStart",
+    "SteppedSurface",
+    "is_stepped_config",
+    "step_input_names",
+    "stepped_surface_allows_input_references",
+    "stepped_surface_for",
     "AGGREGATIONS",
     "JOIN_MAINTAIN_ORDER",
     "JOIN_VALIDATE",
@@ -62,6 +73,79 @@ __all__ = [
 STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE = (
     "A stepped transform addresses its inputs by their edge names and cannot carry inputMapping."
 )
+
+#: Where ``df`` comes from when a step list starts: ``input`` means the first
+#: step chooses an input and renders ``df = <input>`` (a transform); ``frame``
+#: means the surface hands the steps a frame already bound to ``df`` (a Data
+#: Input's opened snapshot), so no start step exists and an empty list is
+#: simply no code.
+StepStart = Literal["input", "frame"]
+STEP_STARTS: tuple[StepStart, ...] = ("input", "frame")
+
+
+@dataclass(frozen=True)
+class SteppedSurface:
+    """How one node type authors steps.
+
+    ``start`` is the render mode. ``inputs`` is what ``join``/``concat`` steps
+    may reference: ``edges`` for a surface whose code sees its incoming edges
+    by name, ``none`` for one whose code sees only ``df``. Every path that
+    renders a node's steps takes its eligible names from this table through
+    :func:`step_input_names`, so the editor, the parser, codegen and execution
+    agree on what a step may name.
+    """
+
+    start: StepStart
+    inputs: Literal["edges", "none"]
+
+
+STEPPED_NODE_TYPES: Mapping[NodeType, SteppedSurface] = MappingProxyType(
+    {
+        NodeType.POLARS: SteppedSurface(start="input", inputs="edges"),
+        NodeType.DATA_INPUT: SteppedSurface(start="frame", inputs="none"),
+        # The first input is already `df`; the other edges stay addressable.
+        NodeType.EXTERNAL_FILE: SteppedSurface(start="frame", inputs="edges"),
+        NodeType.RATING_STEP: SteppedSurface(start="frame", inputs="none"),
+        NodeType.MODEL_SCORE: SteppedSurface(start="frame", inputs="none"),
+        NodeType.SCENARIO_EXPANDER: SteppedSurface(start="frame", inputs="none"),
+        # The single input is bound as df by codegen; steps live in the decorator.
+        NodeType.EXPLORE: SteppedSurface(start="frame", inputs="none"),
+    }
+)
+
+
+def stepped_surface_for(node_type: NodeType) -> SteppedSurface:
+    """The stepped surface of *node_type*; a type outside the table is an error."""
+    try:
+        return STEPPED_NODE_TYPES[node_type]
+    except KeyError:
+        raise ValueError(f"Node type {node_type.value!r} does not author steps.") from None
+
+
+def step_input_names(node_type: NodeType, edge_names: Sequence[str]) -> list[str]:
+    """The input names a stepped *node_type*'s steps may reference.
+
+    *edge_names* are the node's incoming edge (or logical) names; they are
+    returned as given for an ``edges`` surface and dropped for a ``none``
+    surface, whose code runs with only ``df`` in scope.
+    """
+    surface = stepped_surface_for(node_type)
+    return list(edge_names) if surface.inputs == "edges" else []
+
+
+def is_stepped_config(node_type: NodeType, config: Mapping[str, object]) -> bool:
+    """Whether *config* is authored as steps on a node type that supports them."""
+    return node_type in STEPPED_NODE_TYPES and isinstance(config.get("steps"), list)
+
+
+def stepped_surface_allows_input_references(node_type: NodeType) -> bool:
+    """Whether a stepped *node_type*'s steps may name its incoming edges.
+
+    Only such a surface needs its step references rewritten when an input is
+    renamed (a submodel boundary, an Edge Join insertion, a node rename).
+    """
+    surface = STEPPED_NODE_TYPES.get(node_type)
+    return surface is not None and surface.inputs == "edges"
 
 
 class PolarsStepError(ValueError):
@@ -274,20 +358,31 @@ _RESERVED_NAMES = frozenset({"df", "pl"})
 
 
 def validate_polars_steps(steps: object) -> list[dict[str, Any]]:
-    """Validate the step schema without input-name checks and return the list."""
-    return _Renderer(steps, None).steps
+    """Validate the step schema without input-name checks and return the list.
+
+    Field validation does not depend on the start mode, which only governs
+    where a ``source`` step may appear at render time.
+    """
+    return _Renderer(steps, None, "input").steps
 
 
 def render_polars_steps(
     steps: object,
     input_names: Sequence[str] | None = None,
+    *,
+    start: StepStart,
 ) -> RenderedSteps:
     """Render ``steps`` into the Polars function body.
 
     With ``input_names`` given, every input reference must be one of them;
-    without it references are rendered as written.
+    without it references are rendered as written. ``start`` says where ``df``
+    comes from: ``input`` requires a leading ``source`` step (and refuses an
+    empty list); ``frame`` refuses a ``source`` step anywhere and renders an
+    empty list to empty code.
     """
-    return _Renderer(steps, input_names).render()
+    if start not in STEP_STARTS:
+        raise ValueError(f"Unknown step start {start!r}; expected one of {STEP_STARTS!r}.")
+    return _Renderer(steps, input_names, start).render()
 
 
 def referenced_step_inputs(steps: object) -> list[str]:
@@ -362,10 +457,11 @@ def _needs_parentheses(child_op: object, parent: tuple[str, str] | None) -> bool
 
 
 class _Renderer:
-    def __init__(self, steps: object, input_names: Sequence[str] | None) -> None:
+    def __init__(self, steps: object, input_names: Sequence[str] | None, start: StepStart) -> None:
         if not isinstance(steps, list):
             raise PolarsStepError("Steps must be a list.")
         self.input_names = None if input_names is None else frozenset(input_names)
+        self.start = start
         self.variables: set[str] = set()
         self.index = 0
         self.depth = 0
@@ -400,6 +496,9 @@ class _Renderer:
 
     def render(self) -> RenderedSteps:
         if not self.steps:
+            if self.start == "frame":
+                # The surface already bound df; no steps is simply no code.
+                return RenderedSteps(code="", step_lines=())
             raise PolarsStepError("Choose the input to start from.")
         ids = [s["id"] for s in self.steps]
         duplicates = sorted(step_id for step_id, count in Counter(ids).items() if count > 1)
@@ -413,9 +512,12 @@ class _Renderer:
         for index, step in enumerate(self.steps):
             self.index = index
             kind = step["kind"]
-            if index == 0 and kind != "source":
+            if self.start == "frame":
+                if kind == "source":
+                    raise self.fail("This node starts from df; remove the start step.")
+            elif index == 0 and kind != "source":
                 raise self.fail("The first step must choose the input to start from.")
-            if index > 0 and kind == "source":
+            elif index > 0 and kind == "source":
                 raise self.fail("Only the first step can choose the input to start from.")
             start = len(lines) + 1
             lines.extend(getattr(self, f"_render_{kind}")(step).split("\n"))
@@ -424,11 +526,22 @@ class _Renderer:
         if any(step["kind"] == "free_code" for step in self.steps):
             # Also check the combined function scope: e.g. `global df` after
             # the source assignment, or imports valid only at module scope.
+            # Frame surfaces already bind df before authored code, so validation
+            # adds a synthetic binding solely to model that scope; rendered code
+            # and step ranges do not include it.
+            is_frame = self.start == "frame"
+            wrapper_prefix = "def _steps():\n    df = None\n" if is_frame else "def _steps():\n"
+            wrapper_line_offset = 2 if is_frame else 1
             body = "\n".join(f"    {line}" for line in lines)
             try:
-                compile(f"def _steps():\n{body}\n", "<polars-steps>", "exec", dont_inherit=True)
+                compile(
+                    f"{wrapper_prefix}{body}\n",
+                    "<polars-steps>",
+                    "exec",
+                    dont_inherit=True,
+                )
             except SyntaxError as exc:
-                line = (exc.lineno or 2) - 1
+                line = (exc.lineno or (wrapper_line_offset + 1)) - wrapper_line_offset
                 self.index = next(
                     i for i, (start, end) in enumerate(step_lines) if start <= line <= end
                 )

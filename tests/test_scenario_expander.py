@@ -30,7 +30,7 @@ class TestBuildConfig:
             "column_name": "scenario_value",
             "min_value": 0.8,
             "max_value": 1.2,
-            "steps": 11,
+            "stepCount": 11,
             "step_column": "step",
         }
         config = _build_node_config(
@@ -43,7 +43,7 @@ class TestBuildConfig:
         assert config["column_name"] == "scenario_value"
         assert config["min_value"] == 0.8
         assert config["max_value"] == 1.2
-        assert config["steps"] == 11
+        assert config["stepCount"] == 11
         assert config["step_column"] == "step"
 
 
@@ -54,7 +54,7 @@ class TestCodegen:
             "column_name": "scenario_value",
             "min_value": 0.8,
             "max_value": 1.2,
-            "steps": 21,
+            "stepCount": 21,
             "step_column": "scenario_index",
         }
         node = _make_node(config, label="expand_scenarios")
@@ -72,7 +72,7 @@ class TestExecutor:
             "column_name": "scenario_value",
             "min_value": 0.5,
             "max_value": 1.5,
-            "steps": 5,
+            "stepCount": 5,
             "step_column": "scenario_index",
         }
         node = _make_node(config)
@@ -90,7 +90,7 @@ class TestExecutor:
             "column_name": "price",
             "min_value": 1.0,
             "max_value": 2.0,
-            "steps": 3,
+            "stepCount": 3,
             "step_column": "idx",
         }
         node = _make_node(config)
@@ -109,7 +109,7 @@ class TestExecutor:
             "column_name": "price",
             "min_value": 0.1,
             "max_value": 0.3,
-            "steps": 3,
+            "stepCount": 3,
         }
         _, fn, _ = _build_node_fn(_make_node(config), source_names=["upstream"])
 
@@ -120,9 +120,20 @@ class TestExecutor:
         assert result.to_numpy().dtype == np.float32
         np.testing.assert_array_equal(result.to_numpy(), expected)
 
-    def test_defaults(self):
-        """Empty config uses sensible defaults (no value column without column_name)."""
-        node = _make_node({})
+    def test_missing_step_count_is_rejected(self):
+        """The grid size is required: no absent-key default, at build time or at call time."""
+        with pytest.raises(ValueError, match="requires stepCount"):
+            _build_node_fn(_make_node({}), source_names=["upstream"])
+        from haute._node_apply import expand_scenarios_from_config
+
+        with pytest.raises(ValueError, match="requires stepCount"):
+            expand_scenarios_from_config(pl.DataFrame({"a": [1]}).lazy(), {})
+        with pytest.raises(ValueError, match="whole number"):
+            expand_scenarios_from_config(pl.DataFrame({"a": [1]}).lazy(), {"stepCount": 2.5})
+
+    def test_explicit_default_step_count_expands_the_grid(self):
+        """A new node's explicit default of 21 (no value column without column_name)."""
+        node = _make_node({"stepCount": 21})
         _, fn, _ = _build_node_fn(node, source_names=["upstream"])
         input_df = pl.DataFrame({"a": [1]}).lazy()
         result = fn(input_df).collect()

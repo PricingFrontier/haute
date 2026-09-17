@@ -215,7 +215,7 @@ def test_chunk_plan_accepts_v1_chunk_safe_chain():
                 _node(
                     "scenario",
                     "scenarioExpander",
-                    {"column": "premium", "min": 0.9, "max": 1.1, "steps": 3},
+                    {"column": "premium", "min": 0.9, "max": 1.1, "stepCount": 3},
                 ),
                 _node("out", "output", make_output_config(["quote_id", "premium"])),
             ],
@@ -322,7 +322,7 @@ def test_byte_budgeted_chunk_plan_accounts_for_scenario_row_expansion(
                         "column_name": "scenario_value",
                         "min_value": 0.9,
                         "max_value": 1.1,
-                        "steps": 4,
+                        "stepCount": 4,
                         "step_column": "scenario_index",
                     },
                 ),
@@ -378,7 +378,7 @@ def test_byte_budgeted_chunk_plan_rejects_one_source_row_expanding_past_budget(
                         "column_name": "scenario_value",
                         "min_value": 0.9,
                         "max_value": 1.1,
-                        "steps": 100,
+                        "stepCount": 100,
                         "step_column": "scenario_index",
                     },
                 ),
@@ -1304,7 +1304,7 @@ def test_chunk_plan_rejects_row_nonlocal_editor_code(node_type: str, tmp_path: P
                     "column_name": "factor",
                     "min_value": 1,
                     "max_value": 2,
-                    "steps": 2,
+                    "stepCount": 2,
                     "code": "df = df.sort('premium')",
                 },
             ),
@@ -1320,3 +1320,28 @@ def test_chunk_plan_rejects_row_nonlocal_editor_code(node_type: str, tmp_path: P
         chunk_plan(ChunkPlanRequest(graph=graph, target_node_id="out", chunk_size=2))
     assert raised.value.context["node_id"] == expected_node
     assert raised.value.context["reason"] == "unsupported_frame_method"
+
+
+def test_chunk_plan_rejects_scenario_expander_with_invalid_step_count(tmp_path: Path) -> None:
+    source_path = _write_projected_source(tmp_path)
+    nodes = [
+        _node("source", "dataInput", {"path": str(source_path)}),
+        _node(
+            "scenario",
+            "scenarioExpander",
+            {
+                "column_name": "factor",
+                "min_value": 1,
+                "max_value": 2,
+                "stepCount": -1,
+            },
+        ),
+        _node("out", "output", make_output_config(["premium"])),
+    ]
+    edges = [
+        make_edge("source", "scenario").model_dump(),
+        make_edge("scenario", "out").model_dump(),
+    ]
+    graph = make_graph({"nodes": nodes, "edges": edges})
+    with pytest.raises(ChunkPlanUnsupportedError, match="requires a valid stepCount"):
+        chunk_plan(ChunkPlanRequest(graph=graph, target_node_id="out", chunk_size=2))

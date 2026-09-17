@@ -1,3 +1,4 @@
+import { authoredPolarsConfig } from "../../utils/polarsStepInputs"
 import type { SimpleEdge, SimpleNode } from "../editors"
 
 type ExploreCacheIdentityInput = {
@@ -14,7 +15,11 @@ function isExploreNode(node: SimpleNode): boolean {
 
 function dataAffectingConfig(node: SimpleNode): Record<string, unknown> {
   const config = node.data.config ?? {}
-  if (!isExploreNode(node)) return config
+  // Steps are authored; their generated code and validation message are caches
+  // the render endpoint refreshes, so on this node or any stepped ancestor they
+  // must not change what the report was computed from.
+  const authored = authoredPolarsConfig(config)
+  if (!isExploreNode(node)) return authored
 
   const {
     overview: _overview,
@@ -22,7 +27,7 @@ function dataAffectingConfig(node: SimpleNode): Record<string, unknown> {
     pivots: _pivots,
     charts: _charts,
     ...dataConfig
-  } = config
+  } = authored
   void _overview
   void _pivotFormulas
   void _pivots

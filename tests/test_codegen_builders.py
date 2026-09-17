@@ -355,7 +355,7 @@ class TestGenScenarioExpander:
                 "column_name": "scenario_value",
                 "min_value": 0.8,
                 "max_value": 1.2,
-                "steps": 21,
+                "stepCount": 21,
                 "step_column": "scenario_index",
             },
             label="Scenarios",
@@ -376,7 +376,7 @@ class TestGenScenarioExpander:
                 "column_name": "sv",
                 "min_value": 0.5,
                 "max_value": 1.5,
-                "steps": 11,
+                "stepCount": 11,
             },
             label="Expand",
         )
@@ -394,7 +394,7 @@ class TestGenScenarioExpander:
     def test_no_sources_uses_df_param(self) -> None:
         node = _make_codegen_node(
             "scenarioExpander",
-            {"column_name": "sv", "steps": 5},
+            {"column_name": "sv", "stepCount": 5},
             label="NoSrcExpand",
         )
         code = _node_to_code(node, source_names=[])
@@ -409,7 +409,7 @@ class TestGenScenarioExpander:
             {
                 "quote_id": "",
                 "column_name": None,
-                "steps": 21,
+                "stepCount": 21,
             },
             label="PartialExpand",
         )
@@ -426,7 +426,7 @@ class TestGenScenarioExpander:
             "scenarioExpander",
             {
                 "column_name": "sv",
-                "steps": 5,
+                "stepCount": 5,
                 "code": 'df = df.filter(pl.col("sv") > 0.9)',
             },
             label="FilteredExpand",
@@ -442,7 +442,7 @@ class TestGenScenarioExpander:
             "scenarioExpander",
             {
                 "column_name": "sv",
-                "steps": 3,
+                "stepCount": 3,
                 "code": 'df = df.with_columns(pl.col("sv").alias("factor"))',
             },
             label="AssignExpand",
@@ -456,7 +456,7 @@ class TestGenScenarioExpander:
         """Empty code string produces passthrough (no sentinel)."""
         node = _make_codegen_node(
             "scenarioExpander",
-            {"column_name": "sv", "steps": 5, "code": ""},
+            {"column_name": "sv", "stepCount": 5, "code": ""},
             label="PassExpand",
         )
         code = _node_to_code(node, source_names=["data"])
@@ -840,7 +840,7 @@ class TestGraphToCodeWithBuilders:
                                 "column_name": "sv",
                                 "min_value": 0.8,
                                 "max_value": 1.2,
-                                "steps": 5,
+                                "stepCount": 5,
                             },
                         },
                     },
@@ -1043,7 +1043,7 @@ class TestGraphToCodeWithBuilders:
                         "data": {
                             "label": "Expand",
                             "nodeType": "scenarioExpander",
-                            "config": {"column_name": "sv", "steps": 5},
+                            "config": {"column_name": "sv", "stepCount": 5},
                         },
                     },
                     {

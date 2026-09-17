@@ -6,9 +6,10 @@ import type { NodeTypeValue } from "../utils/nodeTypes"
 import { authoritativeSourceHandles, edgeInputName } from "../utils/apiInputPorts"
 import {
   ColumnsTab,
-  PolarsCodePanel,
+  SteppedCodePane,
   LazyEditorBoundary,
 } from "./LazyNodeEditors"
+import { stepInputNames, steppedSurfaceFor } from "../utils/polarsStepInputs"
 import type { InputSource, SimpleNode, SimpleEdge, OnUpdateConfig, OnUpdateConfigResult, OnReplaceConfig } from "./editors"
 import {
   effectiveNodeType,
@@ -1237,10 +1238,13 @@ type NodeEditorBodyProps = {
   inputSources: InputSource[]
   onDeleteEdge?: (edgeId: string) => void
   errorLine?: number | null
+  /** The last run's error message for this node, if it failed. */
+  runError?: string | null
   upstreamColumns: { name: string; dtype: string }[]
   availableColumns: { name: string; dtype: string }[]
   currentColumns: { name: string; dtype: string }[]
   onUpdateConfig: OnUpdateConfig
+  onReplaceConfig: OnReplaceConfig
   configEditor: React.ReactNode
 }
 
@@ -1255,23 +1259,36 @@ function NodeEditorBody({
   inputSources,
   onDeleteEdge,
   errorLine,
+  runError,
   upstreamColumns,
   availableColumns,
   currentColumns,
   onUpdateConfig,
+  onReplaceConfig,
   configEditor,
 }: NodeEditorBodyProps) {
   let editor = configEditor
   if (activeTab === "polars" && showPolarsTab) {
+    const chips = nodeType === NODE_TYPES.DATA_INPUT ? [] : inputSources
+    // Every Polars-tab surface authors steps: the step builder while
+    // `config.steps` is a list, rendering against the surface's eligible
+    // input names (never the chips); `stepInputNames` refuses a type outside
+    // the surface table rather than falling back to a plain code box.
+    const surface = steppedSurfaceFor(nodeType)
+    if (surface === undefined) throw new Error(`Polars tab on ${nodeType}, which does not author steps.`)
     editor = (
-      <PolarsCodePanel
+      <SteppedCodePane
         config={config}
         onUpdate={onUpdateConfig}
-        inputSources={nodeType === NODE_TYPES.DATA_INPUT ? [] : inputSources}
+        onReplaceConfig={onReplaceConfig}
+        inputSources={chips}
+        inputNames={stepInputNames(nodeType, inputSources.map((source) => source.name))}
         onDeleteInput={onDeleteEdge}
         errorLine={errorLine}
+        runError={runError}
         upstreamColumns={upstreamColumns}
-        hint={POLARS_TAB_HINTS[nodeType] ?? null}
+        start={surface.start}
+        codeHint={POLARS_TAB_HINTS[nodeType] ?? null}
       />
     )
   } else if (activeTab === "columns" && showColumnsTab) {
@@ -1659,10 +1676,12 @@ function NodePanelContent({
         inputSources={inputSources}
         onDeleteEdge={onDeleteEdge}
         errorLine={errorLine}
+        runError={runError}
         upstreamColumns={upstreamColumns}
         availableColumns={availableColumns}
         currentColumns={currentColumns}
         onUpdateConfig={handleConfigUpdate}
+        onReplaceConfig={handleConfigReplace}
         configEditor={configEditor}
       />
     </PanelShell>

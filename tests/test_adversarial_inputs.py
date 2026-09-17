@@ -542,16 +542,16 @@ class TestIntegerOverflow:
             )
 
     def test_scenario_expander_steps_overflow(self):
-        """steps=2^32 in scenarioExpander config should parse fine in Pydantic."""
+        """stepCount=2^32 in scenarioExpander config should parse fine in Pydantic."""
         node = GraphNode(
             id="se",
             data=NodeData(
                 label="SE",
                 nodeType="scenarioExpander",
-                config={"steps": 2**32, "min_value": 0, "max_value": 1},
+                config={"stepCount": 2**32, "min_value": 0, "max_value": 1},
             ),
         )
-        assert node.data.config["steps"] == 2**32
+        assert node.data.config["stepCount"] == 2**32
 
 
 # ═══════════════════════════════════════════════════════════════════════

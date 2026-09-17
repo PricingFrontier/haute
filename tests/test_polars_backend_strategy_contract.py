@@ -1827,7 +1827,7 @@ def _source_and_child_graph(path: Path, child: dict[str, object]):
                 "config": {
                     "column_name": "m",
                     "step_column": "scenario_index",
-                    "steps": 1,
+                    "stepCount": 1,
                     "code": (
                         "df = df.drop('a', 'm', 'scenario_index')"
                         ".with_columns(x=pl.int_range(pl.len()))"

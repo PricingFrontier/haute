@@ -100,3 +100,24 @@ def test_expression_depth_cap_agrees() -> None:
     match = re.search(r"^export const MAX_EXPR_DEPTH = (\d+)$", SOURCE, re.M)
     assert match
     assert int(match.group(1)) == steps.MAX_EXPR_DEPTH
+
+
+STEP_INPUTS = CATALOGUE.parents[3] / "utils" / "polarsStepInputs.ts"
+
+
+def test_stepped_surface_table_agrees() -> None:
+    """The browser mirror of ``STEPPED_NODE_TYPES`` names the same types, modes and eligibility."""
+    source = STEP_INPUTS.read_text(encoding="utf-8")
+    match = re.search(r"^export const STEPPED_NODE_TYPES[^=]*= \{\n(.*?)^\}", source, re.S | re.M)
+    assert match, "polarsStepInputs.ts declares no STEPPED_NODE_TYPES"
+    editor = {
+        node_type: (start, inputs)
+        for node_type, start, inputs in re.findall(
+            r'^\s+(\w+): \{ start: "(\w+)", inputs: "(\w+)" \},?$', match.group(1), re.M
+        )
+    }
+    renderer = {
+        node_type.value: (surface.start, surface.inputs)
+        for node_type, surface in steps.STEPPED_NODE_TYPES.items()
+    }
+    assert editor == renderer

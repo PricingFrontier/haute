@@ -1139,14 +1139,11 @@ def _resolve_row_cardinality_from_index(
                 target_node_id,
                 "invalid_input_cardinality",
             )
-        from haute._node_apply import _DEFAULT_SCENARIO_STEPS
+        from haute._node_apply import scenario_step_count
 
-        raw_steps = node.data.config.get("steps")
         try:
-            steps = int(raw_steps) if raw_steps is not None else _DEFAULT_SCENARIO_STEPS
+            steps = scenario_step_count(node.data.config)
         except (TypeError, ValueError, OverflowError):
-            return _ResolvedRowCardinality.unavailable(target_node_id, "invalid_scenario_steps")
-        if steps < 1:
             return _ResolvedRowCardinality.unavailable(target_node_id, "invalid_scenario_steps")
         parent = parents[0]
         assert parent.output_rows is not None and parent.peak_rows is not None

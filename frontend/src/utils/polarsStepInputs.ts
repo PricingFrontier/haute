@@ -10,6 +10,60 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+/**
+ * Where `df` comes from when a step list starts: `input` means the first step
+ * chooses an input (a Transform); `frame` means the surface hands the steps a
+ * frame already bound to `df` (a Data Input's opened snapshot).
+ */
+export type StepStart = "input" | "frame"
+
+/** How one node type authors steps; the browser mirror of `haute._polars_steps.STEPPED_NODE_TYPES`. */
+export type SteppedSurface = {
+  start: StepStart
+  /** What join/concat steps may reference: the incoming edge names, or nothing. */
+  inputs: "edges" | "none"
+}
+
+// Held equal to the backend table by tests/test_polars_steps_catalogue.py.
+export const STEPPED_NODE_TYPES: Readonly<Record<string, SteppedSurface>> = {
+  polars: { start: "input", inputs: "edges" },
+  dataInput: { start: "frame", inputs: "none" },
+  externalFile: { start: "frame", inputs: "edges" },
+  ratingStep: { start: "frame", inputs: "none" },
+  modelScore: { start: "frame", inputs: "none" },
+  scenarioExpander: { start: "frame", inputs: "none" },
+  explore: { start: "frame", inputs: "none" },
+}
+
+/** The stepped surface of a node type, or undefined for a type that does not author steps. */
+export function steppedSurfaceFor(nodeType: string): SteppedSurface | undefined {
+  return Object.hasOwn(STEPPED_NODE_TYPES, nodeType) ? STEPPED_NODE_TYPES[nodeType] : undefined
+}
+
+/**
+ * Whether a stepped node type's steps may name its incoming edges. Only such
+ * a surface needs its step references rewritten when an input is renamed.
+ */
+export function steppedSurfaceAllowsInputReferences(nodeType: string): boolean {
+  return steppedSurfaceFor(nodeType)?.inputs === "edges"
+}
+
+/**
+ * The input names a stepped node's steps may reference: the edge names for an
+ * `edges` surface, none for a surface whose code sees only `df`. Every render
+ * request takes its names from here, never from the input chips on display.
+ */
+export function stepInputNames(nodeType: string, edgeNames: readonly string[]): string[] {
+  const surface = steppedSurfaceFor(nodeType)
+  if (surface === undefined) throw new Error(`Node type ${JSON.stringify(nodeType)} does not author steps.`)
+  return surface.inputs === "edges" ? [...edgeNames] : []
+}
+
+/** Whether `config` is authored as steps on a node type that supports them. */
+export function isSteppedConfig(nodeType: string, config: unknown): boolean {
+  return steppedSurfaceFor(nodeType) !== undefined && isRecord(config) && Array.isArray(config.steps)
+}
+
 /** Authored transform settings, excluding the caches materialised from steps. */
 export function authoredPolarsConfig(config: Record<string, unknown>): Record<string, unknown> {
   if (!Array.isArray(config.steps)) return config

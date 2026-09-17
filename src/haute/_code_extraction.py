@@ -435,6 +435,16 @@ INCOMPLETE_TRANSFORM_MESSAGE = (
 INCOMPLETE_TRANSFORM_BODY = (
     f"    raise NotImplementedError(\n        {INCOMPLETE_TRANSFORM_MESSAGE!r},\n    )\n"
 )
+# The same placeholder for a stepped surface whose steps cannot be rendered
+# (a Data Input's post-load steps). Also constant, for the same reason; the
+# recogniser accepts either message.
+INCOMPLETE_STEPS_MESSAGE = (
+    "This node's steps are incomplete. Complete or remove them before running."
+)
+INCOMPLETE_STEPS_BODY = (
+    f"    raise NotImplementedError(\n        {INCOMPLETE_STEPS_MESSAGE!r},\n    )\n"
+)
+_PLACEHOLDER_MESSAGES = frozenset({INCOMPLETE_TRANSFORM_MESSAGE, INCOMPLETE_STEPS_MESSAGE})
 POLARS_OUTPUT_DECLARATION = "    df: pl.LazyFrame\n"
 
 
@@ -468,7 +478,7 @@ def _is_incomplete_transform_placeholder(source: str) -> bool:
     if len(call.args) != 1:
         return False
     argument = call.args[0]
-    return isinstance(argument, ast.Constant) and argument.value == INCOMPLETE_TRANSFORM_MESSAGE
+    return isinstance(argument, ast.Constant) and argument.value in _PLACEHOLDER_MESSAGES
 
 
 def _is_polars_output_declaration(source: str) -> bool:
@@ -513,20 +523,25 @@ def _match_polars(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherRe
         if _is_polars_output_declaration(statement):
             start_idx = end_idx
 
-    if start_idx < len(cleaned):
-        end_idx = _statement_end_index(cleaned, start_idx)
-        statement = _dedent("\n".join(cleaned[start_idx:end_idx])).strip()
-        if _is_incomplete_transform_placeholder(statement):
-            # ``generated_scaffold`` so anything the user added AFTER the
-            # placeholder (by hand-editing the file) keeps its references to
-            # the input parameters.
-            return MatcherResult(
-                start_idx=end_idx,
-                return_vars=("df",),
-                generated_scaffold=True,
-            )
-
+    # The incomplete placeholder that may follow is recognised by the shared
+    # engine (``_skip_incomplete_placeholder``) for every matcher kind.
     return MatcherResult(start_idx=start_idx, return_vars=("df",))
+
+
+def _skip_incomplete_placeholder(cleaned: list[str], start_idx: int) -> int | None:
+    """Return the index after a generated placeholder statement at *start_idx*, or None.
+
+    Every generated body puts the placeholder exactly where the user code
+    would go, immediately after its scaffold, so it is checked once here for
+    every matcher kind rather than in each matcher.
+    """
+    while start_idx < len(cleaned) and not cleaned[start_idx].strip():
+        start_idx += 1
+    if start_idx >= len(cleaned):
+        return None
+    end_idx = _statement_end_index(cleaned, start_idx)
+    statement = _dedent("\n".join(cleaned[start_idx:end_idx])).strip()
+    return end_idx if _is_incomplete_transform_placeholder(statement) else None
 
 
 def _match_explore(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherResult:
@@ -1020,7 +1035,16 @@ def extract_user_code(
         return ""
 
     result = matcher(cleaned, params)
-    rest = cleaned[result.start_idx :]
+    start_idx = result.start_idx
+    generated_scaffold = result.generated_scaffold
+    after_placeholder = _skip_incomplete_placeholder(cleaned, start_idx)
+    if after_placeholder is not None:
+        # ``generated_scaffold`` so anything the user added AFTER the
+        # placeholder (by hand-editing the file) keeps its references to
+        # the input parameters.
+        start_idx = after_placeholder
+        generated_scaffold = True
+    rest = cleaned[start_idx:]
     if not rest:
         return ""
 
@@ -1030,12 +1054,49 @@ def extract_user_code(
         return ""
 
     code = "\n".join(code_lines).strip()
-    if result.generated_scaffold:
+    if generated_scaffold:
         # The generated ``df = <helper>(...)`` scaffold already produced ``df``;
         # remaining lines are pure user code referencing it, so finalise
         # without treating the first param as a strippable alias.
         return _finalise_polars(code, ())
     return finaliser(code, params)
+
+
+def normalise_user_code(
+    code: str,
+    *,
+    kind: str,
+    param_names: tuple[str, ...] | list[str] | None = None,
+) -> str:
+    """Pass *code* through the post-processing a generated body of *kind* receives.
+
+    A rendering is not always a fixpoint of extraction (a finaliser may drop
+    provably redundant brackets), so a caller comparing a rendering with code
+    extracted from a body normalises the rendering the same way first. Only
+    the finaliser applies: the matcher strips generated scaffold a rendering
+    never contains, the docstring stripper removes the function docstring
+    (not a rendering's own leading string statement), and the trailing
+    ``return df`` is codegen's, so those stages are skipped here. A kind
+    whose matcher reports generated scaffold finalises through the polars
+    rules, exactly as :func:`extract_user_code` does for its real body.
+    """
+    if kind not in BOILERPLATE_MATCHERS:
+        raise KeyError(
+            f"Unknown boilerplate matcher kind: {kind!r}. "
+            f"Available kinds: {sorted(BOILERPLATE_MATCHERS)!r}"
+        )
+    stripped = code.strip()
+    if not stripped:
+        return ""
+    if kind in _SCAFFOLDED_KINDS:
+        return _finalise_polars(stripped, ())
+    return _FINALISERS[kind](stripped, tuple(param_names or ()))
+
+
+#: Kinds whose matcher reports ``generated_scaffold`` for every generated body,
+#: so their extraction finalises through the polars rules with no parameter
+#: aliases (see ``extract_user_code``).
+_SCAFFOLDED_KINDS = frozenset({"explore", "scenario_expander", "rating_step"})
 
 
 # ---------------------------------------------------------------------------

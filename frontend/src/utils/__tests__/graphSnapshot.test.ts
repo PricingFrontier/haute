@@ -23,11 +23,15 @@ import {
 } from "../graphSnapshot"
 import useGraphStore from "../../stores/useGraphStore"
 
-describe("stepped transform derived code", () => {
-  it.each([false, true])("excludes generated fields only from dirty fingerprints (inside definition: %s)", (inDefinition) => {
+describe("stepped node derived code", () => {
+  it.each([
+    [false, "polars"],
+    [true, "polars"],
+    [false, "dataInput"],
+  ])("excludes generated fields only from dirty fingerprints (inside definition: %s, %s)", (inDefinition, nodeType) => {
     const node = {
       id: "transform", position: { x: 0, y: 0 },
-      data: { nodeType: "polars", config: { steps: [{ id: "s", kind: "source", input: "quotes" }], code: "old", _steps_error: "old error", _authored: "keep" } },
+      data: { nodeType, config: { steps: [{ id: "s", kind: "source", input: "quotes" }], code: "old", _steps_error: "old error", _authored: "keep" } },
     } as Node
     const graph = {
       nodes: inDefinition ? [] : [node], edges: [], preamble: "",

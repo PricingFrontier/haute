@@ -1748,7 +1748,7 @@ class TestExcludedTypeRoundTrips:
                         nodeType=NodeType.SCENARIO_EXPANDER,
                         config={
                             "column_name": "discount",
-                            "steps": 5,
+                            "stepCount": 5,
                         },
                     ),
                 ),
@@ -1771,7 +1771,7 @@ class TestExcludedTypeRoundTrips:
                         nodeType=NodeType.SCENARIO_EXPANDER,
                         config={
                             "column_name": "discount",
-                            "steps": 5,
+                            "stepCount": 5,
                             "code": 'df = df.filter(pl.col("discount") >= 1.0)',
                         },
                     ),

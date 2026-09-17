@@ -10,7 +10,11 @@ from haute._graph_utils import (
     _edge_id,
     edge_input_name,
 )
-from haute._polars_steps import PolarsStepError, rename_step_inputs
+from haute._polars_steps import (
+    PolarsStepError,
+    rename_step_inputs,
+    stepped_surface_allows_input_references,
+)
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -442,11 +446,11 @@ def rewrite_boundary_input_names(
 
         steps = config.get("steps")
         if (
-            node.data.nodeType == NodeType.POLARS
+            stepped_surface_allows_input_references(node.data.nodeType)
             and not config.get("instanceOf")
             and isinstance(steps, list)
         ):
-            # A stepped transform addresses inputs by their edge names, so the
+            # A stepped edges surface addresses inputs by their edge names, so the
             # boundary rename rewrites the references inside the steps rather
             # than recording an ``inputMapping`` indirection.
             try:

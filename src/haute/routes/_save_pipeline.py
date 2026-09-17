@@ -1417,10 +1417,19 @@ class SavePipelineService:
         raises if the pipeline is actually run, and this warning points at the
         node so the user is not surprised by that later.
         """
-        from haute._builders import resolve_instance_node
+        from haute._builders import resolve_instance_node, stepped_code_problem
         from haute._graph_utils import edge_input_name
-        from haute._polars_steps import PolarsStepError, render_polars_steps
+        from haute._polars_steps import is_stepped_config, step_input_names
 
+        stepped_labels = {
+            NodeType.POLARS: "Transform",
+            NodeType.DATA_INPUT: "Data Input",
+            NodeType.EXTERNAL_FILE: "External File",
+            NodeType.RATING_STEP: "Rating Step",
+            NodeType.MODEL_SCORE: "Model Score",
+            NodeType.SCENARIO_EXPANDER: "Scenario Expander",
+            NodeType.EXPLORE: "Explore",
+        }
         scoped_graphs = [graph, *self._iter_embedded_submodel_graphs(graph)]
         for scoped_graph in scoped_graphs:
             node_map = {node.id: node for node in scoped_graph.nodes}
@@ -1432,30 +1441,28 @@ class SavePipelineService:
 
             for node in scoped_graph.nodes:
                 resolved_node = resolve_instance_node(node, node_map)
-                if resolved_node.data.nodeType != NodeType.POLARS:
-                    continue
-                steps = resolved_node.data.config.get("steps")
-                if isinstance(steps, list) and not resolved_node.data.config.get("instanceOf"):
-                    problem = resolved_node.data.config.get("_steps_error")
-                    if problem is None:
-                        names = [
-                            edge_input_name(edge, node_map[edge.source], submodels=graph.submodels)
-                            for edge in incoming.get(node.id, [])
-                            if edge.source in node_map
-                        ]
-                        try:
-                            render_polars_steps(steps, names)
-                        except PolarsStepError as exc:
-                            problem = str(exc)
+                node_type = resolved_node.data.nodeType
+                config = resolved_node.data.config
+                if is_stepped_config(node_type, config) and not config.get("instanceOf"):
+                    edge_names = [
+                        edge_input_name(edge, node_map[edge.source], submodels=graph.submodels)
+                        for edge in incoming.get(node.id, [])
+                        if edge.source in node_map
+                    ]
+                    problem = stepped_code_problem(
+                        config, node_type, step_input_names(node_type, edge_names)
+                    )
                     if problem is not None:
                         label = node.data.label or node.id
                         warnings.append(
-                            f"Transform node {label!r} has an incomplete step list "
-                            f"({problem}). It will save, but running the pipeline will "
-                            "fail until the step is completed."
+                            f"{stepped_labels[node_type]} node {label!r} has an incomplete "
+                            f"step list ({problem}). It will save, but running the pipeline "
+                            "will fail until the step is completed."
                         )
                     continue
-                if str(resolved_node.data.config.get("code") or "").strip():
+                if node_type != NodeType.POLARS:
+                    continue
+                if str(config.get("code") or "").strip():
                     continue
                 count = upstream_counts.get(node.id, 0)
                 label = node.data.label or node.id

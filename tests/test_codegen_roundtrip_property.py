@@ -355,7 +355,7 @@ def _capstone_root_graph(
                     "column_name": "scenario (value)",
                     "min_value": 0.0,
                     "max_value": 1.0,
-                    "steps": 3,
+                    "stepCount": 3,
                     "step_column": "step_index",
                     "code": _simple_user_code(user_text),
                 }

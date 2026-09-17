@@ -13,11 +13,11 @@ This node accepts a single input.
 | `column_name` | Name of the new column containing the generated values |
 | `min_value` | **Required.** Start of the value range |
 | `max_value` | **Required.** End of the value range |
-| `steps` | **Required.** Number of values to generate across the range |
+| `stepCount` | **Required.** Number of values to generate across the range |
 | `step_column` | **Required.** Name of the 0-based step index column |
 | `code` | Polars code applied after expansion |
 
-**Before and after** (with `min_value: 200`, `max_value: 400`, `steps: 3`):
+**Before and after** (with `min_value: 200`, `max_value: 400`, `stepCount: 3`):
 
 ```
 BEFORE                        AFTER

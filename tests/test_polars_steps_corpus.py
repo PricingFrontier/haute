@@ -218,6 +218,7 @@ def test_the_listed_gaps_are_still_outside_the_vocabulary() -> None:
                 {"id": "c", "kind": "cast", "casts": [{"column": "region", "dtype": "Enum"}]},
             ],
             ["quotes"],
+            start="input",
         )
     assert not {"cut", "band", "qcut"} & set(FUNCTIONS)
     assert not {"band", "banding", "cut"} & set(STEP_KINDS)
@@ -237,9 +238,9 @@ def test_steps_reproduce_hand_written_polars(snippet_id: str, hard: bool) -> Non
     # under their names, as upstream nodes are in the graph.
     bound = synthetic_inputs(hard=hard)
     for aux_name, aux_steps in (entry.get("aux") or {}).items():
-        aux_code = render_polars_steps(aux_steps, list(bound)).code
+        aux_code = render_polars_steps(aux_steps, list(bound), start="input").code
         bound[aux_name] = run(aux_code, dict(bound)).lazy()
-    rendered = render_polars_steps(entry["steps"], list(bound))
+    rendered = render_polars_steps(entry["steps"], list(bound), start="input")
     try:
         actual = run(rendered.code, bound)
     except Exception as exc:  # noqa: BLE001 - compared against the snippet's own failure

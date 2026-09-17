@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, get_type_hints
+from typing import Any, Literal, get_type_hints
 
 import pytest
 
@@ -335,7 +335,7 @@ class TestBuildNodeConfigProducesValidKeys:
             ),
             pytest.param(
                 NodeType.SCENARIO_EXPANDER,
-                {"scenario_expander": True, "quote_id": "qid", "steps": 10},
+                {"scenario_expander": True, "quote_id": "qid", "stepCount": 10},
                 "",
                 ["df"],
                 id="scenario_expander",
@@ -565,6 +565,7 @@ class TestSharedColumnSettingsUniversal:
         """Explore can store the Polars snippet used to prepare analysis data."""
         assert get_type_hints(ExploreConfig) == {
             "code": str,
+            "steps": list[dict[str, Any]],
             "overview": ExploreOverviewConfig,
             "pivot_formulas": list[ExplorePivotFormula],
             "pivots": list[ExplorePivotPersistedConfig],

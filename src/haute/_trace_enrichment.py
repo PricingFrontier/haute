@@ -746,7 +746,8 @@ def enrich_scenario_expansion(
             "parameters": {
                 "min_value": config.get("min_value"),
                 "max_value": config.get("max_value"),
-                "steps": config.get("steps"),
+                # The trace parameter keeps its name; the config key is the grid size.
+                "steps": config.get("stepCount"),
             },
         }
     except Exception as exc:

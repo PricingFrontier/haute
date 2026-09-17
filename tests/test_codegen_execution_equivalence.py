@@ -301,7 +301,7 @@ def test_scenario_expander_run_matches_executor_batch(tmp_path):
             "column_name": "scenario_value",
             "min_value": 0.8,
             "max_value": 1.2,
-            "steps": 5,
+            "stepCount": 5,
             "step_column": "scenario_index",
         },
     )
@@ -323,7 +323,7 @@ def test_scenario_expander_saved_file_is_not_a_passthrough(tmp_path):
         "exp",
         "expand",
         NodeType.SCENARIO_EXPANDER,
-        {"steps": 7, "step_column": "scenario_index"},
+        {"stepCount": 7, "step_column": "scenario_index"},
     )
     graph = PipelineGraph(nodes=[src, expander], edges=[_edge("c", "exp")])
     module = _write_and_import(graph, tmp_path)
