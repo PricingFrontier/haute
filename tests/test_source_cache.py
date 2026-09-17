@@ -23,9 +23,11 @@ from haute._execution_context import ExecutionProfile
 from haute._source_cache import (
     SourceCacheBuildContext,
     SourceCacheCorruptError,
+    SourceCacheGenerationMissingError,
     SourceCacheIdentity,
     SourceCacheQuotaExceededError,
     SourceCacheStore,
+    _validate_generation_files,
 )
 
 
@@ -962,3 +964,164 @@ def test_reconcile_reports_a_removal_that_left_its_directory_behind(
     )
 
     assert store.reconcile_unpublished(identity, generation_id, "0123abcd") == "unremovable"
+
+
+# ---------------------------------------------------------------------------
+# Generation hardening (ported from the deleted Explore persistent store) and
+# named-generation leases.
+# ---------------------------------------------------------------------------
+
+
+def _published(tmp_path: Path) -> tuple[SourceCacheStore, SourceCacheIdentity, Path]:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="data/hardening.parquet", format="parquet")
+    generation = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1, 2]}).lazy()),
+        context=_context(),
+    )
+    return store, identity, generation.data_path.parent
+
+
+@pytest.mark.parametrize("link_kind", ["hard_link", "symbolic_link"])
+def test_linked_generation_artifact_is_corrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    link_kind: str,
+) -> None:
+    import stat
+
+    store, identity, generation_dir = _published(tmp_path)
+    data_path = generation_dir / "data.parquet"
+    original_lstat = Path.lstat
+
+    def linked_lstat(path: Path):
+        result = original_lstat(path)
+        if path != data_path:
+            return result
+        values = list(result)
+        if link_kind == "hard_link":
+            values[stat.ST_NLINK] = 2
+        else:
+            values[stat.ST_MODE] = stat.S_IFLNK | 0o777
+        return os.stat_result(values)
+
+    monkeypatch.setattr(Path, "lstat", linked_lstat)
+    store._verified_generations.clear()
+
+    with pytest.raises(SourceCacheCorruptError):
+        store.open_generation(identity)
+    assert store.status(identity).state == "corrupt"
+
+
+def test_partial_generation_without_data_is_corrupt(tmp_path: Path) -> None:
+    store, identity, generation_dir = _published(tmp_path)
+    (generation_dir / "data.parquet").unlink()
+
+    with pytest.raises(SourceCacheCorruptError):
+        store.open_generation(identity)
+
+
+def test_generation_validation_rejects_windows_reparse_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stat
+    from types import SimpleNamespace
+
+    generation = tmp_path / "generation"
+    generation.mkdir()
+    metadata = generation / "meta.json"
+    data = generation / "data.parquet"
+    metadata.write_text("{}", encoding="utf-8")
+    data.write_bytes(b"parquet")
+    original_lstat = Path.lstat
+
+    def reparse_lstat(path: Path):
+        if path == generation:
+            return SimpleNamespace(st_mode=stat.S_IFDIR, st_nlink=1, st_file_attributes=0x400)
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", reparse_lstat)
+
+    with pytest.raises(ValueError, match="plain directory"):
+        _validate_generation_files(generation, metadata, data)
+
+
+@pytest.mark.parametrize("case", ["artifact_nonregular", "generation_escape", "artifact_escape"])
+def test_generation_validation_rejects_escaped_or_nonregular_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    import stat
+    from types import SimpleNamespace
+
+    generation = tmp_path / "generation"
+    generation.mkdir()
+    metadata = generation / "meta.json"
+    data = generation / "data.parquet"
+    metadata.write_text("{}", encoding="utf-8")
+    data.write_bytes(b"parquet")
+    original_lstat = Path.lstat
+    original_resolve = Path.resolve
+
+    if case == "artifact_nonregular":
+
+        def nonregular_lstat(path: Path):
+            if path == data:
+                return SimpleNamespace(st_mode=stat.S_IFDIR, st_nlink=1, st_file_attributes=0)
+            return original_lstat(path)
+
+        monkeypatch.setattr(Path, "lstat", nonregular_lstat)
+    else:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        escaped = outside / "artifact"
+        escaped.write_bytes(b"outside")
+        escaped_generation = outside / "generation"
+        escaped_generation.mkdir()
+
+        def escaped_resolve(path: Path, *, strict: bool = False) -> Path:
+            if case == "generation_escape" and path == generation:
+                return escaped_generation
+            if case == "artifact_escape" and path == data:
+                return escaped
+            return original_resolve(path, strict=strict)
+
+        monkeypatch.setattr(Path, "resolve", escaped_resolve)
+
+    with pytest.raises(ValueError, match="non-regular|escapes"):
+        _validate_generation_files(generation, metadata, data)
+
+
+def test_lease_generation_reads_a_named_non_current_generation(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path, retire_grace_seconds=0)
+    identity = _identity(path="data/named.parquet", format="parquet")
+    first = store.build(
+        identity, _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()), context=_context()
+    )
+
+    with store.lease_generation(identity, first.generation_id) as leased:
+        store.build(
+            identity,
+            _LazyBuilder(pl.DataFrame({"id": [2]}).lazy()),
+            context=_context(),
+            refresh=True,
+        )
+        assert leased.generation_id == first.generation_id
+        assert store.open_generation(identity).generation_id != first.generation_id
+        assert leased.lazy_frame.collect()["id"].to_list() == [1]
+
+    assert not first.data_path.exists()
+    with pytest.raises(SourceCacheGenerationMissingError):
+        with store.lease_generation(identity, first.generation_id):
+            pass
+
+
+def test_lease_generation_rejects_an_unknown_generation(tmp_path: Path) -> None:
+    store, identity, _generation_dir = _published(tmp_path)
+
+    with pytest.raises(SourceCacheGenerationMissingError):
+        with store.lease_generation(identity, str(uuid.uuid4())):
+            pass

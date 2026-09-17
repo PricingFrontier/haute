@@ -23,6 +23,8 @@ In scope:
 - API-input flat-file adapters and common Polars collect/sink helpers;
 - provider dispatch for file, lakehouse, inline, database, and Databricks inputs;
 - source-cache identity, build, publication, lease, quota, clear, and status behaviour;
+- node-output snapshots in the same store: signatures, slots, column widening, retention and
+  eviction, and cross-process publication and leases;
 - bounded SQLite snapshot acquisition.
 
 The [Databricks IO component](../databricks-io/high-level.md) owns Databricks credential
@@ -121,7 +123,46 @@ Leases are process-local. A superseded generation is retired only after
 generation was published, so a reader in another process finishes its scan; an explicit
 clear and quota pressure reclaim immediately, the latter logged.
 
-Store startup never deletes a generation. It may reclaim a staging directory only when the
+Node outputs share the same store root, byte quota, generation cap, and environment
+variables as input snapshots, as a `node_output` provider. A node-output identity is a
+slot — pipeline source file, node, source, and execution semantics class — plus the node's
+checked data signature, so every signature of a node keeps its own generation and a
+reverted edit finds its earlier snapshot again. A per-slot index lists a slot's identities:
+for a requested signature the slot is `current` when that identity has a fresh generation,
+`stale` when its own generation is stale or only other identities have generations, and
+`missing` otherwise. Each generation records the column set it holds (`all` or an explicit
+list) and the transitive closure of snapshot generations its rows derive from. A
+generation is fresh when no recorded dependency identity now has a different current
+generation; a cleared or evicted dependency does not make it stale. A writer always
+continues from its own completed artifact. Under the identity's publication lock it
+publishes only when every dependency it recorded is still current or cleared, its columns
+contain the latest generation's columns, and there is no fresh latest generation, it widens
+that generation, or it is an explicit refresh; otherwise it keeps its artifact as a
+request-owned file and the outcome is `superseded`. A published generation therefore never
+narrows its identity's columns, and replacing or widening a generation makes every
+descendant recorded against the previous one stale.
+
+A node-output generation is `pinned` when its slot's pin names its identity and `automatic`
+otherwise; an explicit build pins, and a pin passes to the slot's newest publication. Its
+last-used time is its metadata file's modification time, refreshed on lease at most once a
+minute. Quota pressure on a node-output publication retires unleased automatic
+generations — superseded ones first, then least recently used — and logs each; when even
+that cannot make room nothing is evicted and the publication raises the quota error while
+handing its completed staged artifact to the caller intact. Input-snapshot quota behaviour
+is unchanged. Node-output publication, eviction, clear, and leases are coordinated across
+processes: a per-identity publication lock is held from a writer's re-check to its first
+lease, and a store-wide lease lock, always taken after it, makes lease acquisition,
+publication through the publisher's first lease, and retirement atomic. Every lease is also
+a marker file in its generation naming the owning process's token, whose liveness is an
+exclusive lock that process holds on its token file, so retirement never removes a
+generation another live process reads, and a dead owner's marker is removed. Retirement
+renames a generation out of selection under the lock and deletes its files afterwards.
+Clear removes a slot's identities, pointers, and pin but never a generation another
+operation still leases; that generation retires when released. A reader may lease a named
+generation, current or not, so a spawned worker reads exactly the generation its parent
+leased.
+
+Store startup never deletes a published generation. It may reclaim a staging directory only when the
 newest filesystem activity beneath that directory is older than the configured stale-build
 threshold; recent or unreadable staging state is preserved. Unreclaimed staging bytes count
 against the store byte quota. Publication and leases are coordinated within one process,
@@ -197,46 +238,8 @@ When `overwrite=false`, an existing data-output destination raises
 than treating it as an I/O failure or replacing the destination.
 
 Malformed pointers, digest mismatches, metadata mismatches, invalid generation identifiers,
-or invalid Parquet footer/schema evidence raise `SourceCacheCorruptError`; callers do not
+linked, hard-linked, reparse-point, or escaping generation artifacts, or invalid Parquet
+footer/schema evidence raise `SourceCacheCorruptError`; a named generation that does not
+exist or was retired raises its `SourceCacheGenerationMissingError` subclass. Callers do not
 silently rebuild or fall back. Transient operating-system access errors propagate as
 operating-system errors so operators can retry and are not told durable data is corrupt.
-
-## Approved change contract — node-output snapshots in the source snapshot store
-
-- **Current limitation.** The source snapshot store in `src/haute/_source_cache.py` holds only
-  external-input snapshots. Explore keeps a separate durable store in `src/haute/_explore_cache.py`
-  that copies and re-hashes its Parquet artifact on every read, and no other pipeline point is
-  cached durably.
-- **Unresolved target.** The store also holds node-output snapshots as a `node_output` provider.
-  Each identity is a slot (pipeline source file, node, source, execution semantics class) plus the
-  node's checked data signature, so every signature of a node keeps its own generation and a
-  reverted edit finds its earlier snapshot. A per-slot index lists the slot's identities. Each
-  generation records its column set, which only widens, and every upstream snapshot generation its
-  rows derive from, transitively, as dependencies; it is fresh when no recorded dependency now has a
-  different generation. Generations are pinned when written by an explicit build and automatic when
-  captured by an execution; a slot's pin passes to its newest signature. For node-output
-  publications, quota pressure retires unleased automatic generations in least-recently-used order
-  before rejecting, and a rejected publication hands its completed staged artifact to the caller
-  instead of deleting it. Publication into an identity is serialised across processes under a
-  per-identity cross-process lock. A writer always continues from its own artifact and publishes
-  it only when its recorded dependencies are still current or cleared and there is no fresh
-  generation, it widens the current one, or it is an explicit refresh, so a published generation
-  never narrows its identity's columns. A store-wide cross-process lease lock, always taken
-  after the publication lock, makes lease acquisition, publication through the publisher's first
-  lease, and retirement (supersession, eviction, clear) atomic. Every lease is also a marker file
-  naming its owning process, whose liveness is proven by a per-process file lock, so no process
-  retires a generation another live process is reading or about to read. A reader can lease a named generation, not only the current one, so a spawned
-  worker reads exactly the generation its parent leased.
-- **Non-goals.** Input-snapshot providers, publication, quota behaviour, and staging reclamation are
-  unchanged. API-input table caches stay in the JSON-shredding cache.
-- **Failure and compatibility semantics.** A named generation that is unknown or retired raises
-  the existing missing or corrupt errors. A publication with nothing retirable raises the existing
-  quota error. The Explore store and its `.haute_cache/explore` root are removed without migration;
-  Haute has no released users.
-- **Acceptance evidence.** Store tests prove in-place reads of a verified generation perform no
-  full-file hash and no copy, edit-and-revert reuse, widening, least-recently-used eviction that
-  spares pinned and leased generations, pin inheritance, one publication from two concurrent worker
-  processes, refresh publication, no narrowing after an ancestor refresh, a paused reader in one process surviving eviction and clear from another, dead-owner
-  marker cleanup, staged-artifact handover on quota rejection, named-generation leases, and the
-  ported Explore-store hardening cases.
-- **Roadmap package.** [CACHE-S01](../roadmap/caching.md#cache-s01--node-output-snapshots-in-the-shared-store).

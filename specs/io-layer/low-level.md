@@ -11,6 +11,7 @@
 | `src/haute/_database_io.py` | Credential-free database locator/query validation and bounded read-only SQLite snapshot batches. |
 | `src/haute/_credential_security.py` | Shared URI credential detection and provider-diagnostic redaction. |
 | `src/haute/_source_cache.py` | Primary owner of source-cache identities, generations, metadata, publication, leases, quota, status, and cleanup. |
+| `src/haute/_node_snapshots.py` | Node-output snapshots in the shared store: slot and signature identity, class mappings, slot index, column sets and dependencies, cross-process publication and lease locks, lease markers, retention, eviction, clear, and pin. |
 | `src/haute/_polars_io_schema.py` | Cached index over the committed Polars callable schema, live introspection of the installed Polars, and the intersection of the two. |
 | `src/haute/_polars_io_arguments.json` | Generated Polars callable signature data checked against the pinned Polars version. |
 | `src/haute/_polars_dtypes.py` | Struct-capable dtype JSON codec used by registry schema arguments. |
@@ -47,10 +48,15 @@ relationship is recorded in `specs/ownership.toml`.
   point.
 - `SourceCacheMetadata` records identity, generation, optional freshness signature, artifact
   SHA-256/size, rows, columns, schema, creation time, profile, and build class.
-- `SourceCacheGeneration` names immutable `data.parquet` and `meta.json` paths.
+- `SourceCacheGeneration` names immutable `data.parquet` and `meta.json` paths. Before a
+  generation is trusted, its directory must be a plain directory inside its identity and
+  both artifacts plain, single-link files inside the generation;
+  `SourceCacheGenerationMissingError` (a `SourceCacheCorruptError`) reports a named
+  generation that does not exist.
 - `SourceCacheStore` coordinates same-root handles in-process, publishes generations, tracks
   local leases and verified-generation memos, applies quotas, reclaims provably stale
-  staging, and exposes `build`, `lease`, `clear`, and `status`. Leases are process-local. A
+  staging, and exposes `build`, `lease`, `lease_generation`, `clear`, and `status`. Leases
+  are process-local. A
   superseded generation is retired only after `HAUTE_INPUT_CACHE_RETIRE_GRACE_SECONDS`
   (default 1800) have elapsed since the current generation was published, so a reader in
   another process finishes its scan; an explicit clear and quota pressure reclaim
@@ -233,6 +239,85 @@ projection, excluding only the build currently being admitted.
    the identity lock, and when the final holder releases, every non-current
    unleased generation is retired. Thus refresh/clear affect future selection
    immediately without invalidating an already-derived scan.
+
+### Node-output snapshots
+
+`src/haute/_node_snapshots.py` extends the store as `NodeSnapshotStore`, a subclass that
+delegates every non-`node_output` identity to `SourceCacheStore` unchanged.
+
+- **Identity.** `NodeSnapshotSlot(pipeline_source_file, node_id, source, semantics_class)`
+  has a SHA-256 slot digest. `slot.identity(signature)` is a `SourceCacheIdentity` with
+  provider `node_output` whose descriptor adds the signature under `data_fingerprint`
+  (identity redaction treats a key named `signature` as credential material).
+  `node_snapshot_signature(graph, node_id, source, semantics_class, enforce_contracts)`
+  builds the checked `node_snapshot_signature` consumer from the graph fingerprint of the
+  node's upstream subgraph (including the node), the runtime-input fingerprint targeted at
+  the node, and the execution fields; `pipeline_source_file_key(graph)` resolves the slot's
+  pipeline file.
+- **Class mappings.** `snapshot_write_class(profile, preview_admitted=...)` returns
+  `bounded` for every bounded profile (`TRAINING_PREP`, `OPTIMISER_SETUP`,
+  `EXPLORE_ANALYSIS`, `AUTO_RANGE`, `LAZY_SINK`, `CHUNKED_MAP_REDUCE`, `NODE_SNAPSHOT`) and
+  `None` for deploy profiles; `snapshot_read_classes(profile)` returns `{bounded}` for the
+  same profiles. `PREVIEW_EAGER` reads and writes `bounded` only when
+  `PREVIEW_SHARES_BOUNDED_SEMANTICS` is true, which the execution-profile semantics proof
+  decides; it is false.
+- **Layout.** Node-output identities live beside input identities under
+  `.haute_cache/inputs/<identity digest>/` (`current.json`, `generations/<id>/`,
+  `.staging-<token>/`, `.retired-<hex>/`). Each generation's `meta.json` carries a
+  `node_output` block (metadata version 2: slot, slot digest, signature, `column_set` of
+  `"all"` or a sorted list, and `dependencies` as identity digest → generation id). The
+  per-slot index is `.haute_cache/inputs/.node-slots/<slot digest>.json` (identities and
+  the pinned identity), rewritten atomically under the lease lock. Locks live in
+  `.haute_cache/inputs/.locks/` (`publication-<identity digest>.lock`, `leases.lock`) and
+  process tokens in `.haute_cache/inputs/.processes/<token>.lock`. Lease markers are
+  `.lease-<12-hex token>` files directly in the generation directory, and last use is the
+  `meta.json` modification time; both keep the deepest path inside the traditional Windows
+  limit beneath long temporary roots.
+- **Status.** `latest_generation(identity)` validates the pointer's generation through the
+  store's metadata/digest/verified-memo path and reports its columns, dependencies,
+  freshness, retention, and last use. `slot_status(slot, signature)` is `current` or
+  `stale` from that generation, `stale` when another indexed identity has a current
+  generation, `missing` otherwise, and `corrupt` when validation fails.
+- **Leases.** `lease(identity)` reads the pointer, then under the lease lock confirms the
+  directory and the pointer, increments the in-process count, and on 0 → 1 creates this
+  process's marker; a pointer that moved (or a generation retired meanwhile) re-selects.
+  Only then, with the generation protected, is it validated, and a validation failure
+  releases the lease before raising. `lease_generation(identity, generation_id)` does the
+  same without the pointer check, rejects a malformed generation id, and raises
+  `SourceCacheGenerationMissingError` for an unknown or retired generation. Release
+  decrements under the lease lock; at zero it removes the marker and
+  retires the generation when it is no longer current and no live marker remains. A marker
+  is live when it names this process with a non-zero in-process count, or when its token
+  file's lock cannot be acquired; a dead marker (and token file) is removed.
+- **Publication.** `stage_node_output(identity)` allocates a request-owned
+  `NodeSnapshotArtifact` staging directory. `publish_node_output(identity, artifact,
+  columns, dependencies, explicit, profile, refresh)` validates the artifact (SHA-256,
+  footer, schema; an explicit column set must name existing columns) and writes `meta.json`
+  outside the locks, then under the identity's publication lock applies the publication
+  rule. `explicit` marks an explicit cache build: only it may `refresh`, pin the slot, or
+  replace a corrupt latest generation; an automatic capture raises the corruption. A
+  superseded outcome returns the artifact. Otherwise, under the lease lock, it admits
+  quota, renames staging to the generation, seeds the verified memo, creates the
+  publisher's marker and in-process count, writes the pointer, records the identity in the
+  slot index (moving the pin to it when `explicit` or when the slot is already pinned), and
+  retires the superseded generation when no live marker holds it. Any failure after the
+  publisher's lease exists releases that lease before raising. The returned
+  `NodeSnapshotPublication` holds the lease (or owns the artifact) until closed.
+- **Quota.** Admission projects published plus retained staging bytes, excluding the
+  artifact being admitted and subtracting the superseded generation when unheld. When over
+  the byte or count limit it lists unleased, unpinned node-output generations, non-current
+  first then by last use, and raises `NodeSnapshotQuotaRejectedError` (a
+  `SourceCacheQuotaExceededError` carrying the artifact) without evicting when even all of
+  them would not make room. Otherwise it retires candidates in order, re-checking markers at
+  the `evict_before_marker_check` fault point, removing an evicted current generation's
+  pointer and index entry, and logs `node_snapshot_evicted`.
+- **Clear and pin.** `clear_slot(slot)` removes every indexed identity's pointer, retires
+  each unheld generation, and deletes the index; `clear(identity)` does the same for one
+  identity. `pin(identity)` pins a slot to an identity that has a current generation.
+- **Retirement.** Under the lease lock a generation directory is renamed to
+  `.retired-<hex>` beside `generations/`; the files are deleted after the lock is released,
+  and store construction removes any leftover retired directory. A rename refused by an open
+  Windows handle is logged (`node_snapshot_retirement_deferred`) and left selectable.
 
 ### Staging reclamation and quota admission
 
@@ -548,6 +633,29 @@ failure sections above are the maintained answers.
   every argument is scanner-accepted (build class `bounded`, warning
   `eager_read_mode_scanned`) versus a reader-only argument (build class stays
   `admitted_eager`), and `input_snapshot_build_class` reporting the effective class.
+- `tests/test_source_cache.py` additionally covers the generation hardening ported from the
+  removed Explore store (hard-linked, symbolic-link, reparse-point, escaping, non-regular,
+  and partial generations, simulated through `lstat` so no platform skips) and `lease_generation` of a named non-current generation and of an
+  unknown one.
+- `tests/test_node_snapshot_signature.py` covers the checked signature field set, upstream,
+  runtime-file, utility-module, preamble, source, class, and contract-enforcement
+  invalidation, and slot and signature stability for downstream edits and Explore
+  presentation fields.
+- `tests/test_node_snapshot_retention.py` covers the class mappings, edit and revert,
+  widening with descendant staleness, the publication rule (fresh equal width, stale
+  replacement, never narrowing a stale generation, refresh only by explicit builds, a writer
+  bound to a replaced dependency, cleared dependencies, a corrupt latest generation surfaced
+  by an automatic capture and replaced by an explicit build),
+  least-recently-used eviction, pinned and leased generations surviving quota pressure,
+  staged-artifact handover on rejection, pin inheritance and explicit pinning, no rehash
+  on a second lease, named-generation leases through refresh and clear, validation only
+  after the lease marker exists, malformed generation ids, the publisher's lease released
+  when its handoff fails, lease markers, and recorded metadata.
+- `tests/test_node_snapshot_cross_process.py` covers two worker processes publishing one
+  identity once, a paused reader in another process keeping its generation through
+  eviction and clear, a killed reader's dead marker making its generation evictable, a
+  writer whose columns miss a concurrently widened generation keeping its own artifact, and
+  both interleavings of a lease and an eviction paused at their fault points.
 - `tests/test_source_cache.py` additionally covers a build context with the parent-chosen
   pair staging under `.staging-<staging_token>` and publishing `generation_id`, beneath a
   temporary root long enough that a full-UUID staging name would exceed Windows'

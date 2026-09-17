@@ -27,7 +27,8 @@ export type Profile =
   | 'auto_range'
   | 'deploy_live'
   | 'deploy_batch'
-  | 'chunked_map_reduce';
+  | 'chunked_map_reduce'
+  | 'node_snapshot';
 export type Column = string;
 export type OriginKind = 'seed' | 'contract' | 'expression' | 'join_key' | 'conservative_boundary';
 export type SourceColumn = string | null;

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat as stat_module
 import threading
 import time
 import uuid
@@ -36,6 +37,9 @@ ReconcileOutcome = Literal[
 _VerifiedGeneration = tuple[str, str, int, int, str]
 _DEFAULT_STAGING_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 _DEFAULT_RETIRE_GRACE_SECONDS = 30 * 60
+# Provider of node-output snapshots; their publication, leases, and retirement
+# live in ``haute._node_snapshots``.
+NODE_OUTPUT_PROVIDER = "node_output"
 
 logger = get_logger(component="source_cache")
 
@@ -46,6 +50,10 @@ class SourceCacheError(RuntimeError):
 
 class SourceCacheCorruptError(SourceCacheError):
     """The selected cache generation is not a valid immutable snapshot."""
+
+
+class SourceCacheGenerationMissingError(SourceCacheCorruptError):
+    """A named generation does not exist: it was never published or was retired."""
 
 
 class SourceCacheBuildError(SourceCacheError):
@@ -218,9 +226,12 @@ class SourceCacheMetadata:
     created_at: float
     profile: str
     build_class: BuildClass
+    # Provider-specific generation facts (node-output column set and
+    # dependencies). Absent for input snapshots, whose metadata is unchanged.
+    node_output: Mapping[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "identity_digest": self.identity_digest,
             "identity": self.identity,
             "schema_version": self.schema_version,
@@ -235,6 +246,9 @@ class SourceCacheMetadata:
             "profile": self.profile,
             "build_class": self.build_class,
         }
+        if self.node_output is not None:
+            payload["node_output"] = dict(self.node_output)
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,6 +286,38 @@ def _sha256_file(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _is_reparse_point(path_stat: os.stat_result) -> bool:
+    return bool(getattr(path_stat, "st_file_attributes", 0) & 0x400)
+
+
+def _validate_generation_files(generation_dir: Path, *artifacts: Path) -> None:
+    """Reject links, reparse points, hard links, and escapes before trusting a generation."""
+    generation_stat = generation_dir.lstat()
+    if (
+        not stat_module.S_ISDIR(generation_stat.st_mode)
+        or stat_module.S_ISLNK(generation_stat.st_mode)
+        or _is_reparse_point(generation_stat)
+    ):
+        raise ValueError("source-cache generation is not a plain directory")
+    for path in artifacts:
+        artifact_stat = path.lstat()
+        if (
+            not stat_module.S_ISREG(artifact_stat.st_mode)
+            or stat_module.S_ISLNK(artifact_stat.st_mode)
+            or _is_reparse_point(artifact_stat)
+        ):
+            raise ValueError("source-cache generation contains a non-regular artifact")
+        if artifact_stat.st_nlink != 1:
+            raise ValueError("source-cache generation artifact must not be hard-linked")
+    resolved_generation = generation_dir.resolve(strict=True)
+    if resolved_generation.parent != generation_dir.parent.resolve(strict=True):
+        raise ValueError("source-cache generation escapes its identity directory")
+    for path in artifacts:
+        resolved = path.resolve(strict=True)
+        if resolved.parent != resolved_generation or not resolved.is_file():
+            raise ValueError("source-cache artifact escapes its generation")
 
 
 def _validate_generation_id(value: object) -> str:
@@ -428,6 +474,13 @@ class SourceCacheStore:
             generation_dir = self.identity_path(identity) / "generations" / generation_id
             data_path = generation_dir / "data.parquet"
             metadata_path = generation_dir / "meta.json"
+            try:
+                generation_dir.lstat()
+            except FileNotFoundError as exc:
+                raise SourceCacheGenerationMissingError(
+                    "source-cache generation does not exist"
+                ) from exc
+            _validate_generation_files(generation_dir, metadata_path, data_path)
             raw = json.loads(metadata_path.read_text(encoding="utf-8"))
             metadata = SourceCacheMetadata(
                 identity_digest=raw["identity_digest"],
@@ -443,6 +496,7 @@ class SourceCacheStore:
                 created_at=raw["created_at"],
                 profile=raw["profile"],
                 build_class=raw["build_class"],
+                node_output=raw.get("node_output"),
             )
             data_stat = data_path.stat()
             if (
@@ -462,6 +516,7 @@ class SourceCacheStore:
                 or not isinstance(metadata.columns, dict)
                 or metadata.column_count != len(metadata.columns)
                 or not isinstance(metadata.created_at, (int, float))
+                or (metadata.node_output is not None and not isinstance(metadata.node_output, dict))
             ):
                 raise ValueError("metadata does not match snapshot")
             verification_key = (
@@ -626,6 +681,8 @@ class SourceCacheStore:
     ) -> SourceCacheGeneration:
         if context.build_class == "unsupported":
             raise SourceCacheBuildError("unsupported source-cache build class")
+        if identity.provider == NODE_OUTPUT_PROVIDER:
+            raise SourceCacheBuildError("node-output snapshots are published, not built here")
         declared = getattr(builder, "build_class", context.build_class)
         if declared != context.build_class:
             raise SourceCacheBuildError("builder build class does not match source-cache context")
@@ -742,6 +799,32 @@ class SourceCacheStore:
     def lease(self, identity: SourceCacheIdentity) -> Iterator[SourceCacheGeneration]:
         with self._identity_lock(identity):
             generation = self.open_generation(identity)
+            key = (identity.digest, generation.generation_id)
+            with self._lock:
+                self._leases[key] = self._leases.get(key, 0) + 1
+        try:
+            yield generation
+        finally:
+            with self._identity_lock(identity):
+                with self._lock:
+                    self._leases[key] -= 1
+                    if self._leases[key] == 0:
+                        del self._leases[key]
+                self._retire_unleased(identity)
+
+    @contextlib.contextmanager
+    def lease_generation(
+        self, identity: SourceCacheIdentity, generation_id: str
+    ) -> Iterator[SourceCacheGeneration]:
+        """Pin and yield exactly *generation_id*, current or not.
+
+        A spawned worker reads the generation its parent leased, never whatever
+        is current. Validation uses the same metadata, digest, and verified-memo
+        path as :meth:`lease`; an unknown or retired generation raises
+        :class:`SourceCacheGenerationMissingError`.
+        """
+        with self._identity_lock(identity):
+            generation = self._metadata_from_path(identity, generation_id)
             key = (identity.digest, generation.generation_id)
             with self._lock:
                 self._leases[key] = self._leases.get(key, 0) + 1

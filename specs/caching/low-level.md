@@ -48,6 +48,7 @@ missing and unknown names before hashing:
 | `deploy_schema` | 1 | `graph_fingerprint`, `runtime_input_fingerprint`, `artifact_fingerprint`, `output_node_id`, `input_node_ids`, `source`, `row_limit`, `execution_policy` |
 | `model_contract` | 1 | `feature_names`, `categorical_features`, `offset_column` |
 | `input_snapshot` | 1 | `schema_version`, `provider`, `descriptor` |
+| `node_snapshot_signature` | 1 | `lineage_fingerprint`, `runtime_input_fingerprint`, `source`, `semantics_class`, `enforce_contracts`, `preamble_supplied`, `execution_semantics_version` |
 
 The repeated records inside those payloads are separately closed and versioned:
 `graph_node` v1 is `id`, `label`, `nodeType`, `config`; `graph_edge` v1 is
@@ -132,6 +133,12 @@ stops the worker and discards staging.
 ### Source snapshots
 
 `SourceCacheIdentity` uses `checked_cache_inputs(CacheConsumer.INPUT_SNAPSHOT, ...)`.
+`node_snapshot_signature()` in `src/haute/_node_snapshots.py` builds the
+`node_snapshot_signature` consumer: the lineage fingerprint is `graph_fingerprint` of the
+node's upstream subgraph including the node, the runtime-input fingerprint is
+`dataframe_graph_input_fingerprint` targeted at the node, and the execution semantics
+version is `node-snapshot:v1`. It never contains generations or column sets, and
+request shape (column demand) and row limits are excluded with rationales.
 Generation layout, integrity, publication, quota, lease, and concurrency rules are owned
 and tested by the [IO layer](../io-layer/low-level.md).
 
@@ -215,6 +222,8 @@ cache lifecycle changes.
 
 - `tests/test_runtime_input_cache_invalidation.py` — preview/trace cache keys invalidate on runtime file/artifact edits or disappearance, preserve stat-gate semantics, and share file signatures across preview/trace.
 
+- `tests/test_node_snapshot_signature.py` covers the `node_snapshot_signature` field set
+  and its invalidation matrix.
 - `tests/test_cache_identity_contract.py`, `tests/test_cache_fingerprint_injectivity.py`,
   `tests/test_caching_correctness.py`, `tests/test_cache_unification.py`,
   `tests/test_graph_fingerprint_cached.py`, and `tests/test_hashing.py` cover canonical

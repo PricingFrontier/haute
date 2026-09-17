@@ -16,7 +16,6 @@ and the [rating roadmap](rating.md).
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CACHE-S01 | Planned | P1 | Store node-output snapshots per signature in the shared snapshot store, with column widening and eviction. |
 | CACHE-S02 | Planned | P1 | Resolve any consumer and column demand to a leased, current frame for its data point. |
 | CACHE-S03 | Planned | P2 | Build, join, refresh, and clear pinned full-width snapshots through one job service. |
 | CACHE-S04 | Planned | P2 | Persist analysis results by data version and run the data profile as an isolated job. |
@@ -28,206 +27,13 @@ and the [rating roadmap](rating.md).
 
 ## Planned improvements
 
-Delivery order is `CACHE-S01` → `CACHE-S02` → `CACHE-S03` → `CACHE-S04` →
+Delivery order is `CACHE-S02` → `CACHE-S03` → `CACHE-S04` →
 `CACHE-S05`, then the consumer packages `EDA-C01` and `RAT-B01` → `RAT-B02` →
 `RAT-B03`, then `CACHE-S06` → `CACHE-S07` → `CACHE-S09`. A later package must
 not bypass the resolver, lease, signature, or capture contracts of an earlier
-one.
-
-### CACHE-S01 — Node-output snapshots in the shared store
-
-**Why:** The same full data is computed and stored repeatedly. Explore keeps a
-private durable store keyed by the Explore node. Training preparation,
-training evaluation preview, optimiser setup, and Data Output each cache
-process-locally under their own namespace, and those runs also write the full
-output of every join and fan-out to temporary Parquet checkpoints that are
-deleted when the run ends. Explore's restore path copies the whole Parquet file
-and hashes it twice on every read. The IO layer's source snapshot store already
-provides provider-neutral immutable generations, in-place scans, a per-process
-verified-generation memo, quota admission, lease-aware retirement with a
-cross-process grace period, and supervised spawned builds.
-
-**Plan:**
-
-- Node outputs become a snapshot provider `node_output` of the existing
-  `SourceCacheStore`. A **slot** is `(pipeline_source_file, node_id, source,
-  semantics_class)`. A **snapshot identity** is a slot plus the node's data
-  signature, checked by the existing `input_snapshot` consumer, so each
-  signature of a node has its own identity and generation. Reverting an edit
-  therefore finds the earlier signature's snapshot again. Node-output and input
-  snapshots share the store root, byte quota, generation cap, and environment
-  variables.
-- Add the checked cache consumer `node_snapshot_signature` v1 with fields
-  `lineage_fingerprint` (graph fingerprint of the producer's upstream subgraph
-  including the producer), `runtime_input_fingerprint`
-  (`dataframe_graph_input_fingerprint` targeted at the producer), `source`,
-  `semantics_class`, `enforce_contracts`, `preamble_supplied`, and
-  `execution_semantics_version`. It never contains snapshot generations or
-  column sets. Presentation-only config stays excluded through the existing
-  field classifications.
-- A per-slot index, written atomically under the store lock, lists the slot's
-  snapshot identities. For a requested signature the slot state is `current`
-  when that identity has a fresh generation, `stale` when only other identities
-  exist, and `missing` when none do.
-- **Columns.** Each generation records the column set it holds, either `all` or
-  an explicit list. A reader may use a generation whose columns contain its
-  demand. A writer computes the union of its demand and the columns of the
-  identity's latest generation, whether that generation is fresh or stale by
-  its dependencies, and publishes it as the identity's next generation, so an
-  identity's column set only widens, a rebuild after an ancestor refresh keeps
-  every column the identity already held, and one generation serves every
-  narrower reader. Widening replaces the generation, so descendants recorded
-  against the previous generation become stale.
-- Generation metadata gains `dependencies`: the transitive closure of the
-  snapshot generations its rows derive from — every seed scanned upstream of
-  the node when it was written (CACHE-S07) plus each seed generation's own
-  recorded `dependencies` — as an `identity → generation_id` map, empty when
-  nothing upstream was seeded; the metadata schema version increments. A
-  generation is `fresh` when no recorded dependency identity now has a
-  different current generation. A cleared dependency does not make it stale,
-  because the recorded rows are still the rows it was built from. Freshness
-  never consults the seeds a new request would choose, while replacing or
-  widening any ancestor generation makes every descendant stale.
-- **Retention.** A generation is `pinned` when written by an explicit cache
-  build (CACHE-S03) and `automatic` when captured by an execution (CACHE-S07,
-  CACHE-S09). A pin belongs to the slot: when a newer signature's generation is
-  published for a pinned slot, it inherits the pin and the older identities
-  become automatic. Each generation records a last-used time, updated on lease
-  at most once per minute through an atomic metadata write. For `node_output`
-  publications, quota pressure first retires unleased `automatic` generations
-  in least-recently-used order (logged), and only then rejects the publication.
-  Input-snapshot quota behaviour is unchanged.
-- One function maps an `ExecutionProfile` to a write class or `None`: every
-  bounded profile writes `bounded`; `PREVIEW_EAGER` writes `bounded` only for a
-  lineage CACHE-S09 admits; `DEPLOY_LIVE` never writes. A second mapping states
-  which classes a profile may read: bounded profiles read `bounded`,
-  `PREVIEW_EAGER` reads `bounded` only once CACHE-S06 proves its outputs equal,
-  and `DEPLOY_LIVE` reads none. CACHE-S06 may split a class; splitting changes
-  only these mappings.
-- Add the bounded profile `NODE_SNAPSHOT` for explicit snapshot builds.
-- Add `SourceCacheStore.lease_generation(identity, generation_id)`, which pins
-  and validates a named generation through the same metadata, digest, and
-  verified-memo path as `lease`. A spawned worker uses it to read exactly the
-  generation its parent leased, never whatever is current.
-- **Cross-process coordination.** Node-output publication, eviction, clear, and
-  pointer changes may happen in several processes at once (the server, spawned
-  training and snapshot workers, and CLI runs), so the store's process-local
-  locks and lease counts are not enough:
-  - There are two cross-process file locks, both built on the file-lock
-    primitive behind the JSON cache's publication lock
-    (`src/haute/_json_shred/_publication.py`): a per-identity **publication
-    lock**, held by one writer from its freshness re-check to its first lease,
-    and a store-wide **lease lock**. The lock order is always publication lock
-    then lease lock; no code takes the publication lock while holding the lease
-    lock.
-  - Every lease is recorded as a marker file inside the generation naming the
-    owning process's token. Each process holds an exclusive file lock on its
-    own token file for its lifetime, so a marker whose token lock can be
-    acquired belongs to a process that has exited and is removed. In-process
-    lease counts remain a fast path for repeated leases by one process;
-    markers are authoritative across processes.
-  - Three operations are atomic under the lease lock: **lease acquisition**
-    (select the generation, confirm its directory, create the marker);
-    **publication to first lease** (quota admission including eviction,
-    rename of the staged directory, pointer write, and the publisher's marker);
-    and **retirement** for supersession, eviction, and `clear` (check for live
-    markers, then rename the generation to a private retired name). Deleting a
-    renamed generation's files happens after the lease lock is released, so a
-    long delete never blocks readers, and a renamed generation can never be
-    selected again.
-  - Any process, including a spawned worker, publishes and leases directly
-    through these locks and markers; no node-output publication is routed
-    through a parent process.
-- **Publication rule.** A writer always continues from its own completed
-  artifact; it never switches to a generation another writer published while
-  it was computing. Switching would save no computation, because the writer
-  has already computed its artifact, and it cannot be proven to agree with rows
-  the writer has already read on other branches (from seeds, captures, or
-  nodes it executed itself). Holding the publication lock, the writer re-reads
-  the identity's latest generation `G` and publishes its artifact only when
-  every generation it recorded as a dependency is still current or cleared,
-  its columns contain `G`'s columns (or there is no `G`), and one of these
-  holds:
-  - there is no fresh `G` (none exists, or `G` is stale by its dependencies);
-  - the writer's columns strictly contain `G`'s columns (widening);
-  - the writer is an explicit build with `refresh=true` (CACHE-S03).
-  Otherwise the writer keeps its staged artifact as a request-owned temporary
-  file and reports `snapshot_capture_superseded`. Automatic captures and
-  non-refresh explicit builds therefore never replace a fresh generation of
-  equal width, and a published generation never narrows its identity's
-  columns.
-- **Quota rejection keeps the work.** When quota admission still rejects a
-  node-output publication after automatic eviction, the completed staged
-  artifact is not deleted: ownership passes to the caller as a request-owned
-  temporary file that is removed when the request ends.
-- The only multi-frame producer is `apiInput`; CACHE-S02 resolves its ports to
-  the API-input table cache, so a node-output snapshot is always one frame. A
-  multi-frame output reaching a node-output write fails with
-  `node_snapshot_multi_frame_unsupported`.
-- Delete `src/haute/_explore_cache.py` and its `.haute_cache/explore` root. No
-  migration: Haute has no released users.
-
-**Acceptance:**
-
-- Contract tests: the signature rejects missing and unknown fields; editing an
-  upstream node config, edge, preamble, utility module, or runtime file changes
-  the signature; editing a downstream node, banding rules, or the Explore
-  presentation fields `overview`, `pivots`, `pivot_formulas`, and `charts`
-  changes neither slot nor signature.
-- Edit and revert: a node cached under signature `s1`, edited to `s2` and
-  cached, then reverted to `s1` reports `current` for `s1` without a build while
-  `s1`'s generation is retained.
-- Widening: a generation holding `[a, b]` serves a reader demanding `[a]`; a
-  writer demanding `[c]` publishes `[a, b, c]` and a descendant recorded against
-  the `[a, b]` generation becomes `stale`.
-- Eviction: with the quota full, a `node_output` publication retires the least
-  recently used unleased `automatic` generation and succeeds; a leased or
-  `pinned` generation is never retired this way; when nothing is retirable the
-  publication is rejected with the existing quota error.
-- Pin inheritance: a pinned slot edited to a new signature and rebuilt pins
-  the new generation and makes the old one `automatic`.
-- Single publication: two spawned worker processes writing one identity and
-  demand at the same time publish one generation; the other worker continues
-  from its own artifact without publishing and reports
-  `snapshot_capture_superseded`.
-- Refresh publication: an explicit `refresh=true` build publishes over a fresh
-  generation of equal width.
-- No narrowing: `B` holds `[a, b]`; refreshing its ancestor makes `B` stale; a
-  run needing only `[a]` rebuilds `B` and publishes `[a, b]`.
-  A worker whose columns do not contain a concurrently widened generation's
-  columns keeps its own artifact and reports `snapshot_capture_superseded`.
-- Cross-process leases: a worker process paused while reading a generation
-  keeps it through eviction under quota pressure and through `clear` run from
-  another process; after the worker is killed, its marker is detected as dead
-  and the generation becomes retirable.
-- Lease versus eviction race: with fault points pausing one process just
-  before it creates its lease marker and another just before it checks markers
-  for eviction, every interleaving either leases the generation and keeps it,
-  or retires it and makes the lease acquisition fail with the store's missing
-  error; no process ever scans a deleted or renamed generation.
-- No switching: a writer bound to `A1` whose identity has meanwhile gained a
-  generation recorded against `A2` neither reads nor replaces it, continues
-  from its own artifact, and reports `snapshot_capture_superseded`.
-- Quota rejection after eviction hands the staged artifact to the caller
-  intact (same bytes, same rows) and removes it when the request ends.
-- The write and read class mappings return the values above.
-- A second lease of a verified generation performs no full-file hash, and no
-  file is created under the process dataframe-cache root.
-- `lease_generation` for an unknown or retired generation raises the store's
-  existing missing/corrupt error; for a valid non-current generation it returns
-  that generation.
-- Every hardening case in the Explore persistent-cache tests (links, hard links,
-  reparse points, directory escape, partial generation, retirement under lease)
-  is either already covered by `tests/test_source_cache.py` or ported there
-  before `_explore_cache.py` is deleted.
-
-**Dependencies:** The IO-layer snapshot publication, lease, quota, and
-retirement contract and the caching checked-input contract.
-
-**Evidence:** `src/haute/_source_cache.py`; `src/haute/_explore_cache.py`;
-`src/haute/_dataframe_execution_cache.py`; `src/haute/_cache.py`;
-`src/haute/_polars_utils.py`; `tests/test_source_cache.py`;
-`tests/test_explore_routes.py`.
+one. Every package builds on the node-output snapshot store (signature, slot
+index, column widening, retention, cross-process leases, and the publication
+rule) specified in the [IO layer](../io-layer/low-level.md#node-output-snapshots).
 
 ### CACHE-S02 — Data-point resolver and leased reads
 
@@ -257,7 +63,7 @@ stale, unpinned, or column-incomplete file.
   |---|---|---|---|---|
   | `data_input` | Data Input with blank post-load code | direct Parquet: always `current`; snapshot-backed: IO-layer status, where `ready`+`fresh` is `current`, `ready`+`stale` is `stale`, otherwise `missing`, `building`, or `corrupt` | source version (direct: resolved path, size, `mtime_ns`; snapshot: generation id) plus the Data Input node's lineage fingerprint | none (direct) or existing input-cache job |
   | `api_input_table` | `apiInput` port | JSON table cache validity for the full schema, `working/` then `committed/` | serving layer's metadata digest, port label, and the node's lineage fingerprint | existing JSON-cache build |
-  | `node_output` | any other producer, including a Data Input with non-blank post-load code | CACHE-S01 slot state for the current signature; a fresh generation that does not cover the demand is `partial` | generation id | CACHE-S03 job |
+  | `node_output` | any other producer, including a Data Input with non-blank post-load code | node-output slot state for the current signature; a fresh generation that does not cover the demand is `partial` | generation id | CACHE-S03 job |
 
 - A source kind is re-executed for each read, so it is limited to outputs that
   are a deterministic function of their versioned source: column selection and
@@ -318,7 +124,7 @@ stale, unpinned, or column-incomplete file.
   reading while the parent refreshes and then clears the slot; the generation
   directory survives until the child exits and the parent releases its lease.
 
-**Dependencies:** CACHE-S01; the IO-layer canonical Data Input and snapshot
+**Dependencies:** The IO-layer node-output snapshot store, canonical Data Input, and snapshot
 lease contracts; the JSON-shredding cache contract.
 
 **Evidence:** `src/haute/_input_providers.py`; `src/haute/_source_cache.py`;
@@ -384,7 +190,7 @@ identity.
   existing Explore worker failure envelope and terminal reasons.
 - `clear` removes every identity of the slot; a later `point` reports `missing`.
 
-**Dependencies:** CACHE-S01, CACHE-S02; the background-jobs worker isolation
+**Dependencies:** CACHE-S02; the background-jobs worker isolation
 and job lifecycle contracts.
 
 **Evidence:** `src/haute/routes/_explore_service.py`;
@@ -519,10 +325,10 @@ fixture runs with a limit so the row-local scoring path that a non-zero limit
 selects is compared. That result decides whether preview may read and write
 `bounded` snapshots (CACHE-S09).
 
-**Acceptance:** The differential test passes, and the CACHE-S01 write and read
+**Acceptance:** The differential test passes, and the snapshot write and read
 mappings match its findings, including the `PREVIEW_EAGER` decision.
 
-**Dependencies:** CACHE-S01.
+**Dependencies:** The IO-layer snapshot write and read class mappings.
 
 **Evidence:** `src/haute/_polars_utils.py`; `src/haute/_io.py`;
 `src/haute/_input_providers.py`; `src/haute/_builders.py`.
@@ -592,7 +398,7 @@ therefore produced and written again on every run.
   Score nodes (whose scored Parquet file becomes the staged artifact instead of
   a private temporary file), and the target the caller materialises. Each
   capture writes the negotiated planning demand at that node under the
-  CACHE-S01 publication rule as an `automatic` generation, then continues
+  node-output publication rule as an `automatic` generation, then continues
   from its own artifact (a lease on the generation it published, or a
   request-owned temporary file when it did not publish), exactly where the
   temporary checkpoint scan is used today. Its `dependencies` are the closure of
@@ -602,7 +408,7 @@ therefore produced and written again on every run.
   `data_output` are removed. Deploy scoring keeps its process-local cache,
   because deployed scorers have no project snapshot store.
 - When a capture's publication is rejected for quota after automatic eviction,
-  or the CACHE-S01 publication rule does not publish it, the execution
+  or the node-output publication rule does not publish it, the execution
   continues from its
   own completed staged artifact, now a request-owned temporary file, without
   recomputing the node, and records `snapshot_capture_skipped` with reason
@@ -618,7 +424,7 @@ therefore produced and written again on every run.
   captures.
 - A spawned worker receives the plan as `(identity, generation_id)` pairs and
   uses `lease_generation`; the parent keeps its seed leases until the worker
-  exits. The worker captures directly through the CACHE-S01 cross-process
+  exits. The worker captures directly through the store's cross-process
   publication lock and holds its own lease markers on what it publishes.
 - Execution metrics report `shared_snapshot_seeds` and `shared_snapshot_captures`
   per node.
@@ -704,7 +510,7 @@ editors.
 **Plan:**
 
 - **Admission.** A preview lineage is admitted to shared snapshots when the
-  CACHE-S01 mappings let `PREVIEW_EAGER` read and write `bounded` and a
+  snapshot class mappings let `PREVIEW_EAGER` read and write `bounded` and a
   schema-only bounded preparation of the lineage's sources succeeds (every CSV
   it reads has declared dtypes and it reads no plain JSON). A lineage that is not
   admitted neither seeds nor captures and behaves as today.
@@ -719,7 +525,7 @@ editors.
   rule defines it) or a materialisation boundary (a node whose code calls a
   frame operation the operation registry classifies as materialising, such as
   `group_by` or `sort`), with the preview's demand at that node, as an
-  `automatic` generation under the CACHE-S01 publication rule. Downstream
+  `automatic` generation under the node-output publication rule. Downstream
   nodes then read the preview's own artifact: the generation it published,
   or a request-owned temporary file when it did not publish. Other nodes are never
   captured, because the row limit already stops their reads early; a Model

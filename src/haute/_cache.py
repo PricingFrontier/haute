@@ -96,6 +96,7 @@ class CacheConsumer(StrEnum):
     DEPLOY_SCHEMA = "deploy_schema"
     MODEL_CONTRACT = "model_contract"
     INPUT_SNAPSHOT = "input_snapshot"
+    NODE_SNAPSHOT_SIGNATURE = "node_snapshot_signature"
 
 
 class CacheIdentityRecord(StrEnum):
@@ -525,6 +526,44 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 ),
                 CacheInputClass.EXECUTION_POLICY: (
                     "Build boundedness controls admission, not source identity."
+                ),
+            },
+        ),
+        CacheConsumer.NODE_SNAPSHOT_SIGNATURE: _consumer_contract(
+            CacheConsumer.NODE_SNAPSHOT_SIGNATURE,
+            version=1,
+            fields=(
+                "lineage_fingerprint",
+                "runtime_input_fingerprint",
+                "source",
+                "semantics_class",
+                "enforce_contracts",
+                "preamble_supplied",
+                "execution_semantics_version",
+            ),
+            consumed={
+                CacheInputClass.NODE_CONFIG: ("lineage_fingerprint",),
+                CacheInputClass.UPSTREAM_LINEAGE: ("lineage_fingerprint",),
+                CacheInputClass.EDGE_WIRING: ("lineage_fingerprint",),
+                CacheInputClass.USER_CODE: (
+                    "lineage_fingerprint",
+                    "runtime_input_fingerprint",
+                    "preamble_supplied",
+                ),
+                CacheInputClass.SOURCE_SELECTION: ("source",),
+                CacheInputClass.RUNTIME_FILES: ("runtime_input_fingerprint",),
+                CacheInputClass.ARTIFACTS: ("runtime_input_fingerprint",),
+                CacheInputClass.EXECUTION_POLICY: (
+                    "semantics_class",
+                    "enforce_contracts",
+                    "execution_semantics_version",
+                ),
+            },
+            excluded={
+                CacheInputClass.ROW_LIMIT: _FULL_FRAME_NO_ROW_LIMIT,
+                CacheInputClass.REQUEST_SHAPE: (
+                    "A column demand widens a generation's column set instead of changing "
+                    "the snapshot identity."
                 ),
             },
         ),

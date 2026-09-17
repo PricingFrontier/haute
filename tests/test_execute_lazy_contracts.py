@@ -159,6 +159,7 @@ def test_preview_contract_resolution_reports_opaque_degradation() -> None:
         ExecutionProfile.DEPLOY_BATCH,
         ExecutionProfile.DEPLOY_LIVE,
         ExecutionProfile.CHUNKED_MAP_REDUCE,
+        ExecutionProfile.NODE_SNAPSHOT,
     ],
 )
 def test_bounded_profiles_require_strict_contract_resolution(

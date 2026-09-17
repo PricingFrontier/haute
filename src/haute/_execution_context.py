@@ -48,6 +48,7 @@ class ExecutionProfile(StrEnum):
     DEPLOY_LIVE = "deploy_live"
     DEPLOY_BATCH = "deploy_batch"
     CHUNKED_MAP_REDUCE = "chunked_map_reduce"
+    NODE_SNAPSHOT = "node_snapshot"
 
 
 class ExecutionCacheProofMissReason(StrEnum):

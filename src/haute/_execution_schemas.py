@@ -210,6 +210,7 @@ class ExecutionStrategyDiagnosticPayload(BaseModel):
         "deploy_live",
         "deploy_batch",
         "chunked_map_reduce",
+        "node_snapshot",
     ]
     boundedness: Literal["bounded", "unbounded", "unknown"]
     reason_code: str
