@@ -3829,6 +3829,49 @@ def test_external_file_unknown_input_and_input_mapping_fail_loudly(tmp_path: Pat
         execute_graph(graph, target_node_id="ext", execution_context=_capped_context())
 
 
+def test_instance_of_stepped_external_file_executes_with_mapping(tmp_path: Path) -> None:
+    quotes, rates = _frames(tmp_path)
+    alt_q = tmp_path / "alt_quotes.parquet"
+    alt_r = tmp_path / "alt_rates.parquet"
+    pl.DataFrame({"premium": [100.0], "region": ["north"]}).write_parquet(alt_q)
+    pl.DataFrame({"region": ["north"], "rate": [5.0]}).write_parquet(alt_r)
+    join = step(
+        "j", "join", input="rates", how="inner", leftOn=["region"], rightOn=["region"], suffix="_r"
+    )
+    original = _external_file(tmp_path, [join, step("l", "limit", n=1)])
+    instance = GraphNode(
+        id="ext_inst",
+        data=NodeData(
+            label="ext_inst",
+            nodeType="externalFile",
+            config={
+                "instanceOf": "ext",
+                "inputMapping": {"quotes": "alt_quotes", "rates": "alt_rates"},
+            },
+        ),
+    )
+    graph = PipelineGraph(
+        nodes=[
+            quotes,
+            rates,
+            original,
+            _ready_source("alt_quotes", alt_q),
+            _ready_source("alt_rates", alt_r),
+            instance,
+        ],
+        edges=[
+            make_edge("quotes", "ext"),
+            make_edge("rates", "ext"),
+            make_edge("alt_quotes", "ext_inst"),
+            make_edge("alt_rates", "ext_inst"),
+        ],
+    )
+    results = execute_graph(graph, target_node_id="ext_inst", execution_context=_capped_context())
+    assert results["ext_inst"].status == "ok", results["ext_inst"].error
+    assert len(results["ext_inst"].preview) == 1
+    assert results["ext_inst"].preview[0]["rate"] == 5.0
+
+
 def test_flatten_rewrites_a_stepped_external_file_input() -> None:
     child = PipelineGraph(
         nodes=[

@@ -1320,3 +1320,28 @@ def test_chunk_plan_rejects_row_nonlocal_editor_code(node_type: str, tmp_path: P
         chunk_plan(ChunkPlanRequest(graph=graph, target_node_id="out", chunk_size=2))
     assert raised.value.context["node_id"] == expected_node
     assert raised.value.context["reason"] == "unsupported_frame_method"
+
+
+def test_chunk_plan_rejects_scenario_expander_with_invalid_step_count(tmp_path: Path) -> None:
+    source_path = _write_projected_source(tmp_path)
+    nodes = [
+        _node("source", "dataInput", {"path": str(source_path)}),
+        _node(
+            "scenario",
+            "scenarioExpander",
+            {
+                "column_name": "factor",
+                "min_value": 1,
+                "max_value": 2,
+                "stepCount": -1,
+            },
+        ),
+        _node("out", "output", make_output_config(["premium"])),
+    ]
+    edges = [
+        make_edge("source", "scenario").model_dump(),
+        make_edge("scenario", "out").model_dump(),
+    ]
+    graph = make_graph({"nodes": nodes, "edges": edges})
+    with pytest.raises(ChunkPlanUnsupportedError, match="requires a valid stepCount"):
+        chunk_plan(ChunkPlanRequest(graph=graph, target_node_id="out", chunk_size=2))
