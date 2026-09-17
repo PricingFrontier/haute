@@ -1,0 +1,23 @@
+{
+  "status": "started",
+  "job_id": "node-data-7f2c",
+  "cached": false,
+  "message": "Caching started",
+  "point": {
+    "consumer_node_id": "banding",
+    "point": {"producer_node_id": "join", "port_label": null},
+    "slot_key": "join||live",
+    "kind": "node_output",
+    "state": "building",
+    "demand": ["premium"],
+    "data_version": null,
+    "row_count": null,
+    "size_bytes": null,
+    "retention": null,
+    "generation": null,
+    "job": {"job_id": "node-data-7f2c", "progress": 0.0, "message": "Caching data"},
+    "reads_directly": false,
+    "build_endpoint": null,
+    "clear_endpoint": null
+  }
+}

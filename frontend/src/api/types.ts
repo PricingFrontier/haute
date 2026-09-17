@@ -1023,6 +1023,91 @@ export interface ExploreCacheReport {
   execution_metrics?: ExecutionMetrics | null
 }
 
+export const NODE_DATA_POINT_KINDS = ["data_input", "api_input_table", "node_output"] as const
+
+export type NodeDataPointKind = (typeof NODE_DATA_POINT_KINDS)[number]
+
+export const NODE_DATA_POINT_STATES = [
+  "current",
+  "stale",
+  "partial",
+  "missing",
+  "building",
+  "corrupt",
+] as const
+
+export type NodeDataPointState = (typeof NODE_DATA_POINT_STATES)[number]
+
+/** A generation's column set: every column, or exactly the named ones. */
+export type NodeDataColumns = "all" | string[]
+
+export type NodeDataRetention = "pinned" | "automatic"
+
+export interface NodeDataPointRef {
+  producer_node_id: string
+  port_label?: string | null
+}
+
+export interface NodeDataGeneration {
+  generation_id: string
+  columns: NodeDataColumns
+  row_count: number
+  column_count: number
+  size_bytes: number
+  retention: NodeDataRetention
+  fresh: boolean
+  created_at: number
+}
+
+export interface NodeDataJob {
+  job_id: string
+  progress: number
+  message: string
+}
+
+export interface NodeDataPointResponse {
+  consumer_node_id: string
+  point: NodeDataPointRef
+  slot_key: string
+  kind: NodeDataPointKind
+  state: NodeDataPointState
+  demand: NodeDataColumns
+  data_version?: string | null
+  row_count?: number | null
+  size_bytes?: number | null
+  retention?: NodeDataRetention | null
+  generation?: NodeDataGeneration | null
+  job?: NodeDataJob | null
+  reads_directly: boolean
+  build_endpoint?: string | null
+  clear_endpoint?: string | null
+}
+
+export interface NodeDataRunResponse {
+  status: "started" | "joined" | "completed" | "delegated"
+  job_id?: string | null
+  cached: boolean
+  message: string
+  point: NodeDataPointResponse
+}
+
+export interface NodeDataStatusResponse {
+  status: JobStatus
+  progress: number
+  message: string
+  terminal_reason?: string | null
+  error?: string | null
+  error_code?: string | null
+  execution_metrics?: ExecutionMetrics | null
+  generation_id?: string | null
+  outcome?: "published" | "superseded" | null
+}
+
+export interface NodeDataClearResponse {
+  status: "cleared" | "delegated"
+  point: NodeDataPointResponse
+}
+
 export interface ExploreRunResponse {
   status: "started" | "running" | "completed"
   job_id?: string | null

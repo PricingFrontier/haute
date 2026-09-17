@@ -94,7 +94,7 @@
         }
       },
       {
-        "pattern": "src/panels/explore/cacheIdentity.ts",
+        "pattern": "src/panels/dataPointIdentity.ts",
         "thresholds": {
           "statements": 96,
           "branches": 94,

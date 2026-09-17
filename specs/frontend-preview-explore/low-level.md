@@ -28,7 +28,7 @@
 | `frontend/src/panels/ExplorePreview.tsx` | Explore run/cancel/store lifecycle and Preview/Overview/Pivots/Charts tab composition. |
 | `frontend/src/api/types.ts`, `frontend/src/types/guards.ts`, `frontend/src/stores/useNodeResultsStore.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned Explore API contracts, runtime guards, and node-scoped report/pivot job/result state consumed by the preview panes. |
 | `frontend/src/panels/UtilityPanel.tsx` | Utility-module list/read/create/delete/editor UI with debounced, flushable saves and syntax-error display. `App.tsx` loads the panel through a lazy import only after the user opens Utility, keeping its editor and API path out of startup JavaScript. |
-| `frontend/src/panels/explore/cacheIdentity.ts` | Upstream-lineage/config identity for an Explore cache request. |
+| `frontend/src/panels/dataPointIdentity.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned upstream-lineage/config identity of the data a consumer reads, used for the Explore cache request. |
 | `frontend/src/panels/explore/overviewCardDefinitions.ts`, `frontend/src/panels/explore/overviewConfig.ts` | Ordered overview-card registry and defensive config reader. |
 | `frontend/src/panels/explore/ExploreOverviewPane.tsx` | Enabled-card/empty-state dispatcher. |
 | `frontend/src/panels/explore/pivotConfig.ts`, `frontend/src/panels/explore/pivotNumberFormat.ts`, `frontend/src/panels/explore/useExplorePivotActions.ts`, `frontend/src/panels/explore/useAutoUpdateExplorePivots.ts`, `frontend/src/panels/explore/ExplorePivotsPane.tsx`, `frontend/src/panels/explore/PivotTableGrid.tsx` | Pivot version-1 parsing, number-format helpers, calculation identity, and the shared result-freshness predicate; shared table/chart run and cancel lifecycle; deduplicated automatic scheduling for mounted consumers; enabled-section lifecycle; virtualised semantic matrix rendering. |
@@ -65,7 +65,7 @@
 
 ### Explore and overview
 
-1. `frontend/src/panels/explore/cacheIdentity.ts` finds all upstream nodes, removes Explore
+1. `frontend/src/panels/dataPointIdentity.ts` finds all upstream nodes, removes Explore
    overview, shared-formula-library, pivot, and chart settings from data-affecting config, and
    includes submodels/preamble. Calculated-field definitions affect pivot calculations but never
    the materialised Explore dataframe.

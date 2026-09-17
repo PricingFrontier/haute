@@ -23,7 +23,7 @@ import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
 import { recoverySummaryKey, useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
-import { buildExploreCacheIdentity } from "./explore/cacheIdentity"
+import { buildNodeDataCacheIdentity } from "./dataPointIdentity"
 import { modellingPanesFor, resolveModellingPane } from "./modelling/modellingPanes"
 import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
@@ -1389,7 +1389,7 @@ function NodePanelContent({
   // picker never renders members from a superseded identity.
   const exploreConfigHash = useMemo(() => {
     if (!node || effectiveNodeType(node) !== NODE_TYPES.EXPLORE) return null
-    const identity = buildExploreCacheIdentity({ node, allNodes, edges, submodels, preamble })
+    const identity = buildNodeDataCacheIdentity({ node, allNodes, edges, submodels, preamble })
     return hashConfig({ graph: identity, source: activeSource })
   }, [node, allNodes, edges, submodels, preamble, activeSource])
 

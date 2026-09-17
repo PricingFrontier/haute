@@ -77,6 +77,10 @@ import type {
   MlflowModel,
   MlflowModelVersion,
   MlflowRun,
+  NodeDataClearResponse,
+  NodeDataPointResponse,
+  NodeDataRunResponse,
+  NodeDataStatusResponse,
   LogOptimiserToMlflowRequest,
   OptimiserEstimate,
   OptimiserSolveResponse,
@@ -116,6 +120,10 @@ import {
   parseExplorePivotMembersResponse,
   parseExplorePivotRunResponse,
   parseExplorePivotStatusResponse,
+  parseNodeDataClearResponse,
+  parseNodeDataPointResponse,
+  parseNodeDataRunResponse,
+  parseNodeDataStatusResponse,
   parseFrontierAutoRangeStartResponse,
   parseFrontierAutoRangeStatusResponse,
   parseFrontierStatusResponse,
@@ -1167,6 +1175,79 @@ export function clearInputCache(
   options?: { signal?: AbortSignal },
 ): Promise<InputCacheSnapshotResponse> {
   return post<unknown>("/api/input-cache/clear", payload, options).then(parseInputCacheSnapshotResponse)
+}
+
+// ---------------------------------------------------------------------------
+// Node data endpoints
+// ---------------------------------------------------------------------------
+
+export interface NodeDataArgs {
+  graph: GraphPayload
+  node_id: string
+  source?: string
+  signal?: AbortSignal
+}
+
+export function getNodeDataPoint(args: NodeDataArgs): Promise<NodeDataPointResponse> {
+  const { signal, ...payload } = args
+  return post<unknown>(
+    "/api/node-data/point",
+    {
+      ...payload,
+      source: payload.source ?? "live",
+    },
+    { signal },
+  ).then(parseNodeDataPointResponse)
+}
+
+export function runNodeData(
+  args: NodeDataArgs & { refresh?: boolean; streamingChunkSize?: number; timeout?: number },
+): Promise<NodeDataRunResponse> {
+  const { streamingChunkSize, signal, timeout = 300_000, ...payload } = args
+  return post<unknown>(
+    "/api/node-data/run",
+    {
+      ...payload,
+      source: payload.source ?? "live",
+      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
+    },
+    { signal, timeout },
+  ).then(parseNodeDataRunResponse)
+}
+
+export function getNodeDataStatus(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<NodeDataStatusResponse> {
+  return request<unknown>(`/api/node-data/status/${encodeURIComponent(jobId)}`, options).then(
+    (data) =>
+      validateApiResponse("Could not read node data status", () =>
+        parseNodeDataStatusResponse(data),
+      ),
+  )
+}
+
+export function cancelNodeData(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<NodeDataStatusResponse> {
+  return post<unknown>(
+    `/api/node-data/cancel/${encodeURIComponent(jobId)}`,
+    {},
+    options,
+  ).then(parseNodeDataStatusResponse)
+}
+
+export function clearNodeData(args: NodeDataArgs): Promise<NodeDataClearResponse> {
+  const { signal, ...payload } = args
+  return post<unknown>(
+    "/api/node-data/clear",
+    {
+      ...payload,
+      source: payload.source ?? "live",
+    },
+    { signal },
+  ).then(parseNodeDataClearResponse)
 }
 
 // ---------------------------------------------------------------------------

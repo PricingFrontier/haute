@@ -11,7 +11,7 @@ import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsF
 import type { PreviewData } from "../DataPreview"
 import type { SimpleEdge, SimpleNode } from "../editors"
 import ExplorePreview from "../ExplorePreview"
-import { buildExploreCacheIdentity } from "../explore/cacheIdentity"
+import { buildNodeDataCacheIdentity } from "../dataPointIdentity"
 import { PREVIEW_PANEL_DIMENSIONS } from "../previewPanelLayout"
 
 const mockRunExplore = vi.fn()
@@ -171,7 +171,7 @@ function makeExploreDataCacheHash({
   source?: string
 }): string {
   return hashConfig({
-    graph: buildExploreCacheIdentity({ node, allNodes, edges: graphEdges, submodels, preamble }),
+    graph: buildNodeDataCacheIdentity({ node, allNodes, edges: graphEdges, submodels, preamble }),
     source,
   })
 }

@@ -21,7 +21,7 @@ import { buildGraph } from "../utils/buildGraph"
 import ExecutionDiagnosticsSummary from "../components/ExecutionDiagnosticsSummary"
 import DataPreview, { type PreviewData } from "./DataPreview"
 import type { SimpleEdge, SimpleNode } from "./editors"
-import { buildExploreCacheIdentity } from "./explore/cacheIdentity"
+import { buildNodeDataCacheIdentity } from "./dataPointIdentity"
 import PreviewPanelFrame from "./PreviewPanelFrame"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import { PREVIEW_PANEL_ACTION_BUTTON_CLASS } from "./previewPanelLayout"
@@ -128,7 +128,7 @@ export default function ExplorePreview({
 
   const hasInput = useMemo(() => edges.some((edge) => edge.target === nodeId), [edges, nodeId])
   const cacheIdentity = useMemo(
-    () => buildExploreCacheIdentity({ node, allNodes, edges, submodels, preamble }),
+    () => buildNodeDataCacheIdentity({ node, allNodes, edges, submodels, preamble }),
     [allNodes, edges, node, preamble, submodels],
   )
   const configHash = useMemo(

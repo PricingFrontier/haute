@@ -19,7 +19,7 @@ the [caching roadmap](caching.md).
 
 ## Planned improvements
 
-Delivery order is `RAT-B01` → `RAT-B02` → `RAT-B03`, after `CACHE-S05`.
+Delivery order is `RAT-B01` → `RAT-B02` → `RAT-B03`.
 
 ### RAT-B01 — Rule-claim index for banding
 
@@ -126,7 +126,7 @@ counts disagree with execution.
   labels, and preview fallback shapes matching the server shapes for the same
   rows.
 
-**Dependencies:** RAT-B01, CACHE-S05; the caching data-point resolver; the equal-width
+**Dependencies:** RAT-B01; the shared frontend data cache; the caching data-point resolver; the equal-width
 binning helper is shared with `EDA-E09`.
 
 **Evidence:** `frontend/src/panels/editors/BandingEditor.tsx`;

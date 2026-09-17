@@ -29,6 +29,11 @@ import {
   fetchSchema,
   getExploreStatus,
   getExploreCacheSnapshot,
+  getNodeDataPoint,
+  getNodeDataStatus,
+  runNodeData,
+  cancelNodeData,
+  clearNodeData,
   getExplorePivotStatus,
   getMilestones,
   getMilestoneSaves,
@@ -539,6 +544,51 @@ describe("client runtime contracts", () => {
     expect(result.result?.row_count).toBe(150)
   })
 
+  it("getNodeDataPoint posts the consumer node and parses its point", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("node_data_point_response")))
+
+    const result = await getNodeDataPoint({ graph: dummyGraph, node_id: "explore" })
+
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/node-data/point")
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
+      graph: dummyGraph, node_id: "explore", source: "live",
+    })
+    expect(result.slot_key).toBe("join||live")
+    expect(result.state).toBe("partial")
+    expect(result.generation?.columns).toEqual(["premium", "region"])
+    expect(result.job?.job_id).toBe("node-data-7f2c")
+  })
+
+  it("runNodeData sends refresh and the streaming chunk size, and parses the started job", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("node_data_run_response")))
+
+    const result = await runNodeData({
+      graph: dummyGraph, node_id: "banding", refresh: true, streamingChunkSize: 2048,
+    })
+
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/node-data/run")
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
+      graph: dummyGraph, node_id: "banding", source: "live", refresh: true, streaming_chunk_size: 2048,
+    })
+    expect(result.status).toBe("started")
+    expect(result.job_id).toBe("node-data-7f2c")
+    expect(result.point.demand).toEqual(["premium"])
+  })
+
+  it("getNodeDataStatus, cancelNodeData and clearNodeData parse their terminal payloads", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("node_data_status_response")))
+    const status = await getNodeDataStatus("node-data-7f2c")
+    const cancelled = await cancelNodeData("node-data-7f2c")
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("node_data_clear_response")))
+    const cleared = await clearNodeData({ graph: dummyGraph, node_id: "explore" })
+
+    expect(status.outcome).toBe("published")
+    expect(status.generation_id).toBe("b41f0a2c9d5e4f7a")
+    expect(cancelled.status).toBe("completed")
+    expect(cleared.status).toBe("cleared")
+    expect(cleared.point.state).toBe("missing")
+  })
+
   it("getExploreStatus and cancelExplore parse terminal reports", async () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("explore_status_response")))
 
@@ -601,6 +651,20 @@ describe("client runtime contracts", () => {
     await expect(getExploreStatus("explore-job-1")).rejects.toMatchObject({
       name: "ApiResponseValidationError",
       message: expect.stringMatching(/could not read explore status.*parseExploreStatusResponse/i),
+      cause: expect.any(Error),
+    })
+  })
+
+  it("getNodeDataStatus rejects malformed status payloads as response validation errors", async () => {
+    // The background poller only stops on an ApiResponseValidationError, so a
+    // malformed reply must arrive as one instead of retrying for a day.
+    mockFetch.mockReturnValue(
+      jsonResponse({ ...loadUiContractFixture<Record<string, unknown>>("node_data_status_response"), progress: "bad" }),
+    )
+
+    await expect(getNodeDataStatus("node-data-7f2c")).rejects.toMatchObject({
+      name: "ApiResponseValidationError",
+      message: expect.stringMatching(/could not read node data status.*parseNodeDataStatusResponse/i),
       cause: expect.any(Error),
     })
   })
@@ -775,6 +839,30 @@ describe("next-wave client runtime contracts", () => {
       response: { ...loadUiContractFixture<Record<string, unknown>>("explore_run_response"), cached: "yes" },
       call: () => runExplore({ graph: dummyGraph, node_id: "explore" }),
       error: /parseExploreRunResponse/i,
+    },
+    {
+      name: "getNodeDataPoint",
+      response: { ...loadUiContractFixture<Record<string, unknown>>("node_data_point_response"), state: "warm" },
+      call: () => getNodeDataPoint({ graph: dummyGraph, node_id: "explore" }),
+      error: /parseNodeDataPointResponse/i,
+    },
+    {
+      name: "runNodeData",
+      response: { ...loadUiContractFixture<Record<string, unknown>>("node_data_run_response"), status: "queued" },
+      call: () => runNodeData({ graph: dummyGraph, node_id: "banding" }),
+      error: /parseNodeDataRunResponse/i,
+    },
+    {
+      name: "getNodeDataStatus",
+      response: { ...loadUiContractFixture<Record<string, unknown>>("node_data_status_response"), outcome: "kept" },
+      call: () => getNodeDataStatus("node-data-7f2c"),
+      error: /parseNodeDataStatusResponse/i,
+    },
+    {
+      name: "clearNodeData",
+      response: { ...loadUiContractFixture<Record<string, unknown>>("node_data_clear_response"), status: "gone" },
+      call: () => clearNodeData({ graph: dummyGraph, node_id: "explore" }),
+      error: /parseNodeDataClearResponse/i,
     },
     {
       name: "getExploreCacheSnapshot",

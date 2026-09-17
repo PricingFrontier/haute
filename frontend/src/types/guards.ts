@@ -123,6 +123,11 @@ import type {
   MlflowModel,
   MlflowModelVersion,
   MlflowRun,
+  NodeDataClearResponse,
+  NodeDataColumns,
+  NodeDataPointResponse,
+  NodeDataRunResponse,
+  NodeDataStatusResponse,
   OptimiserHistoryEntry,
   OptimiserEstimate,
   OptimiserSolveResponse,
@@ -144,7 +149,11 @@ import type {
   UtilityReadResponse,
   UtilityWriteResult,
 } from "../api/types"
-import { JOB_STATUS_VALUES } from "../api/types"
+import {
+  JOB_STATUS_VALUES,
+  NODE_DATA_POINT_KINDS,
+  NODE_DATA_POINT_STATES,
+} from "../api/types"
 import {
   PIPELINE_NODE_TYPES,
   type BackendNodeStatus,
@@ -1925,6 +1934,142 @@ export function parseExploreStatusResponse(value: unknown): ExploreStatusRespons
     result: obj.result === undefined || obj.result === null ? null : parseExploreCacheReport(obj.result),
     terminal_reason: optionalNullableString("parseExploreStatusResponse", obj, "terminal_reason"),
     execution_metrics: optionalExecutionMetrics("parseExploreStatusResponse", obj, "execution_metrics"),
+  }
+}
+
+const NODE_DATA_RETENTIONS = ["pinned", "automatic"] as const
+const NODE_DATA_RUN_STATUSES = ["started", "joined", "completed", "delegated"] as const
+const NODE_DATA_OUTCOMES = ["published", "superseded"] as const
+const NODE_DATA_CLEAR_STATUSES = ["cleared", "delegated"] as const
+
+export function parseNodeDataColumns(
+  parser: string,
+  value: unknown,
+  field: string,
+): NodeDataColumns {
+  if (value === "all") {
+    return "all"
+  }
+  return expectArray(parser, value, field).map((item, index) =>
+    expectString(parser, item, `${field}[${index}]`),
+  )
+}
+
+export function parseNodeDataPointResponse(value: unknown): NodeDataPointResponse {
+  const parser = "parseNodeDataPointResponse"
+  const obj = expectPlainObject(parser, value)
+  const pointObj = expectPlainObject(parser, obj.point, "field `point`")
+  const generationObj =
+    obj.generation === undefined || obj.generation === null
+      ? null
+      : expectPlainObject(parser, obj.generation, "field `generation`")
+  const jobObj =
+    obj.job === undefined || obj.job === null
+      ? null
+      : expectPlainObject(parser, obj.job, "field `job`")
+
+  return {
+    consumer_node_id: expectString(parser, obj.consumer_node_id, "field `consumer_node_id`"),
+    point: {
+      producer_node_id: expectString(
+        parser,
+        pointObj.producer_node_id,
+        "field `point.producer_node_id`",
+      ),
+      port_label: optionalNullableString(parser, pointObj, "port_label"),
+    },
+    slot_key: expectString(parser, obj.slot_key, "field `slot_key`"),
+    kind: expectStringLiteral(parser, obj.kind, "field `kind`", NODE_DATA_POINT_KINDS),
+    state: expectStringLiteral(parser, obj.state, "field `state`", NODE_DATA_POINT_STATES),
+    demand: parseNodeDataColumns(parser, obj.demand, "field `demand`"),
+    data_version: optionalNullableString(parser, obj, "data_version"),
+    row_count: optionalNullableNumber(parser, obj, "row_count"),
+    size_bytes: optionalNullableNumber(parser, obj, "size_bytes"),
+    retention:
+      obj.retention === undefined || obj.retention === null
+        ? null
+        : expectStringLiteral(parser, obj.retention, "field `retention`", NODE_DATA_RETENTIONS),
+    generation:
+      generationObj === null
+        ? null
+        : {
+            generation_id: expectString(
+              parser,
+              generationObj.generation_id,
+              "field `generation.generation_id`",
+            ),
+            columns: parseNodeDataColumns(
+              parser,
+              generationObj.columns,
+              "field `generation.columns`",
+            ),
+            row_count: expectNumber(parser, generationObj.row_count, "field `generation.row_count`"),
+            column_count: expectNumber(
+              parser,
+              generationObj.column_count,
+              "field `generation.column_count`",
+            ),
+            size_bytes: expectNumber(parser, generationObj.size_bytes, "field `generation.size_bytes`"),
+            retention: expectStringLiteral(
+              parser,
+              generationObj.retention,
+              "field `generation.retention`",
+              NODE_DATA_RETENTIONS,
+            ),
+            fresh: expectBoolean(parser, generationObj.fresh, "field `generation.fresh`"),
+            created_at: expectNumber(parser, generationObj.created_at, "field `generation.created_at`"),
+          },
+    job:
+      jobObj === null
+        ? null
+        : {
+            job_id: expectString(parser, jobObj.job_id, "field `job.job_id`"),
+            progress: expectNumber(parser, jobObj.progress, "field `job.progress`"),
+            message: expectString(parser, jobObj.message, "field `job.message`"),
+          },
+    reads_directly: optionalBoolean(parser, obj, "reads_directly"),
+    build_endpoint: optionalNullableString(parser, obj, "build_endpoint"),
+    clear_endpoint: optionalNullableString(parser, obj, "clear_endpoint"),
+  }
+}
+
+export function parseNodeDataRunResponse(value: unknown): NodeDataRunResponse {
+  const parser = "parseNodeDataRunResponse"
+  const obj = expectPlainObject(parser, value)
+  return {
+    status: expectStringLiteral(parser, obj.status, "field `status`", NODE_DATA_RUN_STATUSES),
+    job_id: optionalNullableString(parser, obj, "job_id"),
+    cached: optionalBoolean(parser, obj, "cached"),
+    message: optionalString(parser, obj, "message"),
+    point: parseNodeDataPointResponse(obj.point),
+  }
+}
+
+export function parseNodeDataStatusResponse(value: unknown): NodeDataStatusResponse {
+  const parser = "parseNodeDataStatusResponse"
+  const obj = expectPlainObject(parser, value)
+  return {
+    status: expectStringLiteral(parser, obj.status, "field `status`", JOB_STATUS_VALUES),
+    progress: optionalNumber(parser, obj, "progress"),
+    message: optionalString(parser, obj, "message"),
+    terminal_reason: optionalNullableString(parser, obj, "terminal_reason"),
+    error: optionalNullableString(parser, obj, "error"),
+    error_code: optionalNullableString(parser, obj, "error_code"),
+    execution_metrics: optionalExecutionMetrics(parser, obj, "execution_metrics"),
+    generation_id: optionalNullableString(parser, obj, "generation_id"),
+    outcome:
+      obj.outcome === undefined || obj.outcome === null
+        ? null
+        : expectStringLiteral(parser, obj.outcome, "field `outcome`", NODE_DATA_OUTCOMES),
+  }
+}
+
+export function parseNodeDataClearResponse(value: unknown): NodeDataClearResponse {
+  const parser = "parseNodeDataClearResponse"
+  const obj = expectPlainObject(parser, value)
+  return {
+    status: expectStringLiteral(parser, obj.status, "field `status`", NODE_DATA_CLEAR_STATUSES),
+    point: parseNodeDataPointResponse(obj.point),
   }
 }
 

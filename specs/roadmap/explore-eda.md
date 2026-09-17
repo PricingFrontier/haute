@@ -45,7 +45,7 @@ analyses its own output; an Explore node and a Banding node on one parent share
 one build and one cache state; a pivot calculated before a refresh is never
 returned for the new generation.
 
-**Dependencies:** `CACHE-S05`; the node-data build service, the data profile job, and the analysis-result store.
+**Dependencies:** The node-data build service, the data profile job, the analysis-result store, and the shared frontend data cache.
 
 **Evidence:** `src/haute/routes/_explore_service.py`;
 `src/haute/routes/_pivot_service.py`; `src/haute/routes/explore.py`;

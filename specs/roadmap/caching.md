@@ -16,7 +16,6 @@ and the [rating roadmap](rating.md).
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CACHE-S05 | Planned | P2 | Give every consumer one frontend data-cache hook and button. |
 | CACHE-S06 | Planned | P1 | Prove which execution profiles and projections produce identical node outputs. |
 | CACHE-S07 | Planned | P1 | Make every bounded execution seed from and capture into shared snapshots, replacing private caches and temporary checkpoints. |
 | CACHE-S09 | Planned | P2 | Make previews and traces seed from and capture into shared snapshots. |
@@ -24,9 +23,8 @@ and the [rating roadmap](rating.md).
 
 ## Planned improvements
 
-Delivery order is `CACHE-S05`, then the consumer packages `EDA-C01` and
-`RAT-B01` → `RAT-B02` → `RAT-B03`, then `CACHE-S06` → `CACHE-S07` →
-`CACHE-S09`. A later package must
+Delivery order is the consumer packages `EDA-C01` and `RAT-B01` → `RAT-B02` →
+`RAT-B03`, then `CACHE-S06` → `CACHE-S07` → `CACHE-S09`. A later package must
 not bypass the resolver, lease, signature, or capture contracts of an earlier
 one. Every package builds on the node-output snapshot store (signature, slot
 index, column widening, retention, cross-process leases, and the publication
@@ -34,62 +32,10 @@ rule) specified in the [IO layer](../io-layer/low-level.md#node-output-snapshots
 the data-point resolver and leased reads specified in
 [caching](../caching/low-level.md#data-points), the node-data build service, the data
 profile job, and the request-time analysis helper specified in the
-[server API](../server-api/low-level.md#node-data-builds), and the analysis-result store
-specified in [caching](../caching/low-level.md#analysis-results).
-
-### CACHE-S05 — Shared frontend data-cache hook and button
-
-**Why:** Explore's cache state, job polling, document execution fence, and
-cache button live inside `ExplorePreview.tsx` and an Explore-only store slice,
-so Banding and Rating cannot reuse them and would not see a job Explore
-started on the same point.
-
-**Plan:**
-
-- A `useNodeDataCache(consumerNode)` hook calls `/api/node-data/point` and
-  exposes `point`, `kind`, `state`, `progress`, `rowCount`, `sizeBytes`,
-  `retention`, `dataVersion`, `run`, `refresh`, `cancel`, and `clear`. For
-  snapshot-backed `data_input` and `api_input_table` points it delegates to the
-  existing input-snapshot and JSON-cache orchestration; a direct-Parquet
-  `data_input` point shows no build action.
-- A store slice keyed by slot (`producerNodeId|portLabel|source`) holds what
-  every consumer of the point shares: the running job and its progress, and the
-  current generation's id, column set, row count, size, and retention. Each
-  consumer derives its own availability (`current`, `partial`, `stale`,
-  `missing`) from that shared entry and its own column demand, so a narrow
-  generation can be `current` for Banding and `partial` for Explore at the same
-  time. The slice keeps a node-data epoch that increments whenever a generation
-  is published, widened, evicted, or cleared, as reported by `point` responses
-  and job completions.
-- The identity hash that decides when to re-ask the backend generalises
-  `frontend/src/panels/explore/cacheIdentity.ts` to any point; the backend's
-  `point` response remains authoritative.
-- A shared `DataCacheButton` component carries Explore's current states,
-  colours, progress, and cancel, shows `partial` as "Cached for some columns",
-  and shows the snapshot size and whether it is pinned or automatic.
-
-**Acceptance:**
-
-- Explore and a Banding editor on the same parent render the same job progress
-  from one job, whichever consumer started it.
-- With one generation holding only the banded column, a Banding editor and an
-  Explore preview on the same parent, mounted together, show `current` and
-  `partial` respectively from the same slot entry; a full-width build then makes
-  both `current`.
-- A point that becomes `current` through a run's automatic capture updates the
-  button without a user build.
-- A stale identity aborts the in-flight `point` request; a document-fence
-  change prevents late state writes.
-- A direct-Parquet `data_input` point renders "Reads Parquet directly" with no
-  button.
-
-**Dependencies:** The node-data build service and routes.
-
-**Evidence:** `frontend/src/panels/ExplorePreview.tsx`;
-`frontend/src/panels/explore/cacheIdentity.ts`;
-`frontend/src/stores/useNodeResultsStore.ts`;
-`frontend/src/hooks/ensureInputSnapshots.ts`;
-`frontend/src/panels/__tests__/ExplorePreview.test.tsx`.
+[server API](../server-api/low-level.md#node-data-builds), the analysis-result store
+specified in [caching](../caching/low-level.md#analysis-results), and the shared frontend
+data cache specified in
+[frontend shared](../frontend-shared/low-level.md#the-shared-data-cache).
 
 ### CACHE-S06 — Execution-profile and projection data semantics proof
 

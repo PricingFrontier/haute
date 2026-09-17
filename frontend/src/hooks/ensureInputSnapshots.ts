@@ -2,6 +2,8 @@ import type { Node } from "@xyflow/react"
 import {
   ApiError,
   buildInputCache,
+  cancelInputCacheJob,
+  deleteJsonCache,
   getInputCacheJob,
   getInputCacheStatus,
   buildJsonCache,
@@ -13,6 +15,18 @@ import { dataInputIsDirect } from "../utils/dataInputMode"
 import { NODE_TYPES } from "../utils/nodeTypes"
 
 const POLL_INTERVAL_MS = 800
+// A cancelled build is waited for, because a point reports itself as building
+// until its job is terminal and nothing else is polling it by then.
+const CANCELLATION_TERMINAL_POLLS = 60
+
+/**
+ * A cancellation that the server did not accept, or whose build never reached a
+ * terminal state. The caller cancelled, so this is the outcome it must report:
+ * work is still running that the user asked to stop.
+ */
+export class CancellationFailedError extends Error {
+  override name = "CancellationFailed"
+}
 
 export interface EnsureInputSnapshotsOptions {
   /** Called at most once when this ensure pass starts or joins any build. */
@@ -20,6 +34,18 @@ export interface EnsureInputSnapshotsOptions {
   signal?: AbortSignal
   /** Current Quote Input cache preparation phase; null when preparation ends. */
   onProgress?: (message: string | null) => void
+  /**
+   * Rebuild every snapshot and cache this pass covers, even one that is already
+   * served. Without it a ready — including a stale — snapshot and a cached table
+   * are left as they are, which is what a preview wants; a user asking for a
+   * refresh wants the data recomputed.
+   */
+  force?: boolean
+  /**
+   * The id of each input-snapshot build this pass started or joined, so a
+   * caller can cancel that build again itself if a cancellation fails.
+   */
+  onJobStarted?: (jobId: string) => void
 }
 
 function snapshotConfigs(nodes: Node[]): Record<string, unknown>[] {
@@ -66,11 +92,21 @@ async function ensureQuoteInputCache(
   }
   report("Checking Quote Input cache…")
   try {
-    const status = options.signal
-      ? await getJsonCacheStatusForSchema(payload, { signal: options.signal })
-      : await getJsonCacheStatusForSchema(payload)
-    if (options.signal?.aborted) throw abortError()
-    if (status.cached) return
+    if (options.force) {
+      // The build endpoint answers a valid working cache with no work at all,
+      // so a forced rebuild removes that layer first. The committed layer of a
+      // saved pipeline is untouched; the working layer is what a read serves.
+      report("Replacing the Quote Input cache…")
+      await deleteJsonCache(path, options.signal ? { signal: options.signal } : undefined)
+      if (options.signal?.aborted) throw abortError()
+    }
+    if (!options.force) {
+      const status = options.signal
+        ? await getJsonCacheStatusForSchema(payload, { signal: options.signal })
+        : await getJsonCacheStatusForSchema(payload)
+      if (options.signal?.aborted) throw abortError()
+      if (status.cached) return
+    }
     notifyBuildStart()
     report("Caching Quote Input as Parquet…")
     const controller = new AbortController()
@@ -133,27 +169,77 @@ async function waitForJob(
   jobId: string,
   signal?: AbortSignal,
 ): Promise<void> {
-  for (;;) {
-    if (signal?.aborted) throw abortError()
-    const job = signal
-      ? await getInputCacheJob(jobId, { signal })
-      : await getInputCacheJob(jobId)
-    if (job.status === "completed") return
-    if (TERMINAL_JOB_STATUSES.has(job.status)) {
-      throw new Error(job.message || `Input snapshot build ${job.status}.`)
+  try {
+    for (;;) {
+      if (signal?.aborted) throw abortError()
+      const job = signal
+        ? await getInputCacheJob(jobId, { signal })
+        : await getInputCacheJob(jobId)
+      if (job.status === "completed") return
+      if (TERMINAL_JOB_STATUSES.has(job.status)) {
+        throw new Error(job.message || `Input snapshot build ${job.status}.`)
+      }
+      await waitForNextPoll(signal)
     }
-    await waitForNextPoll(signal)
+  } catch (caught) {
+    if (!signal?.aborted) throw caught
+    await cancelInputSnapshotBuild(jobId)
+    throw abortError()
   }
+}
+
+/**
+ * Cancel a build and wait for it to stop.
+ *
+ * The endpoint only acknowledges the request — the job can still be running
+ * when it answers — and a point keeps reporting itself as building until that
+ * job is terminal, so the wait here is what lets the caller report a point that
+ * is no longer being built. A refused cancellation, or one whose build never
+ * terminates, is raised rather than passed off as a completed cancellation.
+ */
+export async function cancelInputSnapshotBuild(jobId: string): Promise<void> {
+  let acknowledged: { status: string }
+  try {
+    acknowledged = await cancelInputCacheJob(jobId)
+  } catch (caught) {
+    throw new CancellationFailedError(
+      `The snapshot build could not be cancelled: ${
+        caught instanceof Error ? caught.message : String(caught)
+      }`,
+    )
+  }
+  if (TERMINAL_JOB_STATUSES.has(acknowledged.status as never)) return
+  for (let poll = 0; poll < CANCELLATION_TERMINAL_POLLS; poll += 1) {
+    await waitForNextPoll()
+    let job: { status: string }
+    try {
+      job = await getInputCacheJob(jobId)
+    } catch (caught) {
+      // The build was asked to stop but its state is unknown, which is a
+      // failed cancellation rather than an ordinary build error: the caller
+      // must keep offering to stop it.
+      throw new CancellationFailedError(
+        `The snapshot build could not be confirmed as stopped: ${
+          caught instanceof Error ? caught.message : String(caught)
+        }`,
+      )
+    }
+    if (TERMINAL_JOB_STATUSES.has(job.status as never)) return
+  }
+  throw new CancellationFailedError(
+    "The snapshot build did not stop after it was cancelled; it may still be running.",
+  )
 }
 
 async function startBuild(
   config: Record<string, unknown>,
   signal?: AbortSignal,
+  refresh = false,
 ): Promise<string> {
   const payload = {
     schema_version: 1 as const,
     config,
-    refresh: false,
+    refresh,
   }
   try {
     const request = { ...payload, profile: "lazy_sink" as const }
@@ -182,7 +268,8 @@ async function startBuild(
 
 /**
  * Build (or join the build of) every unavailable snapshot the graph needs.
- * A ready snapshot is served as published even when its freshness is stale.
+ * A ready snapshot is served as published even when its freshness is stale,
+ * unless ``force`` asks for every snapshot and cache to be rebuilt.
  */
 export async function ensureInputSnapshots(
   nodes: Node[],
@@ -207,19 +294,20 @@ export async function ensureInputSnapshots(
 
   await Promise.all(
     configs.map(async (config) => {
-      const payload = { schema_version: 1 as const, config }
-      const status = options.signal
-        ? await getInputCacheStatus(payload, { signal: options.signal })
-        : await getInputCacheStatus(payload)
-      if (status.state === "ready") return
+      if (!options.force) {
+        const payload = { schema_version: 1 as const, config }
+        const status = options.signal
+          ? await getInputCacheStatus(payload, { signal: options.signal })
+          : await getInputCacheStatus(payload)
+        if (status.state === "ready") return
+      }
 
       // The build endpoint joins an existing job for "building". Corrupt and
       // failed snapshots are known-bad and are rebuilt before execution.
       notifyBuildStart()
-      await waitForJob(
-        await startBuild(config, options.signal),
-        options.signal,
-      )
+      const jobId = await startBuild(config, options.signal, options.force === true)
+      options.onJobStarted?.(jobId)
+      await waitForJob(jobId, options.signal)
     }),
   )
 }

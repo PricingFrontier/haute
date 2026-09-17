@@ -145,13 +145,13 @@ fabricated.
 
 - **Current limitation.** Explore's cache inspection, run, cancel, job polling, and cache button
   live in `frontend/src/panels/ExplorePreview.tsx` with an Explore-only store slice keyed by the
-  Explore node, so another consumer of the same data cannot see or reuse them.
-- **Unresolved target.** A shared data-cache hook and button serve every consumer. The running job,
-  its progress, and the current generation's id, columns, size, and retention are stored once per
-  data-point slot, so Explore and a Banding or Rating editor on the same input share one job,
-  whichever started it. Each consumer derives its own availability from that shared entry and its
-  column demand, so one narrow generation can be current for Banding and partial for Explore.
-  Explore's overview reads the shared profile analysis for the point's current data version.
+  Explore node, so it neither shows nor reuses the shared build another consumer of the same data
+  started through the delivered shared data cache.
+- **Unresolved target.** The Explore preview reads its data through the shared data-cache hook and
+  renders the shared cache button, so Explore and a Banding or Rating editor on the same input
+  share one job, whichever started it, and one narrow generation is current for Banding while it
+  is partial for Explore. Explore's overview reads the shared profile analysis for the point's
+  current data version.
 - **Non-goals.** Explore tabs, pivot and chart panes, and their configuration persistence are
   unchanged.
 - **Failure and compatibility semantics.** A failed point inspection is surfaced, never shown as
@@ -160,7 +160,7 @@ fabricated.
 - **Acceptance evidence.** Tests render Explore and a Banding editor on one parent sharing progress
   from a single job, showing current and partial side by side for one narrow generation, plus the
   existing Explore preview cache-state tests on the shared hook.
-- **Roadmap package.** [CACHE-S05](../roadmap/caching.md#cache-s05--shared-frontend-data-cache-hook-and-button).
+- **Roadmap package.** [EDA-C01](../roadmap/explore-eda.md#eda-c01--explore-on-shared-data-points).
 
 ## Approved change contract — previews from cached data
 

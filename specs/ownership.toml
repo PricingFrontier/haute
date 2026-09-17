@@ -150,6 +150,12 @@ consumers = ["frontend-modelling-optimiser-ui", "frontend-node-editors"]
 reason = "Preview/Explore owns the generic ARIA tab strip consumed by modelling result and node-panel panes."
 
 [[shared_file]]
+path = "frontend/src/panels/dataPointIdentity.ts"
+primary = "frontend-shared"
+consumers = ["frontend-preview-explore"]
+reason = "Shared UI owns the data-point cache identity every consumer gates its point request with; the Explore preview consumes it for its own cache request."
+
+[[shared_file]]
 path = "frontend/src/panels/explore/chartConfig.ts"
 primary = "frontend-preview-explore"
 consumers = ["frontend-node-editors"]
