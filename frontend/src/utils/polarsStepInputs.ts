@@ -32,6 +32,7 @@ export const STEPPED_NODE_TYPES: Readonly<Record<string, SteppedSurface>> = {
   ratingStep: { start: "frame", inputs: "none" },
   modelScore: { start: "frame", inputs: "none" },
   scenarioExpander: { start: "frame", inputs: "none" },
+  explore: { start: "frame", inputs: "none" },
 }
 
 /** The stepped surface of a node type, or undefined for a type that does not author steps. */

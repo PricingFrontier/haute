@@ -4168,3 +4168,92 @@ def test_model_score_steps_run_after_scoring(tmp_path: Path) -> None:
     assert result.status == "ok", result.error
     assert "prediction" in [c.name for c in result.columns]
     assert len(result.preview) == 2
+
+
+def _explore(steps: list[dict[str, Any]], **extra: Any) -> GraphNode:
+    """An Explore node whose analysis frame is authored as steps."""
+    return GraphNode(
+        id="report",
+        data=NodeData(label="report", nodeType="explore", config={"steps": steps, **extra}),
+    )
+
+
+def test_explore_steps_execute_and_round_trip_through_the_decorator(tmp_path: Path) -> None:
+    """Explore has no sidecar: its steps travel in the decorator beside its cards."""
+    quotes, _rates = _frames(tmp_path)
+    steps = [step("l", "limit", n=2)]
+    graph = PipelineGraph(nodes=[quotes, _explore(steps)], edges=[make_edge("quotes", "report")])
+    result = execute_graph(graph, target_node_id="report", execution_context=_capped_context())[
+        "report"
+    ]
+    assert result.status == "ok", result.error
+    assert len(result.preview) == 2
+
+    code = graph_to_code(graph, pipeline_name="main")
+    assert "@pipeline.explore(steps=[" in code
+    assert "\n    df = quotes\n    df = df.head(2)\n    return df\n" in code
+    # No sidecar is written for an Explore node.
+    assert "config/explore" not in code
+    assert not [rel for rel in collect_node_configs(graph) if "report" in rel]
+
+    _write_sidecars(tmp_path, graph)
+    node = next(
+        n for n in parse_pipeline_source(code, _base_dir=tmp_path).nodes if n.id == "report"
+    )
+    assert node.data.config["steps"] == steps
+    assert node.data.config["code"] == "df = df.head(2)"
+    assert "_steps_discarded" not in node.data.config
+
+
+def test_explore_steps_keep_their_cards_and_fail_loudly_when_incomplete(tmp_path: Path) -> None:
+    quotes, _rates = _frames(tmp_path)
+    from tests.test_explore_pivots import _pivot
+
+    pivots = [_pivot()]
+    steps = [step("l", "limit", n=2)]
+    graph = PipelineGraph(
+        nodes=[quotes, _explore(steps, pivots=pivots)], edges=[make_edge("quotes", "report")]
+    )
+    code = graph_to_code(graph, pipeline_name="main")
+    _write_sidecars(tmp_path, graph)
+    node = next(
+        n for n in parse_pipeline_source(code, _base_dir=tmp_path).nodes if n.id == "report"
+    )
+    assert node.data.config["steps"] == steps
+    assert [pivot["id"] for pivot in node.data.config["pivots"]] == [pivots[0]["id"]]
+
+    broken = _explore([step("f", "filter", match="all", conditions=[])])
+    assert broken.data.config["_steps_error"] == "Step 1: Add at least one condition."
+    broken_graph = PipelineGraph(nodes=[quotes, broken], edges=[make_edge("quotes", "report")])
+    result = execute_graph(
+        broken_graph, target_node_id="report", execution_context=_capped_context()
+    )["report"]
+    assert result.status == "error"
+    assert INCOMPLETE_STEPS_MESSAGE in str(result.error)
+
+    broken_code = graph_to_code(broken_graph, pipeline_name="main")
+    assert INCOMPLETE_STEPS_MESSAGE in broken_code
+    _write_sidecars(tmp_path, broken_graph)
+    reloaded = next(
+        n for n in parse_pipeline_source(broken_code, _base_dir=tmp_path).nodes if n.id == "report"
+    )
+    assert reloaded.data.config["steps"] == broken.data.config["steps"]
+    assert reloaded.data.config["code"] == ""
+    assert reloaded.data.config["_steps_error"] == "Step 1: Add at least one condition."
+
+
+def test_explore_hand_edited_body_discards_its_steps(tmp_path: Path) -> None:
+    quotes, _rates = _frames(tmp_path)
+    graph = PipelineGraph(
+        nodes=[quotes, _explore([step("l", "limit", n=2)])], edges=[make_edge("quotes", "report")]
+    )
+    _write_sidecars(tmp_path, graph)
+    edited = graph_to_code(graph, pipeline_name="main").replace("df.head(2)", "df.head(3)")
+    node = next(
+        n for n in parse_pipeline_source(edited, _base_dir=tmp_path).nodes if n.id == "report"
+    )
+    assert "steps" not in node.data.config
+    assert node.data.config["code"] == "df = df.head(3)"
+    assert node.data.config["_steps_discarded"].startswith("Steps were discarded because")
+    # Explore has no sidecar to retire.
+    assert "_discarded_sidecar" not in node.data.config

@@ -838,14 +838,21 @@ def _gen_explore(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
     params = _build_params(source_names)
     first = source_names[0]
-    code = str(config.get("code") or "").strip()
+    code, incomplete = _stepped_body_code(config, NodeType.EXPLORE, source_names)
     overview = config["overview"] if "overview" in config else {}
     pivot_formulas = config.get("pivot_formulas")
     pivots = config["pivots"] if "pivots" in config else []
     charts = config["charts"] if "charts" in config else []
     decorator_args = _explore_decorator_args(overview, pivot_formulas, pivots, charts, config)
-    if code:
-        user_body = _wrap_user_code(code, ["df"])
+    steps = config.get("steps")
+    if isinstance(steps, list):
+        # No sidecar: the steps travel in the decorator beside pivots and charts.
+        step_arg = f"steps={steps!r}"
+        decorator_args = f"{decorator_args}, {step_arg}" if decorator_args else step_arg
+    if code or incomplete:
+        user_body = (
+            INCOMPLETE_STEPS_BODY.rstrip("\n") if incomplete else _wrap_user_code(code, ["df"])
+        )
         return (
             f"@pipeline.explore({decorator_args})\n"
             f"def {func_name}({params}) -> pl.LazyFrame:\n"

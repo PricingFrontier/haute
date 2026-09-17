@@ -194,6 +194,10 @@ def _build_node_config(
         code = _extract_explore_user_code(body, param_names) if body else ""
         if code:
             config["code"] = code
+        # Explore has no sidecar: its steps travel as a decorator argument
+        # beside its pivots and charts, and are reconciled with the body below.
+        if "steps" in decorator_kwargs:
+            config["steps"] = decorator_kwargs["steps"]
         if "overview" in decorator_kwargs:
             overview = validate_explore_overview(
                 decorator_kwargs["overview"],
@@ -388,6 +392,7 @@ _EXTRACTION_KIND_BY_STEPPED_TYPE: dict[NodeType, str] = {
     NodeType.RATING_STEP: "rating_step",
     NodeType.MODEL_SCORE: "model_score",
     NodeType.SCENARIO_EXPANDER: "scenario_expander",
+    NodeType.EXPLORE: "explore",
 }
 
 
@@ -395,7 +400,7 @@ def _reconcile_steps(
     config: dict[str, Any],
     node_type: NodeType,
     param_names: list[str],
-    config_ref: str,
+    config_ref: str | None,
     func_name: str,
 ) -> dict[str, Any]:
     """Keep a stepped sidecar's ``steps`` only while they still render the body.
@@ -419,7 +424,7 @@ def _reconcile_steps(
     steps = config["steps"]
     if not isinstance(steps, list):
         raise ConfigError(
-            f"{node_type.value} sidecar 'steps' must be a list.",
+            f"{node_type.value} 'steps' must be a list.",
             func_name=func_name,
             config_path=config_ref,
         )
@@ -449,7 +454,7 @@ def _reconcile_steps(
         reason = "the function body no longer matches the rendered steps"
     reconciled = {k: v for k, v in config.items() if k != "steps"}
     reconciled["_steps_discarded"] = f"Steps were discarded because {reason}."
-    if node_type == NodeType.POLARS:
+    if node_type == NodeType.POLARS and config_ref is not None:
         reconciled["_discarded_sidecar"] = config_ref
     logger.warning(
         "polars_steps_discarded",
@@ -532,6 +537,9 @@ def _resolve_node_config(
         raise _sidecar_required_error(node_type, func_name)
     else:
         config = _build_node_config(node_type, decorator_kwargs, body, param_names)
+        if node_type in STEPPED_NODE_TYPES:
+            # Decorator-carried steps (Explore) reconcile with the body the same way.
+            config = _reconcile_steps(config, node_type, param_names, None, func_name)
 
     if node_type == NodeType.LIVE_SWITCH:
         config["inputs"] = list(edge_param_names if edge_param_names is not None else param_names)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, get_type_hints
+from typing import Any, Literal, get_type_hints
 
 import pytest
 
@@ -565,6 +565,7 @@ class TestSharedColumnSettingsUniversal:
         """Explore can store the Polars snippet used to prepare analysis data."""
         assert get_type_hints(ExploreConfig) == {
             "code": str,
+            "steps": list[dict[str, Any]],
             "overview": ExploreOverviewConfig,
             "pivot_formulas": list[ExplorePivotFormula],
             "pivots": list[ExplorePivotPersistedConfig],

@@ -368,8 +368,8 @@ and concat and keeps group by, pivot and unpivot. Column suggestions use the sam
 upstream columns the code box used. An empty frame-mode list renders to empty code, so
 the confirmed switch to code on an empty list writes empty code, and the node behaves
 exactly as with an empty code box until a step is added. Every Polars tab (Data Input,
-External File, Scenario Expander, Rating Step, Model Score) mounts this pane in `frame`
-mode, with the surface's eligible input names from the shared table: every connected
+External File, Scenario Expander, Rating Step, Model Score) and Explore's own "Polars
+Code" pane mount this pane in `frame` mode, with the surface's eligible input names from the shared table: every connected
 input for an External File (whose free code still reaches `obj`, as the tab's code hint
 says), none for the others. A new node of each of these types starts in step mode with
 an empty list, and changing a Data Input's provider or format keeps its steps as it

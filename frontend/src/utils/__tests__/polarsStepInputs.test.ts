@@ -16,6 +16,7 @@ describe("stepped surfaces", () => {
       ratingStep: { start: "frame", inputs: "none" },
       modelScore: { start: "frame", inputs: "none" },
       scenarioExpander: { start: "frame", inputs: "none" },
+      explore: { start: "frame", inputs: "none" },
     })
     expect(steppedSurfaceFor("polars")).toEqual({ start: "input", inputs: "edges" })
     expect(steppedSurfaceFor("output")).toBeUndefined()

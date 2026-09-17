@@ -756,7 +756,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
             node_config=("outputFormat", "outputMapping"),
         ),
         NodeType.EXPLORE: _classify_config_fields(
-            user_code=("code",),
+            user_code=("code", "steps"),
             excluded={
                 "overview": (
                     "Overview-card visibility affects presentation, not the explored frame."

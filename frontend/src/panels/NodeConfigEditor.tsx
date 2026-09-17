@@ -119,7 +119,7 @@ export function NodeConfigEditor({
       if (activeExplorePane === "code") {
         return (
           <div id="explore-code-pane" role="tabpanel" aria-labelledby="explore-code-tab" data-testid="explore-code-pane" className="h-full min-h-0 flex flex-col">
-            <ExploreCodeEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} upstreamColumns={upstreamColumns} />
+            <ExploreCodeEditor config={config} onUpdate={onUpdateConfig} onReplaceConfig={onReplaceConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} runError={runError} upstreamColumns={upstreamColumns} />
           </div>
         )
       }

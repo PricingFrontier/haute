@@ -332,6 +332,16 @@ def _examples():
                 "steps": [{"id": "l", "kind": "limit", "n": 2}],
             },
         ),
+        # Explore keeps its steps in the decorator beside its cards, so the
+        # round trip has to carry both.
+        (
+            NodeType.EXPLORE,
+            {
+                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                "pivot_formulas": [_formula()],
+                "pivots": [_pivot(formulas=["formula_1"])],
+            },
+        ),
     ]
     for index, (node_type, config) in enumerate(variants):
         variant = graph.model_copy(deep=True)

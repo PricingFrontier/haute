@@ -1428,6 +1428,7 @@ class SavePipelineService:
             NodeType.RATING_STEP: "Rating Step",
             NodeType.MODEL_SCORE: "Model Score",
             NodeType.SCENARIO_EXPANDER: "Scenario Expander",
+            NodeType.EXPLORE: "Explore",
         }
         scoped_graphs = [graph, *self._iter_embedded_submodel_graphs(graph)]
         for scoped_graph in scoped_graphs:

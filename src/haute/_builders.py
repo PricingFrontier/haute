@@ -348,8 +348,10 @@ def _explore_fn(df: _Frame) -> _Frame:
 
 
 def _explore_columns(config: dict[str, Any]) -> _ColumnContract:
-    """Explore code can derive/filter arbitrary analysis columns."""
-    return _OPAQUE_CONTRACT if (config.get("code") or "").strip() else _passthrough_columns(config)
+    """Explore code, or a step list (the same program), derives arbitrary analysis columns."""
+    if (config.get("code") or "").strip() or isinstance(config.get("steps"), list):
+        return _OPAQUE_CONTRACT
+    return _passthrough_columns(config)
 
 
 def _configured_pipeline_dir() -> Path | None:
@@ -571,6 +573,12 @@ def _build_live_switch(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
 @_register(NodeType.EXPLORE, columns=_explore_columns)
 def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
+    problem = stepped_code_problem(
+        ctx.config, NodeType.EXPLORE, step_input_names(NodeType.EXPLORE, [])
+    )
+    if problem is not None:
+        # Incomplete steps must not explore the frame unchanged.
+        return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), False
     code = str(ctx.config.get("code") or "").strip()
     if not code:
         return ctx.func_name, _explore_fn, False

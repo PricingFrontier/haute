@@ -162,7 +162,9 @@ without loading external config. The strict `_extract_decorated_nodes` path then
 every skeleton and propagates any failure. For each skeleton it calls `_resolve_node_config`, which
 either: loads and normalises a `config=` sidecar via `_config_io.load_node_config` and
 attaches code parsed from the function body (`_attach_code_from_body`), then for a
-stepped node type's sidecar reconciles its `steps` with that body (`_reconcile_steps`,
+stepped node type's sidecar reconciles its `steps` with that body, as does an Explore
+node's decorator-carried list (`_reconcile_steps` with no config reference, which is
+why only a transform records `_discarded_sidecar`) (`_reconcile_steps`,
 rendering in the type's start mode against `step_input_names(node_type, param_names)`
 and comparing the extracted body with the rendering passed through the same
 extraction, `_code_extraction.normalise_user_code`: keep, discard with

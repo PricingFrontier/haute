@@ -4,7 +4,7 @@
   "output": {"outputMapping": [], "outputFormat": ""},
   "dataInput": {"inputType": "file", "format": "parquet", "mode": "scan", "path": "", "arguments": {}, "steps": []},
   "dataOutput": {"outputType": "file", "format": "parquet", "mode": "sink", "path": "", "arguments": {}},
-  "explore": {},
+  "explore": {"steps": []},
   "externalFile": {"path": "", "fileType": "pickle", "steps": []},
   "constant": {"values": [{"name": "constant_1", "value": "1.0"}]},
   "polars": {"steps": []},

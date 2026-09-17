@@ -543,6 +543,7 @@ class ExploreConfig(TypedDict, total=False):
     """Config for explore nodes."""
 
     code: str
+    steps: list[dict[str, Any]]  # low-code steps over df, persisted as a decorator argument
     overview: ExploreOverviewConfig
     pivot_formulas: list[ExplorePivotFormula]
     pivots: list[ExplorePivotPersistedConfig]
@@ -927,7 +928,7 @@ class NodeData(BaseModel):
         # join or concat is refused here already; an `edges` surface's names
         # are only known to the graph, so its references are checked at build
         # time against the connected edges.
-        input_names = [] if surface.inputs == "none" else None
+        input_names: list[str] | None = [] if surface.inputs == "none" else None
         try:
             rendered = render_polars_steps(steps, input_names, start=surface.start)
         except PolarsStepError as exc:

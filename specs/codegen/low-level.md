@@ -262,7 +262,7 @@ statement per line with a leading `df = <input>`, and its decorator carries
 failure emits the incomplete placeholder body (the save warns which step is
 incomplete); `steps` together with `inputMapping` on an original is a `ConfigError`.
 A stepped frame surface (`config["steps"]` is a list on a Data Input, External File,
-Rating Step, Model Score or Scenario Expander) has its user-code lines produced by
+Rating Step, Model Score, Scenario Expander or Explore) has its user-code lines produced by
 `_stepped_body_code(config, node_type, source_names)`: the rendering by
 `render_polars_steps(steps, step_input_names(node_type, source_names), start="frame")`,
 or `incomplete=True` when they cannot be rendered. The generator places the rendering
@@ -270,7 +270,9 @@ where that surface's hand-written code goes (`_wrap_external_code` after the Dat
 load scaffold or after `df = <first input>` for an External File; `_wrap_user_code` after
 the rating, scoring or expansion scaffold) and the `INCOMPLETE_STEPS_BODY` placeholder in
 the same position when incomplete (an External File keeps its `df = <first input>`
-binding before it); the steps live in each type's required sidecar. `extract_user_code`
+binding before it); the steps live in each type's required sidecar, except Explore's,
+which `_gen_explore` appends to its decorator arguments as `steps=[...]` and
+`_build_node_config` reads back from the decorator kwargs. `extract_user_code`
 recognises a placeholder statement (either constant) immediately after the matcher's
 scaffold for every kind and treats it as generated scaffold, and
 `normalise_user_code(code, kind=..., param_names=...)` applies only the finaliser the
@@ -436,7 +438,7 @@ preamble global, matching the generated function's local assignment.
 | `polars` transform has no code (any source count) | No error — emits a `NotImplementedError`-raising placeholder so the graph still saves; fails at run time, warned at save time | `_codegen_builders._gen_transform`, `_save_pipeline._validate_transforms_are_runnable` |
 | `polars` transform with executable code and an input named `df` | `ConfigError` (node id/label) | `_codegen_builders._gen_transform` |
 | stepped `polars` transform whose steps cannot be rendered | No error — incomplete placeholder body, warned at save time with the step index | `_codegen_builders._gen_transform`, `_save_pipeline._validate_transforms_are_runnable` |
-| stepped `dataInput`, `externalFile`, `ratingStep`, `modelScore` or `scenarioExpander` whose steps cannot be rendered | No error — the `INCOMPLETE_STEPS_MESSAGE` placeholder replaces the surface's user-code lines, warned at save time with the step index | `_codegen_builders._stepped_body_code` and each surface's generator, `_save_pipeline._validate_transforms_are_runnable` |
+| stepped `dataInput`, `externalFile`, `ratingStep`, `modelScore`, `scenarioExpander` or `explore` whose steps cannot be rendered | No error — the `INCOMPLETE_STEPS_MESSAGE` placeholder replaces the surface's user-code lines, warned at save time with the step index | `_codegen_builders._stepped_body_code` and each surface's generator, `_save_pipeline._validate_transforms_are_runnable` |
 | stepped `polars` original carrying `inputMapping` | `ConfigError` (node id/label) | `_codegen_builders._gen_transform` |
 | `edgeJoin` codegen called with `!= 2` sources | `ConfigError` | `_codegen_builders._gen_edge_join` |
 | `Explore` node with `!= 1` incoming edge | `ParseError` | `_codegen_builders._gen_explore` |

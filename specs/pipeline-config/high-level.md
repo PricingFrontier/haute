@@ -301,19 +301,23 @@ saved. A sidecar whose `steps` value is not a list fails the parse with a `Confi
 
 **Stepped surfaces.** The same step list authors the Polars code of every surface
 that has one: a Data Input's post-load code, an External File's code over the loaded
-object, and the post-processing of a Rating Step, a Model Score and a Scenario
-Expander. The renderer takes a required start mode: `input` is the transform's (the
+object, the post-processing of a Rating Step, a Model Score and a Scenario
+Expander, and an Explore node's analysis frame. The renderer takes a required start mode: `input` is the transform's (the
 first step chooses the input and renders `df = <input>`), and `frame` is for a
 surface whose code runs with `df` already bound (the opened snapshot, the first input
 beside `obj`, the rated, scored or expanded frame). In frame mode an empty list renders
 to empty code without error, because the node then simply keeps its base behaviour, a
 `source` step is refused at any position with a step-indexed message, and
 `join`/`concat` references are checked against the surface's eligible input names.
+Explore is the one stepped type with no config folder: its steps travel as a `steps=`
+decorator argument beside its overview, pivot and chart cards, are reconciled against
+the body exactly as a sidecar's are, and leave no `_discarded_sidecar` marker when a
+hand edit discards them (there is no file to retire).
 One table (`STEPPED_NODE_TYPES` in `haute._polars_steps`) maps every stepped node type
 to its start mode and its input eligibility: `edges` for a transform and for an
 External File (whose code sees every connected input by name, the first also as
 `df`), `none` for the surfaces whose code sees only `df` (Data Input, Rating Step,
-Model Score, Scenario Expander), where a join or concat is refused. Every path that
+Model Score, Scenario Expander, Explore), where a join or concat is refused. Every path that
 renders a node's steps (the node data model, the parser's reconcile, the executor
 builder, codegen, the deploy interceptors and the render endpoint) obtains the
 eligible names from it. Only an `edges` surface has its step references rewritten when

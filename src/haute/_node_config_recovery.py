@@ -518,13 +518,13 @@ def _validator_issues(
         problem = config.get("_steps_error")
         if problem is None:
             surface = stepped_surface_for(node_type)
-            names: list[str] | None = (
+            eligible: list[str] | None = (
                 []
                 if surface.inputs == "none"
                 else (None if input_names is None else list(input_names))
             )
             try:
-                render_polars_steps(config["steps"], names, start=surface.start)
+                render_polars_steps(config["steps"], eligible, start=surface.start)
             except PolarsStepError as exc:
                 problem = str(exc)
         if problem:

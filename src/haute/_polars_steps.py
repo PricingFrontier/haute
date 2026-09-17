@@ -108,6 +108,8 @@ STEPPED_NODE_TYPES: Mapping[NodeType, SteppedSurface] = MappingProxyType(
         NodeType.RATING_STEP: SteppedSurface(start="frame", inputs="none"),
         NodeType.MODEL_SCORE: SteppedSurface(start="frame", inputs="none"),
         NodeType.SCENARIO_EXPANDER: SteppedSurface(start="frame", inputs="none"),
+        # The single input is bound as df by codegen; steps live in the decorator.
+        NodeType.EXPLORE: SteppedSurface(start="frame", inputs="none"),
     }
 )
 
