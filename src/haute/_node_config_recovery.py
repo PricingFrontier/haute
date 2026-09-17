@@ -29,7 +29,12 @@ from haute._polars_io_registry import (
     validate_data_input_config,
     validate_data_output_config,
 )
-from haute._polars_steps import is_stepped_config
+from haute._polars_steps import (
+    PolarsStepError,
+    is_stepped_config,
+    render_polars_steps,
+    stepped_surface_for,
+)
 from haute._rating import validate_banding_config
 from haute._rating_step_config import normalise_rating_step_config
 from haute._recovery_schemas import RecoveryFieldChange, RecoveryIssue
@@ -506,9 +511,24 @@ def _validator_issues(
                 elif value["name"]:
                     names.add(value["name"])
     if is_stepped_config(node_type, config):
-        steps_error = config.get("_steps_error")
-        if steps_error:
-            issues.append(_issue("steps", "incomplete", str(steps_error)))
+        # A raw sidecar candidate carries no derived ``_steps_error``, so the
+        # steps are rendered here rather than trusting a field the node data
+        # model would have written. An ``edges`` surface's references can only
+        # be checked when the caller knows the connected input names.
+        problem = config.get("_steps_error")
+        if problem is None:
+            surface = stepped_surface_for(node_type)
+            names: list[str] | None = (
+                []
+                if surface.inputs == "none"
+                else (None if input_names is None else list(input_names))
+            )
+            try:
+                render_polars_steps(config["steps"], names, start=surface.start)
+            except PolarsStepError as exc:
+                problem = str(exc)
+        if problem:
+            issues.append(_issue("steps", "incomplete", str(problem)))
     elif node_type is NodeType.POLARS and (
         not isinstance(config.get("code"), str) or not config["code"].strip()
     ):

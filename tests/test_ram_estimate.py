@@ -1981,7 +1981,7 @@ def test_cardinality_binding_and_node_failure_paths_fail_closed() -> None:
             1,
             "invalid_input_name_binding",
         ),
-        (NodeType.SCENARIO_EXPANDER, {"steps": "invalid"}, 1, "invalid_scenario_steps"),
+        (NodeType.SCENARIO_EXPANDER, {"stepCount": "invalid"}, 1, "invalid_scenario_steps"),
         (
             NodeType.SCENARIO_EXPANDER,
             {"stepCount": 2, "code": "df = df.filter(pl.col('x') > 0)"},

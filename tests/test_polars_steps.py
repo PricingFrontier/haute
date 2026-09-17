@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import pickle
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -3672,8 +3673,6 @@ def test_data_input_generated_module_runs_standalone(tmp_path: Path) -> None:
     """The generated function itself applies the steps, and raises for an incomplete list."""
     quotes, _rates = _frames(tmp_path)
     # The module resolves its project root by walking up to a haute.toml inside a git repository.
-    import subprocess
-
     (tmp_path / "haute.toml").write_text("", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     module = _write_and_import(
@@ -3948,7 +3947,10 @@ def test_scenario_expander_steps_execute_and_round_trip(tmp_path: Path) -> None:
     assert node.data.config["steps"] == [source()]
 
 
-def test_model_score_steps_round_trip_and_fail_before_any_model_loads(tmp_path: Path) -> None:
+def test_model_score_steps_round_trip_and_fail_before_any_model_loads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute.deploy import _scorer
     from haute.deploy._scorer import score_graph
 
     quotes, _rates = _frames(tmp_path)
@@ -4016,30 +4018,51 @@ def test_model_score_steps_round_trip_and_fail_before_any_model_loads(tmp_path: 
             ],
         }
     )
+    # A remapped model WITHOUT a bundled feature contract is exactly the case
+    # whose preparation pass (`_attach_bundled_model_contract_inputs`) loads the
+    # local model, so a guard placed after it would load before rejecting.
+    model_path = tmp_path / "score.cbm"
+    model_path.write_bytes(b"not a real model")
+    loaded: list[str] = []
+    monkeypatch.setattr(_scorer, "_load_local_model_cached", lambda path, task: loaded.append(path))
     with pytest.raises(ConfigError, match=r"Step 1: Add at least one condition") as failed:
         score_graph(
             graph=deploy_graph,
             input_df=pl.DataFrame({"x": [1.0]}),
             input_node_ids=["src"],
             output_node_id="out",
-            artifact_paths={},
+            artifact_paths={"scored__score.cbm": str(model_path)},
         )
     assert INCOMPLETE_STEPS_MESSAGE in str(failed.value)
+    assert loaded == [], "the deploy plan loaded a model before rejecting the incomplete steps"
 
 
 def test_recovery_and_save_report_incomplete_steps_on_every_surface(project_root: Path) -> None:
     from haute._node_config_recovery import validate_recovery_config
 
+    pl.DataFrame({"premium": [1.0]}).write_parquet(project_root / "quotes.parquet")
     broken_steps = [step("f", "filter", match="all", conditions=[])]
+    # Raw sidecar-shaped candidates: no derived `_steps_error`, so recovery
+    # must render the steps itself to report the incomplete one.
     for node in (
         _rating_step(broken_steps),
         _scenario_expander(broken_steps),
         _model_score(broken_steps),
+        _stepped_input(_ready_source("quotes", project_root / "quotes.parquet"), broken_steps),
     ):
-        issues = validate_recovery_config(node.data.nodeType, node.data.config, input_names=None)
+        raw = {k: v for k, v in node.data.config.items() if not k.startswith("_") and k != "code"}
+        assert "_steps_error" not in raw
+        issues = validate_recovery_config(node.data.nodeType, raw, input_names=None)
         assert any(issue.path == "steps" and issue.code == "incomplete" for issue in issues), (
             node.data.nodeType
         )
+        # A renderable list on the same raw shape reports nothing.
+        ok_raw = {**raw, "steps": [step("l", "limit", n=2)]}
+        assert not [
+            issue
+            for issue in validate_recovery_config(node.data.nodeType, ok_raw, input_names=None)
+            if issue.path == "steps"
+        ], node.data.nodeType
 
     quotes, rates = _frames(project_root)
     warnings = _save(
@@ -4053,3 +4076,95 @@ def test_recovery_and_save_report_incomplete_steps_on_every_surface(project_root
         in w
         for w in warnings
     ), warnings
+
+
+def _surface_graph(
+    tmp_path: Path, surface: str, steps: list[dict[str, Any]]
+) -> tuple[PipelineGraph, str]:
+    """A source plus one stepped frame surface, ready to generate and run."""
+    quotes, _rates = _frames(tmp_path)
+    if surface == "dataInput":
+        return PipelineGraph(nodes=[_stepped_input(quotes, steps)], edges=[]), "quotes"
+    node = {
+        "externalFile": lambda: _external_file(tmp_path, steps),
+        "ratingStep": lambda: _rating_step(steps),
+        "scenarioExpander": lambda: _scenario_expander(steps),
+    }[surface]()
+    return (
+        PipelineGraph(nodes=[quotes, node], edges=[make_edge("quotes", node.id)]),
+        node.id,
+    )
+
+
+#: Every frame surface whose generated module runs without an external model.
+_RUNNABLE_FRAME_SURFACES = ("dataInput", "externalFile", "ratingStep", "scenarioExpander")
+
+
+@pytest.mark.parametrize("surface", _RUNNABLE_FRAME_SURFACES)
+def test_frame_surface_generated_module_runs_standalone(tmp_path: Path, surface: str) -> None:
+    """The generated function itself applies the steps, and raises for an incomplete list."""
+    (tmp_path / "haute.toml").write_text("", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+
+    graph, _node_id = _surface_graph(tmp_path, surface, [step("l", "limit", n=2)])
+    module = _write_and_import(graph, tmp_path)
+    frame = _collect(module.pipeline.run())
+    assert frame.height == 2, surface
+
+    broken, _ = _surface_graph(tmp_path, surface, [step("f", "filter", match="all", conditions=[])])
+    broken_module = _write_and_import(broken, tmp_path)
+    with pytest.raises(NotImplementedError, match=INCOMPLETE_STEPS_MESSAGE.split(".")[0]):
+        _collect(broken_module.pipeline.run())
+
+
+@pytest.mark.parametrize("surface", (*_RUNNABLE_FRAME_SURFACES, "modelScore"))
+def test_frame_surface_free_code_with_redundant_parentheses_reloads_in_step_mode(
+    tmp_path: Path, surface: str
+) -> None:
+    """Each surface's extractor normalises its own rendering, so reconcile must not discard it."""
+    steps = [step("c", "free_code", code="df = (df.head(2))")]
+    if surface == "modelScore":
+        quotes, _rates = _frames(tmp_path)
+        graph = PipelineGraph(
+            nodes=[quotes, _model_score(steps)], edges=[make_edge("quotes", "scored")]
+        )
+        node_id = "scored"
+    else:
+        graph, node_id = _surface_graph(tmp_path, surface, steps)
+
+    code = graph_to_code(graph, pipeline_name="main")
+    assert "df = (df.head(2))" in code
+    _write_sidecars(tmp_path, graph)
+    node = next(n for n in parse_pipeline_source(code, _base_dir=tmp_path).nodes if n.id == node_id)
+    assert node.data.config["steps"] == steps, surface
+    assert node.data.config["code"] == "df = (df.head(2))", surface
+    assert "_steps_discarded" not in node.data.config, surface
+
+
+def test_model_score_steps_run_after_scoring(tmp_path: Path) -> None:
+    """A Model Score's steps apply to the scored frame, as its post-processing code does."""
+    from unittest.mock import MagicMock, patch
+
+    import numpy as np
+
+    from haute._mlflow_io import ScoringModel
+
+    raw = MagicMock()
+    raw.feature_names_ = ["premium"]
+    raw.predict.return_value = np.array([1.0, 2.0, 3.0, 4.0])
+    raw.get_cat_feature_indices.return_value = []
+    del raw.predict_proba
+    model = ScoringModel(
+        model=raw, feature_names=["premium"], cat_feature_names=frozenset(), flavor="catboost"
+    )
+
+    quotes, _rates = _frames(tmp_path)
+    scored = _model_score([step("l", "limit", n=2)])
+    graph = PipelineGraph(nodes=[quotes, scored], edges=[make_edge("quotes", "scored")])
+    with patch("haute._mlflow_io.load_mlflow_model", return_value=model):
+        result = execute_graph(graph, target_node_id="scored", execution_context=_capped_context())[
+            "scored"
+        ]
+    assert result.status == "ok", result.error
+    assert "prediction" in [c.name for c in result.columns]
+    assert len(result.preview) == 2
