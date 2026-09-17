@@ -12,7 +12,7 @@ import type { PreviewData } from "../DataPreview"
 import type { SimpleEdge, SimpleNode } from "../editors"
 import ExplorePreview from "../ExplorePreview"
 import { buildExploreCacheIdentity } from "../explore/cacheIdentity"
-import { DEFAULT_PREVIEW_PANEL_DIMENSIONS } from "../previewPanelLayout"
+import { PREVIEW_PANEL_DIMENSIONS } from "../previewPanelLayout"
 
 const mockRunExplore = vi.fn()
 const mockGetExploreStatus = vi.fn()
@@ -488,7 +488,7 @@ describe("ExplorePreview", () => {
 
     expect(screen.getByTestId("explore-preview-frame")).toBeInTheDocument()
     expect(screen.getByTestId("explore-preview-frame")).toHaveStyle({
-      height: `${DEFAULT_PREVIEW_PANEL_DIMENSIONS.initialHeight}px`,
+      height: `${PREVIEW_PANEL_DIMENSIONS.initialHeight}px`,
     })
     expect(screen.getByTestId("explore-preview-frame-header")).toHaveClass("h-9")
     expect(screen.getByTestId("preview-panel-node-icon").querySelector(".lucide-search")).toBeTruthy()

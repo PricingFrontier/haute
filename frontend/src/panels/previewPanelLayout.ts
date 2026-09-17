@@ -1,7 +1,7 @@
-export const DEFAULT_PREVIEW_PANEL_DIMENSIONS = {
+/** Sizing shared by every preview pane; the height ceiling is the space left in the editor column. */
+export const PREVIEW_PANEL_DIMENSIONS = {
   initialHeight: 256,
   minHeight: 120,
-  maxHeight: 600,
 } as const
 
 export const PREVIEW_PANEL_HEADER_HEIGHT_CLASS = "h-9"
