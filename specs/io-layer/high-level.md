@@ -200,3 +200,43 @@ Malformed pointers, digest mismatches, metadata mismatches, invalid generation i
 or invalid Parquet footer/schema evidence raise `SourceCacheCorruptError`; callers do not
 silently rebuild or fall back. Transient operating-system access errors propagate as
 operating-system errors so operators can retry and are not told durable data is corrupt.
+
+## Approved change contract — node-output snapshots in the source snapshot store
+
+- **Current limitation.** The source snapshot store in `src/haute/_source_cache.py` holds only
+  external-input snapshots. Explore keeps a separate durable store in `src/haute/_explore_cache.py`
+  that copies and re-hashes its Parquet artifact on every read, and no other pipeline point is
+  cached durably.
+- **Unresolved target.** The store also holds node-output snapshots as a `node_output` provider.
+  Each identity is a slot (pipeline source file, node, source, execution semantics class) plus the
+  node's checked data signature, so every signature of a node keeps its own generation and a
+  reverted edit finds its earlier snapshot. A per-slot index lists the slot's identities. Each
+  generation records its column set, which only widens, and every upstream snapshot generation its
+  rows derive from, transitively, as dependencies; it is fresh when no recorded dependency now has a
+  different generation. Generations are pinned when written by an explicit build and automatic when
+  captured by an execution; a slot's pin passes to its newest signature. For node-output
+  publications, quota pressure retires unleased automatic generations in least-recently-used order
+  before rejecting, and a rejected publication hands its completed staged artifact to the caller
+  instead of deleting it. Publication into an identity is serialised across processes under a
+  per-identity cross-process lock. A writer always continues from its own artifact and publishes
+  it only when its recorded dependencies are still current or cleared and there is no fresh
+  generation, it widens the current one, or it is an explicit refresh, so a published generation
+  never narrows its identity's columns. A store-wide cross-process lease lock, always taken
+  after the publication lock, makes lease acquisition, publication through the publisher's first
+  lease, and retirement (supersession, eviction, clear) atomic. Every lease is also a marker file
+  naming its owning process, whose liveness is proven by a per-process file lock, so no process
+  retires a generation another live process is reading or about to read. A reader can lease a named generation, not only the current one, so a spawned
+  worker reads exactly the generation its parent leased.
+- **Non-goals.** Input-snapshot providers, publication, quota behaviour, and staging reclamation are
+  unchanged. API-input table caches stay in the JSON-shredding cache.
+- **Failure and compatibility semantics.** A named generation that is unknown or retired raises
+  the existing missing or corrupt errors. A publication with nothing retirable raises the existing
+  quota error. The Explore store and its `.haute_cache/explore` root are removed without migration;
+  Haute has no released users.
+- **Acceptance evidence.** Store tests prove in-place reads of a verified generation perform no
+  full-file hash and no copy, edit-and-revert reuse, widening, least-recently-used eviction that
+  spares pinned and leased generations, pin inheritance, one publication from two concurrent worker
+  processes, refresh publication, no narrowing after an ancestor refresh, a paused reader in one process surviving eviction and clear from another, dead-owner
+  marker cleanup, staged-artifact handover on quota rejection, named-generation leases, and the
+  ported Explore-store hardening cases.
+- **Roadmap package.** [CACHE-S01](../roadmap/caching.md#cache-s01--node-output-snapshots-in-the-shared-store).

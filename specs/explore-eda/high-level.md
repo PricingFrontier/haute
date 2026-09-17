@@ -417,3 +417,24 @@ setting them to `None` otherwise. A column reclassified between numeric and non-
 two runs therefore has a different populated-field set. `nan_count` is narrower still: it is
 populated only for float dtypes (`Float32`/`Float64`), so an integer column reclassified to or
 from float also flips `nan_count` between `0` and `None`.
+
+## Approved change contract — Explore on shared data points
+
+- **Current limitation.** Explore materialises and profiles its own copy of its input under the
+  Explore node's identity in `src/haute/_explore_cache.py`, restores it by copying the Parquet
+  file, and pivots scan that private entry, so other nodes cannot share the data.
+- **Unresolved target.** Explore analyses its shared data point: its input when its code is
+  blank, its own output otherwise. It builds or joins the point's snapshot through the shared
+  node-data service, reads its overview from the shared profile analysis for the point's current
+  data version, and leases the point frame for every pivot, pivot-member, and chart calculation.
+  An Explore node wired directly to a Data Input or an API-input table analyses that source
+  without building a copy.
+- **Non-goals.** Pivot, chart, and overview semantics, limits, and presentation config are
+  unchanged.
+- **Failure and compatibility semantics.** A point that is not current returns cache-required
+  with its state. A pivot result computed for one data version is never returned for another.
+  The Explore run, cache-status, status, and cancel routes are removed without compatibility
+  routes.
+- **Acceptance evidence.** Explore route, pivot, and chart tests pass on shared points, including
+  one shared build between Explore and Banding on the same parent.
+- **Roadmap package.** [EDA-C01](../roadmap/explore-eda.md#eda-c01--explore-on-shared-data-points).

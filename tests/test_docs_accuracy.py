@@ -140,10 +140,12 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
 )
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "background-jobs-api",
+    "caching",
     "explore-eda",
     "modelling",
     "optimiser",
     "polars-steps",
+    "rating",
 )
 _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = ()
 _COMPONENT_PACKAGE_HEADING = re.compile(

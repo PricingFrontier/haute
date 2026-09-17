@@ -539,3 +539,24 @@ remains, while an unrelated diagnosed failure may leave it degraded.
 No migration registry, `Upgrade node` action, automatic load-time rewrite, or
 guessed legacy version exists in this scope. Problems without a safe
 remove-only plan continue through raw source/config inspection.
+
+## Approved change contract — node-data, banding statistics, and rating level routes
+
+- **Current limitation.** Only Explore exposes a data-cache job surface, and it is keyed by the
+  Explore node; there is no route for whole-dataset banding statistics or rating levels.
+- **Unresolved target.** A node-data route family reports a consumer node's data point, kind,
+  state for the consumer's column demand (including partial when a fresh snapshot lacks some
+  demanded columns), data version, row count, columns, size, and whether the snapshot is pinned or
+  automatic; starts, joins, refreshes, cancels, and clears pinned full-width node-output builds; and
+  delegates input-snapshot and API-input table builds to their existing routes. A
+  banding-statistics route and a rating-levels route serve whole-dataset results for a current
+  point. The Explore run, cache-status, status, and cancel routes are removed.
+- **Non-goals.** Input-cache and JSON-cache routes, pivot run/status/cancel semantics, and job
+  lifecycle states are unchanged.
+- **Failure and compatibility semantics.** An invalid consumer wiring returns 400; a point that
+  is not current returns a cache-required body with its state; invalid columns or rules return
+  422; admission or memory-limit failure returns 507 with the execution error payload; a run for a
+  running identical build returns the running job.
+- **Acceptance evidence.** Route tests for join, signature replacement, refresh bypass, partial
+  widening, clear, delegation, and each failure response.
+- **Roadmap package.** [CACHE-S03](../roadmap/caching.md#cache-s03--explicit-snapshot-jobs-and-api).

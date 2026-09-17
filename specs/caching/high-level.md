@@ -134,3 +134,34 @@ previous same-key entry. JSON schema and parse failures return structured 4xx re
 source modification during build or stopped workers return 409; memory-limit exhaustion,
 unsupported caps, and admission rejections return 507; timeouts return 504; unexpected
 failures are logged and return a generic 500.
+
+## Approved change contract — one shared layer for full-data materialisations
+
+- **Current limitation.** Each dataframe-cache consumer puts its own namespace, profile, and
+  execution policy in its key, so the same pipeline point is recomputed and stored once per
+  consumer, only in the process-local cache; runs also write temporary checkpoints that are deleted
+  afterwards. Explore alone persists its data, keyed by the Explore node.
+- **Unresolved target.** A ninth checked consumer, the node-snapshot signature, identifies the
+  data at a pipeline point independently of the consumer: upstream lineage fingerprint, runtime
+  input fingerprint, source, execution semantics class, contract enforcement, preamble presence,
+  and execution semantics version. Each snapshot records its column set and every upstream snapshot
+  generation its rows derive from, transitively; it becomes stale when any of those is replaced or
+  widened, never because another snapshot was created or cleared. A data-point resolver maps any
+  consumer node and column demand to one point kind (Data Input without post-load code, API-input
+  table, or node output) and yields a leased frame covering the demand, produced by executing the
+  source node itself for source kinds, or a typed cache-required failure. Every bounded execution,
+  explicit build, and admitted preview writes the full-data materialisations it performs into this
+  layer and reads from it. Analysis results are stored by point identity and data version, so a
+  refreshed or widened generation never serves a previous generation's results.
+- **Non-goals.** Stat-gated caches, the preview response cache, and deploy scoring's process-local
+  dataframe cache are unchanged. The preview/trace lineage key keeps its field set; only its runtime
+  input fingerprint gains the generations of any snapshots a preview or trace seeds from.
+- **Failure and compatibility semantics.** A missing, stale, partial, building, or corrupt point is
+  never read; callers receive cache-required with the state. A signature with a missing or unknown
+  field fails before hashing, as every checked consumer does. The private dataframe-cache namespaces
+  for training preparation, training evaluation preview, optimiser setup, and Data Output are
+  removed without migration.
+- **Acceptance evidence.** Contract tests for the signature's field set and invalidation matrix;
+  resolver tests for each point kind, state, and column demand; analysis-store tests for
+  data-version isolation and corrupt-document discard.
+- **Roadmap package.** [CACHE-S02](../roadmap/caching.md#cache-s02--data-point-resolver-and-leased-reads).

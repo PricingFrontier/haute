@@ -269,3 +269,26 @@ Out of scope (owned by neighbouring components):
   entries without a non-empty factor list raises `ValueError` before the frame
   is touched. Executor-built nodes and generated standalone pipeline code use
   the same normalisation contract.
+
+## Approved change contract — rule claims and whole-dataset banding statistics
+
+- **Current limitation.** Banding match counts, distributions, and category values are computed
+  in the browser from preview rows with a separate implementation of the banding rules, which
+  disagrees with execution for categorical text casts, duplicate categorical values, rules with
+  empty assignments, and non-finite numeric values. Rating factor levels also come only from
+  preview rows.
+- **Unresolved target.** One rule-preparation path builds both the banding output and a per-row
+  rule-claim index in the user's rule order. Banding statistics (equal-width bins, capped
+  categorical value counts, per-rule claim counts, unmatched count, null and non-finite counts)
+  and rating factor levels (keyed by the lookup's own key expression) are computed server-side
+  over the Banding or Rating Step node's shared data point.
+- **Non-goals.** Banding output values, the rating lookup, rating-table combination, and
+  generated code are unchanged.
+- **Failure and compatibility semantics.** Rules that execution rejects return the same message
+  as a 422. A point that is not current returns cache-required with its state; statistics are
+  never computed from stale data. Admission or memory-limit failure returns 507.
+- **Acceptance evidence.** Hand-calculated claim vectors for breakpoints (both closures),
+  categorical (Float, Int, Boolean, duplicates, empty assignment, default collision), and
+  continuous rules; a property test linking claims to banding output; route tests for bins,
+  caps, null accounting, and every failure response.
+- **Roadmap package.** [RAT-B01](../roadmap/rating.md#rat-b01--rule-claim-index-for-banding).

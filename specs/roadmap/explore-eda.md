@@ -12,6 +12,7 @@ specified in [Explore / EDA](../explore-eda/high-level.md),
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
+| EDA-C01 | Planned | P2 | Run Explore on shared data points instead of a private Explore cache. |
 | EDA-E09 | Planned | P2 | Add bounded server-binned distributions. |
 | EDA-E10 | Planned | P2 | Add one cached on-demand relationship/key-analysis service. |
 | EDA-E18 | Deferred | P3 | Evaluate advanced Excel-parity pivot operations after representative use. |
@@ -19,6 +20,37 @@ specified in [Explore / EDA](../explore-eda/high-level.md),
 | EDA-E24 | Deferred | P3 | Evaluate the remaining PivotChart parity surface from evidence. |
 
 ## Planned improvements
+
+### EDA-C01 — Explore on shared data points
+
+**Why:** Explore materialises and profiles its own copy of its input under an
+Explore-node identity, so a Banding or Rating node on the same input cannot use
+it, and Explore cannot use data another consumer cached.
+
+**Plan:** Explore resolves its data point through `CACHE-S02`, builds or joins
+it through `CACHE-S03`, and shows state through the `CACHE-S05` hook and
+button. The overview reads the `CACHE-S04` `profile` analysis for the point's
+current data version, starting the profile job when absent. Pivot runs, pivot
+members, and charts lease the point frame for their whole calculation instead
+of scanning the Explore dataframe-cache entry. The pivot result cache key
+replaces the Explore dataframe-cache key with `(point identity digest,
+data_version)`. `ExploreCacheReport` is replaced by the node-data point response
+plus the profile result; `_explore_cache.py`, the Explore run/cache-status/
+status/cancel routes, and `ExploreCacheSpec` are removed.
+
+**Acceptance:** Explore route, pivot, chart, and preview tests pass on shared
+points; an Explore node wired directly to a Data Input or an `apiInput` port
+analyses that source without a node-output build; Explore with non-blank code
+analyses its own output; an Explore node and a Banding node on one parent share
+one build and one cache state; a pivot calculated before a refresh is never
+returned for the new generation.
+
+**Dependencies:** `CACHE-S02`, `CACHE-S03`, `CACHE-S04`, `CACHE-S05`.
+
+**Evidence:** `src/haute/routes/_explore_service.py`;
+`src/haute/routes/_pivot_service.py`; `src/haute/routes/explore.py`;
+`frontend/src/panels/ExplorePreview.tsx`; `tests/test_explore_routes.py`;
+`tests/test_explore_pivot_routes.py`.
 
 ### EDA-E09 — Distribution charts
 

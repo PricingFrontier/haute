@@ -140,3 +140,46 @@ green hit. Invalid optional overview configuration is discarded while parsing. I
 chart- or pivot-card configuration is surfaced in its pane rather than silently replaced, while
 malformed data that a renderer cannot safely interpret is allowed to surface rather than being
 fabricated.
+
+## Approved change contract — shared data-cache state for Explore
+
+- **Current limitation.** Explore's cache inspection, run, cancel, job polling, and cache button
+  live in `frontend/src/panels/ExplorePreview.tsx` with an Explore-only store slice keyed by the
+  Explore node, so another consumer of the same data cannot see or reuse them.
+- **Unresolved target.** A shared data-cache hook and button serve every consumer. The running job,
+  its progress, and the current generation's id, columns, size, and retention are stored once per
+  data-point slot, so Explore and a Banding or Rating editor on the same input share one job,
+  whichever started it. Each consumer derives its own availability from that shared entry and its
+  column demand, so one narrow generation can be current for Banding and partial for Explore.
+  Explore's overview reads the shared profile analysis for the point's current data version.
+- **Non-goals.** Explore tabs, pivot and chart panes, and their configuration persistence are
+  unchanged.
+- **Failure and compatibility semantics.** A failed point inspection is surfaced, never shown as
+  a current cache; an identity change aborts in-flight inspection; a document-fence change
+  prevents late state writes.
+- **Acceptance evidence.** Tests render Explore and a Banding editor on one parent sharing progress
+  from a single job, showing current and partial side by side for one narrow generation, plus the
+  existing Explore preview cache-state tests on the shared hook.
+- **Roadmap package.** [CACHE-S05](../roadmap/caching.md#cache-s05--shared-frontend-data-cache-hook-and-button).
+
+## Approved change contract — previews from cached data
+
+- **Current limitation.** A preview below a join or a group-by recomputes that upstream work over
+  the full data on every backend cache miss, keeps none of it for later previews, runs, or editors,
+  and the preview panel cannot tell the user whether any rows came from cached data.
+- **Unresolved target.** When the backend seeds a preview from snapshots, the preview panel shows
+  "Using cached data from" with the seeded node labels. Preview results record the node-data epoch
+  they were fetched under and are refetched when a snapshot is published, widened, evicted, or
+  cleared, except that a preview's own captures do not refetch that preview. A trace request carries
+  the seed plan of the preview it explains; trace validity includes that preview's identity and the
+  epoch, so when either changes the displayed trace and highlight are hidden, an in-flight trace is
+  aborted, and a late response is discarded.
+- **Non-goals.** Preview row limits, column limits, and the preview table's rendering are
+  unchanged.
+- **Failure and compatibility semantics.** A preview whose response lists no seeds shows no cached
+  data label; a refetch after an epoch change that fails surfaces the existing preview error.
+- **Acceptance evidence.** Tests show a preview fetched before a snapshot publishes is refetched
+  after the epoch increments, a preview's own capture does not refetch it, the panel lists the
+  seeded node labels, and completed and in-flight traces are invalidated when the snapshot they
+  depend on is refreshed or cleared.
+- **Roadmap package.** [CACHE-S09](../roadmap/caching.md#cache-s09--previews-and-traces-seed-from-and-capture-into-shared-snapshots).
