@@ -84,7 +84,7 @@ vi.mock("../../utils/makePreviewData", () => ({
 
 import { loadPipeline, previewNode } from "../../api/client"
 import { makeNode, makeEdge } from "../../test-utils/factories"
-import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
+import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
 
@@ -147,7 +147,7 @@ describe("usePipelineAPI — activeSource captured at cascade start (#33, #34)",
     // downstream node, switching the active source after the root
     // preview starts causes downstream previews to use a different
     // source — producing column schemas that don't match the root.
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
 
     const seenSources: string[] = []
     let finishRootPreview!: () => void
@@ -219,7 +219,7 @@ describe("usePipelineAPI — activeSource captured at cascade start (#33, #34)",
     // source_file attribution.  Using `.getState()` inside the callback
     // is correct here — but only if the getter is invoked at save time
     // (not captured on hook render).
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     const savePayloads: Array<Record<string, unknown>> = []
     vi.mocked(await import("../../api/client")).savePipeline.mockImplementation(
       (payload) => {
@@ -250,7 +250,7 @@ describe("usePipelineAPI — activeSource captured at cascade start (#33, #34)",
     // captured at fetch start (not re-read when the request fires), so
     // a user bumping rowLimit mid-flight doesn't corrupt the in-flight
     // payload.
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
 
     const seenRowLimits: number[] = []
     mockPreview.mockImplementation(async ({ rowLimit }) => {

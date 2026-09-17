@@ -936,6 +936,50 @@ describe("useWebSocketSync", () => {
       expect(useDocumentStatusStore.getState().systemFailure).toBeNull()
     })
 
+    it("sends the initially loaded document's fingerprint on the first connection", () => {
+      const params = makeHookParams("rating/main.py")
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r1",
+        nodes: [readyNode],
+      }), true, "loaded-fp")
+      renderHook(() => useWebSocketSync(params))
+
+      act(() => latestWS().onopen?.(new Event("open")))
+
+      expect(latestWS().send).toHaveBeenCalledWith(JSON.stringify({
+        type: "resync",
+        source_file: "rating/main.py",
+        document_schema_version: 1,
+        document_fingerprint: "loaded-fp",
+      }))
+    })
+
+    it("asks for the current document again after a parse error", async () => {
+      const params = makeHookParams("rating/main.py")
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r1",
+        nodes: [readyNode],
+      }), true, "loaded-fp")
+      renderHook(() => useWebSocketSync(params))
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({ type: "parse_error", error: "boom", source_file: "rating/main.py" }),
+        }))
+      })
+
+      act(() => latestWS().onclose?.({} as CloseEvent))
+      act(() => vi.advanceTimersByTime(1000))
+      act(() => latestWS().onopen?.(new Event("open")))
+
+      expect(latestWS().send).toHaveBeenCalledWith(JSON.stringify({
+        type: "resync",
+        source_file: "rating/main.py",
+        document_schema_version: 1,
+      }))
+    })
+
     it("resyncs by whole-document fingerprint after the new protocol is applied", async () => {
       const params = makeHookParams("rating/main.py")
       const document = makePipelineEditorDocument({

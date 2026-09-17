@@ -6,7 +6,7 @@ import ExecutionDiagnosticsIndicator from "../components/ExecutionDiagnosticsInd
 import type { ColumnInfo } from "../types/node"
 import type { SchemaWarning, NodeTiming, NodeMemory, ExecutionMetrics } from "../api/types"
 import PreviewPanelFrame from "./PreviewPanelFrame"
-import { DEFAULT_PREVIEW_PANEL_DIMENSIONS } from "./previewPanelLayout"
+import { PREVIEW_PANEL_DIMENSIONS } from "./previewPanelLayout"
 
 export interface PreviewData {
   nodeId: string
@@ -60,7 +60,7 @@ const MID_COLUMN_WIDTH = 140
 const MIN_COLUMN_WIDTH = 120
 const COLUMN_OVERSCAN = 3
 const FALLBACK_VIEW_WIDTH = 960
-const FALLBACK_VIEW_HEIGHT = DEFAULT_PREVIEW_PANEL_DIMENSIONS.initialHeight
+const FALLBACK_VIEW_HEIGHT = PREVIEW_PANEL_DIMENSIONS.initialHeight
 const NULL_VALUE_STYLE = { color: 'var(--text-muted)', fontStyle: 'italic' }
 const EMPTY_COLUMNS: ColumnInfo[] = []
 const EMPTY_FRAME_LABELS: string[] = []

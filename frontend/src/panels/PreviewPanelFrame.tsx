@@ -3,7 +3,7 @@ import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp } from "lucide-react"
 
 import NodeTypeIcon from "../components/NodeTypeIcon"
 import { useDragResize } from "../hooks/useDragResize"
-import { DEFAULT_PREVIEW_PANEL_DIMENSIONS, PREVIEW_PANEL_HEADER_HEIGHT_CLASS } from "./previewPanelLayout"
+import { PREVIEW_PANEL_DIMENSIONS, PREVIEW_PANEL_HEADER_HEIGHT_CLASS } from "./previewPanelLayout"
 
 const FRAME_ICON_SIZE = 14
 
@@ -14,9 +14,6 @@ type PreviewPanelFrameProps = {
   subtitle?: ReactNode
   collapsedMeta?: ReactNode
   nodeType?: string | null
-  initialHeight?: number
-  minHeight?: number
-  maxHeight?: number
   "data-testid"?: string
 }
 
@@ -27,41 +24,28 @@ export default function PreviewPanelFrame({
   subtitle,
   collapsedMeta,
   nodeType,
-  initialHeight = DEFAULT_PREVIEW_PANEL_DIMENSIONS.initialHeight,
-  minHeight = DEFAULT_PREVIEW_PANEL_DIMENSIONS.minHeight,
-  maxHeight = DEFAULT_PREVIEW_PANEL_DIMENSIONS.maxHeight,
   "data-testid": testId,
 }: PreviewPanelFrameProps) {
   const [collapsed, setCollapsed] = useState(false)
   const [expandedToTop, setExpandedToTop] = useState(false)
-  const collapsedContainerRef = useRef<HTMLDivElement | null>(null)
-  const restoreHeightRef = useRef(initialHeight)
-  const { height, containerRef, onDragStart, resizeToHeight } = useDragResize({ initialHeight, minHeight, maxHeight })
+  const restoreHeightRef = useRef<number>(PREVIEW_PANEL_DIMENSIONS.initialHeight)
+  const { height, containerRef, onDragStart, resizeToHeight } = useDragResize(PREVIEW_PANEL_DIMENSIONS)
   const frameIcon = <NodeTypeIcon nodeType={nodeType} size={FRAME_ICON_SIZE} />
   const topButtonTitle = expandedToTop ? "Restore preview panel height" : "Expand preview panel to top"
   const TopButtonIcon = expandedToTop ? ChevronDown : collapsed ? ChevronsUp : ChevronUp
   const CollapseButtonIcon = expandedToTop ? ChevronsDown : ChevronDown
 
-  const availablePanelHeight = () => {
-    const source = containerRef.current ?? collapsedContainerRef.current
-    const parent = source?.parentElement
-    const parentHeight = parent?.getBoundingClientRect().height ?? 0
-    if (parentHeight > 0) return Math.floor(parentHeight)
-    const sourceBottom = source?.getBoundingClientRect().bottom ?? 0
-    if (sourceBottom > 0) return Math.floor(sourceBottom)
-    return window.innerHeight
-  }
-
   const handleToggleTop = () => {
     if (expandedToTop) {
-      resizeToHeight(restoreHeightRef.current, { clampToMax: false })
+      resizeToHeight(restoreHeightRef.current)
       setExpandedToTop(false)
       setCollapsed(false)
       return
     }
 
     restoreHeightRef.current = height
-    resizeToHeight(availablePanelHeight(), { clampToMax: false })
+    // The hook caps every resize at the space the column offers, so this fills it.
+    resizeToHeight(Number.POSITIVE_INFINITY)
     setExpandedToTop(true)
     setCollapsed(false)
   }
@@ -73,7 +57,7 @@ export default function PreviewPanelFrame({
 
   const handleCollapse = () => {
     if (expandedToTop) {
-      resizeToHeight(restoreHeightRef.current, { clampToMax: false })
+      resizeToHeight(restoreHeightRef.current)
       setExpandedToTop(false)
     }
     setCollapsed(true)
@@ -82,7 +66,8 @@ export default function PreviewPanelFrame({
   if (collapsed) {
     return (
       <div
-        ref={collapsedContainerRef}
+        // The collapsed bar shares the container ref so expanding from it measures the same column.
+        ref={containerRef}
         className="h-8 flex items-center gap-2 px-4 shrink-0"
         style={{ borderTop: "1px solid var(--border)", background: "var(--bg-panel)" }}
         data-testid={testId ? `${testId}-collapsed` : undefined}

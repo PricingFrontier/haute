@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import keyword
 import re
 from collections import Counter, deque
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -2231,6 +2232,15 @@ def _load_readable_pipeline_editor_document(
             source_selection_trusted=source_selection_trusted,
         ),
     )
+
+
+def pipeline_document_fingerprint(document_payload: Mapping[str, Any]) -> str:
+    """Fingerprint a complete editor document's JSON-mode, by-alias wire payload.
+
+    Load responses, live-sync frames, and resync comparisons all use this one digest, so a
+    document loaded over HTTP compares equal to the same document recovered for a resync.
+    """
+    return hashlib.sha256(canonical_json(document_payload).encode("utf-8")).hexdigest()
 
 
 def load_pipeline_editor_document(

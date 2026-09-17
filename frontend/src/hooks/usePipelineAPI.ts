@@ -82,8 +82,14 @@ export interface PipelineAPIReturn {
   /** Save the pipeline. Resolves true on success, false on failure (never rejects);
    *  callers chaining follow-on work (such as Commit) await this. */
   handleSave: () => Promise<boolean>
-  /** Atomically ingest a validated authoritative editor document. */
-  adoptPipelineDocument: (document: import("../types/pipelineDocument").PipelineEditorDocument) => void
+  /**
+   * Atomically ingest a validated authoritative editor document, with the server fingerprint its
+   * response named (null when the response names none, so the next live-sync resync refetches it).
+   */
+  adoptPipelineDocument: (
+    document: import("../types/pipelineDocument").PipelineEditorDocument,
+    documentFingerprint: string | null,
+  ) => void
 }
 
 export interface FetchPreviewOptions {
@@ -424,7 +430,10 @@ export default function usePipelineAPI({
     setNodesRaw((nds) => invalidateStaleColumnStashes(nds, activeSource))
   }, [activeSource, setNodesRaw])
 
-  const adoptPipelineDocument = useCallback((data: import("../types/pipelineDocument").PipelineEditorDocument) => {
+  const adoptPipelineDocument = useCallback((
+    data: import("../types/pipelineDocument").PipelineEditorDocument,
+    documentFingerprint: string | null,
+  ) => {
     if (data.source_file && data.source_revision === null) {
       throw new Error("parsePipelineEditorDocument: live document has no source_revision")
     }
@@ -437,7 +446,7 @@ export default function usePipelineAPI({
     submodelsRef.current = loadedSubmodels
     sourceRevisionRef.current = data.source_revision ?? ""
     preservedBlocksRef.current = data.preserved_blocks
-    useDocumentStatusStore.getState().loadDocumentStatus(data, false)
+    useDocumentStatusStore.getState().loadDocumentStatus(data, false, documentFingerprint)
     useGraphStore.getState().loadGraphSnapshot({
       nodes: pipelineNodes,
       edges: normalizeEdges(pipelineEdges),
@@ -465,7 +474,7 @@ export default function usePipelineAPI({
     useDocumentStatusStore.getState().reset()
 
     loadPipeline({ signal: controller.signal, retry: INITIAL_PIPELINE_RETRY_POLICY })
-      .then((raw) => {
+      .then(({ document: raw, documentFingerprint }) => {
         if (disposed) return
         // Narrow the response at the ingestion boundary.  Any drift in
         // the backend contract (missing `nodes`/`edges`, wrong type on an
@@ -473,7 +482,7 @@ export default function usePipelineAPI({
         // `.catch` handler below — rather than surfacing downstream as a
         // cryptic "undefined is not iterable" three callbacks deep.
         const data = parsePipelineEditorDocument(raw)
-        adoptPipelineDocument(data)
+        adoptPipelineDocument(data, documentFingerprint)
         setLoading(false)
       })
       .catch((err) => {

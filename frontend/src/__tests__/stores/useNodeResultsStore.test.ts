@@ -200,6 +200,7 @@ describe("useNodeResultsStore", () => {
         }),
         null,
         true,
+        "live-fingerprint",
       )
       state.completeSolveJob("n1", makeSolveResult())
 
@@ -623,6 +624,7 @@ describe("useNodeResultsStore", () => {
         }),
         null,
         true,
+        "live-fingerprint",
       )
       const state = useNodeResultsStore.getState()
       state.completeExplorePivotJob(completedKey, makePivotResult({ pivot_id: "completed" }))

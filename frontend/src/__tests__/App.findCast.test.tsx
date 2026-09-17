@@ -39,11 +39,18 @@ vi.mock("@xyflow/react", () => ({
     zoomIn: vi.fn(),
     zoomOut: vi.fn(),
   }),
+  useNodesInitialized: () => false,
   SelectionMode: { Partial: 0 },
   ConnectionMode: { Loose: "loose" },
   BackgroundVariant: { Dots: "dots" },
   MarkerType: { ArrowClosed: "arrowclosed" },
 }))
+
+// The viewport-reveal hook reads the React Flow store, which this mock does not provide.
+vi.mock("../hooks/useActiveNodeReveal", () => {
+  const reveal = { handleMoveStart: () => {}, centreNode: () => {} }
+  return { useActiveNodeReveal: () => reveal }
+})
 
 // Mock stateful hooks
 let mockNodes: Array<{ id: string; position: { x: number; y: number }; data: Record<string, unknown> }> = []

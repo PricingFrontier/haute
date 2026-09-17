@@ -45,13 +45,36 @@ describe("useDocumentStatusStore", () => {
     expect(useDocumentStatusStore.getState()).toMatchObject({ loadStatus:null, sourceText:"", capabilities:null })
   })
 
+  it("records the accepted document's fingerprint until a failure or reset forgets it", () => {
+    const store = useDocumentStatusStore.getState()
+    store.loadDocumentStatus(loaded, false, "loaded-fp")
+    expect(useDocumentStatusStore.getState().documentFingerprint).toBe("loaded-fp")
+
+    store.loadLiveDocumentStatus({ ...loaded, source_revision: "r2" }, null, true, "live-fp")
+    expect(useDocumentStatusStore.getState().documentFingerprint).toBe("live-fp")
+
+    store.setSystemFailure("load failed")
+    expect(useDocumentStatusStore.getState().documentFingerprint).toBeNull()
+
+    store.loadDocumentStatus(loaded, false, "loaded-fp")
+    store.reset()
+    expect(useDocumentStatusStore.getState().documentFingerprint).toBeNull()
+  })
+
+  it("records no fingerprint for a document adopted without one", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(loaded, false, "loaded-fp")
+    useDocumentStatusStore.getState().loadDocumentStatus(loaded, false, null)
+    expect(useDocumentStatusStore.getState().documentFingerprint).toBeNull()
+    useDocumentStatusStore.getState().reset()
+  })
+
   it("tracks a live source-only canvas reference separately from current document state", () => {
     const sourceOnly = { ...loaded, load_status: "source_only" as const, source_revision: "r2" }
     useDocumentStatusStore.getState().loadLiveDocumentStatus(sourceOnly, {
       kind: "last_renderable",
       sourceRevision: "r1",
       loadStatus: "ready",
-    }, false)
+    }, false, "live-fingerprint")
 
     expect(useDocumentStatusStore.getState()).toMatchObject({
       loadStatus: "source_only",

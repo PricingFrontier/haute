@@ -295,8 +295,14 @@ remediation without exposing raw bounded-collection JSON.
 - Utility save replies cannot clear/show errors for a different active module. A 400 API detail
   matching `line N` highlights that line; list/load errors are toast-visible, not interpreted as
   a missing utility directory.
-- The frame restores its saved height after expand-to-top and uses parent height, own bottom edge,
-  then viewport height when measuring available space.
+- Every preview pane (data, explore, modelling, optimiser) renders through `PreviewPanelFrame`,
+  which takes no per-pane sizing props: all panes share `PREVIEW_PANEL_DIMENSIONS` (initial and
+  minimum height). The only height ceiling is the space available in the parent column: the
+  parent's height minus siblings that cannot shrink (banners), since the flex-growing canvas can
+  yield all of its height. Dragging and expand-to-top share that ceiling, so a drag reaches the
+  same top edge as the expand command. Without a measurable parent the ceiling falls back to the
+  frame's own bottom edge, then the viewport height. The frame restores its saved height after
+  expand-to-top.
 - `PreviewPanelTabs` gives exactly one enabled tab `tabIndex=0`; Left/Right wrap across enabled
   tabs, Home/End select the boundary tab, and disabled tabs are skipped.
 

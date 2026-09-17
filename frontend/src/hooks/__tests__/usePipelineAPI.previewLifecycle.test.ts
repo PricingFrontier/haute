@@ -77,7 +77,7 @@ vi.mock("../../utils/makePreviewData", () => ({
 import { loadPipeline, previewNode } from "../../api/client"
 import { ensureInputSnapshots } from "../ensureInputSnapshots"
 import { makeNode } from "../../test-utils/factories"
-import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
+import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
 
@@ -147,7 +147,7 @@ describe("usePipelineAPI — preview lifecycle terminal states (W0)", () => {
   })
 
   it.each([false, true])("finishes interrupted input preparation without reviving a deleted node (deleted=%s)", async (deleted) => {
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     let finishPreparation!: () => void
     vi.mocked(ensureInputSnapshots).mockImplementationOnce(() => new Promise<void>((resolve) => {
       finishPreparation = resolve
@@ -190,7 +190,7 @@ describe("usePipelineAPI — preview lifecycle terminal states (W0)", () => {
     // effect bumped structuralVersion while the request was in flight,
     // stranding the panel on "Executing pipeline..." with no further
     // requests and no error.
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
 
     let resolvePreview!: (value: PreviewEnvelope) => void
     mockPreview.mockImplementation(() => new Promise((resolve) => {
@@ -245,7 +245,7 @@ describe("usePipelineAPI — preview lifecycle terminal states (W0)", () => {
   })
 
   it("previews a requested output frame without clearing the visible table first", async () => {
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     mockPreview.mockResolvedValue(okEnvelope)
 
     const applyNode = makeNode("browser_apply", "optimiserApply")
@@ -274,7 +274,7 @@ describe("usePipelineAPI — preview lifecycle terminal states (W0)", () => {
   it("surfaces a preview failure that arrives after a mid-flight structuralVersion bump", async () => {
     // Same interleave as above but the backend fails: the panel must show
     // the error, never an eternal "loading" with no error surfaced.
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
 
     let rejectPreview!: (reason: unknown) => void
     mockPreview.mockImplementation(() => new Promise((_resolve, reject) => {
@@ -309,7 +309,7 @@ describe("usePipelineAPI — preview lifecycle terminal states (W0)", () => {
   })
 
   it("renders a memory-limit preview failure in plain language rather than its raw detail", async () => {
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     const detail = {
       error_code: "memory_limit",
       operation: "pipeline_preview",
@@ -340,7 +340,7 @@ describe("usePipelineAPI — preview lifecycle terminal states (W0)", () => {
     // handleDeleteNode clears previewData to null and removes the node;
     // the late response must keep that terminal state (no panel for a
     // node that no longer exists, no orphaned cache entry).
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
 
     let resolvePreview!: (value: PreviewEnvelope) => void
     mockPreview.mockImplementation(() => new Promise((resolve) => {

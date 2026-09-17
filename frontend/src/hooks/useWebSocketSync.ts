@@ -187,10 +187,6 @@ export default function useWebSocketSync({
   const { addToast } = useToastStore()
   const [status, setStatus] = useState<WsStatus>(() => enabled ? "reconnecting" : "disconnected")
   const retriesRef = useRef(0)
-  const appliedDocumentFingerprintRef = useRef<{
-    sourceFile: string
-    fingerprint: string
-  } | null>(null)
 
   useEffect(() => {
     if (!enabled) {
@@ -241,22 +237,11 @@ export default function useWebSocketSync({
       return useDocumentStatusStore.getState().sourceFile || sourceFileRef?.current
     }
 
-    function appliedDocumentFingerprintFor(sourceFile: string): string | undefined {
-      const applied = appliedDocumentFingerprintRef.current
-      if (!applied || !isCurrentSourceFile(applied.sourceFile, sourceFile)) {
-        return undefined
-      }
-      return applied.fingerprint
-    }
-
-    function rememberAppliedDocumentFingerprint(
-      incomingSource: unknown,
-      fingerprint: string,
-    ) {
-      const sourceFile = normalizeSourceFile(incomingSource)
-        ?? normalizeSourceFile(currentDocumentSource())
-      appliedDocumentFingerprintRef.current = sourceFile
-        ? { sourceFile, fingerprint }
+    /** The accepted document's fingerprint (seeded by the initial load) when it belongs to `sourceFile`. */
+    function acceptedDocumentFingerprintFor(sourceFile: string): string | null {
+      const status = useDocumentStatusStore.getState()
+      return status.sourceFile && isCurrentSourceFile(status.sourceFile, sourceFile)
+        ? status.documentFingerprint
         : null
     }
 
@@ -315,7 +300,7 @@ export default function useWebSocketSync({
               source_file: sourceFile,
               document_schema_version: DOCUMENT_SCHEMA_VERSION,
             }
-            const documentFingerprint = appliedDocumentFingerprintFor(sourceFile)
+            const documentFingerprint = acceptedDocumentFingerprintFor(sourceFile)
             if (documentFingerprint) {
               resyncPayload[DOCUMENT_FINGERPRINT_FIELD] = documentFingerprint
             }
@@ -358,9 +343,9 @@ export default function useWebSocketSync({
             frame.document,
             retainedCanvas,
             false,
+            frame.documentFingerprint,
           )
           sourceRevisionRef.current = frame.document.source_revision ?? ""
-          rememberAppliedDocumentFingerprint(frame.sourceFile, frame.documentFingerprint)
 
           if (frame.document.load_status === "source_only") {
             if (dirty) {
@@ -457,7 +442,6 @@ export default function useWebSocketSync({
           // could not be loaded or resynced at all. Authored errors arrive
           // as degraded/source-only documents, never through this frame.
           ++graphUpdateSeq
-          appliedDocumentFingerprintRef.current = null
           useDocumentStatusStore.getState().setSystemFailure(
             String(msg.error || "Pipeline document could not be loaded."),
           )

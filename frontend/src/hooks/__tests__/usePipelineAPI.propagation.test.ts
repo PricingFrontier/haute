@@ -104,7 +104,7 @@ vi.mock("../../utils/makePreviewData", () => ({
 
 import { ApiError, loadPipeline, previewNode } from "../../api/client"
 import { makeNode, makeEdge } from "../../test-utils/factories"
-import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
+import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
 
@@ -206,7 +206,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     // rather than chaining recursively), downstream column updates
     // would race and A's new schema would not have propagated into
     // the B-preview graph payload yet.
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     const { callOrder, deferreds } = makeControllablePreview()
 
     const A = makeNode("A")
@@ -280,7 +280,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     // activeSourceRef.current for each recursive cascade call, the chain
     // can split across sources when the user flips the active source
     // while the root preview is in flight.
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     const { callOrder, deferreds } = makeControllablePreview()
 
     const A = makeNode("A")
@@ -356,7 +356,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
   // ─────────────────────────────────────────────────────────────────
 
   it("cascade uses the rowLimit captured at cascade start, even when store flips mid-flight", async () => {
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     const { callOrder, deferreds } = makeControllablePreview()
 
     const A = makeNode("A")
@@ -414,7 +414,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     // Catches: if the refactor drops the columnsEqual check, every
     // cascade would walk the whole downstream graph unconditionally,
     // wasting API calls and masking genuine schema changes.
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     const { callOrder, deferreds } = makeControllablePreview()
 
     // B already has the columns the backend will return → cascade halts at B.
@@ -484,7 +484,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     // Acceptance: we assert downstream B is invoked AT MOST twice
     // across two root-triggered cascades — the refactor may legitimately
     // collapse to exactly 2 invocations (once per cascade) but NOT 4.
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     const { callOrder, deferreds } = makeControllablePreview()
 
     const A = makeNode("A")
@@ -574,7 +574,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
   // ─────────────────────────────────────────────────────────────────
 
   it("fires previews for all direct downstream children when root columns change", async () => {
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     const { callOrder, deferreds } = makeControllablePreview()
 
     const A = makeNode("A")
@@ -632,7 +632,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
   })
 
   it("caps concurrent downstream previews for a wide fan-out while eventually running all affected nodes", async () => {
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     const callOrder: string[] = []
     const activeDownstream = new Set<string>()
     const deferreds = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
@@ -718,7 +718,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
   })
 
   it("suppresses stale downstream failure toasts after a newer preview supersedes the cascade", async () => {
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     const { callOrder, deferreds } = makeControllablePreview()
 
     const A = makeNode("A")
@@ -758,7 +758,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
   })
 
   it("treats expected downstream preview supersession as cancellation, not a warning", async () => {
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     const { callOrder, deferreds } = makeControllablePreview()
 
     const A = makeNode("A")
@@ -803,7 +803,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
   })
 
   it("still warns for downstream conflicts that are not preview supersession", async () => {
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     const { callOrder, deferreds } = makeControllablePreview()
 
     const A = makeNode("A")
@@ -848,7 +848,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
   })
 
   it("dedupes diamond-shaped downstream propagation so a shared child previews once", async () => {
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     const { callOrder, deferreds, graphsByNode } = makeControllablePreview()
 
     const A = makeNode("A")
@@ -934,7 +934,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
   })
 
   it("waits for a longer sibling branch before previewing an uneven diamond join", async () => {
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     const { callOrder, deferreds, graphsByNode } = makeControllablePreview()
 
     const A = makeNode("A")
@@ -1042,7 +1042,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
   // ─────────────────────────────────────────────────────────────────
 
   it("does not invoke additional previews when the previewed node has no downstream edges", async () => {
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     const { callOrder, deferreds } = makeControllablePreview()
 
     const leaf = makeNode("leaf")
@@ -1084,7 +1084,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     // Promise.all (rather than per-sibling then/catch/finally), a
     // single rejection would reject the whole cascade and leak the
     // in-flight guard.
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     const { callOrder, deferreds } = makeControllablePreview()
 
     const A = makeNode("A")

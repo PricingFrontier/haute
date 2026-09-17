@@ -354,8 +354,34 @@ candidate, with the error toast.
   clears any prior node's preview, but does not issue a predictably failing
   execution request; Infer Tables followed by an explicit refresh is the
   normal first-preview flow.
+- **Active node visibility.** The inspector panel and the preview pane take
+  their space from the canvas, so opening them must not leave the node they
+  describe hidden behind them. Whenever a node becomes the inspector's active
+  node — clicking it, dropping it from the palette, inserting an edge-join,
+  choosing it in node search, or navigating to it from the recovery banner —
+  the editor keeps it inside the canvas area that remains. If any part of the
+  node lies outside that area, the view pans, without changing zoom, by the
+  least distance that places the node at least 40px inside the canvas edges;
+  on an axis where the node cannot fit with that margin it is centred
+  instead. A node that is already fully visible never moves the view. The
+  first placement glides over 200ms, matching the inspector's slide-in. While
+  the same node stays active, later layout changes — a lazily loaded preview
+  pane mounting, the inspector or preview pane being resized, the node's own
+  size changing — are compensated in the same frame, so the node never
+  appears covered. A user pan or zoom gesture ends this for the current node,
+  so the editor never pulls the view back after the user has deliberately
+  moved away; the next node to become active starts it again. Programmatic
+  view changes (fit view, auto-pan) do not end it. Node search is the one
+  centred placement: it centres the chosen node at zoom 0.8 within the canvas
+  area that remains once the inspector is open, not within the canvas as it
+  was before the inspector opened.
 - **Pipeline load and save.** The pipeline loads once on mount with a
-  cold-start retry policy. Its versioned editor-document response is validated before state
+  cold-start retry policy. Once every node of the loaded document has been
+  measured, the canvas fits all of them into view (padding 0.15) once per
+  canvas mount — the editor canvas mounts on page load and again when it
+  returns from the comparison, source-only, or load-failure views, each time
+  with a fresh viewport; it never fits a partially measured graph, which would
+  zoom onto whichever nodes happened to be measured first. Its versioned editor-document response is validated before state
   changes, then adapted to React Flow; recovery wire nodes never enter the canonical graph
   store directly. `ready` documents retain normal behaviour. A `degraded` document renders
   every recoverable element, marks unavailable or blocked nodes separately from transient
@@ -426,8 +452,14 @@ candidate, with the error toast.
   `markSaved`; any apply failure restores the graph fields and request-facing
   refs. An omitted submodels field or missing live `source_revision` fails
   loudly.
-  A resync on reconnect sends the last-applied graph fingerprint so the
-  server can skip re-sending an unchanged graph.
+  Every resync — the first connection after the page loads as well as a
+  reconnect — sends the fingerprint of the last accepted document, so the
+  server skips re-sending an unchanged one. The initial load's fingerprint
+  arrives with the document itself; loading a page therefore never re-applies
+  the same document, never announces it as updated from file, and never
+  re-fits the view or clears the selection it has just made. A document
+  adopted from a response that names no fingerprint (repair, scoped node save)
+  records none, and the next resync asks for the current document.
 - **Submodel navigation.** Drilling resolves a canonical occurrence from its
   node type and `{definitionId, alias}` config, loads the shared definition by
   definition id, verifies any returned identity, and builds boundary nodes from

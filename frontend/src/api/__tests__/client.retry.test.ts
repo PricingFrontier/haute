@@ -37,13 +37,21 @@ import {
 // Test helpers
 // ---------------------------------------------------------------------------
 
-function jsonResponse(body: unknown, status = 200) {
+function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}) {
   return Promise.resolve({
     ok: status >= 200 && status < 300,
     status,
     statusText: status === 200 ? "OK" : "Error",
+    headers: new Headers(headers),
     json: () => Promise.resolve(body),
   })
+}
+
+const DOCUMENT_FINGERPRINT = "doc-fp"
+
+/** A pipeline load response: the document plus the fingerprint header the server names. */
+function pipelineResponse(body: unknown) {
+  return jsonResponse(body, 200, { "x-haute-document-fingerprint": DOCUMENT_FINGERPRINT })
 }
 
 function errorResponse(status: number, body?: unknown) {
@@ -182,11 +190,11 @@ describe("retry: idempotent GET on network error", () => {
       mockFetch
         .mockRejectedValueOnce(new TypeError("Failed to fetch"))
         .mockRejectedValueOnce(new TypeError("Failed to fetch"))
-        .mockReturnValueOnce(jsonResponse(payload))
+        .mockReturnValueOnce(pipelineResponse(payload))
 
       const result = await loadPipeline()
 
-      expect(result).toEqual(payload)
+      expect(result).toEqual({ document: payload, documentFingerprint: DOCUMENT_FINGERPRINT })
       expect(mockFetch).toHaveBeenCalledTimes(3)
     } finally {
       stub.restore()
@@ -196,7 +204,7 @@ describe("retry: idempotent GET on network error", () => {
   it("succeeds on the first attempt when fetch succeeds immediately", async () => {
     const stub = stubBackoffTimers()
     try {
-      mockFetch.mockReturnValueOnce(jsonResponse({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-test" }))
+      mockFetch.mockReturnValueOnce(pipelineResponse({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-test" }))
       await loadPipeline()
       // No backoff sleeps should have been scheduled.
       expect(stub.capturedDelays).toHaveLength(0)
@@ -407,11 +415,14 @@ describe("retry: caller supplied policy", () => {
         .mockRejectedValueOnce(new TypeError("cold start"))
         .mockRejectedValueOnce(new TypeError("cold start"))
         .mockRejectedValueOnce(new TypeError("cold start"))
-        .mockReturnValueOnce(jsonResponse({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-test" }))
+        .mockReturnValueOnce(pipelineResponse({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-test" }))
 
       const result = await loadPipeline({ retry: { maxRetries: 5, baseDelayMs: 25 } })
 
-      expect(result).toEqual({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-test" })
+      expect(result).toEqual({
+        document: { nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-test" },
+        documentFingerprint: DOCUMENT_FINGERPRINT,
+      })
       expect(mockFetch).toHaveBeenCalledTimes(6)
       expect(stub.capturedDelays).toHaveLength(5)
     } finally {

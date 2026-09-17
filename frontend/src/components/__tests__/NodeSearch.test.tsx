@@ -13,7 +13,6 @@ import { makeNode } from "../../test-utils/factories"
 // Mocks
 // ---------------------------------------------------------------------------
 
-const mockSetCenter = vi.fn()
 let mockNodes = [
   makeNode("n1", NODE_TYPES.DATA_INPUT, { data: { label: "Load Claims", nodeType: NODE_TYPES.DATA_INPUT, config: {} } }),
   makeNode("n2", NODE_TYPES.POLARS, { data: { label: "Clean Data", nodeType: NODE_TYPES.POLARS, config: {} }, position: { x: 200, y: 100 } }),
@@ -28,9 +27,6 @@ vi.mock("@xyflow/react", async () => {
   const actual = await vi.importActual("@xyflow/react")
   return {
     ...actual,
-    useReactFlow: () => ({
-      setCenter: mockSetCenter,
-    }),
     useNodes: () => mockNodes,
   }
 })
@@ -60,7 +56,6 @@ function renderSearch(overrides: Partial<{ onClose: () => void; onSelectNode: (i
 describe("NodeSearch", () => {
   afterEach(() => {
     cleanup()
-    mockSetCenter.mockClear()
     mockNodes = defaultMockNodes
   })
 
@@ -127,7 +122,6 @@ describe("NodeSearch", () => {
     fireEvent.keyDown(input, { key: "Enter" })
     expect(onSelectNode).toHaveBeenCalledWith("n1")
     expect(onClose).toHaveBeenCalledOnce()
-    expect(mockSetCenter).toHaveBeenCalledOnce()
   })
 
   it("navigates with arrow keys", () => {
@@ -230,7 +224,6 @@ describe("NodeSearch", () => {
 
     expect(onSelectNode).toHaveBeenCalledWith("node-75")
     expect(onClose).toHaveBeenCalledOnce()
-    expect(mockSetCenter).toHaveBeenCalledWith(850, 400, { zoom: 0.8, duration: 300 })
   })
 
   it("uses the measured list height when keyboard scrolling in a short viewport", () => {

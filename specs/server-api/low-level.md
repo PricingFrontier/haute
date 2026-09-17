@@ -14,7 +14,7 @@
 | `src/haute/_event_bus.py` | `EventBus` — thread-safe synchronous pub/sub with typed `parse.error` and `pipeline.document.update` overloads; `default_bus` is the module-level singleton the watcher and server wire together. |
 | `src/haute/_types.py` | `NodeType` (`StrEnum`), the decorator↔NodeType maps, every per-node-type config `TypedDict`, the `SolveResultLike` Protocol family, and the canonical `NodeData` / `GraphNode` / `GraphEdge` / `PipelineGraph` Pydantic models (with `PipelineGraph`'s cached-property-invalidating `model_copy` override). |
 | `src/haute/_pipeline_revision.py` | [submodels](../submodels/low-level.md)-owned canonical parsed-graph revision plus the editor recovery revision over a contained, role-qualified raw-artifact manifest with explicit missing sentinels. |
-| `src/haute/_pipeline_recovery.py` | Side-effect-free editor loader: AST/regex skeleton discovery, isolated node resolution, availability/diagnostic propagation, typed sidecar merge, raw-artifact revision assembly, and ready/degraded/source-only classification. It never returns a canonical `PipelineGraph`. |
+| `src/haute/_pipeline_recovery.py` | Side-effect-free editor loader: AST/regex skeleton discovery, isolated node resolution, availability/diagnostic propagation, typed sidecar merge, raw-artifact revision assembly, and ready/degraded/source-only classification, plus `pipeline_document_fingerprint`, the one digest of a dumped editor document shared by the load routes, resync, and live-sync frames. It never returns a canonical `PipelineGraph`. |
 | `src/haute/_pipeline_repair.py` | Unavailable-node removal planner and shared revision/plan verification, conservation and rollback service for explicit removal, current-format update and reset. It never accepts client-authored bytes. |
 | `src/haute/_pipeline_repair_actions.py` | Bounded submodel-format update and ordinary-node reset planners; single-node codegen, shared palette defaults, isolated artifact-only preview and strict postconditions. Node-scoped saves and resets write a sidecar for every node that emits one (`node_emits_sidecar`), so a stepped transform's optional polars sidecar is updated alongside its regenerated body. |
 | `src/haute/_submodel_recovery.py` | Literal submodel registration identity evidence used only by recovery, raw revision discovery and explicitly requested updates. |
@@ -191,8 +191,8 @@ when a path/query/body fails model validation):
 | `GET /api/session` | No body | `SessionStatusResponse {ok: bool=true}` |
 | `POST /api/session/bootstrap` | No body; explicit exact local Origin required | `SessionStatusResponse {ok: bool=true}` plus HttpOnly, SameSite=Strict session cookie and no-store headers |
 | `GET /api/pipelines` | No body | `list[PipelineSummary]`; each item carries `{name, description, file, node_count, load_status, diagnostic_count}`. |
-| `GET /api/pipeline` | No body | First discovered authored `PipelineEditorDocument`, irrespective of load status; a new empty ready document only when no authored document exists. Readable authored errors remain HTTP 200. |
-| `GET /api/pipeline/{name}` | Pipeline name path parameter | Named `PipelineEditorDocument`; a readable non-ready document is found by recovered metadata or file stem and remains HTTP 200. |
+| `GET /api/pipeline` | No body | First discovered authored `PipelineEditorDocument`, irrespective of load status; a new empty ready document only when no authored document exists. Readable authored errors remain HTTP 200. The `x-haute-document-fingerprint` header carries `pipeline_document_fingerprint` of the returned document. |
+| `GET /api/pipeline/{name}` | Pipeline name path parameter | Named `PipelineEditorDocument`; a readable non-ready document is found by recovered metadata or file stem and remains HTTP 200. Carries the same `x-haute-document-fingerprint` header. |
 | `POST /api/pipeline/editor-identities` | `EditorIdentitiesRequest {nodes:[{node_id,label,node_type,source_handles}]}` | `EditorIdentitiesResponse {identities:[{node_id,function_name,config_reference,default_input_name,source_handle_input_names}]}` in exact request order; public handles are sanitised server-side and the operation has no project-state side effects. |
 | `POST /api/pipeline/save` | `SavePipelineRequest {name="main", description="", graph={}, preamble=null, preserved_blocks=[], source_file="", sources=["live"], active_source="live", base_revision}`; `base_revision` is a required `RevisionToken | null` | `SavePipelineResponse {status="saved", file, pipeline_name, source_revision, warnings=[], git_sha=null, identity_required=false}`, or `409` with a flat `detail` beginning `stale_document_revision:` when `base_revision` does not equal the on-disk `source_revision` (`null` versus an existing file, or a token versus a missing file, are mismatches) |
 | `POST /api/pipeline/read-json` | `ReadJsonRequest {path}` | `ReadJsonResponse`, a root JSON object (arrays/scalars are rejected) |
@@ -234,7 +234,11 @@ no-ops. The server sends exactly two frame types: a complete
 `{"type":"pipeline_document_update","schema_version":1,"document":object,
 "document_fingerprint":sha256,"source_file":str}` or
 `{"type":"parse_error","error":str,"source_file":str}`.
-A matching document fingerprint produces no frame. A parse error is emitted only when the
+A matching document fingerprint produces no frame. Every fingerprint — in these frames, in a
+resync comparison, and in the load routes' `x-haute-document-fingerprint` header — is
+`pipeline_document_fingerprint`: SHA-256 over `canonical_json` of the document's JSON-mode,
+by-alias dump, so a document loaded over HTTP and the same document recovered for a resync
+compare equal. A parse error is emitted only when the
 editor document itself cannot be loaded or resynced and carries a fixed safe message;
 authored pipeline errors are never parse errors — they arrive as degraded or source-only
 documents. The frame builder rejects an event payload that already contains reserved key

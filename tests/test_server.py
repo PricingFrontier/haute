@@ -158,7 +158,20 @@ class TestSessionStatus:
 # ---------------------------------------------------------------------------
 
 
+DOCUMENT_FINGERPRINT_HEADER = "x-haute-document-fingerprint"
+
+
 class TestGetFirstPipeline:
+    def test_names_the_returned_document_fingerprint(self, client: TestClient):
+        from haute._pipeline_recovery import pipeline_document_fingerprint
+
+        resp = client.get("/api/pipeline")
+
+        assert resp.status_code == 200
+        assert resp.headers[DOCUMENT_FINGERPRINT_HEADER] == pipeline_document_fingerprint(
+            resp.json()
+        )
+
     def test_returns_graph(self, client: TestClient):
         resp = client.get("/api/pipeline")
         assert resp.status_code == 200
@@ -240,6 +253,15 @@ class TestGetPipelineByName:
         assert resp.status_code == 200
         graph = resp.json()
         assert graph["pipeline_name"] == "test_pipeline"
+
+    def test_names_the_returned_document_fingerprint(self, client: TestClient):
+        from haute._pipeline_recovery import pipeline_document_fingerprint
+
+        resp = client.get("/api/pipeline/test_pipeline")
+
+        assert resp.headers[DOCUMENT_FINGERPRINT_HEADER] == pipeline_document_fingerprint(
+            resp.json()
+        )
 
     def test_not_found(self, client: TestClient):
         resp = client.get("/api/pipeline/nonexistent")
@@ -1310,12 +1332,13 @@ class TestWebSocketResync:
         pipeline_dir: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        from haute._pipeline_recovery import pipeline_document_fingerprint
         from haute.routes._helpers import load_pipeline_editor_document
-        from haute.server import _document_payload_fingerprint, _handle_ws_sync_message
+        from haute.server import _handle_ws_sync_message
 
         monkeypatch.chdir(pipeline_dir)
         pipeline_file = pipeline_dir / "test_pipeline.py"
-        current_fingerprint = _document_payload_fingerprint(
+        current_fingerprint = pipeline_document_fingerprint(
             load_pipeline_editor_document(pipeline_file, project_root=pipeline_dir).model_dump(
                 mode="json", by_alias=True
             )
@@ -1481,18 +1504,50 @@ class TestWebSocketResync:
         assert offload_calls == 1
         assert [frame["type"] for frame in ws.frames] == ["pipeline_document_update"]
 
+    def test_first_resync_with_the_loaded_fingerprint_sends_nothing(
+        self, client: TestClient, pipeline_dir: Path
+    ) -> None:
+        """A page that just loaded the document must not be sent it again on connect."""
+        from unittest.mock import patch
+
+        from haute.server import _handle_ws_sync_message
+
+        loaded = client.get("/api/pipeline")
+        assert loaded.json()["source_file"] == "test_pipeline.py"
+        ws = self._CollectingWebSocket()
+        with patch(
+            "haute.server.discover_pipelines",
+            return_value=[pipeline_dir / "test_pipeline.py"],
+        ):
+            asyncio.run(
+                _handle_ws_sync_message(
+                    ws,  # type: ignore[arg-type]
+                    json.dumps(
+                        {
+                            "type": "resync",
+                            "source_file": "test_pipeline.py",
+                            "document_schema_version": 1,
+                            "document_fingerprint": loaded.headers[DOCUMENT_FINGERPRINT_HEADER],
+                        }
+                    ),
+                )
+            )
+
+        assert ws.frames == []
+
     def test_v1_resync_sends_editor_document_and_suppresses_equal_fingerprint(
         self, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from unittest.mock import patch
 
+        from haute._pipeline_recovery import pipeline_document_fingerprint
         from haute.routes._helpers import load_pipeline_editor_document
-        from haute.server import _document_payload_fingerprint, _handle_ws_sync_message
+        from haute.server import _handle_ws_sync_message
 
         monkeypatch.chdir(pipeline_dir)
         pipeline_file = pipeline_dir / "test_pipeline.py"
         document = load_pipeline_editor_document(pipeline_file, project_root=pipeline_dir)
-        fingerprint = _document_payload_fingerprint(document.model_dump(mode="json", by_alias=True))
+        fingerprint = pipeline_document_fingerprint(document.model_dump(mode="json", by_alias=True))
         ws = self._CollectingWebSocket()
         with patch("haute.server.discover_pipelines", return_value=[pipeline_file]):
             asyncio.run(

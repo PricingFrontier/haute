@@ -504,6 +504,7 @@ async function attemptFetch<T>(
   fetchOptions: RequestInit,
   timeout: number,
   externalSignal: AbortSignal | undefined,
+  read: (response: Response) => Promise<T>,
 ): Promise<T> {
   const controller = new AbortController()
   let abortSource: "timeout" | "external" | undefined
@@ -541,7 +542,7 @@ async function attemptFetch<T>(
     if (!res.ok) {
       await throwApiError(res)
     }
-    return await res.json() as T
+    return await read(res)
   } catch (err) {
     if (abortSource === "timeout" && isAbortError(err)) {
       throw new ApiTimeoutError(url, timeout)
@@ -558,9 +559,15 @@ async function attemptFetch<T>(
 // Exported for split-chunk API modules (e.g. api/dispersion.ts): endpoints
 // consumed only by lazy-loaded panels live outside this module so their code
 // stays out of the initial bundle, but they share the same fetch machinery.
-export async function request<T>(
+export function request<T>(url: string, options: RequestOptions = {}): Promise<T> {
+  return requestWith(url, options, (response) => response.json() as Promise<T>)
+}
+
+/** `request` with a caller-supplied reader for a successful response (e.g. to read its headers). */
+async function requestWith<T>(
   url: string,
-  options: RequestOptions = {},
+  options: RequestOptions,
+  read: (response: Response) => Promise<T>,
 ): Promise<T> {
   const { timeout = 30_000, signal: rawSignal, retry, ...fetchOptions } = options
   // Normalise RequestInit's `AbortSignal | null` to `AbortSignal | undefined`
@@ -577,7 +584,7 @@ export async function request<T>(
     }
 
     try {
-      return await attemptFetch<T>(url, fetchOptions, timeout, externalSignal)
+      return await attemptFetch<T>(url, fetchOptions, timeout, externalSignal, read)
     } catch (err) {
       lastError = err
       // Non-retryable errors (AbortError, 4xx, non-idempotent method) short-circuit.
@@ -640,8 +647,25 @@ export function checkHauteSession(options: ApiClientOptions = {}): Promise<{ ok:
 // Pipeline endpoints
 // ---------------------------------------------------------------------------
 
-export function loadPipeline(options?: ApiClientOptions): Promise<unknown> {
-  return request<unknown>("/api/pipeline", options)
+/** Response header naming the fingerprint of the editor document a load route returns. */
+export const DOCUMENT_FINGERPRINT_HEADER = "x-haute-document-fingerprint"
+
+export interface LoadedPipeline {
+  /** The unvalidated editor document; narrow it with `parsePipelineEditorDocument`. */
+  document: unknown
+  /** The server's fingerprint of exactly this document, sent back on the first live-sync resync. */
+  documentFingerprint: string
+}
+
+export async function loadPipeline(options: ApiClientOptions = {}): Promise<LoadedPipeline> {
+  const { document, documentFingerprint } = await requestWith("/api/pipeline", options, async (response) => ({
+    document: await response.json() as unknown,
+    documentFingerprint: response.headers.get(DOCUMENT_FINGERPRINT_HEADER)?.trim() ?? "",
+  }))
+  if (!documentFingerprint) {
+    throw new Error(`loadPipeline: response has no ${DOCUMENT_FINGERPRINT_HEADER} header`)
+  }
+  return { document, documentFingerprint }
 }
 
 const EDITOR_NODE_TYPES_WITHOUT_DEFAULT_INPUT = new Set([

@@ -81,6 +81,8 @@ import type { DrilledOccurrenceIdentity } from "./utils/submodelRuntimeTarget"
 import { isSubmodelInstanceConfig, nodeData } from "./types/node"
 import type { HauteNodeData } from "./types/node"
 import { useScopedNodeSave } from "./hooks/useScopedNodeSave"
+import { useActiveNodeReveal } from "./hooks/useActiveNodeReveal"
+import InitialViewFit from "./components/InitialViewFit"
 import { withNativeDeletePolicy } from "./utils/submodelDeletionPolicy"
 import { requestSubmodelCreation } from "./utils/submodelCreation"
 import { resolveEditorGraphIdentities } from "./utils/editorIdentities"
@@ -125,7 +127,8 @@ const defaultEdgeOptions = {
 
 const connectionLineStyle = { stroke: 'var(--accent)', strokeWidth: 2, strokeDasharray: '6 3' }
 
-const fitViewOptions = { padding: 0.15 }
+// Zoom at which node search centres the chosen node.
+const NODE_SEARCH_FOCUS_ZOOM = 0.8
 
 const proOptions = { hideAttribution: true }
 
@@ -735,6 +738,7 @@ function FlowEditor() {
   const activePanelNodeCandidate = selectedNode?.id ?? lastSelectedId
   const panelNode = panelGraph.getNode(activePanelNodeCandidate)
   const activePanelNodeId = panelNode ? activePanelNodeCandidate : null
+  const { handleMoveStart: handleActiveNodeMoveStart, centreNode } = useActiveNodeReveal(activePanelNodeId)
 
   useEffect(() => {
     setPinnedPreviewNodeId(activePanelNodeId ?? null)
@@ -898,7 +902,8 @@ function FlowEditor() {
   ) => {
     const recoverTargetId =
       pipelineRepairTarget?.action === "recover" ? pipelineRepairTarget.recoveryId : null
-    adoptPipelineDocument(document)
+    // The repair response names no document fingerprint; the next resync fetches the document.
+    adoptPipelineDocument(document, null)
     resetToAuthoritativeRoot(
       document.source_file,
       document.pipeline_name ?? "main",
@@ -941,7 +946,8 @@ function FlowEditor() {
   const applyScopedSaveDocument = useCallback(
     (document: import("./types/pipelineDocument").PipelineEditorDocument, savedNodeId: string) => {
       const selectionUnchanged = selectedNodeRef.current?.id === savedNodeId
-      adoptPipelineDocument(document)
+      // The scoped save response names no document fingerprint; the next resync fetches the document.
+      adoptPipelineDocument(document, null)
       resetToAuthoritativeRoot(document.source_file, document.pipeline_name ?? "main")
       if (selectionUnchanged) {
         const restored = graphRef.current.nodes.find((item) => item.id === savedNodeId)
@@ -1352,7 +1358,8 @@ function FlowEditor() {
     setUtilityOpen(false)
     setImportsOpen(false)
     setGitOpen(false)
-  }, [setGitOpen, setImportsOpen, setUtilityOpen])
+    centreNode(node.id, NODE_SEARCH_FOCUS_ZOOM)
+  }, [centreNode, setGitOpen, setImportsOpen, setUtilityOpen])
 
   const handleImportAdded = useCallback((importLine: string) => {
     const current = preambleRef.current
@@ -1557,6 +1564,7 @@ function FlowEditor() {
                 nodesDraggable={!editingReadOnly}
                 nodesConnectable={!editingReadOnly}
                 onSelectionChange={onSelectionChange}
+                onMoveStart={handleActiveNodeMoveStart}
                 onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
                 onNodeMouseLeave={() => setHoveredNodeId(null)}
                 onNodeClick={(event, node) => { setUtilityOpen(false); setImportsOpen(false); setGitOpen(false); setHoveredNodeId(null); onNodeClick(event, node) }}
@@ -1585,8 +1593,6 @@ function FlowEditor() {
                 selectionMode={SelectionMode.Partial}
                 selectionKeyCode={null}
                 minZoom={0.1}
-                fitView
-                fitViewOptions={fitViewOptions}
                 proOptions={proOptions}
                 defaultEdgeOptions={defaultEdgeOptions}
                 connectionLineStyle={connectionLineStyle}
@@ -1594,6 +1600,7 @@ function FlowEditor() {
                 isValidConnection={isValidConnection}
               >
                 <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="rgba(255,255,255,.06)" />
+                <InitialViewFit />
               </ReactFlow>
             </div>
           </ErrorBoundary>
