@@ -4332,3 +4332,49 @@ def test_recovery_keeps_steps_when_the_body_still_matches(project_root: Path, su
     raw, _changes = _recovered_settings(project_root, node_id)
     assert raw["steps"] == steps, surface
     assert "_steps_discarded" not in raw, surface
+
+
+def test_recovery_plans_a_malformed_step_container_without_raising(project_root: Path) -> None:
+    """Recovery never raises on a bad field: the unusable list goes, the body stays.
+
+    A `ConfigError` here would escape the recovery route, which handles only
+    `PipelineRepairError` and `OSError`, and the user would get an HTTP 500
+    instead of a plan.
+    """
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute._pipeline_repair import build_recover_unavailable_node_plan
+    from haute.schemas import PipelineRepairRecoverRequest
+
+    quotes, _rates = _frames(project_root)
+    graph = PipelineGraph(nodes=[_stepped_input(quotes, [step("l", "limit", n=2)])], edges=[])
+    (project_root / "main.py").write_text(
+        graph_to_code(graph, pipeline_name="main"), encoding="utf-8"
+    )
+    _write_sidecars(project_root, graph)
+    sidecar = project_root / "config" / "data_input" / "quotes.json"
+    persisted = json.loads(sidecar.read_text(encoding="utf-8"))
+    # A step list that is not a list at all, beside a readable rest of config.
+    sidecar.write_text(json.dumps({**persisted, "steps": {"kind": "limit"}}), encoding="utf-8")
+
+    document = load_pipeline_editor_document(project_root / "main.py", project_root=project_root)
+    target = next(node for node in document.nodes if node.authored_id == "quotes")
+
+    # The raw read degrades instead of raising.
+    raw, changes = _recovered_settings(project_root, "quotes")
+    assert "steps" not in raw
+    assert raw["code"] == "df = df.head(2)"
+    assert any(change.path == "/steps" and change.outcome == "removed" for change in changes)
+
+    # And the route's own plan builder returns a plan rather than an exception.
+    plan = build_recover_unavailable_node_plan(
+        project_root=project_root,
+        request=PipelineRepairRecoverRequest(
+            source_file=document.source_file,
+            source_revision=document.source_revision,
+            target_source_file=target.source_file,
+            target_recovery_id=target.recovery_id,
+            action="recover",
+        ),
+    )
+    assert plan.response.plan_hash
+    assert "df = df.head(2)" in json.dumps(plan.response.model_dump(), default=str)
