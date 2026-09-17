@@ -531,6 +531,22 @@ describe("DataInputEditor", () => {
     )
   })
 
+  it.each([
+    ["a new node's empty step list", { inputType: "file", format: "parquet", mode: "scan", path: "", arguments: {}, steps: [] }],
+    ["step editor state", { inputType: "file", format: "csv", mode: "scan", path: "quotes.csv", arguments: {}, steps: [{ id: "f", kind: "filter", match: "all", conditions: [] }], _steps_error: "Step 1: Add at least one condition." }],
+    ["a discarded step list on Databricks", { inputType: "databricks", http_path: "/sql/1", table: "cat.schema.t", arguments: {}, code: "", _steps_discarded: "Steps were discarded because the body changed." }],
+  ])("reports no configuration error for %s", async (_label, config) => {
+    renderEditor(config)
+    await screen.findByRole("radiogroup", { name: "Provider" })
+    expect(screen.queryByText(/Unexpected configuration keys/)).not.toBeInTheDocument()
+  })
+
+  it("still reports a genuinely unknown configuration key", async () => {
+    renderEditor({ inputType: "file", format: "csv", mode: "scan", path: "quotes.csv", arguments: {}, stepz: [] })
+    await screen.findByLabelText("Format")
+    expect(screen.getByText(/Unexpected configuration keys: stepz\./)).toBeInTheDocument()
+  })
+
   it("switches to Parquet without authoring a cache-mode field", async () => {
     const { onReplaceConfig } = renderEditor({
       inputType: "file",

@@ -26,6 +26,10 @@ const INPUT_COMMON_KEYS = new Set([
   "categorical_levels",
   "contract",
   "code",
+  // Post-load steps and the editor state the step machinery writes beside them.
+  "steps",
+  "_steps_error",
+  "_steps_discarded",
 ])
 
 const OUTPUT_COMMON_KEYS = new Set([
