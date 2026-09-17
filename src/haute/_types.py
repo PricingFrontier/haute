@@ -587,8 +587,15 @@ class ModellingConfig(TypedDict, total=False):
     regularization: str
     alpha: float
     l1_ratio: float
+    cv_folds: int
+    cv_selection: str  # "min" | "1se"
+    cv_seed: int
+    max_iter: int
+    tol: float
+    robust_standard_errors: str  # "HC0" | "HC1" | "HC2" | "HC3"
     intercept: bool
     var_power: float
+    theta: float
     # CatBoost / shared
     loss_function: str
     variance_power: float

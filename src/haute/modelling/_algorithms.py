@@ -137,29 +137,67 @@ def _mem_checkpoint(label: str) -> None:
 # Callback type: (iteration, total_iterations, metrics_dict) -> None
 IterationCallback = Callable[[int, int, dict[str, float]], None]
 
-# CatBoost model-metadata key recording the offset/baseline column a model
-# was trained with.  The .cbm format has no native baseline memory, so the
-# column name is stamped into the model's metadata at fit time and read back
-# by every loader — making the artifact self-describing the same way a
-# RustyStats model's ``required_columns`` carries its offset spec.
+# CatBoost model-metadata keys recording the offset/baseline column a model
+# was trained with and how it enters the raw score.  The .cbm format has no
+# native baseline memory, so both are stamped into the model's metadata at fit
+# time and read back by every loader — making the artifact self-describing the
+# same way a RustyStats model carries its exposure or offset spec.
 CATBOOST_OFFSET_METADATA_KEY = "haute_offset_column"
+CATBOOST_OFFSET_LINK_METADATA_KEY = "haute_offset_link"
+OFFSET_LINKS: frozenset[str] = frozenset({"log", "identity"})
+# CatBoost losses whose raw score is on the log scale, so an offset column is an
+# exposure multiplier that enters the baseline as log(offset).
+_LOG_LINK_CATBOOST_LOSSES: frozenset[str] = frozenset({"Poisson", "Tweedie"})
+
+
+def catboost_offset_link(loss_function: str | None) -> str:
+    """How a CatBoost loss applies an offset: ``log`` multiplies, ``identity`` adds."""
+    name = str(loss_function or "").partition(":")[0]
+    return "log" if name in _LOG_LINK_CATBOOST_LOSSES else "identity"
+
+
+def offset_baseline(values: Any, *, column: str, link: str, context: str) -> np.ndarray:
+    """Transform offset column values into a raw-score baseline.
+
+    Under a log link the offset is a positive exposure multiplier and enters
+    as ``log(offset)``; null, zero, or negative values are refused rather than
+    producing an infinite or undefined baseline. Other links add it verbatim.
+    """
+    array = np.asarray(values, dtype=np.float64)
+    if link == "identity":
+        return array
+    if link != "log":
+        raise HauteValidationError(f"{context}: unknown offset link {link!r}")
+    with np.errstate(invalid="ignore"):
+        invalid = int(np.count_nonzero(~np.isfinite(array) | (array <= 0)))
+    if invalid:
+        raise HauteValidationError(
+            f"{context}: offset column {column!r} must be positive under a log link, but "
+            f"{invalid:,} rows are null, zero, or negative."
+        )
+    return np.log(array)
 
 
 def _extract_offset_baseline(
     df: pl.DataFrame,
     offset: str,
     *,
+    link: str,
     context: str,
 ) -> np.ndarray:
-    """Return the offset column as a float baseline array, loud when absent."""
+    """Return the offset column as a raw-score baseline, loud when absent."""
     if offset not in df.columns:
         raise HauteValidationError(
             f"{context}: offset column {offset!r} is missing from the input "
             f"data. The model was trained with this offset and predictions "
-            f"without it would be silently mis-scaled. Available columns: "
-            f"{df.columns}"
+            f"without it would be silently mis-scaled."
         )
-    return df[offset].cast(pl.Float64).to_numpy()
+    return offset_baseline(
+        df[offset].cast(pl.Float64).to_numpy(),
+        column=offset,
+        link=link,
+        context=context,
+    )
 
 
 @dataclass
@@ -305,6 +343,7 @@ def _build_pool(
     target: str | None = None,
     weight: str | None = None,
     offset: str | None = None,
+    offset_link: str | None = None,
     y: np.ndarray | None = None,
     w: np.ndarray | None = None,
     baseline: np.ndarray | None = None,
@@ -320,6 +359,8 @@ def _build_pool(
     When the caller pre-extracts ``y``/``w``/``baseline`` arrays and passes
     a features-only DataFrame, it can ``del`` the original full DataFrame
     before this function runs — avoiding triple copies (Polars + Pandas + Pool).
+    A pre-extracted ``baseline`` is already on the raw-score scale; an
+    ``offset`` column is transformed by ``offset_link``.
     """
     from catboost import Pool
 
@@ -359,8 +400,17 @@ def _build_pool(
         y = df[target].cast(pl.Float64).to_numpy()
     if w is None and weight and weight in df.columns:
         w = df[weight].cast(pl.Float64).to_numpy()
-    if baseline is None and offset and offset in df.columns:
-        baseline = df[offset].cast(pl.Float64).to_numpy()
+    if baseline is None and offset:
+        if offset_link is None:
+            raise HauteValidationError(
+                "CatBoost pool: an offset column needs its link to build the baseline"
+            )
+        baseline = _extract_offset_baseline(
+            df,
+            offset,
+            link=offset_link,
+            context="CatBoost pool",
+        )
 
     # Always pass feature names explicitly: the numeric-only fast path hands
     # CatBoost a bare numpy array, and without names the saved model reports
@@ -537,6 +587,7 @@ class CatBoostAlgorithm(BaseAlgorithm):
 
         pool = kwargs.get("pool")
         eval_pool = kwargs.get("eval_pool")
+        offset_link = catboost_offset_link(params.get("loss_function"))
 
         if pool is None:
             assert train_df is not None, "Either train_df or pool must be provided"
@@ -547,6 +598,7 @@ class CatBoostAlgorithm(BaseAlgorithm):
                 target=target,
                 weight=weight,
                 offset=offset,
+                offset_link=offset_link,
             )
 
         if eval_pool is None and eval_df is not None:
@@ -557,6 +609,7 @@ class CatBoostAlgorithm(BaseAlgorithm):
                 target=target,
                 weight=weight,
                 offset=offset,
+                offset_link=offset_link,
             )
 
         model_params = {**params}
@@ -628,10 +681,13 @@ class CatBoostAlgorithm(BaseAlgorithm):
             model.fit(pool, **fit_kwargs)
         _mem_checkpoint("catboost model.fit() END")
 
-        # Record the offset column on the model so saved .cbm artifacts are
-        # self-describing: predict/serve must re-supply this baseline.
+        # Record the offset column and its link on the model so saved .cbm
+        # artifacts are self-describing: predict/serve must re-supply this
+        # baseline exactly as it was built for the fit.
         if offset:
-            model.get_metadata()[CATBOOST_OFFSET_METADATA_KEY] = offset
+            metadata = model.get_metadata()
+            metadata[CATBOOST_OFFSET_METADATA_KEY] = offset
+            metadata[CATBOOST_OFFSET_LINK_METADATA_KEY] = offset_link
 
         # Capture best iteration if early stopping was active
         best_iteration: int | None = None
@@ -685,9 +741,18 @@ class CatBoostAlgorithm(BaseAlgorithm):
             # a bare matrix predict silently scores from baseline 0.
             from catboost import Pool
 
+            from haute._mlflow_io import _catboost_offset_link
+
+            link = _catboost_offset_link(model)
+            if link is None:
+                raise HauteValidationError(
+                    f"CatBoost predict: the model records no offset, but offset column "
+                    f"{offset!r} was supplied"
+                )
             baseline = _extract_offset_baseline(
                 df,
                 offset,
+                link=link,
                 context="CatBoost predict",
             )
             cat_indices = [i for i, f in enumerate(features) if f in cat_cols]

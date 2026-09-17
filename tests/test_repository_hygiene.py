@@ -318,8 +318,6 @@ _BACKEND_MINT_ALLOWLIST = {
     # starter-pipeline TEMPLATE STRING that `haute init` writes into the
     # user's project — string constants are invisible to the AST walk, and
     # scaffolded user code is outside this scan's contract anyway.
-    # Keys rows from an external library's column headers, not user input.
-    "src/haute/modelling/_rustystats.py",
     # label_slug feeds only the default `version` STRING inside the artifact
     # payload (timestamp-salted); the on-disk path comes from the
     # user-supplied output_path, so no name it mints reaches persistence.

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -18,8 +18,10 @@ rs = pytest.importorskip("rustystats", reason="rustystats not installed")
 from haute.errors import HauteValidationError  # noqa: E402 - import after importorskip guard
 from haute.modelling._rustystats import (  # noqa: E402 - import after importorskip guard
     GLMAlgorithm,
-    _auto_terms,
-    _build_interactions,
+    _build_glm_builder_kwargs,
+    estimate_glm_dispersion,
+    glm_fit_kwargs,
+    prepare_glm_design,
 )
 
 # ---------------------------------------------------------------------------
@@ -30,98 +32,29 @@ from haute.modelling._rustystats import (  # noqa: E402 - import after importors
 @pytest.fixture()
 def sample_df() -> pl.DataFrame:
     """Small DataFrame for testing GLM fits."""
-    np.random.seed(42)
+    rng = np.random.default_rng(42)
     n = 500
     return pl.DataFrame(
         {
-            "driver_age": np.random.randint(18, 70, n),
-            "vehicle_age": np.random.randint(0, 20, n),
-            "area": np.random.choice(["A", "B", "C", "D"], n),
-            "exposure": np.random.uniform(0.5, 1.0, n),
-            "claim_count": np.random.poisson(0.1, n),
+            "driver_age": rng.integers(18, 70, n),
+            "vehicle_age": rng.integers(0, 20, n),
+            "area": rng.choice(["A", "B", "C", "D"], n),
+            "exposure": rng.uniform(0.5, 1.0, n),
+            "claim_count": rng.poisson(0.1, n).astype(float),
         }
     )
+
+
+_SAMPLE_TERMS = {
+    "driver_age": {"type": "linear"},
+    "vehicle_age": {"type": "linear"},
+    "area": {"type": "categorical"},
+}
 
 
 @pytest.fixture()
 def algo() -> GLMAlgorithm:
     return GLMAlgorithm()
-
-
-# ---------------------------------------------------------------------------
-# _auto_terms
-# ---------------------------------------------------------------------------
-
-
-class TestAutoTerms:
-    def test_numeric_features_become_linear(self):
-        terms = _auto_terms(["age", "income"], [])
-        assert terms == {
-            "age": {"type": "linear"},
-            "income": {"type": "linear"},
-        }
-
-    def test_cat_features_become_categorical(self):
-        terms = _auto_terms(["age", "region"], ["region"])
-        assert terms["age"] == {"type": "linear"}
-        assert terms["region"] == {"type": "categorical"}
-
-    def test_empty_features(self):
-        assert _auto_terms([], []) == {}
-
-
-@pytest.mark.parametrize(
-    ("primary", "additional"),
-    [("target_encoding", "frequency_encoding"), ("frequency_encoding", "target_encoding")],
-)
-def test_multiple_encodings_fit_save_and_score_raw_source(algo, tmp_path, primary, additional):
-    from haute._mlflow_io import load_local_model
-    from haute.modelling._glm_pyfunc import GLMPyfuncModel
-    from haute.modelling._glm_terms import validate_glm_model_columns
-
-    rng = np.random.default_rng(72)
-    region = rng.choice(["a", "b", "c", "d", "e"], size=500, p=[0.4, 0.25, 0.2, 0.1, 0.05])
-    means = {"a": 1.0, "b": 3.0, "c": 2.0, "d": 5.0, "e": 4.0}
-    df = pl.DataFrame({"region": region, "y": [means[r] for r in region] + rng.normal(size=500)})
-    terms = {
-        "region": {"type": primary},
-        "region_extra": {"type": additional, "variable": "region"},
-    }
-    features = validate_glm_model_columns(terms, [], df.columns)
-    model = algo.fit(
-        train_df=df,
-        features=features,
-        cat_features=["region"],
-        target="y",
-        weight=None,
-        params={"family": "gaussian", "terms": terms},
-        task="regression",
-    ).model
-    assert set(model.feature_names) == {"Intercept", "TE(region)", "FE(region)"}
-    holdout = pl.DataFrame({"region": ["a", "b", "unseen"]})
-    expected = model.predict(holdout)
-    path = tmp_path / "encodings.rsglm"
-    algo.save(model, path)
-    loaded = load_local_model(str(path))
-    assert loaded.feature_names == ["region"]
-    np.testing.assert_allclose(loaded.predict(holdout), expected)
-    # This uses the same projection/scoring path as Model Score and deployment.
-    np.testing.assert_allclose(GLMPyfuncModel(str(path)).predict(holdout), expected)
-
-
-# ---------------------------------------------------------------------------
-# _build_interactions
-# ---------------------------------------------------------------------------
-
-
-def _design_columns(df: pl.DataFrame, terms, interactions) -> list[str]:
-    """Column names RustyStats will actually fit for this dict spec."""
-    from rustystats.formula import dict_to_parsed_formula
-    from rustystats.interactions import InteractionBuilder
-
-    parsed = dict_to_parsed_formula("y", terms, interactions, intercept=True)
-    _y, _design, names = InteractionBuilder(df).build_design_matrix_from_parsed(parsed)
-    return list(names)
 
 
 @pytest.fixture()
@@ -135,35 +68,67 @@ def interaction_df() -> pl.DataFrame:
             "w": rng.normal(size=n),
             "c": rng.choice(["a", "b", "c"], size=n),
             "d": rng.choice(["p", "q"], size=n),
+            "flag": rng.choice([True, False], size=n),
             "y": rng.poisson(2.0, size=n).astype(float),
         }
     )
 
 
-class TestBuildInteractions:
-    def test_inherits_main_terms_and_never_asks_rustystats_for_main_effects(self):
-        terms = {"age": {"type": "linear"}, "region": {"type": "categorical"}}
-        config = [{"factors": ["age", "region"], "include_main": True}]
-        built, effective = _build_interactions(config, terms, ["region"])
-        assert built == [
-            {"age": {"type": "linear"}, "region": {"type": "categorical"}, "include_main": False}
-        ]
-        assert effective == terms
+def _fit(
+    algo: GLMAlgorithm,
+    frame: pl.DataFrame,
+    params: dict[str, Any],
+    *,
+    target: str = "y",
+    weight: str | None = None,
+    offset: str | None = None,
+    **kwargs: Any,
+) -> Any:
+    features = [name for name in frame.columns if name not in {target, weight, offset}]
+    return algo.fit(
+        train_df=frame,
+        features=features,
+        cat_features=[],
+        target=target,
+        weight=weight,
+        params=params,
+        task="regression",
+        offset=offset,
+        **kwargs,
+    )
 
-    def test_materialises_a_missing_main_effect_once_and_never_duplicates(self, interaction_df):
-        terms = {"x": {"type": "linear"}}
-        config = [
-            {"factors": ["x", "z"], "include_main": True},
-            {"factors": ["z", "w"], "include_main": True},
-        ]
-        built, effective = _build_interactions(config, terms, [])
-        assert effective == {
-            "x": {"type": "linear"},
-            "z": {"type": "linear"},
-            "w": {"type": "linear"},
+
+def _design_columns(frame: pl.DataFrame, params: dict[str, Any]) -> list[str]:
+    """Column names RustyStats builds for the design Haute resolves from ``params``."""
+    from rustystats.formula import dict_to_parsed_formula
+    from rustystats.interactions import InteractionBuilder
+
+    terms, interactions = prepare_glm_design(params, frame)
+    parsed = dict_to_parsed_formula("y", terms, interactions, intercept=True)
+    _y, _design, names = InteractionBuilder(frame).build_design_matrix_from_parsed(parsed)
+    return list(names)
+
+
+# ---------------------------------------------------------------------------
+# The resolved design RustyStats fits
+# ---------------------------------------------------------------------------
+
+
+class TestResolvedDesign:
+    def test_a_glm_without_terms_is_refused(self, algo, interaction_df):
+        with pytest.raises(HauteValidationError, match="GLM config has no terms"):
+            _fit(algo, interaction_df, {"family": "poisson"})
+
+    def test_materialised_main_effects_appear_once(self, interaction_df):
+        params = {
+            "family": "poisson",
+            "terms": {"x": {"type": "linear"}},
+            "interactions": [
+                {"factors": ["x", "z"], "include_main": True},
+                {"factors": ["z", "w"], "include_main": True},
+            ],
         }
-        assert all(item["include_main"] is False for item in built)
-        assert _design_columns(interaction_df, effective, built) == [
+        assert _design_columns(interaction_df, params) == [
             "Intercept",
             "x",
             "z",
@@ -173,292 +138,175 @@ class TestBuildInteractions:
         ]
 
     def test_include_main_false_leaves_a_factor_without_main_effect(self, interaction_df):
-        terms = {"x": {"type": "linear"}}
-        built, effective = _build_interactions(
-            [{"factors": ["x", "z"], "include_main": False}], terms, []
-        )
-        assert effective == terms
-        assert _design_columns(interaction_df, effective, built) == ["Intercept", "x", "x:z"]
+        params = {
+            "family": "poisson",
+            "terms": {"x": {"type": "linear"}},
+            "interactions": [{"factors": ["x", "z"], "include_main": False}],
+        }
+        assert _design_columns(interaction_df, params) == ["Intercept", "x", "x:z"]
 
-    def test_dtype_default_for_a_factor_with_no_main_term(self):
-        built, _effective = _build_interactions(
-            [{"factors": ["x", "d"], "include_main": False}], {}, ["d"]
-        )
-        assert built[0]["x"] == {"type": "linear"}
-        assert built[0]["d"] == {"type": "categorical"}
+    def test_boolean_factor_defaults_to_categorical(self, interaction_df):
+        params = {
+            "family": "poisson",
+            "terms": {"x": {"type": "linear"}},
+            "interactions": [{"factors": ["x", "flag"], "include_main": True}],
+        }
+        names = _design_columns(interaction_df, params)
+        assert "flag" not in names
+        assert any(name.startswith("flag[T.") for name in names), names
 
-    def test_local_spline_override_produces_interaction_local_basis(self, interaction_df):
-        terms = {"x": {"type": "bs", "df": 4}, "c": {"type": "categorical"}}
-        config = [
-            {
-                "factors": ["x", "c"],
-                "specs": {"x": {"type": "bs", "df": 6}},
-                "include_main": False,
-            }
-        ]
-        built, effective = _build_interactions(config, terms, ["c"])
-        assert built[0]["x"] == {"type": "bs", "df": 6}
-        names = _design_columns(interaction_df, effective, built)
+    def test_local_spline_override_produces_an_interaction_local_basis(self, interaction_df):
+        params = {
+            "family": "poisson",
+            "terms": {"x": {"type": "bs", "df": 4}, "c": {"type": "categorical"}},
+            "interactions": [
+                {
+                    "factors": ["x", "c"],
+                    "specs": {"x": {"type": "bs", "df": 6}},
+                    "include_main": False,
+                }
+            ],
+        }
+        names = _design_columns(interaction_df, params)
         assert "bs(x, 2/4)" in names and "bs(x, 4/4)" in names
         assert "c[T.b]:bs(x, 2/6)" in names and "c[T.b]:bs(x, 6/6)" in names
 
-    def test_linear_override_on_spline_main_forces_linear_column(self, interaction_df):
-        terms = {"x": {"type": "bs", "df": 4}, "c": {"type": "categorical"}}
-        config = [
-            {"factors": ["x", "c"], "specs": {"x": {"type": "linear"}}, "include_main": False}
-        ]
-        built, effective = _build_interactions(config, terms, ["c"])
-        names = _design_columns(interaction_df, effective, built)
+    def test_linear_override_on_a_spline_main_forces_a_linear_column(self, interaction_df):
+        params = {
+            "family": "poisson",
+            "terms": {"x": {"type": "bs", "df": 4}, "c": {"type": "categorical"}},
+            "interactions": [
+                {"factors": ["x", "c"], "specs": {"x": {"type": "linear"}}, "include_main": False}
+            ],
+        }
+        names = _design_columns(interaction_df, params)
         assert "c[T.b]:x" in names and "c[T.b]:bs(x, 2/4)" not in names
 
-    def test_unconstrained_spline_main_is_inherited_unchanged(self):
-        terms = {"x": {"type": "ns", "df": 3}, "c": {"type": "categorical"}}
-        built, _ = _build_interactions([{"factors": ["x", "c"]}], terms, ["c"])
-        assert built[0]["x"] == {"type": "ns", "df": 3}
+    def test_categorical_slot_over_a_materialised_categorical_main_builds(self, interaction_df):
+        params = {
+            "family": "poisson",
+            "terms": {"w": {"type": "linear"}},
+            "interactions": [
+                {"factors": ["c", "z"], "include_main": True},
+                {
+                    "factors": ["c", "w"],
+                    "specs": {"c": {"type": "categorical"}},
+                    "include_main": False,
+                },
+            ],
+        }
+        names = _design_columns(interaction_df, params)
+        assert names.count("c[T.b]") == 1
+        assert "c[T.b]:z" in names and "c[T.b]:w" in names
 
-    def test_skips_unfilled_and_single_factor_rows(self):
-        terms = {"a": {"type": "linear"}, "b": {"type": "categorical"}}
+    def test_reference_level_shares_the_intercept(self, algo, interaction_df):
+        params = {"family": "poisson", "terms": {"c": {"type": "categorical", "reference": "b"}}}
+        model = _fit(algo, interaction_df.select("c", "y"), params).model
+        # Level-restricted categoricals are named without the treatment prefix.
+        assert model.feature_names == ["Intercept", "c[a]", "c[c]"]
 
-        def built(config):
-            return _build_interactions(config, terms, ["b"])[0]
+    def test_unobserved_reference_level_is_refused_at_fit(self, algo, interaction_df):
+        params = {"family": "poisson", "terms": {"c": {"type": "categorical", "reference": "z"}}}
+        with pytest.raises(HauteValidationError, match="reference level 'z' is not in the"):
+            _fit(algo, interaction_df.select("c", "y"), params)
 
-        assert built([{"factors": ["", ""], "include_main": True}]) == []
-        assert built([{"factors": ["a", ""], "include_main": True}]) == []
-        assert built([{"factors": ["a"], "include_main": True}]) == []
-        assert len(built([{"factors": ["a", "b"]}])) == 1
+    @pytest.mark.parametrize(
+        ("primary", "additional"),
+        [("target_encoding", "frequency_encoding"), ("frequency_encoding", "target_encoding")],
+    )
+    def test_multiple_encodings_fit_save_and_score_raw_source(
+        self, algo, tmp_path, primary, additional
+    ):
+        from haute._mlflow_io import load_local_model
+        from haute.modelling._glm_pyfunc import GLMPyfuncModel
 
-    def test_empty_interactions(self):
-        assert _build_interactions([], {"a": {"type": "linear"}}, []) == (
-            [],
-            {"a": {"type": "linear"}},
+        rng = np.random.default_rng(72)
+        region = rng.choice(["a", "b", "c", "d", "e"], size=500, p=[0.4, 0.25, 0.2, 0.1, 0.05])
+        means = {"a": 1.0, "b": 3.0, "c": 2.0, "d": 5.0, "e": 4.0}
+        df = pl.DataFrame(
+            {"region": region, "y": [means[r] for r in region] + rng.normal(size=500)}
         )
+        terms = {
+            "region": {"type": primary},
+            "region_extra": {"type": additional, "variable": "region"},
+        }
+        model = _fit(algo, df, {"family": "gaussian", "terms": terms}).model
+        assert set(model.feature_names) == {"Intercept", "TE(region)", "FE(region)"}
+        holdout = pl.DataFrame({"region": ["a", "b", "unseen"]})
+        expected = model.predict(holdout)
+        path = tmp_path / "encodings.rsglm"
+        algo.save(model, path)
+        loaded = load_local_model(str(path))
+        assert loaded.feature_names == ["region"]
+        np.testing.assert_allclose(loaded.predict(holdout), expected)
+        # This uses the same projection/scoring path as Model Score and deployment.
+        np.testing.assert_allclose(GLMPyfuncModel(str(path)).predict(holdout), expected)
 
 
 class TestProductTargetEncoding:
-    def test_local_encoding_preserves_native_fits_and_honours_parameters(self, interaction_df):
+    def test_slot_encoding_registers_its_main_effect_with_its_parameters(self, interaction_df):
         from rustystats.formula import dict_to_parsed_formula
         from rustystats.interactions import InteractionBuilder
 
-        terms = {"c": {"type": "categorical"}, "x": {"type": "bs", "df": 4}}
-        built, effective = _build_interactions(
-            [
+        frame = interaction_df
+        params = {
+            "family": "poisson",
+            "terms": {"x": {"type": "bs", "df": 4}},
+            "interactions": [
                 {
-                    "factors": ["c", "x"],
+                    "factors": ["c", "z"],
                     "include_main": False,
                     "specs": {
                         "c": {"type": "target_encoding", "prior_weight": 0, "n_permutations": 2},
-                        "x": {"type": "linear"},
                     },
                 }
             ],
-            terms,
-            ["c"],
-            column_names=[*interaction_df.columns, "c_te"],
-        )
-        assert terms == {"c": {"type": "categorical"}, "x": {"type": "bs", "df": 4}}
-        assert effective == {
-            **terms,
-            "c_te_2": {
-                "type": "target_encoding",
-                "variable": "c",
-                "prior_weight": 0,
-                "n_permutations": 2,
-            },
         }
-        parsed = dict_to_parsed_formula("y", effective, built)
+        terms, interactions = prepare_glm_design(params, frame)
+        assert terms == {
+            "x": {"type": "bs", "df": 4},
+            "c": {"type": "target_encoding", "prior_weight": 0, "n_permutations": 2},
+        }
+        parsed = dict_to_parsed_formula("y", terms, interactions)
         assert len(parsed.target_encoding_terms) == 1
         assert parsed.target_encoding_terms[0].prior_weight == 0
         assert parsed.target_encoding_terms[0].n_permutations == 2
-        _, matrix, names = InteractionBuilder(interaction_df).build_design_matrix_from_parsed(
-            parsed
-        )
-        assert "c[T.b]" in names and "bs(x, 2/4)" in names
+        _, matrix, names = InteractionBuilder(frame).build_design_matrix_from_parsed(parsed)
+        assert "bs(x, 2/4)" in names
         assert names.count("TE(c)") == 1
         np.testing.assert_allclose(
-            matrix[:, names.index("x:TE(c)")],
-            interaction_df["x"].to_numpy() * matrix[:, names.index("TE(c)")],
+            matrix[:, names.index("z:TE(c)")],
+            frame["z"].to_numpy() * matrix[:, names.index("TE(c)")],
         )
 
-    def test_inherits_encoding_with_multiple_linear_partners(self, interaction_df):
-        from rustystats.formula import dict_to_parsed_formula
-        from rustystats.interactions import InteractionBuilder
-
-        terms = {"c": {"type": "target_encoding", "prior_weight": 2, "n_permutations": 3}}
-        built, effective = _build_interactions(
-            [{"factors": ["c", "x", "z"], "include_main": False}],
-            terms,
-            ["c"],
-        )
-        assert effective == terms
-        parsed = dict_to_parsed_formula("y", effective, built)
-        _, matrix, names = InteractionBuilder(interaction_df).build_design_matrix_from_parsed(
-            parsed
-        )
-        assert set(names) == {"Intercept", "TE(c)", "x:z:TE(c)"}
-        np.testing.assert_allclose(
-            matrix[:, names.index("x:z:TE(c)")],
-            interaction_df["x"].to_numpy()
-            * interaction_df["z"].to_numpy()
-            * matrix[:, names.index("TE(c)")],
-        )
-
-    @pytest.mark.parametrize("include_main", [False, True])
-    def test_encoding_main_is_required_independently_of_include_main(self, include_main):
-        _, effective = _build_interactions(
-            [
-                {
-                    "factors": ["c", "x"],
-                    "include_main": include_main,
-                    "specs": {"c": {"type": "target_encoding"}},
-                }
-            ],
-            {},
-            ["c"],
-        )
-        assert effective["c"] == {"type": "target_encoding"}
-        assert ("x" in effective) is include_main
-
-    @pytest.mark.parametrize("include_main", [False, True])
-    def test_reuses_named_encoding_settings(self, include_main):
-        terms = {
-            "c": {"type": "categorical"},
-            "c_existing": {
-                "type": "target_encoding",
-                "variable": "c",
-                "prior_weight": 7,
-                "n_permutations": 2,
-            },
+    def test_inherited_encoding_with_multiple_linear_partners(self, interaction_df):
+        params = {
+            "family": "poisson",
+            "terms": {"c": {"type": "target_encoding", "prior_weight": 2, "n_permutations": 3}},
+            "interactions": [{"factors": ["c", "x", "z"], "include_main": False}],
         }
-        config = [
-            {
-                "factors": ["c", "x"],
-                "include_main": include_main,
-                "specs": {"c": {"type": "target_encoding"}},
-            }
-        ]
-        _, effective = _build_interactions(config, terms, ["c"])
-        assert effective == ({**terms, "x": {"type": "linear"}} if include_main else terms)
-        config[0]["specs"]["c"]["prior_weight"] = 1
-        with pytest.raises(HauteValidationError, match="target encoding settings.*c_existing"):
-            _build_interactions(config, terms, ["c"])
-
-    def test_named_encoding_without_native_term_is_not_duplicated(self):
-        terms = {"c_existing": {"type": "target_encoding", "variable": "c", "prior_weight": 2}}
-        _, effective = _build_interactions(
-            [
-                {
-                    "factors": ["c", "x"],
-                    "include_main": True,
-                    "specs": {"c": {"type": "target_encoding"}},
-                }
-            ],
-            terms,
-            ["c"],
-        )
-        assert effective == {**terms, "x": {"type": "linear"}}
-
-    @pytest.mark.parametrize("partner", ["categorical", "bs", "ns", "target_encoding"])
-    def test_rejects_non_linear_partners(self, partner):
-        factor = "d" if partner in ("categorical", "target_encoding") else "x"
-        with pytest.raises(HauteValidationError, match="Product target encoding requires"):
-            _build_interactions(
-                [
-                    {
-                        "factors": ["c", factor],
-                        "include_main": False,
-                        "specs": {
-                            "c": {"type": "target_encoding"},
-                            factor: {"type": partner},
-                        },
-                    }
-                ],
-                {},
-                ["c", "d"],
-            )
-
-    def test_rejects_numeric_target_encoding(self):
-        with pytest.raises(HauteValidationError, match="non-numeric"):
-            _build_interactions(
-                [
-                    {
-                        "factors": ["x", "z"],
-                        "specs": {
-                            "x": {"type": "target_encoding"},
-                        },
-                    }
-                ],
-                {},
-                [],
-            )
-
-    @pytest.mark.parametrize(
-        "extra",
-        [
-            {"prior_weight": -1},
-            {"prior_weight": True},
-            {"n_permutations": 0},
-            {"n_permutations": 1.5},
-            {"variable": "d"},
-            {"unknown": 1},
-        ],
-    )
-    def test_rejects_invalid_encoding_parameters(self, extra):
-        with pytest.raises(HauteValidationError):
-            _build_interactions(
-                [
-                    {
-                        "factors": ["c", "x"],
-                        "specs": {
-                            "c": {"type": "target_encoding", **extra},
-                        },
-                    }
-                ],
-                {},
-                ["c"],
-            )
+        assert set(_design_columns(interaction_df, params)) == {"Intercept", "TE(c)", "x:z:TE(c)"}
 
     def test_fit_predict_and_save_load_raw_columns(self, algo, interaction_df, tmp_path):
         from haute._mlflow_io import load_local_model
         from haute.modelling._glm_pyfunc import GLMPyfuncModel
 
-        frame = interaction_df.with_columns(pl.lit(1).alias("c_te"))
-        model = algo.fit(
-            train_df=frame,
-            features=["c", "x"],
-            cat_features=["c"],
-            target="y",
-            weight=None,
-            task="regression",
-            params={
-                "family": "poisson",
-                "terms": {
-                    "c": {"type": "categorical"},
-                    "x": {"type": "linear"},
-                },
-                "interactions": [
-                    {
-                        "factors": ["c", "x"],
-                        "include_main": False,
-                        "specs": {
-                            "c": {
-                                "type": "target_encoding",
-                                "prior_weight": 3,
-                                "n_permutations": 2,
-                            },
-                        },
-                    }
-                ],
-            },
-        ).model
-        assert set(model.feature_names) == {
-            "Intercept",
-            "c[T.b]",
-            "c[T.c]",
-            "x",
-            "TE(c)",
-            "x:TE(c)",
+        frame = interaction_df.select("c", "x", "y")
+        params = {
+            "family": "poisson",
+            "terms": {"x": {"type": "linear"}},
+            "interactions": [
+                {
+                    "factors": ["c", "x"],
+                    "include_main": False,
+                    "specs": {
+                        "c": {"type": "target_encoding", "prior_weight": 3, "n_permutations": 2}
+                    },
+                }
+            ],
         }
-        assert model.terms_dict["c_te_2"]["n_permutations"] == 2
+        model = _fit(algo, frame, params).model
+        assert set(model.feature_names) == {"Intercept", "x", "TE(c)", "x:TE(c)"}
         holdout = pl.DataFrame({"c": ["a", "unseen", "b"], "x": [0.1, -0.2, 0.7]})
         predictions = algo.predict(model, holdout, ["c", "x"])
         assert np.isfinite(predictions).all()
@@ -472,96 +320,26 @@ class TestProductTargetEncoding:
 
 class TestEncodedInteractions:
     @pytest.mark.parametrize("encoding", ["target_encoding", "frequency_encoding"])
-    def test_maps_raw_factors_without_retyping_main_effects(self, encoding):
-        terms = {"x": {"type": "linear"}, "c": {"type": "target_encoding"}}
-        config = {"factors": ["x", "c"], "encoding": encoding, "include_main": True}
-        params = {"prior_weight": 0, "n_permutations": 2} if encoding == "target_encoding" else {}
-        built, effective = _build_interactions([{**config, **params}], terms, ["c"])
-        assert built == [
-            {
-                "x": {"type": "linear"},
-                "c": {"type": "linear"},
-                encoding: True,
-                "include_main": False,
-                **params,
-            }
-        ]
-        assert effective == terms
-        assert config == {"factors": ["x", "c"], "encoding": encoding, "include_main": True}
-
-    def test_auto_prior_is_omitted_and_missing_main_uses_dtype_default(self):
-        terms = {"x": {"type": "ms", "df": 4}}
-        built, effective = _build_interactions(
-            [
-                {"factors": ["x", "c"], "encoding": "target_encoding", "include_main": True},
-            ],
-            terms,
-            ["c"],
-        )
-        assert "prior_weight" not in built[0]
-        assert "n_permutations" not in built[0]
-        assert effective == {**terms, "c": {"type": "categorical"}}
-
-    def test_duplicate_identity_includes_encoding_mode(self):
-        cards = [
-            {"factors": ["c", "d"], "include_main": False},
-            {"factors": ["d", "c"], "encoding": "target_encoding", "include_main": False},
-            {"factors": ["c", "d"], "encoding": "frequency_encoding", "include_main": False},
-        ]
-        built, effective = _build_interactions(cards, {}, ["c", "d"])
-        assert len(built) == 3
-        assert effective == {}
-        with pytest.raises(HauteValidationError, match="duplicates"):
-            _build_interactions([*cards, {**cards[1], "factors": ["c", "d"]}], {}, ["c", "d"])
-
-    @pytest.mark.parametrize(
-        ("extra", "pattern"),
-        [
-            ({"encoding": "unknown"}, "encoding"),
-            ({"encoding": ["target_encoding"]}, "encoding"),
-            ({"encoding": "target_encoding", "specs": {"c": {"type": "categorical"}}}, "specs"),
-            ({"encoding": "target_encoding", "prior_weight": -1}, "prior_weight"),
-            ({"encoding": "target_encoding", "prior_weight": True}, "prior_weight"),
-            ({"encoding": "target_encoding", "prior_weight": float("nan")}, "prior_weight"),
-            ({"encoding": "target_encoding", "prior_weight": "1"}, "prior_weight"),
-            ({"encoding": "target_encoding", "n_permutations": 0}, "n_permutations"),
-            ({"encoding": "target_encoding", "n_permutations": 1.5}, "n_permutations"),
-            ({"encoding": "target_encoding", "n_permutations": True}, "n_permutations"),
-            ({"encoding": "frequency_encoding", "prior_weight": 1}, "prior_weight"),
-            ({"prior_weight": 1}, "prior_weight"),
-            ({"target_encoding": True}, "target_encoding"),
-        ],
-    )
-    def test_rejects_invalid_settings_even_for_incomplete_cards(self, extra, pattern):
-        with pytest.raises(HauteValidationError, match=pattern):
-            _build_interactions([{"factors": ["", ""], **extra}], {}, [])
-
-    @pytest.mark.parametrize("encoding", ["target_encoding", "frequency_encoding"])
     def test_fit_predict_and_save_load_joint_encoding(
         self, encoding, algo, interaction_df, tmp_path
     ):
         from haute._mlflow_io import load_local_model
 
-        params = {"prior_weight": 1.0, "n_permutations": 2} if encoding == "target_encoding" else {}
-        model = algo.fit(
-            train_df=interaction_df,
-            features=["x", "c", "d"],
-            cat_features=["c", "d"],
-            target="y",
-            weight=None,
-            task="regression",
-            params={
-                "family": "poisson",
-                "terms": {
-                    "x": {"type": "linear"},
-                    "c": {"type": "target_encoding", "prior_weight": 1.0},
-                    "d": {"type": "frequency_encoding"},
-                },
-                "interactions": [
-                    {"factors": ["c", "d"], "encoding": encoding, "include_main": False, **params},
-                ],
+        settings = (
+            {"prior_weight": 1.0, "n_permutations": 2} if encoding == "target_encoding" else {}
+        )
+        params = {
+            "family": "poisson",
+            "terms": {
+                "x": {"type": "linear"},
+                "c": {"type": "target_encoding", "prior_weight": 1.0},
+                "d": {"type": "frequency_encoding"},
             },
-        ).model
+            "interactions": [
+                {"factors": ["c", "d"], "encoding": encoding, "include_main": False, **settings},
+            ],
+        }
+        model = _fit(algo, interaction_df.select("x", "c", "d", "y"), params).model
         prefix = "TE" if encoding == "target_encoding" else "FE"
         assert set(model.feature_names) == {"Intercept", "x", "TE(c)", "FE(d)", f"{prefix}(c:d)"}
         holdout = pl.DataFrame(
@@ -574,212 +352,14 @@ class TestEncodedInteractions:
         np.testing.assert_allclose(load_local_model(str(path)).predict(holdout), predictions)
 
     @pytest.mark.parametrize("encoding", ["target_encoding", "frequency_encoding"])
-    def test_numeric_main_is_not_expanded_to_categories(self, encoding, interaction_df):
-        built, effective = _build_interactions(
-            [
-                {"factors": ["x", "c"], "encoding": encoding, "include_main": False},
-            ],
-            {"x": {"type": "linear"}},
-            ["c"],
-        )
-        names = _design_columns(interaction_df, effective, built)
+    def test_joint_encoding_adds_one_column_and_no_factor_main_effects(
+        self, encoding, interaction_df
+    ):
+        card = {"factors": ["flag", "c"], "encoding": encoding, "include_main": False}
+        params = {"family": "poisson", "terms": {"x": {"type": "linear"}}, "interactions": [card]}
+        names = _design_columns(interaction_df, params)
         assert len(names) == 3
         assert names[:2] == ["Intercept", "x"]
-
-
-class TestBuildInteractionsRejections:
-    def _reject(self, config, terms, cat_features, pattern):
-        with pytest.raises(HauteValidationError, match=pattern):
-            _build_interactions(config, terms, cat_features)
-
-    def test_rejects_duplicate_factor_sets_in_any_order(self):
-        terms = {"x": {"type": "linear"}, "z": {"type": "linear"}}
-        self._reject([{"factors": ["x", "z"]}, {"factors": ["z", "x"]}], terms, [], "duplicates")
-
-    def test_rejects_a_factor_repeated_within_one_card(self):
-        self._reject([{"factors": ["x", "x"]}], {"x": {"type": "linear"}}, [], "more than once")
-
-    def test_rejects_reserved_factor_names_in_joint_encoding(self):
-        self._reject(
-            [{"factors": ["x", "c", "include_main"], "encoding": "target_encoding"}],
-            {},
-            ["c"],
-            "reserved.*include_main",
-        )
-
-    def test_rejects_ignored_categorical_level_override(self):
-        self._reject(
-            [{"factors": ["x", "c"], "specs": {"c": {"type": "categorical", "levels": ["a"]}}}],
-            {},
-            ["c"],
-            "levels.*main term",
-        )
-
-    def test_rejects_monotone_overrides(self):
-        self._reject(
-            [{"factors": ["x", "c"], "specs": {"x": {"type": "bs", "monotonicity": "increasing"}}}],
-            {"c": {"type": "categorical"}},
-            ["c"],
-            "monotonicity",
-        )
-        self._reject(
-            [{"factors": ["x", "c"], "specs": {"x": {"type": "ms", "df": 4}}}],
-            {"c": {"type": "categorical"}},
-            ["c"],
-            "override type",
-        )
-
-    def test_rejects_categorical_retype_of_a_non_categorical_main_term(self):
-        self._reject(
-            [{"factors": ["x", "c"], "specs": {"x": {"type": "categorical"}}}],
-            {"x": {"type": "linear"}, "c": {"type": "categorical"}},
-            ["c"],
-            "re-type",
-        )
-
-    def test_rejects_linear_and_spline_on_string_or_categorical_main(self):
-        self._reject(
-            [{"factors": ["d", "c"], "specs": {"d": {"type": "linear"}}}],
-            {"c": {"type": "categorical"}},
-            ["c", "d"],
-            "string column",
-        )
-        self._reject(
-            [{"factors": ["x", "c"], "specs": {"c": {"type": "bs", "df": 4}}}],
-            {"x": {"type": "linear"}, "c": {"type": "categorical"}},
-            ["c"],
-            "string column",
-        )
-        # A numeric column the user chose to fit categorically is not a string
-        # column, so it reaches the categorical-main-term branch instead.
-        self._reject(
-            [{"factors": ["x", "band"], "specs": {"band": {"type": "bs", "df": 4}}}],
-            {"x": {"type": "linear"}, "band": {"type": "categorical"}},
-            [],
-            "categorical main term",
-        )
-
-    def test_rejects_inherited_monotone_spline_and_effective_target_encoding(self):
-        self._reject(
-            [{"factors": ["x", "c"]}],
-            {"x": {"type": "ms", "df": 4}, "c": {"type": "categorical"}},
-            ["c"],
-            "Monotone",
-        )
-        self._reject(
-            [{"factors": ["x", "c"]}],
-            {
-                "x": {"type": "bs", "df": 4, "monotonicity": "increasing"},
-                "c": {"type": "categorical"},
-            },
-            ["c"],
-            "Monotone",
-        )
-        self._reject(
-            [{"factors": ["d", "c"]}],
-            {"d": {"type": "target_encoding"}, "c": {"type": "categorical"}},
-            ["c", "d"],
-            "Product target encoding requires",
-        )
-        self._reject(
-            [{"factors": ["d", "c"], "specs": {"d": {"type": "target_encoding"}}}],
-            {"c": {"type": "categorical"}},
-            ["c", "d"],
-            "Product target encoding requires",
-        )
-
-    def test_rejects_frequency_encoding_in_a_product_interaction(self):
-        self._reject(
-            [{"factors": ["d", "c"]}],
-            {"d": {"type": "frequency_encoding"}, "c": {"type": "categorical"}},
-            ["c", "d"],
-            "Frequency-encoded.*product interactions",
-        )
-
-    def test_rejects_conflicting_overrides_across_cards(self):
-        self._reject(
-            [
-                {"factors": ["x", "c"], "specs": {"x": {"type": "bs", "df": 4}}},
-                {"factors": ["x", "d"], "specs": {"x": {"type": "bs", "df": 6}}},
-            ],
-            {"c": {"type": "categorical"}, "d": {"type": "categorical"}},
-            ["c", "d"],
-            "conflicting",
-        )
-
-    def test_rejects_override_that_retypes_a_materialised_main_effect_in_either_card_order(self):
-        # The first card materialises a linear main effect for x; the second
-        # would re-type that same column to categorical. The main effect is
-        # invisible to ``terms``, so only the effective-terms pass catches it.
-        terms = {"w": {"type": "linear"}}
-        cards = [
-            {"factors": ["x", "z"], "include_main": True},
-            {
-                "factors": ["x", "w"],
-                "specs": {"x": {"type": "categorical"}},
-                "include_main": False,
-            },
-        ]
-        self._reject(cards, terms, [], "re-type")
-        self._reject(list(reversed(cards)), terms, [], "re-type")
-
-    def test_rejects_numeric_override_over_a_materialised_categorical_main(self):
-        # Mirror direction: a card materialises a categorical main effect for a
-        # numeric column, another card fits the same column linearly.
-        terms = {"w": {"type": "linear"}}
-        cards = [
-            {"factors": ["x", "z"], "specs": {"x": {"type": "categorical"}}, "include_main": True},
-            {"factors": ["x", "w"], "specs": {"x": {"type": "linear"}}, "include_main": False},
-        ]
-        self._reject(cards, terms, [], "conflicting")
-
-    def test_rejects_inherited_spec_that_conflicts_with_a_main_materialised_by_a_sibling_card(
-        self,
-    ):
-        # Card A materialises a categorical main effect for numeric ``x``
-        # through its own override; card B carries no override, so it inherits
-        # the dtype default and would fit ``x`` linearly against that
-        # categorical main. Only a resolved-spec check sees it — card B has
-        # nothing in ``specs`` for the override pass to look at.
-        terms = {"w": {"type": "linear"}}
-        cards = [
-            {"factors": ["x", "w"], "specs": {"x": {"type": "categorical"}}, "include_main": True},
-            {"factors": ["x", "z"], "include_main": True},
-        ]
-        # Whichever card sits first materialises the main effect, so the other
-        # one is the offender and the message names its conflict. Order decides
-        # the wording, never whether the pair is accepted.
-        self._reject(cards, terms, [], "categorical main term")
-        self._reject(list(reversed(cards)), terms, [], "re-type")
-
-    def test_two_cards_agreeing_on_a_categorical_fit_for_the_same_column_still_build(self):
-        terms = {"w": {"type": "linear"}}
-        cards = [
-            {"factors": ["x", "w"], "specs": {"x": {"type": "categorical"}}, "include_main": True},
-            {"factors": ["x", "z"], "specs": {"x": {"type": "categorical"}}, "include_main": True},
-        ]
-        built, effective = _build_interactions(cards, terms, [])
-        assert effective["x"] == {"type": "categorical"}
-        assert [item["x"] for item in built] == [{"type": "categorical"}] * 2
-
-    def test_categorical_override_over_a_materialised_categorical_main_still_builds(
-        self, interaction_df
-    ):
-        terms = {"w": {"type": "linear"}}
-        cards = [
-            {"factors": ["c", "z"], "include_main": True},
-            {
-                "factors": ["c", "w"],
-                "specs": {"c": {"type": "categorical"}},
-                "include_main": False,
-            },
-        ]
-        built, effective = _build_interactions(cards, terms, ["c"])
-        assert effective["c"] == {"type": "categorical"}
-        names = _design_columns(interaction_df, effective, built)
-        assert "c[T.b]" in names
-        assert "c[T.b]:z" in names
-        assert "c[T.b]:w" in names
 
 
 # ---------------------------------------------------------------------------
@@ -790,21 +370,12 @@ class TestBuildInteractionsRejections:
 class TestGLMFit:
     @pytest.mark.parametrize(
         ("kind", "interaction"),
-        [
-            ("bs", False),
-            ("ns", False),
-            ("ms", False),
-            ("bs", True),
-            ("ns", True),
-        ],
+        [("bs", False), ("ns", False), ("ms", False), ("bs", True), ("ns", True)],
     )
     def test_omitted_df_selects_smoothing_and_numeric_df_selects_fixed(
-        self,
-        kind,
-        interaction,
-        algo,
-        interaction_df,
+        self, kind, interaction, algo, interaction_df
     ):
+        frame = interaction_df.select("x", "c", "y")
         for extra in ({}, {"df": 5}):
             spec = {"type": kind, **extra}
             terms = {"c": {"type": "categorical"}} if interaction else {"x": spec}
@@ -813,434 +384,272 @@ class TestGLMFit:
                 if interaction
                 else []
             )
-            model = algo.fit(
-                train_df=interaction_df,
-                features=["x", "c"],
-                cat_features=["c"],
-                target="y",
-                weight=None,
-                task="regression",
-                params={"family": "gaussian", "terms": terms, "interactions": interactions},
-            ).model
+            params = {"family": "gaussian", "terms": terms, "interactions": interactions}
+            model = _fit(algo, frame, params).model
             assert model.has_smooth_terms() is (not extra)
-            assert np.isfinite(algo.predict(model, interaction_df, ["x", "c"])).all()
+            assert np.isfinite(algo.predict(model, frame, ["x", "c"])).all()
 
     def test_frequency_encoding_native_fit(self, algo, interaction_df):
-        model = algo.fit(
-            train_df=interaction_df,
-            features=["c"],
-            cat_features=["c"],
-            target="y",
-            weight=None,
-            task="regression",
-            params={"family": "poisson", "terms": {"c": {"type": "frequency_encoding"}}},
-        ).model
+        frame = interaction_df.select("c", "y")
+        params = {"family": "poisson", "terms": {"c": {"type": "frequency_encoding"}}}
+        model = _fit(algo, frame, params).model
         assert model.feature_names == ["Intercept", "FE(c)"]
-        assert np.isfinite(algo.predict(model, interaction_df, ["c"])).all()
+        assert np.isfinite(algo.predict(model, frame, ["c"])).all()
 
-    def test_fit_poisson_auto_terms(self, algo, sample_df):
-        """Fit a Poisson GLM with auto-generated terms."""
-        features = ["driver_age", "vehicle_age", "area"]
-        cat_features = ["area"]
-
-        result = algo.fit(
-            train_df=sample_df,
-            features=features,
-            cat_features=cat_features,
+    def test_fit_poisson_with_a_weight(self, algo, sample_df):
+        result = _fit(
+            algo,
+            sample_df,
+            {"family": "poisson", "terms": _SAMPLE_TERMS},
             target="claim_count",
             weight="exposure",
-            params={"family": "poisson"},
-            task="regression",
         )
-
-        assert result.model is not None
         assert result.best_iteration is not None
-        assert len(result.loss_history) > 0
         assert "train_deviance" in result.loss_history[0]
-
-    def test_fit_with_explicit_terms(self, algo, sample_df):
-        """Fit with user-specified term types."""
-        result = algo.fit(
-            train_df=sample_df,
-            features=["driver_age", "vehicle_age", "area"],
-            cat_features=["area"],
-            target="claim_count",
-            weight="exposure",
-            params={
-                "family": "poisson",
-                "terms": {
-                    "driver_age": {"type": "linear"},
-                    "vehicle_age": {"type": "linear"},
-                    "area": {"type": "categorical"},
-                },
-            },
-            task="regression",
-        )
-        assert result.model is not None
-
-    def test_fit_gaussian(self, algo, sample_df):
-        """Fit a Gaussian (OLS) GLM."""
-        result = algo.fit(
-            train_df=sample_df,
-            features=["driver_age", "vehicle_age"],
-            cat_features=[],
-            target="claim_count",
-            weight=None,
-            params={"family": "gaussian"},
-            task="regression",
-        )
-        assert result.model is not None
-
-    def test_fit_with_offset(self, algo, sample_df):
-        """Fit with exposure as offset (RustyStats requires positive offset for Poisson/log)."""
-        result = algo.fit(
-            train_df=sample_df,
-            features=["driver_age", "vehicle_age"],
-            cat_features=[],
-            target="claim_count",
-            weight=None,
-            params={"family": "poisson"},
-            task="regression",
-            offset="exposure",
-        )
-        assert result.model is not None
+        assert result.model.feature_names == [
+            "Intercept",
+            "driver_age",
+            "vehicle_age",
+            "area[T.B]",
+            "area[T.C]",
+            "area[T.D]",
+        ]
 
     def test_fit_with_interactions(self, algo):
-        """Fit with interaction terms (two linear features)."""
-        np.random.seed(123)
+        rng = np.random.default_rng(123)
         n = 5000
-        driver_age = np.random.randint(20, 65, n).astype(float)
-        vehicle_age = np.random.randint(0, 15, n).astype(float)
+        driver_age = rng.integers(20, 65, n).astype(float)
+        vehicle_age = rng.integers(0, 15, n).astype(float)
         rate = np.exp(-2.0 + 0.01 * driver_age - 0.02 * vehicle_age)
-        claim_count = np.random.poisson(rate)
         df = pl.DataFrame(
             {
                 "driver_age": driver_age,
                 "vehicle_age": vehicle_age,
-                "exposure": np.ones(n),
-                "claim_count": claim_count,
+                "claim_count": rng.poisson(rate).astype(float),
             }
         )
-        result = algo.fit(
-            train_df=df,
-            features=["driver_age", "vehicle_age"],
-            cat_features=[],
-            target="claim_count",
-            weight="exposure",
-            params={
-                "family": "poisson",
-                "terms": {
-                    "driver_age": {"type": "linear"},
-                    "vehicle_age": {"type": "linear"},
-                },
-                "interactions": [
-                    {"factors": ["driver_age", "vehicle_age"], "include_main": True},
-                ],
-            },
-            task="regression",
-        )
-        assert result.model is not None
+        params = {
+            "family": "poisson",
+            "terms": {"driver_age": {"type": "linear"}, "vehicle_age": {"type": "linear"}},
+            "interactions": [{"factors": ["driver_age", "vehicle_age"], "include_main": True}],
+        }
+        model = _fit(algo, df, params, target="claim_count").model
+        assert model.feature_names == [
+            "Intercept",
+            "driver_age",
+            "vehicle_age",
+            "driver_age:vehicle_age",
+        ]
 
-    def test_fit_with_monotone_constraints(self, algo, sample_df):
-        """Monotone constraints from top-level config are applied to terms."""
-        result = algo.fit(
-            train_df=sample_df,
-            features=["driver_age", "vehicle_age"],
-            cat_features=[],
-            target="claim_count",
-            weight=None,
-            params={"family": "poisson"},
-            task="regression",
-            monotone_constraints={"driver_age": -1},
-        )
-        assert result.model is not None
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        [
+            ({"monotone_constraints": {"x": -1}}, "monotone_constraints is a CatBoost lever"),
+            ({"feature_weights": {"x": 2.0}}, "feature_weights is a CatBoost lever"),
+        ],
+    )
+    def test_catboost_levers_are_refused(self, algo, interaction_df, kwargs, message):
+        params = {"family": "poisson", "terms": {"x": {"type": "linear"}}}
+        with pytest.raises(HauteValidationError, match=message):
+            _fit(algo, interaction_df.select("x", "y"), params, **kwargs)
+
+    def test_monotonicity_lives_on_the_term(self, algo, interaction_df):
+        params = {
+            "family": "poisson",
+            "terms": {"x": {"type": "linear", "monotonicity": "decreasing"}},
+        }
+        model = _fit(algo, interaction_df.select("x", "y"), params).model
+        assert model.inference_status == "constrained_boundary"
+        assert float(model.params[1]) <= 0.0
 
     def test_fit_requires_dataframe(self, algo):
-        """fit() should raise if train_df is None."""
         with pytest.raises(ValueError, match="requires train_df"):
-            algo.fit(
-                None,
-                [],
-                [],
-                "target",
-                None,
-                {},
-                "regression",
-            )
+            algo.fit(None, [], [], "target", None, {}, "regression")
 
-    def test_fit_calls_on_iteration(self, algo, sample_df):
-        """Verify iteration callback is called at start and end."""
+    def test_fit_calls_on_iteration(self, algo, interaction_df):
         calls = []
 
-        def callback(it, total, metrics):
-            calls.append((it, total))
+        def callback(iteration, total, metrics):
+            calls.append((iteration, total))
 
-        algo.fit(
-            train_df=sample_df,
-            features=["driver_age"],
-            cat_features=[],
-            target="claim_count",
-            weight=None,
-            params={"family": "poisson"},
-            task="regression",
+        _fit(
+            algo,
+            interaction_df.select("x", "y"),
+            {"family": "poisson", "terms": {"x": {"type": "linear"}}},
             on_iteration=callback,
         )
-        assert (0, 1) in calls  # start signal
-        assert (1, 1) in calls  # completion signal
+        assert calls == [(0, 1), (1, 1)]
 
-    def test_fit_with_regularization(self, algo, sample_df):
-        """Fit with lasso regularization."""
-        result = algo.fit(
-            train_df=sample_df,
-            features=["driver_age", "vehicle_age"],
-            cat_features=[],
-            target="claim_count",
-            weight=None,
-            params={
-                "family": "poisson",
-                "regularization": "lasso",
-            },
-            task="regression",
+
+# ---------------------------------------------------------------------------
+# Regularisation, solver, and family controls
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def penalty_df() -> pl.DataFrame:
+    rng = np.random.default_rng(5)
+    n = 800
+    x = rng.uniform(0, 1, n)
+    z = rng.normal(size=n)
+    return pl.DataFrame({"x": x, "z": z, "y": rng.poisson(np.exp(0.2 + x)).astype(float)})
+
+
+_PENALTY_TERMS = {"x": {"type": "linear"}, "z": {"type": "linear"}}
+_CV = {"cv_folds": 4, "cv_selection": "1se", "cv_seed": 7}
+
+
+class TestRegularizationAndSolverControls:
+    @pytest.mark.parametrize(
+        ("penalty", "l1_ratio"),
+        [
+            ({"regularization": "ridge"}, 0.0),
+            ({"regularization": "lasso"}, 1.0),
+            ({"regularization": "elastic_net", "l1_ratio": 0.4}, 0.4),
+        ],
+    )
+    def test_fixed_alpha_reaches_rustystats_without_cross_validation(
+        self, algo, penalty_df, penalty, l1_ratio
+    ):
+        params = {"family": "poisson", "terms": _PENALTY_TERMS, "alpha": 0.5, **penalty}
+        assert glm_fit_kwargs(params) == {"alpha": 0.5, "l1_ratio": l1_ratio}
+
+        model = _fit(algo, penalty_df, params).model
+        assert float(model.alpha) == 0.5
+        assert model.n_cv_folds is None
+        summary = algo.glm_result(model, params).regularization
+        assert summary is not None
+        assert summary["mode"] == "fixed"
+        assert summary["alpha"] == 0.5
+        assert summary["cv_folds"] is None
+
+    def test_cross_validation_is_seeded_and_reproducible(self, algo, penalty_df):
+        params = {"family": "poisson", "terms": _PENALTY_TERMS, "regularization": "ridge", **_CV}
+        assert glm_fit_kwargs(params) == {
+            "regularization": "ridge",
+            "cv": 4,
+            "selection": "1se",
+            "cv_seed": 7,
+        }
+        assert glm_fit_kwargs(
+            {**params, "regularization": "elastic_net", "l1_ratio": 0.3, "alpha": 0}
+        ) == {
+            "regularization": "elastic_net",
+            "cv": 4,
+            "selection": "1se",
+            "cv_seed": 7,
+            "l1_ratio": 0.3,
+        }
+
+        first = _fit(algo, penalty_df, params).model
+        second = _fit(algo, penalty_df, params).model
+        assert float(first.alpha) == float(second.alpha)
+        np.testing.assert_array_equal(np.asarray(first.params), np.asarray(second.params))
+
+    def test_solver_controls_reach_the_fit_only_when_set(self, algo, penalty_df):
+        params = {"family": "poisson", "terms": _PENALTY_TERMS}
+        assert glm_fit_kwargs(params) == {}
+        controlled = {**params, "max_iter": 50, "tol": 1e-6, "robust_standard_errors": "HC1"}
+        assert glm_fit_kwargs(controlled) == {
+            "max_iter": 50,
+            "tol": 1e-6,
+            "store_design_matrix": True,
+        }
+        assert bool(_fit(algo, penalty_df, controlled).model.converged)
+
+    def test_robust_standard_errors_use_hc_statistics(self, algo, penalty_df):
+        params = {"family": "poisson", "terms": _PENALTY_TERMS, "robust_standard_errors": "HC1"}
+        model = _fit(algo, penalty_df, params).model
+        report = algo.glm_result(model, params)
+
+        assert report.errors == []
+        assert report.inference == {
+            "status": "valid_standard",
+            "valid": True,
+            "standard_errors": "HC1",
+            "reason": None,
+        }
+        robust = np.asarray(model.bse_robust("HC1"))
+        np.testing.assert_allclose([row["std_error"] for row in report.coefficients], robust)
+        assert not np.allclose(robust, np.asarray(model.bse()))
+        lower = np.exp(np.asarray(model.conf_int_robust(alpha=0.05, cov_type="HC1"))[:, 0])
+        np.testing.assert_allclose([row["ci_lower"] for row in report.relativities], lower)
+
+    def test_quasibinomial_fits_with_logit_link(self, algo):
+        rng = np.random.default_rng(9)
+        n = 800
+        x = rng.uniform(0, 1, n)
+        frame = pl.DataFrame(
+            {"x": x, "y": rng.binomial(1, 1 / (1 + np.exp(0.5 - x))).astype(float)}
         )
-        assert result.model is not None
+        params = {"family": "quasibinomial", "terms": {"x": {"type": "linear"}}}
+        model = _fit(algo, frame, params).model
+        report = algo.glm_result(model, params)
 
+        assert model.link == "logit"
+        assert report.errors == []
+        assert report.relativities == []
+        assert "log_likelihood" not in report.fit_statistics
+        assert "aic" not in report.fit_statistics
 
-# ---------------------------------------------------------------------------
-# GLMAlgorithm.predict()
-# ---------------------------------------------------------------------------
-
-
-class TestGLMPredict:
-    def test_predict_returns_ndarray(self, algo, sample_df):
-        fit_result = algo.fit(
-            train_df=sample_df,
-            features=["driver_age", "vehicle_age"],
-            cat_features=[],
-            target="claim_count",
-            weight=None,
-            params={"family": "poisson"},
-            task="regression",
-        )
-        preds = algo.predict(fit_result.model, sample_df, ["driver_age", "vehicle_age"])
-        assert isinstance(preds, np.ndarray)
-        assert preds.shape == (len(sample_df),)
-        assert np.all(np.isfinite(preds))
-
-    def test_predict_poisson_positive(self, algo, sample_df):
-        """Poisson predictions should be non-negative."""
-        fit_result = algo.fit(
-            train_df=sample_df,
-            features=["driver_age"],
-            cat_features=[],
-            target="claim_count",
-            weight=None,
-            params={"family": "poisson"},
-            task="regression",
-        )
-        preds = algo.predict(fit_result.model, sample_df, ["driver_age"])
-        assert np.all(preds >= 0)
-
-
-# ---------------------------------------------------------------------------
-# GLMAlgorithm.feature_importance()
-# ---------------------------------------------------------------------------
-
-
-class TestGLMFeatureImportance:
-    def test_returns_sorted_list(self, algo, sample_df):
-        fit_result = algo.fit(
-            train_df=sample_df,
-            features=["driver_age", "vehicle_age"],
-            cat_features=[],
-            target="claim_count",
-            weight=None,
-            params={"family": "poisson"},
-            task="regression",
-        )
-        importance = algo.feature_importance(fit_result.model)
-        assert len(importance) > 0
-        assert all("feature" in item and "importance" in item for item in importance)
-        # Should be sorted descending by importance
-        imps = [item["importance"] for item in importance]
-        assert imps == sorted(imps, reverse=True)
-
-
-# ---------------------------------------------------------------------------
-# GLMAlgorithm.save() and model loading
-# ---------------------------------------------------------------------------
-
-
-class TestGLMSaveLoad:
-    def test_save_and_load_roundtrip(self, algo, sample_df):
-        """Save model, load it back, and verify predictions match."""
-        fit_result = algo.fit(
-            train_df=sample_df,
-            features=["driver_age", "vehicle_age"],
-            cat_features=[],
-            target="claim_count",
-            weight=None,
-            params={"family": "poisson"},
-            task="regression",
-        )
-        preds_original = algo.predict(
-            fit_result.model,
-            sample_df,
-            ["driver_age", "vehicle_age"],
+    def test_tweedie_endpoints_fit_with_extended_support(self, algo):
+        rng = np.random.default_rng(4)
+        n = 600
+        x = rng.normal(size=n)
+        frame = pl.DataFrame({"x": x, "y": rng.gamma(2.0, np.exp(0.3 + 0.2 * x) / 2.0)})
+        for power in (1.0, 2.0):
+            params = {"family": "tweedie", "var_power": power, "terms": {"x": {"type": "linear"}}}
+            assert _build_glm_builder_kwargs(
+                target="y", terms=params["terms"], data=frame, params=params
+            )["allow_extended_tweedie"]
+            assert bool(_fit(algo, frame, params).model.converged)
+        interior = {"family": "tweedie", "var_power": 1.5, "terms": {"x": {"type": "linear"}}}
+        assert "allow_extended_tweedie" not in _build_glm_builder_kwargs(
+            target="y", terms=interior["terms"], data=frame, params=interior
         )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "model.rsglm"
-            algo.save(fit_result.model, path)
-            assert path.exists()
-            assert path.stat().st_size > 0
-
-            # Load via _mlflow_io
-            from haute._mlflow_io import load_local_model
-
-            scoring_model = load_local_model(str(path))
-            assert scoring_model.flavor == "rustystats"
-
-            preds_loaded = scoring_model.predict(sample_df)
-            np.testing.assert_allclose(preds_original, preds_loaded, rtol=1e-6)
-
 
 # ---------------------------------------------------------------------------
-# GLM-specific diagnostics
+# GLMAlgorithm.predict(), feature_importance(), and save()
 # ---------------------------------------------------------------------------
 
 
-class TestGLMDiagnostics:
+class TestGLMPredictAndSave:
     @pytest.fixture()
-    def fitted_model(self, algo, sample_df):
-        fit_result = algo.fit(
-            train_df=sample_df,
-            features=["driver_age", "vehicle_age", "area"],
-            cat_features=["area"],
+    def fitted(self, algo, sample_df):
+        return _fit(
+            algo,
+            sample_df.drop("exposure"),
+            {"family": "poisson", "terms": _SAMPLE_TERMS},
             target="claim_count",
-            weight="exposure",
-            params={"family": "poisson"},
-            task="regression",
+        ).model
+
+    def test_predict_returns_positive_finite_rates(self, algo, fitted, sample_df):
+        predictions = algo.predict(fitted, sample_df, list(_SAMPLE_TERMS))
+        assert isinstance(predictions, np.ndarray)
+        assert predictions.shape == (len(sample_df),)
+        assert np.all(np.isfinite(predictions)) and np.all(predictions > 0)
+
+    def test_feature_importance_is_sorted_by_coefficient_magnitude(self, algo, fitted):
+        importance = algo.feature_importance(fitted)
+        assert [row["feature"] for row in importance] == sorted(
+            fitted.feature_names,
+            key=lambda name: abs(float(fitted.params[fitted.feature_names.index(name)])),
+            reverse=True,
         )
-        return fit_result.model
 
-    def test_coefficients_table(self, algo, fitted_model):
-        table = algo.coefficients_table(fitted_model)
-        assert len(table) > 0
-        first = table[0]
-        # Check normalized keys
-        assert "feature" in first
-        assert "coefficient" in first
-        assert "p_value" in first
+    def test_save_and_load_roundtrip(self, algo, fitted, sample_df, tmp_path: Path):
+        from haute._mlflow_io import load_local_model
 
-    def test_relativities(self, algo, fitted_model):
-        rels = algo.relativities(fitted_model)
-        assert len(rels) > 0
-        first = rels[0]
-        # Check normalized keys
-        assert "feature" in first
-        assert "relativity" in first
-        assert first["relativity"] > 0  # exp(coef) is always positive
-
-    def test_fit_statistics(self, algo, fitted_model):
-        stats = algo.fit_statistics(fitted_model)
-        assert "deviance" in stats
-        assert "aic" in stats
-        assert "bic" in stats
-        assert stats["deviance"] > 0
-
-    def test_fit_statistics_convergence(self, algo, fitted_model):
-        stats = algo.fit_statistics(fitted_model)
-        assert "converged" in stats
-        assert stats["converged"] == 1.0
-
-    def test_coefficients_table_deserialized_model_fails_loud(self, algo, fitted_model):
-        """A round-tripped (to_bytes/from_bytes) model has no covariance data,
-        so real inference statistics cannot be computed.
-
-        Characterises the real trigger for the old fabrication path: the
-        deserialized RustyStats result lacks bse()/tvalues()/pvalues().
-        The contract is to raise — never to return SE=0.0 / p=1.0 rows.
-        Today the deserialized result also lacks ``coefficients`` (it only
-        stores ``params``), so the fallback fails on attribute access; if a
-        future RustyStats exposes coefficients there, the stats block raises
-        GLMInferenceUnavailableError instead. Either way: loud, no table.
-        """
-        from haute.modelling._rustystats import GLMInferenceUnavailableError
-
-        loaded = rs.GLMModel.from_bytes(fitted_model.to_bytes())
-
-        with pytest.raises((AttributeError, GLMInferenceUnavailableError)):
-            algo.coefficients_table(loaded)
-
-
-# ---------------------------------------------------------------------------
-# GLMAlgorithm.cross_validate() — removed in Phase 2 Package 2C-5.
-# The orchestrator (``TrainingJob``) no longer calls CV, so the method
-# and its tests were deleted. AIC/BIC remain on the GLM fit statistics.
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Integration: TrainingJob with GLM
-# ---------------------------------------------------------------------------
-
-
-class TestTrainingJobGLM:
-    def test_training_job_glm_basic(self, sample_df):
-        """Full TrainingJob pipeline with GLM."""
-        from haute.modelling import TrainingJob
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            job = TrainingJob(
-                name="test_glm",
-                data=sample_df,
-                target="claim_count",
-                weight="exposure",
-                algorithm="glm",
-                task="regression",
-                params={
-                    "family": "poisson",
-                    "terms": {
-                        "driver_age": {"type": "linear"},
-                        "vehicle_age": {"type": "linear"},
-                        "area": {"type": "categorical"},
-                    },
-                },
-                split={"strategy": "random", "validation_size": 0.2, "seed": 42},
-                metrics=["gini", "poisson_deviance"],
-                output_dir=tmpdir,
-            )
-            result = job.run()
-
-            assert result.model_path.endswith(".rsglm")
-            assert Path(result.model_path).exists()
-            assert result.train_rows > 0
-            assert result.validation_rows > 0
-            assert "gini" in result.metrics
-            assert len(result.feature_importance) > 0
-
-            # GLM-specific fields populated
-            assert len(result.glm_coefficients) > 0
-            assert len(result.glm_relativities) > 0
-            assert "deviance" in result.glm_fit_statistics
-            assert "aic" in result.glm_fit_statistics
-
-    def test_training_job_glm_auto_terms(self, sample_df):
-        """TrainingJob with GLM auto-generates terms when not specified."""
-        from haute.modelling import TrainingJob
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            job = TrainingJob(
-                name="test_glm_auto",
-                data=sample_df,
-                target="claim_count",
-                algorithm="glm",
-                params={"family": "gaussian"},
-                output_dir=tmpdir,
-            )
-            result = job.run()
-            assert result.model_path.endswith(".rsglm")
-            assert len(result.features) > 0
+        path = tmp_path / "model.rsglm"
+        algo.save(fitted, path)
+        scoring_model = load_local_model(str(path))
+        assert scoring_model.flavor == "rustystats"
+        np.testing.assert_allclose(
+            algo.predict(fitted, sample_df, list(_SAMPLE_TERMS)),
+            scoring_model.predict(sample_df),
+            rtol=1e-6,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1267,6 +676,7 @@ def nb_df() -> pl.DataFrame:
 
 
 _NB_TERMS = {"x1": {"type": "linear"}, "x2": {"type": "linear"}}
+_NB_PARAMS = {"family": "negbinomial", "terms": _NB_TERMS}
 
 
 class TestNegBinomialThetaThreading:
@@ -1280,25 +690,10 @@ class TestNegBinomialThetaThreading:
             rs.glm_dict(response="y", terms=_NB_TERMS, data=nb_df, family="negbinomial").fit()
 
     def test_theta_param_reaches_the_fit(self, algo, nb_df):
-        """params["theta"] must change the fitted model — the whole gate is
-        pointless if the threaded value never reaches RustyStats."""
+        def fit_deviance(theta: float) -> float:
+            return float(_fit(algo, nb_df, {**_NB_PARAMS, "theta": theta}).model.deviance)
 
-        def fit_deviance(params):
-            result = algo.fit(
-                train_df=nb_df,
-                features=["x1", "x2"],
-                cat_features=[],
-                target="y",
-                weight=None,
-                params=params,
-                task="regression",
-            )
-            return float(result.model.deviance)
-
-        base = {"family": "negbinomial", "terms": _NB_TERMS}
-        dev_theta_1 = fit_deviance({**base, "theta": 1.0})
-        dev_theta_5 = fit_deviance({**base, "theta": 5.0})
-        assert dev_theta_1 != dev_theta_5
+        assert fit_deviance(1.0) != fit_deviance(5.0)
 
 
 class TestEstimateGlmDispersion:
@@ -1306,52 +701,45 @@ class TestEstimateGlmDispersion:
         """Golden value: statsmodels NB2 MLE on this exact draw gives
         1/alpha = 2.4487 (betas match rustystats to 4 d.p.). Pinned as a
         literal so statsmodels is not a test dependency."""
-        from haute.modelling._rustystats import estimate_glm_dispersion
-
-        est = estimate_glm_dispersion(
-            data=nb_df,
-            terms=_NB_TERMS,
-            target="y",
-            family="negbinomial",
-            param="theta",
-        )
+        est = estimate_glm_dispersion(data=nb_df, params=_NB_PARAMS, target="y", param="theta")
         assert est.param == "theta"
         assert est.value == pytest.approx(2.4487, abs=0.01)
         assert est.llf == pytest.approx(-693.038, abs=0.05)
         assert est.n_fits > 0
 
     def test_estimate_is_deterministic(self, nb_df):
-        from haute.modelling._rustystats import estimate_glm_dispersion
-
-        kwargs = dict(data=nb_df, terms=_NB_TERMS, target="y", family="negbinomial", param="theta")
+        kwargs = {"data": nb_df, "params": _NB_PARAMS, "target": "y", "param": "theta"}
         first = estimate_glm_dispersion(**kwargs)
         second = estimate_glm_dispersion(**kwargs)
         assert first.value == second.value
         assert first.n_fits == second.n_fits
 
-    def test_tweedie_var_power_finds_interior_maximum(self, nb_df):
-        from haute.modelling._rustystats import estimate_glm_dispersion
-
+    def test_tweedie_var_power_finds_interior_maximum(self):
         rng = np.random.default_rng(7)
         n = 400
         x1 = rng.normal(0, 1, n)
         mu = np.exp(0.3 + 0.5 * x1)
         y = np.where(rng.random(n) < 0.3, 0.0, rng.gamma(2.0, mu / 2.0))
-        frame = pl.DataFrame({"x1": x1, "y": y})
-
         est = estimate_glm_dispersion(
-            data=frame,
-            terms={"x1": {"type": "linear"}},
+            data=pl.DataFrame({"x1": x1, "y": y}),
+            params={"family": "tweedie", "terms": {"x1": {"type": "linear"}}},
             target="y",
-            family="tweedie",
             param="var_power",
         )
         assert est.param == "var_power"
         assert 1.01 < est.value < 1.99
 
-    def test_on_fit_callback_can_abort(self, nb_df):
-        from haute.modelling._rustystats import estimate_glm_dispersion
+    def test_the_profile_fits_the_resolved_design(self, nb_df):
+        """An unobserved reference level is refused before any candidate fit."""
+        frame = nb_df.with_columns(pl.Series("g", ["a", "b"] * 200))
+        params = {
+            "family": "negbinomial",
+            "terms": {**_NB_TERMS, "g": {"type": "categorical", "reference": "z"}},
+        }
+        with pytest.raises(HauteValidationError, match="reference level 'z'"):
+            estimate_glm_dispersion(data=frame, params=params, target="y", param="theta")
 
+    def test_on_fit_callback_can_abort(self, nb_df):
         class _StopError(RuntimeError):
             pass
 
@@ -1361,27 +749,23 @@ class TestEstimateGlmDispersion:
         with pytest.raises(_StopError):
             estimate_glm_dispersion(
                 data=nb_df,
-                terms=_NB_TERMS,
+                params=_NB_PARAMS,
                 target="y",
-                family="negbinomial",
                 param="theta",
                 on_fit=abort_immediately,
             )
 
     def test_unknown_param_rejected(self, nb_df):
-        from haute.modelling._rustystats import estimate_glm_dispersion
-
         with pytest.raises(ValueError, match="Unknown dispersion parameter"):
-            estimate_glm_dispersion(
-                data=nb_df, terms=_NB_TERMS, target="y", family="negbinomial", param="alpha"
-            )
+            estimate_glm_dispersion(data=nb_df, params=_NB_PARAMS, target="y", param="alpha")
 
     def test_family_param_mismatch_rejected(self, nb_df):
-        from haute.modelling._rustystats import estimate_glm_dispersion
-
         with pytest.raises(ValueError, match="belongs to the negbinomial family"):
             estimate_glm_dispersion(
-                data=nb_df, terms=_NB_TERMS, target="y", family="poisson", param="theta"
+                data=nb_df,
+                params={"family": "poisson", "terms": _NB_TERMS},
+                target="y",
+                param="theta",
             )
 
 
@@ -1406,71 +790,35 @@ _EXPOSURE_TERMS = {"x": {"type": "linear"}}
 
 class TestOffsetExposureSemantics:
     def _fit(self, algo, df, params):
-        return algo.fit(
-            train_df=df,
-            features=["x"],
-            cat_features=[],
-            target="y",
-            weight=None,
-            params={"terms": _EXPOSURE_TERMS, **params},
-            task="regression",
-            offset="e",
-        )
+        return _fit(algo, df, {"terms": _EXPOSURE_TERMS, **params}, offset="e")
 
-    def test_builder_maps_offset_to_exposure_for_log_link_and_keeps_offset_otherwise(self):
-        from haute.modelling._rustystats import _build_glm_builder_kwargs
-
+    @pytest.mark.parametrize(
+        ("params", "key"),
+        [
+            ({"family": "poisson"}, "exposure"),
+            ({"family": "gaussian", "link": "log"}, "exposure"),
+            ({"family": "gaussian"}, "offset"),
+            ({"family": "binomial"}, "offset"),
+        ],
+    )
+    def test_builder_routes_the_offset_by_the_effective_link(self, params, key):
         frame = pl.DataFrame({"y": [1.0], "x": [0.0], "e": [1.0]})
-        log_default = _build_glm_builder_kwargs(
-            target="y",
-            terms=_EXPOSURE_TERMS,
-            data=frame,
-            family="poisson",
-            intercept=True,
-            offset="e",
+        kwargs = _build_glm_builder_kwargs(
+            target="y", terms=_EXPOSURE_TERMS, data=frame, params=params, offset="e"
         )
-        assert log_default["exposure"] == "e"
-        assert "offset" not in log_default
-
-        explicit_log = _build_glm_builder_kwargs(
-            target="y",
-            terms=_EXPOSURE_TERMS,
-            data=frame,
-            family="gaussian",
-            intercept=True,
-            link="log",
-            offset="e",
+        assert kwargs[key] == "e"
+        assert {"exposure", "offset"} - {key} <= {"exposure", "offset"} - set(kwargs)
+        without = _build_glm_builder_kwargs(
+            target="y", terms=_EXPOSURE_TERMS, data=frame, params=params
         )
-        assert explicit_log["exposure"] == "e"
-        assert "offset" not in explicit_log
-
-        identity = _build_glm_builder_kwargs(
-            target="y",
-            terms=_EXPOSURE_TERMS,
-            data=frame,
-            family="gaussian",
-            intercept=True,
-            offset="e",
-        )
-        assert identity["offset"] == "e"
-        assert "exposure" not in identity
-
-        no_offset = _build_glm_builder_kwargs(
-            target="y",
-            terms=_EXPOSURE_TERMS,
-            data=frame,
-            family="poisson",
-            intercept=True,
-        )
-        assert "exposure" not in no_offset and "offset" not in no_offset
+        assert "exposure" not in without and "offset" not in without
 
     def test_log_link_offset_predictions_equal_exp_of_log_exposure_plus_linear_predictor(
         self, algo, exposure_df
     ):
         """Canonical-link path (no explicit link): the offset column is a multiplier."""
-        result = self._fit(algo, exposure_df, {"family": "poisson"})
-        model = result.model
-        coef = dict(zip(model.feature_names, np.asarray(model.coefficients)))
+        model = self._fit(algo, exposure_df, {"family": "poisson"}).model
+        coef = dict(zip(model.feature_names, np.asarray(model.params)))
         head = exposure_df.head(50)
         preds = algo.predict(model, head, ["x"], offset="e")
         expected = np.exp(
@@ -1483,32 +831,36 @@ class TestOffsetExposureSemantics:
 
     def test_explicit_log_link_on_gaussian_maps_offset_to_exposure(self, algo, exposure_df):
         """Explicit-link path: gaussian is identity by default, log when asked."""
-        result = self._fit(algo, exposure_df, {"family": "gaussian", "link": "log"})
+        model = self._fit(algo, exposure_df, {"family": "gaussian", "link": "log"}).model
         head = exposure_df.head(50)
-        preds = algo.predict(result.model, head, ["x"], offset="e")
-        doubled = algo.predict(
-            result.model, head.with_columns(pl.col("e") * 2.0), ["x"], offset="e"
-        )
+        preds = algo.predict(model, head, ["x"], offset="e")
+        doubled = algo.predict(model, head.with_columns(pl.col("e") * 2.0), ["x"], offset="e")
         np.testing.assert_allclose(doubled, 2.0 * preds, rtol=1e-9)
 
     def test_identity_link_offset_is_additive(self, algo, exposure_df):
-        result = self._fit(algo, exposure_df, {"family": "gaussian"})
+        model = self._fit(algo, exposure_df, {"family": "gaussian"}).model
         head = exposure_df.head(50)
-        preds = algo.predict(result.model, head, ["x"], offset="e")
-        shifted = algo.predict(
-            result.model, head.with_columns(pl.col("e") + 1.0), ["x"], offset="e"
-        )
+        preds = algo.predict(model, head, ["x"], offset="e")
+        shifted = algo.predict(model, head.with_columns(pl.col("e") + 1.0), ["x"], offset="e")
         np.testing.assert_allclose(shifted, preds + 1.0, rtol=1e-9, atol=1e-9)
 
-    def test_tweedie_boundary_powers_1_and_2_fit_with_extended_tweedie_enabled(
-        self, algo, exposure_df
+    @pytest.mark.parametrize(
+        ("params", "link"),
+        [({"family": "poisson"}, "log"), ({"family": "gaussian"}, "identity")],
+    )
+    def test_loaded_log_link_glm_reports_its_exposure_column(
+        self, algo, exposure_df, tmp_path: Path, params, link
     ):
-        # Power 2.0 is the Gamma boundary and requires y > 0; the Poisson
-        # fixture has zeros, so shift the response for this behavioural check.
-        positive_df = exposure_df.with_columns(pl.col("y") + 0.5)
-        for power in (1.0, 2.0):
-            result = self._fit(algo, positive_df, {"family": "tweedie", "var_power": power})
-            assert result.model is not None
+        """A log-link GLM records its offset as RustyStats' exposure spec; the
+        loader must still report the column and how it enters the prediction."""
+        from haute._mlflow_io import load_local_model
+
+        model = self._fit(algo, exposure_df, params).model
+        path = tmp_path / "offset.rsglm"
+        algo.save(model, path)
+        scoring_model = load_local_model(str(path))
+        assert scoring_model.offset_column == "e"
+        assert scoring_model.offset_link == link
 
 
 # ---------------------------------------------------------------------------
@@ -1517,29 +869,18 @@ class TestOffsetExposureSemantics:
 
 
 class TestTermKeySubsets:
-    """Haute edits a deliberate subset of the keys RustyStats accepts.
+    """Haute's stored term keys are RustyStats keys, plus ``reference``.
 
-    The subset is what the node UI exposes and what the backend round-trips;
-    the rest of ``VALID_KEYS`` stays RustyStats' business. Pinning it here
-    catches a RustyStats release that renames or drops a key Haute writes.
+    Pinning them against the installed wheel catches a RustyStats release that
+    renames or drops a key Haute writes.
     """
 
-    HAUTE_SUBSET = {
-        "linear": {"type", "monotonicity"},
-        "categorical": {"type", "levels"},
-        "bs": {"type", "df", "k", "degree", "monotonicity", "knots", "boundary_knots"},
-        "ns": {"type", "df", "k", "knots", "boundary_knots"},
-        "ms": {"type", "df", "k", "degree", "monotonicity", "knots", "boundary_knots"},
-        "target_encoding": {"type", "prior_weight", "n_permutations", "variable"},
-        "frequency_encoding": {"type", "variable"},
-        "expression": {"type", "expr", "monotonicity"},
-    }
-
-    def test_haute_edits_a_subset_of_rustystats_valid_keys(self):
-        """Mirrors TERM_TYPE_PROPS in frontend/src/panels/modelling/glmTerms.ts."""
+    def test_stored_term_keys_are_rustystats_valid_keys(self):
         import inspect
 
         from rustystats import formula
+
+        from haute.modelling._glm_terms import TERM_KEYS
 
         # ``VALID_KEYS`` is a local literal inside a function in the installed
         # wheel, so it has to be read out of the module source.
@@ -1550,6 +891,6 @@ class TestTermKeySubsets:
         namespace: dict[str, object] = {}
         exec(source[start:end], namespace)  # noqa: S102 - reading a literal from the installed wheel
         valid_keys = namespace["VALID_KEYS"]
-        assert set(self.HAUTE_SUBSET) <= set(valid_keys)
-        for term_type, keys in self.HAUTE_SUBSET.items():
-            assert keys <= valid_keys[term_type], term_type
+        assert set(TERM_KEYS) <= set(valid_keys)
+        for term_type, keys in TERM_KEYS.items():
+            assert keys - {"reference"} <= valid_keys[term_type], term_type

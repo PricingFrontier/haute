@@ -49,7 +49,6 @@ _EXPECTED_DEBT_IDS = {
     "3a392e6541a16437",
     "3ab16f01c706b8cf",
     "4908d9a546bf0eb3",
-    "53ef46f50a3e8e3c",
     "78ccd0efb0b58c07",
     "7ecc4c9aac18c56a",
     "8575a86d12fcd9fd",
@@ -215,11 +214,9 @@ _EXPECTED_DEBT_IDS = {
     "c12bf51de96471f5",
     # W4b (4b.1/4b.2/4b.3) — real-GLM route/export/diagnostics tests train
     # actual rustystats models; rustystats is an optional extra, so the
-    # tests importorskip it. See tests/test_train_param_routing.py and
-    # tests/test_glm_integration.py::TestInferenceUnavailableDiagnostics.
+    # tests importorskip it. See tests/test_train_param_routing.py.
     "560f4d4069c7b172",
     "6e4e489debab1b3f",
-    "7b4fe4c7336c7b86",
     # W4b (4b.6/4b.9) — the temp-cleanup and per-model-contract suites fit
     # real CatBoost models (cancel/failure points inside genuine fits; the
     # two-runs-one-dir e2e); catboost is an optional extra. The pre-split

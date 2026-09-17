@@ -6,12 +6,12 @@
 |---|---|
 | `src/haute/modelling/__init__.py` | Public API surface: `FitResult`, `MLflowLogResult`, `TrainingJob`, `TrainResult`, `generate_training_script`, `log_experiment`. |
 | `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC, `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
-| `src/haute/modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats; GLM-only diagnostics (`coefficients_table`, `relativities`, `fit_statistics`, `glm_diagnostics`); `estimate_glm_dispersion()` profile-likelihood estimation; `_resolve_glm_terms()` term resolution. |
+| `src/haute/modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats; `prepare_glm_design()` (frame-dtype validation, reference-level translation, interaction resolution); `glm_fit_kwargs()` (fixed or cross-validated penalty, solver controls, robust standard errors); `GLMAlgorithm.glm_result()` over `glm_inference`, `glm_coefficient_rows`, `glm_relativity_rows`, `glm_fit_statistics`, `glm_smooth_term_rows`, and `glm_regularization_summary`; `estimate_glm_dispersion()` profile-likelihood estimation. |
 | `src/haute/modelling/_training_job.py` | `TrainingJob` orchestrator — prepare one eligible source, persist/reload its evaluation plan, run selection or tuning fits, perform one deployable final fit, compute diagnostics, stage artifacts, and optionally log once to MLflow; also defines `TrainResult` and intermediate stage types. |
 | `src/haute/modelling/_evaluation.py` | Strict version-1 evaluation config, exact development/final-test and validation-fit plan generation, plan/result/report codecs, digest linkage, strategy summaries, and validation-row-weighted aggregation. |
 | `src/haute/modelling/_tuning.py` | Strict bounded CatBoost tuning config/search-space validation, seeded trial resolution, winner/tree-count selection, and tuning plan/trials/report codecs. |
-| `src/haute/modelling/_train_config.py` | Single source of truth for modelling-node config → training-job kwargs (`build_training_job_kwargs`, `build_train_params`, `parse_evaluation_config`, `parse_tuning_config`, `training_objective_issue`, `default_metrics`, `effective_metrics`). |
-| `src/haute/modelling/_glm_terms.py` | Pure GLM term contract shared by the config builder, routes, job, and adapter: `SUPPORTED_TERM_TYPES`, the expression grammar (`expression_identifiers`), the schema-free `glm_model_columns()` used for projection demand, and `validate_glm_model_columns()` against a real schema. Imports no RustyStats, so the schema-free half runs during projection planning before any data exists. |
+| `src/haute/modelling/_train_config.py` | Single source of truth for modelling-node config → training-job kwargs (`build_training_job_kwargs`, `build_train_params`, `parse_evaluation_config`, `parse_tuning_config`, `training_objective_issue`, `default_metrics`, `effective_metrics`), plus the GLM value contract (`GLM_FAMILY_LINKS`, `GLM_CONFIG_KEYS`, `CATBOOST_ONLY_LEVERS`, `is_glm_config`, `glm_params_issue`, `validate_glm_params`). |
+| `src/haute/modelling/_glm_terms.py` | Pure GLM term contract shared by the config builder, routes, job, and adapter: `SUPPORTED_TERM_TYPES` and `TERM_KEYS`, dtype classes (`glm_dtype_class`, `MAIN_FITS_BY_CLASS`, `SLOT_FITS_BY_CLASS`), the parameter contract (`validate_term_spec`, `validate_interaction_entry`), the expression grammar (`expression_identifiers`), the schema-free `glm_model_columns()` used for projection demand, `validate_glm_model_columns()` against a real schema and role columns, `resolve_categorical_levels()`, the order-independent `resolve_glm_design()`, and `penalised_smooth_terms()` / `monotone_constraint_terms()`. Imports no RustyStats, so the schema-free half runs during projection planning before any data exists. |
 | `src/haute/modelling/_target_check.py` | `training_target_task_issue()` — data-dependent target-column vs task/metric gate returning an actionable message (or nothing when the pairing is valid), keyed on the effective reported-metric set (explicit config metrics or the objective-implied defaults), shared by the train route's pre-dispatch validation and `TrainingJob._prepare_data`. |
 | `src/haute/modelling/_split.py` | Internal partition-mask execution used by a final or selection fit. Its `SplitConfig` is a private test seam for direct callers exercising the shared partition/fit machinery; it is not a public modelling-node config contract and is not exported. |
 | `src/haute/modelling/_metrics.py` | Primary metric functions and diagnostic data computation (double lift, AvE, residuals, actual-vs-predicted, Lorenz, PDP). |
@@ -53,8 +53,7 @@
   `CatBoostAlgorithm` and `GLMAlgorithm` implement it.
   Both also expose algorithm-specific methods that `_training_job._compute_metrics`
   probes with `hasattr()` rather than an interface method — `shap_summary` /
-  `feature_importance_typed` (CatBoost only), `coefficients_table` / `relativities` /
-  `fit_statistics` (GLM only).
+  `feature_importance_typed` (CatBoost only), `glm_result` (GLM only).
 - **`FitResult`** (`_algorithms.py`) — `model`, `best_iteration: int | None`,
   `loss_history: list[dict[str, float]]`. Returned by every algorithm's `fit()`.
 - **`ALGORITHM_REGISTRY`** (`_algorithms.py`) — `dict[str, type[BaseAlgorithm]]`,
@@ -165,10 +164,14 @@
   `_mlflow_log.log_experiment`, avoiding 25+ positional parameters at either call site.
 - **`MLflowLogResult`** (`_mlflow_log.py`) — `backend` (`"databricks"|"server"|"local"`),
   `experiment_name`, `run_id`, `tracking_uri`, `run_url: str | None`.
-- **`GLMInferenceUnavailableError`** (`_rustystats.py`, `RuntimeError` subclass) —
-  raised by `coefficients_table()` when real SE/z/p-value statistics cannot be
-  obtained; never fabricated.
-- **`DispersionEstimate`** (`_rustystats.py`, `__slots__`-based) — result of
+- **`GLMInference`** (`_rustystats.py`, frozen dataclass) — `status` (RustyStats'
+  `inference_status`, or `singular_design` when a valid status carries a non-finite
+  statistic), `valid`, `standard_errors` (`model` or the robust type), `reason`, and the
+  statistic arrays when valid. `to_plain_data()` is the `glm_inference` response field.
+- **`GLMResultReport`** (`_rustystats.py`, dataclass) — `inference`, `coefficients`,
+  `relativities`, `fit_statistics`, `smooth_terms`, `regularization`, and `errors`, the
+  failed diagnostics by name.
+- **`DispersionEstimate`** (`_rustystats.py`, frozen dataclass) — result of
   `estimate_glm_dispersion()`: `param` (`"theta"|"var_power"`), `value` (the resolved
   parameter), `llf` (the profile-maximised log-likelihood), `n_fits` (candidate fits the
   search performed). `_DISPERSION_BOUNDS` fixes the search interval per parameter:
@@ -474,11 +477,12 @@ experiment logs nothing.
    (`_DISPERSION_PARAM_STUBS`: `theta=1.0`, `var_power=1.5`) so the shared config
    machinery can run; the stub value never reaches a fit — the search
    overrides it at every candidate. A spawn child then runs `job._prepare_data`
-   (identical to training), narrows `features`/`cat_features` to the GLM terms exactly
-   as `TrainingJob.run` does, resolves the effective terms via `_resolve_glm_terms`
+   (identical to training), validates the model columns against the prepared frame's
+   dtypes and role columns, collects only the columns the design needs (including an
+   interaction factor whose main effect Include main effects materialises), and calls
+   `estimate_glm_dispersion`, which resolves the design with `prepare_glm_design`
    (shared with `GLMAlgorithm.fit`, so the profiled design can never drift from what
-   training would actually fit), collects only the columns the design needs, and calls
-   `estimate_glm_dispersion`.
+   training would actually fit).
 6. `estimate_glm_dispersion` (`_rustystats.py`) validates `param` is estimable and
    matches `family`, then runs a bounded 1-D `scipy.optimize.minimize_scalar` search
    (`method="bounded"`) maximising `rs.glm_dict(**builder_kwargs).fit().llf()` over the
@@ -1042,14 +1046,17 @@ potentially large copy on its threadpool.
   (`resolve_training_input_schema`, schema-only lazy build) before a training or
   dispersion job is created (422), and again against the loaded frame in `TrainingJob`
   and the dispersion worker.
-- `_build_interactions` (`_rustystats.py`) resolves each factor as override → main term →
-  dtype default, rejects overrides outside {linear, categorical, bs, ns}, any
-  `monotonicity` inside an interaction, categorical overrides that would re-type a
-  non-categorical main effect, numeric fits on string columns or categorical mains,
-  effective target encoding, inherited monotone splines, conflicting overrides across
-  cards, and duplicate factor sets; it materialises missing main effects once into the
-  terms dict and always passes `include_main=False`, because RustyStats' own
-  `include_main=True` duplicates existing main effects. Unset factor slots (`""`) are
+- `resolve_glm_design` (`_glm_terms.py`) resolves each product factor as override →
+  the column's single inheritable main effect → dtype-class default, independent of
+  card order. Monotone splines, monotone linear or `bs` mains, level-restricted
+  categoricals, frequency encodings, and columns with several main effects need an
+  explicit slot fit. Product target encoding registers one main effect whose settings
+  every card agrees on; Include main effects materialises the single spec its cards
+  agree on; slots are then checked against the effective native main effects
+  (categorical only over categorical, never linear, splines, or target encoding over
+  categorical); duplicates are checked per encoding mode and factor set. RustyStats
+  always receives `include_main=False`, because its own flag duplicates existing main
+  effects. Unset factor slots (`""`) are
   filtered out before the two-factor minimum, so the config panel's freshly added
   `{"factors": ["", ""]}` row is a skip rather than a fit input. Tests assert design
   columns through `dict_to_parsed_formula` and `InteractionBuilder`.
@@ -1058,18 +1065,26 @@ potentially large copy on its threadpool.
   Tweedie's variance power, and RustyStats 0.9 itself refuses to fit without one.
   `estimate_glm_dispersion` exists specifically to give the user a principled value to
   set rather than guessing.
-- GLM regularization's internal alpha-search cross-validation fold count is hardcoded to 5
-  (`fit_kwargs["cv"] = 5` in `GLMAlgorithm.fit`), matching sklearn's `LassoCV`/`RidgeCV`/
-  `ElasticNetCV` default — treated as a numerical implementation detail, not a user-exposed
-  config knob.
+- `glm_fit_kwargs` passes a positive `alpha` as a fixed penalty with `l1_ratio` and never
+  `regularization` (RustyStats ignores `alpha` whenever `regularization` is set). An absent
+  or zero `alpha` cross-validates with the configured `cv_folds`, `cv_selection`, and
+  `cv_seed`, which the objective gate requires, so the selected penalty is reproducible.
+  Regularisation is refused with penalised smooth splines, and robust standard errors with
+  regularisation, monotonicity, or penalised smooth splines.
 - CatBoost's offset baseline is only honoured when supplied through a `Pool`; a
   bare-matrix `predict()` call silently scores from baseline 0 in CatBoost itself, so
   `CatBoostAlgorithm.predict()` always wraps in a `Pool` whenever an offset is
-  configured (`_extract_offset_baseline` raises if the column is missing).
+  configured (`_extract_offset_baseline` raises if the column is missing). The baseline
+  is `log(offset)` for `Poisson` and `Tweedie` losses and the offset verbatim otherwise;
+  `haute_offset_link` records the transform beside `haute_offset_column`, and a model
+  recording a column without a link is refused. The job's offset link and the link
+  stamped at fit both follow the effective loss (`TrainingJob._catboost_loss_function`).
 - GLM prediction keeps the offset column inside the frame handed to RustyStats rather
   than transforming it in Python — RustyStats owns the fit-time offset transform (e.g.
   log for an exposure column under a log-link family) and reapplies it identically at
-  predict time.
+  predict time. A log link passes the column as `exposure=`, stored on `_exposure_spec`;
+  other links pass `offset=`. `rustystats_offset_column` reads either spec for the loader
+  and scorer. Training and log-link scoring refuse null, zero, or negative exposure.
 - Metric/diagnostic functions filter non-finite rows before computing (a warning is
   logged and the dropped count is surfaced via `metrics[NON_FINITE_FILTERED_KEY]`), but
   raise `ValueError` outright if *every* row is non-finite.
@@ -1117,10 +1132,11 @@ rows/features) and retry.
   mismatch (edited/corrupted file), invalid `categorical_levels` declarations, and
   train-vs-score disagreement via `assert_contracts_match` (names the offending field
   and shows expected vs. actual).
-- **`GLMInferenceUnavailableError`** (`RuntimeError` subclass, `_rustystats.py`) —
-  caught by `TrainingJob._compute_metrics`'s `hasattr(algo, "coefficients_table")`
-  block via `_record_diag_error`; recorded in `diagnostics_errors`, never propagates to
-  fail the whole run.
+- **GLM result diagnostics** — `GLMAlgorithm.glm_result` catches each failing GLM
+  diagnostic (unknown inference status, non-finite coefficient, relativity or bound
+  overflow, non-finite fit statistic or smoothing result) by name; `TrainingJob` records
+  each in `diagnostics_errors`, never failing the whole run. Invalid inference is not a
+  failure: rows carry null statistics and `glm_inference.reason` says why.
 - **`ValueError`** — the dominant validation error across the package: invalid
   evaluation/tuning evidence, missing required columns, a target/task/metric mismatch
   (`training_target_task_issue`), an empty training DataFrame, all-non-finite metric
@@ -1202,7 +1218,8 @@ rows/features) and retry.
   exception into a structured `diagnostics_errors` entry (`diagnostic`, `error`,
   `error_type`) plus a `logger.warning` — used identically for SHAP,
   `LossFunctionChange` importance, PDP, and every GLM-specific diagnostic
-  (`coefficients_table`, `relativities`, `fit_statistics`, `regularization_path`).
+  (`glm_inference`, `glm_coefficients`, `glm_relativities`, `glm_fit_statistics`,
+  `glm_smooth_terms`, `glm_regularization`).
 - Categorical PDP grids retain missing source levels as JSON `null`, with the prediction
   computed for that missing level. The frontend response contract accepts these levels
   and labels them `(missing)`; numeric grid values remain non-null.

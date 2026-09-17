@@ -75,10 +75,12 @@ compatibility facade and route own no duplicate state or worker implementation.
 - A user configures a "modelling" node: target column, optional weight/offset columns,
   columns to exclude (or an explicit feature list), algorithm (`catboost` or `glm`),
   task, evaluation configuration, requested metrics, and algorithm-specific parameters
-  (CatBoost hyperparameters, or GLM terms/family/link/regularization/interactions).
+  (CatBoost hyperparameters, or GLM terms/family/link/regularization/solver/interactions).
   CatBoost hyperparameters live in the node's `params` object and its Tweedie power is
   `variance_power`; GLM settings live at the node's top level and its Tweedie power is
-  `var_power`.
+  `var_power`. `exclude`, `feature_columns`, `monotone_constraints`, and `feature_weights`
+  apply only to CatBoost: a GLM's features are its terms and interaction factors, and GLM
+  monotonicity lives on each term.
 - Starting training (`POST /api/modelling/train`) performs the cheap graph/config
   validation synchronously, creates and registers the cancellable job, starts an owned
   preparation thread, and returns `status="started"` plus the job ID before RAM
@@ -151,14 +153,14 @@ compatibility facade and route own no duplicate state or worker implementation.
   field. The user can inspect or adjust that auto-filled value before their normal
   save/publish action. Its process supervisor enforces the timeout stamped at job
   creation; status polling is not required to trigger that timeout.
-- Monotonicity is the one additional cross-algorithm capability lever exposed in
+- CatBoost monotonicity is the one additional capability lever exposed in
   modelling-node configuration. `monotone_constraints` maps configured numeric feature
   names to exactly `-1` (decreasing) or `1` (increasing); zero means absence and is
   omitted by the editor. Entries for features made dormant by `exclude` remain stored:
   the shared config builder omits them from live training and script export, so re-including
   the feature restores its prior direction. The established explicit `feature_columns` contract
-  still wins over a stale exclusion. After the final CatBoost feature selection or GLM-term
-  narrowing is known, training rejects a non-object mapping, malformed names or
+  still wins over a stale exclusion. After the final CatBoost feature selection is known,
+  training rejects a non-object mapping, malformed names or
   directions, active constraints on absent/non-selected features, and constraints on
   features whose dtype is not `Int64` or `Float64` before splitting
   or fitting.
@@ -168,8 +170,8 @@ Invariants that always hold:
   both go through one shared config→kwargs builder (`_train_config.build_training_job_kwargs`).
 - The training objective must be fully specified before a job starts or a script is
   exported: an unset loss/family, Tweedie variance power, Negative Binomial `theta`, GLM
-  factor set, or elastic-net L1 ratio is rejected with an actionable message rather than
-  silently defaulting.
+  terms, elastic-net L1 ratio, or cross-validation folds, selection rule, or seed is
+  rejected with an actionable message rather than silently defaulting.
 - A classification task never trains against a continuous target, and classification
   metrics are never computed against one. Once training data is materialised, the
   target column's values are checked against the task and the effective metric set —
@@ -214,7 +216,9 @@ Invariants that always hold:
   not presented as final-model diagnostics.
 - A model trained with an offset column always has its offset effect included in
   reported predictions and diagnostics — an offset-absent prediction path is refused,
-  never silently computed at baseline zero.
+  never silently computed at baseline zero. The offset is a strictly positive exposure
+  multiplier under a log link (a log-link GLM, CatBoost `Poisson` or `Tweedie`) and an
+  additive term otherwise, for both algorithms.
 - Optional diagnostics (SHAP, partial dependence, GLM inference statistics) can fail
   independently without aborting the run; failures are recorded and surfaced, not
   swallowed.
@@ -351,10 +355,11 @@ terms/family/link/regularization config and training a plain Gaussian all-featur
 model instead. Both are permanently closed off by making the builder the only path.
 
 "Loud, actionable failure over silent fallback" is applied deliberately to the training
-objective: an unset Tweedie variance power, Negative Binomial `theta`, GLM factor set,
-or elastic-net L1 ratio would otherwise fall through to a library default (variance
-power 1.5, theta 1.0, auto-terms over every column, pure ridge) that produces a real,
-trainable, plausible-looking model — just not the one the user intended.
+objective: an unset Tweedie variance power, Negative Binomial `theta`, GLM terms,
+elastic-net L1 ratio, or cross-validation seed would otherwise fall through to a library
+default (variance power 1.5, theta 1.0, an intercept-only design, pure ridge, unseeded
+folds) that produces a real, trainable, plausible-looking model — just not the one the
+user intended, or not the same one twice.
 `training_objective_issue` gates this identically at config-build time and at the
 route's upfront validation, so the two paths cannot drift apart on what counts as
 "complete."
@@ -392,7 +397,7 @@ gated by `training_objective_issue`. Because a user still needs *some* principle
 choose a value, `estimate_glm_dispersion` (`_rustystats.py`) offers a profile-likelihood
 search as an explicit, on-demand action: it holds every other part of the design fixed
 (the same terms/interactions/weight/offset the config already specifies, resolved via
-the same `_resolve_glm_terms` helper `GLMAlgorithm.fit` uses, so the profiled design is
+the same `prepare_glm_design` helper `GLMAlgorithm.fit` uses, so the profiled design is
 never allowed to drift from what training would actually fit) and maximises the fitted
 model's log-likelihood over the single dispersion parameter with a bounded 1-D search
 (`scipy.optimize.minimize_scalar`, ~20-30 IRLS fits; `theta` is searched in log-space
@@ -453,11 +458,13 @@ Optional diagnostics occupy a deliberate middle ground: neither "abort the whole
 SHAP fails" nor "silently drop it and say nothing." Each optional block is wrapped so a
 failure is recorded in `TrainResult.diagnostics_errors` with the failing diagnostic
 name and exception type, and training still completes. GLM inference statistics
-(coefficient standard errors, z-values, p-values) are the one exception treated as
-harder-fail-loud than most: a past bug rendered fabricated placeholder statistics
-(SE=0.0, p=1.0) as if real, inventing statistical significance, so the current code
-raises `GLMInferenceUnavailableError` and omits the coefficient table entirely rather
-than emit partial or fabricated rows.
+(coefficient standard errors, z-values, p-values) are never fabricated: a past bug
+rendered placeholder statistics (SE=0.0, p=1.0) as if real. RustyStats 0.9 marks
+inference invalid after penalties, selection, monotonicity constraints, and smoothing,
+so those fits publish their coefficients with null statistics and a one-sentence
+`glm_inference.reason`; a non-finite statistic under valid inference is reported as a
+near-singular design, and a non-finite coefficient or relativity fails that diagnostic
+by name rather than reaching the finite-JSON guard.
 
 The HTML model card renders charts as inline SVG with zero external dependencies,
 specifically so the artifact is a single file a pricing reviewer can open in any

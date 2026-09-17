@@ -3,29 +3,38 @@ import { Plus, Search } from "lucide-react"
 
 import type { OnUpdateConfig } from "../editors/_shared"
 import { configField } from "../../utils/configField"
-import { roleColumns, type ModellingColumn } from "./featureSelection"
+import { roleColumnReasons, type ModellingColumn } from "./featureSelection"
 import {
   addTerm,
+  addTermAvailability,
   additionalTypeOptions,
-  canAddTerm,
+  columnContext,
+  expressionIdentifiers,
   fitAllWithDefaults,
+  interactionEntryIssue,
   isAdditionalSpec,
-  isEncodingSpec,
   isExpressionSpec,
   isTermSpecShape,
   modelMembership,
   nativeTypeOptions,
   removeTerm,
-  renameExpression,
+  renameTerm,
+  repairMalformedTerm,
   setExpression,
+  setSplineMode,
   setTermField,
-  switchNativeType,
+  simulateInteractionDesign,
   switchAdditionalType,
+  switchNativeType,
+  featureTag,
   termsByColumn,
+  typeLabel,
+  type ColumnContext,
+  type EditResult,
   type InteractionSpec,
-  type NativeTermType,
   type Terms,
   type TermEntry,
+  type UnresolvedTerm,
 } from "./glmTerms"
 import { MODELLING_INPUT_STYLE, toggleButtonStyle } from "./styles"
 import { TermCard } from "./TermCard"
@@ -38,31 +47,63 @@ type Props = {
 
 const REMOVE_ALL_CONFIRMATION = "Remove every term and interaction from this model?"
 
+/** The eligible column an additional term belongs to, for its type options. */
+function additionalColumn(key: string, spec: TermEntry["spec"], context: ColumnContext): ModellingColumn | null {
+  const source = isExpressionSpec(spec)
+    ? expressionIdentifiers(String(spec.expr ?? ""))?.[0]
+    : typeof spec.variable === "string" ? spec.variable : key
+  return source !== undefined && context.eligibleNames.has(source) ? context.byName.get(source) ?? null : null
+}
+
 export function GLMTermsConfig({ config, onUpdate, columns }: Props) {
   const [filter, setFilter] = useState("")
   const [inModelOnly, setInModelOnly] = useState(false)
   const [mode, setMode] = useState<"builder" | "json">("builder")
   const terms = configField<Terms>(config, "terms", {})
-  const interactions = configField<InteractionSpec[]>(config, "interactions", [])
+  const rawInteractions = configField<unknown>(config, "interactions", [])
 
-  const eligible = useMemo(() => {
-    const roles = roleColumns(config)
-    return columns.filter((column) => !roles.has(column.name))
-  }, [columns, config])
-  const eligibleNames = useMemo(() => new Set(eligible.map((column) => column.name)), [eligible])
-  const allColumnNames = useMemo(() => new Set(columns.map((column) => column.name)), [columns])
-  const { byColumn, unresolved } = useMemo(() => termsByColumn(terms, eligibleNames), [terms, eligibleNames])
-  const membership = useMemo(
-    () => modelMembership(terms, interactions, eligibleNames),
-    [terms, interactions, eligibleNames],
+  const roles = useMemo(() => roleColumnReasons(config), [config])
+  const context = useMemo(() => columnContext(columns, roles), [columns, roles])
+  const interactions = useMemo(
+    () => (Array.isArray(rawInteractions) ? rawInteractions : []).filter(
+      (entry): entry is InteractionSpec => interactionEntryIssue(entry) === null,
+    ),
+    [rawInteractions],
+  )
+  const dtypeOf = useMemo(() => (name: string) => context.byName.get(name)?.dtype ?? "", [context])
+  const { byColumn, unresolved } = useMemo(() => termsByColumn(terms, context), [terms, context])
+  const membership = useMemo(() => modelMembership(terms, interactions, context), [terms, interactions, context])
+  const design = useMemo(() => simulateInteractionDesign(terms, interactions, dtypeOf), [terms, interactions, dtypeOf])
+
+  const query = filter.trim().toLowerCase()
+  const visible = useMemo(
+    () => context.eligible.filter((column) =>
+      column.name.toLowerCase().includes(query) && (!inModelOnly || membership.inModel.has(column.name)),
+    ),
+    [context, query, inModelOnly, membership],
+  )
+  const rowOptions = useMemo(
+    () => new Map(visible.map((column) => [
+      column.name,
+      {
+        native: nativeTypeOptions(terms, column.name, column.dtype),
+        add: addTermAvailability(terms, column.name, column.dtype),
+      },
+    ])),
+    [visible, terms],
   )
 
-  const visible = eligible.filter((column) => {
-    if (!column.name.toLowerCase().includes(filter.trim().toLowerCase())) return false
-    return !inModelOnly || membership.inModel.has(column.name)
-  })
-
   const writeTerms = (next: Terms) => onUpdate("terms", next)
+  const applied = (result: EditResult): EditResult => {
+    if (result.ok) writeTerms(result.terms)
+    return result
+  }
+  const handlersFor = (key: string) => ({
+    onChangeField: (field: string, value: unknown) => writeTerms(setTermField(terms, key, field, value)),
+    onRemove: () => writeTerms(removeTerm(terms, key)),
+    onRename: (nextKey: string) => applied(renameTerm(terms, key, nextKey, context.upstreamNames)),
+    onChangeExpr: (expr: string) => applied(setExpression(terms, key, expr, context)),
+  })
 
   // JSON mode: the RustyStats dict, saved on blur.
   const termsJson = useMemo(() => JSON.stringify(terms, null, 2), [terms])
@@ -83,12 +124,7 @@ export function GLMTermsConfig({ config, onUpdate, columns }: Props) {
         setJsonError("Must be a JSON object")
         return
       }
-      // Every consumer of a terms dict reads `spec.type`, so a malformed entry
-      // written here would break the builder on the next render. Refuse the
-      // whole dict and keep the draft on screen so it can be corrected.
-      const malformed = Object.entries(parsed as Record<string, unknown>).find(
-        ([, spec]) => !isTermSpecShape(spec),
-      )
+      const malformed = Object.entries(parsed as Record<string, unknown>).find(([, spec]) => !isTermSpecShape(spec))
       if (malformed) {
         setJsonError(`Term "${malformed[0]}" must be an object with a string "type"`)
         return
@@ -100,116 +136,70 @@ export function GLMTermsConfig({ config, onUpdate, columns }: Props) {
     }
   }
 
-  const renderAdditionalCard = ({ key, spec }: TermEntry, column: ModellingColumn) => {
-    const sharedProps = {
-      termKey: key,
-      spec,
-      onRename: (nextKey: string) => {
-        const result = renameExpression(terms, key, nextKey, allColumnNames)
-        if (result.ok) writeTerms(result.terms)
-        return result
-      },
-      onChangeExpr: (expr: string) => {
-        const result = setExpression(terms, key, expr, eligibleNames)
-        if (result.ok) writeTerms(result.terms)
-        return result
-      },
-      onChangeField: (field: string, value: unknown) => writeTerms(setTermField(terms, key, field, value)),
-      onRemove: () => writeTerms(removeTerm(terms, key)),
-    }
+  const renderAdditional = ({ key, spec }: TermEntry, column: ModellingColumn | null, notice?: string) => {
+    const handlers = handlersFor(key)
     return (
       <TermCard
         key={key}
         kind="additional"
-        {...sharedProps}
-        column={column.name}
-        dtype={column.dtype}
-        typeOptions={additionalTypeOptions(column.dtype, terms, column.name, key)}
-        onChangeType={(nextType) => {
-          const result = switchAdditionalType(terms, key, column.name, column.dtype, nextType)
-          if (result.ok) writeTerms(result.terms)
-          return result
-        }}
+        termKey={key}
+        spec={spec}
+        notice={notice}
+        typeOptions={column
+          ? additionalTypeOptions(terms, key, column.name, column.dtype)
+          : [{ value: spec.type as "expression", label: typeLabel(spec.type) }]}
+        onChangeType={(nextType) => column
+          ? applied(switchAdditionalType(terms, key, column.name, column.dtype, nextType))
+          : { ok: false, reason: "Fix the columns this term reads before changing its type." }}
+        onRename={handlers.onRename}
+        onChangeExpr={handlers.onChangeExpr}
+        onChangeField={handlers.onChangeField}
+        onRemove={handlers.onRemove}
       />
     )
   }
 
-  const addColumnTerm = (column: ModellingColumn) => {
-    writeTerms(addTerm(terms, column.name, column.dtype, allColumnNames))
-  }
-  const addButton = (column: ModellingColumn) => (
-    <button type="button" aria-label={`Add ${column.name} term`} disabled={!canAddTerm(terms, column.name, column.dtype)} className="focus-ring inline-flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1.5 text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-50" style={toggleButtonStyle(false)} onClick={() => addColumnTerm(column)}>
-      <Plus size={12} aria-hidden="true" /> Add term
-    </button>
-  )
-
   const renderTermCards = (column: ModellingColumn) =>
-    (byColumn.get(column.name) ?? []).map(({ key, spec }) =>
-      // Not `spec.type`: a stale entry can be type-less or null, and reading
-      // through it here used to take the whole builder pane down.
-      isAdditionalSpec(spec, key) ? renderAdditionalCard({ key, spec }, column) : (
+    (byColumn.get(column.name) ?? []).map((entry) => {
+      if (isAdditionalSpec(entry.spec, entry.key)) return renderAdditional(entry, column)
+      const handlers = handlersFor(entry.key)
+      return (
         <TermCard
-          key={key}
+          key={entry.key}
           kind="native"
           column={column.name}
-          spec={spec}
-          typeOptions={nativeTypeOptions(terms, column.name, column.dtype)}
-          onChangeType={(nextType: NativeTermType) => writeTerms(switchNativeType(terms, column.name, nextType))}
-          onChangeField={(field, value) => writeTerms(setTermField(terms, column.name, field, value))}
-          onRemove={() => writeTerms(removeTerm(terms, column.name))}
+          dtype={column.dtype}
+          spec={entry.spec}
+          typeOptions={rowOptions.get(column.name)?.native ?? []}
+          onChangeType={(nextType) => writeTerms(switchNativeType(terms, column.name, nextType))}
+          onChangeField={handlers.onChangeField}
+          onChangeSplineMode={(splineMode) => writeTerms(setSplineMode(terms, column.name, splineMode))}
+          onRemove={handlers.onRemove}
         />
-      ),
-    )
+      )
+    })
 
-  const renderUnresolvedTerm = ({ key, spec }: TermEntry) => {
-    if (isExpressionSpec(spec)) {
-      return (
-        <TermCard
-          key={key}
-          kind="expression"
-          termKey={key}
-          spec={spec}
-          onRename={(nextKey) => {
-            const result = renameExpression(terms, key, nextKey, allColumnNames)
-            if (result.ok) writeTerms(result.terms)
-            return result
-          }}
-          onChangeExpr={(expr) => {
-            const result = setExpression(terms, key, expr, eligibleNames)
-            if (result.ok) writeTerms(result.terms)
-            return result
-          }}
-          onChangeField={(field, value) => writeTerms(setTermField(terms, key, field, value))}
-          onRemove={() => writeTerms(removeTerm(terms, key))}
-        />
-      )
+  const renderUnresolved = (entry: UnresolvedTerm) => {
+    const handlers = handlersFor(entry.key)
+    const column = context.eligibleNames.has(entry.key) ? context.byName.get(entry.key) : undefined
+    if (!entry.malformed && isAdditionalSpec(entry.spec, entry.key)) {
+      return renderAdditional(entry, additionalColumn(entry.key, entry.spec, context), entry.reason)
     }
-    if (isEncodingSpec(spec)) {
-      const type = spec.type
-      return (
-        <TermCard
-          key={key}
-          kind="additional"
-          termKey={key}
-          column={typeof spec.variable === "string" ? spec.variable : ""}
-          dtype="String"
-          spec={spec}
-          typeOptions={[{ value: type, label: type === "target_encoding" ? "Target enc." : "Frequency enc.", disabled: false }]}
-          onChangeType={() => ({ ok: false, reason: "Repair the source column in JSON before changing this term." })}
-          onRename={(nextKey) => {
-            const result = renameExpression(terms, key, nextKey, allColumnNames)
-            if (result.ok) writeTerms(result.terms)
-            return result
-          }}
-          onChangeExpr={() => ({ ok: false, reason: "This encoding has no expression." })}
-          onChangeField={(field, value) => writeTerms(setTermField(terms, key, field, value))}
-          onRemove={() => writeTerms(removeTerm(terms, key))}
-        />
-      )
-    }
-    return null
+    return (
+      <TermCard
+        key={entry.key}
+        kind="unresolved"
+        termKey={entry.key}
+        spec={entry.spec}
+        reason={entry.reason}
+        repairOptions={entry.malformed && column ? nativeTypeOptions(terms, column.name, column.dtype) : undefined}
+        onRepair={entry.malformed && column ? (type) => writeTerms(repairMalformedTerm(terms, column.name, type)) : undefined}
+        onRemove={handlers.onRemove}
+      />
+    )
   }
 
+  const hiddenCount = context.unsupported.length
   return (
     <section aria-labelledby="model-features-heading">
       <div className="flex items-end justify-between gap-3">
@@ -217,7 +207,7 @@ export function GLMTermsConfig({ config, onUpdate, columns }: Props) {
           Features
         </h3>
         <span className="text-[10px] tabular-nums" style={{ color: "var(--text-secondary)" }}>
-          {membership.inModel.size} of {eligible.length} in model
+          {membership.inModel.size} of {context.eligible.length} in model
         </span>
       </div>
 
@@ -234,7 +224,7 @@ export function GLMTermsConfig({ config, onUpdate, columns }: Props) {
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <button type="button" className="rounded-lg px-2.5 py-1 text-[10px] font-medium" style={toggleButtonStyle(false)} onClick={() => writeTerms(fitAllWithDefaults(terms, eligible))}>
+        <button type="button" className="rounded-lg px-2.5 py-1 text-[10px] font-medium" style={toggleButtonStyle(false)} onClick={() => writeTerms(fitAllWithDefaults(terms, context))}>
           Fit all with defaults
         </button>
         <button
@@ -259,6 +249,11 @@ export function GLMTermsConfig({ config, onUpdate, columns }: Props) {
           JSON
         </button>
       </div>
+      {hiddenCount > 0 && (
+        <p className="mt-1.5 text-[10px]" style={{ color: "var(--text-secondary)" }}>
+          {hiddenCount} {hiddenCount === 1 ? "column is" : "columns are"} hidden because GLM fits do not support {hiddenCount === 1 ? "its dtype" : "their dtypes"}: {context.unsupported.map((column) => `${column.name} (${column.dtype})`).join(", ")}.
+        </p>
+      )}
 
       {mode === "json" ? (
         <div className="mt-2">
@@ -275,22 +270,21 @@ export function GLMTermsConfig({ config, onUpdate, columns }: Props) {
             className="w-full rounded-lg px-2.5 py-2 font-mono text-xs"
             style={{ ...MODELLING_INPUT_STYLE, border: `1px solid ${jsonError ? "var(--danger)" : "var(--border)"}`, resize: "vertical" }}
           />
-          {jsonError && <p className="mt-0.5 text-[10px]" style={{ color: "var(--danger)" }}>{jsonError}</p>}
+          {jsonError && <p role="alert" className="mt-0.5 text-[10px]" style={{ color: "var(--danger)" }}>{jsonError}</p>}
         </div>
       ) : (
         <div className="mt-3 grid gap-1.5">
+          {unresolved.length > 0 && (
+            <div role="group" aria-label="Unresolved terms" className="rounded-lg px-3 py-2" style={{ background: "var(--danger-soft-subtle)", border: "1px solid var(--danger-border)" }}>
+              <p className="text-xs font-semibold" style={{ color: "var(--danger-text-soft)" }}>Unresolved terms</p>
+              <p className="mt-1 text-[11px]" style={{ color: "var(--danger-text-soft)" }}>These terms cannot be fitted. Fix or remove them before training.</p>
+              <div className="ml-2 mt-1.5 grid min-w-0 gap-1.5 border-l pl-3" style={{ borderColor: "var(--danger-border)" }}>{unresolved.map(renderUnresolved)}</div>
+            </div>
+          )}
           {visible.map((column) => {
             const cards = renderTermCards(column)
-            // Membership, not the cards anchored here: an expression naming
-            // this column is anchored under its *first* identifier, so a row
-            // with no cards of its own can still be in the model.
-            const tag = !membership.inModel.has(column.name)
-              ? "Not in model"
-              : cards.length > 0
-                ? null
-                : membership.interactionOnly.has(column.name)
-                  ? "Interaction only"
-                  : "In an expression"
+            const tag = featureTag(column.name, cards.length > 0, membership, design)
+            const availability = rowOptions.get(column.name)?.add ?? { ok: true as const }
             return (
               <div key={column.name} role="group" aria-label={`${column.name} feature`} className="min-w-0 rounded-lg px-3 py-2" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -299,7 +293,19 @@ export function GLMTermsConfig({ config, onUpdate, columns }: Props) {
                   </span>
                   <span className="max-w-20 shrink-0 truncate rounded px-1.5 py-0.5 font-mono text-[10px]" title={column.dtype} style={{ background: "var(--chrome-hover)", color: "var(--text-secondary)" }}>{column.dtype}</span>
                   {tag && <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>{tag}</span>}
-                  {addButton(column)}
+                  <span title={availability.ok ? undefined : availability.reason}>
+                    <button
+                      type="button"
+                      aria-label={`Add ${column.name} term`}
+                      aria-description={availability.ok ? undefined : availability.reason}
+                      disabled={!availability.ok}
+                      className="focus-ring inline-flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1.5 text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+                      style={toggleButtonStyle(false)}
+                      onClick={() => writeTerms(addTerm(terms, column.name, column.dtype, context.upstreamNames))}
+                    >
+                      <Plus size={12} aria-hidden="true" /> Add term
+                    </button>
+                  </span>
                 </div>
                 {cards.length > 0 && (
                   <div className="ml-2 mt-1.5 grid min-w-0 gap-1.5 border-l pl-3" style={{ borderColor: "var(--border)" }}>{cards}</div>
@@ -312,15 +318,9 @@ export function GLMTermsConfig({ config, onUpdate, columns }: Props) {
               No matching feature columns.
             </p>
           )}
-          {unresolved.length > 0 && (
-            <div role="group" aria-label="Unresolved terms" className="rounded-lg px-3 py-2" style={{ background: "var(--danger-soft-subtle)", border: "1px solid var(--danger-border)" }}>
-              <p className="text-xs font-semibold" style={{ color: "var(--danger-text-soft)" }}>Unresolved terms</p>
-              <p className="mt-1 text-[11px]" style={{ color: "var(--danger-text-soft)" }}>These name no upstream column; training will fail.</p>
-              <div className="ml-2 mt-1.5 grid min-w-0 gap-1.5 border-l pl-3" style={{ borderColor: "var(--danger-border)" }}>{unresolved.map(renderUnresolvedTerm)}</div>
-            </div>
-          )}
         </div>
       )}
     </section>
   )
 }
+

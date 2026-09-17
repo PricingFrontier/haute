@@ -8,6 +8,7 @@ import { useId, type ReactNode } from "react"
 import { Activity, ChartNoAxesCombined, Database, SlidersHorizontal, Target, type LucideIcon } from "lucide-react"
 import type {
   EvaluationMetricSummary,
+  GlmRegularization,
   TuningReport,
 } from "../../api/types"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
@@ -23,6 +24,16 @@ function formatDiagnosticLabel(diagnostic: string): string {
   switch (diagnostic) {
     case "glm_coefficients":
       return "GLM coefficients"
+    case "glm_relativities":
+      return "GLM relativities"
+    case "glm_inference":
+      return "GLM inference"
+    case "glm_fit_statistics":
+      return "GLM fit statistics"
+    case "glm_smooth_terms":
+      return "GLM smooth terms"
+    case "glm_regularization":
+      return "GLM regularization"
     case "pdp":
       return "PDP"
     case "shap":
@@ -34,6 +45,33 @@ function formatDiagnosticLabel(diagnostic: string): string {
         .map(part => part.charAt(0).toUpperCase() + part.slice(1))
         .join(" ")
   }
+}
+
+const PENALTY_LABELS: Record<GlmRegularization["penalty"], string> = {
+  ridge: "Ridge",
+  lasso: "Lasso",
+  elastic_net: "Elastic Net",
+}
+
+function regularizationRows(regularization: GlmRegularization): [string, string][] {
+  const rows: [string, string][] = [
+    ["Penalty", PENALTY_LABELS[regularization.penalty]],
+    ["Alpha", regularization.alpha.toPrecision(6)],
+  ]
+  if (regularization.penalty === "elastic_net" && regularization.l1_ratio !== null) {
+    rows.push(["L1 ratio", regularization.l1_ratio.toFixed(2)])
+  }
+  rows.push(["Non-zero coefficients", String(regularization.n_nonzero)])
+  if (regularization.mode === "cross_validation") {
+    rows.push(
+      ["Alpha chosen by", `${regularization.cv_folds ?? "?"}-fold cross-validation`],
+      ["Selection rule", regularization.cv_selection === "1se" ? "One standard error" : "Minimum deviance"],
+      ["Seed", String(regularization.cv_seed ?? "")],
+    )
+  } else {
+    rows.push(["Alpha chosen by", "Fixed"])
+  }
+  return rows
 }
 
 function formatNumber(value: unknown): string {
@@ -351,30 +389,43 @@ export function SummaryTab({
           </dl>
         </SummaryCard>
 
-        {result.glm_regularization_path &&
-          (result.glm_regularization_path.selected_alpha != null ||
-            result.glm_regularization_path.n_nonzero != null) && (
-            <SummaryCard title="Regularization" icon={SlidersHorizontal} description="Selected penalty and retained coefficients.">
-              <dl className="space-y-2">
-                {result.glm_regularization_path.selected_alpha != null && (
-                  <div className="flex justify-between text-xs gap-4">
-                    <dt style={{ color: "var(--text-muted)" }}>Alpha</dt>
-                    <dd className="font-mono tabular-nums" style={{ color: "var(--text-primary)" }}>
-                      {result.glm_regularization_path.selected_alpha.toFixed(6)}
-                    </dd>
-                  </div>
-                )}
-                {result.glm_regularization_path.n_nonzero != null && (
-                  <div className="flex justify-between text-xs gap-4">
-                    <dt style={{ color: "var(--text-muted)" }}>Non-zero coefficients</dt>
-                    <dd className="font-mono tabular-nums" style={{ color: "var(--text-primary)" }}>
-                      {result.glm_regularization_path.n_nonzero}
-                    </dd>
-                  </div>
-                )}
-              </dl>
-            </SummaryCard>
-          )}
+        {result.glm_regularization && (
+          <SummaryCard title="Regularization" icon={SlidersHorizontal} description="The penalty RustyStats applied.">
+            <dl className="space-y-2">
+              {regularizationRows(result.glm_regularization).map(([label, value]) => (
+                <div key={label} className="flex justify-between text-xs gap-4">
+                  <dt style={{ color: "var(--text-muted)" }}>{label}</dt>
+                  <dd className="font-mono tabular-nums" style={{ color: "var(--text-primary)" }}>{value}</dd>
+                </div>
+              ))}
+            </dl>
+          </SummaryCard>
+        )}
+
+        {result.glm_smooth_terms.length > 0 && (
+          <SummaryCard title="Smooth terms" icon={SlidersHorizontal} description="Effective degrees of freedom and smoothing strength chosen for each automatic spline.">
+            <table aria-label="Smooth terms" className="w-full text-xs font-mono">
+              <thead>
+                <tr style={{ color: "var(--text-muted)" }}>
+                  <th className="text-left font-medium">Term</th>
+                  <th className="text-right font-medium">Basis (k)</th>
+                  <th className="text-right font-medium">EDF</th>
+                  <th className="text-right font-medium">Lambda</th>
+                </tr>
+              </thead>
+              <tbody>
+                {result.glm_smooth_terms.map((term) => (
+                  <tr key={term.term} style={{ color: "var(--text-primary)" }}>
+                    <td className="text-left">{term.term}</td>
+                    <td className="text-right tabular-nums">{term.k}</td>
+                    <td className="text-right tabular-nums">{term.edf.toFixed(2)}</td>
+                    <td className="text-right tabular-nums">{term.lambda.toPrecision(4)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </SummaryCard>
+        )}
       </div>
 
       {evaluation && evaluation.validation_method !== "none" && (

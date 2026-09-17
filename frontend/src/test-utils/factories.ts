@@ -216,7 +216,9 @@ export function makeTrainResult(
     glm_coefficients: [],
     glm_relativities: [],
     glm_fit_statistics: {},
-    glm_regularization_path: null,
+    glm_inference: null,
+    glm_smooth_terms: [],
+    glm_regularization: null,
     diagnostics_errors: [],
     feature_selection: null,
     evaluation: {

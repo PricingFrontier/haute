@@ -277,7 +277,7 @@ class TestTrainingRequiredColumnsByNode:
             {
                 "algorithm": "glm",
                 "target": "target",
-                "terms": {"age": {}, "region": {}},
+                "terms": {"age": {"type": "linear"}, "region": {"type": "categorical"}},
                 "exclude": ["age"],
             },
         )
@@ -361,13 +361,19 @@ class TestTrainingFeatureSelection:
         ) in [(item.column, item.reason) for item in diagnostic.retained_metadata.items]
 
     def test_glm_terms_follow_schema_order_and_missing_columns_fail_before_execution(self) -> None:
+        schema = {
+            "feature_b": "Float64",
+            "target": "Float64",
+            "feature_a": "Float64",
+            "unused": "Float64",
+        }
         diagnostic = _build_training_feature_selection(
             {
                 "algorithm": "glm",
                 "target": "target",
-                "terms": {"feature_a": {}, "feature_b": {}},
+                "terms": {"feature_a": {"type": "linear"}, "feature_b": {"type": "linear"}},
             },
-            ["feature_b", "target", "feature_a", "unused"],
+            schema,
         )
 
         assert diagnostic.mode == "glm_terms"
@@ -378,10 +384,10 @@ class TestTrainingFeatureSelection:
             {
                 "algorithm": "glm",
                 "target": "target",
-                "terms": {"feature_a": {}, "feature_b": {}},
+                "terms": {"feature_a": {"type": "linear"}, "feature_b": {"type": "linear"}},
                 "exclude": ["feature_a"],
             },
-            ["feature_b", "target", "feature_a", "unused"],
+            schema,
         )
         assert stale_exclude.features.items == ["feature_b", "feature_a"]
         assert [(item.column, item.reason) for item in stale_exclude.excluded_columns.items] == [
@@ -396,7 +402,7 @@ class TestTrainingFeatureSelection:
                     "target": "target",
                     "feature_columns": ["missing"],
                 },
-                ["target", "feature"],
+                {"target": "Float64", "feature": "Float64"},
             )
 
         with pytest.raises(ValueError, match="GLM terms reference columns.*missing"):
@@ -404,9 +410,19 @@ class TestTrainingFeatureSelection:
                 {
                     "algorithm": "glm",
                     "target": "target",
-                    "terms": {"missing": {}},
+                    "terms": {"missing": {"type": "linear"}},
                 },
-                ["target", "feature"],
+                {"target": "Float64", "feature": "Float64"},
+            )
+
+        with pytest.raises(ValueError, match="cannot use role columns: 'target' \\(target\\)"):
+            _build_training_feature_selection(
+                {
+                    "algorithm": "glm",
+                    "target": "target",
+                    "terms": {"target": {"type": "linear"}},
+                },
+                {"target": "Float64", "feature": "Float64"},
             )
 
     def test_empty_feature_set_fails_and_high_cardinality_detail_is_bounded(self) -> None:

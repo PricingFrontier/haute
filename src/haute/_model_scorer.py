@@ -498,18 +498,50 @@ def _model_offset_column(model: Any, flavor: _ModelFlavor) -> str | None:
 
     Both native flavors are self-describing: CatBoost via the
     ``haute_offset_column`` model-metadata key stamped at fit time,
-    RustyStats via the serialised offset spec.  Pyfunc models expose no
-    offset surface (their signature declares the column as an input, and
-    the wrapped model owns applying it).
+    RustyStats via its serialised exposure (log link) or offset spec.  Pyfunc
+    models expose no offset surface (their signature declares the column as an
+    input, and the wrapped model owns applying it).
     """
     if flavor == "catboost":
         from haute._mlflow_io import _catboost_offset_column
 
         return _catboost_offset_column(model)
     if flavor == "rustystats":
-        spec = getattr(model, "_offset_spec", None)
-        return spec if isinstance(spec, str) and spec else None
+        from haute._mlflow_io import rustystats_offset_column
+
+        return rustystats_offset_column(model)
     return None
+
+
+def _model_offset_link(model: Any, flavor: _ModelFlavor) -> str | None:
+    """How a native model applies its offset: ``log`` multiplies, ``identity`` adds."""
+    if flavor == "catboost":
+        from haute._mlflow_io import _catboost_offset_link
+
+        return _catboost_offset_link(model)
+    if flavor == "rustystats":
+        from haute._mlflow_io import rustystats_offset_link
+
+        return rustystats_offset_link(model)
+    return None
+
+
+def _require_positive_log_link_offset(
+    frame: pl.DataFrame,
+    offset_column: str | None,
+    offset_link: str | None,
+) -> None:
+    """Refuse null, zero, or negative exposure before a log-link model scores it."""
+    if not offset_column or offset_link != "log":
+        return
+    from haute.modelling._algorithms import offset_baseline
+
+    offset_baseline(
+        frame[offset_column].cast(pl.Float64).to_numpy(),
+        column=offset_column,
+        link="log",
+        context="Scoring",
+    )
 
 
 def _require_offset_column(available: Iterable[str], offset_column: str | None) -> None:
@@ -531,16 +563,32 @@ def _catboost_baseline_pool(
     features: list[str],
     cat_feature_names: frozenset[str],
     offset_column: str,
+    *,
+    offset_link: str | None,
 ) -> Any:
     """Wrap prepared CatBoost predict input in a Pool carrying the baseline.
 
     CatBoost only applies a baseline supplied inside a ``Pool``; a bare
-    matrix predict silently scores from baseline 0.
+    matrix predict silently scores from baseline 0.  The baseline is built
+    with the model's recorded offset link, exactly as it was for the fit.
     """
     from catboost import Pool
 
+    from haute.modelling._algorithms import offset_baseline
+
     _require_offset_column(frame.columns, offset_column)
-    baseline = frame[offset_column].cast(pl.Float64).to_numpy()
+    if offset_link is None:
+        raise FeatureMismatchError(
+            f"Scoring input supplies offset column {offset_column!r}, but the CatBoost model "
+            "was not trained with an offset.",
+            offset_column=offset_column,
+        )
+    baseline = offset_baseline(
+        frame[offset_column].cast(pl.Float64).to_numpy(),
+        column=offset_column,
+        link=offset_link,
+        context="Scoring",
+    )
     cat_indices = [i for i, f in enumerate(features) if f in cat_feature_names]
     return Pool(
         data=x_data,
@@ -791,6 +839,9 @@ def _score_collected_frame(
 
     _validate_runtime_categorical_values(frame, categorical_levels or {})
     predict_features = _offset_predict_features(features, flavor, offset_column)
+    offset_link = _model_offset_link(model, flavor) if offset_column else None
+    if flavor == "rustystats":
+        _require_positive_log_link_offset(frame, offset_column, offset_link)
     x_data = _prepare_predict_frame(
         frame.select(predict_features),
         predict_features,
@@ -804,6 +855,7 @@ def _score_collected_frame(
             features,
             cat_feature_names,
             offset_column,
+            offset_link=offset_link,
         )
     preds = np.asarray(model.predict(x_data)).flatten()
     prediction = pl.Series(output_col, preds)
@@ -1785,6 +1837,7 @@ def _batch_score_to_parquet(
     os.close(fd)
 
     writer = None
+    reader = None
     wrote_any = False
     success = False
     want_proba = task == "classification"
@@ -1794,6 +1847,9 @@ def _batch_score_to_parquet(
         features=features,
     )
     offset_column = _declared_offset_column(scoring_model)
+    offset_link = (
+        _model_offset_link(scoring_model.raw_model, scoring_model.flavor) if offset_column else None
+    )
     predict_features = _offset_predict_features(
         features,
         scoring_model.flavor,
@@ -1801,7 +1857,9 @@ def _batch_score_to_parquet(
     )
 
     try:
-        pf = pq.ParquetFile(input_path)
+        # Closed in ``finally``: an open reader keeps the input file locked on
+        # Windows, and the caller's cleanup would then mask a scoring refusal.
+        pf = reader = pq.ParquetFile(input_path)
         input_schema_names = list(pf.schema_arrow.names)
         _require_offset_column(input_schema_names, offset_column)
         for batch in pf.iter_batches(
@@ -1814,6 +1872,8 @@ def _batch_score_to_parquet(
                 chunk = chunk_raw
             feature_chunk = chunk.select(features)
             _validate_runtime_categorical_values(feature_chunk, normalised_levels)
+            if scoring_model.flavor == "rustystats":
+                _require_positive_log_link_offset(chunk, offset_column, offset_link)
             x_data = _prepare_predict_frame(
                 chunk.select(predict_features),
                 predict_features,
@@ -1827,6 +1887,7 @@ def _batch_score_to_parquet(
                     features,
                     scoring_model.cat_feature_names,
                     offset_column,
+                    offset_link=offset_link,
                 )
             preds = pl.Series(output_col, scoring_model.predict(x_data))
             if not want_proba:
@@ -1898,6 +1959,8 @@ def _batch_score_to_parquet(
             pq.write_table(empty.to_arrow(), out_path)
         success = True
     finally:
+        if reader is not None:
+            reader.close()
         if writer is not None:
             writer.close()
         if not success:

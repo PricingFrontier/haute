@@ -49,7 +49,12 @@ from haute.modelling._split import (
     SplitConfig,
     split_mask,
 )
-from haute.modelling._train_config import default_metrics
+from haute.modelling._train_config import (
+    default_metrics,
+    glm_effective_link,
+    glm_params_issue,
+    validate_glm_params,
+)
 from haute.modelling._tuning import (
     TUNING_SCHEMA_VERSION,
     TuningConfig,
@@ -289,7 +294,9 @@ class TrainResult:
     glm_coefficients: list[dict[str, Any]] = field(default_factory=list)
     glm_relativities: list[dict[str, Any]] = field(default_factory=list)
     glm_fit_statistics: dict[str, float] = field(default_factory=dict)
-    glm_regularization_path: dict[str, Any] | None = None
+    glm_inference: dict[str, Any] | None = None
+    glm_smooth_terms: list[dict[str, Any]] = field(default_factory=list)
+    glm_regularization: dict[str, Any] | None = None
     # Optional-diagnostic failures surfaced to callers so a degraded
     # run (SHAP/PDP/GLM diagnostics missing) is visible in the UI and
     # in test suites, instead of being silently swallowed.
@@ -362,7 +369,9 @@ class _MetricsResult:
     glm_coefficients: list[dict[str, Any]] = field(default_factory=list)
     glm_relativities: list[dict[str, Any]] = field(default_factory=list)
     glm_fit_statistics: dict[str, float] = field(default_factory=dict)
-    glm_regularization_path: dict[str, Any] | None = None
+    glm_inference: dict[str, Any] | None = None
+    glm_smooth_terms: list[dict[str, Any]] = field(default_factory=list)
+    glm_regularization: dict[str, Any] | None = None
     # Optional-diagnostic failures (SHAP, PDP, GLM diagnostics) —
     # surfaced rather than silently swallowed.
     diagnostics_errors: list[dict[str, str]] = field(default_factory=list)
@@ -467,12 +476,28 @@ class TrainingJob:
         self.variance_power = variance_power
         self.offset = offset
         self.monotone_constraints = monotone_constraints
-        if self.algorithm == "glm" and monotone_constraints:
-            raise HauteValidationError(
-                "monotone_constraints is a CatBoost lever; GLM monotonicity lives on "
-                "each term's 'monotonicity' key"
-            )
         self.feature_weights = feature_weights
+        if self.algorithm == "glm":
+            catboost_levers = [
+                name
+                for name, value in (
+                    ("exclude", self.exclude),
+                    ("feature_columns", self.feature_columns),
+                    ("monotone_constraints", monotone_constraints),
+                    ("feature_weights", feature_weights),
+                )
+                if value
+            ]
+            if catboost_levers:
+                raise HauteValidationError(
+                    f"{', '.join(catboost_levers)} only apply to CatBoost. A GLM's features are "
+                    "its terms and interaction factors, and GLM monotonicity lives on each "
+                    "term's 'monotonicity' key."
+                )
+            glm_issue = glm_params_issue(self.params)
+            if glm_issue is not None:
+                raise HauteValidationError(glm_issue)
+            validate_glm_params(self.params)
         if split is not None and evaluation is not None:
             raise HauteValidationError("split and evaluation are competing contracts")
         self.evaluation: EvaluationConfig | None
@@ -696,7 +721,9 @@ class TrainingJob:
                 glm_coefficients=metrics_result.glm_coefficients,
                 glm_relativities=metrics_result.glm_relativities,
                 glm_fit_statistics=metrics_result.glm_fit_statistics,
-                glm_regularization_path=metrics_result.glm_regularization_path,
+                glm_inference=metrics_result.glm_inference,
+                glm_smooth_terms=metrics_result.glm_smooth_terms,
+                glm_regularization=metrics_result.glm_regularization,
                 diagnostics_errors=metrics_result.diagnostics_errors,
             )
 
@@ -825,48 +852,108 @@ class TrainingJob:
     ) -> _PreparedData:
         """Apply the same final feature contract to selection and final fits."""
         if self.algorithm == "glm":
-            glm_terms = self.params.get("terms", {})
-            if glm_terms:
-                from haute.modelling._glm_terms import validate_glm_model_columns
+            from haute.modelling._glm_terms import validate_glm_model_columns
 
-                model_columns = validate_glm_model_columns(
-                    glm_terms,
-                    self.params.get("interactions") or [],
-                    prepared.features,
-                )
-                keep = set(model_columns)
-                prepared = _PreparedData(
-                    data_path=prepared.data_path,
-                    owns_tmp=prepared.owns_tmp,
-                    features=[feature for feature in prepared.features if feature in keep],
-                    cat_features=[feature for feature in prepared.cat_features if feature in keep],
-                    total_rows=prepared.total_rows,
-                    feature_dtypes={
-                        feature: dtype
-                        for feature, dtype in prepared.feature_dtypes.items()
-                        if feature in keep
-                    },
-                    categorical_levels={
-                        feature: levels
-                        for feature, levels in prepared.categorical_levels.items()
-                        if feature in keep
-                    },
-                    target_dtype=prepared.target_dtype,
-                    target_null_count=prepared.target_null_count,
-                    offset_dtype=prepared.offset_dtype,
-                )
-                report(
-                    f"GLM: using {len(prepared.features)} model columns "
-                    f"({len(prepared.cat_features)} categorical)",
-                    0.12,
-                )
-                if not prepared.features:
-                    raise HauteValidationError(
-                        "GLM: no valid features remaining after matching terms to "
-                        "data columns. Check that term names match the training data."
-                    )
+            model_columns = validate_glm_model_columns(
+                self.params["terms"],
+                self.params.get("interactions") or [],
+                prepared.feature_dtypes,
+                role_columns=self._role_columns(),
+            )
+            keep = set(model_columns)
+            prepared = _PreparedData(
+                data_path=prepared.data_path,
+                owns_tmp=prepared.owns_tmp,
+                features=[feature for feature in prepared.features if feature in keep],
+                cat_features=[feature for feature in prepared.cat_features if feature in keep],
+                total_rows=prepared.total_rows,
+                feature_dtypes={
+                    feature: dtype
+                    for feature, dtype in prepared.feature_dtypes.items()
+                    if feature in keep
+                },
+                categorical_levels={
+                    feature: levels
+                    for feature, levels in prepared.categorical_levels.items()
+                    if feature in keep
+                },
+                target_dtype=prepared.target_dtype,
+                target_null_count=prepared.target_null_count,
+                offset_dtype=prepared.offset_dtype,
+            )
+            report(
+                f"GLM: using {len(prepared.features)} model columns "
+                f"({len(prepared.cat_features)} categorical)",
+                0.12,
+            )
         self._validate_monotone_constraints(prepared)
         return prepared
+
+    def _role_columns(self) -> dict[str, str]:
+        """Columns with a modelling role, which can never be GLM model columns."""
+        roles: dict[str, str] = {}
+
+        def add(column: str | None, role: str) -> None:
+            if column:
+                roles.setdefault(column, role)
+
+        add(self.target, "target")
+        add(self.weight, "weight")
+        add(self.offset, "offset")
+        add(self.fold_column, "fold")
+        for column in self.id_columns:
+            add(column, "identifier")
+        if self.evaluation is not None:
+            if self.evaluation.strategy == "group":
+                add(self.evaluation.group_column, "evaluation")
+            elif self.evaluation.strategy == "temporal":
+                add(self.evaluation.date_column, "evaluation")
+        return roles
+
+    def _catboost_loss_function(self) -> str | None:
+        """The CatBoost ``loss_function`` the fit uses.
+
+        The job's loss setting wins over a ``loss_function`` inside ``params``,
+        exactly as the fit params are built, so the offset baseline and the
+        link stamped on the model always describe the same loss.
+        """
+        resolved = resolve_loss_function(self.loss_function, self.task, self.variance_power)
+        if resolved:
+            return resolved
+        in_params = self.params.get("loss_function")
+        return str(in_params) if in_params else None
+
+    def _offset_link(self) -> str:
+        """How the offset enters the model: ``log`` multiplies, ``identity`` adds."""
+        if self.algorithm == "glm":
+            return glm_effective_link(self.params)
+        from haute.modelling._algorithms import catboost_offset_link
+
+        return catboost_offset_link(self._catboost_loss_function())
+
+    def _require_positive_log_link_offset(
+        self,
+        data_path: str,
+        *,
+        execution_context: ExecutionContext | None,
+    ) -> None:
+        """Refuse null, zero, or negative offsets before fitting under a log link."""
+        if not self.offset or self._offset_link() != "log":
+            return
+        offset = pl.col(self.offset).cast(pl.Float64)
+        invalid = _training_streaming_collect(
+            pl.scan_parquet(data_path)
+            .filter(pl.col(self.target).is_not_null())
+            .select((offset.is_null() | offset.is_nan() | (offset <= 0)).sum()),
+            stage_name="training_offset_check",
+            execution_context=execution_context,
+        ).item()
+        if invalid:
+            raise HauteValidationError(
+                f"Offset column {self.offset!r} must be positive under a log link, but "
+                f"{int(invalid):,} training rows are null, zero, or negative. The offset "
+                "multiplies the prediction (an exposure), so fix or remove those rows upstream."
+            )
 
     def run_evaluation_fit(
         self,
@@ -1625,6 +1712,11 @@ class TrainingJob:
                         f"wrote clean temp parquet without {target_null_count:,} null target rows"
                     )
 
+            self._require_positive_log_link_offset(
+                data_path,
+                execution_context=execution_context,
+            )
+
             # Derive features from schema
             features, cat_features = self._derive_features(schema_df)
             # Snapshot dtypes before we drop the schema frame — downstream
@@ -1800,13 +1892,9 @@ class TrainingJob:
         # GLM: pack all GLM-specific config into fit_params for the algorithm
         is_glm = self.algorithm == "glm"
         if not is_glm:
-            resolved_loss = resolve_loss_function(
-                self.loss_function,
-                self.task,
-                self.variance_power,
-            )
-            if resolved_loss:
-                fit_params["loss_function"] = resolved_loss
+            loss_function = self._catboost_loss_function()
+            if loss_function:
+                fit_params["loss_function"] = loss_function
 
         # Read train partition
         _report("Loading training data", 0.2)
@@ -1859,8 +1947,18 @@ class TrainingJob:
 
             train_y = train_df[self.target].cast(pl.Float64).to_numpy()
             train_w = train_df[self.weight].cast(pl.Float64).to_numpy() if self.weight else None
+            from haute.modelling._algorithms import offset_baseline
+
+            offset_link = self._offset_link()
             train_baseline = (
-                train_df[self.offset].cast(pl.Float64).to_numpy() if self.offset else None
+                offset_baseline(
+                    train_df[self.offset].cast(pl.Float64).to_numpy(),
+                    column=self.offset,
+                    link=offset_link,
+                    context="CatBoost training",
+                )
+                if self.offset
+                else None
             )
             train_features_df = train_df.select(features)
             del train_df
@@ -1888,7 +1986,14 @@ class TrainingJob:
                 val_y = eval_df[self.target].cast(pl.Float64).to_numpy()
                 val_w = eval_df[self.weight].cast(pl.Float64).to_numpy() if self.weight else None
                 val_baseline = (
-                    eval_df[self.offset].cast(pl.Float64).to_numpy() if self.offset else None
+                    offset_baseline(
+                        eval_df[self.offset].cast(pl.Float64).to_numpy(),
+                        column=self.offset,
+                        link=offset_link,
+                        context="CatBoost validation",
+                    )
+                    if self.offset
+                    else None
                 )
                 val_features_df = eval_df.select(features)
                 del eval_df
@@ -2177,6 +2282,7 @@ class TrainingJob:
                     cat_features,
                     target=self.target,
                     offset=self.offset,
+                    offset_link=self._offset_link() if self.offset else None,
                 )
                 feature_importance_loss = algo.feature_importance_typed(
                     model,
@@ -2214,35 +2320,11 @@ class TrainingJob:
             _record_diag_error(diagnostics_errors, "pdp", exc)
 
         # ── GLM-specific diagnostics (all OPTIONAL) ──
-        glm_coefficients: list[dict[str, Any]] = []
-        glm_relativities: list[dict[str, Any]] = []
-        glm_fit_statistics: dict[str, float] = {}
-        glm_regularization_path: dict[str, Any] | None = None
-
-        if hasattr(algo, "coefficients_table"):
-            try:
-                glm_coefficients = algo.coefficients_table(model)
-            except Exception as exc:
-                _record_diag_error(diagnostics_errors, "glm_coefficients", exc)
-        if hasattr(algo, "relativities"):
-            try:
-                glm_relativities = algo.relativities(model)
-            except Exception as exc:
-                _record_diag_error(diagnostics_errors, "glm_relativities", exc)
-        if hasattr(algo, "fit_statistics"):
-            try:
-                glm_fit_statistics = algo.fit_statistics(model)
-            except Exception as exc:
-                _record_diag_error(diagnostics_errors, "glm_fit_statistics", exc)
-        if hasattr(model, "regularization_path") and model.regularization_path:
-            try:
-                rp = model.regularization_path
-                glm_regularization_path = {
-                    "selected_alpha": float(getattr(rp, "selected_alpha", 0)),
-                    "n_nonzero": int(model.n_nonzero()) if hasattr(model, "n_nonzero") else 0,
-                }
-            except Exception as exc:
-                _record_diag_error(diagnostics_errors, "glm_regularization_path", exc)
+        glm_report = None
+        if hasattr(algo, "glm_result"):
+            glm_report = algo.glm_result(model, train_result.fit_params)
+            for diagnostic, glm_error in glm_report.errors:
+                _record_diag_error(diagnostics_errors, diagnostic, glm_error)
 
         del diag_df
         gc.collect()
@@ -2266,10 +2348,12 @@ class TrainingJob:
             lorenz_curve=lorenz_model,
             lorenz_curve_perfect=lorenz_perfect,
             pdp_data=pdp_data,
-            glm_coefficients=glm_coefficients,
-            glm_relativities=glm_relativities,
-            glm_fit_statistics=glm_fit_statistics,
-            glm_regularization_path=glm_regularization_path,
+            glm_coefficients=glm_report.coefficients if glm_report else [],
+            glm_relativities=glm_report.relativities if glm_report else [],
+            glm_fit_statistics=glm_report.fit_statistics if glm_report else {},
+            glm_inference=glm_report.inference if glm_report else None,
+            glm_smooth_terms=glm_report.smooth_terms if glm_report else [],
+            glm_regularization=glm_report.regularization if glm_report else None,
             diagnostics_errors=diagnostics_errors,
         )
 
@@ -2589,7 +2673,9 @@ class TrainingJob:
             glm_coefficients=result.glm_coefficients,
             glm_relativities=result.glm_relativities,
             glm_fit_statistics=result.glm_fit_statistics,
-            glm_regularization_path=result.glm_regularization_path,
+            glm_inference=result.glm_inference,
+            glm_smooth_terms=result.glm_smooth_terms,
+            glm_regularization=result.glm_regularization,
             lorenz_curve_perfect=result.lorenz_curve_perfect,
             pdp_data=result.pdp_data,
             final_test_metrics=result.final_test_metrics,

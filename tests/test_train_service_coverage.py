@@ -481,8 +481,9 @@ class TestStartGlmMergeAndKeepColumns:
         # Protected columns: target + weight + offset. nick-dev builds these from a
         # set (_training_required_metadata_columns), so membership — not order — is
         # the contract; assert order-independently.
+        # feature_columns is a CatBoost lever, so a GLM keeps only role columns.
         keep = captured["keep_columns"]
-        assert set(keep) == {"loss", "exposure", "log_exp", "x1"}
+        assert set(keep) == {"loss", "exposure", "log_exp"}
         # A GLM feature is in the model exactly when it has a term or is an
         # interaction factor, so the sink is never asked to drop by `exclude`.
         assert captured["exclude"] is None

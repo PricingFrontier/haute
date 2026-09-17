@@ -76,7 +76,7 @@ export function CommonFeatureConfig({ config, onUpdate, columns }: Props) {
   const visible = eligible.filter((column) =>
     column.name.toLowerCase().includes(filter.trim().toLowerCase()),
   )
-  const selectedNames = finalSelectedFeatureNames(config, eligible, "catboost")
+  const selectedNames = finalSelectedFeatureNames(config, eligible)
   const includedCount = eligible.filter(
     (column) => !exclude.includes(column.name),
   ).length

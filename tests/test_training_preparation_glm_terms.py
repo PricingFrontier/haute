@@ -5,6 +5,7 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
+from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute.errors import HauteValidationError
 from haute.routes._training_preparation import (
     _build_training_feature_selection,
@@ -41,9 +42,18 @@ def test_glm_term_columns_are_the_resolved_model_columns():
     assert _glm_training_term_columns({"algorithm": "glm", "target": "y", "terms": {}}) is None
 
 
-def test_feature_selection_ignores_exclude_for_glm():
+SCHEMA = {
+    "age": "Float64",
+    "income": "Float64",
+    "region": "String",
+    "y": "Float64",
+    "unused": "Float64",
+}
+
+
+def test_feature_selection_ignores_exclude_and_feature_columns_for_glm():
     payload = _build_training_feature_selection(
-        GLM_CONFIG, ["age", "income", "region", "y", "unused"]
+        {**GLM_CONFIG, "feature_columns": ["unused"]}, SCHEMA
     )
     assert payload.mode == "glm_terms"
     assert payload.features.items == ["age", "income", "region"]
@@ -55,7 +65,14 @@ def test_feature_selection_ignores_exclude_for_glm():
 
 def test_feature_selection_rejects_expression_keyed_by_a_column():
     with pytest.raises(HauteValidationError, match="names a column"):
-        _build_training_feature_selection(GLM_CONFIG, ["age", "age_sq", "income", "region", "y"])
+        _build_training_feature_selection(GLM_CONFIG, {**SCHEMA, "age_sq": "Float64"})
+
+
+def test_feature_selection_rejects_role_columns_and_unsupported_dtypes():
+    with pytest.raises(HauteValidationError, match=r"role columns: 'income' \(weight\)"):
+        _build_training_feature_selection({**GLM_CONFIG, "weight": "income"}, SCHEMA)
+    with pytest.raises(HauteValidationError, match="'region' has dtype Date"):
+        _build_training_feature_selection(GLM_CONFIG, {**SCHEMA, "region": "Date"})
 
 
 def test_sink_exclusions_are_none_for_glm_and_configured_for_catboost():
@@ -113,5 +130,9 @@ def test_resolve_training_input_schema_reflects_added_renamed_and_dropped_column
         }
     )
 
-    schema = resolve_training_input_schema(graph, "model", None, "live")
-    assert schema == ["x", "y2", "x2"]
+    context = ExecutionContext(
+        operation="training_glm_schema",
+        profile=ExecutionProfile.TRAINING_PREP,
+    )
+    schema = resolve_training_input_schema(graph, "model", None, "live", execution_context=context)
+    assert schema == {"x": "Float64", "y2": "Float64", "x2": "Float64"}

@@ -6,30 +6,22 @@ import { configField } from "../../utils/configField"
 import { toggleButtonStyle } from "./styles"
 import { FailoverHelp } from "./FailoverHelp"
 import { OffsetFieldLabel } from "./OffsetFieldLabel"
+import { GLM_FAMILY_LINKS, isGlmFamily, type GlmFamily } from "./glmFamilies"
 
 type Column = { name: string; dtype: string }
 
-// Families the backend validates (_VALID_GLM_LINKS in
-// routes/_train_service.py). Keep in sync with that dict.
-const FAMILIES = [
-  { value: "poisson", label: "Poisson", hint: "Claim frequency" },
-  { value: "gamma", label: "Gamma", hint: "Claim severity" },
-  { value: "tweedie", label: "Tweedie", hint: "Pure premium" },
-  { value: "gaussian", label: "Gaussian", hint: "Linear regression" },
-  { value: "binomial", label: "Binomial", hint: "Binary outcomes" },
-  { value: "quasipoisson", label: "Quasi-Poisson", hint: "Overdispersed counts" },
-  { value: "negbinomial", label: "Neg. Binomial", hint: "Overdispersed counts (explicit theta)" },
-] as const
-
-const CANONICAL_LINKS: Record<string, string> = {
-  poisson: "log",
-  gamma: "log",
-  tweedie: "log",
-  gaussian: "identity",
-  binomial: "logit",
-  quasipoisson: "log",
-  negbinomial: "log",
+/** Display order and labels; the families and their links come from GLM_FAMILY_LINKS. */
+const FAMILY_LABELS: Record<GlmFamily, { label: string; hint: string; metrics: string[] }> = {
+  poisson: { label: "Poisson", hint: "Claim frequency", metrics: ["gini", "poisson_deviance"] },
+  gamma: { label: "Gamma", hint: "Claim severity", metrics: ["gini", "rmse"] },
+  tweedie: { label: "Tweedie", hint: "Pure premium", metrics: ["gini", "tweedie_deviance"] },
+  gaussian: { label: "Gaussian", hint: "Linear regression", metrics: ["gini", "rmse"] },
+  binomial: { label: "Binomial", hint: "Binary outcomes", metrics: ["auc", "logloss"] },
+  quasipoisson: { label: "Quasi-Poisson", hint: "Overdispersed counts", metrics: ["gini", "poisson_deviance"] },
+  quasibinomial: { label: "Quasi-Binomial", hint: "Overdispersed binary outcomes", metrics: ["auc", "logloss"] },
+  negbinomial: { label: "Neg. Binomial", hint: "Overdispersed counts (explicit theta)", metrics: ["gini", "poisson_deviance"] },
 }
+const FAMILIES = (Object.keys(GLM_FAMILY_LINKS) as GlmFamily[]).map((value) => ({ value, ...FAMILY_LABELS[value] }))
 
 const TWEEDIE_HELP =
   "Tweedie interpolates between Poisson (power 1) and Gamma (power 2); the " +
@@ -45,8 +37,6 @@ const THETA_HELP =
   "fit without it, so a choice is required. Estimate profiles the likelihood " +
   "over theta on the node's training data; the result is filled in for you to " +
   "accept or adjust."
-
-const LINK_FUNCTIONS = ["log", "identity", "logit", "inverse", "sqrt", "cloglog", "probit"]
 
 const GLM_METRICS = [
   { value: "gini", label: "Gini" },
@@ -83,7 +73,10 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
   const link = configField(config, "link", "")
   const intercept = configField(config, "intercept", true)
   const metrics = configField<string[]>(config, "metrics", ["gini", "poisson_deviance"])
-  const canonicalLink = CANONICAL_LINKS[family] || "log"
+  const links: readonly string[] = isGlmFamily(family) ? GLM_FAMILY_LINKS[family] : []
+  const canonicalLink = links[0]
+  const linkUnavailable = link !== "" && !links.includes(link)
+  const theta = config.theta
 
   const handleEstimate = async (param: DispersionParam) => {
     if (!onEstimateDispersion || estimating) return
@@ -177,19 +170,10 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
                 <button
                   key={f.value}
                   onClick={() => {
-                    const defaults: Record<string, string[]> = {
-                      poisson: ["gini", "poisson_deviance"],
-                      gamma: ["gini", "rmse"],
-                      tweedie: ["gini", "tweedie_deviance"],
-                      gaussian: ["gini", "rmse"],
-                      binomial: ["auc", "logloss"],
-                      quasipoisson: ["gini", "poisson_deviance"],
-                      negbinomial: ["gini", "poisson_deviance"],
-                    }
                     onUpdate({
                       family: f.value,
                       link: "",  // reset to canonical
-                      metrics: defaults[f.value] || ["gini", "rmse"],
+                      metrics: f.metrics,
                     })
                   }}
                   className="px-2.5 py-1 rounded-md text-xs font-mono transition-colors"
@@ -201,33 +185,45 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
               )
             })}
           </div>
+          {family !== "" && !isGlmFamily(family) && (
+            <p role="alert" className="mt-1 text-[11px]" style={{ color: "var(--danger)" }}>
+              The saved family {family} is not supported; choose one above.
+            </p>
+          )}
         </div>
 
-        {/* Link function */}
-        <div>
-          <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
-            Link Function
-          </label>
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            <button
-              onClick={() => onUpdate("link", "")}
-              className="px-2.5 py-1 rounded-md text-xs font-mono transition-colors"
-              style={toggleButtonStyle(!link)}
-            >
-              auto ({canonicalLink})
-            </button>
-            {LINK_FUNCTIONS.filter(l => l !== canonicalLink).map(l => (
+        {/* Link function: the links RustyStats supports for the family. */}
+        {links.length > 0 && (
+          <div>
+            <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+              Link Function
+            </label>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
               <button
-                key={l}
-                onClick={() => onUpdate("link", l)}
+                onClick={() => onUpdate("link", "")}
                 className="px-2.5 py-1 rounded-md text-xs font-mono transition-colors"
-                style={toggleButtonStyle(link === l)}
+                style={toggleButtonStyle(!link)}
               >
-                {l}
+                auto ({canonicalLink})
               </button>
-            ))}
+              {links.slice(1).map(l => (
+                <button
+                  key={l}
+                  onClick={() => onUpdate("link", l)}
+                  className="px-2.5 py-1 rounded-md text-xs font-mono transition-colors"
+                  style={toggleButtonStyle(link === l)}
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
+            {linkUnavailable && (
+              <p role="alert" className="mt-1 text-[11px]" style={{ color: "var(--danger)" }}>
+                The saved link {link} is not available for {FAMILY_LABELS[family as GlmFamily].label}; choose one above.
+              </p>
+            )}
           </div>
-        </div>
+        )}
 
         {/* Tweedie variance power — gated: no silent 1.5 failover. */}
         {family === "tweedie" && (
@@ -283,7 +279,7 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
             <div className="mt-1 flex gap-1.5">
               <input
                 type="number" min={0} step="any"
-                value={typeof config.theta === "number" ? config.theta : ""}
+                value={typeof theta === "number" ? theta : ""}
                 placeholder="e.g. 1.5"
                 onChange={(e) => {
                   const parsed = parseFloat(e.target.value)
@@ -291,13 +287,18 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
                 }}
                 className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg text-xs font-mono"
                 style={
-                  typeof config.theta === "number"
+                  typeof theta === "number" && theta > 0
                     ? { background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }
                     : { background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)", color: "var(--text-primary)" }
                 }
               />
               {estimateButton("theta")}
             </div>
+            {typeof theta === "number" && !(theta > 0) && (
+              <p role="alert" className="mt-1 text-[11px]" style={{ color: "var(--danger)" }}>
+                Theta must be greater than 0.
+              </p>
+            )}
             {estimateError && estimating === null && (
               <div className="mt-1 text-[11px]" style={{ color: "var(--warning)" }}>
                 Estimation failed: {estimateError}

@@ -8,6 +8,8 @@ consumers must derive TrainingJob kwargs from it so they can never drift
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from haute.modelling._train_config import (
@@ -19,6 +21,8 @@ from haute.modelling._train_config import (
     effective_metrics,
 )
 
+ROOT = Path(__file__).resolve().parents[1]
+
 # Minimal canonical evaluation object — every public modelling config must
 # supply exactly one versioned evaluation contract.
 MINIMAL_EVALUATION = {
@@ -27,6 +31,9 @@ MINIMAL_EVALUATION = {
     "seed": 42,
     "validation": {"method": "single", "size": 0.2},
 }
+
+
+CV_SETTINGS = {"cv_folds": 5, "cv_selection": "min", "cv_seed": 42}
 
 
 class TestBuildTrainParams:
@@ -126,6 +133,12 @@ class TestBuildTrainParams:
             "regularization",
             "alpha",
             "l1_ratio",
+            "cv_folds",
+            "cv_selection",
+            "cv_seed",
+            "max_iter",
+            "tol",
+            "robust_standard_errors",
             "intercept",
             "var_power",
             "theta",
@@ -623,7 +636,7 @@ class TestDefaultMetricsDerivation:
             data="d.parquet",
             target="y",
             algorithm="glm",
-            params={"family": "tweedie"},
+            params={"family": "tweedie", "var_power": 1.5, "terms": {"x": {"type": "linear"}}},
         )
         assert glm_job.metrics == ["gini", "tweedie_deviance"]
 
@@ -867,6 +880,7 @@ class TestFailoverGates:
                 "terms": {"age": {"type": "linear"}},
                 "regularization": "elastic_net",
                 "l1_ratio": 0.0,
+                **CV_SETTINGS,
                 "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
@@ -881,6 +895,7 @@ class TestFailoverGates:
                 "family": "poisson",
                 "terms": {"age": {"type": "linear"}},
                 "regularization": "ridge",
+                **CV_SETTINGS,
                 "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
@@ -913,3 +928,147 @@ class TestFailoverGates:
             )
             is None
         )
+
+
+def _glm_config(**overrides: object) -> dict[str, object]:
+    return {
+        "target": "y",
+        "algorithm": "glm",
+        "family": "poisson",
+        "terms": {"age": {"type": "linear"}},
+        "evaluation": MINIMAL_EVALUATION,
+        **overrides,
+    }
+
+
+class TestGlmValueContract:
+    def test_glm_jobs_receive_no_catboost_only_levers(self):
+        kwargs = build_training_job_kwargs(
+            _glm_config(
+                exclude=["age"],
+                feature_columns=["age"],
+                monotone_constraints={"age": 1},
+                feature_weights={"age": 2.0},
+            ),
+            data="d",
+        )
+        assert kwargs["exclude"] == []
+        assert kwargs["feature_columns"] is None
+        assert kwargs["monotone_constraints"] is None
+        assert kwargs["feature_weights"] is None
+
+    def test_cross_validation_settings_are_required_only_without_a_fixed_alpha(self):
+        with pytest.raises(TrainingConfigError, match="needs its folds, selection rule, seed"):
+            build_training_job_kwargs(_glm_config(regularization="lasso"), data="d")
+        with pytest.raises(TrainingConfigError, match="needs its seed"):
+            build_training_job_kwargs(
+                _glm_config(regularization="lasso", alpha=0, cv_folds=5, cv_selection="1se"),
+                data="d",
+            )
+        build_training_job_kwargs(_glm_config(regularization="lasso", alpha=0.25), data="d")
+
+    @pytest.mark.parametrize(
+        ("overrides", "message"),
+        [
+            ({"family": "inverse_gaussian"}, "Unknown GLM family 'inverse_gaussian'"),
+            ({"link": "sqrt"}, "Link 'sqrt' is not valid for the poisson family"),
+            ({"family": "tweedie", "var_power": 3.0}, "variance power must be from 1"),
+            ({"family": "tweedie", "var_power": True}, "variance power must be a number"),
+            ({"family": "negbinomial", "theta": 0}, "theta must be a finite positive number"),
+            ({"regularization": "group"}, "Unknown GLM regularization 'group'"),
+            ({"regularization": "ridge", "alpha": -1}, "alpha must be a finite non-negative"),
+            (
+                {"regularization": "elastic_net", "alpha": 1, "l1_ratio": 2},
+                "L1 ratio must be a number from 0 to 1",
+            ),
+            (
+                {"regularization": "ridge", **CV_SETTINGS, "cv_folds": 1},
+                "folds must be an integer from 2 to 20",
+            ),
+            (
+                {"regularization": "ridge", **CV_SETTINGS, "cv_selection": "max"},
+                "selection must be 'min'",
+            ),
+            (
+                {"regularization": "ridge", **CV_SETTINGS, "cv_seed": -3},
+                "seed must be a non-negative integer",
+            ),
+            ({"max_iter": 0}, "Maximum iterations must be an integer from 1 to 10000"),
+            ({"tol": 1}, "Tolerance must be a number greater than 0 and less than 1"),
+            ({"robust_standard_errors": "HC4"}, "Robust standard errors must be one of"),
+            ({"intercept": "yes"}, "intercept must be true or false"),
+            ({"terms": {"age": {"type": "linear", "df": 4}}}, "do not accept"),
+        ],
+    )
+    def test_invalid_glm_values_fail_before_a_job_exists(self, overrides, message):
+        with pytest.raises(TrainingConfigError, match=message):
+            build_training_job_kwargs(_glm_config(**overrides), data="d")
+
+    def test_regularization_with_penalised_spline_is_refused(self):
+        for regularization in (
+            {"regularization": "ridge", **CV_SETTINGS},
+            {"regularization": "ridge", "alpha": 0.5},
+        ):
+            with pytest.raises(
+                TrainingConfigError, match=r"automatically smoothed splines \('age'\)"
+            ):
+                build_training_job_kwargs(
+                    _glm_config(terms={"age": {"type": "bs"}}, **regularization), data="d"
+                )
+        build_training_job_kwargs(
+            _glm_config(terms={"age": {"type": "bs", "df": 5}}, regularization="ridge", alpha=0.5),
+            data="d",
+        )
+
+    @pytest.mark.parametrize(
+        ("overrides", "message"),
+        [
+            ({"regularization": "ridge", "alpha": 0.5}, "cannot be combined with regularization"),
+            (
+                {"terms": {"age": {"type": "linear", "monotonicity": "increasing"}}},
+                "monotonicity constraints \\('age'\\)",
+            ),
+            ({"terms": {"age": {"type": "ns"}}}, "automatically smoothed splines"),
+        ],
+    )
+    def test_robust_standard_errors_with_regularization_are_refused(self, overrides, message):
+        with pytest.raises(TrainingConfigError, match=message):
+            build_training_job_kwargs(
+                _glm_config(robust_standard_errors="HC1", **overrides), data="d"
+            )
+
+    def test_tweedie_power_outside_one_to_two_is_refused(self):
+        for power in (0.99, 2.01, 3, -1.5, float("nan"), float("inf")):
+            with pytest.raises(TrainingConfigError, match="variance power must be"):
+                build_training_job_kwargs(_glm_config(family="tweedie", var_power=power), data="d")
+        for power in (1, 1.0, 1.5, 2.0):
+            build_training_job_kwargs(_glm_config(family="tweedie", var_power=power), data="d")
+
+    def test_quasibinomial_defaults_to_classification_metrics(self):
+        assert default_metrics("regression", family="quasibinomial") == ["auc", "logloss"]
+
+    def test_family_link_table_matches_frontend_and_rustystats_default_links(self):
+        import json
+        import re
+
+        from rustystats.formula import get_default_link
+
+        from haute.modelling._train_config import GLM_FAMILY_LINKS
+
+        assert {family: links[0] for family, links in GLM_FAMILY_LINKS.items()} == {
+            family: get_default_link(family) for family in GLM_FAMILY_LINKS
+        }
+        assert {link for links in GLM_FAMILY_LINKS.values() for link in links} <= {
+            "identity",
+            "log",
+            "logit",
+        }
+
+        source = (ROOT / "frontend/src/panels/modelling/glmFamilies.ts").read_text(encoding="utf-8")
+        block = re.search(r"GLM_FAMILY_LINKS = \{(.*?)\} as const", source, re.DOTALL)
+        assert block is not None
+        frontend = {
+            family: json.loads(links)
+            for family, links in re.findall(r"(\w+): (\[[^\]]*\])", block.group(1))
+        }
+        assert frontend == {family: list(links) for family, links in GLM_FAMILY_LINKS.items()}

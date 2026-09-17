@@ -441,14 +441,23 @@ class ScoringModel:
     ``predict_proba`` / ``raw_model`` surface.
 
     ``offset_column`` names the offset/exposure column the model was
-    trained with (``None`` when the model has none).  Scoring frames must
-    carry it: the CatBoost path re-supplies it as a ``Pool`` baseline, the
+    trained with (``None`` when the model has none), and ``offset_link``
+    records how it enters the prediction: ``log`` for a positive exposure
+    multiplier, ``identity`` for an additive term.  Scoring frames must carry
+    the column: the CatBoost path re-supplies it as a ``Pool`` baseline, the
     RustyStats path hands it to the model inside the predict frame (it is
     already part of ``required_columns``).  A missing column fails loud —
     scoring never silently proceeds on an offset-0/absent basis.
     """
 
-    __slots__ = ("_model", "feature_names", "cat_feature_names", "flavor", "offset_column")
+    __slots__ = (
+        "_model",
+        "feature_names",
+        "cat_feature_names",
+        "flavor",
+        "offset_column",
+        "offset_link",
+    )
 
     def __init__(
         self,
@@ -457,12 +466,14 @@ class ScoringModel:
         cat_feature_names: frozenset[str] = frozenset(),
         flavor: ModelFlavor = "pyfunc",
         offset_column: str | None = None,
+        offset_link: str | None = None,
     ) -> None:
         self._model = model
         self.feature_names = feature_names
         self.cat_feature_names = cat_feature_names
         self.flavor = flavor
         self.offset_column = offset_column
+        self.offset_link = offset_link
 
     @property
     def raw_model(self) -> Any:
@@ -549,6 +560,52 @@ def _catboost_offset_column(model: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _catboost_offset_link(model: Any) -> str | None:
+    """Read how a CatBoost model's offset enters its raw score.
+
+    ``None`` when the model records no offset column. A model that records
+    an offset column without its link is refused: its baseline cannot be
+    rebuilt the way it was trained.
+    """
+    from haute.errors import ConfigError
+    from haute.modelling._algorithms import CATBOOST_OFFSET_LINK_METADATA_KEY, OFFSET_LINKS
+
+    column = _catboost_offset_column(model)
+    if column is None:
+        return None
+    try:
+        value = model.get_metadata().get(CATBOOST_OFFSET_LINK_METADATA_KEY)
+    except Exception:
+        value = None
+    if not isinstance(value, str) or value not in OFFSET_LINKS:
+        raise ConfigError(
+            f"This CatBoost model records offset column {column!r} but not how the offset "
+            "enters its predictions. Retrain it with this version of Haute.",
+            offset_column=column,
+        )
+    return value
+
+
+def rustystats_offset_column(model: Any) -> str | None:
+    """The exposure (log link) or offset (other links) column a GLM was fitted with."""
+    for attribute in ("_exposure_spec", "_offset_spec"):
+        value = getattr(model, attribute, None)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def rustystats_offset_link(model: Any) -> str | None:
+    """``log`` for a GLM fitted with an exposure column, ``identity`` for an offset."""
+    exposure = getattr(model, "_exposure_spec", None)
+    if isinstance(exposure, str) and exposure:
+        return "log"
+    offset = getattr(model, "_offset_spec", None)
+    if isinstance(offset, str) and offset:
+        return "identity"
+    return None
+
+
 def _wrap_catboost(model: CatBoostRegressor | CatBoostClassifier) -> ScoringModel:
     """Wrap a raw CatBoost model in a ``ScoringModel``."""
     feature_names = list(model.feature_names_)
@@ -562,6 +619,7 @@ def _wrap_catboost(model: CatBoostRegressor | CatBoostClassifier) -> ScoringMode
         cat_feature_names=cat_names,
         flavor="catboost",
         offset_column=_catboost_offset_column(model),
+        offset_link=_catboost_offset_link(model),
     )
 
 
@@ -590,13 +648,13 @@ def _load_rustystats_model(path: str) -> ScoringModel:
         else {}
     )
     feature_names = list(dict.fromkeys(aliases.get(name, name) for name in model.required_columns))
-    offset_spec = getattr(model, "_offset_spec", None)
     return ScoringModel(
         model=model,
         feature_names=feature_names,
         cat_feature_names=frozenset(),
         flavor="rustystats",
-        offset_column=offset_spec if isinstance(offset_spec, str) and offset_spec else None,
+        offset_column=rustystats_offset_column(model),
+        offset_link=rustystats_offset_link(model),
     )
 
 

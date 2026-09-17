@@ -1125,21 +1125,34 @@ def test_worker_timing_rejects_all_invalid_values() -> None:
             _worker_timing(job, job_id="job-1")
 
 
-def test_dispersion_worker_remains_isolated_and_emits_fit_events(tmp_path: Path) -> None:
-    data = tmp_path / "prepared.parquet"
-    frame = pl.DataFrame(
-        {"x": [1.0, 2.0], "y": [3.0, 4.0], "weight": [1.0, 1.0], "offset": [0.0, 0.0]}
-    )
-    frame.write_parquet(data)
-    queue, captured = _ForwardingQueue(), {}
-
+def _prepared_job(data: Path, dtypes: dict[str, str], captured: dict | None = None) -> type:
     class Job:
         def __init__(self, **kwargs):
-            captured.update(kwargs)
+            if captured is not None:
+                captured["job_kwargs"] = kwargs
 
         def _prepare_data(self, progress, **_kwargs):
             progress("Preparing", 0.1)
-            return SimpleNamespace(features=["x"], cat_features=[], data_path=data)
+            return SimpleNamespace(
+                features=list(dtypes),
+                cat_features=[name for name, dtype in dtypes.items() if dtype == "String"],
+                feature_dtypes=dtypes,
+                data_path=data,
+            )
+
+        def _role_columns(self):
+            return {"y": "target", "weight": "weight", "offset": "offset"}
+
+    return Job
+
+
+def test_dispersion_worker_remains_isolated_and_emits_fit_events(tmp_path: Path) -> None:
+    data = tmp_path / "prepared.parquet"
+    frame = pl.DataFrame(
+        {"x": [1.0, 2.0], "y": [3.0, 4.0], "weight": [1.0, 1.0], "offset": [1.0, 1.0]}
+    )
+    frame.write_parquet(data)
+    queue = _ForwardingQueue()
 
     def estimate(**kwargs):
         kwargs["on_fit"](0)
@@ -1153,7 +1166,12 @@ def test_dispersion_worker_remains_isolated_and_emits_fit_events(tmp_path: Path)
                 "target": "y",
                 "weight": "weight",
                 "offset": "offset",
-                "params": {"family": "negbinomial", "terms": {"x": {}}, "interactions": []},
+                "params": {
+                    "family": "negbinomial",
+                    "theta": 1.0,
+                    "terms": {"x": {"type": "linear"}},
+                    "interactions": [],
+                },
             },
             "param": "theta",
             "profile": ExecutionProfile.TRAINING_PREP.value,
@@ -1161,9 +1179,7 @@ def test_dispersion_worker_remains_isolated_and_emits_fit_events(tmp_path: Path)
         },
     )
     with (
-        patch("haute.modelling.TrainingJob", Job),
-        patch("haute.modelling._rustystats._resolve_glm_terms", return_value=["x"]),
-        patch("haute.modelling._rustystats._build_interactions", return_value=([], {})),
+        patch("haute.modelling.TrainingJob", _prepared_job(data, {"x": "Float64"})),
         patch("haute.modelling._rustystats.estimate_glm_dispersion", side_effect=estimate),
         patch("haute._polars_utils.streaming_collect", return_value=frame),
     ):
@@ -1175,36 +1191,28 @@ def test_dispersion_worker_remains_isolated_and_emits_fit_events(tmp_path: Path)
     assert [event.kind for event in queue.events] == ["progress", "progress", "dispersion_fit"]
 
 
-def test_dispersion_worker_projects_target_encoding_sources(tmp_path: Path) -> None:
+def test_dispersion_frame_includes_an_interaction_only_materialised_column(tmp_path: Path) -> None:
+    """The profile runs on the training design: an interaction factor whose
+    main effect Include main effects materialises is loaded, while unused
+    columns and internal encoding aliases are not."""
     data = tmp_path / "prepared.parquet"
     pl.DataFrame(
         {
             "c": ["a", "b"],
             "x": [1.0, 2.0],
+            "unused": [0.0, 0.0],
             "y": [3.0, 4.0],
             "weight": [1.0, 1.0],
-            "offset": [0.0, 0.0],
+            "offset": [1.0, 1.0],
         }
     ).write_parquet(data)
-    queue, captured = _ForwardingQueue(), {}
-
-    class Job:
-        def __init__(self, **_kwargs):
-            pass
-
-        def _prepare_data(self, _progress, **_kwargs):
-            return SimpleNamespace(features=["c", "x"], cat_features=["c"], data_path=data)
-
-    effective_terms = {
-        "c": {"type": "categorical"},
-        "c_te": {"type": "target_encoding", "variable": "c"},
-        "x": {"type": "linear"},
+    captured: dict = {}
+    params = {
+        "family": "negbinomial",
+        "theta": 1.0,
+        "terms": {"c": {"type": "categorical"}},
+        "interactions": [{"factors": ["c", "x"], "include_main": True}],
     }
-
-    def build_interactions(*args, **kwargs):
-        captured["build_args"] = args
-        captured["build_kwargs"] = kwargs
-        return ([{"c": {"type": "categorical"}, "x": {"type": "linear"}}], effective_terms)
 
     def estimate(**kwargs):
         captured["estimate"] = kwargs
@@ -1214,42 +1222,25 @@ def test_dispersion_worker_projects_target_encoding_sources(tmp_path: Path) -> N
         "job-1",
         "dispersion",
         {
-            "job_kwargs": {
-                "target": "y",
-                "weight": "weight",
-                "offset": "offset",
-                "params": {
-                    "family": "negbinomial",
-                    "terms": {"c": {"type": "categorical"}, "x": {"type": "linear"}},
-                    "interactions": [{"factors": ["c", "x"]}],
-                },
-            },
+            "job_kwargs": {"target": "y", "weight": "weight", "offset": "offset", "params": params},
             "param": "theta",
             "profile": ExecutionProfile.TRAINING_PREP.value,
             "memory_limit_bytes": None,
         },
     )
+    dtypes = {"c": "String", "x": "Float64", "unused": "Float64"}
     with (
-        patch("haute.modelling.TrainingJob", Job),
-        patch(
-            "haute.modelling._rustystats._resolve_glm_terms",
-            return_value={"c": {"type": "categorical"}, "x": {"type": "linear"}},
-        ),
-        patch("haute.modelling._rustystats._build_interactions", side_effect=build_interactions),
+        patch("haute.modelling.TrainingJob", _prepared_job(data, dtypes)),
         patch("haute.modelling._rustystats.estimate_glm_dispersion", side_effect=estimate),
     ):
         result = _run_dispersion_process_job(
-            WorkerRuntime(queue, str(tmp_path / "artifacts")), request
+            WorkerRuntime(_ForwardingQueue(), str(tmp_path / "artifacts")), request
         )
 
     assert isinstance(result, WorkerResultManifest)
     assert captured["estimate"]["data"].columns == ["c", "x", "y", "weight", "offset"]
-    assert "c_te" not in captured["estimate"]["data"].columns
-    assert captured["estimate"]["terms"] is effective_terms
-    assert captured["estimate"]["interactions"] == [
-        {"c": {"type": "categorical"}, "x": {"type": "linear"}}
-    ]
-    assert captured["build_kwargs"]["column_names"] == ["c", "x", "y", "weight", "offset"]
+    assert captured["estimate"]["params"] == params
+    assert captured["estimate"]["target"] == "y"
 
 
 @pytest.mark.parametrize(

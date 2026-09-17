@@ -124,26 +124,47 @@
       {
         "feature": "x",
         "coefficient": 0.1,
-        "std_error": 0.01,
-        "z_value": 10,
-        "p_value": 0.001,
-        "significance": "***"
+        "std_error": null,
+        "z_value": null,
+        "p_value": null,
+        "significance": null
       }
     ],
     "glm_relativities": [
       {
         "feature": "x",
         "relativity": 1.1,
-        "ci_lower": 1,
-        "ci_upper": 1.2
+        "ci_lower": null,
+        "ci_upper": null
       }
     ],
     "glm_fit_statistics": {
-      "aic": 1.2
+      "deviance": 12.5,
+      "total_edf": 4.2
     },
-    "glm_regularization_path": {
-      "selected_alpha": 0.01,
-      "n_nonzero": 4
+    "glm_inference": {
+      "status": "naive_after_cv_selection",
+      "valid": false,
+      "standard_errors": null,
+      "reason": "The penalty was chosen by cross-validation, so standard errors and p-values are not valid."
+    },
+    "glm_smooth_terms": [
+      {
+        "term": "x",
+        "k": 10,
+        "edf": 3.2,
+        "lambda": 21.5
+      }
+    ],
+    "glm_regularization": {
+      "penalty": "ridge",
+      "mode": "cross_validation",
+      "alpha": 0.01,
+      "l1_ratio": 0,
+      "n_nonzero": 4,
+      "cv_folds": 5,
+      "cv_selection": "min",
+      "cv_seed": 42
     },
     "diagnostics_errors": [
       {

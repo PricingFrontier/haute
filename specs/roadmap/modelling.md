@@ -3,12 +3,15 @@
 ## Scope
 
 The modelling node's GLM configuration surface: how a feature enters a GLM,
-how each fit (term) is configured, and how interactions declare their own
-fits, on RustyStats 0.9.0. Current behaviour is specified in
+how each fit (term) is configured, how interactions declare their own
+fits, how regularisation and solver settings reach RustyStats 0.9.0, and how
+GLM results report inference validity. The offset contract is shared with
+CatBoost, so its training and scoring baseline transform is in scope too.
+Current behaviour is specified in
 [the modelling specification](../modelling/low-level.md) and
 [the modelling UI specification](../frontend-modelling-optimiser-ui/low-level.md).
-CatBoost configuration is out of scope; its Features pane keeps the current
-include/exclude cards and monotonicity arrows unchanged.
+CatBoost's Features pane keeps the current include/exclude cards and
+monotonicity arrows unchanged.
 
 ## Priorities
 
@@ -18,6 +21,11 @@ include/exclude cards and monotonicity arrows unchanged.
 | MOD-T01 | Planned | P2 | GLM backend resolves model columns from terms and interactions, builds interactions without duplicated or re-typed main effects, ignores CatBoost-only levers, and drops the `all_factors` flag. |
 | MOD-T02 | Planned | P2 | One GLM Features list where a feature enters the model only through its terms. |
 | MOD-T03 | Planned | P2 | Interaction cards that pick two or more features and choose, per factor, the fit RustyStats 0.9.0 honours inside the interaction, including interaction-local splines. |
+| MOD-T04 | Planned | P1 | GLM results report coefficients for every fit, show standard errors and p-values only when RustyStats marks inference valid, never fail delivery on non-finite statistics, and report smoothing and the regularisation actually applied. |
+| MOD-T05 | Planned | P1 | Regularisation honours a fixed alpha, seeds and exposes cross-validation, refuses combinations RustyStats cannot fit honestly, offers robust standard errors and solver controls, and limits families and links to what RustyStats supports. |
+| MOD-T06 | Planned | P1 | One offset meaning for GLM and CatBoost (a positive exposure multiplier under a log link), carried through training, saved models, and every scoring path. |
+| MOD-T07 | Planned | P1 | A strict, dtype-aware GLM term contract and order-independent interaction resolution that never builds a design different from the configuration. |
+| MOD-T08 | Planned | P2 | The GLM pane mirrors the backend contract, keeps every saved term and interaction visible and repairable, supports reference levels, and loses its duplicated code. |
 
 ## Design (approved 16 September 2026; revised after Codex plan review and for RustyStats 0.9.0)
 
@@ -196,10 +204,10 @@ dropped outright and stale tests are updated.
   the column it fits, so each column carries at most one native fit. An
   **expression** spec `{"type": "expression", "expr": ..., "monotonicity"?}`
   is keyed by a user-editable name that is not a column name; a column may
-  carry any number of expression fits. The RustyStats expression grammar
-  is exactly: `x ** n`, `x + y`, `x - y`, `x * y`, `x / y` (where `y` is a
-  column or a number), or a bare `x`. Every identifier must be a schema
-  column.
+  carry any number of expression fits. Expressions follow the grammar in
+  "Expression grammar" below (a subset of what RustyStats parses: `x ** n`,
+  `x + y`, `x - y`, `x * y`, `x / y`, or a bare `x`). Every identifier must
+  be a schema column of a continuous or integer dtype.
 - Additional fits may also be named `target_encoding` or `frequency_encoding`
   specs with RustyStats' supported `variable` key pointing to the raw feature.
   A feature may have one target encoding and one frequency encoding alongside
@@ -219,25 +227,33 @@ dropped outright and stale tests are updated.
   boundary_knots}; `ns` {df, k, knots, boundary_knots}; `ms` {df, k, degree,
   monotonicity, knots, boundary_knots, default monotonicity `increasing`};
   `target_encoding` {prior_weight, n_permutations, variable}; `frequency_encoding` {variable};
-  `expression` {expr, monotonicity}. A type switch keeps supported shared
+  `expression` {expr, monotonicity}. `categorical` additionally carries
+  Haute's `reference` key, translated before RustyStats sees the term (see
+  "Term parameter contract"). A type switch keeps supported shared
   parameters for the new type. Term types outside the eight above
   and the redirecting key `interaction` are rejected by column resolution.
   `variable` is accepted only for the two encoding types; other native keys
-  must be the column RustyStats reads. A backend test asserts each subset is contained in RustyStats'
-  `VALID_KEYS` for that type.
+  must be the column RustyStats reads. Parameter values and combinations
+  follow "Term parameter contract". A backend test fits each RustyStats key
+  through the library and asserts RustyStats accepts it for that type.
 - `interactions` entries are `{"factors": [...], "specs": {factor: spec},
   "include_main": bool, "encoding"?: mode}`. Product `specs` holds only explicit **overrides**, each
   one of `{"type": "linear"}`, `{"type": "categorical"}`, `{"type": "bs",
-  "df"?, "degree"?}`, or `{"type": "ns", "df"?}`. A factor with no entry
-  follows its main term, or the dtype default when it has no main term
-  (categorical for string dtypes, linear otherwise). Two or more filled
+  "df"?, "k"?, "degree"?, "knots"?, "boundary_knots"?}`, `{"type": "ns",
+  "df"?, "k"?, "knots"?, "boundary_knots"?}`, or `{"type":
+  "target_encoding", "prior_weight"?, "n_permutations"?}`. A factor with no
+  entry resolves as described in "Interaction resolution": an inheritable
+  single main effect, else the dtype default of its column type (see
+  "Column types"). Two or more filled
   factors are required; incomplete entries are skipped at train time, as
   today. Encoded modes and their parameters follow the fit-controls contract
   above and carry no product overrides.
 - `all_factors` is removed from config, backend, validation, and docs.
-- `exclude` and `monotone_constraints` become CatBoost-only levers. The GLM
-  pane never writes them; `build_training_job_kwargs` passes `exclude=[]`
-  and `monotone_constraints=None` for GLM regardless of stored values;
+- `exclude`, `feature_columns`, `monotone_constraints`, and
+  `feature_weights` are CatBoost-only levers (one shared list). The GLM
+  pane never writes them; `build_training_job_kwargs` passes none of them
+  for GLM regardless of stored values; `GLMAlgorithm.fit` refuses a
+  `monotone_constraints` or `feature_weights` argument;
   `_effective_glm_params` no longer narrows terms or interactions by
   `exclude`; the training route passes no sink exclusions for GLM on both
   `_execute_and_sink` call sites in `_training_lifecycle.py` (training and
@@ -250,7 +266,10 @@ dropped outright and stale tests are updated.
   dispersion estimation the effective link is the explicit `link`, else
   `rustystats.formula.get_default_link(family)` (not exported at the package
   root on 0.9.0); at prediction it is the fitted model's resolved
-  `model.link`, so the two paths cannot disagree.
+  `model.link`, so the two paths cannot disagree. The offset contract shared
+  with CatBoost, and the scoring accessors that read the fitted model's
+  exposure or offset column, are defined in "Offsets across GLM and
+  CatBoost".
 
 ### Model membership
 
@@ -259,8 +278,9 @@ filled factor of an interaction. The training gate message becomes "add a
 term to at least one feature". "Fit all with defaults" materialises explicit
 dtype-default native terms for every eligible column that lacks a native
 term, leaving existing terms untouched; it replaces the `all_factors`
-opt-in and keeps the silent-failover gate because empty terms still block
-training.
+opt-in. Empty terms still block training, and RustyStats is never asked to
+build terms itself: the direct-construction API refuses a GLM without terms
+instead of generating one term per column.
 
 ### Backend column resolution (two phases)
 
@@ -302,25 +322,30 @@ construction API, each replacing the current `set(terms)` comparison.
 
 ### Interaction building
 
-For Product mode, `_build_interactions(interactions, terms, cat_features)` resolves each
-factor's spec as override, else native main term, else dtype default, and
-then:
+For Product mode, `_build_interactions(interactions, terms, dtype_classes)`
+resolves each factor's spec by the order-independent rules in "Interaction
+resolution" (override, else an inheritable single main effect, else the
+dtype default), and then:
 
 - rejects, naming the interaction and factor, an override type outside
   {`linear`, `categorical`, `bs`, `ns`, `target_encoding`}; any override carrying
-  `monotonicity`; a `categorical` override on a factor whose main term
-  exists and is not categorical; a `linear`, `bs`, or `ns` override on a
-  string column or on a factor whose main term is categorical; an effective
-  `frequency_encoding` fit; target encoding on a numeric column or alongside
-  any non-Linear partner; an effective `ms` fit or a `bs` main term carrying
-  `monotonicity` that is inherited into an interaction (RustyStats rejects
-  both, so the slot must override to a plain spline or linear); conflicting
-  overrides for one column across cards; and two cards with the same factor
+  `monotonicity`, `levels`, or `reference`; a fit the column's dtype class
+  does not allow; an inherited main effect that interactions cannot honour
+  (monotone fits, level-restricted categoricals, frequency encoding) or a
+  column with several main effects and no override; target encoding
+  alongside any non-Linear partner; and two cards with the same factor
   set and encoding mode in any order;
-- materialises a main effect for every factor that has no main term when its
-  card's `include_main` is true, adding the resolved spec to the terms dict
-  handed to RustyStats exactly once per column, and always passes
-  `include_main: False` to RustyStats, so no main effect is ever duplicated;
+- after every card is resolved, rejects a `categorical` slot on a column
+  whose main effect is not categorical, a `linear`, `bs`, or `ns` slot on a
+  column whose main effect is categorical, and a target-encoding slot on a
+  column whose main effect is categorical, whether that main effect was
+  configured or materialised;
+- materialises a main effect for every factor that has no main effect when its
+  cards' `include_main` is true and those cards resolve it to one spec,
+  adding that spec to the terms dict handed to RustyStats exactly once per
+  column; cards that resolve the column to different specs are rejected
+  together; RustyStats always receives `include_main: False`, so no main
+  effect is ever duplicated;
 - registers the mandatory Product target-encoded main effect independently
   of `include_main`, preserving other native fits with a unique encoding alias
   when needed. Dispersion estimation projects raw encoding sources rather than
@@ -365,11 +390,14 @@ forwarded to RustyStats.
   horizontal overflow.
   Expression name and expression each have a visible label. Additional terms
   never convert into linear, categorical, or spline fits through the type
-  select. Numeric dtypes are treated as continuous in the feature builder:
-  neither native nor additional selectors offer target/frequency encoding.
-  Their additional terms show Fit type: Expression beside the compact expression
-  fields, even though it is the only choice. Non-numeric features offer target
-  and frequency encoding as additional fits. A saved numeric encoding remains
+  select. Fit menus follow the column's dtype class ("Column types"):
+  continuous columns never offer categorical fits or target/frequency
+  encoding, while integer columns (integer-coded rating factors) offer them
+  beside the numeric fits.
+  Continuous additional terms show Fit type: Expression beside the compact
+  expression fields, even though it is the only choice. Integer, boolean and
+  categorical features offer target and frequency encoding as additional
+  fits. A saved encoding on a continuous column remains
   visible until explicitly changed or removed; rendering never rewrites it,
   and it does not make the other encoding available. Other fits invalid for
   the dtype and encodings used by another term are omitted from the choices,
@@ -447,25 +475,28 @@ Frequency encoding. In Product mode each slot pairs a column select (any
 eligible column not already in that card that can take a supported fit
 alongside its other factors)
 with a fit select offering the supported product fits:
-**As main term** (only when the column has a native term that is not a
-monotone spline; deletes `specs[col]`), **Linear** (numeric columns only;
-writes `specs[col] = {"type": "linear"}`; refused when the main term is
-categorical), **Categorical** (non-numeric columns without a native term,
-or columns with an existing categorical main term;
+**As main term** (only when the column has exactly one inheritable main
+effect, per "Interaction resolution"; deletes `specs[col]`), **Linear**
+(continuous and integer columns;
+writes `specs[col] = {"type": "linear"}`; refused when the main effect is
+categorical), **Categorical** (integer, boolean and categorical columns without
+a main effect, or with a categorical main effect;
 writes `specs[col] = {"type": "categorical"}`),
-**B-spline** and **Nat. spline** (numeric columns only; write
+**B-spline** and **Nat. spline** (continuous and integer columns; write
 `specs[col] = {"type": "bs"|"ns"}` plus df and, for `bs`, degree fields;
-never a monotonicity control; refused when the main term is categorical).
-**Target enc.** is available for a non-numeric factor only while every other
-picked factor uses Linear; with such a factor selected, partner fit menus
-offer only Linear (and As main when that main fit is Linear). Native target
-encoding can be inherited under the same rule. A frequency-encoded native
-term cannot be inherited in a Product, but its raw non-numeric source can
-use an explicit target-encoding override with Linear partners.
-A column whose main term is a monotone spline, or a B-spline with
-monotonicity, must pick an explicit slot fit; the slot shows "Monotone
-splines cannot be used inside interactions" until it does. A slot with no
-native term and no override selects its dtype default directly in Fit type,
+never a monotonicity control; refused when the main effect is categorical).
+**Target enc.** is available for an integer, boolean or categorical factor
+only while every other picked factor uses Linear and the factor's main effect
+is not categorical; with such a factor selected, partner fit menus
+offer only Linear (and As main when that main fit is Linear). Native or
+named target encoding can be inherited under the same rule. A
+frequency-encoded main effect cannot be inherited in a Product, but its raw
+source can use an explicit target-encoding override with Linear partners.
+A column whose main effect interactions cannot honour (a monotone spline, a
+monotone linear or B-spline term, a categorical term with `levels` or
+`reference`, frequency encoding, or several main-effect terms) must pick an
+explicit slot fit; the slot names the reason until it does. A slot with no
+main effect and no override selects its dtype default directly in Fit type,
 without persisting an override. As main term names the inherited fit in the
 option label, without a separate Effective fit field.
 Picking a column writes `factors[i]` and deletes any `specs` entry for the
@@ -495,6 +526,315 @@ training rejects it. Removing a card removes its entry.
 - `docs/building-models/nodes/model-training.md`: the `terms` and
   `interactions` rows (which list term types that do not exist).
 - Named failing scenarios are listed under each package's Acceptance.
+
+## Design amendments (17 September 2026 review)
+
+The branch review verified each defect below against the installed
+RustyStats 0.9.0 wheel by fitting real models. The contracts here refine the
+design above and are implemented by MOD-T04 to MOD-T08.
+
+### Result integrity
+
+RustyStats 0.9 classifies every fit with `inference_status` and fills
+`coef_table()` standard errors, z-values and p-values with NaN unless the
+status is `valid_standard` (or `valid_robust`). Penalised smooth splines
+(`unavailable`), monotonicity constraints (`constrained_boundary`), and every
+regularised fit (`naive_after_regularization`, `naive_after_selection`,
+`naive_after_cv_selection`) are therefore NaN, and the training response's
+finite-JSON guard rejected those jobs as system faults.
+
+- `glm_inference` is `{status, valid, standard_errors, reason}`. `status` is
+  the fitted model's `inference_status`, or `singular_design` when RustyStats
+  reports valid inference but a standard error is not finite. `valid` is
+  true only for `valid_standard`. `standard_errors` is `model` or the robust
+  type in use when valid, and null otherwise. `reason` is null when valid and
+  otherwise one sentence per status: the ridge penalty shrinks coefficients;
+  lasso or elastic net selects variables; the penalty was chosen by
+  cross-validation; monotonicity constraints restrict the coefficients;
+  automatically smoothed splines are penalised; covariance was not computed;
+  standard errors are not finite because the design is close to singular.
+- Every `glm_coefficients` row carries `feature` and a finite
+  `coefficient`. `std_error`, `z_value`, `p_value`, and `significance` are
+  present only when inference is valid and are null otherwise. A non-finite
+  coefficient fails the `glm_coefficients` diagnostic in `diagnostics_errors`.
+- `glm_relativities` exist only for log-link models; any other link yields
+  an empty list, never `exp` of a non-log coefficient. `ci_lower` and
+  `ci_upper` are null unless inference is valid. A relativity or confidence
+  bound that is not finite (`exp` overflow, as for an unscaled term or a
+  categorical level whose response is always zero) fails the
+  `glm_relativities` diagnostic naming the terms; the job still succeeds.
+- `glm_fit_statistics` contains finite numbers only: `deviance`,
+  `null_deviance`, `n_obs`, `df_model`, `df_residual`, `iterations`,
+  `converged`, `scale`, `log_likelihood` (omitted for quasi-likelihood
+  families), `aic` and `bic` when RustyStats defines them (it returns none
+  for quasi-likelihood families and for fits without valid inference, except
+  penalised smooth fits, which use effective degrees of freedom), and
+  `total_edf` and `gcv` for smooth fits. A non-finite value fails the
+  `glm_fit_statistics` diagnostic.
+- `glm_smooth_terms` lists each penalised smooth term as `{term, k, edf,
+  lambda}`.
+- `glm_regularization` is null for unpenalised fits and otherwise
+  `{penalty, mode, alpha, l1_ratio, n_nonzero, cv_folds, cv_selection,
+  cv_seed}` read from the fitted model, so `alpha` is the penalty actually
+  used; the cross-validation fields are null in fixed mode. It is not
+  derived from `regularization_path`, which 0.9 returns as a list (the old
+  attribute read always reported a selected alpha of 0).
+- The Coefficients pane shows the reason above the table, dashes in the
+  statistic columns, no significance legend, and term order instead of
+  p-value order when inference is invalid; it names robust standard errors
+  when they are used. Relativities draw confidence whiskers only when bounds
+  are present. The Summary shows smooth terms and the regularisation block.
+
+### Regularisation and solver controls
+
+- Config keys: `regularization` (`ridge`, `lasso`, `elastic_net`, or
+  absent), `alpha` (absent or 0 selects the penalty by cross-validation; a
+  positive number is a fixed penalty), `l1_ratio` (elastic net, 0 to 1),
+  `cv_folds` (integer 2 to 20), `cv_selection` (`min` or `1se`), and
+  `cv_seed` (non-negative integer).
+- Cross-validation mode passes `regularization`, `cv=cv_folds`,
+  `selection=cv_selection`, `cv_seed`, and the elastic-net `l1_ratio` to
+  `fit()`. RustyStats draws unseeded folds, so an unseeded fit picked a
+  different alpha on every run. Choosing a regularisation type in the pane
+  writes `cv_folds: 5`, `cv_selection: "min"`, and `cv_seed: 42` when they
+  are absent; the values stay visible and editable and survive type and mode
+  changes. The objective gate refuses a cross-validation config missing any
+  of them.
+- Fixed mode passes `alpha` and `l1_ratio` (0 for ridge, 1 for lasso, the
+  configured ratio for elastic net) and never `regularization`: RustyStats
+  ignores `alpha` whenever `regularization` is passed, so a configured alpha
+  of 0.5 trained at a cross-validated 59.5.
+- Regularisation of either mode is refused before training when any
+  penalised smooth spline is present (a `bs`, `ns`, or `ms` main term, or a
+  `bs` or `ns` interaction slot, without `df` or `knots`), naming the terms:
+  RustyStats raises for cross-validation and silently reuses a fixed alpha as
+  the smoothing parameter.
+- `max_iter` (integer 1 to 10000) and `tol` (number greater than 0 and less
+  than 1) are optional and reach `fit()` only when set; absent keeps
+  RustyStats' route-specific defaults.
+- `robust_standard_errors` (`HC0`, `HC1`, `HC2`, or `HC3`) is optional. When
+  set, the fit keeps its design matrix (`store_design_matrix=True`) and the
+  coefficient table and relativity bounds use `bse_robust`,
+  `tvalues_robust`, `pvalues_robust`, significance codes from the robust
+  p-values, and `conf_int_robust`. It is refused with regularisation,
+  monotonicity constraints (a `linear`, `expression`, or `bs` term with
+  `monotonicity`), or penalised smooth splines, where RustyStats marks
+  inference invalid. Robust statistics are computed on the fitted model
+  before it is saved; a reloaded model keeps the stored table.
+
+### Families, links, and dispersion parameters
+
+- One table, `GLM_FAMILY_LINKS` in `haute.modelling._train_config`, drives
+  backend validation, and the Target pane reads an identical TypeScript
+  constant pinned by a contract test: gaussian identity or log; poisson log
+  or identity; quasipoisson log or identity; binomial logit, log, or
+  identity; quasibinomial logit, log, or identity; gamma log or identity;
+  tweedie log or identity; negbinomial log or identity. The first link is
+  canonical and equals `rustystats.formula.get_default_link`. RustyStats
+  0.9.0 supports only identity, log, and logit, so `inverse`, `sqrt`,
+  `probit`, `cloglog`, `inverse_squared`, and the `inverse_gaussian` family
+  are removed. Quasibinomial defaults its metrics to AUC and log loss.
+- Tweedie `var_power` must lie in [1, 2]; `allow_extended_tweedie=True` is
+  passed only for exactly 1 or 2.
+- `theta` must be a finite positive number. `theta`, the controls above, and
+  every GLM key are declared in the modelling config type and the cache
+  config classification, so a sidecar write keeps them (theta was dropped
+  on save). The Negative Binomial help says RustyStats refuses to fit without
+  an explicit theta and that Estimate profiles the likelihood on the node's
+  training data.
+
+### Offsets across GLM and CatBoost
+
+- An offset column is a strictly positive exposure multiplier under a log
+  link and an additive term otherwise, for both algorithms. GLM log link:
+  `exposure=`. CatBoost `Poisson` and `Tweedie` losses: baseline
+  `log(offset)`. `RMSE`, `MAE`, `Logloss`, and `CrossEntropy`: baseline
+  verbatim. CatBoost applied every offset verbatim, contradicting the shared
+  help that promises 2× exposure gives 2× the expected count.
+- CatBoost models record the transform as `haute_offset_link` (`log` or
+  `identity`) beside `haute_offset_column`; every predict, diagnostics,
+  explainability, and scoring path applies the recorded transform, and a
+  model recording an offset column without a transform is refused with a
+  retrain message.
+- Training refuses a log-link offset with null or non-positive values before
+  fitting, naming the column and the row count; log-link scoring refuses the
+  same values.
+- A RustyStats model records its column on `_exposure_spec` (log link) or
+  `_offset_spec`. One accessor serves the native loader's
+  `ScoringModel.offset_column` and the scorer's offset guard, which read only
+  `_offset_spec` and so lost every log-link GLM offset.
+
+### Column types
+
+Backend and pane share five dtype classes, pinned by a fixture of Polars
+dtype names:
+
+- continuous (floats, decimals): `linear`, `bs`, `ns`, `ms`, expression
+  operands; default `linear`.
+- integer (signed and unsigned integers): the continuous fits plus
+  `categorical`, `target_encoding`, and `frequency_encoding`; default
+  `linear`.
+- boolean: `categorical`, `target_encoding`, `frequency_encoding`; default
+  `categorical`.
+- categorical (String, Categorical, Enum): `categorical`, `target_encoding`,
+  `frequency_encoding`; default `categorical`.
+- unsupported (dates, times, durations, lists, arrays, structs, binary,
+  null, object): not eligible. The pane lists how many columns it hides, and
+  validation refuses any term, operand, source, or factor of this class.
+
+The backend used string dtypes alone as categorical while the pane used a
+numeric check, so Boolean, Date, and Enum slots were shown as Categorical
+and fitted as linear. Joint encodings accept integer, boolean, and
+categorical factors. The route gate validates classes against the
+unprojected input schema; the job and adapter validate them against the
+training frame.
+
+### Term parameter contract
+
+- Every term has a string `type` and only its type's keys (the builder's
+  per-type keys plus `reference` on `categorical`). An unknown key is refused
+  by name.
+- `monotonicity` is `increasing` or `decreasing`; RustyStats reads any other
+  truthy value as decreasing.
+- At most one of `df`, `k`, and `knots`; RustyStats silently prefers `k`
+  over `df`.
+- `df` and `k` are integers no larger than 20 and at least `degree + 1` for
+  `bs` (degree 3 when unset), and at least 2 for `ns` and `ms`; below those
+  minimums RustyStats silently widens the basis. `degree` is an integer from
+  1 to 5. `knots` holds 1 to 20 finite, strictly increasing numbers.
+  `boundary_knots` holds exactly two finite increasing numbers that enclose
+  every knot.
+- `prior_weight` is `auto` or a finite non-negative number; `n_permutations`
+  is an integer from 1 to 100.
+- `levels` is a non-empty list of unique strings; `reference` is a non-empty
+  string; a term carries at most one of them. `reference` is translated when
+  the model is fitted into `levels` holding every observed label (NumPy
+  string form, nulls excluded) except the reference, so the reference and
+  unseen levels share the intercept. A `reference` or listed level that the
+  training data does not contain is refused with the observed labels, rather
+  than producing an all-zero column that RustyStats reports as a singular
+  matrix. Boolean labels are `True` and `False`.
+- Interaction overrides accept the keys listed in the stored config
+  contract with the same bounds. An interaction entry is a mapping with only
+  its documented keys; `factors` is a list of strings (an empty string is an
+  unfilled slot), `specs` maps picked factors to mappings, and
+  `include_main` is a boolean.
+- Role columns (target, weight, offset, fold, identifiers, and the
+  evaluation group or date key) cannot be term columns, expression operands,
+  encoding sources, or interaction factors.
+- Messages that list available columns show at most 20 names and the total.
+
+### Expression grammar
+
+- An identifier is a Unicode letter or underscore followed by Unicode
+  letters, Unicode numbers, or underscores. A number is ASCII digits with
+  optional ASCII decimal digits.
+- The forms are `identifier`, `identifier ** operand`, and
+  `identifier op operand` with `op` one of `+ - * /` and `operand` an
+  identifier or a number, with surrounding whitespace allowed.
+- A right-hand identifier that Python's `float()` parses (`inf`,
+  `infinity`, `nan` in any case) is refused, because RustyStats would read
+  it as a number.
+- The backend and the pane test the grammar against one shared fixture,
+  `frontend/src/panels/modelling/__tests__/fixtures/glmExpressionGrammar.json`.
+- A column whose name is not an identifier cannot appear in an expression;
+  the pane offers no expression for it and explains why when Add term has
+  nothing else to add. The grammar help says log and other transforms
+  belong in an upstream Polars node.
+
+### Interaction resolution
+
+A column's main effects are its native term and every encoding term whose
+`variable` names it. A product factor resolves in this order:
+
+1. An override is used as written, after its type, parameters, and dtype
+   class are validated.
+2. A column with exactly one main effect inherits it when interactions can
+   honour it: `linear` or `bs` without `monotonicity`, `ns`, `categorical`
+   without `levels` or `reference`, or `target_encoding`. RustyStats rejects
+   monotone fixed-df splines and silently drops monotonicity, levels, and
+   references inside interactions, so `ms`, monotone `linear` or `bs`,
+   level-restricted categoricals, and frequency encoding need an explicit
+   slot fit, and the error names the reason.
+3. A column with several main effects needs an explicit slot fit.
+4. A column with no main effect uses its dtype default.
+
+After every card is resolved, independent of card order: Product target
+encoding keeps its single-encoded-factor and Linear-partner rule; Include
+main effects materialises, for each column without a main effect, the one
+spec its include-main cards agree on, and cards that disagree are rejected
+together with guidance to add a main term; the mandatory target-encoded main
+effect is registered with settings that agree across cards and existing
+encodings; slots are checked against the effective main effects (categorical
+only over categorical, linear and splines never over categorical, target
+encoding never over categorical); and duplicates are checked per encoding
+mode and factor set. Different `linear`, `bs`, or `ns` local fits for one
+column across cards are allowed, because RustyStats builds each interaction's
+local basis separately. An encoding alias counts as a main effect, so
+Include main effects no longer adds a categorical main effect on top of a
+named target encoding.
+
+### Pane consistency
+
+- Dtype classes drive native, additional, slot, and joint menus.
+- A term naming an ineligible column (a role column, an unsupported dtype,
+  or a column no longer upstream) and a malformed entry (no string `type`)
+  are listed under Unresolved terms with the reason, the saved fit type, and
+  removal; a malformed entry offers a type select that writes a valid spec.
+  A malformed entry is never displayed as a linear term.
+- Term and spec lookups use own-property checks, so a column named
+  `constructor` or `toString` is an ordinary column.
+- Interaction cards and slots keep stable keys for their lifetime in the
+  editor, so removing one never moves drafts or disclosure state onto a
+  neighbour.
+- A malformed interaction entry renders an error card with a remove control.
+  A saved factor that is no longer eligible stays selected as unavailable
+  with a warning.
+- Slot fit menus follow "Interaction resolution". Saved choices outside the
+  menu stay visible with a warning.
+- Feature rows are tagged "Main effect from Interaction N (fit)" when
+  Include main effects materialises one, "Target encoding from Interaction
+  N" when a Product target encoding registers one, and "Interaction only"
+  only when neither applies. Conflicting materialisations are shown on the
+  cards involved.
+- Spline editors switch mode through one transition (Auto removes `df` and
+  `knots`; Fixed writes `df` as the larger of 5 and `degree + 1` and removes
+  `k` and `knots`). Numeric inputs keep a draft until a valid in-range value
+  commits, so clearing a field never flips the mode or deletes a sibling
+  setting.
+- Categorical Advanced settings offer Reference level (blank means the first
+  level in sorted order) and Levels, whose help says unlisted and unseen
+  levels share the intercept; entering one clears the other.
+- The Include main effects help is visible beside the checkbox. Refusal
+  alerts are shown per field.
+- The Target pane lists Quasi-Binomial, offers each family's links from the
+  shared table, and bounds the variance power to 1 to 2. Regularisation shows
+  Alpha, and in cross-validation mode folds, selection rule (minimum
+  deviance or one standard error), and seed, with inline messages for the
+  smooth-spline and robust-standard-error conflicts. An inline Solver
+  disclosure holds maximum iterations, tolerance, and robust standard errors.
+- One `modellingPanesFor(algorithm)` list drives the pane tabs and bodies.
+- Cleanups: the GLM branch of `finalSelectedFeatureNames`, the unused
+  `disabled` flag on fit options, the triplicated term-edit handlers, the
+  duplicated expression-card markup, and the duplicated unique-name loops
+  are removed, and per-row option computations are memoised.
+
+### Route and preparation behaviour
+
+- The evaluation preview demands only the target and the evaluation key, so
+  an unfinished GLM term no longer fails the whole estimate response.
+- The GLM schema gate resolves the input schema with dtypes inside an
+  admitted `TRAINING_PREP` execution context, validates role columns and
+  dtype classes, and the dispersion route reuses the preamble it compiled.
+- One `is_glm_config` predicate serves the route helpers.
+- A GLM without terms is refused when `TrainingJob` is constructed and by
+  `GLMAlgorithm.fit`; the auto-term builder is removed.
+- `GLMAlgorithm.glm_diagnostics` is removed: nothing called it, it passed
+  `data=` where RustyStats expects `train_data=`, and a working call writes
+  `analysis/diagnostics.json` into the server's working directory.
+- The end-to-end GLM integration fixture uses a well-conditioned design; the
+  previous spline plus squared expression on the same unscaled column
+  overflowed `exp` on Linux CI.
 
 ## Planned improvements
 
@@ -563,8 +903,7 @@ dispersion worker's column load through them. Rewrite `_build_interactions`
 per the interaction-building rules. In `_train_config.py` delete
 `all_factors` from `GLM_CONFIG_KEYS` and `training_objective_issue` (whose
 empty-terms message becomes "GLM config has no terms. Add a term to at least
-one feature — an empty term set would silently auto-build a term for every
-column."), drop the `exclude` narrowing from `_effective_glm_params`, and
+one feature."), drop the `exclude` narrowing from `_effective_glm_params`, and
 pass `exclude=[]` and `monotone_constraints=None` for GLM. Remove
 `all_factors` from `_resolve_glm_terms`, remove the `fit` branch that copies
 `monotone_constraints` into terms, and reject GLM jobs constructed with
@@ -707,3 +1046,195 @@ on a linear main term, trains it, and sees results.
 **Evidence:** `frontend/src/panels/modelling/glmTerms.ts`
 (interaction slot rules); `src/haute/modelling/_rustystats.py`
 (`_build_interactions`); `frontend/e2e/core-flows.spec.ts`.
+
+### MOD-T04 — GLM result integrity
+**Why:** Every penalised-spline, monotone, or regularised GLM failed at result
+delivery because RustyStats 0.9 reports NaN standard errors for fits without
+valid inference, an ill-conditioned fit can overflow `exp` in relativities,
+non-log links received `exp` relativities through a fallback, the reported
+selected alpha was always 0, and smoothing results were never shown.
+
+**Plan:** Implement "Result integrity": `coefficients_table`,
+`relativities`, and `fit_statistics` in `src/haute/modelling/_rustystats.py`
+read `inference_status`, emit nullable inference fields, and raise a named
+diagnostic error for non-finite values; add `glm_inference`,
+`glm_smooth_terms`, and `glm_regularization` (replacing
+`glm_regularization_path`) to the training result, worker response,
+`TrainResponse`, MLflow log fields, frontend types, guards, factories, and
+the Coefficients, Relativities, and Summary panes. Replace the overflowing
+end-to-end fixture.
+
+**Acceptance:** Named scenarios:
+`test_monotone_glm_result_passes_the_finite_response_guard_with_null_inference`;
+`test_auto_spline_glm_reports_smooth_terms_and_unavailable_inference`;
+`test_cv_ridge_glm_reports_the_selected_alpha_and_folds`;
+`test_relativity_overflow_is_a_diagnostic_error_not_a_job_failure`;
+`test_identity_link_has_no_relativities`;
+`test_singular_design_reports_invalid_inference`; and frontend tests that
+the Coefficients pane shows the reason and dashes for invalid inference,
+that Relativities omit missing bounds, and that the Summary lists smooth
+terms and the regularisation block. The end-to-end integration test passes
+on Linux CI.
+
+**Dependencies:** MOD-T00, MOD-T01.
+
+**Evidence:** `src/haute/modelling/_rustystats.py` (`coefficients_table`,
+`relativities`, `fit_statistics`); `src/haute/modelling/_training_job.py`
+(GLM diagnostics block); `src/haute/routes/_training_worker.py`
+(`_assert_json_finite`); `frontend/src/panels/modelling/GLMCoefficientsTab.tsx`;
+`tests/test_glm_integration.py`.
+
+### MOD-T05 — Regularisation, solver, and family controls
+**Why:** A configured alpha was silently replaced by a cross-validated one,
+cross-validation was unseeded and not reproducible, regularisation with
+automatic splines either raised inside RustyStats or silently became a
+smoothing parameter, the link table offered links RustyStats 0.9.0 rejects,
+Tweedie accepted any power once extended support was switched on, theta was
+dropped when a config was saved, and robust standard errors and solver
+controls were unavailable.
+
+**Plan:** Implement "Regularisation and solver controls" and "Families,
+links, and dispersion parameters": fixed and cross-validation fit kwargs in
+`GLMAlgorithm.fit`; `cv_folds`, `cv_selection`, `cv_seed`, `max_iter`, `tol`,
+and `robust_standard_errors` in `GLM_CONFIG_KEYS`, the modelling config
+type, the cache classification, the objective gate, and the frontend gate;
+`GLM_FAMILY_LINKS` shared by both route validators and the Target pane;
+quasibinomial; the Tweedie range; and the Regularisation and Solver controls
+in the Target pane.
+
+**Acceptance:** Named scenarios:
+`test_fixed_alpha_reaches_rustystats_without_cross_validation`;
+`test_cross_validation_is_seeded_and_reproducible`;
+`test_regularization_with_penalised_spline_is_refused`;
+`test_robust_standard_errors_use_hc_statistics`;
+`test_robust_standard_errors_with_regularization_are_refused`;
+`test_unsupported_links_and_inverse_gaussian_are_refused`;
+`test_quasibinomial_fits_with_logit_link`;
+`test_tweedie_power_outside_one_to_two_is_refused`;
+`test_theta_and_glm_controls_survive_a_sidecar_write`;
+`test_family_link_table_matches_frontend_and_rustystats_default_links`; and
+frontend tests for the regularisation, cross-validation, and solver controls
+and their gate messages.
+
+**Dependencies:** MOD-T04.
+
+**Evidence:** `src/haute/modelling/_rustystats.py` (`GLMAlgorithm.fit`);
+`src/haute/modelling/_train_config.py`; `src/haute/_types.py`
+(`ModellingConfig`); `src/haute/_cache.py`;
+`src/haute/routes/_training_preparation.py` and
+`src/haute/routes/_training_evaluation.py` (`_VALID_GLM_LINKS`);
+`frontend/src/panels/modelling/GLMRegularizationConfig.tsx`;
+`frontend/src/panels/modelling/GLMTargetConfig.tsx`.
+
+### MOD-T06 — Offsets across GLM and CatBoost
+**Why:** Log-link GLMs record their offset on `_exposure_spec`, which the
+native loader and scorer never read, so saved models lost their offset
+contract; CatBoost applied offsets verbatim while the shared help promises a
+multiplier; and non-positive exposure failed inside RustyStats with an
+unclassified error.
+
+**Plan:** Implement "Offsets across GLM and CatBoost": one RustyStats offset
+accessor in `_mlflow_io.py` used by `_model_scorer.py`; the CatBoost
+`haute_offset_link` metadata and one baseline transform used by training,
+prediction, diagnostics, explainability, and scoring; and the positive
+exposure check in training preparation and log-link scoring.
+
+**Acceptance:** Named scenarios:
+`test_loaded_log_link_glm_reports_its_exposure_column`;
+`test_catboost_poisson_offset_is_a_multiplier`;
+`test_catboost_rmse_offset_is_additive`;
+`test_catboost_model_without_offset_link_metadata_is_refused`;
+`test_non_positive_log_link_offset_is_refused_before_fitting`; and
+`test_scoring_refuses_non_positive_log_link_exposure`.
+
+**Dependencies:** MOD-T00.
+
+**Evidence:** `src/haute/_mlflow_io.py` (`_load_rustystats_model`,
+`_catboost_offset_column`); `src/haute/_model_scorer.py`
+(`_model_offset_column`, `_catboost_baseline_pool`);
+`src/haute/modelling/_algorithms.py` (`_build_pool`,
+`CATBOOST_OFFSET_METADATA_KEY`); `src/haute/modelling/_training_job.py`;
+`frontend/src/panels/modelling/OffsetFieldLabel.tsx`.
+
+### MOD-T07 — GLM term contract and interaction resolution
+**Why:** Inherited `levels` and monotonicity were silently dropped inside
+interactions, a named target encoding was invisible to interaction
+resolution and produced a rank-deficient design, target encoding over a
+categorical main effect was exactly collinear, the fitted main effect
+depended on interaction-card order, backend and pane classified Boolean,
+Date, and Enum columns differently, invalid parameters were silently
+reinterpreted by RustyStats, terms on role columns passed the route gate,
+malformed interaction entries were split into characters or escaped as
+server errors, and the expression grammar disagreed between the backend and
+the pane for non-ASCII names.
+
+**Plan:** Implement "Column types", "Term parameter contract", "Expression
+grammar", and "Interaction resolution" in `src/haute/modelling/_glm_terms.py`
+and `_build_interactions`; translate `reference` and check observed levels
+at fit; pass dtype classes from the training frame and the unprojected
+schema; refuse role columns; share the CatBoost-only lever list and one
+`is_glm_config` predicate; remove the auto-term builder and
+`glm_diagnostics`; and implement the route items of "Route and preparation
+behaviour".
+
+**Acceptance:** Named scenarios:
+`test_inherited_levels_or_monotonicity_require_an_explicit_slot_fit`;
+`test_named_target_encoding_counts_as_a_main_effect`;
+`test_target_encoding_slot_over_categorical_main_is_refused`;
+`test_materialised_main_effect_is_independent_of_card_order`;
+`test_different_local_splines_for_one_column_across_cards_are_allowed`;
+`test_dtype_classes_drive_defaults_and_allowed_fits`;
+`test_integer_column_can_be_categorical_and_target_encoded`;
+`test_unsupported_dtype_terms_are_refused`;
+`test_term_parameters_outside_the_contract_are_refused`;
+`test_reference_level_translates_to_levels_and_refuses_unobserved_labels`;
+`test_role_columns_cannot_be_terms_or_factors`;
+`test_malformed_interaction_entries_are_validation_errors`;
+`test_expression_grammar_matches_the_shared_fixture`;
+`test_glm_refuses_catboost_only_levers_and_empty_terms`;
+`test_evaluation_preview_ignores_unfinished_terms`; and
+`test_dispersion_frame_includes_an_interaction_only_materialised_column`.
+
+**Dependencies:** MOD-T01.
+
+**Evidence:** `src/haute/modelling/_glm_terms.py`;
+`src/haute/modelling/_rustystats.py` (`_build_interactions`,
+`_resolve_interaction_factor_spec`); `src/haute/modelling/_training_job.py`
+(`_derive_features`); `src/haute/routes/_training_lifecycle.py`
+(`evaluation_preview`, `_validate_glm_input_schema`);
+`src/haute/routes/_training_worker.py`.
+
+### MOD-T08 — GLM pane consistency
+**Why:** The pane hid terms on role or missing columns, crashed on malformed
+interaction entries, treated prototype-named columns as existing terms,
+moved drafts between cards after a removal, labelled materialised main
+effects "Interaction only", flipped spline mode while a number was edited,
+offered fits the backend refused, had no reference-level control, and
+carried duplicated and dead code.
+
+**Plan:** Implement "Pane consistency" in `glmTerms.ts`, `TermCard.tsx`,
+`GLMTermsConfig.tsx`, `GLMInteractionsConfig.tsx`, `NodePanel.tsx`,
+`ModellingConfig.tsx`, and `featureSelection.ts`, mirroring MOD-T07's dtype
+classes, parameter bounds, grammar fixture, and resolution rules as pure
+helpers with exact-payload tests.
+
+**Acceptance:** Named scenarios in `glmTerms.test.ts`,
+`GLMTermsConfig.test.tsx`, `GLMInteractionsConfig.test.tsx`, and
+`TermCard.test.tsx`: unresolved role, missing, unsupported, and malformed
+terms are listed with reasons and removable; a `constructor` column behaves
+as an ordinary column; removing an interaction keeps the remaining card's
+draft; a malformed interaction renders an error card; an unavailable saved
+factor stays selected with a warning; slot menus match the resolution
+rules; materialised main-effect tags; clearing a spline df field keeps Fixed
+mode and sibling settings; reference level and levels are exclusive; integer
+columns offer categorical and encoding fits; non-identifier columns offer no
+expression; and the expression grammar fixture passes. The browser flow
+trains a GLM with an automatic spline and sees its coefficients.
+
+**Dependencies:** MOD-T05, MOD-T07.
+
+**Evidence:** `frontend/src/panels/modelling/glmTerms.ts`;
+`frontend/src/panels/modelling/TermCard.tsx`;
+`frontend/src/panels/modelling/GLMTermsConfig.tsx`;
+`frontend/src/panels/modelling/GLMInteractionsConfig.tsx`;
+`frontend/src/panels/NodePanel.tsx`; `frontend/e2e/core-flows.spec.ts`.

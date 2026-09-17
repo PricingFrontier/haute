@@ -18,12 +18,13 @@ import {
   type LoadAvailability,
 } from "../types/node"
 import type { PipelineDiagnostic } from "../types/pipelineDocument"
-import useUIStore, { type ExplorePane, type ModellingPane } from "../stores/useUIStore"
+import useUIStore, { type ExplorePane } from "../stores/useUIStore"
 import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
 import { recoverySummaryKey, useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
 import { buildExploreCacheIdentity } from "./explore/cacheIdentity"
+import { modellingPanesFor, resolveModellingPane } from "./modelling/modellingPanes"
 import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import { useGraph } from "./useGraph"
@@ -108,15 +109,6 @@ const EXPLORE_PANES = [
   { key: "charts", label: "Charts" },
   { key: "export", label: "Export" },
 ] as const satisfies readonly { key: ExplorePane; label: string }[]
-
-const MODELLING_PANES = [
-  { key: "target", label: "Target" },
-  { key: "features", label: "Features" },
-  { key: "params", label: "Params" },
-  { key: "split", label: "Split" },
-  { key: "train", label: "Train" },
-  { key: "export", label: "Export" },
-] as const satisfies readonly { key: ModellingPane; label: string }[]
 
 // ─── Instance sub-panel (kept inline — it references multiple node-level concerns) ──
 
@@ -1519,11 +1511,10 @@ function NodePanelContent({
   const refreshTitle = showExplorePanes ? "Refresh Explore outputs" : "Refresh preview"
   const activeExplorePane = showExplorePanes ? rememberedExplorePane ?? "code" : "code"
   const algorithm = typeof config.algorithm === "string" ? config.algorithm.toLowerCase() : ""
-  const showModellingPanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.MODELLING && (algorithm === "catboost" || algorithm === "glm")
-  const activeModellingPane = showModellingPanes && !(algorithm === "glm" && rememberedModellingPane === "params")
-    ? rememberedModellingPane ?? "target"
-    : "target"
-  const modellingTabs = MODELLING_PANES.filter((pane) => algorithm !== "glm" || pane.key !== "params").map((pane) => ({
+  const modellingPanes = modellingPanesFor(algorithm)
+  const showModellingPanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.MODELLING && modellingPanes.length > 0
+  const activeModellingPane = showModellingPanes ? resolveModellingPane(algorithm, rememberedModellingPane) : "target"
+  const modellingTabs = modellingPanes.map((pane) => ({
     ...pane,
     indicator: pane.key === "train" && hasActiveTrainJob
       ? { kind: "active" as const, label: "Training is running" }

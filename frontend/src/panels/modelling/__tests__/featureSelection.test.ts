@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   finalSelectedFeatureNames,
+  roleColumnReasons,
   roleColumns,
   type ModellingColumn,
 } from "../featureSelection"
@@ -69,29 +70,26 @@ describe("feature-selection transitions", () => {
     ).toEqual(new Set(["target", "weight", "offset", "fold", "id", "date"]))
   })
 
-  it("derives final selections for CatBoost and GLM", () => {
+  it("derives the final CatBoost selection from exclusions", () => {
     const eligible = columns.filter(({ name }) => ["age", "region"].includes(name))
 
-    expect(
-      finalSelectedFeatureNames({ exclude: ["region"] }, eligible, "catboost"),
-    ).toEqual(new Set(["age"]))
-    expect(
-      finalSelectedFeatureNames(
-        {
-          terms: { region: { type: "categorical" }, a2: { type: "expression", expr: "age ** 2" } },
-          exclude: ["age"],
-        },
-        eligible,
-        "glm",
-      ),
-    ).toEqual(new Set(["region", "age"]))
-    expect(
-      finalSelectedFeatureNames(
-        { terms: {}, interactions: [{ factors: ["age", "region"], include_main: true }] },
-        eligible,
-        "glm",
-      ),
-    ).toEqual(new Set(["age", "region"]))
+    expect(finalSelectedFeatureNames({ exclude: ["region"] }, eligible)).toEqual(new Set(["age"]))
+    expect(finalSelectedFeatureNames({}, eligible)).toEqual(new Set(["age", "region"]))
+  })
+
+  it("names each column's modelling role", () => {
+    expect(roleColumnReasons({
+      target: "target",
+      weight: "weight",
+      offset: "target",
+      id_columns: ["id", "weight"],
+      evaluation: { strategy: "group", group_column: "group" },
+    })).toEqual(new Map([
+      ["target", "target"],
+      ["weight", "weight"],
+      ["id", "identifier"],
+      ["group", "evaluation"],
+    ]))
   })
 
 })

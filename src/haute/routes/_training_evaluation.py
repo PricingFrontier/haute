@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
@@ -12,26 +13,14 @@ from haute.errors import HauteValidationError
 from haute.modelling._evaluation import (
     EvaluationPlan,
 )
+from haute.modelling._train_config import build_train_params, validate_glm_params
 
 logger = get_logger(component="server.modelling.train")
 
-_DISPERSION_ESTIMATE_ROW_CAP = 200_000
-_DISPERSION_PARAM_FAMILIES = {"theta": "negbinomial", "var_power": "tweedie"}
-_DISPERSION_PARAM_STUBS = {"theta": 1.0, "var_power": 1.5}
-_VALID_GLM_LINKS: dict[str, tuple[str, ...]] = {
-    "gaussian": ("identity", "log", "inverse"),
-    "binomial": ("logit", "probit", "cloglog"),
-    "poisson": ("log", "identity", "sqrt"),
-    "quasipoisson": ("log", "identity"),
-    "negbinomial": ("log", "identity"),
-    "gamma": ("inverse", "log", "identity"),
-    "tweedie": ("log", "identity"),
-    "inverse_gaussian": ("inverse_squared", "inverse", "log", "identity"),
-}
-
-
-# cost per candidate. 200k rows pins a single dispersion scalar far tighter
-# than the search's own tolerance.
+# Dispersion estimation profiles the likelihood on a bounded sample: each
+# candidate is a full GLM fit, so the row cap bounds the per-candidate cost.
+# 200k rows pins a single dispersion scalar far tighter than the search's own
+# tolerance.
 _DISPERSION_ESTIMATE_ROW_CAP = 200_000
 
 # Which GLM family owns each estimable dispersion parameter.
@@ -43,35 +32,12 @@ _DISPERSION_PARAM_FAMILIES = {"theta": "negbinomial", "var_power": "tweedie"}
 _DISPERSION_PARAM_STUBS = {"theta": 1.0, "var_power": 1.5}
 
 
-def _validate_glm_family_link(family: str, link: str) -> None:
-    """Raise HTTPException(400) if the family is unset or the combination invalid."""
-    if not family:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "No GLM family selected. Open the config panel and choose a "
-                "distribution family explicitly (e.g. poisson for claim counts, "
-                "gamma for severity) — an unset family would silently train a "
-                "gaussian model."
-            ),
-        )
-    if family not in _VALID_GLM_LINKS:
-        raise HTTPException(
-            status_code=400,
-            detail=(f"Unknown GLM family '{family}'. Available: {', '.join(_VALID_GLM_LINKS)}."),
-        )
-    if not link:
-        return  # canonical link will be used
-    valid = _VALID_GLM_LINKS[family]
-    if link not in valid:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Link '{link}' is not valid for the {family} family. "
-                f"Valid links: {', '.join(valid)}. "
-                f"For a binary target like sale_flag, use family='binomial' with link='logit'."
-            ),
-        )
+def _validate_glm_config_values(config: Mapping[str, Any]) -> None:
+    """Raise HTTPException(400) when a GLM config holds invalid values."""
+    try:
+        validate_glm_params(build_train_params(config))
+    except HauteValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _evaluation_preview_payload(

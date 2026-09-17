@@ -109,18 +109,30 @@ describe("SummaryTab", () => {
     expect(screen.getByText("No final test was reserved for this run.")).toBeInTheDocument()
   })
 
-  it("keeps zero-valued GLM regularization available", () => {
+  it("keeps a zero-valued cross-validated penalty and its fold settings available", () => {
     const result = makeTrainResult({
-      glm_regularization_path: { selected_alpha: 0, n_nonzero: 0 },
+      glm_regularization: {
+        penalty: "lasso",
+        mode: "cross_validation",
+        alpha: 0,
+        l1_ratio: 1,
+        n_nonzero: 0,
+        cv_folds: 5,
+        cv_selection: "1se",
+        cv_seed: 42,
+      },
     })
 
     render(<SummaryTab result={result} />)
 
     const regularization = screen.getByRole("region", { name: "Regularization" })
-    expect(within(regularization).getByText("Alpha")).toBeInTheDocument()
-    expect(within(regularization).getByText("0.000000")).toBeInTheDocument()
+    expect(within(regularization).getByText("0.00000")).toBeInTheDocument()
     expect(within(regularization).getByText("Non-zero coefficients")).toBeInTheDocument()
     expect(within(regularization).getByText("0")).toBeInTheDocument()
+    expect(within(regularization).getByText("5-fold cross-validation")).toBeInTheDocument()
+    expect(within(regularization).getByText("One standard error")).toBeInTheDocument()
+    expect(within(regularization).getByText("42")).toBeInTheDocument()
+    expect(within(regularization).queryByText("L1 ratio")).not.toBeInTheDocument()
   })
 
   it("shows warning and optional diagnostic failures", () => {

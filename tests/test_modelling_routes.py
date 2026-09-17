@@ -23,7 +23,7 @@ from haute.routes._train_service import (
     _declared_categorical_levels_for_training,
     _friendly_error,
     _training_required_columns_by_node,
-    _validate_glm_family_link,
+    _validate_glm_config_values,
 )
 from tests.conftest import (
     make_edge,
@@ -1570,6 +1570,27 @@ class TestEstimateEndpoint:
             "min_selection_validation_rows": 12,
             "max_selection_validation_rows": 12,
         }
+
+    @pytest.mark.parametrize(
+        "terms",
+        [
+            {"ghost": {"type": "linear"}},
+            {"x1": {"type": "linear"}, "ratio": {"type": "expression", "expr": "x1 / missing"}},
+        ],
+    )
+    def test_evaluation_preview_ignores_unfinished_terms(self, client, training_data, terms):
+        """The preview reads only the target and the evaluation key, so a GLM
+        term on a column that is not upstream does not fail the estimate."""
+        graph = _make_modelling_graph(training_data, algorithm="glm", params={})
+        config = graph["nodes"][1]["data"]["config"]
+        config.update({"family": "gaussian", "terms": terms})
+
+        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+
+        assert resp.status_code == 200, resp.text
+        preview = resp.json()["evaluation_preview"]
+        assert preview is not None
+        assert preview["development_rows"] == 60
 
     def test_estimate_maps_evaluation_preview_validation_failure_to_422(
         self,
@@ -3234,65 +3255,68 @@ class TestGlmSinkExclusions:
 
 
 # ---------------------------------------------------------------------------
-# _validate_glm_family_link unit tests
+# _validate_glm_config_values unit tests
 # ---------------------------------------------------------------------------
 
 
-class TestValidateGlmFamilyLink:
-    def test_unknown_family(self):
+def _glm_values(**overrides: object) -> dict[str, object]:
+    return {
+        "algorithm": "glm",
+        "target": "y",
+        "family": "poisson",
+        "terms": {"x": {"type": "linear"}},
+        **overrides,
+    }
+
+
+class TestValidateGlmConfigValues:
+    def test_unknown_family_names_the_supported_families(self):
         with pytest.raises(HTTPException) as exc_info:
-            _validate_glm_family_link("exponential", "log")
+            _validate_glm_config_values(_glm_values(family="exponential"))
         assert exc_info.value.status_code == 400
         assert "exponential" in exc_info.value.detail
         assert "gaussian" in exc_info.value.detail
 
-    def test_invalid_link_for_family(self):
+    def test_invalid_link_names_the_family_links(self):
         with pytest.raises(HTTPException) as exc_info:
-            _validate_glm_family_link("binomial", "identity")
+            _validate_glm_config_values(_glm_values(family="gamma", link="logit"))
         assert exc_info.value.status_code == 400
-        assert "identity" in exc_info.value.detail
-        assert "logit" in exc_info.value.detail
+        assert exc_info.value.detail == (
+            "Link 'logit' is not valid for the gamma family. Valid links: log, identity."
+        )
 
-    def test_valid_family_link(self):
-        _validate_glm_family_link("gamma", "log")
-
-    def test_quasipoisson_accepted(self):
-        """Quasi-Poisson estimates its dispersion (no user parameter), so the
-        route validates it — RustyStats accepts only log/identity, no sqrt."""
-        _validate_glm_family_link("quasipoisson", "log")
-        _validate_glm_family_link("quasipoisson", "identity")
-        _validate_glm_family_link("quasipoisson", "")  # canonical link
-
-    def test_quasipoisson_rejects_bad_link(self):
+    @pytest.mark.parametrize(
+        ("family", "link"),
+        [
+            ("gaussian", "inverse"),
+            ("binomial", "probit"),
+            ("binomial", "cloglog"),
+            ("poisson", "sqrt"),
+            ("gamma", "inverse"),
+            ("inverse_gaussian", ""),
+        ],
+    )
+    def test_unsupported_links_and_inverse_gaussian_are_refused(self, family, link):
         with pytest.raises(HTTPException) as exc_info:
-            _validate_glm_family_link("quasipoisson", "logit")
+            _validate_glm_config_values(_glm_values(family=family, link=link))
         assert exc_info.value.status_code == 400
-        assert "logit" in exc_info.value.detail
 
-    def test_negbinomial_accepted(self):
-        """Neg. Binomial is offered now its theta gate exists: the training
-        objective requires an explicit theta (training_objective_issue), so
-        the unset theta that held it out of #86 can never reach a fit.
-        RustyStats accepts only log/identity — no sqrt."""
-        _validate_glm_family_link("negbinomial", "log")
-        _validate_glm_family_link("negbinomial", "identity")
-        _validate_glm_family_link("negbinomial", "")  # canonical link
+    @pytest.mark.parametrize(
+        ("family", "link"),
+        [
+            ("quasipoisson", ""),
+            ("quasipoisson", "identity"),
+            ("negbinomial", "log"),
+            ("quasibinomial", "logit"),
+            ("binomial", "log"),
+            ("gaussian", "log"),
+        ],
+    )
+    def test_supported_family_links_pass(self, family, link):
+        _validate_glm_config_values(_glm_values(family=family, link=link))
 
-    def test_negbinomial_rejects_bad_link(self):
-        with pytest.raises(HTTPException) as exc_info:
-            _validate_glm_family_link("negbinomial", "sqrt")
-        assert exc_info.value.status_code == 400
-        assert "sqrt" in exc_info.value.detail
-
-    def test_empty_family_raises(self):
-        """The old early-return here was the silent gaussian-default channel."""
-        with pytest.raises(HTTPException) as exc_info:
-            _validate_glm_family_link("", "log")
-        assert exc_info.value.status_code == 400
-        assert "family" in exc_info.value.detail.lower()
-
-    def test_empty_link_skips(self):
-        _validate_glm_family_link("poisson", "")
+    def test_absent_family_is_left_to_the_objective_gate(self):
+        _validate_glm_config_values({"algorithm": "glm", "terms": {"x": {"type": "linear"}}})
 
 
 # ---------------------------------------------------------------------------
@@ -3545,10 +3569,12 @@ class TestDispersionErrorPaths:
         assert job["status"] == "contract_error"
         assert "missing column" in job["message"]
 
-    def test_start_preserves_explicit_feature_that_is_also_excluded(
+    def test_start_keeps_only_role_columns_because_glm_ignores_catboost_levers(
         self,
         nb_training_data,
     ):
+        """feature_columns and exclude are CatBoost levers: a GLM's sink keeps
+        its role columns and reads its term columns through projection demand."""
         from haute._execution_context import ExecutionContext, ExecutionProfile
         from haute.schemas import DispersionEstimateRequest
 
@@ -3556,6 +3582,7 @@ class TestDispersionErrorPaths:
             nb_training_data,
             feature_columns=["x1"],
             exclude=["x1"],
+            theta=1.5,
         )
         store, service = self._service()
         body = DispersionEstimateRequest.model_validate(
@@ -3584,7 +3611,7 @@ class TestDispersionErrorPaths:
             response = service.start_dispersion_estimate(body)
 
         assert response.status == "started"
-        assert "x1" in captured["keep_columns"]
+        assert captured["keep_columns"] == ["y"]
 
     def test_start_maps_unexpected_exception_to_error(self, nb_training_data):
         from haute.schemas import DispersionEstimateRequest
@@ -3796,7 +3823,11 @@ class TestDispersionErrorPaths:
                     owns_tmp=False,
                     features=["other_column"],
                     cat_features=[],
+                    feature_dtypes={"other_column": "Float64"},
                 )
+
+            def _role_columns(self):
+                return {"y": "target"}
 
         store, service = self._service()
         with patch("haute.modelling.TrainingJob", FakeJob):

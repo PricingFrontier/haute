@@ -377,7 +377,7 @@ class TestBuildPool:
         assert pool.num_row() == 3
 
     def test_pool_with_weight_and_offset(self):
-        """Weight and offset are extracted from df correctly."""
+        """Weight and offset are extracted from df; a log link logs the exposure."""
         from haute.modelling._algorithms import _build_pool
 
         df = pl.DataFrame(
@@ -385,11 +385,30 @@ class TestBuildPool:
                 "f1": [1.0, 2.0, 3.0],
                 "y": [0.0, 1.0, 0.0],
                 "w": [1.0, 2.0, 1.0],
-                "off": [0.1, 0.2, 0.3],
+                "off": [0.5, 1.0, 2.0],
             }
         )
-        pool = _build_pool(df, ["f1"], [], target="y", weight="w", offset="off")
-        assert pool.num_row() == 3
+        log_pool = _build_pool(
+            df, ["f1"], [], target="y", weight="w", offset="off", offset_link="log"
+        )
+        identity_pool = _build_pool(
+            df, ["f1"], [], target="y", weight="w", offset="off", offset_link="identity"
+        )
+        assert log_pool.num_row() == 3
+        np.testing.assert_allclose(log_pool.get_baseline().ravel(), np.log([0.5, 1.0, 2.0]))
+        np.testing.assert_allclose(identity_pool.get_baseline().ravel(), [0.5, 1.0, 2.0])
+
+    def test_pool_offset_needs_its_link_and_log_link_refuses_non_positive_exposure(self):
+        from haute.errors import HauteValidationError
+        from haute.modelling._algorithms import _build_pool
+
+        df = pl.DataFrame({"f1": [1.0, 2.0], "y": [0.0, 1.0], "off": [0.0, 1.0]})
+        with pytest.raises(HauteValidationError, match="needs its link"):
+            _build_pool(df, ["f1"], [], target="y", offset="off")
+        with pytest.raises(
+            HauteValidationError, match="must be positive under a log link, but 1 rows"
+        ):
+            _build_pool(df, ["f1"], [], target="y", offset="off", offset_link="log")
 
     def test_pool_with_pre_extracted_arrays(self):
         """Pre-extracted y, w, baseline arrays bypass df extraction."""
@@ -1141,9 +1160,10 @@ class TestSaveArtifactsCoverage:
 
         job = TrainingJob(
             name="myglm",
-            data=pl.DataFrame({"y": [1]}),
+            data=pl.DataFrame({"y": [1], "x": [1.0]}),
             target="y",
             algorithm="glm",
+            params={"family": "gaussian", "terms": {"x": {"type": "linear"}}},
             output_dir=str(tmp_path),
         )
         train_result = _TrainModelResult(
@@ -2048,8 +2068,8 @@ class TestPrepareDataWriteError:
 class TestComputeMetricsGLMExceptions:
     """Cover the try/except blocks in _compute_metrics for GLM diagnostics."""
 
-    def test_glm_coefficients_exception_is_logged(self, tmp_path):
-        """When coefficients_table raises, warning is logged and empty list returned."""
+    def test_glm_result_failures_are_recorded_without_failing_training(self, tmp_path, monkeypatch):
+        """Each GLM result diagnostic that raises is recorded by name; training succeeds."""
         from haute.modelling._training_job import TrainingJob
 
         rng = np.random.RandomState(42)
@@ -2067,34 +2087,34 @@ class TestComputeMetricsGLMExceptions:
             output_dir=str(tmp_path),
         )
 
-        # Patch the GLMAlgorithm methods to raise exceptions to cover the except blocks
-        from haute.modelling._rustystats import GLMAlgorithm
+        from haute.modelling import _rustystats
 
-        orig_coefs = GLMAlgorithm.coefficients_table
-        orig_rels = GLMAlgorithm.relativities
-        orig_stats = GLMAlgorithm.fit_statistics
+        def fail(name: str):
+            def raise_error(*_args, **_kwargs):
+                raise RuntimeError(f"{name} fail")
 
-        try:
-            GLMAlgorithm.coefficients_table = lambda self, model: (_ for _ in ()).throw(
-                RuntimeError("coef fail")
-            )
-            GLMAlgorithm.relativities = lambda self, model: (_ for _ in ()).throw(
-                RuntimeError("rel fail")
-            )
-            GLMAlgorithm.fit_statistics = lambda self, model: (_ for _ in ()).throw(
-                RuntimeError("stats fail")
-            )
+            return raise_error
 
-            result = job.run()
+        monkeypatch.setattr(_rustystats, "glm_coefficient_rows", fail("coef"))
+        monkeypatch.setattr(_rustystats, "glm_relativity_rows", fail("rel"))
+        monkeypatch.setattr(_rustystats, "glm_fit_statistics", fail("stats"))
 
-            # Diagnostics should be empty but training should still succeed
-            assert result.glm_coefficients == []
-            assert result.glm_relativities == []
-            assert result.glm_fit_statistics == {}
-        finally:
-            GLMAlgorithm.coefficients_table = orig_coefs
-            GLMAlgorithm.relativities = orig_rels
-            GLMAlgorithm.fit_statistics = orig_stats
+        result = job.run()
+
+        assert result.glm_coefficients == []
+        assert result.glm_relativities == []
+        assert result.glm_fit_statistics == {}
+        assert result.glm_inference == {
+            "status": "valid_standard",
+            "valid": True,
+            "standard_errors": "model",
+            "reason": None,
+        }
+        assert {(error["diagnostic"], error["error"]) for error in result.diagnostics_errors} >= {
+            ("glm_coefficients", "coef fail"),
+            ("glm_relativities", "rel fail"),
+            ("glm_fit_statistics", "stats fail"),
+        }
 
 
 # ---------------------------------------------------------------------------

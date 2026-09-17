@@ -14,9 +14,8 @@ from haute.routes._training_evaluation import (
     _DISPERSION_ESTIMATE_ROW_CAP,
     _DISPERSION_PARAM_FAMILIES,
     _DISPERSION_PARAM_STUBS,
-    _VALID_GLM_LINKS,
     _evaluation_preview_payload,
-    _validate_glm_family_link,
+    _validate_glm_config_values,
 )
 from haute.routes._training_lifecycle import (
     _DISPERSION_JOB_TYPE,
@@ -73,7 +72,6 @@ __all__ = [
     "_TRAINING_ARTIFACT_KINDS",
     "_TRAINING_JOB_TYPE",
     "_TUNING_ARTIFACT_PATHS",
-    "_VALID_GLM_LINKS",
     "_VramCheck",
     "_assert_json_finite",
     "_bounded_loss_history",
@@ -107,7 +105,7 @@ __all__ = [
     "_training_required_columns_by_node",
     "_training_required_metadata_columns",
     "_validate_evaluation_artifact_contents",
-    "_validate_glm_family_link",
+    "_validate_glm_config_values",
     "_validate_tuning_artifact_contents",
     "_worker_failure_payload",
     "_worker_request_payload",

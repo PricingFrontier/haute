@@ -8,6 +8,7 @@ import numpy as np
 import polars as pl
 
 from haute._logging import get_logger
+from haute.errors import HauteValidationError
 
 logger = get_logger(component="model_explainability")
 
@@ -76,7 +77,22 @@ def _catboost_pool_for_row(scoring_model: Any, input_row: dict[str, Any]) -> Any
             raise ModelExplanationError(
                 f"offset column {offset_column!r} must be finite; got None."
             )
-        baseline = np.asarray([baseline_value], dtype=float)
+        from haute.modelling._algorithms import offset_baseline
+
+        offset_link = getattr(scoring_model, "offset_link", None)
+        if offset_link is None:
+            raise ModelExplanationError(
+                f"offset column {offset_column!r} has no recorded link; retrain the model."
+            )
+        try:
+            baseline = offset_baseline(
+                [baseline_value],
+                column=offset_column,
+                link=offset_link,
+                context="CatBoost SHAP explanation",
+            )
+        except HauteValidationError as exc:
+            raise ModelExplanationError(str(exc)) from exc
     else:
         baseline = None
     cat_indices = [features.index(column) for column in cat_cols]

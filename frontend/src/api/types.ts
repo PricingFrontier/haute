@@ -694,25 +694,51 @@ export interface PdpFeatureRow {
   error_type?: string
 }
 
+/** Inference fields are null when `glm_inference.valid` is false. */
 export interface GlmCoefficientRow {
   feature: string
   coefficient: number
-  std_error: number
-  z_value: number
-  p_value: number
-  significance: string
+  std_error: number | null
+  z_value: number | null
+  p_value: number | null
+  significance: string | null
 }
 
+/** Bounds are null when inference is not valid. */
 export interface GlmRelativityRow {
   feature: string
   relativity: number
-  ci_lower?: number
-  ci_upper?: number
+  ci_lower: number | null
+  ci_upper: number | null
 }
 
-export interface GlmRegularizationPath {
-  selected_alpha?: number
-  n_nonzero?: number
+export interface GlmInference {
+  /** RustyStats' inference status, or `singular_design`. */
+  status: string
+  valid: boolean
+  /** `model` or the robust type (HC0 to HC3) when valid; null otherwise. */
+  standard_errors: string | null
+  /** Why statistics are unavailable; null when valid. */
+  reason: string | null
+}
+
+export interface GlmSmoothTerm {
+  term: string
+  k: number
+  edf: number
+  lambda: number
+}
+
+export interface GlmRegularization {
+  penalty: "ridge" | "lasso" | "elastic_net"
+  mode: "cross_validation" | "fixed"
+  /** The penalty RustyStats applied. */
+  alpha: number
+  l1_ratio: number | null
+  n_nonzero: number
+  cv_folds: number | null
+  cv_selection: string | null
+  cv_seed: number | null
 }
 
 export interface TrainDiagnosticsError {
@@ -854,7 +880,9 @@ export interface TrainResponse {
   glm_coefficients: GlmCoefficientRow[]
   glm_relativities: GlmRelativityRow[]
   glm_fit_statistics: Record<string, number>
-  glm_regularization_path: GlmRegularizationPath | null
+  glm_inference: GlmInference | null
+  glm_smooth_terms: GlmSmoothTerm[]
+  glm_regularization: GlmRegularization | null
   diagnostics_errors: TrainDiagnosticsError[]
   feature_selection: TrainFeatureSelection | null
   evaluation?: EvaluationReport

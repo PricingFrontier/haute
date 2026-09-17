@@ -2176,7 +2176,9 @@ class TrainResponse(BaseModel):
     glm_coefficients: list[dict[str, Any]] = Field(default_factory=list)
     glm_relativities: list[dict[str, Any]] = Field(default_factory=list)
     glm_fit_statistics: dict[str, float] = Field(default_factory=dict)
-    glm_regularization_path: dict[str, Any] | None = None
+    glm_inference: dict[str, Any] | None = None
+    glm_smooth_terms: list[dict[str, Any]] = Field(default_factory=list)
+    glm_regularization: dict[str, Any] | None = None
     diagnostics_errors: list[dict[str, str]] = Field(default_factory=list)
     warning: str | None = None
     total_source_rows: int | None = None

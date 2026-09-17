@@ -9,7 +9,7 @@
  *   - SummaryTab GLM fit statistics
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
 import { GLMTargetConfig } from "../modelling/GLMTargetConfig"
 import { GLMRegularizationConfig } from "../modelling/GLMRegularizationConfig"
 import { GLMCoefficientsTab } from "../modelling/GLMCoefficientsTab"
@@ -137,16 +137,48 @@ describe("GLMTargetConfig", () => {
 
   it("renders all backend-accepted family buttons", () => {
     render(<GLMTargetConfig config={baseConfig} onUpdate={onUpdate} columns={defaultColumns} />)
-    // Every family the backend _VALID_GLM_LINKS validates. Quasi-Poisson's
-    // dispersion is estimated from Pearson residuals (no user parameter);
-    // Neg. Binomial is offered now its theta gate exists — an explicit theta
-    // is required before training, so RustyStats can never refuse the fit.
+    // Every family in GLM_FAMILY_LINKS, which the backend validates against.
     for (const label of [
       "Poisson", "Gamma", "Tweedie", "Gaussian", "Binomial", "Quasi-Poisson",
-      "Neg. Binomial",
+      "Quasi-Binomial", "Neg. Binomial",
     ]) {
       expect(screen.getByRole("button", { name: label })).toBeTruthy()
     }
+  })
+
+  it("selecting Quasi-Binomial sets family, canonical link and classification metrics", () => {
+    render(<GLMTargetConfig config={baseConfig} onUpdate={onUpdate} columns={defaultColumns} />)
+    fireEvent.click(screen.getByRole("button", { name: "Quasi-Binomial" }))
+    expect(onUpdate).toHaveBeenCalledWith({ family: "quasibinomial", link: "", metrics: ["auc", "logloss"] })
+  })
+
+  it("offers each family's supported links and flags a saved unsupported link or family", () => {
+    const { unmount } = render(<GLMTargetConfig config={{ ...baseConfig, family: "binomial" }} onUpdate={onUpdate} columns={defaultColumns} />)
+    expect(screen.getByRole("button", { name: "auto (logit)" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "log" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "identity" })).toBeTruthy()
+    for (const unsupported of ["probit", "cloglog", "inverse", "sqrt"]) {
+      expect(screen.queryByRole("button", { name: unsupported })).toBeNull()
+    }
+    unmount()
+    const second = render(<GLMTargetConfig config={{ ...baseConfig, family: "gaussian", link: "sqrt" }} onUpdate={onUpdate} columns={defaultColumns} />)
+    expect(screen.getByRole("alert")).toHaveTextContent("The saved link sqrt is not available for Gaussian; choose one above.")
+    second.unmount()
+    render(<GLMTargetConfig config={{ ...baseConfig, family: "inverse_gaussian" }} onUpdate={onUpdate} columns={defaultColumns} />)
+    expect(screen.getByRole("alert")).toHaveTextContent("The saved family inverse_gaussian is not supported; choose one above.")
+    expect(screen.queryByText("Link Function")).toBeNull()
+  })
+
+  it("bounds the Tweedie variance power to 1 to 2", () => {
+    render(<GLMTargetConfig config={{ ...baseConfig, family: "tweedie", var_power: 1.5 }} onUpdate={onUpdate} columns={defaultColumns} />)
+    const slider = screen.getByRole("slider")
+    expect(slider).toHaveAttribute("min", "1")
+    expect(slider).toHaveAttribute("max", "2")
+  })
+
+  it("flags a theta that is not positive", () => {
+    render(<GLMTargetConfig config={{ ...baseConfig, family: "negbinomial", theta: 0 }} onUpdate={onUpdate} columns={defaultColumns} />)
+    expect(screen.getByRole("alert")).toHaveTextContent("Theta must be greater than 0.")
   })
 
   it("selecting Neg. Binomial sets family, canonical link and count metrics", () => {
@@ -334,10 +366,14 @@ describe("GLMRegularizationConfig", () => {
     expect(screen.getByRole("button", { name: "Elastic Net" })).toBeTruthy()
   })
 
-  it("clicking Ridge sets regularization", () => {
-    render(<GLMRegularizationConfig config={{}} onUpdate={onUpdate} />)
+  it("choosing a regularization type writes visible cross-validation defaults only when absent", () => {
+    const { unmount } = render(<GLMRegularizationConfig config={{}} onUpdate={onUpdate} />)
     fireEvent.click(screen.getByRole("button", { name: "Ridge" }))
-    expect(onUpdate).toHaveBeenCalledWith("regularization", "ridge")
+    expect(onUpdate).toHaveBeenCalledWith({ regularization: "ridge", cv_folds: 5, cv_selection: "min", cv_seed: 42 })
+    unmount()
+    render(<GLMRegularizationConfig config={{ regularization: "ridge", cv_folds: 8, cv_selection: "1se", cv_seed: 7 }} onUpdate={onUpdate} />)
+    fireEvent.click(screen.getByRole("button", { name: "Lasso" }))
+    expect(onUpdate).toHaveBeenLastCalledWith({ regularization: "lasso" })
   })
 
   it("clicking None clears regularization", () => {
@@ -346,9 +382,90 @@ describe("GLMRegularizationConfig", () => {
     expect(onUpdate).toHaveBeenCalledWith("regularization", null)
   })
 
-  it("shows alpha input when regularization is active", () => {
-    render(<GLMRegularizationConfig config={{ regularization: "ridge" }} onUpdate={onUpdate} />)
-    expect(screen.getByText(/Alpha/)).toBeTruthy()
+  it("cross-validated mode edits folds, selection rule, and seed", () => {
+    render(<GLMRegularizationConfig config={{ regularization: "ridge", cv_folds: 5, cv_selection: "min", cv_seed: 42 }} onUpdate={onUpdate} />)
+    expect(screen.getByRole("button", { name: "Cross-validated" })).toHaveAttribute("aria-pressed", "true")
+    expect(screen.queryByRole("spinbutton", { name: "Regularization alpha" })).toBeNull()
+    const folds = screen.getByRole("spinbutton", { name: "Cross-validation folds" })
+    expect(folds).toHaveValue(5)
+    fireEvent.change(folds, { target: { value: "25" } })
+    fireEvent.blur(folds)
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter an integer from 2 to 20")
+    expect(onUpdate).not.toHaveBeenCalled()
+    fireEvent.change(folds, { target: { value: "10" } })
+    fireEvent.blur(folds)
+    expect(onUpdate).toHaveBeenCalledWith("cv_folds", 10)
+    fireEvent.change(screen.getByRole("combobox", { name: "Cross-validation selection rule" }), { target: { value: "1se" } })
+    expect(onUpdate).toHaveBeenCalledWith("cv_selection", "1se")
+    const seed = screen.getByRole("spinbutton", { name: "Cross-validation seed" })
+    fireEvent.change(seed, { target: { value: "7" } })
+    fireEvent.blur(seed)
+    expect(onUpdate).toHaveBeenCalledWith("cv_seed", 7)
+    fireEvent.click(screen.getByRole("button", { name: "Fixed" }))
+    expect(onUpdate).toHaveBeenCalledWith("alpha", 1)
+  })
+
+  it("fixed mode edits a positive alpha and returns to cross-validation", () => {
+    render(<GLMRegularizationConfig config={{ regularization: "ridge", alpha: 0.5 }} onUpdate={onUpdate} />)
+    expect(screen.getByRole("button", { name: "Fixed" })).toHaveAttribute("aria-pressed", "true")
+    const alpha = screen.getByRole("spinbutton", { name: "Regularization alpha" })
+    expect(alpha).toHaveValue(0.5)
+    fireEvent.change(alpha, { target: { value: "0" } })
+    fireEvent.blur(alpha)
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a number greater than 0")
+    fireEvent.change(alpha, { target: { value: "0.25" } })
+    fireEvent.blur(alpha)
+    expect(onUpdate).toHaveBeenCalledWith("alpha", 0.25)
+    fireEvent.click(screen.getByRole("button", { name: "Cross-validated" }))
+    expect(onUpdate).toHaveBeenCalledWith("alpha", null)
+  })
+
+  it("explains that regularization cannot be combined with automatic splines", () => {
+    render(
+      <GLMRegularizationConfig
+        config={{ regularization: "ridge", alpha: 0.5, terms: { age: { type: "bs" }, income: { type: "ns", df: 4 } }, interactions: [null] }}
+        onUpdate={onUpdate}
+      />,
+    )
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Regularization cannot be combined with automatically smoothed splines (age): set Fixed df on those splines or turn regularization off.",
+    )
+  })
+
+  it("the Solver disclosure edits iterations, tolerance, and robust standard errors", () => {
+    render(<GLMRegularizationConfig config={{ max_iter: 50 }} onUpdate={onUpdate} />)
+    const solver = screen.getByRole("button", { name: "Solver" })
+    expect(solver).toHaveAttribute("aria-expanded", "false")
+    expect(screen.getByRole("spinbutton", { name: "Maximum iterations", hidden: true })).not.toBeVisible()
+    fireEvent.click(solver)
+    const iterations = screen.getByRole("spinbutton", { name: "Maximum iterations" })
+    expect(iterations).toHaveValue(50)
+    fireEvent.change(iterations, { target: { value: "" } })
+    fireEvent.blur(iterations)
+    expect(onUpdate).toHaveBeenCalledWith("max_iter", null)
+    const tolerance = screen.getByRole("spinbutton", { name: "Convergence tolerance" })
+    fireEvent.change(tolerance, { target: { value: "1" } })
+    fireEvent.blur(tolerance)
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a number greater than 0 and less than 1")
+    fireEvent.change(tolerance, { target: { value: "0.000001" } })
+    fireEvent.blur(tolerance)
+    expect(onUpdate).toHaveBeenCalledWith("tol", 0.000001)
+    const robust = screen.getByRole("combobox", { name: "Robust standard errors" })
+    expect(Array.from(robust.querySelectorAll("option")).map((option) => option.value)).toEqual(["", "HC0", "HC1", "HC2", "HC3"])
+    fireEvent.change(robust, { target: { value: "HC1" } })
+    expect(onUpdate).toHaveBeenCalledWith("robust_standard_errors", "HC1")
+  })
+
+  it("shows a robust standard error conflict even while the Solver section is closed", () => {
+    render(
+      <GLMRegularizationConfig
+        config={{ robust_standard_errors: "HC1", terms: { age: { type: "linear", monotonicity: "increasing" } } }}
+        onUpdate={onUpdate}
+      />,
+    )
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Robust standard errors cannot be combined with monotonicity constraints (age): RustyStats marks that inference as not valid.",
+    )
   })
 
   it("L1 ratio controls only appear for elastic_net", () => {
@@ -461,6 +578,33 @@ describe("GLMCoefficientsTab", () => {
     expect(screen.getByText("No coefficient data available")).toBeTruthy()
   })
 
+  it("shows the reason, dashes, and design order when inference is not valid", () => {
+    const reason = "The ridge penalty shrinks the coefficients, so standard errors and p-values are not valid."
+    const result = makeTrainResult({
+      glm_inference: { status: "naive_after_regularization", valid: false, standard_errors: null, reason },
+      glm_coefficients: makeGlmCoefficients().map((row) => ({ ...row, std_error: null, z_value: null, p_value: null, significance: null })),
+    })
+    render(<GLMCoefficientsTab result={result} />)
+    expect(screen.getByRole("note")).toHaveTextContent(reason)
+    expect(screen.queryByText("Signif. codes:")).toBeNull()
+    const rows = Array.from(document.querySelectorAll("tbody tr"))
+    expect(rows.map((row) => row.querySelector("td")!.textContent)).toEqual(["(Intercept)", "age", "region_B", "region_C"])
+    expect(Array.from(rows[0].querySelectorAll("td")).slice(2).map((cell) => cell.textContent)).toEqual(["–", "–", "–", "–"])
+    fireEvent.click(screen.getByText("Std. Error"))
+    expect(Array.from(document.querySelectorAll("tbody tr")).map((row) => row.querySelector("td")!.textContent))
+      .toEqual(["(Intercept)", "age", "region_B", "region_C"])
+  })
+
+  it("names robust standard errors when they are used", () => {
+    const result = makeTrainResult({
+      glm_inference: { status: "valid_standard", valid: true, standard_errors: "HC1", reason: null },
+      glm_coefficients: makeGlmCoefficients(),
+    })
+    render(<GLMCoefficientsTab result={result} />)
+    expect(screen.getByText(/^Robust SE \(HC1\)/)).toBeTruthy()
+    expect(screen.getByText("Standard errors, z-values, and p-values are heteroskedasticity-robust (HC1).")).toBeTruthy()
+  })
+
   it("formats very small p-values in scientific notation", () => {
     const result = makeTrainResult({
       glm_coefficients: [
@@ -531,7 +675,7 @@ describe("GLMRelativitiesTab", () => {
   })
 
   it("hides CI note when no CI data", () => {
-    const rows = makeGlmRelativities().map(r => ({ feature: r.feature, relativity: r.relativity }))
+    const rows = makeGlmRelativities().map(r => ({ feature: r.feature, relativity: r.relativity, ci_lower: null, ci_upper: null }))
     const result = makeTrainResult({ glm_relativities: rows })
     render(<GLMRelativitiesTab result={result} />)
     expect(screen.queryByText("— CI whiskers")).toBeNull()
@@ -567,16 +711,39 @@ describe("SummaryTab (GLM extensions)", () => {
     expect(screen.queryByText("Fit statistics")).toBeNull()
   })
 
-  it("shows regularization info when present", () => {
+  it("shows the fixed penalty RustyStats applied", () => {
     const result = makeTrainResult({
-      glm_regularization_path: { selected_alpha: 0.001234, n_nonzero: 12 },
+      glm_regularization: {
+        penalty: "elastic_net",
+        mode: "fixed",
+        alpha: 0.001234,
+        l1_ratio: 0.3,
+        n_nonzero: 12,
+        cv_folds: null,
+        cv_selection: null,
+        cv_seed: null,
+      },
     })
     render(<SummaryTab result={result} />)
-    expect(screen.getByText("Regularization")).toBeTruthy()
-    expect(screen.getByText("Alpha")).toBeTruthy()
-    expect(screen.getByText("0.001234")).toBeTruthy()
-    expect(screen.getByText("Non-zero coefficients")).toBeTruthy()
-    expect(screen.getByText("12")).toBeTruthy()
+    const card = screen.getByRole("region", { name: "Regularization" })
+    const rows = Array.from(card.querySelectorAll("dl > div")).map((row) => [row.querySelector("dt")!.textContent, row.querySelector("dd")!.textContent])
+    expect(rows).toEqual([
+      ["Penalty", "Elastic Net"],
+      ["Alpha", "0.00123400"],
+      ["L1 ratio", "0.30"],
+      ["Non-zero coefficients", "12"],
+      ["Alpha chosen by", "Fixed"],
+    ])
+  })
+
+  it("lists smooth terms with their effective degrees of freedom", () => {
+    const result = makeTrainResult({ glm_smooth_terms: [{ term: "age", k: 10, edf: 3.214, lambda: 21.5 }] })
+    render(<SummaryTab result={result} />)
+    const table = screen.getByRole("table", { name: "Smooth terms" })
+    expect(Array.from(within(table).getAllByRole("row")).map((row) => row.textContent)).toEqual([
+      "TermBasis (k)EDFLambda",
+      "age103.2121.50",
+    ])
   })
 
   it("hides regularization when no path info", () => {
@@ -626,6 +793,37 @@ describe("ModellingConfig (GLM routing)", () => {
         strategy: "random",
       }),
     })
+  })
+
+  it("a malformed interaction override renders a removable error card instead of failing the editor", () => {
+    const onUpdate = vi.fn()
+    const config = {
+      _nodeId: "n1",
+      algorithm: "glm",
+      target: "claim_count",
+      family: "poisson",
+      terms: { age: { type: "bs" } },
+      regularization: "ridge",
+      interactions: [{ factors: ["age", "region"], specs: { age: null }, include_main: true }],
+    }
+    const { rerender } = render(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <ModellingConfig config={config} onUpdate={onUpdate} upstreamColumns={defaultColumns} activePane="features" />
+      </GraphProvider>,
+    )
+    const card = screen.getByRole("group", { name: "Interaction 1" })
+    expect(within(card).getByText("Interaction 1 cannot be edited")).toBeTruthy()
+    expect(within(card).getByRole("alert")).toHaveTextContent("The fit for age in this interaction has no fit type.")
+    fireEvent.click(within(card).getByRole("button", { name: "Remove interaction 1" }))
+    expect(onUpdate).toHaveBeenCalledWith("interactions", [])
+    for (const pane of ["target", "train"] as const) {
+      rerender(
+        <GraphProvider allNodes={[]} edges={[]}>
+          <ModellingConfig config={config} onUpdate={onUpdate} upstreamColumns={defaultColumns} activePane={pane} />
+        </GraphProvider>,
+      )
+      expect(screen.getByRole("tabpanel")).toBeTruthy()
+    }
   })
 
   it("GLM config routes Rustystats target settings and regularization to the Target pane", () => {

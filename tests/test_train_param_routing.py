@@ -167,7 +167,7 @@ def frequency_data(tmp_path) -> str:
         {
             "x1": x1,
             "x2": x2,
-            "log_exposure": np.log(exposure),
+            "exposure": exposure,
             "claim_count": rng.poisson(lam).astype(np.float64),
         }
     )
@@ -201,7 +201,7 @@ def target_ordered_data(tmp_path) -> str:
 
 
 class TestCatBoostParamRouting:
-    def test_catboost_log_exposure_frequency_workflow_trains(self, client, frequency_data):
+    def test_catboost_exposure_frequency_workflow_trains(self, client, frequency_data):
         """RED repro for 4b.1: top-level ``offset`` config must not reach CatBoost.
 
         Pre-fix, ``offset`` was merged into train params and forwarded to
@@ -212,7 +212,7 @@ class TestCatBoostParamRouting:
             "target": "claim_count",
             "algorithm": "catboost",
             "task": "regression",
-            "offset": "log_exposure",
+            "offset": "exposure",
             "loss_function": "Poisson",
             "params": {"iterations": 4, "depth": 2},
             "evaluation": {
@@ -246,7 +246,7 @@ class TestCatBoostParamRouting:
             "algorithm": "catboost",
             "task": "regression",
             "loss_function": "RMSE",
-            "offset": "log_exposure",
+            "offset": "exposure",
             "weight": "x2",
             "params": {"iterations": 4, "depth": 2},
             "evaluation": {
@@ -292,7 +292,7 @@ class TestCatBoostParamRouting:
             "output_dir": kwargs["output_dir"],
             "loss_function": "RMSE",
             "variance_power": None,
-            "offset": "log_exposure",
+            "offset": "exposure",
             "monotone_constraints": None,
             "feature_weights": None,
             "categorical_levels": None,
@@ -324,7 +324,7 @@ class TestCatBoostParamRouting:
             "alpha": 0.5,
             "l1_ratio": 0.1,
             "intercept": True,
-            "offset": "log_exposure",
+            "offset": "exposure",
             "params": {},
             "evaluation": {
                 "schema_version": 1,
@@ -348,8 +348,8 @@ class TestCatBoostParamRouting:
         assert kwargs["params"]["alpha"] == 0.5
         assert kwargs["params"]["l1_ratio"] == 0.1
         assert kwargs["params"]["intercept"] is True
-        assert kwargs["params"]["offset"] == "log_exposure"
-        assert kwargs["offset"] == "log_exposure"
+        assert kwargs["params"]["offset"] == "exposure"
+        assert kwargs["offset"] == "exposure"
         assert kwargs["algorithm"] == "glm"
 
     def test_glm_real_fit_uses_configured_family_and_terms(self, client, frequency_data):
@@ -379,11 +379,11 @@ class TestCatBoostParamRouting:
 
         assert status["status"] == "completed", status.get("message")
         coef_features = {row["feature"] for row in status["result"]["glm_coefficients"]}
-        # Only the configured term (plus intercept) — x2/log_exposure must NOT
+        # Only the configured term (plus intercept) — x2/exposure must NOT
         # have been auto-termed into the model.
         assert any("x1" in feature for feature in coef_features)
         assert not any("x2" in feature for feature in coef_features)
-        assert not any("log_exposure" in feature for feature in coef_features)
+        assert not any("exposure" in feature for feature in coef_features)
 
 
 # ---------------------------------------------------------------------------

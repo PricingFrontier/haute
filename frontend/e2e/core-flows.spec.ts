@@ -137,10 +137,13 @@ test.describe("core browser flows", () => {
     const card = page.getByRole("group", { name: "Interaction 1" })
     await card.getByRole("combobox", { name: "Interaction 1 feature 1" }).selectOption("channel")
     await card.getByRole("combobox", { name: "Interaction 1 feature 2" }).selectOption("mileage")
+    // An automatic (penalised) interaction spline: RustyStats chooses its smoothing.
     await card.getByRole("combobox", { name: "mileage fit in interaction" }).selectOption("bs")
-    await card.getByRole("combobox", { name: "mileage df mode" }).selectOption("fixed")
-    await card.getByRole("spinbutton", { name: "mileage df" }).fill("3")
+    await expect(card.getByRole("combobox", { name: "mileage df mode" })).toHaveValue("auto")
     await expect(card.getByRole("checkbox", { name: "Include main effects" })).toBeChecked()
+    await expect(
+      page.getByRole("group", { name: "channel feature" }).getByText("Main effect from Interaction 1 (Categorical)"),
+    ).toBeVisible()
     // raw_rows exposes id, value, proposer_age, channel, vehicle_age, mileage;
     // the target `value` is the only role column, leaving five eligible features.
     await expect(page.getByText("2 of 5 in model")).toBeVisible()
@@ -150,10 +153,14 @@ test.describe("core browser flows", () => {
     await expect(
       page.getByText(/Model trained — results in preview panel below/i),
     ).toBeVisible({ timeout: 120_000 })
+    await expect(page.getByRole("table", { name: "Smooth terms" })).toBeVisible()
     const resultTabs = page.getByRole("tablist", { name: "Model result panes" })
     await resultTabs.getByRole("tab", { name: "Coefficients", exact: true }).click()
+    await expect(
+      page.getByText("Automatically smoothed splines are penalised, so standard errors and p-values are not valid."),
+    ).toBeVisible()
     await expect(page.getByText("I(mileage ** 2)")).toBeVisible()
-    await expect(page.getByText(/channel\[T\.direct\]:bs\(mileage, 1\/3\)/)).toBeVisible()
+    await expect(page.getByText("channel[T.direct]:bs(mileage, 1/9, k)")).toBeVisible()
   })
 
   test("persists node edits through save and reload", async ({ page }) => {
