@@ -55,7 +55,6 @@ function Harness({
   inputSources,
   inputNames = inputSources.map((source) => source.name),
   start = "input",
-  frameHint,
   onReplace = vi.fn(),
   errorLine,
   runError,
@@ -65,7 +64,6 @@ function Harness({
   inputSources: InputSource[]
   inputNames?: string[]
   start?: "input" | "frame"
-  frameHint?: React.ReactNode
   onReplace?: (config: Record<string, unknown>) => void
   errorLine?: number | null
   runError?: string | null
@@ -75,7 +73,6 @@ function Harness({
   return (
     <PolarsStepsEditor
       start={start}
-      frameHint={frameHint}
       inputNames={inputNames}
       config={config}
       onUpdate={(keyOrUpdates, value) => {
@@ -510,12 +507,10 @@ describe("PolarsStepsEditor in frame mode", () => {
   })
   afterEach(cleanup)
 
-  it("shows a fixed start card with the frame hint and no input selector", () => {
-    render(<Harness initial={{ steps: [] }} inputSources={[]} start="frame" frameHint="the opened input snapshot" />)
-    const startCard = screen.getByTestId("polars-steps-frame-start")
-    expect(startCard).toHaveTextContent("Start from")
-    expect(startCard).toHaveTextContent("df")
-    expect(startCard).toHaveTextContent("the opened input snapshot")
+  it("shows no start card and no input selector", () => {
+    render(<Harness initial={{ steps: [] }} inputSources={[]} start="frame" />)
+    expect(screen.queryByRole("group", { name: "Start from" })).not.toBeInTheDocument()
+    expect(screen.queryByText("Start from")).not.toBeInTheDocument()
     expect(screen.queryByLabelText("Start from input")).not.toBeInTheDocument()
     expect(screen.queryByText("Connect an input to start building steps, or switch to code.")).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Add step" })).toBeEnabled()

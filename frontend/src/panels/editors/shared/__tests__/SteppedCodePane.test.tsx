@@ -37,7 +37,6 @@ describe("SteppedCodePane", () => {
         inputSources={[{ sourceNodeId: "q", name: "quotes", sourceLabel: "Quotes", edgeId: "e1" }]}
         inputNames={[...inputNames]}
         start={start}
-        frameHint="the opened input snapshot"
         codeHint="assign to df"
         runError="boom"
       />,
@@ -47,7 +46,6 @@ describe("SteppedCodePane", () => {
     expect(stepsEditorProps.at(-1)).toMatchObject({
       start,
       inputNames: [...inputNames],
-      frameHint: "the opened input snapshot",
       runError: "boom",
       onReplaceConfig: onReplace,
     })

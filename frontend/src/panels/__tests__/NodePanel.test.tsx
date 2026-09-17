@@ -55,7 +55,7 @@ vi.mock("../LazyNodeEditors", async () => {
     steppedCodePaneProps.push(props)
     return (
       <div data-testid="SteppedCodePane">
-        <span data-testid="polars-hint">{props.frameHint as React.ReactNode}</span>
+        <span data-testid="polars-hint">{props.codeHint as React.ReactNode}</span>
         <textarea data-testid="code-editor" />
       </div>
     )

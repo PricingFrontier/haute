@@ -1,5 +1,5 @@
 import { Code } from "lucide-react"
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { NODE_GROUP_COLORS } from "../../../theme/colors"
 import type { StepStart } from "../../../utils/polarsStepInputs"
@@ -51,8 +51,8 @@ function EmptyBox({ children }: { children: React.ReactNode }) {
  * `Add step` menu, the locked generated-code panel and the one-way switch to
  * code. In `input` mode (a Transform) the start card chooses the input and
  * the first step is the `source` step; in `frame` mode (a surface whose `df`
- * is already bound) the start card only says what `df` is, every card is a
- * numbered step, and a `source` step is invalid.
+ * is already bound) there is no start card, every card is a numbered step,
+ * and a `source` step is invalid.
  */
 export default function PolarsStepsEditor({
   config,
@@ -65,7 +65,6 @@ export default function PolarsStepsEditor({
   runError,
   upstreamColumns,
   start,
-  frameHint,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
@@ -80,8 +79,6 @@ export default function PolarsStepsEditor({
   runError?: string | null
   upstreamColumns?: { name: string; dtype: string }[]
   start: StepStart
-  /** What `df` is when the steps start (frame mode only). */
-  frameHint?: ReactNode
 }) {
   const isFrame = start === "frame"
   const steps = useMemo(() => readSteps(config) ?? [], [config])
@@ -275,22 +272,17 @@ export default function PolarsStepsEditor({
         </EmptyBox>
       ) : (
         <>
-          <div
-            className="rounded-lg px-3 py-2 flex flex-wrap items-center gap-2"
-            style={{ background: "var(--bg-input)", border: "1px solid var(--border)", borderLeft: `3px dashed ${NODE_GROUP_COLORS.transform}` }}
-            role="group"
-            aria-label="Start from"
-            data-testid={isFrame ? "polars-steps-frame-start" : undefined}
-          >
-            <span className="text-xs font-semibold" style={{ color: "var(--text-primary)" }}>
-              Start from
-            </span>
-            {isFrame ? (
-              <>
-                <code className="text-xs font-mono" style={{ color: "var(--text-primary)" }}>df</code>
-                <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>{frameHint}</span>
-              </>
-            ) : (
+          {/* In frame mode df is the node's own frame, so there is nothing to choose and no start card. */}
+          {!isFrame && (
+            <div
+              className="rounded-lg px-3 py-2 flex flex-wrap items-center gap-2"
+              style={{ background: "var(--bg-input)", border: "1px solid var(--border)", borderLeft: `3px dashed ${NODE_GROUP_COLORS.transform}` }}
+              role="group"
+              aria-label="Start from"
+            >
+              <span className="text-xs font-semibold" style={{ color: "var(--text-primary)" }}>
+                Start from
+              </span>
               <select
                 ref={(el) => {
                   if (el) disclosures.current.set(0, el)
@@ -317,13 +309,13 @@ export default function PolarsStepsEditor({
                   </option>
                 ))}
               </select>
-            )}
-            {!isFrame && badgeFor(0) && (
-              <div role="status" className="basis-full text-[11px]" style={{ color: `var(--${badgeFor(0)?.tone})` }}>
-                {badgeFor(0)?.text}
-              </div>
-            )}
-          </div>
+              {badgeFor(0) && (
+                <div role="status" className="basis-full text-[11px]" style={{ color: `var(--${badgeFor(0)?.tone})` }}>
+                  {badgeFor(0)?.text}
+                </div>
+              )}
+            </div>
+          )}
 
           {stepCards.length > 0 && (
             <div className="grid gap-1.5" role="list" aria-label="Steps">

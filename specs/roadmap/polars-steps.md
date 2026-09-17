@@ -202,13 +202,12 @@ checks leave its integer alone.
   renders `PolarsStepsEditor`; otherwise the code box (`PolarsCodePanel`) with
   the `_steps_discarded` notice above it. Props: `config`, `onUpdate`,
   `onReplaceConfig`, `inputSources`, `onDeleteInput`, `errorLine`, `runError`,
-  `upstreamColumns`, `start` (`{ kind: "input" }` or
-  `{ kind: "frame", frameHint: ReactNode }`), `codeHint`, `starterCode`.
-  `TransformEditor` becomes a thin wrapper passing `start: { kind: "input" }`.
-- **`PolarsStepsEditor`** takes `start`. In frame mode the "Start from"
-  selector is replaced by a fixed, non-editable start card that states what
-  `df` is (the `frameHint`: "the opened input snapshot", "the rated data", and
-  so on, reusing today's `POLARS_TAB_HINTS` wording); the seeding effect that
+  `upstreamColumns`, `inputNames` (the eligible step input names), `start`
+  (`"input"` or `"frame"`), `codeHint`, `starterCode`. `TransformEditor` is a
+  thin wrapper passing `start="input"`.
+- **`PolarsStepsEditor`** takes `start`. In frame mode there is no start card
+  at all (the frame is the node's own, so there is nothing to choose or
+  explain; the user removed the descriptive card as noise); the seeding effect that
   writes a `source` step is skipped; `canAdd` no longer depends on a chosen
   input; `AddStepMenu` withholds only the `join` and `concat` kinds while
   `inputNames` is empty (the Combine section keeps group by, pivot and
@@ -217,8 +216,7 @@ checks leave its integer alone.
   `useRenderedSteps(steps, inputNames, start, onRendered)` sends `start`.
 - **Node panel wiring.** `NodeEditorBody` mounts `SteppedCodePane` on the
   Polars tab for `POLARS_TAB_TYPES`, passing `onReplaceConfig`
-  (`handleConfigReplace` is already in scope), `runError`, and the per-type
-  frame hint. The input chips (`inputSources`) keep today's display rule, but
+  (`handleConfigReplace` is already in scope) and `runError`. The input chips (`inputSources`) keep today's display rule, but
   the step editor's `inputNames` come from `stepInputNames(nodeType,
   edgeNames)`: the edge names for External File, `[]` for the rest, so the
   editor never offers a join the executor would refuse.
@@ -279,9 +277,8 @@ mode and the rename rewriting.
 into `_wrap_external_code(code, input_name=...)` or emits the placeholder;
 extend the rename rewriting gates (`_submodel_instances.py`,
 `nodeUpdatePlan.ts`, `edgeJoinGraph.ts`) to stepped types whose start mode
-allows input references; frame hint "`obj` = loaded file, `df` = the first
-input". The step forms do not model `obj`; reaching it is a Free code step,
-which the start card says.
+allows input references. The step forms do not model `obj`; reaching it is a Free code step (the
+code-box hint already says `obj` is the loaded file).
 
 **Acceptance:** join/concat steps naming a connected input render and run;
 renaming that upstream node rewrites the reference inside the steps and never
@@ -313,8 +310,7 @@ contract, the stepped-node validation also runs at the start of
 that preparation pass loads anything;
 `_gen_rating_step` and `_gen_model_score` render into `_wrap_user_code` or
 emit the placeholder; `_model_score_columns` treats a non-empty step list
-like non-empty code (opaque); frame hints "the rated data" and "the scored
-data"; `node_defaults.json` `steps: []` for both.
+like non-empty code (opaque); `node_defaults.json` `steps: []` for both.
 
 **Acceptance:** the round-trip and reconcile tests per surface; a Limit step
 on each node runs after rating or scoring in preview and in the generated
@@ -355,8 +351,7 @@ gives a new node `stepCount: 21` explicitly, the builder, chunk planner and
 existing "empty config uses defaults" test in `tests/test_scenario_expander.py`
 becomes a rejection test. Second commit: add the type to
 `STEPPED_NODE_TYPES` (frame, no inputs) with the same rollout shape as
-PST-S04, the frame hint "the expanded scenario grid", and `steps: []` added
-to the node default.
+PST-S04 and `steps: []` added to the node default.
 
 **Acceptance:** the rename leaves every scenario test green under the new
 key; a config without `stepCount` is rejected by canonical validation and by

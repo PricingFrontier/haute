@@ -237,14 +237,14 @@ test.describe("Transform step builder journey", () => {
     await page.reload()
     await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
 
-    // The Polars tab shows the step builder in frame mode: df is the snapshot, no input selector.
+    // The Polars tab shows the step builder in frame mode: no start card, no input selector.
     await page.getByRole("button", { name: /Data Input node: stepped_in/i }).click()
     const panel = page.getByTestId("node-panel")
     await expect(panel).toBeVisible()
     await panel.getByRole("button", { name: /^polars$/i }).click()
     const editor = panel.getByTestId("polars-steps-editor")
     await expect(editor).toBeVisible()
-    await expect(editor.getByTestId("polars-steps-frame-start")).toContainText("the opened input snapshot")
+    await expect(editor.getByText("Start from")).toHaveCount(0)
     await expect(editor.getByLabel("Start from input")).toHaveCount(0)
 
     // Join and concat are withheld (nothing to reference); a Limit step renders against the frame.

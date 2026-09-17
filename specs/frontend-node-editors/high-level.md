@@ -355,9 +355,9 @@ Nodes whose config has no `steps` list render the code box exactly as before.
 (`SteppedCodePane`): a `steps` list renders the step builder, anything else the code
 box, with the discard notice above it when steps were discarded on load. The pane
 takes a start mode. `input` is the Transform's, as described above. `frame` is for a
-surface whose code runs with `df` already bound: the "Start from" selector is replaced
-by a fixed card that says what `df` is (for a Data Input, the opened input snapshot),
-no start step is written or accepted (a persisted `source` step renders as an invalid
+surface whose code runs with `df` already bound: there is no start card at all (the
+frame is the node's own, so there is nothing to choose or explain), no start step is
+written or accepted (a persisted `source` step renders as an invalid
 card that can only be deleted), cards are numbered from Step 1, every card can be moved,
 the first card can be opened by "Go to error", and steps can be added without choosing
 an input. The pane's step editor renders against the surface's eligible input names,

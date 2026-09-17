@@ -1286,7 +1286,6 @@ function NodeEditorBody({
         runError={runError}
         upstreamColumns={upstreamColumns}
         start={surface.start}
-        frameHint={POLARS_TAB_HINTS[nodeType] ?? null}
         codeHint={POLARS_TAB_HINTS[nodeType] ?? null}
       />
     ) : (
