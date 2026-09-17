@@ -29,7 +29,7 @@ from haute._logging import get_logger
 from haute._rating_step_config import (
     normalise_rating_step_config,
 )
-from haute._types import NodeType, PipelineGraph
+from haute._types import GraphNode, NodeType, PipelineGraph
 
 logger = get_logger(component="config_io")
 
@@ -52,7 +52,13 @@ NODE_TYPE_TO_FOLDER: dict[NodeType, str] = {
     NodeType.OPTIMISER_APPLY: "apply_optimisation",
     NodeType.SCENARIO_EXPANDER: "expander",
     NodeType.CONSTANT: "constant",
+    NodeType.POLARS: "polars",
 }
+
+# Node types whose sidecar is optional: a ``polars`` transform stores its
+# low-code ``steps`` in ``config/polars/<name>.json`` only while it is
+# authored in step mode; a code-only transform has no sidecar at all.
+_OPTIONAL_SIDECAR_TYPES: frozenset[NodeType] = frozenset({NodeType.POLARS})
 
 FOLDER_TO_NODE_TYPE: dict[str, NodeType] = {v: k for k, v in NODE_TYPE_TO_FOLDER.items()}
 
@@ -180,8 +186,25 @@ def is_windows_reserved_filename(filename: str) -> bool:
 
 
 def has_config_folder(node_type: NodeType) -> bool:
-    """Whether this node type stores config in an external JSON file."""
-    return node_type in NODE_TYPE_TO_FOLDER
+    """Whether this node type requires an external JSON config file."""
+    return node_type in NODE_TYPE_TO_FOLDER and node_type not in _OPTIONAL_SIDECAR_TYPES
+
+
+def has_optional_config_folder(node_type: NodeType) -> bool:
+    """Whether this node type may, but need not, carry a JSON sidecar."""
+    return node_type in _OPTIONAL_SIDECAR_TYPES
+
+
+def node_emits_sidecar(node: GraphNode) -> bool:
+    """Whether saving ``node`` writes a JSON sidecar.
+
+    Required-sidecar types always do; a ``polars`` transform does only while
+    its config carries a ``steps`` list.
+    """
+    node_type = node.data.nodeType
+    if has_config_folder(node_type):
+        return True
+    return has_optional_config_folder(node_type) and isinstance(node.data.config.get("steps"), list)
 
 
 def config_path_for_node(
@@ -315,7 +338,7 @@ def collect_node_configs(graph: PipelineGraph) -> dict[str, str]:
     configs: dict[str, str] = {}
     for node in graph.nodes:
         nt = node.data.nodeType
-        if not has_config_folder(nt):
+        if not node_emits_sidecar(node):
             continue
         if node.data.config.get("instanceOf"):
             continue
@@ -336,7 +359,7 @@ def config_load_errors(graph: PipelineGraph) -> dict[str, str]:
     errors: dict[str, str] = {}
     for node in graph.nodes:
         nt = node.data.nodeType
-        if not has_config_folder(nt):
+        if nt not in NODE_TYPE_TO_FOLDER:
             continue
         err = node.data.config.get("_load_error")
         if not err:

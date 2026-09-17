@@ -10,6 +10,7 @@ from haute._graph_utils import (
     _edge_id,
     edge_input_name,
 )
+from haute._polars_steps import PolarsStepError, rename_step_inputs
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -439,7 +440,27 @@ def rewrite_boundary_input_names(
             input_mapping = {}
             renamed_currents = set()
 
-        if node.data.nodeType == NodeType.POLARS and not config.get("instanceOf"):
+        steps = config.get("steps")
+        if (
+            node.data.nodeType == NodeType.POLARS
+            and not config.get("instanceOf")
+            and isinstance(steps, list)
+        ):
+            # A stepped transform addresses inputs by their edge names, so the
+            # boundary rename rewrites the references inside the steps rather
+            # than recording an ``inputMapping`` indirection.
+            try:
+                renamed_steps = rename_step_inputs(steps, renames)
+            except PolarsStepError as exc:
+                raise ParseError(
+                    "Submodel boundary cannot rename a stepped transform's inputs.",
+                    node_id=node.id,
+                    detail=str(exc),
+                ) from exc
+            if renamed_steps != steps:
+                config["steps"] = renamed_steps
+                changed = True
+        elif node.data.nodeType == NodeType.POLARS and not config.get("instanceOf"):
             for logical, current in renames.items():
                 if logical == current or logical in renamed_currents:
                     continue
@@ -471,12 +492,7 @@ def rewrite_boundary_input_names(
         if not changed:
             rewritten.append(node)
             continue
-        rewritten.append(
-            node.model_copy(
-                deep=True,
-                update={"data": node.data.model_copy(update={"config": config})},
-            )
-        )
+        rewritten.append(node.with_config(config))
     return rewritten
 
 
@@ -499,14 +515,7 @@ def rewrite_node_references(
         if not changed:
             rewritten.append(node)
             continue
-        rewritten.append(
-            node.model_copy(
-                deep=True,
-                update={
-                    "data": node.data.model_copy(update={"config": config}),
-                },
-            )
-        )
+        rewritten.append(node.with_config(config))
     return rewritten
 
 

@@ -220,6 +220,101 @@ instead of being re-executed as a bare `return` statement.
 There is no generated-code-only rebasing of `data/foo.parquet` beneath the
 pipeline module directory.
 
+**Stepped transforms.** A `polars` transform may be authored as an ordered list of
+low-code steps instead of hand-written code. The steps live in the node's optional
+`config/polars/<name>.json` sidecar, which the generated decorator references with
+`config=`; a `@pipeline.polars` function without `config=` is a code-only transform
+and has no sidecar. The `polars` folder is the one optional sidecar folder: the sidecar
+walks (collection, load-error protection, and the save-time collision and
+reserved-filename guard) treat a `polars` node as a sidecar owner only while its config
+carries a `steps` list, and the stale-file sweep removes the file when a node stops
+carrying one. One renderer (`src/haute/_polars_steps.py`) validates the closed step
+schema and renders the steps into the function body, recording each step's inclusive
+line range and raising a step-indexed error for any malformed or incomplete step.
+Step-id uniqueness checks for valid lists run in linear time in the number of steps.
+The vocabulary covers filters
+(comparison, null, membership, text and regex operators), derived columns (formulas,
+typed functions over numbers, text, dates and durations, conditionals, window
+aggregates with a partition and an optional in-partition order, and text joins),
+select, drop, rename, cast (the integer, float, string, boolean, date, datetime and
+categorical dtypes), sort, unique, group-by with optional per-aggregate row filters
+and quantiles (an empty key list summarises the whole frame), joins with optional
+key-cardinality validation (inner, left and full joins only, as Polars refuses it
+elsewhere) and output-order control, concat, fill-null, limit, and
+node-local variables; a null literal renders as `pl.lit(None)` in expression position
+and is refused in membership lists and variables. An operand may itself be a nested
+expression (`{"kind": "expr", "expr": ...}`) wherever a value, column or variable is
+accepted, except in membership lists, variable values and function arguments, which
+stay plain values; a value, formula or function expression may carry a `text` annotation (the
+formula exactly as the editor's user typed it, kept for display and never rendered); a
+nested formula is bracketed only where Python's left-to-right
+evaluation needs it (a left operand only when its operator is weaker than the
+parent's, a right operand and either side of `**` always, and anywhere outside a
+formula), so a chain of terms reads flat, and nesting is capped at twelve levels (a
+step's own expression is level one), beyond which the step is refused
+with a message to compute part of the expression in an earlier step; inside a
+group-by aggregation's row filter operands stay plain, because a nested aggregate
+there would mean the group's value rather than the frame's. Two reshaping steps
+complete the vocabulary: a fixed-column `pivot` (index columns, the column whose
+values spread out, one entry per output column pairing a plain literal value with an
+output name, the values column, and an aggregate among sum, mean, min, max, median,
+first, last, count of non-null values and row count) is lowered to a maintain-order
+group-by of filtered aggregates rather than Polars' own `pivot`, so the lineage and
+cardinality models prove it and its output schema is fixed by the step (each cell
+matches `pivot(on_columns=...)` value for value: an empty cell is 0 for sum and the
+counts and null otherwise); duplicate values, duplicate or index-colliding names,
+mixed value types and null values are refused; and `unpivot` renders the native
+call with a non-empty literal `on` list, an optional index, and distinct name and
+value columns that must not collide with the index (row order afterwards is
+unspecified, as in Polars). Select and drop take an optional list of column types
+beside the named columns, rendered as one `pl.col(<dtype>)` per type excluding the
+named columns so a column is never projected twice (`df.select(['g',
+pl.col(pl.Float64).exclude('g')])`), and a group-by aggregation may target every
+column of one type instead of a column, naming its outputs by suffix
+(`pl.col(pl.Float64).mean().name.suffix('_mean')`; no row filter, no row count, and
+no uniqueness check on suffixes). Those dtype selections are the closed selector forms
+the lineage model expands from an upstream dtype schema; without one, or after a
+computed column whose dtype is not propagated, lineage fails closed exactly as the
+same hand-written selector would. The node data
+model enforces
+one invariant on construction: a `polars` config that carries `steps` always carries the
+rendering of those steps as its `code`, or an empty `code` plus an editor-state
+`_steps_error` message when they cannot be rendered, so every consumer that reads
+transform code (execution, chunk planning, projection, estimation, tracing, codegen)
+sees the same program without knowing about steps and a stale `code` in a browser
+payload is overwritten on ingress; in-process config replacement uses the validated
+`GraphNode.with_config` helper rather than an unvalidated model copy so the invariant
+also holds after assistant and submodel operations. A stepped original transform
+addresses its inputs by their current edge names and never carries `inputMapping` (a
+config with both fails loudly); an instance of a stepped transform keeps its own
+`inputMapping`, and submodel flattening rewrites the input references inside a stepped
+transform's steps instead of recording a mapping. When a polars sidecar is referenced,
+parsing loads it, renders its steps against the function's parameter names, and
+compares the result with the code extracted from the body before the node model is
+built: an identical body keeps the node in step mode; a different body, or a body that
+is not empty while the steps cannot be rendered, discards the steps (the body was edited
+by hand), marks the config with an editor-state `_steps_discarded` reason and an
+editor-state `_discarded_sidecar` path that the stale-sidecar sweep baseline includes so
+the file is retired on the next save, and logs a warning; an empty body with
+unrenderable steps keeps the steps, because that is how an incomplete step list is
+saved. A sidecar whose `steps` value is not a list fails the parse with a `ConfigError`.
+
+A `free_code` step carries a `code` string containing Python statements and can
+appear anywhere after the source step. Its statements run inline, in order with
+the low-code steps: `df` is the current frame, `pl` is available, and earlier
+Define variable values can be used. Assign transformations back to `df`; later
+steps consume that frame. Multiline expressions, comments, local helpers and
+control flow are supported. Blank or comment-only snippets, invalid Python, and
+node-level `return`, `yield`, `await`, or loop control outside a loop fail with the
+offending step index; returns inside helper functions are allowed. Validation
+compiles but never executes authored code. The stored snippet is preserved;
+rendering normalises line endings and removes trailing whitespace so generated
+code round-trips through the existing extractor. Free code shares the existing
+code execution and planning contracts, with no separate evaluator. Input renames
+continue to rewrite structured input fields; authored Python is unchanged. Use
+`df` to operate on the current frame across input renames; direct references to
+other input names in a snippet must be kept in sync by the author.
+
 ## Design rationale
 
 The component leans hard on failing loudly rather than guessing: duplicate node names,

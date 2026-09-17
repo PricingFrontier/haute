@@ -271,8 +271,7 @@ def _resolve_runtime_graph_paths(graph: PipelineGraph) -> PipelineGraph:
             and not Path(raw_path).is_absolute()
         ):
             resolved = str((base_dir / raw_path).resolve())
-            data = node.data.model_copy(update={"config": {**config, "path": resolved}})
-            nodes.append(node.model_copy(update={"data": data}))
+            nodes.append(node.with_config({**config, "path": resolved}))
             changed = True
         else:
             nodes.append(node)
@@ -302,10 +301,7 @@ def _attach_bundled_feature_contracts(
         if config.get("feature_contract_path") == contract_path:
             nodes.append(node)
             continue
-        data = node.data.model_copy(
-            update={"config": {**config, "feature_contract_path": contract_path}}
-        )
-        nodes.append(node.model_copy(update={"data": data}))
+        nodes.append(node.with_config({**config, "feature_contract_path": contract_path}))
         changed = True
     if not changed:
         return graph
@@ -388,15 +384,9 @@ def _attach_bundled_model_contract_inputs(
         deploy_inputs = list(feature_names)
         if offset_column is not None and offset_column not in deploy_inputs:
             deploy_inputs.append(offset_column)
-        data = node.data.model_copy(
-            update={
-                "config": {
-                    **config,
-                    _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY: deploy_inputs,
-                }
-            }
+        nodes.append(
+            node.with_config({**config, _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY: deploy_inputs})
         )
-        nodes.append(node.model_copy(update={"data": data}))
         changed = True
 
     return graph.model_copy(update={"nodes": nodes}) if changed else graph

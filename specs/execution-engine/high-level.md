@@ -455,8 +455,10 @@ running heavy work in a child process the parent can kill on timeout or memory l
   exactly one *input name*, derived by `edge_input_name` (`_graph_utils.py`): an
   `apiInput`-frame edge's name is its frame label verbatim (frame labels are
   validated as ASCII Python identifiers by the api-input schema); a collapsed
-  submodel-output edge's name is the occurrence's own name (or f"{alias}__{port_id}"
-  when declaring more than one output port); every ordinary edge's name is the sanitised source-node label.
+  submodel-output edge's name is its sanitised public output port name,
+  independent of the occurrence alias and port count; every ordinary edge's name
+  is the sanitised source-node label. Distinct occurrences feeding a common
+  consumer must contribute distinct input names; collisions fail explicitly.
   Public submodel inputs likewise contribute their sanitised labels to child nodes.
   Immutable public port ids address boundary handles only and never become frame names.
   That name is simultaneously the name listed in
@@ -467,6 +469,16 @@ running heavy work in a child process the parent can kill on timeout or memory l
   one node are a loud validation error, never silently suffixed. Binding remains
   positional in mechanism, but because each name derives from its own edge, edge
   reordering can never re-mean a name.
+
+**Stepped transforms.** A stepped transform reaches the executor with its `code` already
+materialised from `steps` by the node data model, so chunk planning, projection, and every
+other reader classify the rendered program. The transform builder additionally validates
+the steps against the input names the code will execute with (the bound source names plus
+the original names an instance aliases) and builds the same incomplete function that a
+code-less transform builds, carrying the step-indexed message, when validation or
+rendering fails; a stepped original carrying `inputMapping` is rejected. The rendered
+code executes through the same sandboxed path as hand-written code, and execution errors
+keep reporting the failing line so the editor can name the failing step.
 
 ## Design rationale
 

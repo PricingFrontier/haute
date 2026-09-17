@@ -238,11 +238,11 @@
    width with a 28 rem target minimum rather than using a viewport breakpoint, so an open side
    panel cannot force unreadably narrow cards. The accessible summary and semantic table derive
    from the same dataset as the visual chart.
-4. The production bundle gate rejects any startup preload of the chart pane/runtime/vendor,
-   caps the narrowly imported `vendor-charts` chunk at 205 KiB gzip, and keeps the measured
-   application limits at 283 KiB initial and 1,333 KiB total gzip. Chart capability pays
-   its cost only after Charts is opened and cannot quietly grow inside the aggregate
-   budget.
+4. The production bundle gate rejects any startup preload of the chart pane/runtime/vendor
+   and caps the narrowly imported `vendor-charts` chunk at 205 KiB gzip. The application
+   bundle limits are defined by [engineering quality](../engineering-quality/low-level.md);
+   chart capability pays its cost only after Charts is opened and cannot quietly grow inside
+   the aggregate budget.
 
 `DataPreview` consumes guarded version-1 execution metrics through
 `ExecutionDiagnosticsIndicator`: projected/admitted/not-planned states and a

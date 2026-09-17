@@ -29,7 +29,18 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // code; only the small training-handle persistence rides the startup results
 // store. The complete production bundle is 1,350.2 KiB; 1,361 KiB retains the
 // same ~10 KiB aggregate headroom with the startup and vendor caps unchanged.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1361
+// The Polars step builder extends the existing lazy TransformEditor without a
+// new dependency. The complete production bundle is 1,374.5 KiB; its ~24.3
+// KiB increase from the 1,350.2 KiB baseline gets 1,385 KiB, restoring the
+// established ~10 KiB aggregate headroom while the startup and vendor caps
+// remain unchanged.
+// The GLM terms pane (term and interaction editors mirroring the backend term
+// contract, regularisation and solver controls, and the inference-aware result
+// views) is lazy modelling-panel code with no new dependency. The complete
+// production bundle is 1,388.8 KiB; its ~14.3 KiB increase from the 1,374.5 KiB
+// baseline gets 1,399 KiB, restoring the ~10 KiB aggregate headroom with the
+// startup and vendor caps unchanged.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1399
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

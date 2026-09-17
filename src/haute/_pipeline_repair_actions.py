@@ -10,7 +10,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Literal
 
-from haute._config_io import _prepare_config_for_sidecar, config_path_for_node, has_config_folder
+from haute._config_io import _prepare_config_for_sidecar, config_path_for_node, node_emits_sidecar
 from haute._pipeline_recovery import _recovery_artifacts, load_pipeline_editor_document
 from haute._pipeline_repair import (
     PipelineRepairError,
@@ -400,10 +400,6 @@ def _reset_node(
                 node_type=source.node_type,
                 label=source.label,
                 source_handle=edge.source_handle,
-                alias=(source.config or {}).get("alias"),
-                output_port_count=len(source.source_handle_input_names)
-                if source.node_type == NodeType.SUBMODEL
-                else None,
             )
         )
     if len(set(source_names)) != len(source_names):
@@ -431,7 +427,8 @@ def _reset_node(
             f"The current node template cannot use these connections: {exc}"
         ) from exc
     edits: list[RepairArtifactEdit] = []
-    if has_config_folder(node_type):
+    # A stepped transform owns an optional sidecar; a code-only one owns none.
+    if node_emits_sidecar(node):
         authored_reference = next(
             (
                 kw.value.value

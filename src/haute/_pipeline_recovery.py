@@ -1116,30 +1116,10 @@ def _build_recovery_graph(
         source_candidate = candidate_by_id[edge.source.recovery_id]
         if edge_availability == "ready" and source_candidate.node_type is not None:
             try:
-                alias = None
-                output_port_count = None
-                if source_candidate.node_type == NodeType.SUBMODEL:
-                    alias = (
-                        source_candidate.config.get("alias")
-                        if isinstance(source_candidate.config, dict)
-                        else None
-                    )
-                    # When a definition is unavailable (`_unavailable_submodel_definition`)
-                    # the count is unknown: use the number of distinct `out__` handles the
-                    # parent's own edges reference for that occurrence, and treat one or none
-                    # as a single output.
-                    if source_candidate.submodel_output_ports:
-                        output_port_count = len(source_candidate.submodel_output_ports)
-                    else:
-                        ref_handles = handles_by_source.get(source_candidate.recovery_id, [])
-                        distinct_out_handles = {h for h in ref_handles if h.startswith("out__")}
-                        output_port_count = max(1, len(distinct_out_handles))
                 input_name = executable_input_name(
                     node_type=source_candidate.node_type,
                     label=source_candidate.authored_id,
                     source_handle=edge.source_handle,
-                    alias=alias,
-                    output_port_count=output_port_count,
                 )
             except ValueError:
                 input_name = None

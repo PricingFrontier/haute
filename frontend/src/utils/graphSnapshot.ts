@@ -13,6 +13,7 @@
  */
 import type { Node } from "@xyflow/react"
 import type { PipelineEdge } from "../types/node"
+import { authoredPolarsConfig } from "./polarsStepInputs"
 
 // ---------------------------------------------------------------------------
 // Field stripping
@@ -48,11 +49,18 @@ const LIVE_HISTORY_NODE_METADATA_FIELDS = new Set([
 const LIVE_HISTORY_EDGE_IDENTITY_FIELDS = new Set(["_inputName"])
 const NO_RETAINED_METADATA = new Set<string>()
 
-function stripNodeUiFields(n: Node): Record<string, unknown> {
+function stripNodeUiFields(n: Node, forFingerprint = false): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(n as unknown as Record<string, unknown>)) {
     if ((REACT_FLOW_NODE_UI_FIELDS as readonly string[]).includes(k)) continue
     out[k] = k === "data" ? stripNodeDataMetadataFields(v) : v
+  }
+  const data = out.data as Record<string, unknown> | undefined
+  const config = data?.config as Record<string, unknown> | undefined
+  if (forFingerprint && data?.nodeType === "polars" && Array.isArray(config?.steps)) {
+    // Steps are authored; their generated body and validation result are caches.
+    // Keep both in requests/history, but do not count re-materialisation as an edit.
+    data.config = authoredPolarsConfig(config)
   }
   return out
 }
@@ -125,9 +133,9 @@ function stripNodeDataMetadataFields(
   return out
 }
 
-function stripGraphMetadataTransientFields(value: unknown): unknown {
+function stripGraphMetadataTransientFields(value: unknown, forFingerprint = false): unknown {
   if (value === null || typeof value !== "object") return value
-  if (Array.isArray(value)) return value.map(stripGraphMetadataTransientFields)
+  if (Array.isArray(value)) return value.map((child) => stripGraphMetadataTransientFields(child, forFingerprint))
 
   const record = value as Record<string, unknown>
   const isSubmodelDefinition =
@@ -141,18 +149,18 @@ function stripGraphMetadataTransientFields(value: unknown): unknown {
     return Object.fromEntries(
       Object.entries(record)
         .filter(([key]) => !key.startsWith("_"))
-        .map(([key, child]) => [key, stripGraphMetadataTransientFields(child)]),
+        .map(([key, child]) => [key, stripGraphMetadataTransientFields(child, forFingerprint)]),
     )
   }
   if (typeof record.source === "string" && typeof record.target === "string") {
     return stripEdgeUiFields(record as unknown as PipelineEdge)
   }
   if (typeof record.id === "string" && "data" in record) {
-    return stripNodeUiFields(record as unknown as Node)
+    return stripNodeUiFields(record as unknown as Node, forFingerprint)
   }
 
   return Object.fromEntries(
-    Object.entries(record).map(([key, child]) => [key, stripGraphMetadataTransientFields(child)]),
+    Object.entries(record).map(([key, child]) => [key, stripGraphMetadataTransientFields(child, forFingerprint)]),
   )
 }
 
@@ -269,6 +277,8 @@ export function toCanonicalGraphPayload(input: {
  * user-editable graph surface. Preserved blocks remain out of scope because
  * they round-trip outside the graph store, while submodels are editable in
  * the GUI and must participate in dirty detection.
+ * A stepped Polars node's code and validation result are generated caches;
+ * they remain in requests/history but do not contribute to this fingerprint.
  *
  * Determinism: equal inputs produce equal strings even if the caller
  * constructed the object with keys in a different order.
@@ -279,13 +289,12 @@ export function serializeSnapshot(input: {
   preamble: string
   submodels: Record<string, unknown>
 }): string {
-  const graph = toCanonicalGraphPayload(input)
   return JSON.stringify(
     canonicalize({
-      nodes: graph.nodes,
-      edges: graph.edges,
-      preamble: graph.preamble,
-      submodels: graph.submodels,
+      nodes: input.nodes.map((node) => stripNodeUiFields(node, true)),
+      edges: input.edges.map(stripEdgeUiFields),
+      preamble: input.preamble,
+      submodels: stripGraphMetadataTransientFields(input.submodels, true),
     }),
   )
 }

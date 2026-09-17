@@ -2267,6 +2267,146 @@ def test_unresolvable_window_partitions_fail_closed(code: str) -> None:
     assert result.unsupported_operation == "with_columns"
 
 
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "pl.int_range(pl.len())",
+        "pl.int_range(1, pl.len() + 1)",
+        "pl.int_range(5, pl.len() + 2)",
+        "pl.int_range(1, 1 + pl.len())",
+    ],
+)
+def test_frame_length_range_keeps_cardinality_bounded(expression: str) -> None:
+    result = analyze_polars_cardinality(
+        f"df = rows.with_columns({expression}.over(['g']).alias('rn'))",
+        {"rows": 100},
+    )
+
+    assert result.supported, result.reason
+    assert result.output_upper_bound == 100
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "pl.int_range(0, 1000)",
+        "pl.int_range(pl.len(), step=2)",
+        "pl.int_range(pl.len(), dtype=pl.Int64)",
+        "pl.int_range(0, pl.len() * 2)",
+        "pl.int_range(0, pl.len() + pl.len())",
+        "pl.int_range(0, pl.len() + n)",
+        "pl.int_range(pl.len() + 100)",
+        "pl.int_range(pl.len(), 100)",
+        "pl.int_range(-5, pl.len())",
+        "pl.int_range(0, pl.len() - 1)",
+        "pl.int_range(pl.len() - 4294967295)",
+        "pl.int_range(pl.len() - 1, pl.len() + 1)",
+        "pl.int_range(True, pl.len())",
+        "pl.int_range(pl.lit(1000))",
+    ],
+)
+def test_other_int_ranges_stay_unbounded(expression: str) -> None:
+    for method in ("with_columns", "select"):
+        result = analyze_polars_cardinality(
+            f"df = rows.{method}({expression}.alias('rn'))",
+            {"rows": 100},
+        )
+
+        assert not result.supported, expression
+        assert result.reason == "row_expansion_unbounded"
+
+
+def test_frame_length_range_bound_is_witnessed_by_execution() -> None:
+    """The accepted shapes never exceed the input height; a refused one can."""
+    frame = pl.DataFrame({"g": ["a", "a", "b"]})
+    for expression in ("pl.int_range(pl.len())", "pl.int_range(1, pl.len() + 1)"):
+        analysis = analyze_polars_cardinality(
+            f"df = rows.select({expression}.alias('rn'))", {"rows": 3}
+        )
+        assert analysis.supported and analysis.output_upper_bound == 3
+        assert eval(f"frame.select({expression}.alias('rn'))").height == 3  # noqa: S307
+        assert eval(f"frame.select({expression}.over('g').alias('rn'))").height == 3  # noqa: S307
+    assert frame.select(pl.int_range(pl.len() + 100).alias("rn")).height == 103
+    assert frame.head(0).select(pl.int_range(1, pl.len() + 1).alias("rn")).height == 0
+    # ``pl.len()`` is unsigned: subtracting past zero wraps instead of clamping.
+    assert frame.select(pl.int_range(pl.len() - 4294967295).alias("rn")).height == 4
+
+
+def test_horizontal_helper_keywords_cannot_smuggle_columns() -> None:
+    demanded = analyze_polars_lineage(
+        "df = rows.select(pl.concat_str(exprs=['a', 'b'], separator='|').alias('x'))",
+        {"rows": frozenset({"a", "b", "c"})},
+    )
+    assert demanded.supported
+    assert demanded.demands_by_input == {"rows": frozenset({"a", "b"})}
+
+    for expression in (
+        "pl.max_horizontal('a', ignore_nulls=['b'])",
+        "pl.concat_str(exprs=column_names)",
+    ):
+        hidden = analyze_polars_lineage(
+            f"df = rows.select({expression}.alias('x'))",
+            {"rows": frozenset({"a", "b"})},
+        )
+        assert not hidden.supported
+        assert hidden.reason == "dynamic_select"
+
+
+def test_ordered_window_keeps_cardinality_bounded() -> None:
+    """Literal ``descending``/``nulls_last`` flags only order rows within a partition."""
+    code = (
+        "df = src.with_columns(pl.lit(1, dtype=pl.Int64).cum_sum()"
+        ".over(['segment'], order_by=['premium', 'quote_id'], descending=False, nulls_last=True)"
+        ".alias('rn'))"
+    )
+    result = analyze_polars_cardinality(code, {"src": 7})
+
+    assert result.supported, result.reason
+    assert result.output_upper_bound == 7
+    lineage = analyze_polars_lineage(code, {"src": frozenset({"premium", "segment", "quote_id"})})
+    assert lineage.supported, lineage.reason
+    assert lineage.demands_by_input["src"] == frozenset({"premium", "segment", "quote_id"})
+
+
+def test_ordered_window_with_a_dynamic_direction_fails_closed() -> None:
+    result = analyze_polars_cardinality(
+        "df = src.with_columns(pl.col('premium').cum_sum()"
+        ".over('segment', order_by='premium', descending=flag))",
+        {"src": 7},
+    )
+
+    assert not result.supported
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "pl.col('p').rank(method='dense', descending=True).over(['r'])",
+        "pl.col('p').fill_null(strategy='forward').over(['r'], order_by=['q'], descending=False)",
+        "pl.col('p').quantile(0.5, interpolation='linear')",
+        "pl.concat_str([pl.col('r'), pl.lit('x')], separator='|')",
+    ],
+)
+def test_configuration_keywords_are_not_column_references(expression: str) -> None:
+    """Named string options on these methods configure them; they never name a column."""
+    result = analyze_polars_cardinality(
+        f"df = src.with_columns(({expression}).alias('x'))", {"src": 7}
+    )
+
+    assert result.supported, result.reason
+    assert result.output_upper_bound == 7
+
+
+def test_positional_string_on_a_configured_method_still_fails_closed() -> None:
+    """Only the named configuration keyword is literal; a bare positional string is not."""
+    result = analyze_polars_cardinality(
+        "df = src.with_columns(pl.col('p').rank('dense').alias('x'))",
+        {"src": 7},
+    )
+
+    assert not result.supported
+
+
 def test_window_expression_with_an_unaudited_option_is_rejected() -> None:
     """``mapping_strategy='explode'`` changes the row count."""
     result = analyze_polars_cardinality(

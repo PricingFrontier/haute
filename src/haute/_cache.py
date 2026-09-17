@@ -715,7 +715,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
                 "uri",
             ),
         ),
-        NodeType.POLARS: _classify_config_fields(user_code=("code",)),
+        NodeType.POLARS: _classify_config_fields(user_code=("code", "steps")),
         NodeType.EDGE_JOIN: _classify_config_fields(
             node_config=(
                 "coalesce",

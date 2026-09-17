@@ -1866,7 +1866,7 @@ def test_cardinality_helpers_fail_closed_for_invalid_bindings_and_missing_nodes(
     assert missing.unavailable_reason == "node_missing"
 
 
-def test_cardinality_binding_uses_collapsed_submodel_occurrence_name() -> None:
+def test_cardinality_binding_uses_collapsed_submodel_public_port_name() -> None:
     graph = PipelineGraph.model_validate(
         {
             "nodes": [
@@ -1940,7 +1940,7 @@ def test_cardinality_binding_uses_collapsed_submodel_occurrence_name() -> None:
         ((edge, proof),),
     )
 
-    assert bindings == {"unrelated_alias": proof}
+    assert bindings == {"opaque_output_id": proof}
 
 
 def test_cardinality_resolution_handles_constants_and_rejects_invalid_join_arity() -> None:

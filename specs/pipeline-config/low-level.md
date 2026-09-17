@@ -8,6 +8,7 @@
 | `src/haute/_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). For Live Switch nodes, `config["inputs"]` records only positional edge parameters (frame labels for apiInput edges, sanitised source labels otherwise), the same strings referenced by the input-to-scenario mapping; keyword-only configuration parameters are excluded. It consumes the per-type user-code extractors from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
 | `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs, and the Windows-reserved-filename guard. |
 | `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's TypedDict definition, and `warn_unrecognized_config_keys`. |
+| `src/haute/_polars_steps.py` | Low-code Polars step schema: `validate_polars_steps`, `render_polars_steps` (one statement per step, optional input-name validation, `PolarsStepError` with the step index), `referenced_step_inputs`, and `rename_step_inputs` for boundary renames. Consumed by the node data model, the parser, the executor builder, codegen, the save service, submodel flattening, and the render endpoint. |
 | `src/haute/_builders.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration consumes its `NODE_REGISTRY` registration contracts. |
 | `src/haute/_node_builder.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration documents its builder-interception seam. |
 | `src/haute/_contracts.py` | Pipeline-config-owned `Contract`/`ColumnContract` model and registry-backed `get_column_contract()` lookup used by parse-time validation and execution. |
@@ -82,9 +83,11 @@
   `_UNIVERSAL_KEYS` (`instanceOf`, `inputMapping`, `selected_columns`, `column_renames`,
   `categorical_levels`, `contract` — keys any node type may legitimately carry).
 - **`NODE_TYPE_TO_FOLDER` / `FOLDER_TO_NODE_TYPE`** (`_config_io.py`) — the bidirectional
-  map between a `NodeType` and its `config/<folder>/` sidecar directory name. 14 of the 19
-  node types store external config (all except `polars`, `edgeJoin`, `explore`, `submodel`,
-  and `submodelPort`):
+  map between a `NodeType` and its `config/<folder>/` sidecar directory name. 15 of the 19
+  node types store external config (all except `edgeJoin`, `explore`, `submodel`, and
+  `submodelPort`); `polars` is the one optional folder (`_OPTIONAL_SIDECAR_TYPES`):
+  `has_config_folder` stays false for it, `has_optional_config_folder` is true, and
+  `node_emits_sidecar(node)` decides per node (a `steps` list present):
 
   | Node type | Sidecar folder |
   |---|---|
@@ -102,6 +105,7 @@
   | `optimiserApply` | `config/apply_optimisation/` |
   | `scenarioExpander` | `config/expander/` |
   | `constant` | `config/constant/` |
+  | `polars` | `config/polars/` (optional: written only for a stepped transform) |
 - **`TARGETS`** (`_scaffold.py`) — `dict[str, _TargetConfig]`, the 7-entry registry (one per
   supported `--target`) that every scaffold template dispatches through: `label` (for the
   `.env.example` header), `env_body` (literal credential block), `secrets` (ordered CI
@@ -113,7 +117,11 @@
   (`DATABRICKS_RATING_HOST`/`DATABRICKS_RATING_TOKEN`) — and its `secrets` list both deploy-time
   pairs, MLflow and rating.
 - **`GraphNode` / `GraphEdge` / `NodeData` / `PipelineGraph`** (`haute._types`, not owned by
-  this component but constructed here in `_graph_builders.py`).
+  this component but constructed here in `_graph_builders.py`). `NodeData` materialises a
+  `polars` config's `code` from its `steps` on construction (`_materialise_polars_steps`,
+  writing `_steps_error` and empty code when they cannot be rendered), and
+  `GraphNode.with_config` is the validated replacement helper every in-process config
+  rewrite uses instead of `model_copy`. `TransformConfig.steps` is the persisted step list.
 
 ## Control flow
 
@@ -147,7 +155,10 @@ decorated function's identity, decorator token/kwargs, parameters, body, and sou
 without loading external config. The strict `_extract_decorated_nodes` path then resolves
 every skeleton and propagates any failure. For each skeleton it calls `_resolve_node_config`, which
 either: loads and normalises a `config=` sidecar via `_config_io.load_node_config` and
-attaches code parsed from the function body (`_attach_code_from_body`); raises
+attaches code parsed from the function body (`_attach_code_from_body`), then for a
+`polars` sidecar reconciles its `steps` with that body (`_reconcile_polars_steps`: keep,
+discard with `_steps_discarded`/`_discarded_sidecar`, or keep an unrenderable list behind
+an empty body; `steps` plus `inputMapping` on an original is a `ConfigError`); raises
 `_sidecar_required_error` if the node type is folder-backed but no `config=` was given; or
 dispatches into `_build_node_config`'s per-`NodeType` branch to build the config purely from
 decorator kwargs + body. `_resolve_node_config` also pops a `contract=` kwarg before
@@ -175,7 +186,8 @@ constructs only recovery DTOs. No recovery value can be passed to `_build_rf_nod
 execution, lint, deploy, or strict post-save verification.
 
 **Sidecar write path.** `_config_io.collect_node_configs(graph)` walks a `PipelineGraph`,
-skips node types without a config folder, instance nodes (`config["instanceOf"]` set), and
+skips nodes that emit no sidecar (`node_emits_sidecar`: no config folder, or a `polars`
+node without a `steps` list), instance nodes (`config["instanceOf"]` set), and
 nodes flagged `config["_load_error"]` (protects the on-disk file from a bad in-memory state
 clobbering it), preserves exact incoming-edge names in Optimiser and Optimiser Apply config
 without node-id remapping. Before allowlist filtering, known removed identity fields are rejected:
@@ -305,8 +317,8 @@ forwards projection/profile fields; external-file resolution validates
   immediately because live submodel children are not registered there.
 - A Polars node's positional parameters are exactly its connected inputs, by name: an
   ordinary source contributes its sanitised node name, an API input its frame handle, and an
-  occurrence its own name (`a`, or `a__<port_name>` when the definition declares several output
-  ports); a declared `inputMapping={logical: connected}` lets the code keep another name. The
+  occurrence its sanitised public output port name, independent of its alias or output count;
+  a declared `inputMapping={logical: connected}` lets the code keep another name. The
   parser infers nothing else: a parameter that matches no connected input, a connected input
   with no parameter, or a duplicate raises `ParseError` (`unbound_parameters`,
   `unconsumed_inputs`, `connected_inputs`, `remediation`) from the binding gate; the document
@@ -411,6 +423,10 @@ forwards projection/profile fields; external-file resolution validates
 - `tests/test_column_contracts_adoption.py` verifies builder contract adoption, parser/executor boundary enforcement, codegen metadata, model-score exceptions, and overhead benchmark.
 - `tests/test_registry_contracts.py` verifies exec/codegen registration metadata, duplicate/missing-entry failures, readiness/idempotence, and behavioural-body detection.
 - `tests/test_sidecar_golden.py` verifies canonical sidecar JSON emission and loader round-trip.
+- `tests/test_polars_steps.py` verifies the step schema (every invalid payload names its step), golden rendering per step kind and expression type, value-versus-expression operand positions, the extraction fixpoint, `NodeData` materialisation, chunk classification of the materialised code, assistant re-materialisation, executor runs of every step kind, incomplete and unknown-input run-time errors, instance execution with implicit mapping, `inputMapping` rejection, codegen/parse round trip, hand-edit discard, incomplete-list retention, malformed sidecar rejection, sidecar collection, save-time sidecar write/retirement/collision/warnings, the node-scoped save of a stepped transform's sidecar, submodel flattening rewrites (downstream and internal stepped consumers, the latter executed), the explicit-instance mapping round trip, the render endpoint, and the extended vocabulary (golden renders, step-indexed rejections, and an executed program covering ordered windows, date arithmetic, string parsing, quantile and filtered aggregates, whole-frame summaries, null literals, and join validation), and nested expressions (golden renders for every operand position, the depth cap, literal-only positions, and an executed program), reshaping and dtype selectors (golden renders and rejections for select/drop types, dtype aggregations, pivot and unpivot; a cell-for-cell parity check of the pivot lowering against `LazyFrame.pivot` for every offered aggregate on populated, all-null, absent and empty inputs; an executed program; and a check that the generated shapes stay inside the lineage and cardinality models with and without dtypes).
+- `tests/test_polars_steps_catalogue.py` reads the editor's `catalogue.ts` and holds its step kinds and required fields, operators, aggregates, join and fill vocabularies, cast types, function argument shapes and depth cap equal to the renderer's.
+- The free-code cases in `tests/test_polars_steps.py` cover multiline rendering and inclusive line ranges, syntax and control-flow validation without executing code, execution between structured steps, actual runtime error locations, helper-return and trailing-comment round trips, and render API responses.
+- `tests/test_polars_steps_corpus.py` executes the 45-snippet equivalence corpus in `tests/fixtures/polars_steps_corpus/` (hand-written Polars across 18 categories and each snippet's step translation, auxiliary upstream nodes included) on a normal and a hard synthetic dataset, comparing exact dtypes, null patterns and row order (order-free only where the snippet leaves it unspecified) and requiring the same exception class when the snippet raises; the two snippets the vocabulary does not express (Enum categories, `cut` banding) are listed with their reasons and the suite asserts those constructs are still absent from the vocabulary.
 
 Tests live under `tests/`, predominantly as behavioural unit tests against the real decorator
 API and real JSON round-trips rather than mocks:

@@ -128,6 +128,7 @@ import type {
   OptimiserSolveResponse,
   OptimiserSolveResult,
   OptimiserStatusResponse,
+  PolarsStepsRenderResponse,
   PreviewNodeResponse,
   ApplyOptimiserResponse,
   SaveOptimiserResponse,
@@ -3523,4 +3524,18 @@ export function validateReactFlowNode(value: unknown): Node {
     throw new Error(`validateReactFlowNode: expected field \`data\` to be a plain object, got ${typeName(obj.data)}`)
   }
   return value as Node
+}
+
+export function parsePolarsStepsRenderResponse(value: unknown): PolarsStepsRenderResponse {
+  const parser = "parsePolarsStepsRenderResponse"
+  const obj = expectPlainObject(parser, value)
+  return {
+    ok: expectBoolean(parser, obj.ok, "field `ok`"),
+    code: expectString(parser, obj.code, "field `code`"),
+    step_lines: parseArray(parser, obj.step_lines, "field `step_lines`", (item, field) =>
+      parseArray(parser, item, field, (line, lineField) => expectNumber(parser, line, lineField)),
+    ),
+    step_index: expectNullableNumber(parser, obj.step_index, "field `step_index`"),
+    message: expectString(parser, obj.message, "field `message`"),
+  }
 }

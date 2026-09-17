@@ -55,6 +55,7 @@ export type NodeConfigEditorProps = {
   onSwapEdgeJoinInputs?: (nodeId: string) => void
   onShowPivots: () => void
   errorLine?: number | null
+  runError?: string | null
   previewRows?: Record<string, unknown>[]
   selectedPreviewLoading?: boolean
   loadPivotFilterMembers: LoadPivotFilterMembers
@@ -81,6 +82,7 @@ export function NodeConfigEditor({
   onSwapEdgeJoinInputs,
   onShowPivots,
   errorLine,
+  runError,
   previewRows,
   selectedPreviewLoading,
   loadPivotFilterMembers,
@@ -160,7 +162,7 @@ export function NodeConfigEditor({
       return <ConstantEditor config={config} onUpdate={onUpdateConfig} />
 
     case NODE_TYPES.POLARS:
-      return <TransformEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} upstreamColumns={upstreamColumns} />
+      return <TransformEditor config={config} onUpdate={onUpdateConfig} onReplaceConfig={onReplaceConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} runError={runError} upstreamColumns={upstreamColumns} />
 
     case NODE_TYPES.EDGE_JOIN:
       return <EdgeJoinEditor config={config} onUpdate={onUpdateConfig} nodeId={node.id} accentColor={accentColor} onDeleteInput={onDeleteEdge} onSwapInputs={onSwapEdgeJoinInputs ? () => onSwapEdgeJoinInputs(node.id) : undefined} />

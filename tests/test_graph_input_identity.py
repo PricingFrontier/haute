@@ -119,16 +119,14 @@ def test_edge_input_name_does_not_mutate_its_inputs() -> None:
     assert edge == edge_before
 
 
-def test_submodel_output_identity_uses_occurrence_name_not_structural_handle() -> None:
+def test_submodel_output_identity_is_the_port_name_not_the_alias_or_handle() -> None:
     assert (
         graph_utils.executable_input_name(
             node_type=NodeType.SUBMODEL,
             label="Pricing",
             source_handle="out__written_premium",
-            alias="pricing_secondary",
-            output_port_count=1,
         )
-        == "pricing_secondary"
+        == "written_premium"
     )
 
     with pytest.raises(ValueError, match=r"out__<name>"):
@@ -136,12 +134,10 @@ def test_submodel_output_identity_uses_occurrence_name_not_structural_handle() -
             node_type=NodeType.SUBMODEL,
             label="Pricing",
             source_handle="written_premium",
-            alias="pricing_secondary",
-            output_port_count=1,
         )
 
 
-def test_submodel_edge_resolves_occurrence_name_from_definition() -> None:
+def test_submodel_edge_is_named_by_its_port() -> None:
     source = GraphNode(
         id="pricing_instance",
         data=NodeData(
@@ -170,11 +166,11 @@ def test_submodel_edge_resolves_occurrence_name_from_definition() -> None:
             source,
             submodels={"pricing_definition": definition},
         )
-        == "pricing_secondary"
+        == "written_premium"
     )
 
 
-def test_submodel_edge_requires_its_definition_for_public_label_resolution() -> None:
+def test_submodel_edge_needs_no_definition_for_its_port_name() -> None:
     source = GraphNode(
         id="pricing_instance",
         data=NodeData(
@@ -184,11 +180,13 @@ def test_submodel_edge_requires_its_definition_for_public_label_resolution() -> 
         ),
     )
 
-    with pytest.raises(ValueError, match="definition registry"):
+    assert (
         graph_utils.edge_input_name(
             _edge("pricing_instance", source_handle="out__written_premium"),
             source,
         )
+        == "written_premium"
+    )
 
 
 def test_editor_identity_resolver_for_boundary_handles() -> None:
@@ -204,8 +202,53 @@ def test_editor_identity_resolver_for_boundary_handles() -> None:
         source_handles=("policy_input",),
     )
 
-    assert output.source_handle_input_names == {"out__written_premium": "pricing_secondary"}
+    assert output.source_handle_input_names == {"out__written_premium": "written_premium"}
     assert public_input.source_handle_input_names == {"policy_input": "policy_input"}
+
+
+@pytest.mark.parametrize(
+    ("node_type", "handle_prefix"),
+    [
+        (NodeType.API_INPUT, ""),
+        (NodeType.SUBMODEL, "out__"),
+        (NodeType.SUBMODEL_PORT, ""),
+    ],
+)
+@pytest.mark.parametrize("frame_names", [("output_1",), ("output_1", "output_2")])
+def test_polars_inputs_keep_frame_names_when_source_labels_and_aliases_change(
+    node_type: NodeType,
+    handle_prefix: str,
+    frame_names: tuple[str, ...],
+) -> None:
+    source = GraphNode(
+        id="inputs_instance",
+        data=NodeData(
+            label="Inputs display",
+            nodeType=node_type,
+            config={"definitionId": "child", "alias": "Inputs_alias"},
+        ),
+    )
+    source_handles = tuple(f"{handle_prefix}{name}" for name in frame_names)
+    graph = PipelineGraph(
+        nodes=[source, _node("consumer", "Polars consumer", NodeType.POLARS)],
+        edges=[_edge(source.id, source_handle=handle) for handle in source_handles],
+    )
+
+    for label, alias in [("Inputs display", "Inputs_alias"), ("Renamed display", "renamed_alias")]:
+        source.data.label = label
+        source.data.config["alias"] = alias
+        identity = resolve_editor_identity(
+            node_type=node_type,
+            label=label,
+            source_handles=source_handles,
+            alias=alias,
+        )
+
+        assert identity.default_input_name is None
+        assert identity.source_handle_input_names == dict(zip(source_handles, frame_names))
+        assert [
+            name for _edge, name in graph_utils.incoming_edge_bindings(graph, "consumer")
+        ] == list(frame_names)
 
 
 def test_editor_identity_resolver_owns_keyword_unicode_and_config_paths() -> None:

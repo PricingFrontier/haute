@@ -372,9 +372,10 @@ function renderNodePanel(
 
 describe("NodePanel tab hover dual state", () => {
   it("active tab and inactive tab render distinguishably", () => {
-    // polars nodes show the Columns tab, so both tabs are present.
+    // polars nodes show the Columns tab beside their config tab (labelled
+    // "Polars"), so both tabs are present.
     renderNodePanel()
-    const configTab = screen.getByRole("button", { name: /config/i })
+    const configTab = screen.getByRole("button", { name: /^polars$/i })
     const columnsTab = screen.getByRole("button", { name: /columns/i })
     // Active tab uses accent-soft background; inactive tab should not.
     // We assert they are not the same string (a brittle "identical"
@@ -386,7 +387,7 @@ describe("NodePanel tab hover dual state", () => {
 
   it("hovering the ACTIVE tab does not change its inline background (no hover flash)", () => {
     renderNodePanel()
-    const configTab = screen.getByRole("button", { name: /config/i })
+    const configTab = screen.getByRole("button", { name: /^polars$/i })
     const before = configTab.style.background
     fireEvent.mouseEnter(configTab)
     const after = configTab.style.background
@@ -398,7 +399,7 @@ describe("NodePanel tab hover dual state", () => {
 
   it("hovering an INACTIVE tab does not rewrite inline styles of the active tab", () => {
     renderNodePanel()
-    const configTab = screen.getByRole("button", { name: /config/i })
+    const configTab = screen.getByRole("button", { name: /^polars$/i })
     const columnsTab = screen.getByRole("button", { name: /columns/i })
     const activeBefore = configTab.style.background
     fireEvent.mouseEnter(columnsTab)

@@ -26,11 +26,18 @@ backend API modules own validation and persistence.
   code**, 1:1 with the generated function signature: an API-input frame edge's chip shows the
   frame label carried on the edge (`quotes` is displayed as `quotes` and callable as `quotes`),
   an ordinary source's chip shows the sanitised node label, and a submodel `out__` edge's input name
-  is the occurrence's name (its alias, or `<name>__<port_name>` with several output ports), resolved by the backend identity endpoint from the alias the request carries. Renaming an occurrence renames its alias and rebinds downstream consumers without code edits. Inside a
+  is the sanitised public output port name, independent of the occurrence alias and
+  number of output ports. Renaming an occurrence leaves its output frame names
+  unchanged. Connections contributing duplicate input names are rejected explicitly.
+  Polars input chips, their tooltips, and connection-removal controls always use
+  this frame name. A source card's display label, occurrence alias, internal child
+  label, or structural handle must never replace a declared frame name, including
+  when only one frame is emitted or an additional output is added.
+  Inside a
   drilled submodel, an edge from the composite Input resolves its row handle to that public
   input port's name; the literal boundary-card label
-  `INPUT` is never presented as the child's argument name. The source
-  node is named in the chip tooltip. Two frames connected from one API input render as two
+  `INPUT` is never presented as the child's argument name. The frame
+  is named in the chip tooltip. Two frames connected from one API input render as two
   distinct, individually removable chips with two distinct names. Live-switch mapping rows and
   output frame blocks present the same names — there is no separate display identity anywhere.
 - Editors retain incomplete persisted rows when they can be repaired (notably API schema and
@@ -201,6 +208,148 @@ backend API modules own validation and persistence.
   `outputMapping` rows with all four required fields including `enabled`; API
   Input uses `tables`. Editors do not detect, upgrade, or mirror historical
   working-copy formats.
+
+**Transform step builder.** A Transform node's config tab is labelled "Polars" (its config is
+its steps or code). A new Transform node starts in step mode: its default config
+carries an empty `steps` list, and the editor renders the step builder instead of the code
+box whenever `config.steps` is a list. The builder shows a fixed start-from input selector,
+numbered step cards ("Start from", then Step 1 onwards, the same numbering every message
+uses) that read as plain-English summaries while collapsed and open one at a time through a
+keyboard-operable disclosure (a new step opens itself; Escape collapses; deleting a card
+moves focus to the next disclosure or to `Add step`), each with delete, move up, and move
+down, and each draggable by its header (a hand cursor; dropping on another card puts the
+step there and the open card follows its step), an `Add step` button under the last card (under the start card while there are no
+steps) that opens, in place, a chooser of every step kind by name, sectioned as rows,
+columns, combine and values, with what the kind does as its tooltip (arrow keys move between kinds, Escape closes and returns focus), covering filter, derived
+column, conditional column, window aggregate, select, drop, rename, cast, sort, unique,
+group by, join, concat, pivot, unpivot, fill null, limit, and variable, and per-step forms whose column
+pickers offer upstream columns (for an edge from a multi-output producer such as a submodel,
+the columns of that output handle as recorded by the last preview) plus columns derived by
+earlier steps while accepting free text: every column box lists the names starting with
+what is typed beneath it (all of them while the box is empty), Up/Down move through them,
+Tab or a click completes the name, Escape closes the list, and Enter or leaving the box
+keeps what was typed; the box keeps keyboard focus through a completion or a commit. A window expression offers the plain aggregates plus row number, running total,
+previous value, rank, dense rank and forward/backward fill, an optional in-group order
+(one direction, with a hint that ordering needs a group column), a rank direction, and a
+quantile; a text-join expression lists two or more parts and a separator; a group-by
+aggregation takes an optional quantile and an optional row filter and an empty key list
+summarises the whole frame; a join offers an optional key-cardinality check on inner, left
+and full joins (cleared when the kind changes to any other) and an output row order;
+unique can drop every duplicate. The forms accept the renderer's own shorthand for a
+persisted step (a null literal without a value, a columnless window aggregate without
+a column, an order key without a direction, a text join without a separator) and
+canonicalise it before editing. A value in a
+condition or expression is a typed literal, a column, or a variable
+defined by an earlier variable step, and each field offers only the sources and literal
+types the step schema accepts there (string operators take text values only; a variable
+holds a number, text or true/false; a `null` literal is offered for expression operands
+but never in a membership list or a variable; function arguments are labelled and typed
+per function). "Computed as" offers Value first (a new column starts as a plain value), then
+Formula, Function, If-then, Window and Join text. A formula is edited as text
+(`(premium + tax) * 1.05 / 12`, `round(premium / sum_insured * 1000, 3)`: columns by name or
+in backticks, earlier variables by name, quoted text, `true`/`false`/`null`,
+`date('YYYY-MM-DD')`, Python operator precedence with `**` right-associative (power
+binds before a leading sign, while negative exponents are accepted: `-2 ** 2` is
+`-(2 ** 2)`, `(-2) ** 2` is distinct, and `2 ** -2` is valid), brackets,
+and the catalogue's functions with plain-value arguments); the text is parsed into the
+nested expression schema on commit and kept on the expression as typed, so brackets and
+spacing survive collapsing and reopening the card and the card summary shows the same
+text (text that no longer describes the expression is replaced by a fresh rendering);
+a bare value or a function typed as a formula stays a formula in the editor. Column
+completion preserves column identity when a name is also a literal keyword or an
+earlier variable, by inserting a backticked name. Variables named after functions
+remain variable references; names the formula grammar cannot represent remain in
+the structured editor. Removing or reordering a variable definition must not
+turn its remaining references into columns when a formula is edited. Non-finite
+numeric literals are rejected before a formula
+can replace the last valid expression. A new formula box starts empty
+(a placeholder tree keeps the step renderable until something is typed) with an example
+formula as a tooltip on the box and on an info icon beside its label; as a name is typed the
+columns and earlier variables starting with it are listed under the box (Up/Down move, Tab
+or a click completes the name, backticked when it is not an identifier, Escape closes; while
+no upstream column names are known a note says to run the step above); text that cannot be read
+keeps the last good expression and explains why in a muted note (the note clears as soon as the box
+holds the committed formula again, and the box keeps focus after a commit), and an expression text cannot express (one
+holding a window, conditional or text join) is edited in the structured
+left/operator/right form instead. An operand field also offers an "Expression" source that
+opens a nested editor (the same "Computed as" select and expression form, indented under
+the field); the source is withheld at the renderer's depth cap of twelve so the editor
+never builds a step it could not save. Formula commits obey the same cap, including
+their enclosing expression depth: an over-depth draft stays editable with an inline
+error and leaves the last valid expression unchanged. Summaries print a value or
+formula in formula notation
+(quoted text, `date('...')`, brackets only where re-parsing needs them, `?` for a name not yet
+filled in) and describe windows, conditionals and text joins in words; a group-by
+aggregation's row filter offers no nested expressions. The Combine group also offers
+"Pivot to columns" (index chips, the spread column, aggregate and values column, and
+one row per output column pairing a typed value with a name the value suggests, all
+rows sharing the first row's type) and "Unpivot to rows" (stacked columns, index
+chips that exclude them, name and value column fields, and a note that row order is
+not guaranteed). Select and drop take column types beside named columns, and an
+aggregation row can target "every column of a type" with a suffix instead of a name
+(row count and row filters are withheld there). Column suggestions treat a dtype
+selection as unresolved: a typed select keeps every upstream column suggested, a
+suffix is never suggested as a column, a pivot suggests its index and output names,
+and an unpivot its index plus the two new columns. Membership lists add every value
+type through an explicit Add action, so a select's default (true, today's date) can
+be added like any other. A locked generated-code panel shows the code the render endpoint returns for
+the current steps and carries the confirmed one-way `Switch to code` action. A step being
+built is not an error yet: while no run has failed on the node, a render problem is not
+shown at all (the switch to code simply stays disabled). Once the node's last run has failed (the panel receives the
+run's error message, or its error line), the panel names the failing step without opening
+it or collapsing the card being edited (a "Go to error" action opens it), badges that step,
+and tints the failing and the last execution-error line. Renders are tagged with
+the steps revision they were requested for, a response for an older revision never
+replaces a newer one, and a response after the editor unmounts never writes code
+back to the graph. Column and variable suggestions are computed only for the
+open card. The switch is enabled only while the step list is empty or the
+latest render succeeded for the current revision; on confirmation it writes that rendered
+code (or empty code for an empty list) into `code` and removes `steps`. After each
+successful render the rendered code is also written into `code` so read-only views stay
+current. This generated cache update creates no undo entry, preserves redo, does
+not dirty the document, and does not invalidate execution previews. Authored step
+changes still invalidate execution previews. One step edit is one undo action. Undo/redo re-renders the
+restored steps, and an obsolete render must not replace their code. As soon as the
+start input is known (chosen in the selector, or the node's only
+connected input) the start step is written to the config, so the node renders
+`df = <input>` and can be previewed before any step is added. A
+node without inputs cannot add steps and is told to connect an input or switch to code,
+with the switch offered there under the same rule as the code panel's (disabled, with the
+reason as its tooltip, while persisted steps cannot render). Renaming an upstream node rewrites the input references
+inside a stepped transform's steps instead of recording an `inputMapping` binding on it.
+A node whose steps were discarded on load shows the discard reason above the code box.
+A persisted step whose shape the forms cannot edit (an unknown kind or a missing
+setting, including a kind named after an inherited JavaScript object property)
+renders as an invalid card that can only be deleted, never crashes the editor,
+and remains visible even in the first position where the start step belongs.
+Choosing a start input repairs that position without dropping an existing
+non-source step. An invalid existing start prompts for an input even when only
+one is connected; a persisted input that is no longer connected remains visible
+as unavailable until another input is chosen. Adding steps requires a connected
+start input. A missing step id is an invalid persisted shape. Invalid steps
+are skipped by column and variable suggestions; the backend already keeps such a list
+behind an incomplete body. A membership list keeps its chosen value type while empty.
+Numeric controls parse the complete value, including scientific notation (`1e3`
+commits as 1000). Integer controls reject fractional values instead of truncating;
+empty, non-finite and below-minimum values never replace the committed value and
+report a visible validation error.
+
+The Add step chooser also offers **Free code** in a Code section. Its card embeds
+the shared Python code editor, starts empty, and has no explanatory text below
+the editor. The editor starts at a compact 120px height, can be resized vertically,
+and fills the available height as its box grows. It can
+be edited, reordered and deleted like any other step, and can be followed by
+low-code steps. Column completion uses the columns known before the snippet;
+after arbitrary code the editor does not infer its output schema, so later
+column fields accept names typed by the user. Collapsed cards show the first
+nonblank line of code or a prompt to write code. The render response's inclusive
+line ranges map runtime errors to cards, including steps after multiline
+snippets, and the generated-code panel highlights the runtime error's exact
+line. Validation failures badge the offending card and show an error message;
+their generated code is unavailable. Pending or failed renders do not reuse
+stale line ranges to blame a different current step.
+
+Nodes whose config has no `steps` list render the code box exactly as before.
 
 ## Design rationale
 

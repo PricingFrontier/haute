@@ -61,6 +61,11 @@ vi.mock("../api/client", async () => {
     bootstrapHauteSession: vi.fn(() => Promise.resolve()),
     checkHauteSession: vi.fn(() => Promise.resolve({ ok: true })),
     // Pipeline endpoints
+    renderPolarsSteps: vi.fn(async ({ steps }: { steps: Array<{ kind: string; input?: string }> }) => ({
+      ok: true,
+      code: steps.map((step) => (step.kind === "source" ? `df = ${step.input}` : "df = df")).join("\n"),
+      step_lines: steps.map((_, index) => [index + 1, index + 1]),
+    })),
     loadPipeline: vi.fn(() => Promise.resolve(makePipelineEditorDocument({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))),
     resolveEditorNodeIdentities: vi.fn(async (payload: {
       nodes: Array<{
@@ -251,6 +256,7 @@ class MockWebSocket {
 import App from "../App"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
+import { appEdge } from "../utils/flowElements"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
@@ -791,6 +797,70 @@ describe("App integration — load a pipeline with nodes", () => {
       expect(screen.getByRole("button", { name: /^centre$/i })).toBeEnabled()
       expect(screen.getByRole("button", { name: /^layout$/i })).toBeEnabled()
     })
+  })
+
+  it("offers the columns of the output handle an edge leaves from, not the source's single list", async () => {
+    // A submodel-style producer records columns per output; the edge from
+    // output_1 must feed output_1's columns to the transform's formula box.
+    const producer = makeNode("prod", "Model")
+    const runtimeColumns = {
+      _columns: [{ name: "other", dtype: "f64" }],
+      _frameColumns: {
+        output_1: [{ name: "premium", dtype: "f64" }, { name: "premium_net", dtype: "f64" }],
+        output_2: [{ name: "claims", dtype: "i64" }],
+      },
+    }
+    const stepped = makeNode("t", "Transform")
+    stepped.data.config = {
+      steps: [
+        { id: "s", kind: "source", input: "Model" },
+        { id: "w", kind: "with_column", name: "x", expr: { type: "binary", left: { kind: "column", name: "a" }, op: "+", right: { kind: "literal", type: "number", value: 1 }, text: "" } },
+      ],
+      code: "",
+    }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
+      nodes: [producer, stepped],
+      edges: [{ id: "e1", source: "prod", target: "t", sourceHandle: "output_1", targetHandle: null }],
+      source_revision: "revision-test",
+    }))
+    render(<App />)
+    await waitForAppReady()
+    // Runtime columns come from a preview, never from the loaded document.
+    act(() => {
+      useGraphStore.getState().setNodesRaw(useGraphStore.getState().nodes.map((node) => (node.id === "prod" ? { ...node, data: { ...node.data, ...runtimeColumns } } : node)))
+    })
+    fireEvent.click(await screen.findByTestId("rf__node-t"))
+    await findEditorTestId("polars-steps-editor")
+    fireEvent.click(screen.getByRole("button", { name: "Step 1: Add column" }))
+    const formula = await screen.findByRole("combobox", { name: "Formula" })
+    fireEvent.change(formula, { target: { value: "pre" } })
+    const list = await screen.findByRole("listbox", { name: "Matching columns" })
+    expect(within(list).getAllByRole("option").map((option) => option.textContent)).toEqual(["premium", "premium_net"])
+  })
+
+  it("keeps an edge drawn into a stepped transform while its editor seeds the start step", async () => {
+    // The step editor writes the start step from an effect as soon as the
+    // new edge gives it an input; that node update must see the edge.
+    const upstream = makeNode("up", "Quotes")
+    const stepped = makeNode("t", "Transform")
+    stepped.data.config = { steps: [], code: "" }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
+      nodes: [upstream, stepped],
+      edges: [],
+      source_revision: "revision-test",
+    }))
+    render(<App />)
+    await waitForAppReady()
+    fireEvent.click(await screen.findByTestId("rf__node-t"))
+    await findEditorTestId("polars-steps-editor")
+    act(() => {
+      useGraphStore.getState().setEdges((edges) => [...edges, appEdge({ source: "up", target: "t" })])
+    })
+    await waitFor(() => {
+      const config = useGraphStore.getState().nodes.find((node) => node.id === "t")?.data.config as Record<string, unknown>
+      expect(config.steps).toEqual([expect.objectContaining({ kind: "source", input: "Quotes" })])
+    })
+    expect(useGraphStore.getState().edges.map((edge) => [edge.source, edge.target])).toEqual([["up", "t"]])
   })
 
   it("retains deselected edge join columns when switching nodes and returning", async () => {

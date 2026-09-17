@@ -260,16 +260,15 @@
    validate and share those values.
    `frontend/scripts/check-bundle-size.mjs` counts the production entry and
    modulepreload chunks against default ceilings of 283 KiB initial and
-   1,333 KiB total JavaScript gzip. The measured bundle is approximately
-   281.1 KiB initial and 1,328.3 KiB total with the eager execution-diagnostic
-   validator, server-owned editor identities, extracted graph/job controllers,
-   the collapsed submodel input socket's canonical port resolution and
-   parent-binding projection, and existing recovery/live-sync boundaries. Each
-   ceiling raise names the eager core it admits and restores roughly 2 KiB of
-   headroom, so the ratchet keeps catching an accidental eager import rather
-   than only the change that happens to cross it. The Explore chart
-   validator is a separate lazy artifact in the chart-config chunk rather than
-   an entry modulepreload.
+   1,385 KiB total JavaScript gzip. The measured bundle is approximately
+   280.4 KiB initial and 1,374.5 KiB total. The Polars step builder accounts
+   for approximately 24.3 KiB of the aggregate total since the 1,350.2 KiB
+   baseline, with the editor interface in the existing lazy TransformEditor
+   chunk and no new dependency. Initial-path raises admit only
+   deliberate eager core and retain roughly 2 KiB of headroom, whereas an
+   intentional lazy feature restores roughly 10 KiB of aggregate headroom.
+   The Explore chart validator is a separate lazy artifact in the chart-config
+   chunk rather than an entry modulepreload.
    Modelling training response parsers remain in a dynamically imported
    `types/trainGuards.ts` chunk. The checker classifies that chunk as lazy-only
    and fails if it becomes a startup modulepreload; CI may override the ceiling

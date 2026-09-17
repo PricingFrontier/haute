@@ -84,6 +84,7 @@ import type {
   OutputAssembleDryRunResponse,
   OutputDestinationResponse,
   PipelineGraph,
+  PolarsStepsRenderResponse,
   PreviewNodeResponse,
   SaveOptimiserRequest,
   SaveOptimiserResponse,
@@ -171,6 +172,7 @@ import {
   parseOutputDestinationResponse,
   parseOutputAssembleDryRunResponse,
   parsePipelineResponse,
+  parsePolarsStepsRenderResponse,
   parsePreviewNodeResponse,
   parseSavePipelineResponse,
   parseSchemaResponse,
@@ -825,6 +827,21 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
     },
     { signal, timeout },
   ).then((data) => parsePreviewNodeResponse(data) as PreviewNodeResponse)
+}
+
+export interface RenderPolarsStepsArgs {
+  steps: unknown[]
+  inputNames: string[]
+  signal?: AbortSignal
+}
+
+/** Render a low-code Transform step list to the Polars code it stands for. */
+export function renderPolarsSteps(args: RenderPolarsStepsArgs): Promise<PolarsStepsRenderResponse> {
+  return post<unknown>(
+    "/api/pipeline/polars-steps/render",
+    { steps: args.steps, input_names: args.inputNames },
+    { signal: args.signal },
+  ).then((data) => parsePolarsStepsRenderResponse(data))
 }
 
 export interface RecoveryPreviewNodeArgs {

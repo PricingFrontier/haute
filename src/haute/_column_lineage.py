@@ -248,6 +248,23 @@ _HORIZONTAL_PL_CALL_OUTPUTS = {
 # ``to_integer`` and friends intentionally stay out because a bare string names
 # another column there.  ``tests/test_column_lineage.py`` audits every entry
 # against the pinned Polars source.
+#: Plain ``Expr`` methods whose named keyword arguments are configuration
+#: strings, never column references (``rank(method='dense')``,
+#: ``fill_null(strategy='forward')``, ``quantile(0.5, interpolation='linear')``).
+_LITERAL_STRING_KEYWORDS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {
+        "rank": frozenset({"method"}),
+        "fill_null": frozenset({"strategy"}),
+        "quantile": frozenset({"interpolation"}),
+    }
+)
+
+#: Horizontal helpers whose named keyword arguments are scalar configuration
+#: (``pl.concat_str([...], separator='|')``) rather than column references.
+_LITERAL_HELPER_KEYWORDS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {"concat_str": frozenset({"separator", "ignore_nulls"})}
+)
+
 _LITERAL_STRING_ARGUMENT_METHODS: Mapping[str, frozenset[str]] = MappingProxyType(
     {
         "str": frozenset(
@@ -619,13 +636,19 @@ def _over_columns(call: ast.Call) -> frozenset[str] | None:
     """Return the columns one ``Expr.over`` partitions (and orders) by.
 
     Only ``partition_by`` and ``order_by`` are accepted, positionally or by
-    keyword, and only as literal column names. Every other keyword is refused:
+    keyword, and only as literal column names; ``descending`` and
+    ``nulls_last`` are accepted as literal booleans because they only order
+    rows within a partition. Every other keyword is refused:
     ``mapping_strategy='explode'`` in particular changes the row count, which
     the row-bounded expression model must never admit silently.
     """
     columns: set[str] = set()
     nodes: list[ast.AST] = list(call.args)
     for keyword in call.keywords:
+        if keyword.arg in {"descending", "nulls_last"}:
+            if isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, bool):
+                continue
+            return None
         if keyword.arg not in {"partition_by", "order_by"}:
             return None
         nodes.append(keyword.value)
@@ -642,15 +665,29 @@ def _over_columns(call: ast.Call) -> frozenset[str] | None:
 def _horizontal_columns(call: ast.Call) -> frozenset[str] | None:
     """Return literal column references passed to one horizontal helper.
 
-    Strings and string sequences name columns for these helpers; keyword
-    arguments are scalar configuration and must not be able to carry one.
+    Strings and string sequences name columns for these helpers, positionally
+    or through ``exprs=``; every other keyword is scalar configuration (a
+    registered literal keyword, or a value that cannot be a string or a
+    sequence) so it cannot smuggle a column reference past the walk.
     """
     columns: set[str] = set()
+    literal_keywords = _LITERAL_HELPER_KEYWORDS.get(_polars_call_name(call) or "", frozenset())
     for argument in call.args:
         if not _collect_string_expression_columns(argument, columns):
             return None
     for keyword in call.keywords:
         if keyword.arg is None:
+            return None
+        if keyword.arg == "exprs":
+            # ``pl.concat_str(exprs=[...])`` names columns exactly as the
+            # positional form does.
+            if not _collect_string_expression_columns(keyword.value, columns):
+                return None
+            continue
+        if keyword.arg in literal_keywords and isinstance(keyword.value, ast.Constant):
+            continue
+        if isinstance(keyword.value, (ast.List, ast.Tuple, ast.Starred)):
+            # A sequence in any other keyword could hide bare column strings.
             return None
         if _may_evaluate_to_python_string(keyword.value):
             return None
@@ -685,7 +722,9 @@ def _referenced_columns(node: ast.AST, *, rows_only: bool = False) -> frozenset[
             columns.add(name)
         elif direct in _SCHEMA_DEPENDENT_PL_CALLS:
             return None
-        elif direct in _HORIZONTAL_PL_CALL_OUTPUTS:
+        elif direct in _HORIZONTAL_PL_CALL_OUTPUTS or direct in _LITERAL_HELPER_KEYWORDS:
+            # Horizontal helpers and ``pl.concat_str`` read bare strings and
+            # string sequences as column names; their named options are scalar.
             horizontal = _horizontal_columns(child)
             if horizontal is None:
                 return None
@@ -747,11 +786,19 @@ def _referenced_columns(node: ast.AST, *, rows_only: bool = False) -> frozenset[
             # consumes a literal).  Until a method has an explicit transfer,
             # rejecting any argument that can be a string is the only sound
             # choice.
+            literal_keywords = _LITERAL_STRING_KEYWORDS.get(method, frozenset())
             if any(
                 string_argument(argument)
                 for argument in [
                     *child.args,
-                    *(keyword.value for keyword in child.keywords),
+                    *(
+                        keyword.value
+                        for keyword in child.keywords
+                        if not (
+                            keyword.arg in literal_keywords
+                            and isinstance(keyword.value, ast.Constant)
+                        )
+                    ),
                 ]
             ):
                 return None
@@ -766,6 +813,62 @@ def _referenced_columns(node: ast.AST, *, rows_only: bool = False) -> frozenset[
                 if _opaque_helper_argument(argument):
                     return None
     return frozenset(columns)
+
+
+def _range_bound_terms(node: ast.AST) -> tuple[int, int] | None:
+    """Decompose a range bound into ``(len_multiplier, constant)``.
+
+    Accepts a non-negative int literal (``(0, c)``), ``pl.len()`` (``(1, 0)``),
+    and ``pl.len()`` plus a non-negative int literal (``(1, c)``). Subtraction
+    is never accepted: ``pl.len()`` is unsigned, so ``pl.len() - k`` wraps
+    when ``k`` exceeds the height (``pl.len() - 1`` on an empty frame asks
+    for four billion rows), and a negative literal would smuggle the same
+    subtraction. Anything else is not a bound the closed model can size.
+    """
+    if isinstance(node, ast.Constant):
+        value = node.value
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+        return (0, value)
+    if isinstance(node, ast.Call):
+        if _polars_call_name(node) == "len" and not node.args and not node.keywords:
+            return (1, 0)
+        return None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _range_bound_terms(node.left)
+        right = _range_bound_terms(node.right)
+        if left is None or right is None or left[0] + right[0] > 1:
+            return None
+        return (left[0] + right[0], left[1] + right[1])
+    return None
+
+
+def _is_frame_length_range(call: ast.Call) -> bool:
+    """Whether ``pl.int_range(...)`` cannot produce more values than rows.
+
+    ``pl.int_range(start, end)`` has ``max(end - start, 0)`` values. With each
+    bound written as ``m * pl.len() + c`` (``m`` in ``{0, 1}``, ``c >= 0``, no
+    subtraction), that length is ``(m_end - m_start) * pl.len() + (c_end -
+    c_start)``; it is proven to be at most the frame's (or the ``over``
+    partition's) row count exactly when ``m_end - m_start == 1`` and ``c_end
+    - c_start <= 0``. That admits the row-number idioms ``pl.int_range(pl.len())``
+    and ``pl.int_range(1, pl.len() + 1)`` and refuses ``pl.int_range(pl.len() +
+    100)`` (``len + 100`` rows from a ``select``), ``pl.int_range(pl.len(),
+    100)``, every subtraction (unsigned wraparound), a literal-only range, and
+    anything passed by keyword (``step``, ``dtype``); those keep the
+    constructor's unbounded verdict.
+    """
+    if not 1 <= len(call.args) <= 2 or call.keywords:
+        return False
+    if len(call.args) == 1:
+        start: tuple[int, int] | None = (0, 0)
+        end = _range_bound_terms(call.args[0])
+    else:
+        start = _range_bound_terms(call.args[0])
+        end = _range_bound_terms(call.args[1])
+    if start is None or end is None:
+        return False
+    return end[0] - start[0] == 1 and end[1] - start[1] <= 0
 
 
 def _expression_has_unbounded_row_effect(node: ast.AST) -> bool:
@@ -783,6 +886,8 @@ def _expression_has_unbounded_row_effect(node: ast.AST) -> bool:
             continue
         direct = _polars_call_name(child)
         if direct is not None:
+            if direct == "int_range" and _is_frame_length_range(child):
+                continue
             if direct not in _ROW_BOUND_SAFE_POLARS_CALLS:
                 return True
             continue

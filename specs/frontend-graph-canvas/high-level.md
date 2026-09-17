@@ -231,8 +231,8 @@ candidate, with the error toast.
   the edit is atomic and undoable. A read-only drilled occurrence renders the
   list without remove controls. Output keeps one target handle;
   every child-to-Output mapping carries an immutable public output `name` and
-  one internal source endpoint. A canonical occurrence contributes its
-  occurrence alias (or `<alias>__<name>` when declaring more than one output port) downstream. Parent bindings stay on
+  one internal source endpoint. A canonical occurrence contributes each output
+  port's sanitised public name downstream, independent of its alias. Parent bindings stay on
   `in__<name>`/`out__<name>`. Changing internal endpoints while retaining
   a port name and direction is a compatible shared-definition edit. Incidental
   removal or direction changes of a bound port are rejected atomically across
@@ -516,7 +516,8 @@ candidate, with the error toast.
 - **Three separate fingerprints at three granularities** — structural,
   panel-context, and persisted — exist so that expensive recomputation only
   happens at the granularity that actually changed. A position drag never
-  rehashes node config; a preview-only field update bumps the panel-context
+  rehashes node config; a preview-only field update (including per-output-handle
+  column schemas) bumps the panel-context
   version (so the inspector panel refreshes) without bumping the structural
   version (so the graph isn't marked "changed" for undo-history purposes
   beyond what's needed). Whole-document loads are deliberate identity
@@ -540,7 +541,7 @@ candidate, with the error toast.
   time.** Every ordinary incoming edge contributes its API frame label or
   sanitised source label. A canonical drilled Input contributes its sanitised
   public input port ID, and a canonical occurrence output contributes its
-  occurrence alias (or <alias>__<port_id> when declaring more than one output port). A connection whose derived name duplicates an existing
+  sanitised public output port name. A connection whose derived name duplicates an existing
   executable input on the target is refused with a named toast, mirroring the
   backend's save-time `ParseError`. The
   alternative — accepting the edge and letting codegen suffix a parameter —
