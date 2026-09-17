@@ -350,9 +350,10 @@ steps consume that frame. Multiline expressions, comments, local helpers and
 control flow are supported. Blank or comment-only snippets, invalid Python, and
 node-level `return`, `yield`, `await`, or loop control outside a loop fail with the
 offending step index; returns inside helper functions are allowed. Validation
-compiles but never executes authored code. The stored snippet is preserved;
-rendering normalises line endings and removes trailing whitespace so generated
-code round-trips through the existing extractor. Free code shares the existing
+compiles but never executes authored code; frame validation models `df` already
+bound, and diagnostics and ranges refer to authored lines. The stored snippet is
+preserved; rendering normalises line endings and removes trailing whitespace so
+generated code round-trips through the existing extractor. Free code shares the existing
 code execution and planning contracts, with no separate evaluator. Input renames
 continue to rewrite structured input fields; authored Python is unchanged. Use
 `df` to operate on the current frame across input renames; direct references to

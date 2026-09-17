@@ -1014,11 +1014,12 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
     out = config.get("output_column", "prediction")
     produced = {out} if out else {"prediction"}
 
-    # Post-processing code can reference arbitrary columns — opaque. A step
-    # list is the same program (or, while incomplete, a build-time error the
-    # contract must not pre-empt by looking the model up).
+    # Post-processing code can reference arbitrary columns — opaque. A nonempty
+    # step list is a postprocessing program or incomplete build-time error,
+    # while empty lists retain the model feature contract.
     code = str(config.get("code") or "").strip()
-    if code or isinstance(config.get("steps"), list):
+    steps = config.get("steps")
+    if code or (isinstance(steps, list) and bool(steps)):
         return produced, None
 
     feature_contract_path = config.get("feature_contract_path")

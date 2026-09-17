@@ -715,13 +715,42 @@ def _score_graph_lazy(
         config = node.data.config
         func_name = node_fn_name(node)
 
-        # Intercept: apiInput source → inject live DataFrame
-        if node_type in {NodeType.API_INPUT, NodeType.DATA_INPUT} and nid in input_set:
+        # Intercept: apiInput source → inject live DataFrame directly
+        if node_type == NodeType.API_INPUT and nid in input_set:
 
             def inject_input() -> _Frame:
                 return input_lf
 
             return func_name, inject_input, True
+
+        # Intercept: dataInput source → inject live DataFrame through apply_source_scan
+        if node_type == NodeType.DATA_INPUT and nid in input_set:
+            _code = str(config.get("code") or "").strip()
+            _preamble = build_kwargs.get("preamble_ns")
+            _profile = build_kwargs.get("execution_profile")
+            _required = build_kwargs.get("required_output_columns")
+
+            def inject_data_input(
+                _config: dict[str, Any] = config,
+                _node_id: str = nid,
+                _code_value: str = _code,
+                _preamble_ns: dict[str, Any] | None = _preamble,
+                _execution_profile: str | None = _profile,
+                _required_columns: frozenset[str] | set[str] | None = _required,
+            ) -> _Frame:
+                from haute._builders import apply_source_scan
+
+                return apply_source_scan(
+                    input_lf,
+                    profile=_execution_profile,
+                    required_output_columns=_required_columns,
+                    config=_config,
+                    code=_code_value,
+                    preamble_ns=_preamble_ns,
+                    node_id=_node_id,
+                )
+
+            return func_name, inject_data_input, True
 
         # Intercept: retained Data Input snapshot or canonical direct Parquet
         # source. The graph config remains canonical; only this deploy-only

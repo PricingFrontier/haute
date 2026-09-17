@@ -4387,3 +4387,179 @@ def test_recovery_plans_a_malformed_step_container_without_raising(project_root:
     sidecar_edit = next((edit for edit in plan.edits if edit.path.name == "quotes.json"), None)
     if sidecar_edit is not None and sidecar_edit.after is not None:
         assert "steps" not in json.loads(sidecar_edit.after.decode("utf-8"))
+
+
+@pytest.mark.parametrize("authoring", ["code", "steps"])
+@pytest.mark.parametrize("row_count", [1, 2])
+def test_deploy_injected_data_input_applies_post_load_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    authoring: str,
+    row_count: int,
+) -> None:
+    from haute.deploy._scorer import score_graph
+
+    parquet_file = tmp_path / "source.parquet"
+    raw_frame = pl.DataFrame(
+        {
+            "x": [10, 20][:row_count],
+            "unused": [100, 200][:row_count],
+        }
+    )
+    raw_frame.write_parquet(parquet_file)
+    authored_code = (
+        'df = df.with_columns((pl.col("x") * scale).alias("x"))\n'
+        'df = df.with_columns(pl.col("x").alias("doubled"))'
+    )
+    src_config: dict[str, Any] = {
+        "inputType": "file",
+        "format": "parquet",
+        "mode": "scan",
+        "path": str(parquet_file),
+    }
+    if authoring == "code":
+        src_config["code"] = authored_code
+    else:
+        src_config["steps"] = [step("fc", "free_code", code=authored_code)]
+
+    out_config: dict[str, Any] = {
+        "outputMapping": [
+            {
+                "source_port": "src",
+                "source_column": "doubled",
+                "output_path": "$[:].doubled",
+                "enabled": True,
+            }
+        ],
+        "outputFormat": "json",
+    }
+    graph = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="src",
+                data=NodeData(label="src", nodeType=NodeType.DATA_INPUT, config=src_config),
+            ),
+            GraphNode(
+                id="out",
+                data=NodeData(label="out", nodeType=NodeType.OUTPUT, config=out_config),
+            ),
+        ],
+        edges=[
+            GraphEdge(id="e1", source="src", target="out"),
+        ],
+        preamble="scale = 2",
+    )
+
+    canvas_result = execute_graph(graph)["src"]
+    assert canvas_result.status == "ok", canvas_result.error
+    assert [row["doubled"] for row in canvas_result.preview] == [20, 40][:row_count]
+
+    def _fail_resolve(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError(
+            "resolve_data_input must not be called during live-injected deployment"
+        )
+
+    monkeypatch.setattr("haute._input_providers.resolve_data_input", _fail_resolve)
+
+    scored = score_graph(
+        graph=graph,
+        input_df=raw_frame,
+        input_node_ids=["src"],
+        output_node_id="out",
+        output_fields=["doubled"],
+    )
+    assert isinstance(scored, pl.DataFrame)
+    assert scored["doubled"].to_list() == [20, 40][:row_count]
+    assert scored.columns == ["doubled"]
+
+
+@pytest.mark.parametrize(
+    "authoring_config",
+    [{"code": ""}, {"steps": []}],
+    ids=["code", "steps"],
+)
+def test_empty_model_score_steps_preserve_projection(
+    authoring_config: dict[str, Any],
+) -> None:
+    import haute.projection as projection
+    from haute._contracts import _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY
+
+    src_node = GraphNode(
+        id="src",
+        data=NodeData(
+            label="src",
+            nodeType=NodeType.DATA_INPUT,
+            config={
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "path": "src.parquet",
+            },
+        ),
+    )
+    edge = GraphEdge(id="e1", source="src", target="model")
+
+    model_data = NodeData(
+        label="model",
+        nodeType=NodeType.MODEL_SCORE,
+        config={
+            "sourceType": "registered",
+            "registered_model": "test_model",
+            "output_column": "prediction",
+            _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY: ["x"],
+            **authoring_config,
+        },
+    )
+    plan = projection.compute_prepared_plan(
+        ["src", "model"],
+        {"src": ["model"], "model": []},
+        {"src": src_node, "model": GraphNode(id="model", data=model_data)},
+        {"model": ["prediction"]},
+        relevant_edges=[edge],
+    )
+
+    assert plan.needed_by_node["src"] == frozenset({"x"})
+    assert not plan.opaque_boundaries
+
+
+@pytest.mark.parametrize("preceding_limit", [False, True])
+def test_frame_free_code_rejects_global_df_with_authored_line(preceding_limit: bool) -> None:
+    snippet = "# a comment\nglobal df\ndf = df.head(2)"
+    fc_step = step("fc", "free_code", code=snippet)
+    if preceding_limit:
+        steps = [step("l", "limit", n=2), fc_step]
+        expected_index = 1
+    else:
+        steps = [fc_step]
+        expected_index = 0
+    with pytest.raises(PolarsStepError) as exc_info:
+        render_polars_steps(steps, None, start="frame")
+    assert exc_info.value.step_index == expected_index
+    msg = str(exc_info.value)
+    assert "Invalid Python on line 2" in msg
+    assert (
+        "name 'df' is assigned to before global declaration" in msg
+        or "name 'df' is used prior to global declaration" in msg
+    )
+
+
+def test_frame_scope_validation_preserves_rendered_line_ranges() -> None:
+    code = 'a = 1\ndf = df.with_columns(pl.lit(a).alias("a"))'
+    steps = [step("fc", "free_code", code=code), step("l", "limit", n=2)]
+    rendered = render_polars_steps(steps, None, start="frame")
+    assert rendered.code == f"{code}\ndf = df.head(2)"
+    assert rendered.step_lines == ((1, 2), (3, 3))
+
+
+def test_frame_global_df_saves_as_incomplete_placeholder(tmp_path: Path) -> None:
+    offending_steps = [step("fc", "free_code", code="# a comment\nglobal df\ndf = df.head(2)")]
+    graph, node_id = _surface_graph(tmp_path, "dataInput", offending_steps)
+    validated_node = next(n for n in graph.nodes if n.id == node_id)
+    assert "_steps_error" in validated_node.data.config
+    generated = graph_to_code(graph, pipeline_name="main")
+    assert INCOMPLETE_STEPS_MESSAGE in generated
+    compile(generated, "<generated>", "exec")
+    _write_sidecars(tmp_path, graph)
+    parsed = parse_pipeline_source(generated, _base_dir=tmp_path)
+    parsed_node = next(n for n in parsed.nodes if n.id == node_id)
+    assert parsed_node.data.config["steps"] == offending_steps

@@ -526,11 +526,22 @@ class _Renderer:
         if any(step["kind"] == "free_code" for step in self.steps):
             # Also check the combined function scope: e.g. `global df` after
             # the source assignment, or imports valid only at module scope.
+            # Frame surfaces already bind df before authored code, so validation
+            # adds a synthetic binding solely to model that scope; rendered code
+            # and step ranges do not include it.
+            is_frame = self.start == "frame"
+            wrapper_prefix = "def _steps():\n    df = None\n" if is_frame else "def _steps():\n"
+            wrapper_line_offset = 2 if is_frame else 1
             body = "\n".join(f"    {line}" for line in lines)
             try:
-                compile(f"def _steps():\n{body}\n", "<polars-steps>", "exec", dont_inherit=True)
+                compile(
+                    f"{wrapper_prefix}{body}\n",
+                    "<polars-steps>",
+                    "exec",
+                    dont_inherit=True,
+                )
             except SyntaxError as exc:
-                line = (exc.lineno or 2) - 1
+                line = (exc.lineno or (wrapper_line_offset + 1)) - wrapper_line_offset
                 self.index = next(
                     i for i, (start, end) in enumerate(step_lines) if start <= line <= end
                 )
