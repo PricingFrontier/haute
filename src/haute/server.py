@@ -82,6 +82,7 @@ from haute.routes.io_capabilities import router as io_capabilities_router
 from haute.routes.json_cache import router as json_cache_router
 from haute.routes.mlflow import router as mlflow_router
 from haute.routes.modelling import router as modelling_router
+from haute.routes.node_data import router as node_data_router
 from haute.routes.optimiser import router as optimiser_router
 from haute.routes.output_assemble import router as output_assemble_router
 from haute.routes.pipeline import router as pipeline_router
@@ -575,6 +576,7 @@ app.include_router(input_cache_router)
 app.include_router(json_cache_router)
 app.include_router(submodel_router)
 app.include_router(explore_router)
+app.include_router(node_data_router)
 app.include_router(modelling_router)
 app.include_router(optimiser_router)
 app.include_router(mlflow_router)

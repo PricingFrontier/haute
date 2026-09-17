@@ -68,6 +68,7 @@ from haute._source_cache import (
     SourceCacheStore,
     _sha256_file,
     _validate_generation_id,
+    _validate_staging_token,
     new_staging_token,
 )
 from haute._types import PipelineGraph
@@ -1054,14 +1055,34 @@ class NodeSnapshotStore(SourceCacheStore):
 
     # --------------------------------------------------------- publication
 
-    def stage_node_output(self, identity: SourceCacheIdentity) -> NodeSnapshotArtifact:
-        """Allocate a request-owned staging directory to sink a node output into."""
+    def stage_node_output(
+        self, identity: SourceCacheIdentity, *, staging_token: str | None = None
+    ) -> NodeSnapshotArtifact:
+        """Allocate a request-owned staging directory to sink a node output into.
+
+        A supervising parent passes its own ``staging_token`` so it can discard
+        exactly this staging directory if the worker is killed before cleanup.
+        """
         self._require_node_output(identity)
+        token = (
+            _validate_staging_token(staging_token)
+            if staging_token is not None
+            else new_staging_token()
+        )
         identity_dir = self.identity_path(identity)
         identity_dir.mkdir(parents=True, exist_ok=True)
-        staging = identity_dir / f".staging-{new_staging_token()}"
+        staging = identity_dir / f".staging-{token}"
         staging.mkdir()
         return NodeSnapshotArtifact(identity, staging)
+
+    def discard_node_output_staging(self, staging_token: str) -> None:
+        """Remove a terminated worker's staging directory named by its parent's token."""
+        token = _validate_staging_token(staging_token)
+        for staging in self.inputs_root.glob(f"*/.staging-{token}"):
+            if staging.is_dir() and not staging.is_symlink():
+                shutil.rmtree(staging, ignore_errors=True)
+                if staging.exists():
+                    logger.warning("node_snapshot_staging_discard_failed", path=str(staging))
 
     def _staged_metadata(
         self,

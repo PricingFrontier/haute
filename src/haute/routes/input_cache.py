@@ -240,17 +240,23 @@ def _snapshot_payload(
     )
 
 
+def input_snapshot_build_running(identity_digest: str) -> bool:
+    """Whether an input-snapshot build for *identity_digest* is running."""
+    active = _singleflight.active(identity_digest)
+    if active is None:
+        return False
+    active_job = _store.get_job(active.job_id)
+    return active_job is not None and active_job.get("status") == "running"
+
+
 def _status_for_config(
     config: dict[str, Any],
     identity: SourceCacheIdentity,
 ) -> InputCacheSnapshotStatusResponse:
     signature = source_signature(config, base_dir=_pipeline_base_dir())
     cache_status = _cache_store().status(identity, source_signature=signature)
-    active = _singleflight.active(identity.digest)
-    if active is not None:
-        active_job = _store.get_job(active.job_id)
-        if active_job is not None and active_job.get("status") == "running":
-            return _snapshot_payload(identity, cache_status, state="building")
+    if input_snapshot_build_running(identity.digest):
+        return _snapshot_payload(identity, cache_status, state="building")
     return _snapshot_payload(identity, cache_status)
 
 

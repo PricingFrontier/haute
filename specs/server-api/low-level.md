@@ -25,6 +25,8 @@
 | `src/haute/routes/files.py` | `/api/files` (directory browse) and `/api/schema` (flat-file plus XML structured-record schema/preview). |
 | `src/haute/routes/io_capabilities.py` | `/api/io-capabilities`, the versioned provider/format/cache capability contract consumed by the input and output editors. |
 | `src/haute/routes/input_cache.py` | `/api/input-cache/*`, the shared build/status/cancel/clear lifecycle for snapshot-backed inputs. |
+| `src/haute/routes/node_data.py` | `/api/node-data/point`, `/run`, `/status/{job_id}`, `/cancel/{job_id}`, and `/clear` for the data a consumer node reads. |
+| `src/haute/routes/_node_data_service.py` | `NodeDataService`: consumer point responses, delegation, explicit node-output build jobs in isolated workers, supersession, cancellation, and clear. |
 | `src/haute/routes/utility.py` | `/api/utility` CRUD (list/read/create/update/delete) for `utility/*.py` helper modules, with AST syntax validation on every write. |
 | `src/haute/routes/_save_pipeline.py` | `SavePipelineService` — the transactional save orchestrator: singleton/name-collision/load-error validation, codegen invocation, config-file + sidecar writes, stale-config cleanup, and rollback. |
 | `src/haute/routes/_supersession.py` | `SupersessionCoordinator` / `_SupersessionState` — generation-counted "run latest, cancel/skip the rest" concurrency primitive used by preview and trace. |
@@ -507,6 +509,49 @@ committed generation into process-local caches, and transitions the job. Cancell
 supersession, timeout, and worker failure terminate/join the process and discard that exact staged
 generation; child code cannot write the `JobStore` or parent LRU caches.
 
+### Node-data builds
+
+**Node-data builds** (`routes/node_data.py`, `routes/_node_data_service.py`): every request is
+flattened, source-file checked, and runtime-path validated like other graph routes before
+`NodeDataService` resolves the consumer point with a `DataPointResolver` over
+`NodeSnapshotStore(project root)`. The resolver's building probe reports a node-output build
+from the service's own identity-digest → running-job map, an input-snapshot build through
+`input_cache.input_snapshot_build_running(identity_digest)`, and a JSON cache build through
+`json_cache.json_cache_build_running(working_cache_dir)`. `point` returns
+`NodeDataPointResponse` (`slot_key` is `producer|port|source`); node-output details come from
+the slot's latest generation and the running job; snapshot-backed inputs report their
+generation's rows and bytes and name `/api/input-cache/build` and `/api/input-cache/clear`;
+API-input tables name `/api/json-cache/build` and `/api/json-cache`; a direct-Parquet input sets
+`reads_directly`. A service-wide slot lock makes each `run` decision and each `clear` atomic, so
+simultaneous identical requests start one job and join it. `run` pins and completes a node
+output current for `all` unless `refresh`, joins the running job for the same identity, and
+otherwise creates a `node_data` job with a parent-chosen staging token, registers
+it latest for the slot digest (superseding and transitioning the previous job), and starts a
+supervisor thread. The thread first joins the superseded job's thread, then creates an admitted
+`node_snapshot` context, binds metrics publication, and prepares the node's snapshot-backed
+inputs itself (`prepare_graph` then `prepare_input_snapshots` under that context). Preparation
+can build or refresh input snapshots whose generations belong to the signature, so the thread
+then binds the build to the identity of the prepared inputs, re-keys the running job under that
+identity (so `point` and joins still find it), and runs `_run_node_snapshot_worker` in an
+isolated worker with `HAUTE_NODE_SNAPSHOT_TIMEOUT` (default 1800 s). The child sets the project
+root, confirms the bound identity, executes the node with `enforce_contracts=True` and
+`prepare_inputs=False`, rejects a multi-frame output (`node_snapshot_multi_frame_unsupported`),
+sinks the frame into staging named by the parent's token, confirms the identity again, and
+publishes with `explicit=True` and the request's `refresh`; an identity that moved at either
+check (a source or snapshot changed while the build read it) is
+`NodeSnapshotInputsChangedError`, reported as a contract error and never published. It returns
+a closed `_NodeSnapshotWorkerOutcome` (generation id and `published`/`superseded`, or a
+`public_contract`, `memory`, `quota`, or `contract` failure). The parent validates the envelope
+and completes the job under the registry's latest-publication guard with `generation_id`,
+`outcome`, and execution metrics, or maps failures to `contract_error`, `memory_limited`,
+`error` (quota, with its actionable message), the cancellation or supersession reason, a public
+contract error from input preparation (except that a preparation failure after the job was
+cancelled or superseded ends with that reason), or the internal-error envelope. After the worker has terminated, the supervisor discards any
+staging directory carrying its token, which a killed worker could not remove. `clear` cancels
+the slot's running job, waits for that job's supervisor thread to finish so the worker can no
+longer publish, and then calls `NodeSnapshotStore.clear_slot`; for other kinds it answers
+`delegated`. An invalid API-input port is `node_data_point_invalid` (400) on every route.
+
 ## Edge cases and invariants
 
 Save preconditions capture artifact identities **before** validating the client's
@@ -658,6 +703,19 @@ entirely and leave every touched file in whatever state it happened to be in."
 
 ## Testing
 
+- `tests/test_node_data_routes.py` covers a missing point for Banding, one build shared by
+  Explore and Banding on one parent (`building` with the job, `joined`, then cached), an
+  upstream edit making the point stale and a run publishing the new signature, a different
+  signature superseding a running build, refresh recomputing a randomly sampled producer, a
+  partial automatic generation becoming current and pinned, clear removing every signature,
+  contract and admission failures through the job envelope, cancellation and clear
+  terminating a real sleeping worker without publication or staging, clear never letting a
+  build paused before publication repopulate the slot, simultaneous identical runs sharing one
+  job, a killed worker's staging discarded by the parent, a build that prepares or refreshes
+  its CSV input snapshot completing current, a build paused after preparation found by `point`
+  and joined, a source replaced after execution read its rows never being published,
+  cancellation during input preparation ending `cancelled`, delegation and direct reads for source kinds,
+  invalid wiring and an invalid API-input port as 400, and a real isolated-worker build.
 - `tests/test_contract_error_adapter.py` verifies sync/background contract-error payload parity and rejects unversioned errors.
 - `tests/test_error_detail_sanitization.py` verifies safe public error details, logging, domain-error exposure, route-specific sanitization, and sensitive-information leak prevention.
 - `tests/test_error_response_shape.py` verifies standard error envelopes, flat syntax details, sanitized internal errors, and prohibition of dict route details.

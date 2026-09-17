@@ -16,7 +16,6 @@ and the [rating roadmap](rating.md).
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CACHE-S03 | Planned | P2 | Build, join, refresh, and clear pinned full-width snapshots through one job service. |
 | CACHE-S04 | Planned | P2 | Persist analysis results by data version and run the data profile as an isolated job. |
 | CACHE-S05 | Planned | P2 | Give every consumer one frontend data-cache hook and button. |
 | CACHE-S06 | Planned | P1 | Prove which execution profiles and projections produce identical node outputs. |
@@ -26,7 +25,7 @@ and the [rating roadmap](rating.md).
 
 ## Planned improvements
 
-Delivery order is `CACHE-S03` → `CACHE-S04` →
+Delivery order is `CACHE-S04` →
 `CACHE-S05`, then the consumer packages `EDA-C01` and `RAT-B01` → `RAT-B02` →
 `RAT-B03`, then `CACHE-S06` → `CACHE-S07` → `CACHE-S09`. A later package must
 not bypass the resolver, lease, signature, or capture contracts of an earlier
@@ -34,74 +33,8 @@ one. Every package builds on the node-output snapshot store (signature, slot
 index, column widening, retention, cross-process leases, and the publication
 rule) specified in the [IO layer](../io-layer/low-level.md#node-output-snapshots) and
 the data-point resolver and leased reads specified in
-[caching](../caching/low-level.md#data-points).
-
-### CACHE-S03 — Explicit snapshot jobs and API
-
-**Why:** Explore's job lifecycle (isolated worker, memory budget, latest-wins
-replacement, cancellation, typed failure envelope) is the right lifecycle for
-an explicit full-width build, but it is bound to Explore requests and Explore
-identity.
-
-**Plan:**
-
-- A node-data service generalises the Explore service: `point(graph, node_id,
-  source)` reports the resolved point, kind, state for the consumer's demand,
-  data version, row count, columns, size, and retention; `run(graph, node_id,
-  source, refresh)` starts or joins a build; `status(job_id)`,
-  `cancel(job_id)`, and `clear(graph, node_id, source)` complete the surface.
-  Requests name the consumer node; the service resolves the point and demand.
-- Routes live under `/api/node-data`. For snapshot-backed `data_input` and
-  `api_input_table` points, `point` reports state and `run` returns
-  `delegated` with the existing build endpoint to use; a direct-Parquet
-  `data_input` point has nothing to build; only `node_output` points build
-  here.
-- An explicit build writes `all` columns and pins the slot. A `run` whose
-  identity equals a running job's returns that job id (`joined`). A `run` for
-  the same slot with a different signature cancels the running job and starts
-  a new one. A non-refresh `run` on a point that is `current` for `all` pins it
-  and returns `completed` with `cached=true`.
-- Refresh is separate from ordinary building. A non-refresh `run` on a
-  `missing`, `stale`, `partial`, or `corrupt` point builds the current
-  signature's identity and never returns another identity's generation.
-  `refresh=true` rebuilds the current identity even when it is `current` and
-  disables seeding for the whole build lineage, so a refresh always recomputes
-  from sources. A non-refresh build may seed only from points strictly upstream
-  of the point being built; a `stale` point is never seeded.
-- The build runs in the existing isolated worker under `NODE_SNAPSHOT`,
-  calls `SourceCacheStore.build` with `defer_retirement` and the parent's
-  leased generation ids as retained ids, and the parent retires unleased
-  generations after publication, as input-snapshot builds already do.
-- `clear` removes every identity of the slot and its pin, except generations
-  still leased, which retire when released.
-- Delete `/api/explore/run`, `/api/explore/cache-status`,
-  `/api/explore/status/{job_id}`, and `/api/explore/cancel/{job_id}`.
-
-**Acceptance:**
-
-- One job serves Explore and Banding on the same parent: the second `run`
-  returns `joined` with the first job id, then `completed`/`cached=true`.
-- After an upstream edit, `run(refresh=false)` on the now-stale point publishes
-  a generation under the new signature, and the point reports `current`.
-- A different signature for the same slot cancels the running job, whose
-  terminal state is the existing replacement state.
-- Refresh test: a producer whose code draws a fresh random sample on every
-  run is cached, then refreshed with an unchanged graph; the refresh executes
-  (execution metrics report zero shared-snapshot seeds and a source scan) and
-  publishes a new generation with different rows.
-- A `partial` point (an automatic generation holding some columns) becomes
-  `current` for `all` after `run` and is pinned.
-- Memory admission failure, contract errors, and cancellation surface with the
-  existing Explore worker failure envelope and terminal reasons.
-- `clear` removes every identity of the slot; a later `point` reports `missing`.
-
-**Dependencies:** The caching data-point resolver; the background-jobs worker isolation
-and job lifecycle contracts.
-
-**Evidence:** `src/haute/routes/_explore_service.py`;
-`src/haute/routes/explore.py`; `src/haute/routes/input_cache.py`;
-`src/haute/_worker_isolation.py`; `tests/test_explore_routes.py`;
-`tests/test_input_cache_route.py`.
+[caching](../caching/low-level.md#data-points), and the node-data build service and
+routes specified in the [server API](../server-api/low-level.md#node-data-builds).
 
 ### CACHE-S04 — Analysis results and the data profile job
 
@@ -142,7 +75,7 @@ resource controls.
   the file is rewritten or the Data Input's selection or renames change.
 - A corrupt analysis document is discarded and recomputed, never returned.
 
-**Dependencies:** CACHE-S03; the caching data-point resolver; the current Explore frame-statistics
+**Dependencies:** The node-data build service; the caching data-point resolver; the current Explore frame-statistics
 contract.
 
 **Evidence:** `src/haute/routes/_explore_service.py`;
@@ -195,7 +128,7 @@ started on the same point.
 - A direct-Parquet `data_input` point renders "Reads Parquet directly" with no
   button.
 
-**Dependencies:** CACHE-S03.
+**Dependencies:** The node-data build service and routes.
 
 **Evidence:** `frontend/src/panels/ExplorePreview.tsx`;
 `frontend/src/panels/explore/cacheIdentity.ts`;
@@ -392,7 +325,7 @@ therefore produced and written again on every run.
 - A paused seeded worker survives refresh and clear of its seed (the resolver's
   paused-reader contract).
 
-**Dependencies:** CACHE-S03, CACHE-S06; the current checkpoint rule,
+**Dependencies:** CACHE-S06; the node-data build service; the current checkpoint rule,
 dataframe-cache seed path, and runtime graph-input fingerprint contracts.
 
 **Evidence:** `src/haute/_execute_lazy.py`; `src/haute/execution.py`;

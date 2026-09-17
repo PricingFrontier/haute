@@ -1230,6 +1230,89 @@ class ExploreCacheSnapshotResponse(BaseModel):
     result: ExploreCacheReport | None = None
 
 
+NodeDataPointKind = Literal["data_input", "api_input_table", "node_output"]
+NodeDataPointState = Literal["current", "stale", "partial", "missing", "building", "corrupt"]
+NodeDataColumns = list[str] | Literal["all"]
+
+
+class NodeDataRequest(BaseModel):
+    """Name a consumer node; the service resolves the data point it reads."""
+
+    graph: Graph
+    node_id: str
+    source: str = "live"
+
+
+class NodeDataRunRequest(NodeDataRequest):
+    refresh: bool = False
+    streaming_chunk_size: StreamingChunkSize = None
+
+
+class NodeDataPointRef(BaseModel):
+    producer_node_id: str
+    port_label: str | None = None
+
+
+class NodeDataGeneration(BaseModel):
+    """The node-output generation a slot currently holds for the consumer's signature."""
+
+    generation_id: str
+    columns: NodeDataColumns
+    row_count: int
+    column_count: int
+    size_bytes: int
+    retention: Literal["pinned", "automatic"]
+    fresh: bool
+    created_at: float
+
+
+class NodeDataJob(BaseModel):
+    job_id: str
+    progress: float = 0.0
+    message: str = ""
+
+
+class NodeDataPointResponse(BaseModel):
+    consumer_node_id: str
+    point: NodeDataPointRef
+    slot_key: str
+    kind: NodeDataPointKind
+    state: NodeDataPointState
+    demand: NodeDataColumns
+    data_version: str | None = None
+    row_count: int | None = None
+    size_bytes: int | None = None
+    retention: Literal["pinned", "automatic"] | None = None
+    generation: NodeDataGeneration | None = None
+    job: NodeDataJob | None = None
+    reads_directly: bool = False
+    build_endpoint: str | None = None
+    clear_endpoint: str | None = None
+
+
+class NodeDataRunResponse(BaseModel):
+    status: Literal["started", "joined", "completed", "delegated"]
+    job_id: str | None = None
+    cached: bool = False
+    message: str = ""
+    point: NodeDataPointResponse
+
+
+class NodeDataStatusResponse(BaseModel):
+    status: JobStatus
+    progress: float = 0.0
+    message: str = ""
+    terminal_reason: str | None = None
+    execution_metrics: ExecutionMetricsPayload | None = None
+    generation_id: str | None = None
+    outcome: Literal["published", "superseded"] | None = None
+
+
+class NodeDataClearResponse(BaseModel):
+    status: Literal["cleared", "delegated"]
+    point: NodeDataPointResponse
+
+
 ExplorePivotMemberKind = Literal[
     "null",
     "string",

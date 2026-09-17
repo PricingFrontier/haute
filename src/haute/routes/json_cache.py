@@ -23,6 +23,7 @@ discriminates on ``type`` rather than string-matching ``detail``.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -322,6 +323,18 @@ def _finish_build_progress(data_path: str) -> None:
             _build_progress.pop(key, None)
             return
         current["active_count"] = remaining
+
+
+def json_cache_build_running(working_cache_dir: str | Path) -> bool:
+    """Whether a JSON cache build is running for the data file behind *working_cache_dir*."""
+    from haute._json_flatten import _json_cache_dir
+
+    target = os.path.normcase(str(Path(working_cache_dir)))
+    with _build_progress_lock:
+        building_paths = list(_build_progress)
+    return any(
+        os.path.normcase(str(_json_cache_dir(path, "working"))) == target for path in building_paths
+    )
 
 
 def _get_build_progress(data_path: str) -> JsonCacheProgressResponse:

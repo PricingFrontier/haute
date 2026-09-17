@@ -525,6 +525,36 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/TrainStatusResponse"},
         },
     },
+    "/api/node-data/cancel/{job_id}": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/NodeDataStatusResponse"},
+        },
+    },
+    "/api/node-data/clear": {
+        "POST": {
+            "request_ref": "#/components/schemas/NodeDataRequest",
+            "success_schema": {"$ref": "#/components/schemas/NodeDataClearResponse"},
+        },
+    },
+    "/api/node-data/point": {
+        "POST": {
+            "request_ref": "#/components/schemas/NodeDataRequest",
+            "success_schema": {"$ref": "#/components/schemas/NodeDataPointResponse"},
+        },
+    },
+    "/api/node-data/run": {
+        "POST": {
+            "request_ref": "#/components/schemas/NodeDataRunRequest",
+            "success_schema": {"$ref": "#/components/schemas/NodeDataRunResponse"},
+        },
+    },
+    "/api/node-data/status/{job_id}": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/NodeDataStatusResponse"},
+        },
+    },
     "/api/optimiser/apply": {
         "POST": {
             "request_ref": "#/components/schemas/OptimiserApplyRequest",

@@ -225,6 +225,27 @@ hard-code format knowledge. `/api/input-cache/*` owns shared snapshot build, pro
 cancellation, status, and clear operations for file, database, lakehouse, and Databricks
 inputs.
 
+`/api/node-data/*` reports and builds the data a consumer node reads. A request names the
+consumer node; the data-point resolver maps it to a point and column demand. `point` reports
+the point, its kind, its state for that consumer's demand (a fresh snapshot lacking demanded
+columns is `partial`), data version, row count, size, and for a node output the generation's
+column set, retention (`pinned` or `automatic`), and any running build with its progress.
+`run` builds a node-output point as a pinned, full-width snapshot in an isolated worker under
+the `node_snapshot` profile, with the existing admission, memory budget, cancellation, and job
+failure envelope. A run for the identity a running build is producing joins that build; a run
+for the same slot under a different signature supersedes the running build, and the new build
+waits for the superseded worker to stop before it is admitted; simultaneous identical requests
+start one build; a build publishes under the signature of the inputs it actually read, including
+input snapshots it prepared; a non-refresh run on a point already current
+for every column pins it and completes as cached; `refresh` rebuilds a current point. A
+snapshot-backed Data Input or an API-input table point is never built here: `run` answers
+`delegated` naming the existing input-cache or JSON-cache build route, and a direct-Parquet
+Data Input completes as cached because it reads its file directly. `clear` cancels a running
+build of the slot, waits for it to stop, and removes every signature's snapshot and the slot's
+pin, while any
+generation still leased elsewhere retires when released. Invalid consumer wiring returns 400
+`node_data_point_invalid`.
+
 **Utility scripts.** `GET/POST/PUT/DELETE /api/utility[/{module}]` manage Python files under
 the project's `utility/` directory — reusable helpers a pipeline's preamble imports via
 `from utility.<module> import *`. Every write is AST-syntax-checked before landing on disk;
@@ -542,21 +563,15 @@ remove-only plan continue through raw source/config inspection.
 
 ## Approved change contract — node-data, banding statistics, and rating level routes
 
-- **Current limitation.** Only Explore exposes a data-cache job surface, and it is keyed by the
-  Explore node; there is no route for whole-dataset banding statistics or rating levels.
-- **Unresolved target.** A node-data route family reports a consumer node's data point, kind,
-  state for the consumer's column demand (including partial when a fresh snapshot lacks some
-  demanded columns), data version, row count, columns, size, and whether the snapshot is pinned or
-  automatic; starts, joins, refreshes, cancels, and clears pinned full-width node-output builds; and
-  delegates input-snapshot and API-input table builds to their existing routes. A
-  banding-statistics route and a rating-levels route serve whole-dataset results for a current
-  point. The Explore run, cache-status, status, and cancel routes are removed.
+- **Current limitation.** There is no route for whole-dataset banding statistics or rating
+  levels.
+- **Unresolved target.** A banding-statistics route and a rating-levels route serve
+  whole-dataset results for a current data point.
 - **Non-goals.** Input-cache and JSON-cache routes, pivot run/status/cancel semantics, and job
   lifecycle states are unchanged.
 - **Failure and compatibility semantics.** An invalid consumer wiring returns 400; a point that
   is not current returns a cache-required body with its state; invalid columns or rules return
-  422; admission or memory-limit failure returns 507 with the execution error payload; a run for a
-  running identical build returns the running job.
-- **Acceptance evidence.** Route tests for join, signature replacement, refresh bypass, partial
-  widening, clear, delegation, and each failure response.
-- **Roadmap package.** [CACHE-S03](../roadmap/caching.md#cache-s03--explicit-snapshot-jobs-and-api).
+  422; admission or memory-limit failure returns 507 with the execution error payload.
+- **Acceptance evidence.** Route tests for bins, caps, null accounting, level keys, and each
+  failure response.
+- **Roadmap package.** [RAT-B02](../roadmap/rating.md#rat-b02--whole-dataset-banding-statistics).
