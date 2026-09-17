@@ -689,7 +689,7 @@ class ScenarioExpanderConfig(TypedDict, total=False):
     column_name: str  # name of the new value column (e.g. "scenario_value")
     min_value: float  # start of linspace
     max_value: float  # end of linspace
-    steps: int  # number of steps
+    stepCount: int  # number of grid values; required, no absent-key default
     step_column: str  # name of the 0-based step index column (e.g. "scenario_index")
     code: str  # optional Polars transformation code (post-expansion)
 
@@ -857,7 +857,7 @@ SCENARIO_EXPANDER_CONFIG_KEYS: tuple[str, ...] = (
     "column_name",
     "min_value",
     "max_value",
-    "steps",
+    "stepCount",
     "step_column",
 )
 

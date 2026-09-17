@@ -10,7 +10,7 @@
   "polars": {"steps": []},
   "edgeJoin": {"how": "left", "suffix": "_right"},
   "banding": {"factors": [{"banding": "continuous", "column": "", "outputColumn": "", "rules": [], "default": null}]},
-  "scenarioExpander": {},
+  "scenarioExpander": {"stepCount": 21},
   "ratingStep": {"tables": [{"factors": [], "outputColumn": "", "defaultValue": "1.0", "entries": []}], "combinedOutputs": [], "code": ""},
   "modelling": {},
   "modelScore": {"sourceType": "registered", "registered_model": "", "version": "latest", "task": "regression", "output_column": "prediction", "code": ""},

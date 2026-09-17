@@ -35,7 +35,23 @@ from haute._types import _Frame
 # optimiser-service call sites that import them from there.
 _DEFAULT_SCENARIO_MIN = 0.8  # scenario expander lower bound
 _DEFAULT_SCENARIO_MAX = 1.2  # scenario expander upper bound
-_DEFAULT_SCENARIO_STEPS = 21  # number of steps in scenario grid
+
+
+def scenario_step_count(config: Mapping[str, Any]) -> int:
+    """The scenario grid size, ``stepCount``: a required whole number of at least 1.
+
+    There is no absent-key default: a new node is created with an explicit
+    count (``node_defaults.json``), and a config without one is a defect.
+    """
+    raw = config.get("stepCount")
+    if raw is None:
+        raise ValueError("Scenario expander requires stepCount (the number of grid values).")
+    if isinstance(raw, bool) or not isinstance(raw, int | float) or int(raw) != raw:
+        raise ValueError(f"Scenario expander stepCount must be a whole number, got {raw!r}")
+    steps = int(raw)
+    if steps < 1:
+        raise ValueError(f"Scenario expander requires stepCount >= 1, got {steps}")
+    return steps
 
 
 def _resolve_node_config(
@@ -205,10 +221,7 @@ def expand_scenarios_from_config(
     min_val = float(raw_min) if raw_min is not None else _DEFAULT_SCENARIO_MIN
     raw_max = cfg.get("max_value")
     max_val = float(raw_max) if raw_max is not None else _DEFAULT_SCENARIO_MAX
-    raw_steps = cfg.get("steps")
-    steps = int(raw_steps) if raw_steps is not None else _DEFAULT_SCENARIO_STEPS
-    if steps < 1:
-        raise ValueError(f"Scenario expander requires steps >= 1, got {steps}")
+    steps = scenario_step_count(cfg)
     step_col = cfg.get("step_column") or "scenario_index"
 
     scenario_exprs = [pl.lit(list(range(steps))).alias(step_col)]

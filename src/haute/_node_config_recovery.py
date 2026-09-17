@@ -463,11 +463,13 @@ def _validator_issues(
         for field in required:
             if not isinstance(config.get(field), str) or not config[field]:
                 issues.append(_issue(field, "required", f"{field} is required."))
-        if any(field not in config for field in ("min_value", "max_value", "steps")):
-            issues.append(_issue("", "incomplete_range", "Scenario range and steps are required."))
+        if any(field not in config for field in ("min_value", "max_value", "stepCount")):
+            issues.append(
+                _issue("", "incomplete_range", "Scenario range and stepCount are required.")
+            )
         elif (
-            type(config["steps"]) is not int
-            or config["steps"] <= 0
+            type(config["stepCount"]) is not int
+            or config["stepCount"] <= 0
             or type(config["min_value"]) not in (int, float)
             or type(config["max_value"]) not in (int, float)
             or config["min_value"] > config["max_value"]

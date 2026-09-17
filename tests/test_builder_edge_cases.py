@@ -372,36 +372,34 @@ class TestBuildLiveSwitchEdgeCases:
 
 class TestBuildScenarioExpanderEdgeCases:
     def test_steps_less_than_one_raises(self) -> None:
-        with pytest.raises(ValueError, match="steps >= 1"):
+        with pytest.raises(ValueError, match="stepCount >= 1"):
             _build(
                 "scenarioExpander",
-                {"column_name": "sv", "steps": 0},
+                {"column_name": "sv", "stepCount": 0},
                 source_names=["up"],
             )
 
     def test_negative_steps_raises(self) -> None:
-        with pytest.raises(ValueError, match="steps >= 1"):
+        with pytest.raises(ValueError, match="stepCount >= 1"):
             _build(
                 "scenarioExpander",
-                {"column_name": "sv", "steps": -5},
+                {"column_name": "sv", "stepCount": -5},
                 source_names=["up"],
             )
 
-    def test_empty_config_uses_defaults(self) -> None:
-        _, fn, _ = _build(
-            "scenarioExpander",
-            {},
-            source_names=["up"],
-        )
-        lf = pl.DataFrame({"x": [1]}).lazy()
-        result = fn(lf).collect()
+    def test_empty_config_is_rejected(self) -> None:
+        # The grid size has no absent-key default; a new node carries an explicit 21.
+        with pytest.raises(ValueError, match="requires stepCount"):
+            _build("scenarioExpander", {}, source_names=["up"])
+        _, fn, _ = _build("scenarioExpander", {"stepCount": 21}, source_names=["up"])
+        result = fn(pl.DataFrame({"x": [1]}).lazy()).collect()
         assert "scenario_index" in result.columns
         assert result.shape[0] == 21
 
     def test_cross_join_produces_correct_row_count(self) -> None:
         _, fn, _ = _build(
             "scenarioExpander",
-            {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "steps": 5},
+            {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "stepCount": 5},
             source_names=["up"],
         )
         lf = pl.DataFrame({"id": [1, 2, 3]}).lazy()
@@ -413,7 +411,7 @@ class TestBuildScenarioExpanderEdgeCases:
     def test_cross_join_10_rows_7_steps(self) -> None:
         _, fn, _ = _build(
             "scenarioExpander",
-            {"column_name": "sv", "min_value": 0.8, "max_value": 1.2, "steps": 7},
+            {"column_name": "sv", "min_value": 0.8, "max_value": 1.2, "stepCount": 7},
             source_names=["up"],
         )
         lf = pl.DataFrame({"id": list(range(10))}).lazy()

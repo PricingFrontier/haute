@@ -513,7 +513,7 @@ class TestBuildScenarioExpander:
     def test_is_not_a_source_node(self) -> None:
         _, _, is_source = _build(
             "scenarioExpander",
-            {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "steps": 3},
+            {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "stepCount": 3},
             source_names=["upstream"],
         )
         assert is_source is False
@@ -522,7 +522,7 @@ class TestBuildScenarioExpander:
         """Expanding an empty input should yield 0 rows but correct columns."""
         _, fn, _ = _build(
             "scenarioExpander",
-            {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "steps": 3},
+            {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "stepCount": 3},
             source_names=["upstream"],
         )
         input_df = pl.DataFrame({"id": pl.Series([], dtype=pl.Int32)}).lazy()
@@ -533,7 +533,7 @@ class TestBuildScenarioExpander:
     def test_single_step(self) -> None:
         _, fn, _ = _build(
             "scenarioExpander",
-            {"column_name": "val", "min_value": 1.0, "max_value": 1.0, "steps": 1},
+            {"column_name": "val", "min_value": 1.0, "max_value": 1.0, "stepCount": 1},
             source_names=["upstream"],
         )
         input_df = pl.DataFrame({"x": [100]}).lazy()
@@ -548,7 +548,7 @@ class TestBuildScenarioExpander:
                 "column_name": "sv",
                 "min_value": 0.5,
                 "max_value": 1.5,
-                "steps": 3,
+                "stepCount": 3,
                 "step_column": "my_idx",
             },
             source_names=["upstream"],
@@ -562,7 +562,7 @@ class TestBuildScenarioExpander:
         """Empty column_name produces index column only, no value column."""
         _, fn, _ = _build(
             "scenarioExpander",
-            {"column_name": "", "steps": 3, "step_column": "idx"},
+            {"column_name": "", "stepCount": 3, "step_column": "idx"},
             source_names=["upstream"],
         )
         input_df = pl.DataFrame({"x": [1]}).lazy()
@@ -581,7 +581,7 @@ class TestBuildScenarioExpander:
                 "column_name": "sv",
                 "min_value": 0.8,
                 "max_value": 1.2,
-                "steps": 3,
+                "stepCount": 3,
                 "code": 'df = df.filter(pl.col("sv") >= 1.0)',
             },
             source_names=["upstream"],
@@ -600,7 +600,7 @@ class TestBuildScenarioExpander:
                 "column_name": "sv",
                 "min_value": 0.8,
                 "max_value": 1.2,
-                "steps": 3,
+                "stepCount": 3,
                 "code": "",
             },
             source_names=["upstream"],
@@ -617,7 +617,7 @@ class TestBuildScenarioExpander:
                 "column_name": "sv",
                 "min_value": 0.5,
                 "max_value": 1.5,
-                "steps": 3,
+                "stepCount": 3,
                 "code": 'df = df.with_columns(pl.col("sv").alias("factor"))',
             },
             source_names=["upstream"],

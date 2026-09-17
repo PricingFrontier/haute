@@ -335,7 +335,7 @@ class TestBuildNodeConfigProducesValidKeys:
             ),
             pytest.param(
                 NodeType.SCENARIO_EXPANDER,
-                {"scenario_expander": True, "quote_id": "qid", "steps": 10},
+                {"scenario_expander": True, "quote_id": "qid", "stepCount": 10},
                 "",
                 ["df"],
                 id="scenario_expander",

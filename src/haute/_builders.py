@@ -49,12 +49,12 @@ from haute._graph_utils import _sanitize_func_name, build_instance_mapping
 from haute._io import _select_columns
 from haute._logging import get_logger
 from haute._node_apply import (
-    _DEFAULT_SCENARIO_STEPS,
     apply_optimiser_apply_from_config,
     assemble_output_from_config,
     expand_scenarios_from_config,
     load_external_object_from_config,
     resolve_api_input_from_config,
+    scenario_step_count,
     select_live_switch_input,
 )
 from haute._output_assembler import (
@@ -781,12 +781,9 @@ def _scenario_expander_columns(config: dict[str, Any]) -> _ColumnContract:
 @_register(NodeType.SCENARIO_EXPANDER, columns=_scenario_expander_columns, is_behavioural=True)
 def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    # Fail loud at build time on a misconfigured step count (the shared
-    # helper re-validates at call time for the standalone path).
-    raw_steps = config.get("steps")
-    _steps = int(raw_steps) if raw_steps is not None else _DEFAULT_SCENARIO_STEPS
-    if _steps < 1:
-        raise ValueError(f"Scenario expander requires steps >= 1, got {_steps}")
+    # Fail loud at build time on a missing or misconfigured grid size (the
+    # shared helper re-validates at call time for the standalone path).
+    scenario_step_count(config)
     code = str(config.get("code") or "").strip()
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
     _config_captured = dict(config)

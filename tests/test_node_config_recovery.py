@@ -261,7 +261,7 @@ def test_structured_contract_is_accepted() -> None:
                 "step_column": "scenario_index",
                 "min_value": 0.0,
                 "max_value": 1.0,
-                "steps": 2,
+                "stepCount": 2,
             },
             None,
         ),

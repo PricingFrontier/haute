@@ -3629,7 +3629,7 @@ class TestEnrichScenarioExpansionRealConfig:
             "step_column": "step_idx",
             "min_value": 0,
             "max_value": 100,
-            "steps": 5,
+            "stepCount": 5,
         }
         input_row = {"id": 1}
         output_row = {"id": 1, "scenario": "high", "step_idx": 3}

@@ -312,8 +312,12 @@ node type to its start mode and its input eligibility (`edges` for a transform,
 `none` for a Data Input), and every path that renders a node's steps (the node data
 model, the parser's reconcile, the executor builder, codegen, the deploy
 interceptors and the render endpoint) obtains the eligible names from it. A node
-type outside that table that carries a `steps` key (a Scenario Expander's grid size)
-is left alone. The node-data invariant, the sidecar filter and the reconcile rule
+type outside that table that carries a `steps` key is left alone. A Scenario
+Expander's grid size is its required `stepCount` (a whole number of at least 1, read
+by the executor builder, the generated module's helper, the chunk planner, the RAM
+estimator and the trace enrichment through one `scenario_step_count` function with no
+absent-key default; a new node is created with an explicit 21), so `steps` on that
+type is free for its step list. The node-data invariant, the sidecar filter and the reconcile rule
 apply to every stepped type: a Data Input's `steps` persist in its required
 `config/data_input/<name>.json` sidecar beside its source settings, `code` is always
 their rendering (or empty plus `_steps_error`), and on load the parser compares the

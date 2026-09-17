@@ -511,7 +511,7 @@ class TestAllNodeTypesRoundtrip:
                     "column_name": "scenario_val",
                     "min_value": 0.8,
                     "max_value": 1.2,
-                    "steps": 3,
+                    "stepCount": 3,
                     "step_column": "scenario_idx",
                 },
             ),

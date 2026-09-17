@@ -1775,7 +1775,7 @@ def _cardinality_index_for_node(
     ("node_type", "config", "expected_rows"),
     [
         (NodeType.POLARS, {"code": "df = df.filter(pl.col('value') > 0)"}, 4),
-        (NodeType.SCENARIO_EXPANDER, {"steps": 3}, 12),
+        (NodeType.SCENARIO_EXPANDER, {"stepCount": 3}, 12),
         (NodeType.RATING_STEP, {}, 4),
         (NodeType.EXPLORE, {"code": "df = df.filter(pl.col('value') > 0)"}, 4),
         (NodeType.MODEL_SCORE, {}, 4),
@@ -1801,7 +1801,7 @@ def test_row_cardinality_resolution_proves_closed_node_semantics(
     ("node_type", "config", "parent_count", "reason"),
     [
         (NodeType.POLARS, {}, 1, "empty_code"),
-        (NodeType.SCENARIO_EXPANDER, {"steps": 0}, 1, "invalid_scenario_steps"),
+        (NodeType.SCENARIO_EXPANDER, {"stepCount": 0}, 1, "invalid_scenario_steps"),
         (NodeType.SCENARIO_EXPANDER, {}, 2, "invalid_input_cardinality"),
         (NodeType.RATING_STEP, {}, 2, "invalid_input_cardinality"),
         (NodeType.OPTIMISER, {"data_input": "absent"}, 1, "invalid_optimiser_input"),
@@ -1984,7 +1984,7 @@ def test_cardinality_binding_and_node_failure_paths_fail_closed() -> None:
         (NodeType.SCENARIO_EXPANDER, {"steps": "invalid"}, 1, "invalid_scenario_steps"),
         (
             NodeType.SCENARIO_EXPANDER,
-            {"steps": 2, "code": "df = df.filter(pl.col('x') > 0)"},
+            {"stepCount": 2, "code": "df = df.filter(pl.col('x') > 0)"},
             1,
             None,
         ),
