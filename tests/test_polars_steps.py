@@ -61,6 +61,7 @@ from tests.conftest import (
     make_graph,
     make_source_node,
 )
+from tests.test_codegen_execution_equivalence import _collect, _write_and_import
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -3321,6 +3322,21 @@ def test_node_data_materialises_data_input_steps() -> None:
     with pytest.raises(ValueError, match="must be a list"):
         node("not-a-list")
 
+    # A Data Input has no eligible input names, so a reference to one is an
+    # error at materialisation, not only at build time.
+    join = step(
+        "j", "join", input="rates", how="inner", leftOn=["region"], rightOn=["region"], suffix="_r"
+    )
+    joined = node([join])
+    assert joined.data.config["code"] == ""
+    assert (
+        joined.data.config["_steps_error"]
+        == "Step 1: Unknown input 'rates'; connected inputs: none."
+    )
+    stacked = node([step("c", "concat", inputs=["rates"], how="vertical")])
+    assert stacked.data.config["code"] == ""
+    assert stacked.data.config["_steps_error"].startswith("Step 1: Unknown input 'rates'")
+
     grid = GraphNode(
         id="s", data=NodeData(label="s", nodeType="scenarioExpander", config={"steps": 5})
     )
@@ -3382,6 +3398,12 @@ def test_data_input_incomplete_steps_fail_on_every_path(tmp_path: Path) -> None:
         "j", "join", input="rates", how="inner", leftOn=["region"], rightOn=["region"], suffix="_r"
     )
     unknown = _stepped_input(quotes, [join])
+    # Materialisation already refuses the reference (no eligible inputs).
+    assert unknown.data.config["code"] == ""
+    assert (
+        unknown.data.config["_steps_error"]
+        == "Step 1: Unknown input 'rates'; connected inputs: none."
+    )
     graph = PipelineGraph(nodes=[unknown], edges=[])
 
     # Builder path: the executor names the step.
@@ -3620,3 +3642,47 @@ def test_corpus_translations_reload_unchanged_on_a_data_input(
     assert node.data.config["steps"] == steps, name
     assert node.data.config["code"] == expected, name
     assert "_steps_discarded" not in node.data.config, name
+
+
+def test_data_input_free_code_opening_with_a_string_reloads_in_step_mode(tmp_path: Path) -> None:
+    """A rendering that starts with a string statement is not a docstring to the parser."""
+    quotes, _rates = _frames(tmp_path)
+    steps = [step("c", "free_code", code='"""Keep two rows."""\ndf = df.head(2)')]
+    graph = PipelineGraph(nodes=[_stepped_input(quotes, steps)], edges=[])
+    code = graph_to_code(graph, pipeline_name="main")
+    assert '\n    """Keep two rows."""\n    df = df.head(2)\n' in code
+    _write_sidecars(tmp_path, graph)
+
+    node = next(
+        n for n in parse_pipeline_source(code, _base_dir=tmp_path).nodes if n.id == "quotes"
+    )
+    assert node.data.config["steps"] == steps
+    assert node.data.config["code"] == '"""Keep two rows."""\ndf = df.head(2)'
+    assert "_steps_discarded" not in node.data.config
+
+
+def test_data_input_generated_module_runs_standalone(tmp_path: Path) -> None:
+    """The generated function itself applies the steps, and raises for an incomplete list."""
+    quotes, _rates = _frames(tmp_path)
+    # The module resolves its project root by walking up to a haute.toml inside a git repository.
+    import subprocess
+
+    (tmp_path / "haute.toml").write_text("", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    module = _write_and_import(
+        PipelineGraph(nodes=[_stepped_input(quotes, [step("l", "limit", n=2)])], edges=[]),
+        tmp_path,
+    )
+    frame = _collect(module.pipeline.run())
+    assert frame.height == 2
+    assert frame["premium"].to_list() == [50.0, 200.0]
+
+    broken = _write_and_import(
+        PipelineGraph(
+            nodes=[_stepped_input(quotes, [step("f", "filter", match="all", conditions=[])])],
+            edges=[],
+        ),
+        tmp_path,
+    )
+    with pytest.raises(NotImplementedError, match=INCOMPLETE_STEPS_MESSAGE.split(".")[0]):
+        _collect(broken.pipeline.run())

@@ -119,10 +119,13 @@
 - **`GraphNode` / `GraphEdge` / `NodeData` / `PipelineGraph`** (`haute._types`, not owned by
   this component but constructed here in `_graph_builders.py`). `NodeData` materialises a
   stepped config's `code` from its `steps` on construction (`_materialise_steps`, for every
-  node type in `STEPPED_NODE_TYPES`, rendering in that type's start mode and writing
-  `_steps_error` and empty code when they cannot be rendered; a non-list `steps` on a
-  stepped type is a `ValueError`, and a `steps` key on a type outside the table is left
-  alone), and `GraphNode.with_config` is the validated replacement helper every in-process
+  node type in `STEPPED_NODE_TYPES`, rendering in that type's start mode against an empty
+  eligibility list for an `inputs="none"` surface, so a Data Input join or concat already
+  materialises as `_steps_error`, and against no list for an `edges` surface, whose names
+  only the graph knows; writing `_steps_error` and empty code when they cannot be
+  rendered; a non-list `steps` on a stepped type is a `ValueError`, and a `steps` key on
+  a type outside the table is left alone), and `GraphNode.with_config` is the validated
+  replacement helper every in-process
   config rewrite uses instead of `model_copy`. `TransformConfig.steps` and
   `_DataInputCommon.steps` are the persisted step lists.
 

@@ -268,8 +268,9 @@ cannot be rendered; its `steps` live in the required `config/data_input/<func>.j
 sidecar. `extract_user_code` recognises a placeholder statement (either constant)
 immediately after the matcher's scaffold for every kind and treats it as generated
 scaffold, and `normalise_user_code(code, kind=..., param_names=...)` wraps a code string
-as a body and extracts it again so the parser can compare a rendering with an extracted
-body on equal terms.
+as a body (behind a placeholder docstring, so a rendering that itself opens with a string
+statement keeps it exactly as the real body does) and extracts it again so the parser can
+compare a rendering with an extracted body on equal terms.
 A node with NO code cannot run at
 all — there is no implicit single-input passthrough; codegen emits the
 `NotImplementedError` placeholder and the executor installs the matching

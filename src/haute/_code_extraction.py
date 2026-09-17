@@ -1077,7 +1077,15 @@ def normalise_user_code(
     stripped = code.strip()
     if not stripped:
         return ""
-    body = "\n".join(f"    {line}" for line in stripped.splitlines()) + "\n    return df"
+    # A generated body always opens with the function docstring, and the
+    # engine strips exactly that leading string. Supplying one here keeps a
+    # rendering that itself starts with a string statement (a free-code step
+    # opening with `"""Keep two rows."""`) intact, as it is in the real body.
+    body = (
+        '    """normalise"""\n'
+        + "\n".join(f"    {line}" for line in stripped.splitlines())
+        + "\n    return df"
+    )
     return extract_user_code(body, kind=kind, param_names=param_names)
 
 

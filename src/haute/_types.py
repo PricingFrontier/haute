@@ -917,8 +917,13 @@ class NodeData(BaseModel):
         if not isinstance(steps, list):
             raise ValueError("Steps must be a list.")
         config = dict(self.config)
+        # A surface whose code sees only df has no eligible input names, so a
+        # join or concat is refused here already; an `edges` surface's names
+        # are only known to the graph, so its references are checked at build
+        # time against the connected edges.
+        input_names = [] if surface.inputs == "none" else None
         try:
-            rendered = render_polars_steps(steps, start=surface.start)
+            rendered = render_polars_steps(steps, input_names, start=surface.start)
         except PolarsStepError as exc:
             config["code"] = ""
             config["_steps_error"] = str(exc)

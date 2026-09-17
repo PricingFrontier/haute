@@ -259,11 +259,13 @@ test.describe("Transform step builder journey", () => {
     await rowLimit.press("Enter")
     await expect(editor.getByTestId("polars-generated-code")).toContainText("df = df.head(2)")
 
-    // The preview runs the stepped source.
+    // The preview runs the stepped source: the Limit leaves exactly the first two sample rows.
     await page.getByRole("button", { name: "Refresh" }).click()
     const previewTable = page.getByRole("table").first()
     await expect(previewTable).toBeVisible()
-    await expect(previewTable.getByRole("cell").first()).toBeVisible()
+    await expect(previewTable.locator("tbody tr")).toHaveCount(2)
+    await expect(previewTable.getByRole("cell", { name: "11", exact: true })).toBeVisible()
+    await expect(previewTable.getByRole("cell", { name: "23", exact: true })).toBeVisible()
 
     // Saving writes the steps into the Data Input's own sidecar and the rendering after the load scaffold.
     await save(page)
