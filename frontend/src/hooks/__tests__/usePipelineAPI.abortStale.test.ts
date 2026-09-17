@@ -55,7 +55,7 @@ vi.mock("../../utils/makePreviewData", () => ({
 
 import { loadPipeline, previewNode } from "../../api/client"
 import { makeNode } from "../../test-utils/factories"
-import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
+import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
 
@@ -108,7 +108,7 @@ describe("usePipelineAPI — aborted preview clears stale data (#31)", () => {
     // Catches: silent AbortError handling leaves `previewData.nodeId` equal
     // to the *old* node even after the user has clicked a new node. The
     // panel then shows A's rows under B's title.
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
 
     // Node A resolves successfully with columns/preview
     // Node B aborts in-flight — pre-fix, previewData stays stuck on A.
@@ -165,7 +165,7 @@ describe("usePipelineAPI — aborted preview clears stale data (#31)", () => {
     // More precise test: an already-aborted response that races to resolve
     // must not set previewData because `previewAbort.current.signal.aborted`
     // is true by the time the .then() runs.
-    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
 
     // Simulate a slow request for A that will be aborted mid-flight.
     let aSignal: AbortSignal | undefined

@@ -296,6 +296,48 @@ test.describe("core browser flows", () => {
     await expect(editor).not.toContainText("websocket_sync_probe")
   })
 
+  test("does not re-send the document it just loaded when live sync connects", async ({ page }) => {
+    let resyncFingerprint: string | undefined
+    const receivedDocumentPreambles: string[] = []
+    page.on("websocket", (socket) => {
+      if (!new URL(socket.url()).pathname.endsWith("/ws/sync")) return
+      socket.on("framesent", ({ payload }) => {
+        const message = JSON.parse(String(payload)) as { type?: string; document_fingerprint?: string }
+        if (message.type === "resync") resyncFingerprint = message.document_fingerprint
+      })
+      socket.on("framereceived", ({ payload }) => {
+        const message = JSON.parse(String(payload)) as { type?: string; document?: { preamble?: string } }
+        if (message.type === "pipeline_document_update") {
+          receivedDocumentPreambles.push(message.document?.preamble ?? "")
+        }
+      })
+    })
+    const loadResponse = page.waitForResponse((response) =>
+      response.request().method() === "GET" && new URL(response.url()).pathname === "/api/pipeline",
+    )
+
+    await page.goto("/")
+    const loadedFingerprint = (await loadResponse).headers()["x-haute-document-fingerprint"]
+    expect(loadedFingerprint).toMatch(/^[0-9a-f]{64}$/)
+    await expect.poll(() => resyncFingerprint).toBe(loadedFingerprint)
+
+    // The first document frame must be this external edit, not a copy of the loaded document.
+    const original = readFileSync(gitMainPath, "utf8")
+    const constructorAnchor = original.match(/^pipeline\s*=\s*haute\.Pipeline\(.+$/m)?.[0]
+    if (!constructorAnchor) throw new Error("E2E pipeline fixture has no pipeline constructor")
+    try {
+      writeFileSync(
+        gitMainPath,
+        original.replace(constructorAnchor, `import statistics as initial_sync_probe\n\n${constructorAnchor}`),
+        "utf8",
+      )
+      await expect.poll(() => receivedDocumentPreambles.length).toBeGreaterThan(0)
+      expect(receivedDocumentPreambles[0]).toContain("initial_sync_probe")
+    } finally {
+      writeFileSync(gitMainPath, original, "utf8")
+    }
+  })
+
   test("first-run chooser creates a working branch and saves land on its ledger", async ({
     page,
   }) => {

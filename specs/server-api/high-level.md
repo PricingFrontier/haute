@@ -154,7 +154,9 @@ chain.
 **Pipeline CRUD, preview, trace, and output publication.** `GET /api/pipelines` lists every
 discovered pipeline with `ready`, `degraded`, or `source_only` load status. The editor-facing
 `GET /api/pipeline` and `GET /api/pipeline/{name}` routes return a versioned editor document,
-not the canonical runtime graph: readable authored failures are HTTP 200 responses carrying
+not the canonical runtime graph, and name that document's fingerprint — the same SHA-256
+live-sync frames carry — in the `x-haute-document-fingerprint` response header, so the
+canvas's first resync after loading can skip an unchanged document: readable authored failures are HTTP 200 responses carrying
 structured diagnostics, element availability, explicit capabilities, and a raw-artifact
 revision. The unnamed route selects the first discovered document with authored content
 without skipping a broken document in favour of a later healthy one. It returns an empty

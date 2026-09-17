@@ -187,6 +187,7 @@ describe("useTracing", () => {
       }),
       null,
       false,
+      "live-fingerprint",
     )
     const { result } = renderHook(() => useTracing(makeParams()))
 
@@ -213,6 +214,7 @@ describe("useTracing", () => {
       }),
       null,
       false,
+      "live-fingerprint",
     )
     await act(async () => {
       resolveTrace({ status: "ok", trace: makeTrace(["stale_trace"]) })

@@ -84,7 +84,7 @@ describe("pipeline recovery surfaces", () => {
       kind: "last_renderable",
       sourceRevision: "last-good-r1",
       loadStatus: "ready",
-    }, false)
+    }, false, "live-fingerprint")
 
     render(<StalePipelineReferenceBanner />)
 

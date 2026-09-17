@@ -11,9 +11,9 @@ import type { Edge, Node } from "@xyflow/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../../api/client", async () => {
-  const { makePipelineEditorDocument } = await import("../../testSupport/pipelineDocumentFixture")
+  const { makeLoadedPipeline } = await import("../../testSupport/pipelineDocumentFixture")
   return {
-  loadPipeline: vi.fn(() => Promise.resolve(makePipelineEditorDocument({ nodes: [], edges: [] }))),
+  loadPipeline: vi.fn(() => Promise.resolve(makeLoadedPipeline({ nodes: [], edges: [] }))),
   previewNode: vi.fn(),
   savePipeline: vi.fn(),
   setGitIdentity: vi.fn(() => Promise.resolve({ scope: "local" })),

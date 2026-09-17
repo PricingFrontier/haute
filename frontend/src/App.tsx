@@ -903,7 +903,8 @@ function FlowEditor() {
   ) => {
     const recoverTargetId =
       pipelineRepairTarget?.action === "recover" ? pipelineRepairTarget.recoveryId : null
-    adoptPipelineDocument(document)
+    // The repair response names no document fingerprint; the next resync fetches the document.
+    adoptPipelineDocument(document, null)
     resetToAuthoritativeRoot(
       document.source_file,
       document.pipeline_name ?? "main",
@@ -946,7 +947,8 @@ function FlowEditor() {
   const applyScopedSaveDocument = useCallback(
     (document: import("./types/pipelineDocument").PipelineEditorDocument, savedNodeId: string) => {
       const selectionUnchanged = selectedNodeRef.current?.id === savedNodeId
-      adoptPipelineDocument(document)
+      // The scoped save response names no document fingerprint; the next resync fetches the document.
+      adoptPipelineDocument(document, null)
       resetToAuthoritativeRoot(document.source_file, document.pipeline_name ?? "main")
       if (selectionUnchanged) {
         const restored = graphRef.current.nodes.find((item) => item.id === savedNodeId)

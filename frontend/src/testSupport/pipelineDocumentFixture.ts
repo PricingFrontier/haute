@@ -1,5 +1,7 @@
 import type { Edge, Node } from "@xyflow/react"
 
+import type { LoadedPipeline } from "../api/client"
+
 import type {
   PipelineDiagnostic,
   PipelineNodeCompleteness,
@@ -195,6 +197,17 @@ function capabilitiesFor(
     reserved_api_input_frame_labels: [],
     ...overrides,
   }
+}
+
+/** Fingerprint `makeLoadedPipeline` names for its document unless a test supplies one. */
+export const LOADED_DOCUMENT_FINGERPRINT = "loaded-document-fingerprint"
+
+/** A `loadPipeline` result: the editor document plus the fingerprint its response header names. */
+export function makeLoadedPipeline(
+  fixture: PipelineDocumentFixture = {},
+  documentFingerprint: string = LOADED_DOCUMENT_FINGERPRINT,
+): LoadedPipeline {
+  return { document: makePipelineEditorDocument(fixture), documentFingerprint }
 }
 
 /** Convert compact canonical graph fixtures into the editor-load wire contract. */

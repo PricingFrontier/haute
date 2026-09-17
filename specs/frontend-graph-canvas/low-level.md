@@ -32,7 +32,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/hooks/useActiveNodeReveal.ts` | Keeps the inspector's active node visible in the canvas area its inspector and preview pane leave: arms on each active-node change or node-search centre request, re-checks when React Flow's canvas size or the armed node's measured size changes, glides only the first placement, and disarms on a user pan/zoom gesture. Returns `handleMoveStart` for React Flow's `onMoveStart` and `centreNode` for node search. |
 | `frontend/src/utils/nodeReveal.ts` | Pure `nodeRevealViewport` geometry: the zoom-preserving least pan that places a node `NODE_REVEAL_MARGIN_PX` inside the canvas (centring on an axis it cannot fit), or a centred placement at a requested zoom; `null` when a nearest placement needs no move. |
 | `frontend/src/hooks/usePipelineAPI.ts` | Pipeline editor-document load-on-mount; recovery-to-React-Flow adaptation; atomic document-status/revision plus graph ingestion; request-facing refs; preview lifecycle; and capability-fenced Save. |
-| `frontend/src/stores/useDocumentStatusStore.ts` | Authoritative editor-document status, diagnostics, capabilities, raw revision, source-only text, and last accepted document identity. Graph state/history remain in `useGraphStore`. |
+| `frontend/src/stores/useDocumentStatusStore.ts` | Authoritative editor-document status, diagnostics, capabilities, raw revision, source-only text, and last accepted document identity, including its `documentFingerprint` (null when the accepting response named none) that every `/ws/sync` resync sends. Graph state/history remain in `useGraphStore`. |
 | `frontend/src/types/pipelineDocument.ts` | Strict version-1 editor-document wire types/guards and the single adapter from recovery nodes/edges/submodels into render-only React Flow snapshots, including required node identities, edge input identities, submodel input-port identities, and reserved API-frame labels. Recovery wire values are never accepted as canonical graph values. |
 | `frontend/src/components/PipelineRecoveryBanner.tsx` | Accessible degraded-document summary and issues entry point. |
 | `frontend/src/components/SourceRecoveryView.tsx` | Read-only current-source and document-diagnostic surface used when no trustworthy graph skeleton exists. |
@@ -563,7 +563,12 @@ reconciliation rather than dropping them or committing a second mutation.
 15. **Pipeline load (`usePipelineAPI`, mount effect).** Calls `loadPipeline`
     with a cold-start retry policy (`INITIAL_PIPELINE_RETRY_POLICY`, 6
     retries at 250ms base delay); the response is validated through
-    `parsePipelineEditorDocument` before touching the graph. On success, the hook
+    `parsePipelineEditorDocument` before touching the graph. `loadPipeline`
+    returns the raw document together with its required
+    `x-haute-document-fingerprint` header (a missing or blank header throws),
+    and `adoptPipelineDocument(document, documentFingerprint)` records that
+    fingerprint in the document-status store with the document's status;
+    repair and scoped-save adoptions pass `null`. On success, the hook
     canonicalises an omitted/null preamble to `""` and submodels to `{}`,
     requires a non-null `source_revision` for a live document (blankness is not checked), copies
     `preserved_blocks`/`source_revision` into their request-facing refs,
@@ -661,9 +666,15 @@ reconciliation rather than dropping them or committing a second mutation.
     `false` on any failure after toasting the detail.
 19. **WebSocket sync (`useWebSocketSync`).** Connects to the credential-free
     `/ws/sync` URL; the browser supplies its HttpOnly same-origin cookie during
-    the handshake. On open, sends a `resync` message
-    carrying the last-applied document fingerprint for the current source file
-    (server skips replying if it already matches). Every accepted
+    the handshake. On open, sends a `resync` message carrying
+    `useDocumentStatusStore`'s `documentFingerprint` when the store's
+    `sourceFile` is the current source file (server skips replying if it
+    already matches). The store is the only record of that fingerprint: the
+    initial HTTP load seeds it, so the first connection after a page load does
+    not receive, re-apply, toast, or re-fit an unchanged document; every
+    accepted `pipeline_document_update` replaces it through
+    `loadLiveDocumentStatus` (even when a dirty graph blocks the graph swap,
+    since the status is accepted), and a `parse_error` clears it. Every accepted
     `pipeline_document_update` or `parse_error` synchronously advances a
     generation, and validated document nodes always carry finite display
     positions, so updates apply synchronously with no layout pass. Source
@@ -1608,6 +1619,17 @@ again through the editor and save paths.
   for column-relevant steps. All
   drag points are derived from live locator geometry and every assertion is
   an observable DOM, preview, trace, or persisted-pipeline outcome.
+- **Initial-load document fingerprint.** `tests/test_server.py` pins that both load
+  routes name `pipeline_document_fingerprint` of the returned document and that a first
+  resync carrying the loaded header produces no frame. `frontend/src/api/__tests__/client.test.ts`
+  pins `loadPipeline` returning the header's fingerprint and rejecting, without retrying,
+  a response that names none; `frontend/src/hooks/__tests__/usePipelineAPI.test.ts` pins the load recording it and a
+  repair adoption clearing it; `frontend/src/stores/__tests__/useDocumentStatusStore.test.ts` pins live replacement and
+  clearing on system failure and reset; `frontend/src/__tests__/hooks/useWebSocketSync.test.ts` pins the first
+  connection sending the loaded fingerprint and a post-`parse_error` reconnect sending
+  none. `frontend/e2e/core-flows.spec.ts` proves it in a real browser: the first `resync`
+  frame carries the load response's header, and the first `pipeline_document_update`
+  the page receives is a later external edit, not the document it just loaded.
 - **Active node visibility.** `frontend/src/utils/__tests__/nodeReveal.test.ts`
   pins the geometry: no move for a fully visible node (even inside the
   margin), least pans on each edge at non-unit zoom, centring on an axis the

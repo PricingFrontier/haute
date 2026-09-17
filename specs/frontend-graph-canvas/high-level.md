@@ -447,8 +447,14 @@ candidate, with the error toast.
   `markSaved`; any apply failure restores the graph fields and request-facing
   refs. An omitted submodels field or missing live `source_revision` fails
   loudly.
-  A resync on reconnect sends the last-applied graph fingerprint so the
-  server can skip re-sending an unchanged graph.
+  Every resync — the first connection after the page loads as well as a
+  reconnect — sends the fingerprint of the last accepted document, so the
+  server skips re-sending an unchanged one. The initial load's fingerprint
+  arrives with the document itself; loading a page therefore never re-applies
+  the same document, never announces it as updated from file, and never
+  re-fits the view or clears the selection it has just made. A document
+  adopted from a response that names no fingerprint (repair, scoped node save)
+  records none, and the next resync asks for the current document.
 - **Submodel navigation.** Drilling resolves a canonical occurrence from its
   node type and `{definitionId, alias}` config, loads the shared definition by
   definition id, verifies any returned identity, and builds boundary nodes from

@@ -1036,12 +1036,13 @@ def get_project_knowledge(
 def _publish_document_update(source_file: str) -> str:
     """Publish the exact pipeline-document payload used by the file watcher."""
 
-    from haute.server import _document_payload_fingerprint, _wire_source_file
+    from haute._pipeline_recovery import pipeline_document_fingerprint
+    from haute.server import _wire_source_file
 
     document_payload = load_pipeline_editor_document(
         Path(source_file), project_root=Path.cwd()
     ).model_dump(mode="json", by_alias=True)
-    fingerprint = _document_payload_fingerprint(document_payload)
+    fingerprint = pipeline_document_fingerprint(document_payload)
     default_bus.publish(
         "pipeline.document.update",
         {

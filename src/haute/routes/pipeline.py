@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
@@ -46,7 +46,10 @@ from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
 from haute._native_memory_limit import NativeMemoryLimitUnsupportedError
 from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
-from haute._pipeline_recovery import empty_pipeline_editor_document
+from haute._pipeline_recovery import (
+    empty_pipeline_editor_document,
+    pipeline_document_fingerprint,
+)
 from haute._pipeline_repair import (
     PipelineRepairError,
     apply_recover_unavailable_node_plan,
@@ -643,8 +646,21 @@ async def list_pipelines() -> list[PipelineSummary]:
     return list(await asyncio.gather(*[_parse_one(f) for f in files]))
 
 
+# Names the loaded document's fingerprint so the canvas's first /ws/sync resync can skip it.
+DOCUMENT_FINGERPRINT_HEADER = "x-haute-document-fingerprint"
+
+
+def _name_document_fingerprint(
+    response: Response, document: PipelineEditorDocument
+) -> PipelineEditorDocument:
+    response.headers[DOCUMENT_FINGERPRINT_HEADER] = pipeline_document_fingerprint(
+        document.model_dump(mode="json", by_alias=True)
+    )
+    return document
+
+
 @router.get("/pipeline/{name}", response_model=PipelineEditorDocument)
-async def get_pipeline(name: str) -> PipelineEditorDocument:
+async def get_pipeline(name: str, response: Response) -> PipelineEditorDocument:
     """Return the editor document for a specific readable pipeline."""
 
     def _find() -> PipelineEditorDocument | None:
@@ -680,11 +696,11 @@ async def get_pipeline(name: str) -> PipelineEditorDocument:
     document = await asyncio.to_thread(_find)
     if document is None:
         raise_pipeline_not_found(name)
-    return document
+    return _name_document_fingerprint(response, document)
 
 
 @router.get("/pipeline", response_model=PipelineEditorDocument)
-async def get_first_pipeline() -> PipelineEditorDocument:
+async def get_first_pipeline(response: Response) -> PipelineEditorDocument:
     """Return the first authored editor document, or a new empty canvas.
 
     Python file is the source of truth. Sidecar .haute.json provides positions.
@@ -708,7 +724,7 @@ async def get_first_pipeline() -> PipelineEditorDocument:
             raise first_error
         return empty_pipeline_editor_document()
 
-    return await asyncio.to_thread(_find_first)
+    return _name_document_fingerprint(response, await asyncio.to_thread(_find_first))
 
 
 def _pipeline_recovery_error_response(

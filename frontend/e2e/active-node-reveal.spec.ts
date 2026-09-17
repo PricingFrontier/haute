@@ -20,12 +20,8 @@ function contains(outer: Box, inner: Box): boolean {
     && inner.y + inner.height <= outer.y + outer.height
 }
 
-/**
- * The first /ws/sync connection re-applies the document and re-fits the view shortly after load;
- * placing nodes before that lands would race it.
- */
-async function waitForInitialDocumentSync(page: Page) {
-  await expect(page.getByText(/Pipeline updated from file/i)).toBeVisible()
+/** React Flow fits the view once nodes are measured; placing nodes before that lands would race it. */
+async function waitForInitialFit(page: Page) {
   const viewport = page.locator(".react-flow__viewport")
   let previous: string | null = null
   await expect.poll(async () => {
@@ -70,8 +66,8 @@ test.describe("active node visibility", () => {
     resetE2eProject()
     await page.setViewportSize(desktopViewport)
     await page.goto("/")
-    await waitForInitialDocumentSync(page)
     await expect(page.getByTestId("rf__node-raw_rows")).toBeVisible()
+    await waitForInitialFit(page)
   })
 
   test("moves a clicked node out from under its inspector and preview pane without changing zoom", async ({ page }) => {

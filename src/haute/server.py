@@ -32,7 +32,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import Route
 
 from haute import __version__
-from haute._cache import canonical_json
 from haute._cpu_performance import configure_process_high_qos
 from haute._event_bus import default_bus
 from haute._execution_context import configure_execution_telemetry
@@ -51,6 +50,7 @@ from haute._local_security import (
     websocket_rejection_reason,
 )
 from haute._logging import configure_logging, get_logger
+from haute._pipeline_recovery import pipeline_document_fingerprint
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
 from haute.routes._helpers import (
     _ensure_pipeline_index,
@@ -251,11 +251,6 @@ async def _send_ws_parse_error(
     )
 
 
-def _document_payload_fingerprint(document_payload: dict[str, Any]) -> str:
-    """Fingerprint the complete wire-format editor document."""
-    return hashlib.sha256(canonical_json(document_payload).encode("utf-8")).hexdigest()
-
-
 def _client_fingerprint(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -279,7 +274,7 @@ def _prepare_ws_document_resync(
         document_payload = load_pipeline_editor_document(
             pipeline_path, project_root=Path.cwd()
         ).model_dump(mode="json", by_alias=True)
-        document_fingerprint = _document_payload_fingerprint(document_payload)
+        document_fingerprint = pipeline_document_fingerprint(document_payload)
         if client_document_fingerprint == document_fingerprint:
             return _WsDocumentResyncResult(source_file=source_file, unchanged=True)
     except Exception as exc:  # noqa: BLE001
@@ -891,7 +886,7 @@ async def _file_watcher() -> None:
                     # clients as an honest document rather than a parse error.
                     document = load_pipeline_editor_document(p, project_root=Path.cwd())
                     document_payload = document.model_dump(mode="json", by_alias=True)
-                    document_fingerprint = _document_payload_fingerprint(document_payload)
+                    document_fingerprint = pipeline_document_fingerprint(document_payload)
                     _last_broadcast_fp[fp_key] = fp
                     default_bus.publish(
                         "pipeline.document.update",

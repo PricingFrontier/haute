@@ -79,13 +79,21 @@ import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFi
 
 let mockFetch: ReturnType<typeof vi.fn>
 
-function jsonResponse(body: unknown, status = 200) {
+function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}) {
   return Promise.resolve({
     ok: status >= 200 && status < 300,
     status,
     statusText: status === 200 ? "OK" : "Error",
+    headers: new Headers(headers),
     json: () => Promise.resolve(body),
   })
+}
+
+const DOCUMENT_FINGERPRINT = "doc-fp"
+
+/** A pipeline load response: the document plus the fingerprint header the server names. */
+function pipelineResponse(body: unknown) {
+  return jsonResponse(body, 200, { "x-haute-document-fingerprint": DOCUMENT_FINGERPRINT })
 }
 
 function errorResponse(status: number, body?: unknown) {
@@ -360,12 +368,12 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 // ═══════════════════════════════════════════════════════════════════════════
-// request() core function — tested through loadPipeline (a thin GET wrapper)
+// request() core function — tested through loadPipeline (a GET wrapper that also reads the fingerprint header)
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("request() core via loadPipeline", () => {
   it("makes a GET request to the correct URL", async () => {
-    mockFetch.mockReturnValue(jsonResponse({
+    mockFetch.mockReturnValue(pipelineResponse({
       nodes: [], edges: [], preserved_blocks: [], source_revision: null,
     }))
     await loadPipeline()
@@ -375,7 +383,7 @@ describe("request() core via loadPipeline", () => {
   })
 
   it("uses browser-managed same-origin credentials", async () => {
-    mockFetch.mockReturnValue(jsonResponse({
+    mockFetch.mockReturnValue(pipelineResponse({
       nodes: [], edges: [], preserved_blocks: [], source_revision: null,
     }))
 
@@ -449,9 +457,17 @@ describe("request() core via loadPipeline", () => {
       preserved_blocks: [],
       source_revision: null,
     }
-    mockFetch.mockReturnValue(jsonResponse(data))
+    mockFetch.mockReturnValue(pipelineResponse(data))
     const result = await loadPipeline()
-    expect(result).toEqual(data)
+    expect(result).toEqual({ document: data, documentFingerprint: DOCUMENT_FINGERPRINT })
+  })
+
+  it("rejects a pipeline load that names no document fingerprint, without retrying", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ nodes: [], edges: [] }))
+    await expect(loadPipeline()).rejects.toThrow(
+      "loadPipeline: response has no x-haute-document-fingerprint header",
+    )
+    expect(mockFetch).toHaveBeenCalledTimes(1)
   })
 
   it("returns an unknown-node-shaped payload unchanged for recovery ingestion", async () => {
@@ -464,8 +480,11 @@ describe("request() core via loadPipeline", () => {
       }],
       edges: [],
     }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    await expect(loadPipeline()).resolves.toEqual(data)
+    mockFetch.mockReturnValue(pipelineResponse(data))
+    await expect(loadPipeline()).resolves.toEqual({
+      document: data,
+      documentFingerprint: DOCUMENT_FINGERPRINT,
+    })
   })
 
   it("throws ApiError with status and detail on 4xx response", async () => {
@@ -613,7 +632,7 @@ describe("request() core via loadPipeline", () => {
   })
 
   it("passes AbortController signal to fetch", async () => {
-    mockFetch.mockReturnValue(jsonResponse({
+    mockFetch.mockReturnValue(pipelineResponse({
       nodes: [], edges: [], preserved_blocks: [], source_revision: null,
     }))
     await loadPipeline()
