@@ -347,6 +347,28 @@ def {func_name}({params}) -> pl.LazyFrame:
 '''
 
 
+def _stepped_body_code(
+    config: dict, node_type: NodeType, edge_names: list[str]
+) -> tuple[str, bool]:
+    """The user-code lines a frame-mode surface's body carries.
+
+    For a stepped config: the rendering against the surface's eligible input
+    names, or ``incomplete=True`` when the steps cannot be rendered (the body
+    then carries the raising placeholder; the save warns which step). For a
+    code-only config: the authored code as it is.
+    """
+    steps = config.get("steps")
+    if not isinstance(steps, list):
+        return str(config.get("code") or "").strip(), False
+    try:
+        rendered = render_polars_steps(
+            steps, step_input_names(node_type, edge_names), start="frame"
+        ).code
+    except PolarsStepError:
+        return "", True
+    return rendered, False
+
+
 def _wrap_external_code(code: str, *, input_name: str | None = None) -> str:
     """Wrap external-file code around its documented implicit ``df`` frame.
 
@@ -476,7 +498,7 @@ def _gen_model_score(node: GraphNode, source_names: list[str]) -> str:
     source_type = config.get("sourceType", "run")
     task_val = config.get("task", "regression")
     output_column = config.get("output_column", "prediction")
-    user_code = str(config.get("code") or "").strip()
+    user_code, incomplete = _stepped_body_code(config, NodeType.MODEL_SCORE, source_names)
     params = _build_params(source_names)
     first_param = _first_source(source_names)
     cfg_path = config_path_for_node(NodeType.MODEL_SCORE, func_name).as_posix()
@@ -508,7 +530,10 @@ def _gen_model_score(node: GraphNode, source_names: list[str]) -> str:
         if exp_id:
             decorator_kwargs += f", experiment_id={exp_id!r}"
 
-    if user_code:
+    if user_code or incomplete:
+        user_body = (
+            INCOMPLETE_STEPS_BODY.rstrip("\n") if incomplete else _wrap_user_code(user_code, ["df"])
+        )
         return (
             f"@pipeline.model_score({decorator_kwargs})\n"
             f"def {func_name}({params}) -> pl.LazyFrame:\n"
@@ -519,7 +544,7 @@ def _gen_model_score(node: GraphNode, source_names: list[str]) -> str:
             f"        {first_param}, config={_safe_path(cfg_path)},\n"
             f"        base_dir=base,\n"
             f"    )\n"
-            f"{_wrap_user_code(user_code, ['df'])}\n"
+            f"{user_body}\n"
         )
 
     return _MODEL_SCORE.format(
@@ -592,7 +617,7 @@ def _gen_rating_step(node: GraphNode, source_names: list[str]) -> str:
     tables = normalise_rating_tables(config)
     params = _build_params(source_names)
     first = _first_source(source_names)
-    code = str(config.get("code") or "").strip()
+    code, incomplete = _stepped_body_code(config, NodeType.RATING_STEP, source_names)
     emit_tables = []
     for t in tables:
         et: dict = {
@@ -617,8 +642,10 @@ def _gen_rating_step(node: GraphNode, source_names: list[str]) -> str:
         extra_parts.append(f"combined_outputs={decorator_outputs!r}")
     extra_kwargs = (", " + ", ".join(extra_parts)) if extra_parts else ""
     config_path_repr = _safe_path(config_path_for_node(NodeType.RATING_STEP, func_name).as_posix())
-    if code:
-        user_body = _wrap_user_code(code, ["df"])
+    if code or incomplete:
+        user_body = (
+            INCOMPLETE_STEPS_BODY.rstrip("\n") if incomplete else _wrap_user_code(code, ["df"])
+        )
         return (
             f"@pipeline.rating_step(tables={emit_tables!r}{extra_kwargs})\n"
             f"def {func_name}({params}) -> pl.LazyFrame:\n"
@@ -660,12 +687,12 @@ def _gen_scenario_expander(node: GraphNode, source_names: list[str]) -> str:
     config_path_repr = _safe_path(
         config_path_for_node(NodeType.SCENARIO_EXPANDER, func_name).as_posix()
     )
-    code = str(config.get("code") or "").strip()
+    code, incomplete = _stepped_body_code(config, NodeType.SCENARIO_EXPANDER, source_names)
 
     # The body applies the sidecar config at runtime — the same shared helper
     # the executor calls — so a standalone ``pipeline.run()`` expands the
     # scenario grid instead of silently passing the frame through.
-    if not code:
+    if not code and not incomplete:
         return _SCENARIO_EXPANDER.format(
             func_name=func_name,
             description=description,
@@ -675,7 +702,7 @@ def _gen_scenario_expander(node: GraphNode, source_names: list[str]) -> str:
             config_path_repr=config_path_repr,
         )
 
-    user_body = _wrap_user_code(code, ["df"])
+    user_body = INCOMPLETE_STEPS_BODY.rstrip("\n") if incomplete else _wrap_user_code(code, ["df"])
     return (
         f"@pipeline.scenario_expander({dec_kwargs})\n"
         f"def {func_name}({params}) -> pl.LazyFrame:\n"
@@ -838,9 +865,15 @@ def _gen_explore(node: GraphNode, source_names: list[str]) -> str:
 @_register_codegen(NodeType.EXTERNAL_FILE)
 def _gen_external_file(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
-    code = str(config.get("code") or "").strip()
+    code, incomplete = _stepped_body_code(config, NodeType.EXTERNAL_FILE, source_names)
     params = _build_params(source_names)
-    body = _wrap_external_code(code, input_name=_first_source(source_names))
+    first = _first_source(source_names)
+    if incomplete:
+        # The first input is still bound as df, then the placeholder raises.
+        binding = f"    df = {first}\n" if first else ""
+        body = binding + INCOMPLETE_STEPS_BODY.rstrip("\n")
+    else:
+        body = _wrap_external_code(code, input_name=first)
     cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
     return _RETAINED_EXTERNAL.format(
         func_name=func_name,

@@ -730,7 +730,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
         ),
         NodeType.MODEL_SCORE: _classify_config_fields(
             node_config=("output_column", "task"),
-            user_code=("code",),
+            user_code=("code", "steps"),
             artifacts=(
                 "alias",
                 "artifact_path",
@@ -750,7 +750,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
         NodeType.BANDING: _classify_config_fields(node_config=("factors",)),
         NodeType.RATING_STEP: _classify_config_fields(
             node_config=("combinedOutputs", "tables"),
-            user_code=("code",),
+            user_code=("code", "steps"),
         ),
         NodeType.OUTPUT: _classify_config_fields(
             node_config=("outputFormat", "outputMapping"),
@@ -772,7 +772,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
         ),
         NodeType.EXTERNAL_FILE: _classify_config_fields(
             node_config=("fileType", "modelClass"),
-            user_code=("code",),
+            user_code=("code", "steps"),
             artifacts=("path",),
         ),
         NodeType.LIVE_SWITCH: _classify_config_fields(
@@ -860,7 +860,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
                 "stepCount",
                 "step_column",
             ),
-            user_code=("code",),
+            user_code=("code", "steps"),
         ),
         NodeType.OPTIMISER_APPLY: _classify_config_fields(
             node_config=(

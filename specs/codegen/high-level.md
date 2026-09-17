@@ -228,17 +228,19 @@ with a `ConfigError`. Generating, parsing, and extracting a stepped transform re
 the rendered code exactly, which is what lets the parser tell a hand-edited body from a
 rendered one.
 
-**Stepped Data Input.** When a Data Input config carries `steps`, `_gen_data_input`
-renders them in frame mode against the empty input list and places the rendered lines
-exactly where the hand-written post-load code goes, after the generated
-`df = resolve_data_input_from_config(...)` scaffold and before `return df`. When the steps
+**Stepped frame surfaces.** When a Data Input, External File, Rating Step, Model Score or
+Scenario Expander config carries `steps`, its generator renders them in frame mode
+against the surface's eligible input names (every edge name for an External File, the
+empty list otherwise) and places the rendered lines exactly where that surface's
+hand-written code goes: after the generated load, rating, scoring or expansion scaffold,
+after `df = <first input>` for an External File, and before `return df`. When the steps
 cannot be rendered it emits the raising placeholder in that position instead, carrying the
 constant `INCOMPLETE_STEPS_MESSAGE`, so a standalone run of the module raises rather than
-reading the source unchanged; the placeholder recogniser accepts either constant, and the
-extraction pipeline treats a recognised placeholder as scaffold for every matcher kind, so
-the body reloads as empty code with the steps kept. The parser does not require extraction
-to be a fixpoint of rendering: it compares the extracted body with the rendering passed
-through the same extraction.
+running the node's base behaviour unchanged; the placeholder recogniser accepts either
+constant, and the extraction pipeline treats a recognised placeholder as scaffold for every
+matcher kind, so the body reloads as empty code with the steps kept. The parser does not
+require extraction to be a fixpoint of rendering: it compares the extracted body with the
+rendering passed through the same finaliser its kind's extraction ends with.
 
 ## Design rationale
 

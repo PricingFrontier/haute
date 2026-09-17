@@ -299,19 +299,26 @@ the file is retired on the next save, and logs a warning; an empty body with
 unrenderable steps keeps the steps, because that is how an incomplete step list is
 saved. A sidecar whose `steps` value is not a list fails the parse with a `ConfigError`.
 
-**Stepped surfaces.** The same step list can author the post-load code of a Data
-Input. The renderer takes a required start mode: `input` is the transform's (the
+**Stepped surfaces.** The same step list authors the Polars code of every surface
+that has one: a Data Input's post-load code, an External File's code over the loaded
+object, and the post-processing of a Rating Step, a Model Score and a Scenario
+Expander. The renderer takes a required start mode: `input` is the transform's (the
 first step chooses the input and renders `df = <input>`), and `frame` is for a
-surface whose code runs with `df` already bound (a Data Input's opened snapshot). In
-frame mode an empty list renders to empty code without error, because the node then
-simply keeps its base behaviour, a `source` step is refused at any position with a
-step-indexed message, and `join`/`concat` references are checked against the
-surface's eligible input names, which for a Data Input is the empty list, so they are
-refused. One table (`STEPPED_NODE_TYPES` in `haute._polars_steps`) maps every stepped
-node type to its start mode and its input eligibility (`edges` for a transform,
-`none` for a Data Input), and every path that renders a node's steps (the node data
-model, the parser's reconcile, the executor builder, codegen, the deploy
-interceptors and the render endpoint) obtains the eligible names from it. A node
+surface whose code runs with `df` already bound (the opened snapshot, the first input
+beside `obj`, the rated, scored or expanded frame). In frame mode an empty list renders
+to empty code without error, because the node then simply keeps its base behaviour, a
+`source` step is refused at any position with a step-indexed message, and
+`join`/`concat` references are checked against the surface's eligible input names.
+One table (`STEPPED_NODE_TYPES` in `haute._polars_steps`) maps every stepped node type
+to its start mode and its input eligibility: `edges` for a transform and for an
+External File (whose code sees every connected input by name, the first also as
+`df`), `none` for the surfaces whose code sees only `df` (Data Input, Rating Step,
+Model Score, Scenario Expander), where a join or concat is refused. Every path that
+renders a node's steps (the node data model, the parser's reconcile, the executor
+builder, codegen, the deploy interceptors and the render endpoint) obtains the
+eligible names from it. Only an `edges` surface has its step references rewritten when
+an input is renamed (a node rename, an Edge Join insertion, a submodel boundary), and a
+stepped `edges` original never carries `inputMapping`. A node
 type outside that table that carries a `steps` key is left alone. A Scenario
 Expander's grid size is its required `stepCount` (a whole number of at least 1, read
 by the executor builder, the generated module's helper, the chunk planner, the RAM

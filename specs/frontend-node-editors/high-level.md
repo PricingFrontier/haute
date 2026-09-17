@@ -367,10 +367,15 @@ executor would refuse: while that list is empty the `Add step` chooser withholds
 and concat and keeps group by, pivot and unpivot. Column suggestions use the same
 upstream columns the code box used. An empty frame-mode list renders to empty code, so
 the confirmed switch to code on an empty list writes empty code, and the node behaves
-exactly as with an empty code box until a step is added. The Data Input's Polars tab
-mounts this pane; a new Data Input starts in step mode with an empty list, and changing
-its provider or format keeps its steps as it keeps its code. The other Polars-tab
-surfaces keep the plain code box until their own packages.
+exactly as with an empty code box until a step is added. Every Polars tab (Data Input,
+External File, Scenario Expander, Rating Step, Model Score) mounts this pane in `frame`
+mode, with the surface's eligible input names from the shared table: every connected
+input for an External File (whose free code still reaches `obj`, as the tab's code hint
+says), none for the others. A new node of each of these types starts in step mode with
+an empty list, and changing a Data Input's provider or format keeps its steps as it
+keeps its code. Renaming an upstream node rewrites the input references inside a stepped
+External File's steps, as it does for a Transform. A node loaded without a `steps` list
+stays in code mode; the switch is one way.
 
 ## Design rationale
 

@@ -628,6 +628,43 @@ def score_graph_lazy(
         raise
 
 
+def _reject_incomplete_stepped_nodes(graph: PipelineGraph, relevant_node_ids: set[str]) -> None:
+    """Fail before deploy preparation loads anything a stepped node cannot run.
+
+    The interceptors below guard their own branches, but
+    ``_attach_bundled_model_contract_inputs`` loads remapped models before any
+    interceptor runs, so an invalid step list is rejected here first, with
+    the same step-numbered message the executor builder would raise.
+    """
+    from haute._builders import stepped_code_problem
+    from haute._code_extraction import INCOMPLETE_STEPS_MESSAGE
+    from haute._polars_steps import is_stepped_config, step_input_names
+    from haute.errors import ConfigError
+
+    node_by_id = {node.id: node for node in graph.nodes}
+    for node in graph.nodes:
+        if node.id not in relevant_node_ids:
+            continue
+        if not is_stepped_config(node.data.nodeType, node.data.config):
+            continue
+        edge_names = [
+            edge_input_name(edge, node_by_id[edge.source])
+            for edge in graph.edges
+            if edge.target == node.id and edge.source in node_by_id
+        ]
+        problem = stepped_code_problem(
+            node.data.config,
+            node.data.nodeType,
+            step_input_names(node.data.nodeType, edge_names),
+        )
+        if problem is not None:
+            raise ConfigError(
+                f"{INCOMPLETE_STEPS_MESSAGE} {problem}",
+                node_id=node.id,
+                node_label=node.data.label,
+            )
+
+
 def _score_graph_lazy(
     graph: PipelineGraph,
     input_df: pl.DataFrame,
@@ -641,6 +678,7 @@ def _score_graph_lazy(
     remap = artifact_paths or {}
     graph = _attach_bundled_feature_contracts(_resolve_runtime_graph_paths(graph), remap)
     relevant_node_ids = set(upstream_node_ids(output_node_id, graph.parents_of)) | {output_node_id}
+    _reject_incomplete_stepped_nodes(graph, relevant_node_ids)
     graph = _attach_bundled_model_contract_inputs(graph, remap, relevant_node_ids)
     node_by_id = {node.id: node for node in graph.nodes}
     parents_of = graph.parents_of
@@ -745,6 +783,23 @@ def _score_graph_lazy(
         if node_type == NodeType.EXTERNAL_FILE and remap:
             remapped_path = _remap_artifact(nid, config, remap, "path")
             if remapped_path is not None:
+                from haute._builders import _incomplete_transform, stepped_code_problem
+                from haute._code_extraction import INCOMPLETE_STEPS_MESSAGE
+                from haute._polars_steps import step_input_names
+
+                # This interceptor bypasses the External File builder, so it
+                # applies the builder's own incomplete-step guard first.
+                problem = stepped_code_problem(
+                    config,
+                    NodeType.EXTERNAL_FILE,
+                    step_input_names(NodeType.EXTERNAL_FILE, list(source_names)),
+                )
+                if problem is not None:
+                    return (
+                        func_name,
+                        _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"),
+                        False,
+                    )
                 code = config.get("code", "").strip()
                 file_type = config.get("fileType", "pickle")
                 model_class = config.get("modelClass", "classifier")
@@ -877,6 +932,21 @@ def _score_graph_lazy(
                 upstream_node_ids(nid, parents_of),
             )
             _code = str(config.get("code") or "").strip()
+            from haute._builders import _incomplete_transform, stepped_code_problem
+            from haute._code_extraction import INCOMPLETE_STEPS_MESSAGE
+            from haute._polars_steps import step_input_names
+
+            # Every Model Score branch below bypasses the builder, so the
+            # builder's incomplete-step guard runs here before any scoring.
+            problem = stepped_code_problem(
+                config, NodeType.MODEL_SCORE, step_input_names(NodeType.MODEL_SCORE, [])
+            )
+            if problem is not None:
+                return (
+                    func_name,
+                    _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"),
+                    False,
+                )
             _score_source = _deploy_model_score_source(execution_context)
             _required_output_columns = projection.model_score_required_output_columns(
                 config,

@@ -9,7 +9,7 @@ import {
 } from "./apiInputPorts"
 import { attachEditorEdgeIdentities } from "./editorIdentities"
 import { NODE_TYPES } from "./nodeTypes"
-import { renameStepInputs } from "./polarsStepInputs"
+import { renameStepInputs, steppedSurfaceAllowsInputReferences } from "./polarsStepInputs"
 
 type RenamePair = { from: string; to: string }
 
@@ -263,8 +263,9 @@ function targetInputCollision(affected: AffectedRenameTarget): string | null {
   return null
 }
 
+/** A stepped original on a surface whose steps may name its inputs (a Transform, an External File). */
 function isSteppedOrdinaryTransform(node: Node): boolean {
-  if (node.data.nodeType !== NODE_TYPES.POLARS) return false
+  if (!steppedSurfaceAllowsInputReferences(String(node.data.nodeType))) return false
   const config = (node.data.config ?? {}) as Record<string, unknown>
   if ("instanceOf" in config) return false
   return Array.isArray(config.steps)

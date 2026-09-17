@@ -28,11 +28,23 @@ export type SteppedSurface = {
 export const STEPPED_NODE_TYPES: Readonly<Record<string, SteppedSurface>> = {
   polars: { start: "input", inputs: "edges" },
   dataInput: { start: "frame", inputs: "none" },
+  externalFile: { start: "frame", inputs: "edges" },
+  ratingStep: { start: "frame", inputs: "none" },
+  modelScore: { start: "frame", inputs: "none" },
+  scenarioExpander: { start: "frame", inputs: "none" },
 }
 
 /** The stepped surface of a node type, or undefined for a type that does not author steps. */
 export function steppedSurfaceFor(nodeType: string): SteppedSurface | undefined {
   return Object.hasOwn(STEPPED_NODE_TYPES, nodeType) ? STEPPED_NODE_TYPES[nodeType] : undefined
+}
+
+/**
+ * Whether a stepped node type's steps may name its incoming edges. Only such
+ * a surface needs its step references rewritten when an input is renamed.
+ */
+export function steppedSurfaceAllowsInputReferences(nodeType: string): boolean {
+  return steppedSurfaceFor(nodeType)?.inputs === "edges"
 }
 
 /**

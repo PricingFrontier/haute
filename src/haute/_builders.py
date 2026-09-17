@@ -606,6 +606,23 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
     _in_map = dict(config.get("inputMapping", {})) or None
     _preamble_ext = dict(ctx.preamble_ns) if ctx.preamble_ns else {}
+    if isinstance(config.get("steps"), list):
+        # Steps address the other inputs by their edge names (the first is
+        # already df); an original never carries inputMapping beside them.
+        if _in_map is not None and not config.get("instanceOf"):
+            raise ConfigError(STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE, node_id=ctx.node.id)
+        names = set(_src_names)
+        if _orig_src:
+            names.update(build_instance_mapping(_orig_src, _src_names, _in_map))
+        problem = stepped_code_problem(
+            config, NodeType.EXTERNAL_FILE, step_input_names(NodeType.EXTERNAL_FILE, sorted(names))
+        )
+        if problem is not None:
+            return (
+                ctx.func_name,
+                _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"),
+                False,
+            )
     if code:
 
         def external_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
@@ -737,6 +754,12 @@ def _rating_step_columns(config: dict[str, Any]) -> _ColumnContract:
 @_register(NodeType.RATING_STEP, columns=_rating_step_columns, is_behavioural=True)
 def _build_rating_step(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
+    problem = stepped_code_problem(
+        config, NodeType.RATING_STEP, step_input_names(NodeType.RATING_STEP, [])
+    )
+    if problem is not None:
+        # Incomplete post-rating steps must not rate the frame and pass it on.
+        return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), False
     tables = normalise_rating_tables(config)
     combined_outputs = _normalise_combined_outputs(config)
     code = str(config.get("code") or "").strip()
@@ -784,6 +807,12 @@ def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool
     # Fail loud at build time on a missing or misconfigured grid size (the
     # shared helper re-validates at call time for the standalone path).
     scenario_step_count(config)
+    problem = stepped_code_problem(
+        config, NodeType.SCENARIO_EXPANDER, step_input_names(NodeType.SCENARIO_EXPANDER, [])
+    )
+    if problem is not None:
+        # Incomplete post-expansion steps must not expand the grid and pass it on.
+        return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), False
     code = str(config.get("code") or "").strip()
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
     _config_captured = dict(config)
@@ -977,9 +1006,11 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
     out = config.get("output_column", "prediction")
     produced = {out} if out else {"prediction"}
 
-    # Post-processing code can reference arbitrary columns — opaque.
+    # Post-processing code can reference arbitrary columns — opaque. A step
+    # list is the same program (or, while incomplete, a build-time error the
+    # contract must not pre-empt by looking the model up).
     code = str(config.get("code") or "").strip()
-    if code:
+    if code or isinstance(config.get("steps"), list):
         return produced, None
 
     feature_contract_path = config.get("feature_contract_path")
@@ -1087,6 +1118,12 @@ def _declared_categorical_levels_for_model_score(
 @_register(NodeType.MODEL_SCORE, columns=_model_score_columns, is_behavioural=True)
 def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
+    problem = stepped_code_problem(
+        config, NodeType.MODEL_SCORE, step_input_names(NodeType.MODEL_SCORE, [])
+    )
+    if problem is not None:
+        # Incomplete post-scoring steps must not score the frame and pass it on.
+        return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), False
     code = str(config.get("code") or "").strip()
     # Default to "" (not "run") — empty sourceType means the node is
     # unconfigured and should passthrough.  Codegen and score_from_config

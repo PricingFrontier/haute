@@ -788,12 +788,19 @@ describe("NodePanel", () => {
   })
 
   it.each([
-    ["externalFile", "loaded file, assign to"],
-    ["scenarioExpander", "expanded data"],
-    ["ratingStep", "use"],
-    ["modelScore", "Post-processing Code (optional)"],
-  ])("shows the Polars tab and shared code panel for %s nodes", (nodeType, hint) => {
-    renderPanel({ node: makeNode({ data: { label: "Code node", description: "", nodeType, config: {} } }) })
+    ["externalFile", "loaded file, assign to", ["claims"]],
+    ["scenarioExpander", "expanded data", []],
+    ["ratingStep", "use", []],
+    ["modelScore", "Post-processing Code (optional)", []],
+  ])("shows the Polars tab and the stepped pane in frame mode for %s nodes", (nodeType, hint, eligible) => {
+    steppedCodePaneProps.length = 0
+    const claims = makeNode({ id: "claims_src", data: { label: "claims", description: "", nodeType: "polars", config: {} } })
+    const node = makeNode({ data: { label: "Code node", description: "", nodeType, config: { steps: [] } } })
+    renderPanel({
+      node,
+      allNodes: [claims, node],
+      edges: [{ id: "e1", source: "claims_src", target: node.id }],
+    })
 
     expect(screen.getByRole("button", { name: /^config$/i })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /^polars$/i })).toBeInTheDocument()
@@ -801,9 +808,13 @@ describe("NodePanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /^polars$/i }))
 
-    expect(screen.getByTestId("PolarsCodePanel")).toBeInTheDocument()
+    expect(screen.getByTestId("SteppedCodePane")).toBeInTheDocument()
     expect(screen.getByTestId("polars-hint")).toHaveTextContent(hint)
-    expect(screen.getByTestId("code-editor")).toBeInTheDocument()
+    const paneProps = steppedCodePaneProps.at(-1) as Record<string, unknown>
+    expect(paneProps.start).toBe("frame")
+    // Only an External File may reference its inputs; the others see just df.
+    expect(paneProps.inputNames).toEqual(eligible)
+    expect((paneProps.inputSources as Array<{ name: string }>).map((source) => source.name)).toEqual(["claims"])
   })
 
   it("mounts the stepped code pane in frame mode on a Data Input's Polars tab", () => {

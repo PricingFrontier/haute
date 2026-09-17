@@ -29,6 +29,7 @@ from haute._polars_io_registry import (
     validate_data_input_config,
     validate_data_output_config,
 )
+from haute._polars_steps import is_stepped_config
 from haute._rating import validate_banding_config
 from haute._rating_step_config import normalise_rating_step_config
 from haute._recovery_schemas import RecoveryFieldChange, RecoveryIssue
@@ -504,7 +505,7 @@ def _validator_issues(
                     )
                 elif value["name"]:
                     names.add(value["name"])
-    if node_type is NodeType.POLARS and isinstance(config.get("steps"), list):
+    if is_stepped_config(node_type, config):
         steps_error = config.get("_steps_error")
         if steps_error:
             issues.append(_issue("steps", "incomplete", str(steps_error)))

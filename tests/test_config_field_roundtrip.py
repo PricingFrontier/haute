@@ -284,6 +284,54 @@ def _examples():
                 "maintainOrder": "left",
             },
         ),
+        # Frame-mode step lists: the sidecar owns them and codegen renders
+        # them after each surface's scaffold (`df = df.head(2)`).
+        (
+            NodeType.EXTERNAL_FILE,
+            {
+                "path": "models/external.pkl",
+                "fileType": "pickle",
+                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+            },
+        ),
+        (
+            NodeType.RATING_STEP,
+            {
+                "tables": [
+                    {
+                        "factors": ["score_band"],
+                        "outputColumn": "rate_factor",
+                        "defaultValue": "1.0",
+                        "entries": [{"score_band": "low", "value": "1.25"}],
+                    }
+                ],
+                "combinedOutputs": [],
+                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+            },
+        ),
+        (
+            NodeType.MODEL_SCORE,
+            {
+                "sourceType": "run",
+                "run_id": "run-1",
+                "artifact_path": "models/score.cbm",
+                "task": "regression",
+                "output_column": "prediction",
+                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+            },
+        ),
+        (
+            NodeType.SCENARIO_EXPANDER,
+            {
+                "quote_id": "quote_id",
+                "column_name": "scenario_value",
+                "min_value": 0.0,
+                "max_value": 1.0,
+                "stepCount": 3,
+                "step_column": "step_index",
+                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+            },
+        ),
     ]
     for index, (node_type, config) in enumerate(variants):
         variant = graph.model_copy(deep=True)

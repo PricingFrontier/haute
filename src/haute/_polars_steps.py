@@ -40,6 +40,7 @@ __all__ = [
     "SteppedSurface",
     "is_stepped_config",
     "step_input_names",
+    "stepped_surface_allows_input_references",
     "stepped_surface_for",
     "AGGREGATIONS",
     "JOIN_MAINTAIN_ORDER",
@@ -102,6 +103,11 @@ STEPPED_NODE_TYPES: Mapping[NodeType, SteppedSurface] = MappingProxyType(
     {
         NodeType.POLARS: SteppedSurface(start="input", inputs="edges"),
         NodeType.DATA_INPUT: SteppedSurface(start="frame", inputs="none"),
+        # The first input is already `df`; the other edges stay addressable.
+        NodeType.EXTERNAL_FILE: SteppedSurface(start="frame", inputs="edges"),
+        NodeType.RATING_STEP: SteppedSurface(start="frame", inputs="none"),
+        NodeType.MODEL_SCORE: SteppedSurface(start="frame", inputs="none"),
+        NodeType.SCENARIO_EXPANDER: SteppedSurface(start="frame", inputs="none"),
     }
 )
 
@@ -128,6 +134,16 @@ def step_input_names(node_type: NodeType, edge_names: Sequence[str]) -> list[str
 def is_stepped_config(node_type: NodeType, config: Mapping[str, object]) -> bool:
     """Whether *config* is authored as steps on a node type that supports them."""
     return node_type in STEPPED_NODE_TYPES and isinstance(config.get("steps"), list)
+
+
+def stepped_surface_allows_input_references(node_type: NodeType) -> bool:
+    """Whether a stepped *node_type*'s steps may name its incoming edges.
+
+    Only such a surface needs its step references rewritten when an input is
+    renamed (a submodel boundary, an Edge Join insertion, a node rename).
+    """
+    surface = STEPPED_NODE_TYPES.get(node_type)
+    return surface is not None and surface.inputs == "edges"
 
 
 class PolarsStepError(ValueError):

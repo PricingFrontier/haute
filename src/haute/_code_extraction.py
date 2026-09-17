@@ -1068,25 +1068,35 @@ def normalise_user_code(
     kind: str,
     param_names: tuple[str, ...] | list[str] | None = None,
 ) -> str:
-    """Pass *code* through the extraction a generated body of *kind* receives.
+    """Pass *code* through the post-processing a generated body of *kind* receives.
 
     A rendering is not always a fixpoint of extraction (a finaliser may drop
     provably redundant brackets), so a caller comparing a rendering with code
-    extracted from a body normalises the rendering the same way first.
+    extracted from a body normalises the rendering the same way first. Only
+    the finaliser applies: the matcher strips generated scaffold a rendering
+    never contains, the docstring stripper removes the function docstring
+    (not a rendering's own leading string statement), and the trailing
+    ``return df`` is codegen's, so those stages are skipped here. A kind
+    whose matcher reports generated scaffold finalises through the polars
+    rules, exactly as :func:`extract_user_code` does for its real body.
     """
+    if kind not in BOILERPLATE_MATCHERS:
+        raise KeyError(
+            f"Unknown boilerplate matcher kind: {kind!r}. "
+            f"Available kinds: {sorted(BOILERPLATE_MATCHERS)!r}"
+        )
     stripped = code.strip()
     if not stripped:
         return ""
-    # A generated body always opens with the function docstring, and the
-    # engine strips exactly that leading string. Supplying one here keeps a
-    # rendering that itself starts with a string statement (a free-code step
-    # opening with `"""Keep two rows."""`) intact, as it is in the real body.
-    body = (
-        '    """normalise"""\n'
-        + "\n".join(f"    {line}" for line in stripped.splitlines())
-        + "\n    return df"
-    )
-    return extract_user_code(body, kind=kind, param_names=param_names)
+    if kind in _SCAFFOLDED_KINDS:
+        return _finalise_polars(stripped, ())
+    return _FINALISERS[kind](stripped, tuple(param_names or ()))
+
+
+#: Kinds whose matcher reports ``generated_scaffold`` for every generated body,
+#: so their extraction finalises through the polars rules with no parameter
+#: aliases (see ``extract_user_code``).
+_SCAFFOLDED_KINDS = frozenset({"explore", "scenario_expander", "rating_step"})
 
 
 # ---------------------------------------------------------------------------

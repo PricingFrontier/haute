@@ -384,6 +384,10 @@ def _sidecar_required_error(node_type: NodeType, func_name: str) -> ConfigError:
 _EXTRACTION_KIND_BY_STEPPED_TYPE: dict[NodeType, str] = {
     NodeType.POLARS: "polars",
     NodeType.DATA_INPUT: "source",
+    NodeType.EXTERNAL_FILE: "external",
+    NodeType.RATING_STEP: "rating_step",
+    NodeType.MODEL_SCORE: "model_score",
+    NodeType.SCENARIO_EXPANDER: "scenario_expander",
 }
 
 

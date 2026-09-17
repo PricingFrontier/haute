@@ -287,4 +287,106 @@ test.describe("Transform step builder journey", () => {
     await expect(panel.getByRole("button", { name: "Step 1: Limit rows", exact: true })).toBeVisible()
     await expect(panel.getByTestId("polars-generated-code")).toContainText("df = df.head(2)")
   })
+
+  test("authors a Rating Step's post-rating steps on its Polars tab and saves them to its sidecar", async ({ page }) => {
+    test.slow()
+    await openApp(page)
+
+    // Put the fixture's rating step into step mode (an empty list) through the save route.
+    const saveStatus = await page.evaluate(async () => {
+      const headers: Record<string, string> = { "Content-Type": "application/json" }
+      const graphRes = await fetch("/api/pipeline", { headers })
+      if (!graphRes.ok) throw new Error(`GET /api/pipeline ${graphRes.status}`)
+      const document = await graphRes.json()
+      const nodes = document.nodes.map(
+        (node: {
+          recovery_id: string
+          label: string
+          decorator_name: string
+          node_type: string | null
+          description: string
+          display_position: { x: number; y: number }
+          config: Record<string, unknown> | null
+        }) => ({
+          id: node.recovery_id,
+          type: node.node_type ?? node.decorator_name,
+          position: node.display_position,
+          data: {
+            label: node.label,
+            description: node.description,
+            nodeType: node.node_type ?? node.decorator_name,
+            ...(node.config === null
+              ? {}
+              : { config: node.recovery_id === "browser_rating" ? { ...node.config, steps: [] } : node.config }),
+          },
+        }),
+      )
+      const edges = document.edges.map(
+        (edge: {
+          recovery_id: string
+          source_recovery_id: string
+          target_recovery_id: string
+          source_handle: string | null
+          target_handle: string | null
+          source_port: string | null
+          target_port: string | null
+        }) => ({
+          id: edge.recovery_id,
+          source: edge.source_recovery_id,
+          target: edge.target_recovery_id,
+          sourceHandle: edge.source_handle,
+          targetHandle: edge.target_handle,
+          ...(edge.source_port === null ? {} : { sourcePort: edge.source_port }),
+          ...(edge.target_port === null ? {} : { targetPort: edge.target_port }),
+        }),
+      )
+      const res = await fetch("/api/pipeline/save", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          name: document.pipeline_name ?? "main",
+          description: document.pipeline_description ?? "",
+          source_file: document.source_file,
+          base_revision: document.source_revision,
+          preamble: document.preamble ?? "",
+          preserved_blocks: document.preserved_blocks,
+          sources: document.sources,
+          active_source: document.active_source ?? "live",
+          graph: { nodes, edges },
+        }),
+      })
+      if (!res.ok) throw new Error(`POST /api/pipeline/save ${res.status}`)
+      return (await res.json()).status
+    })
+    expect(saveStatus).toBe("saved")
+    await page.reload()
+    await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
+
+    // The Rating Step's Polars tab is the same step builder in frame mode: the rated frame is df.
+    await page.getByRole("button", { name: /Rating Step node: browser_rating/i }).click()
+    const panel = page.getByTestId("node-panel")
+    await expect(panel).toBeVisible()
+    await panel.getByRole("button", { name: /^polars$/i }).click()
+    const editor = panel.getByTestId("polars-steps-editor")
+    await expect(editor).toBeVisible()
+    await expect(editor.getByLabel("Start from input")).toHaveCount(0)
+    await editor.getByRole("button", { name: "Add step" }).click()
+    const menu = editor.getByRole("menu", { name: "Add step" })
+    await expect(menu.getByRole("menuitem", { name: "Join another input" })).toHaveCount(0)
+    await menu.getByRole("menuitem", { name: "Limit rows" }).click()
+    const rowLimit = editor.getByLabel("Row limit")
+    await rowLimit.fill("2")
+    await rowLimit.press("Enter")
+    await expect(editor.getByTestId("polars-generated-code")).toContainText("df = df.head(2)")
+
+    // Saving writes the steps into the rating step's own sidecar and the rendering after the rating scaffold.
+    await save(page)
+    const ratingSidecarPath = resolve(e2eProjectRoot, "rating", "config", "rating_step", "browser_rating.json")
+    await expect.poll(() => existsSync(ratingSidecarPath)).toBe(true)
+    const sidecar = JSON.parse(readFileSync(ratingSidecarPath, "utf8")) as { steps: Array<Record<string, unknown>>; code?: string }
+    expect(sidecar.steps).toEqual([expect.objectContaining({ kind: "limit", n: 2 })])
+    expect(sidecar.code).toBeUndefined()
+    const main = readFileSync(mainPath, "utf8")
+    expect(main).toMatch(/def browser_rating\([\s\S]*?apply_rating_step_from_config\([\s\S]*?df = df\.head\(2\)/)
+  })
 })

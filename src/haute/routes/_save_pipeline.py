@@ -1421,7 +1421,14 @@ class SavePipelineService:
         from haute._graph_utils import edge_input_name
         from haute._polars_steps import is_stepped_config, step_input_names
 
-        stepped_labels = {NodeType.POLARS: "Transform", NodeType.DATA_INPUT: "Data Input"}
+        stepped_labels = {
+            NodeType.POLARS: "Transform",
+            NodeType.DATA_INPUT: "Data Input",
+            NodeType.EXTERNAL_FILE: "External File",
+            NodeType.RATING_STEP: "Rating Step",
+            NodeType.MODEL_SCORE: "Model Score",
+            NodeType.SCENARIO_EXPANDER: "Scenario Expander",
+        }
         scoped_graphs = [graph, *self._iter_embedded_submodel_graphs(graph)]
         for scoped_graph in scoped_graphs:
             node_map = {node.id: node for node in scoped_graph.nodes}

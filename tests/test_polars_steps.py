@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pickle
 from pathlib import Path
 from typing import Any
 
@@ -3337,10 +3338,16 @@ def test_node_data_materialises_data_input_steps() -> None:
     assert stacked.data.config["code"] == ""
     assert stacked.data.config["_steps_error"].startswith("Step 1: Unknown input 'rates'")
 
-    grid = GraphNode(
-        id="s", data=NodeData(label="s", nodeType="scenarioExpander", config={"steps": 5})
-    )
-    assert grid.data.config == {"steps": 5}
+    # A type outside the surface table keeps a `steps` key untouched; a
+    # stepped type refuses anything but a list (the Scenario Expander's grid
+    # size lives under `stepCount`).
+    other = GraphNode(id="o", data=NodeData(label="o", nodeType="output", config={"steps": 5}))
+    assert other.data.config == {"steps": 5}
+    with pytest.raises(ValueError, match="must be a list"):
+        GraphNode(
+            id="s",
+            data=NodeData(label="s", nodeType="scenarioExpander", config={"steps": 5}),
+        )
 
 
 def test_data_input_sidecar_and_validation_carry_steps() -> None:
@@ -3686,3 +3693,363 @@ def test_data_input_generated_module_runs_standalone(tmp_path: Path) -> None:
     )
     with pytest.raises(NotImplementedError, match=INCOMPLETE_STEPS_MESSAGE.split(".")[0]):
         _collect(broken.pipeline.run())
+
+
+# ---------------------------------------------------------------------------
+# Frame-start surfaces: External File, Rating Step, Model Score, Scenario Expander
+# ---------------------------------------------------------------------------
+
+
+def _external_file(tmp_path: Path, steps: list[dict[str, Any]], **extra: Any) -> GraphNode:
+    """An External File over a pickled dict, with post-load steps."""
+    obj_path = tmp_path / "factors.pkl"
+    with obj_path.open("wb") as handle:
+        pickle.dump({"factor": 2.0}, handle)
+    config = {"path": str(obj_path), "fileType": "pickle", "steps": steps, **extra}
+    return GraphNode(id="ext", data=NodeData(label="ext", nodeType="externalFile", config=config))
+
+
+def _rating_step(steps: list[dict[str, Any]], **extra: Any) -> GraphNode:
+    config = {
+        "tables": [
+            {
+                "factors": ["region"],
+                "outputColumn": "rate_factor",
+                "defaultValue": "1.0",
+                "entries": [{"region": "north", "value": "1.25"}],
+            }
+        ],
+        "combinedOutputs": [],
+        "steps": steps,
+        **extra,
+    }
+    return GraphNode(id="rated", data=NodeData(label="rated", nodeType="ratingStep", config=config))
+
+
+def _scenario_expander(steps: list[dict[str, Any]]) -> GraphNode:
+    config = {
+        "column_name": "scenario_value",
+        "min_value": 0.0,
+        "max_value": 1.0,
+        "stepCount": 3,
+        "step_column": "scenario_index",
+        "steps": steps,
+    }
+    return GraphNode(
+        id="grid", data=NodeData(label="grid", nodeType="scenarioExpander", config=config)
+    )
+
+
+def _model_score(steps: list[dict[str, Any]]) -> GraphNode:
+    config = {
+        "sourceType": "registered",
+        "registered_model": "catalog.models.pricing",
+        "version": "1",
+        "task": "regression",
+        "output_column": "prediction",
+        "steps": steps,
+    }
+    return GraphNode(
+        id="scored", data=NodeData(label="scored", nodeType="modelScore", config=config)
+    )
+
+
+def _reparsed(tmp_path: Path, graph: PipelineGraph, node_id: str) -> tuple[str, GraphNode]:
+    code = graph_to_code(graph, pipeline_name="main")
+    _write_sidecars(tmp_path, graph)
+    parsed = parse_pipeline_source(code, _base_dir=tmp_path)
+    return code, next(n for n in parsed.nodes if n.id == node_id)
+
+
+def test_external_file_steps_reach_the_other_inputs_and_obj(tmp_path: Path) -> None:
+    quotes, rates = _frames(tmp_path)
+    join = step(
+        "j", "join", input="rates", how="inner", leftOn=["region"], rightOn=["region"], suffix="_r"
+    )
+    steps = [join, step("l", "limit", n=2)]
+    graph = PipelineGraph(
+        nodes=[quotes, rates, _external_file(tmp_path, steps)],
+        edges=[make_edge("quotes", "ext"), make_edge("rates", "ext")],
+    )
+    result = execute_graph(graph, target_node_id="ext", execution_context=_capped_context())["ext"]
+    assert result.status == "ok", result.error
+    assert "rate" in [c.name for c in result.columns]
+    assert len(result.preview) == 2
+
+    code, node = _reparsed(tmp_path, graph, "ext")
+    assert "\n    df = quotes\n    df = df.join(rates" in code
+    assert node.data.config["steps"] == steps
+    assert (
+        node.data.config["code"]
+        == render_polars_steps(steps, ["quotes", "rates"], start="frame").code
+    )
+    assert "_steps_discarded" not in node.data.config
+
+    # Free code reaches the loaded object as `obj`, as the code box always could.
+    reaching = [
+        step("c", "free_code", code='df = df.with_columns(pl.lit(obj["factor"]).alias("factor"))')
+    ]
+    graph = PipelineGraph(
+        nodes=[quotes, _external_file(tmp_path, reaching)], edges=[make_edge("quotes", "ext")]
+    )
+    result = execute_graph(graph, target_node_id="ext", execution_context=_capped_context())["ext"]
+    assert result.status == "ok", result.error
+    assert result.preview[0]["factor"] == 2.0
+
+
+def test_external_file_unknown_input_and_input_mapping_fail_loudly(tmp_path: Path) -> None:
+    quotes, _rates = _frames(tmp_path)
+    join = step(
+        "j",
+        "join",
+        input="policies",
+        how="inner",
+        leftOn=["region"],
+        rightOn=["region"],
+        suffix="_r",
+    )
+    unknown = _external_file(tmp_path, [join])
+    # An edges surface renders without names at construction; the reference
+    # is checked at build time against the connected edges.
+    assert "_steps_error" not in unknown.data.config
+    graph = PipelineGraph(nodes=[quotes, unknown], edges=[make_edge("quotes", "ext")])
+    result = execute_graph(graph, target_node_id="ext", execution_context=_capped_context())["ext"]
+    assert result.status == "error"
+    assert INCOMPLETE_STEPS_MESSAGE in str(result.error)
+    assert "Step 1: Unknown input 'policies'; connected inputs: quotes." in str(result.error)
+
+    code, node = _reparsed(tmp_path, graph, "ext")
+    assert "\n    df = quotes\n    raise NotImplementedError(" in code
+    assert INCOMPLETE_STEPS_MESSAGE in code
+    assert node.data.config["steps"] == [join]
+    assert "_steps_discarded" not in node.data.config
+
+    mapped = _external_file(tmp_path, [step("l", "limit", n=1)], inputMapping={"quotes": "quotes"})
+    graph = PipelineGraph(nodes=[quotes, mapped], edges=[make_edge("quotes", "ext")])
+    with pytest.raises(ConfigError, match="cannot carry inputMapping"):
+        execute_graph(graph, target_node_id="ext", execution_context=_capped_context())
+
+
+def test_flatten_rewrites_a_stepped_external_file_input() -> None:
+    child = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="output", data=NodeData(label="Internal Output", nodeType="polars", config={})
+            )
+        ],
+        edges=[],
+    )
+    definition = SubmodelDefinition(
+        definition_id="definition_scoring",
+        file="modules/scoring.py",
+        graph=child,
+        input_ports=[],
+        output_ports=[
+            SubmodelOutputPort(name="results", source=SubmodelEndpoint(node_id="output"))
+        ],
+    )
+    instance = GraphNode(
+        id="instance_a",
+        data=NodeData(
+            label="score",
+            nodeType="submodel",
+            config={"definitionId": "definition_scoring", "alias": "score"},
+        ),
+    )
+    join = step("j", "join", input="results", how="inner", leftOn=["k"], rightOn=["k"], suffix="_r")
+    consumer = GraphNode(
+        id="consumer",
+        data=NodeData(
+            label="Consumer",
+            nodeType="externalFile",
+            config={"path": "models/obj.pkl", "fileType": "pickle", "steps": [join]},
+        ),
+    )
+    graph = PipelineGraph(
+        nodes=[instance, consumer],
+        edges=[
+            GraphEdge(
+                id="output", source="instance_a", target="consumer", sourceHandle="out__results"
+            )
+        ],
+        submodels={"definition_scoring": definition},
+    )
+    flat = flatten_graph(graph).node_map["consumer"].data.config
+    assert flat["steps"] == [{**join, "input": "Internal_Output"}]
+    assert "inputMapping" not in flat
+
+
+def test_rating_step_steps_execute_and_round_trip(tmp_path: Path) -> None:
+    quotes, _rates = _frames(tmp_path)
+    steps = [step("l", "limit", n=2)]
+    graph = PipelineGraph(nodes=[quotes, _rating_step(steps)], edges=[make_edge("quotes", "rated")])
+    result = execute_graph(graph, target_node_id="rated", execution_context=_capped_context())[
+        "rated"
+    ]
+    assert result.status == "ok", result.error
+    assert "rate_factor" in [c.name for c in result.columns]
+    assert len(result.preview) == 2
+
+    code, node = _reparsed(tmp_path, graph, "rated")
+    assert "apply_rating_step_from_config(" in code
+    assert "\n    df = df.head(2)\n    return df\n" in code
+    assert node.data.config["steps"] == steps
+    assert node.data.config["code"] == "df = df.head(2)"
+    assert "_steps_discarded" not in node.data.config
+
+    broken = _rating_step([step("f", "filter", match="all", conditions=[])])
+    assert broken.data.config["_steps_error"] == "Step 1: Add at least one condition."
+    graph = PipelineGraph(nodes=[quotes, broken], edges=[make_edge("quotes", "rated")])
+    result = execute_graph(graph, target_node_id="rated", execution_context=_capped_context())[
+        "rated"
+    ]
+    assert result.status == "error"
+    assert INCOMPLETE_STEPS_MESSAGE in str(result.error)
+    code, node = _reparsed(tmp_path, graph, "rated")
+    assert INCOMPLETE_STEPS_MESSAGE in code
+    assert node.data.config["steps"] == broken.data.config["steps"]
+    assert node.data.config["_steps_error"] == "Step 1: Add at least one condition."
+
+
+def test_scenario_expander_steps_execute_and_round_trip(tmp_path: Path) -> None:
+    quotes, _rates = _frames(tmp_path)
+    steps = [step("l", "limit", n=4)]
+    graph = PipelineGraph(
+        nodes=[quotes, _scenario_expander(steps)], edges=[make_edge("quotes", "grid")]
+    )
+    result = execute_graph(graph, target_node_id="grid", execution_context=_capped_context())[
+        "grid"
+    ]
+    assert result.status == "ok", result.error
+    assert "scenario_value" in [c.name for c in result.columns]
+    assert len(result.preview) == 4  # 4 rows x 3 grid values, then the Limit
+
+    code, node = _reparsed(tmp_path, graph, "grid")
+    assert "expand_scenarios_from_config(" in code
+    assert "\n    df = df.head(4)\n    return df\n" in code
+    assert node.data.config["steps"] == steps
+    assert node.data.config["stepCount"] == 3
+    assert "_steps_discarded" not in node.data.config
+
+    broken = _scenario_expander([source()])
+    assert (
+        broken.data.config["_steps_error"]
+        == "Step 1: This node starts from df; remove the start step."
+    )
+    graph = PipelineGraph(nodes=[quotes, broken], edges=[make_edge("quotes", "grid")])
+    assert (
+        execute_graph(graph, target_node_id="grid", execution_context=_capped_context())[
+            "grid"
+        ].status
+        == "error"
+    )
+    code, node = _reparsed(tmp_path, graph, "grid")
+    assert INCOMPLETE_STEPS_MESSAGE in code
+    assert node.data.config["steps"] == [source()]
+
+
+def test_model_score_steps_round_trip_and_fail_before_any_model_loads(tmp_path: Path) -> None:
+    from haute.deploy._scorer import score_graph
+
+    quotes, _rates = _frames(tmp_path)
+    steps = [step("l", "limit", n=2)]
+    graph = PipelineGraph(
+        nodes=[quotes, _model_score(steps)], edges=[make_edge("quotes", "scored")]
+    )
+    code, node = _reparsed(tmp_path, graph, "scored")
+    assert "score_from_config(" in code
+    assert "\n    df = df.head(2)\n    return df\n" in code
+    assert node.data.config["steps"] == steps
+    assert node.data.config["code"] == "df = df.head(2)"
+    assert "_steps_discarded" not in node.data.config
+
+    broken = _model_score([step("f", "filter", match="all", conditions=[])])
+    assert broken.data.config["_steps_error"] == "Step 1: Add at least one condition."
+    graph = PipelineGraph(nodes=[quotes, broken], edges=[make_edge("quotes", "scored")])
+    result = execute_graph(graph, target_node_id="scored", execution_context=_capped_context())[
+        "scored"
+    ]
+    assert result.status == "error"
+    assert INCOMPLETE_STEPS_MESSAGE in str(result.error)
+    code, node = _reparsed(tmp_path, graph, "scored")
+    assert INCOMPLETE_STEPS_MESSAGE in code
+    assert node.data.config["steps"] == broken.data.config["steps"]
+
+    # Deploy: the plan is rejected before any model loading or scoring is attempted.
+    deploy_graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "src",
+                    "data": {"label": "src", "nodeType": "apiInput", "config": {"path": ""}},
+                },
+                {
+                    "id": "scored",
+                    "data": {
+                        "label": "scored",
+                        "nodeType": "modelScore",
+                        "config": broken.data.config,
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {
+                            "outputMapping": [
+                                {
+                                    "source_port": "scored",
+                                    "source_column": "prediction",
+                                    "output_path": "$[:].prediction",
+                                    "enabled": True,
+                                }
+                            ],
+                            "outputFormat": "json",
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "src", "target": "scored", "sourceHandle": "src"},
+                {"id": "e2", "source": "scored", "target": "out"},
+            ],
+        }
+    )
+    with pytest.raises(ConfigError, match=r"Step 1: Add at least one condition") as failed:
+        score_graph(
+            graph=deploy_graph,
+            input_df=pl.DataFrame({"x": [1.0]}),
+            input_node_ids=["src"],
+            output_node_id="out",
+            artifact_paths={},
+        )
+    assert INCOMPLETE_STEPS_MESSAGE in str(failed.value)
+
+
+def test_recovery_and_save_report_incomplete_steps_on_every_surface(project_root: Path) -> None:
+    from haute._node_config_recovery import validate_recovery_config
+
+    broken_steps = [step("f", "filter", match="all", conditions=[])]
+    for node in (
+        _rating_step(broken_steps),
+        _scenario_expander(broken_steps),
+        _model_score(broken_steps),
+    ):
+        issues = validate_recovery_config(node.data.nodeType, node.data.config, input_names=None)
+        assert any(issue.path == "steps" and issue.code == "incomplete" for issue in issues), (
+            node.data.nodeType
+        )
+
+    quotes, rates = _frames(project_root)
+    warnings = _save(
+        project_root,
+        PipelineGraph(
+            nodes=[quotes, rates, _rating_step(broken_steps)], edges=[make_edge("quotes", "rated")]
+        ),
+    )
+    assert any(
+        "Rating Step node 'rated' has an incomplete step list (Step 1: Add at least one condition.)"
+        in w
+        for w in warnings
+    ), warnings

@@ -12,6 +12,10 @@ describe("stepped surfaces", () => {
     expect(STEPPED_NODE_TYPES).toEqual({
       polars: { start: "input", inputs: "edges" },
       dataInput: { start: "frame", inputs: "none" },
+      externalFile: { start: "frame", inputs: "edges" },
+      ratingStep: { start: "frame", inputs: "none" },
+      modelScore: { start: "frame", inputs: "none" },
+      scenarioExpander: { start: "frame", inputs: "none" },
     })
     expect(steppedSurfaceFor("polars")).toEqual({ start: "input", inputs: "edges" })
     expect(steppedSurfaceFor("output")).toBeUndefined()
@@ -21,6 +25,8 @@ describe("stepped surfaces", () => {
   it("derives the eligible step input names from the table, never from the chips", () => {
     expect(stepInputNames("polars", ["quotes", "rates"])).toEqual(["quotes", "rates"])
     expect(stepInputNames("dataInput", ["quotes"])).toEqual([])
+    expect(stepInputNames("externalFile", ["quotes", "rates"])).toEqual(["quotes", "rates"])
+    expect(stepInputNames("ratingStep", ["quotes"])).toEqual([])
     expect(() => stepInputNames("output", [])).toThrow('Node type "output" does not author steps.')
   })
 

@@ -6,7 +6,6 @@ import type { NodeTypeValue } from "../utils/nodeTypes"
 import { authoritativeSourceHandles, edgeInputName } from "../utils/apiInputPorts"
 import {
   ColumnsTab,
-  PolarsCodePanel,
   SteppedCodePane,
   LazyEditorBoundary,
 } from "./LazyNodeEditors"
@@ -1271,10 +1270,13 @@ function NodeEditorBody({
   let editor = configEditor
   if (activeTab === "polars" && showPolarsTab) {
     const chips = nodeType === NODE_TYPES.DATA_INPUT ? [] : inputSources
+    // Every Polars-tab surface authors steps: the step builder while
+    // `config.steps` is a list, rendering against the surface's eligible
+    // input names (never the chips); `stepInputNames` refuses a type outside
+    // the surface table rather than falling back to a plain code box.
     const surface = steppedSurfaceFor(nodeType)
-    editor = surface ? (
-      // A stepped surface: the step builder while `config.steps` is a list,
-      // rendering against the surface's eligible input names (never the chips).
+    if (surface === undefined) throw new Error(`Polars tab on ${nodeType}, which does not author steps.`)
+    editor = (
       <SteppedCodePane
         config={config}
         onUpdate={onUpdateConfig}
@@ -1287,16 +1289,6 @@ function NodeEditorBody({
         upstreamColumns={upstreamColumns}
         start={surface.start}
         codeHint={POLARS_TAB_HINTS[nodeType] ?? null}
-      />
-    ) : (
-      <PolarsCodePanel
-        config={config}
-        onUpdate={onUpdateConfig}
-        inputSources={chips}
-        onDeleteInput={onDeleteEdge}
-        errorLine={errorLine}
-        upstreamColumns={upstreamColumns}
-        hint={POLARS_TAB_HINTS[nodeType] ?? null}
       />
     )
   } else if (activeTab === "columns" && showColumnsTab) {

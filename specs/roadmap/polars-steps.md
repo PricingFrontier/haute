@@ -21,14 +21,11 @@ one reusable stepped-code pane and rolls it out to those surfaces.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| PST-S03 | Planned | P2 | External File: steps over `obj` and the connected inputs, including input renames. |
-| PST-S04 | Planned | P3 | Rating Step and Model Score post-processing as steps. |
-| PST-S05 | Planned | P3 | Scenario Expander: rename its grid-size `steps` key, then steps over the expanded grid. |
 | PST-S06 | Decision | P3 | Explore's Polars Code pane as steps, once its persistence home is chosen. |
 
-Deliver in package order: the shared seams (the start mode, the surface table,
-the stepped-code pane and the fail-loud guards) are in place on Data Input, and
-each package is a per-type rollout over them.
+The shared seams (the start mode, the surface table, the stepped-code pane and
+the fail-loud guards) are in place on every Polars-tab surface; the remaining
+package is Explore, whose persistence home is still to be chosen.
 
 ## Shared design
 
@@ -99,11 +96,8 @@ type. This keeps one predicate for the sidecar, fingerprint, undo, rename and
 materialisation code paths. Scenario Expander already uses `steps` as an
 integer (the grid size, in `SCENARIO_EXPANDER_CONFIG_KEYS`, the decorator
 kwargs, `expand_scenarios_from_config`, chunk planning and
-`ScenarioExpanderEditor.tsx`). That integer is renamed `stepCount` in PST-S05
-before Scenario Expander joins `STEPPED_NODE_TYPES`; there is no compatibility
-path for the old key (the library has no external users). Until PST-S05 lands,
-Scenario Expander is not a stepped type and the generic `isinstance(list)`
-checks leave its integer alone.
+`ScenarioExpanderEditor.tsx`). That integer is now `stepCount`, with no compatibility path for the old key
+(the library has no external users), so `steps` on that type is its step list.
 
 ### Persistence and round trip
 
@@ -121,7 +115,7 @@ checks leave its integer alone.
   `src/haute/_cache.py` is validated at import time against `VALID_KEYS`, so
   every new TypedDict field must be classified in the same package: `steps`
   as `user_code` on each rolled-out surface (as `polars` already classifies
-  it), and Scenario Expander's `stepCount` as `node_config` in PST-S05. The
+  it), and Scenario Expander's `stepCount` as `node_config`. The
   caching spec and the existing classification tests are updated with each.
 - **Data Input editor allowlist.** `INPUT_COMMON_KEYS` in
   `frontend/src/panels/editors/DataInputEditor.tsx` decides which fields
@@ -188,7 +182,7 @@ checks leave its integer alone.
 - **Render endpoint.** `PolarsStepsRenderRequest` gains a required
   `start: Literal["input", "frame"]`; the response is unchanged.
 - **Renames.** Only surfaces whose steps can name inputs need rename
-  rewriting: Transform today, External File after PST-S03. Backend
+  rewriting: Transform and External File. Backend
   `_submodel_instances.py` and frontend `nodeUpdatePlan.ts` /
   `edgeJoinGraph.ts` widen their `polars`-only gates to "stepped type whose
   start mode allows input references". `graphSnapshot.ts` and
@@ -225,7 +219,7 @@ checks leave its integer alone.
   a new Transform does. An empty frame-mode list renders to empty code, so
   the node's behaviour is identical to today's empty code box until a step is
   added. Scenario Expander's default also gains the explicit `stepCount: 21`
-  that PST-S05 makes required.
+  that is required.
 - **Read-only and inspection views** (`ReadOnlyNodeConfig.tsx`, the
   read-only inspector JSON) need no change: they read `code`, which the
   invariant keeps current.
@@ -264,114 +258,6 @@ only the rows it changes.
 
 ## Planned improvements
 
-### PST-S03 — External File
-
-**Why:** External File is the only frame surface whose code can reach other
-frames (`obj` plus every connected input), so it exercises join/concat in frame
-mode and the rename rewriting.
-
-**Plan:** Add `EXTERNAL_FILE` to `STEPPED_NODE_TYPES` (frame, edges);
-`steps` on `ExternalFileConfig` and its cache classification;
-`_build_external_file` and the scorer's remapped-path interceptor apply
-`_stepped_code_problem` with all edge names; `_gen_external_file` renders
-into `_wrap_external_code(code, input_name=...)` or emits the placeholder;
-extend the rename rewriting gates (`_submodel_instances.py`,
-`nodeUpdatePlan.ts`, `edgeJoinGraph.ts`) to stepped types whose start mode
-allows input references. The step forms do not model `obj`; reaching it is a Free code step (the
-code-box hint already says `obj` is the loaded file).
-
-**Acceptance:** join/concat steps naming a connected input render and run;
-renaming that upstream node rewrites the reference inside the steps and never
-adds `inputMapping`; a Free code step reading `obj` runs in preview and in the
-generated module; the External File extractor round-trips the rendering.
-
-**Dependencies:** the shared seams already in place on Data Input.
-
-**Evidence:** `src/haute/_builders.py` (`_build_external_file`);
-`src/haute/_codegen_builders.py` (`_gen_external_file`,
-`_wrap_external_code`); `src/haute/_submodel_instances.py`;
-`frontend/src/utils/nodeUpdatePlan.ts` (`rewriteSteppedTransformInputs`);
-`frontend/src/utils/edgeJoinGraph.ts`.
-
-### PST-S04 — Rating Step and Model Score
-
-**Why:** Both surfaces are post-processing over a single bound frame with no
-other inputs, so they are pure rollouts of the shared seams with per-type extractors.
-
-**Plan:** Add both types to `STEPPED_NODE_TYPES` (frame); `steps` on
-`RatingStepConfig` and `ModelScoreConfig` with their cache classifications
-(`normalise_rating_step_config` must pass `steps` through untouched); guards
-in `_build_rating_step`, `_build_model_score` and the scorer's Model Score
-interceptor (both its remapped-artifact and non-bundled branches). Because
-`_score_graph_lazy` runs `_attach_bundled_model_contract_inputs` before any
-interceptor, and that pass loads remapped models that lack a feature
-contract, the stepped-node validation also runs at the start of
-`_score_graph_lazy` over the relevant nodes, so an invalid step fails before
-that preparation pass loads anything;
-`_gen_rating_step` and `_gen_model_score` render into `_wrap_user_code` or
-emit the placeholder; `_model_score_columns` treats a non-empty step list
-like non-empty code (opaque); `node_defaults.json` `steps: []` for both.
-
-**Acceptance:** the round-trip and reconcile tests per surface; a Limit step
-on each node runs after rating or scoring in preview and in the generated
-module; an invalid Model Score step on a remapped model without a feature
-contract fails in the deploy scorer before `_attach_bundled_model_contract_inputs`
-loads the model, and before scoring on the non-bundled branch; the Model
-Score projection contract is opaque while steps exist.
-
-**Dependencies:** the shared seams already in place on Data Input.
-
-**Evidence:** `src/haute/_builders.py` (`_build_rating_step`,
-`_build_model_score`, `_model_score_columns`);
-`src/haute/_codegen_builders.py` (`_gen_rating_step`, `_gen_model_score`);
-`src/haute/_config_io.py` (`normalise_rating_step_config`).
-
-### PST-S05 — Scenario Expander
-
-**Why:** Its grid-size integer already occupies the `steps` key, so the rollout
-needs a preceding rename.
-
-**Plan:** First commit: rename the integer to `stepCount` across
-`SCENARIO_EXPANDER_CONFIG_KEYS`, `_build_scenario_expander`,
-`expand_scenarios_from_config`, `_scenario_row_multiplier` in `chunking.py`,
-the scenario trace enrichment in `_trace_enrichment.py` (which reports the
-grid size under `parameters`), the Scenario Expander cache classification
-(`stepCount` as `node_config`), the `@pipeline.scenario_expander` decorator
-kwargs and their parsing, `ScenarioExpanderEditor.tsx`, the reference
-pipeline, fixtures and specs. The old key is not listed in
-`reject_removed_config_keys` (that check is by key presence and would reject
-the list-valued `steps` this package introduces); instead the canonical
-validation requires an integer `stepCount`, and the stepped-type check
-already refuses a non-list `steps`, so a stale sidecar carrying the integer
-fails the parse loudly. Because `stepCount` is required, the absent-key
-default of 21 (`_DEFAULT_SCENARIO_STEPS` in `_node_apply.py`, today's
-`scenarioExpander: {}` in `node_defaults.json`) goes: `node_defaults.json`
-gives a new node `stepCount: 21` explicitly, the builder, chunk planner and
-`expand_scenarios_from_config` read the key without a fallback, and the
-existing "empty config uses defaults" test in `tests/test_scenario_expander.py`
-becomes a rejection test. Second commit: add the type to
-`STEPPED_NODE_TYPES` (frame, no inputs) with the same rollout shape as
-PST-S04 and `steps: []` added to the node default.
-
-**Acceptance:** the rename leaves every scenario test green under the new
-key; a config without `stepCount` is rejected by canonical validation and by
-the builder; a new default node saves, reloads and executes with a 21-row
-grid; a sidecar carrying an integer `steps` fails the parse with the
-"steps must be a list" message; a sidecar carrying `stepCount` plus a
-list-valued `steps` loads in step mode; the trace enrichment reports the
-numeric `stepCount` while structured steps are present; the rollout meets the
-PST-S04 acceptance for this type.
-
-**Dependencies:** the shared seams already in place on Data Input.
-
-**Evidence:** `src/haute/_types.py` (`SCENARIO_EXPANDER_CONFIG_KEYS`);
-`src/haute/_builders.py` (`_build_scenario_expander`);
-`src/haute/chunking.py` (`_scenario_row_multiplier`);
-`src/haute/_trace_enrichment.py` (scenario parameters);
-`src/haute/_cache.py` (`CACHE_CONFIG_FIELD_CLASSIFICATIONS`);
-`src/haute/_config_validation.py` (`reject_removed_config_keys`);
-`frontend/src/panels/editors/ScenarioExpanderEditor.tsx`.
-
 ### PST-S06 — Explore
 
 **Why:** Explore's "Polars Code" pane is the same code box, but Explore has
@@ -388,7 +274,7 @@ folder entry, sidecar ownership in the save walks, and a decision on whether
 the overview, pivot and chart settings move into it or stay in the
 decorator) or a `steps=` decorator argument (no sidecar, but a large literal
 in generated code). This roadmap does not choose; the package is taken only
-after PST-S03 to PST-S05 have been used and that choice is made.
+after the Polars-tab surfaces have been used and that choice is made.
 
 **Plan:** After the persistence decision, add `EXPLORE` to `STEPPED_NODE_TYPES` (frame,
 no inputs); persist `steps` per the decision; `ExploreCodeEditor` renders
@@ -397,7 +283,7 @@ or emits the raising placeholder; `_attach_code_from_body` or the
 decorator-kwargs path reconciles the steps; `stringifyExploreConfig` strips
 the materialised `code` like `authoredPolarsConfig`.
 
-**Acceptance:** as PST-S04, plus a complete round trip of overview, pivot and
+**Acceptance:** as the other frame surfaces, plus a complete round trip of overview, pivot and
 chart settings through save and load of a stepped Explore, and the Explore
 report still runs on the stepped frame.
 

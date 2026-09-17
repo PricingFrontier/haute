@@ -274,6 +274,7 @@ class ModelScoreConfig(TypedDict, total=False):
     feature_contract_path: str  # local deploy/runtime feature-contract artifact
     categorical_levels: dict[str, list[str | None]]
     code: str  # optional post-processing code
+    steps: list[dict[str, Any]]  # low-code post-scoring steps; ``code`` is their rendering
     instanceOf: str
     inputMapping: dict[str, str]
     mlflow_destination: str  # "databricks" | "server"; absent = the local folder
@@ -331,6 +332,7 @@ class RatingStepConfig(TypedDict, total=False):
     tables: list[RatingTable]
     combinedOutputs: list[RatingCombinedOutput]
     code: str
+    steps: list[dict[str, Any]]  # low-code post-rating steps; ``code`` is their rendering
 
 
 class OutputMappingEntry(TypedDict):
@@ -557,6 +559,9 @@ class ExternalFileConfig(TypedDict, total=False):
     fileType: str  # "pickle" | "json" | "joblib" | "catboost"
     modelClass: str  # "classifier" | "regressor" (catboost only)
     code: str
+    steps: list[
+        dict[str, Any]
+    ]  # low-code steps over df (the first input) and obj; ``code`` is their rendering
 
 
 class LiveSwitchConfig(TypedDict, total=False):
@@ -692,6 +697,7 @@ class ScenarioExpanderConfig(TypedDict, total=False):
     stepCount: int  # number of grid values; required, no absent-key default
     step_column: str  # name of the 0-based step index column (e.g. "scenario_index")
     code: str  # optional Polars transformation code (post-expansion)
+    steps: list[dict[str, Any]]  # low-code post-expansion steps; ``code`` is their rendering
 
 
 # ---------------------------------------------------------------------------

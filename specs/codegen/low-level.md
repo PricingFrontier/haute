@@ -261,16 +261,24 @@ statement per line with a leading `df = <input>`, and its decorator carries
 `config="config/polars/<func>.json"` so the parser reloads the steps. A render
 failure emits the incomplete placeholder body (the save warns which step is
 incomplete); `steps` together with `inputMapping` on an original is a `ConfigError`.
-A stepped Data Input (`config["steps"]` is a list) has its post-load lines rendered by
-`render_polars_steps(steps, [], start="frame")` into `_wrap_external_code` after the
-load scaffold, or the `INCOMPLETE_STEPS_MESSAGE` placeholder in that position when they
-cannot be rendered; its `steps` live in the required `config/data_input/<func>.json`
-sidecar. `extract_user_code` recognises a placeholder statement (either constant)
-immediately after the matcher's scaffold for every kind and treats it as generated
-scaffold, and `normalise_user_code(code, kind=..., param_names=...)` wraps a code string
-as a body (behind a placeholder docstring, so a rendering that itself opens with a string
-statement keeps it exactly as the real body does) and extracts it again so the parser can
-compare a rendering with an extracted body on equal terms.
+A stepped frame surface (`config["steps"]` is a list on a Data Input, External File,
+Rating Step, Model Score or Scenario Expander) has its user-code lines produced by
+`_stepped_body_code(config, node_type, source_names)`: the rendering by
+`render_polars_steps(steps, step_input_names(node_type, source_names), start="frame")`,
+or `incomplete=True` when they cannot be rendered. The generator places the rendering
+where that surface's hand-written code goes (`_wrap_external_code` after the Data Input
+load scaffold or after `df = <first input>` for an External File; `_wrap_user_code` after
+the rating, scoring or expansion scaffold) and the `INCOMPLETE_STEPS_BODY` placeholder in
+the same position when incomplete (an External File keeps its `df = <first input>`
+binding before it); the steps live in each type's required sidecar. `extract_user_code`
+recognises a placeholder statement (either constant) immediately after the matcher's
+scaffold for every kind and treats it as generated scaffold, and
+`normalise_user_code(code, kind=..., param_names=...)` applies only the finaliser the
+kind's extraction ends with (`_finalise_polars` with no aliases for the scaffolded kinds
+`explore`, `scenario_expander` and `rating_step`, the kind's own finaliser otherwise;
+never the docstring stripper, the matcher or the trailing-return strip, which act on
+generated scaffold a rendering does not contain) so the parser can compare a rendering
+with an extracted body on equal terms.
 A node with NO code cannot run at
 all — there is no implicit single-input passthrough; codegen emits the
 `NotImplementedError` placeholder and the executor installs the matching
@@ -428,7 +436,7 @@ preamble global, matching the generated function's local assignment.
 | `polars` transform has no code (any source count) | No error — emits a `NotImplementedError`-raising placeholder so the graph still saves; fails at run time, warned at save time | `_codegen_builders._gen_transform`, `_save_pipeline._validate_transforms_are_runnable` |
 | `polars` transform with executable code and an input named `df` | `ConfigError` (node id/label) | `_codegen_builders._gen_transform` |
 | stepped `polars` transform whose steps cannot be rendered | No error — incomplete placeholder body, warned at save time with the step index | `_codegen_builders._gen_transform`, `_save_pipeline._validate_transforms_are_runnable` |
-| stepped `dataInput` whose steps cannot be rendered | No error — the `INCOMPLETE_STEPS_MESSAGE` placeholder replaces the post-load lines, warned at save time with the step index | `_codegen_builders._gen_data_input`, `_save_pipeline._validate_transforms_are_runnable` |
+| stepped `dataInput`, `externalFile`, `ratingStep`, `modelScore` or `scenarioExpander` whose steps cannot be rendered | No error — the `INCOMPLETE_STEPS_MESSAGE` placeholder replaces the surface's user-code lines, warned at save time with the step index | `_codegen_builders._stepped_body_code` and each surface's generator, `_save_pipeline._validate_transforms_are_runnable` |
 | stepped `polars` original carrying `inputMapping` | `ConfigError` (node id/label) | `_codegen_builders._gen_transform` |
 | `edgeJoin` codegen called with `!= 2` sources | `ConfigError` | `_codegen_builders._gen_edge_join` |
 | `Explore` node with `!= 1` incoming edge | `ParseError` | `_codegen_builders._gen_explore` |
@@ -447,6 +455,7 @@ file tree on disk.
 - `tests/test_codegen_input_identity.py` — graph-to-source tests pin edge-derived input names as generated Python parameters and persisted `connect` metadata.
 - `tests/test_polars_steps.py::test_codegen_parse_round_trip_reproduces_rendered_code` — a stepped transform's generated module parses back to the rendered code and its steps; `test_stepped_original_rejects_input_mapping` covers the `inputMapping` rejection.
 - `tests/test_polars_steps.py::test_data_input_steps_execute_and_round_trip`, `test_data_input_incomplete_steps_fail_on_every_path`, `test_data_input_hand_edit_discards_steps_without_sidecar_marker` and `test_data_input_free_code_with_redundant_parentheses_reloads_in_step_mode` — a stepped Data Input's generated module carries the rendered lines after the load scaffold and parses back to its steps, an unrenderable list emits the `INCOMPLETE_STEPS_MESSAGE` placeholder that reloads as empty code with the steps kept, a hand edit discards the steps without a `_discarded_sidecar` marker, and a rendering the source finaliser normalises still reloads in step mode.
+- `tests/test_polars_steps.py::test_external_file_steps_reach_the_other_inputs_and_obj`, `test_external_file_unknown_input_and_input_mapping_fail_loudly`, `test_rating_step_steps_execute_and_round_trip`, `test_scenario_expander_steps_execute_and_round_trip` and `test_model_score_steps_round_trip_and_fail_before_any_model_loads` — each frame surface's generated module carries the rendering after its scaffold (after `df = <first input>` for an External File) and parses back to its steps, an unrenderable list emits the placeholder (an External File keeping its binding line) and reloads with the steps kept, and a stepped External File original refuses `inputMapping`.
 - `tests/test_rename_stable_binding.py` — executes a coded transform before and after the rename shape the editor produces (edge renamed, `inputMapping` recording the logical name) with equal rows, shows the unmapped shape failing on the old name, and round-trips the mapping through codegen and the parser.
 
 Tests live under `tests/`, organised roughly one file per concern rather
