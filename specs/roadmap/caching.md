@@ -16,7 +16,6 @@ and the [rating roadmap](rating.md).
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CACHE-S02 | Planned | P1 | Resolve any consumer and column demand to a leased, current frame for its data point. |
 | CACHE-S03 | Planned | P2 | Build, join, refresh, and clear pinned full-width snapshots through one job service. |
 | CACHE-S04 | Planned | P2 | Persist analysis results by data version and run the data profile as an isolated job. |
 | CACHE-S05 | Planned | P2 | Give every consumer one frontend data-cache hook and button. |
@@ -27,109 +26,15 @@ and the [rating roadmap](rating.md).
 
 ## Planned improvements
 
-Delivery order is `CACHE-S02` → `CACHE-S03` → `CACHE-S04` →
+Delivery order is `CACHE-S03` → `CACHE-S04` →
 `CACHE-S05`, then the consumer packages `EDA-C01` and `RAT-B01` → `RAT-B02` →
 `RAT-B03`, then `CACHE-S06` → `CACHE-S07` → `CACHE-S09`. A later package must
 not bypass the resolver, lease, signature, or capture contracts of an earlier
 one. Every package builds on the node-output snapshot store (signature, slot
 index, column widening, retention, cross-process leases, and the publication
-rule) specified in the [IO layer](../io-layer/low-level.md#node-output-snapshots).
-
-### CACHE-S02 — Data-point resolver and leased reads
-
-**Why:** A consumer must be able to ask for the data at a pipeline point
-without knowing whether that point is a derived node output, a snapshot-backed
-Data Input, an API-input table, or a direct Parquet file, and must never read a
-stale, unpinned, or column-incomplete file.
-
-**Plan:**
-
-- A data point is `(producer_node_id, port_label | None)`. A consumer registry
-  maps consumer nodes to points and column demands:
-  - Banding: exactly one incoming edge; the point is `(edge.source,
-    edge.sourceHandle)` when the producer is an `apiInput`, else `(edge.source,
-    None)`; the demand is the banded columns. Rating Step: the same point rule;
-    the demand is the raw factor columns. Zero or several incoming edges fail
-    with `node_data_point_invalid` (HTTP 400).
-  - Explore with blank `code`: its single incoming edge's point, because
-    `_explore_fn` returns its input unchanged. Explore with non-blank `code`:
-    `(explore_node_id, None)`. The demand is `all`.
-  - Any other node: its own output (used by CACHE-S07 and CACHE-S09) with the
-    execution's projected demand.
-- Each point has one kind, resolved under the requested `source` with the
-  executor's source selection:
-
-  | Kind | Producer | State | Data version | Build |
-  |---|---|---|---|---|
-  | `data_input` | Data Input with blank post-load code | direct Parquet: always `current`; snapshot-backed: IO-layer status, where `ready`+`fresh` is `current`, `ready`+`stale` is `stale`, otherwise `missing`, `building`, or `corrupt` | source version (direct: resolved path, size, `mtime_ns`; snapshot: generation id) plus the Data Input node's lineage fingerprint | none (direct) or existing input-cache job |
-  | `api_input_table` | `apiInput` port | JSON table cache validity for the full schema, `working/` then `committed/` | serving layer's metadata digest, port label, and the node's lineage fingerprint | existing JSON-cache build |
-  | `node_output` | any other producer, including a Data Input with non-blank post-load code | node-output slot state for the current signature; a fresh generation that does not cover the demand is `partial` | generation id | CACHE-S03 job |
-
-- A source kind is re-executed for each read, so it is limited to outputs that
-  are a deterministic function of their versioned source: column selection and
-  renames, and an `apiInput` port (whose builder runs no post-load code).
-  Arbitrary post-load code can sample or depend on time, so a Data Input with
-  post-load code is a `node_output` point and every consumer reads one
-  generation.
-- An `apiInput` point's build is the existing JSON-cache build, which caches
-  every emitting table of the node in one pass (the shred walks the source
-  once whatever the number of tables), and its validity covers the node's full
-  schema: editing one table's schema makes every table of that node `stale`.
-  Independent per-table builds and validity are evaluated in CACHE-S08.
-- Source kinds never return the raw file. Their frame is the lazy execution of
-  that single source node, so Data Input selected columns and renames, and an
-  `apiInput` port's frame selection, apply exactly as in a run.
-  The execution uses `prepare_inputs=False`, so it never builds or refreshes an
-  input snapshot, and the API-input loader runs in a cache-only mode that raises
-  `cache_required` instead of shredding JSON when no cache layer can serve the
-  schema. Source data that is already Parquet or already cached is therefore
-  never copied into a node-output snapshot.
-- `lease_point_frame(graph, point, source, columns)` is a context manager
-  yielding `kind`, `data_version`, `columns`, and a `scan` projected to the
-  demand. It raises the typed `cache_required` failure, carrying the state,
-  unless the point is `current` for that demand. `node_output` and
-  snapshot-backed `data_input` points lease their generation; `api_input_table`
-  points use the JSON cache's existing private file-backed snapshot of each
-  opened Parquet file.
-- Lease lifetime is caller-owned and covers the whole operation including the
-  final collect or sink. A spawned child never leases a current pointer: the
-  parent leases, passes `(identity, generation_id)`, holds the lease until the
-  child terminates, and the child calls `lease_generation`.
-
-**Acceptance:**
-
-- Explore with blank code and Banding on the same parent resolve equal points;
-  Explore with code resolves to itself; a Banding node with two incoming edges
-  returns `node_data_point_invalid`.
-- A generation captured by a training run holding the banded column makes the
-  Banding editor's point `current` with no explicit build; Explore on the same
-  parent reports `partial` until a full-width build.
-- Two consumers on different ports of one `apiInput` resolve different points
-  and each scan returns only its own table.
-- A direct-Parquet `data_input` point is `current` with no build, and its data
-  version changes when the file is rewritten.
-- A Data Input with blank post-load code whose config selects and renames
-  columns resolves to a `data_input` point yielding exactly the frame a run
-  produces for that node.
-- A Data Input whose post-load code filters rows, derives a column, and draws
-  an unseeded random sample resolves to a `node_output` point; after one build,
-  two different consumers read identical rows (same filter, derived column, and
-  sample) until the point is refreshed; editing the code makes it `stale`.
-- A `missing`, `stale`, `partial`, `building`, or `corrupt` point raises
-  `cache_required` with that state; reading a missing snapshot-backed
-  `data_input` point starts no snapshot build; an `api_input_table` point whose
-  cache cannot serve the schema raises `cache_required` and performs no JSON
-  shredding.
-- Paused-reader test: a spawned child reading a parent-leased generation keeps
-  reading while the parent refreshes and then clears the slot; the generation
-  directory survives until the child exits and the parent releases its lease.
-
-**Dependencies:** The IO-layer node-output snapshot store, canonical Data Input, and snapshot
-lease contracts; the JSON-shredding cache contract.
-
-**Evidence:** `src/haute/_input_providers.py`; `src/haute/_source_cache.py`;
-`src/haute/_json_shred/_cache.py`; `src/haute/_execute_lazy.py`;
-`src/haute/_builders.py`; `tests/test_source_cache.py`.
+rule) specified in the [IO layer](../io-layer/low-level.md#node-output-snapshots) and
+the data-point resolver and leased reads specified in
+[caching](../caching/low-level.md#data-points).
 
 ### CACHE-S03 — Explicit snapshot jobs and API
 
@@ -190,7 +95,7 @@ identity.
   existing Explore worker failure envelope and terminal reasons.
 - `clear` removes every identity of the slot; a later `point` reports `missing`.
 
-**Dependencies:** CACHE-S02; the background-jobs worker isolation
+**Dependencies:** The caching data-point resolver; the background-jobs worker isolation
 and job lifecycle contracts.
 
 **Evidence:** `src/haute/routes/_explore_service.py`;
@@ -217,7 +122,7 @@ resource controls.
 - The `profile` analysis is the Explore frame-statistics computation, run as an
   isolated-worker job with the existing admission, memory budget,
   cancellation, and failure envelope. The parent leases the point for the
-  job's lifetime (CACHE-S02). Its result schema is the current column
+  job's lifetime. Its result schema is the current column
   statistics plus overview summary, with no Explore node identity in it.
 - Synchronous analyses (banding statistics, rating levels, pivot members) run
   under an admitted execution context with `cancellable_streaming_collect`, as
@@ -237,7 +142,7 @@ resource controls.
   the file is rewritten or the Data Input's selection or renames change.
 - A corrupt analysis document is discarded and recomputed, never returned.
 
-**Dependencies:** CACHE-S02, CACHE-S03; the current Explore frame-statistics
+**Dependencies:** CACHE-S03; the caching data-point resolver; the current Explore frame-statistics
 contract.
 
 **Evidence:** `src/haute/routes/_explore_service.py`;
@@ -484,10 +389,10 @@ therefore produced and written again on every run.
   one sample. After clearing `A`, the run drops `B` as a seed (its recorded `A`
   generation cannot serve `C`) and recomputes both branches from sources; every
   `D` row finds its match.
-- A paused seeded worker survives refresh and clear of its seed (CACHE-S02
+- A paused seeded worker survives refresh and clear of its seed (the resolver's
   paused-reader contract).
 
-**Dependencies:** CACHE-S02, CACHE-S03, CACHE-S06; the current checkpoint rule,
+**Dependencies:** CACHE-S03, CACHE-S06; the current checkpoint rule,
 dataframe-cache seed path, and runtime graph-input fingerprint contracts.
 
 **Evidence:** `src/haute/_execute_lazy.py`; `src/haute/execution.py`;
@@ -553,7 +458,7 @@ editors.
   hidden by recomputation. A hit therefore never returns a retired generation
   to the trace handoff.
 - Leases are held until the preview or trace result is assembled; when the
-  execution runs in an isolated worker, the CACHE-S02 parent-lease handoff
+  execution runs in an isolated worker, the resolver's parent-lease handoff
   applies.
 - Input preparation before a preview (snapshot-backed Data Inputs, API-input
   JSON caches) runs only for sources the seeded execution still reads.
@@ -680,6 +585,6 @@ durable stores.
 **Acceptance:** A decision record, and if implemented, JSON-cache route, deploy
 bundling, and data-point resolver tests pass against one store.
 
-**Dependencies:** CACHE-S02.
+**Dependencies:** The caching data-point resolver.
 
 **Evidence:** `src/haute/_json_shred/_cache.py`; `src/haute/routes/json_cache.py`.

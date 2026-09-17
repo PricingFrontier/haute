@@ -719,3 +719,47 @@ def test_runtime_budget_default_rejects_preexisting_excess(
     with pytest.raises(_runtime_storage.JsonRuntimeDiskBudgetExceededError):
         with _runtime_storage._runtime_disk_budget_transaction(tmp_path):
             pytest.fail("an over-budget transaction must not yield")
+
+
+def test_legacy_upgrade_skips_a_layer_whose_lock_another_thread_holds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: tuple[Path, _source_proof._StrongFileRevision],
+) -> None:
+    import threading
+    import time
+
+    from haute._json_shred import _publication
+
+    path, revision = source
+    dirs, _seen = _layers(tmp_path, monkeypatch)
+    legacy = {"schema_mode": "v2", "data_file": {"size": 3, "sha256": "a" * 64}}
+    for layer in ("working", "committed"):
+        (dirs[layer] / "meta.json").write_bytes(orjson.dumps(legacy))
+    signature = _source_proof._DataFileSignatureRecord(3, 4, "a" * 64, revision)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: revision)
+    held = threading.Event()
+    release = threading.Event()
+
+    def hold_working() -> None:
+        with _publication._build_lock_for(dirs["working"]):
+            held.set()
+            release.wait(30)
+
+    holder = threading.Thread(target=hold_working)
+    holder.start()
+    try:
+        assert held.wait(30)
+        started = time.monotonic()
+        _source_proof._rebind_persisted_source_proofs(path, signature, revision)
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        holder.join(30)
+
+    assert elapsed < 5.0
+    assert orjson.loads((dirs["working"] / "meta.json").read_bytes()) == legacy
+    assert (
+        orjson.loads((dirs["committed"] / "meta.json").read_bytes())["data_file"]
+        == signature.as_dict()
+    )

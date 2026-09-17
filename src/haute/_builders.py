@@ -85,7 +85,7 @@ from haute._registry import (
 from haute._registry import (
     register_exec as _register_exec_in_registry,
 )
-from haute._types import GraphNode, NodeType, _Frame
+from haute._types import GraphNode, NodeType, PipelineGraph, _Frame
 from haute._user_exec import _exec_user_code
 from haute.errors import ConfigError, RatingFactorDtypeContractError
 
@@ -207,6 +207,15 @@ def resolve_instance_node(node: GraphNode, node_map: dict[str, GraphNode]) -> Gr
         }
     )
     return node.model_copy(update={"data": merged_data})
+
+
+def resolve_instance_nodes(graph: PipelineGraph) -> PipelineGraph:
+    """Return *graph* with every instance node carrying its original's effective config."""
+    node_map = graph.node_map
+    resolved = [resolve_instance_node(node, node_map) for node in graph.nodes]
+    if all(new is old for new, old in zip(resolved, graph.nodes, strict=True)):
+        return graph
+    return graph.model_copy(update={"nodes": resolved})
 
 
 # ---------------------------------------------------------------------------

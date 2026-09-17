@@ -278,6 +278,7 @@ def node_snapshot_signature(
     It never contains snapshot generations or column sets: generations are
     recorded as dependencies and column sets widen a generation.
     """
+    from haute._builders import resolve_instance_nodes
     from haute._dataframe_execution_cache import _upstream_subgraph
     from haute.execution import (
         canonical_dataframe_execution_graph,
@@ -286,7 +287,8 @@ def node_snapshot_signature(
 
     if type(enforce_contracts) is not bool:
         raise TypeError("enforce_contracts must be a bool")
-    canonical = canonical_dataframe_execution_graph(graph)
+    # An instance node executes its original's config, so its signature does too.
+    canonical = canonical_dataframe_execution_graph(resolve_instance_nodes(graph))
     lineage = _upstream_subgraph(canonical, node_id)
     inputs = checked_cache_inputs(
         CacheConsumer.NODE_SNAPSHOT_SIGNATURE,

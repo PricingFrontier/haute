@@ -243,7 +243,8 @@ a complete source hash. After that complete hash, Haute atomically rebinds each 
 manifest whose recorded size and SHA-256 match the freshly observed source but whose
 recorded proof differs (a cache built on another volume, or before this host could
 observe a revision) to the current revision-bound proof, so later processes on this
-host reuse the proof without re-hashing the source. A failed rebind is logged and
+host reuse the proof without re-hashing the source. A layer that a build or another reader
+has locked is skipped, never waited for. A failed rebind is logged and
 leaves serving on the already-safe full-hash path; it never turns a metadata write
 into a weaker validity decision.
 Runtime goes further to close the hash-then-reopen race: it atomically pins each requested
@@ -370,6 +371,11 @@ strict build and raises a specific, column-named error instead.
   is not a runtime error: the loader tries the next layer, then shreds the raw
   source directly. Raw-file decode, missing-file, and declared-type failures stay
   loud and specific; the direct path never replaces them with a cache prompt.
+- Inside `api_input_cache_only()` the loader never shreds: when neither layer serves the
+  current schema and source it raises `ApiInputCacheRequiredError` (`cache_required`), and
+  it records the `meta.json` of the layer that served each loaded data path.
+  Data-point reads use this mode so a whole-dataset read never parses the raw source and is
+  versioned by the cache generation it read.
 - A demand naming a non-emitting/unknown port, an empty column set, or a column
   outside that port's declared selected schema is rejected before cache access.
   Planner uncertainty is represented by a full-width demand, never by dropping an

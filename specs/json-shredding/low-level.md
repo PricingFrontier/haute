@@ -774,7 +774,10 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   built on another volume, or before this host could observe a revision) by an atomic
   `meta.json` replacement carrying the current revision-bound proof; a manifest already
   carrying that proof, or one whose content differs, is not changed, and the rewrite is
-  skipped when the source revision moved after the hash. A write failure is logged and
+  skipped when the source revision moved after the hash. A layer whose publication lock
+  another build or reader holds is skipped rather than waited for, because rebinding only
+  spares a later re-hash; so a status probe never waits behind a build here. A write
+  failure is logged and
   does not fail or weaken the proven read. Revision movement fails the signature
   operation, loader failure publishes
   nothing, and least-recently-used entries are evicted at the bound.
@@ -893,6 +896,9 @@ Shred / inference / cache lifecycle (the `_json_shred/` package, `_json_flatten.
 - `tests/test_inference_identifier_labels.py` — focused mutation witnesses for
   inferred table-label derivation, symmetric collision qualification,
   deterministic suffixing, case-only collisions, and validation closure.
+- `tests/test_load_v2_api_source.py` also covers `api_input_cache_only()`: an uncached
+  input raises `ApiInputCacheRequiredError` without shredding, a valid cache still serves,
+  and the mode ends with its context.
 - `tests/test_load_v2_api_source.py` — direct coverage of the shared runtime entry
   point: emit checks, working→committed→direct resolution, cache corruption and
   exact-schema rejection, stale post-schema changes, scalar/empty arrays, typed

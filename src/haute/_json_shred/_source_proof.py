@@ -517,7 +517,12 @@ def _rebind_persisted_source_proofs(
     for layer in ("working", "committed"):
         cache_dir = _json_cache_dir(data_path, layer)
         meta_path = cache_dir / _META_FILENAME
-        with _publication._build_lock_for(cache_dir):
+        lock = _publication._build_lock_for(cache_dir)
+        # Rebinding only spares a later re-hash, so never wait behind a build
+        # or another reader holding this layer: skip it instead.
+        if not lock.acquire(blocking=False):
+            continue
+        try:
             try:
                 meta = orjson.loads(meta_path.read_bytes())
             except (OSError, ValueError):
@@ -566,6 +571,8 @@ def _rebind_persisted_source_proofs(
                         temp_path=str(temp_path),
                         error=str(exc),
                     )
+        finally:
+            lock.release()
 
 
 class _DataFileSignatureLoadGate:

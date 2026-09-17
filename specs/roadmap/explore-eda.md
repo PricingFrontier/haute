@@ -27,7 +27,7 @@ specified in [Explore / EDA](../explore-eda/high-level.md),
 Explore-node identity, so a Banding or Rating node on the same input cannot use
 it, and Explore cannot use data another consumer cached.
 
-**Plan:** Explore resolves its data point through `CACHE-S02`, builds or joins
+**Plan:** Explore resolves its data point through the caching data-point resolver, builds or joins
 it through `CACHE-S03`, and shows state through the `CACHE-S05` hook and
 button. The overview reads the `CACHE-S04` `profile` analysis for the point's
 current data version, starting the profile job when absent. Pivot runs, pivot
@@ -45,7 +45,7 @@ analyses its own output; an Explore node and a Banding node on one parent share
 one build and one cache state; a pivot calculated before a refresh is never
 returned for the new generation.
 
-**Dependencies:** `CACHE-S02`, `CACHE-S03`, `CACHE-S04`, `CACHE-S05`.
+**Dependencies:** `CACHE-S03`, `CACHE-S04`, `CACHE-S05`.
 
 **Evidence:** `src/haute/routes/_explore_service.py`;
 `src/haute/routes/_pivot_service.py`; `src/haute/routes/explore.py`;

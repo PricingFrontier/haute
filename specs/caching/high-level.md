@@ -10,7 +10,8 @@ Cache identities are explicit, versioned contracts rather than ad-hoc object has
 
 In scope are canonical JSON and checked cache-input contracts, graph and lineage keys,
 bounded in-process LRU/stat-gated caches, Parquet-backed dataframe execution artifacts,
-and JSON-to-Parquet cache routes.
+JSON-to-Parquet cache routes, and data points: the mapping from a consumer node to the
+data it reads and leased reads of that data.
 
 The [IO layer](../io-layer/high-level.md) primarily owns shared source-cache storage;
 caching consumes its identity/generation contract. Execution owns runtime-path
@@ -35,6 +36,29 @@ input class is either mapped to named fields or excluded with a rationale;
 missing, unknown, or unclassified fields fail before a key is produced. The
 low-level inventory is the reviewable source for those exact sets and their
 nested record shapes.
+
+A data point is the data at one pipeline location — a producer node and, for an
+`apiInput`, a port — independent of the consumer asking for it. A Banding or Rating
+Step node reads its single incoming connection's point with a demand of its banded or
+raw factor columns; a blank-code Explore node reads its input's point with every
+column; any other node reads its own output. A consumer without exactly one incoming
+connection is `node_data_point_invalid`. Each point has one kind: a Data Input with
+blank post-load code is `data_input`, an `apiInput` port is `api_input_table`, and every
+other producer — including a Data Input with post-load code, whose code may sample or
+depend on time — is `node_output`. A direct-Parquet Data Input is always `current`; a
+snapshot-backed one follows its input snapshot (fresh or unknown freshness is
+`current`); an `apiInput` port is `current` when its working or committed JSON table
+cache serves the node's full schema; a node output follows its node-output slot, and a
+fresh generation that lacks demanded columns is `partial`. A point with a running build
+that is not current is `building`. Each current point has a data version: the source
+file or snapshot generation, the serving cache metadata and port, or the node-output
+generation, together with the producer's lineage fingerprint for source kinds.
+A consumer reads a point only when it is `current` for its demand; otherwise it gets
+`cache_required` with the state. Source kinds are read by lazily executing that single
+source node with input preparation disabled and the API-input loader in cache-only mode,
+so selections and renames apply exactly as in a run and a read never builds a snapshot
+or shreds JSON. The read holds its lease for the caller's whole operation, including
+final collection, and a spawned child reads exactly the generation its parent leased.
 
 `LRUCache` bounds entries, optionally bounds bytes/TTL, and supports pins. Rejecting an
 oversized value leaves an existing same-key entry intact. `StatGatedCache` is bounded by an
@@ -144,21 +168,16 @@ failures are logged and return a generic 500.
   execution policy in its key, so the same pipeline point is recomputed and stored once per
   consumer, only in the process-local cache; runs also write temporary checkpoints that are deleted
   afterwards. Explore alone persists its data, keyed by the Explore node.
-- **Unresolved target.** A data-point resolver maps any
-  consumer node and column demand to one point kind (Data Input without post-load code, API-input
-  table, or node output) and yields a leased frame covering the demand, produced by executing the
-  source node itself for source kinds, or a typed cache-required failure. Every bounded execution,
+- **Unresolved target.** Every bounded execution,
   explicit build, and admitted preview writes the full-data materialisations it performs into this
   layer and reads from it. Analysis results are stored by point identity and data version, so a
   refreshed or widened generation never serves a previous generation's results.
 - **Non-goals.** Stat-gated caches, the preview response cache, and deploy scoring's process-local
   dataframe cache are unchanged. The preview/trace lineage key keeps its field set; only its runtime
   input fingerprint gains the generations of any snapshots a preview or trace seeds from.
-- **Failure and compatibility semantics.** A missing, stale, partial, building, or corrupt point is
-  never read; callers receive cache-required with the state. The private dataframe-cache namespaces
+- **Failure and compatibility semantics.** The private dataframe-cache namespaces
   for training preparation, training evaluation preview, optimiser setup, and Data Output are
   removed without migration.
-- **Acceptance evidence.** Resolver tests for each point kind, state, and column demand;
-  analysis-store tests for
-  data-version isolation and corrupt-document discard.
-- **Roadmap package.** [CACHE-S02](../roadmap/caching.md#cache-s02--data-point-resolver-and-leased-reads).
+- **Acceptance evidence.** Analysis-store tests for data-version isolation and
+  corrupt-document discard.
+- **Roadmap package.** [CACHE-S04](../roadmap/caching.md#cache-s04--analysis-results-and-the-data-profile-job).

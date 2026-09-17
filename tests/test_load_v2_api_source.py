@@ -23,6 +23,8 @@ from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._json_flatten import _json_cache_dir, clear_json_cache
 from haute._json_shred import _runtime_storage
 from haute._json_shred._cache import (
+    ApiInputCacheRequiredError,
+    api_input_cache_only,
     build_per_port_cache,
     is_per_port_cache_valid,
     load_per_port_cache,
@@ -444,6 +446,44 @@ def test_never_cached_input_shreds_in_memory_without_creating_cache(tmp_path: Pa
     assert out["root"].collect().to_dict(as_series=False) == {"id": [1]}
     assert not working.exists()
     assert not committed.exists()
+
+
+def test_cache_only_mode_raises_instead_of_shredding_an_uncached_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = _write(tmp_path, [{"id": 1}])
+    cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
+
+    def _unexpected_shred(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("a cache-only load must never shred the raw source")
+
+    monkeypatch.setattr("haute._json_shred._records._iter_records", _unexpected_shred)
+
+    with api_input_cache_only():
+        with pytest.raises(ApiInputCacheRequiredError) as raised:
+            load_v2_api_source(str(data), cfg)
+
+    assert raised.value.error_code == "cache_required"
+    assert not _json_cache_dir(str(data), "working").exists()
+
+
+def test_cache_only_mode_serves_a_valid_cache_and_ends_with_its_context(tmp_path: Path) -> None:
+    data = _write(tmp_path, [{"id": 4}])
+    cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
+    (tmp_path / "other").mkdir()
+    uncached = _write(tmp_path / "other", [{"id": 5}])
+    _build(data, cfg)
+
+    with api_input_cache_only() as reads:
+        cached = load_v2_api_source(str(data), cfg)["root"].collect()
+    after = load_v2_api_source(str(uncached), cfg)["root"].collect()
+
+    assert cached["id"].to_list() == [4]
+    assert after["id"].to_list() == [5]
+    served = reads.served[str(data)]
+    assert served == read_per_port_cache_meta(_json_cache_dir(str(data), "working"))
+    assert str(uncached) not in reads.served
 
 
 def test_never_cached_jsonl_shreds_in_memory(tmp_path: Path) -> None:

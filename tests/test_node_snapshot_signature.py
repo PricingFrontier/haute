@@ -264,3 +264,19 @@ def test_slot_identity_carries_the_signature_and_round_trips(project: Path) -> N
 
     assert first.digest != second.digest
     assert NodeSnapshotSlot.from_identity(first) == (slot, "sig-1")
+
+
+def test_an_instance_nodes_signature_follows_its_original(project: Path) -> None:
+    graph = _graph(project)
+    instance = _node("join_copy", NodeType.POLARS, {"instanceOf": "join"})
+    graph = graph.model_copy(
+        update={
+            "nodes": [*graph.nodes, instance],
+            "edges": [*graph.edges, GraphEdge(id="e6", source="transform", target="join_copy")],
+        }
+    )
+    baseline = _signature(graph, node_id="join_copy")
+
+    edited = _with_config(graph, "join", code="df = transform.head(1)")
+
+    assert _signature(edited, node_id="join_copy") != baseline

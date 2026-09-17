@@ -10,6 +10,7 @@
 | `src/haute/_dataframe_execution_cache.py` | Dataframe cache key, Parquet artifact LRU, materialization, validation, scan pins, and cleanup. |
 | `src/haute/_stat_gated_cache.py` | Bounded LRU, per-key single-flight cache gated by backing-file metadata. |
 | `src/haute/routes/json_cache.py` | Structured API-input (JSON/JSONL/NDJSON/XML) cache infer/build/progress/status/delete HTTP surface. |
+| `src/haute/_data_points.py` | Consumer-to-data-point mapping, point kinds and states, data versions, and leased point reads. |
 | `src/haute/_source_cache.py` | Cross-component dependency owned by [io-layer](../io-layer/low-level.md); IO-layer-owned source snapshot store consumed for canonical cache identity and immutable generations. |
 
 The shared `_source_cache.py` relationship is recorded in `specs/ownership.toml`; IO
@@ -130,6 +131,64 @@ There is no separate GUI cancel endpoint; the build is cancelled cooperatively
 by request cancellation through the isolated-worker cancellation gate, which
 stops the worker and discards staging.
 
+### Data points
+
+`src/haute/_data_points.py` owns the consumer-to-point mapping and leased reads.
+
+- Every entry point first resolves instance nodes (`resolve_instance_nodes`), so an
+  instance maps, classifies, executes, and signs with its original's configuration.
+- `consumer_point(graph, consumer_node_id)` returns a `ConsumerPoint(consumer_node_id,
+  point, demand)`. Banding reads the single incoming edge's point with the factors'
+  `column` values as demand; Rating Step reads it with the tables' `factors`; a blank-code
+  Explore reads it with every column; any other node, including Explore with code, reads
+  `DataPoint(node_id, None)` with every column. The incoming edge's point is
+  `DataPoint(edge.source, edge.sourceHandle)` when the producer is an `apiInput` with a
+  handle, otherwise `DataPoint(edge.source, None)`. Zero or several incoming edges, an
+  unknown node, or a port on a single-frame producer raise `NodeDataPointInvalidError`
+  (`node_data_point_invalid`).
+- `point_kind(graph, point)` returns `api_input_table` for an `apiInput` port, `data_input`
+  for a Data Input with blank `code`, and `node_output` otherwise.
+- `DataPointResolver(graph, source, store=NodeSnapshotStore, building=probe)` canonicalises
+  the graph once. `building(kind, key)` reports a running build keyed by the input-snapshot
+  identity digest, the working JSON cache directory, or the node-output identity digest.
+  `resolve(point, demand)` returns a `PointResolution` (kind, state, demand, data version,
+  build key, and the node-output identity/generation or input identity/generation id):
+  - `data_input`, direct Parquet: `current`; the version hashes the resolved path, its size
+    and `mtime_ns` (or `missing`), and the node's lineage fingerprint.
+  - `data_input`, snapshot-backed: `SourceCacheStore.status(identity, source_signature)`;
+    `ready` with `stale` freshness is `stale`, other `ready` is `current`, `corrupt` is
+    `corrupt`, anything else `missing`; the version hashes the generation id and lineage.
+  - `api_input_table`: the port must name a configured table; the working then committed
+    cache directory is checked with `is_per_port_cache_valid` for the full config, and a
+    serving layer makes the point `current` with a version hashing that layer's metadata,
+    the port, and the lineage; a layer with unusable metadata makes it `stale`, none
+    `missing`. Each layer's lock is waited for at most half a second: a reader holds it
+    briefly, so a layer still locked is being built and, with no serving layer, the point
+    is `building`; a status probe never waits behind a build.
+  - `node_output`: `NodeSnapshotStore.slot_status` for the slot (resolved pipeline file,
+    node, source, `bounded`) and the `enforce_contracts=True` signature; a `current`
+    generation whose columns do not cover the demand is `partial`; the version is the
+    generation id.
+  A non-current point whose build key has a running build is `building`.
+- `lease_frame(point, demand, execution_context=None)` (and the module-level
+  `lease_point_frame(graph, point, source, columns)`) raises `CacheRequiredError`
+  (`cache_required`, carrying the resolution) unless the point is `current`, then yields a
+  `LeasedPointFrame(kind, data_version, columns, scan, resolution)` whose scan selects the
+  demanded columns in schema order. A demanded column the data lacks raises
+  `PointColumnsMissingError` (`node_data_columns_missing`, naming the columns); an empty
+  demand keeps one carrier column so the frame keeps its row count. The data version is
+  always the version of the data the scan reads:
+  - `node_output`: leases the resolved generation with `lease_generation`; a generation
+    retired in between re-resolves and raises `cache_required` with the new state.
+  - `data_input` and `api_input_table`: lease the resolved input-snapshot generation when
+    there is one, then execute the single source node alone (`execute_lazy_graph` over a
+    one-node graph, `enforce_contracts=True`, `prepare_inputs=False`) inside
+    `api_input_cache_only()`, selecting the port frame for a table. A table's version is
+    computed from the metadata the loader records for the layer it actually served, so a
+    cache rebuilt after resolution is versioned as the new generation. A cache-only load
+    that finds no serving layer, or a snapshot pointer that moved past the resolved
+    generation, re-resolves and raises `cache_required`.
+
 ### Source snapshots
 
 `SourceCacheIdentity` uses `checked_cache_inputs(CacheConsumer.INPUT_SNAPSHOT, ...)`.
@@ -222,8 +281,20 @@ cache lifecycle changes.
 
 - `tests/test_runtime_input_cache_invalidation.py` — preview/trace cache keys invalidate on runtime file/artifact edits or disappearance, preserve stat-gate semantics, and share file signatures across preview/trace.
 
+- `tests/test_data_point_resolver.py` covers consumer points for Banding, Rating Step,
+  and Explore with and without code, invalid wiring, a narrow captured generation being
+  `current` for Banding and `partial` for Explore, node-output `missing`, `building`,
+  `stale`, and `corrupt`, direct-Parquet versions, a Data Input frame equal to a run's
+  with selections and renames, a post-load-code Data Input read as one shared generation,
+  a missing snapshot-backed input starting no build, a built one going stale, two
+  `apiInput` ports scanning only their tables, an uncached port raising
+  `cache_required` without shredding, a spawned child reading a parent-leased
+  generation through refresh and clear, subset and empty demands over a wider generation
+  and absent demanded columns, instance consumers and sources resolved through their
+  originals, a table cache rebuilt between resolution and load versioned as the data read,
+  and a status probe returning `building` promptly while a build holds the cache locks.
 - `tests/test_node_snapshot_signature.py` covers the `node_snapshot_signature` field set
-  and its invalidation matrix.
+  and its invalidation matrix, including an instance node following its original.
 - `tests/test_cache_identity_contract.py`, `tests/test_cache_fingerprint_injectivity.py`,
   `tests/test_caching_correctness.py`, `tests/test_cache_unification.py`,
   `tests/test_graph_fingerprint_cached.py`, and `tests/test_hashing.py` cover canonical
