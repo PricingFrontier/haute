@@ -1,3 +1,12 @@
+import {
+  interactionEntryIssue,
+  monotoneConstraintTerms,
+  penalisedSmoothTerms,
+  type InteractionSpec,
+  type Terms,
+} from "../panels/modelling/glmTerms"
+import { glmCrossValidates } from "../panels/modelling/glmFamilies"
+
 /**
  * Frontend mirror of the backend's target/objective validation.
  *
@@ -12,8 +21,11 @@ export type TrainingConfigurationIssueCode =
   | "glm-family"
   | "glm-tweedie-variance-power"
   | "glm-negbin-theta"
-  | "glm-factor-selection"
+  | "glm-terms"
   | "glm-elastic-net-l1-ratio"
+  | "glm-cross-validation"
+  | "glm-smooth-regularization"
+  | "glm-robust-standard-errors"
   | "catboost-params"
   | "catboost-loss-function"
   | "catboost-tweedie-variance-power"
@@ -228,7 +240,7 @@ export function trainingConfigurationIssues(
           code: "glm-negbin-theta",
           message:
             "Set the Negative Binomial dispersion (theta), or estimate it from " +
-            "the data — an unset value would silently fit at theta=1.0.",
+            "the data — RustyStats refuses to fit without it.",
         })
       }
     }
@@ -240,12 +252,10 @@ export function trainingConfigurationIssues(
       && !Array.isArray(terms)
       && Object.keys(terms).length > 0
     )
-    if (!hasTerms && !config.all_factors) {
+    if (!hasTerms) {
       issues.push({
-        code: "glm-factor-selection",
-        message:
-          "Add factors or tick 'All features' — an empty factor set would " +
-          "silently auto-build a term for every column.",
+        code: "glm-terms",
+        message: "Add a term to at least one feature.",
       })
     }
 
@@ -259,6 +269,53 @@ export function trainingConfigurationIssues(
           "Set the elastic-net L1 ratio (0 fits Ridge, 1 fits LASSO) — an " +
           "unset value would silently fit pure Ridge.",
       })
+    }
+
+    if (glmCrossValidates(config)) {
+      const missing = ([["cv_folds", "folds"], ["cv_selection", "selection rule"], ["cv_seed", "seed"]] as const)
+        .filter(([key]) => config[key] === undefined || config[key] === null || config[key] === "")
+        .map(([, label]) => label)
+      if (missing.length > 0) {
+        issues.push({
+          code: "glm-cross-validation",
+          message:
+            `Set the cross-validation ${missing.join(", ")} so the selected penalty is ` +
+            "reproducible.",
+        })
+      }
+    }
+
+    const glmTerms: Terms = hasTerms ? terms as Terms : {}
+    const glmInteractions = (Array.isArray(config.interactions) ? config.interactions : [])
+      .filter((entry): entry is InteractionSpec => interactionEntryIssue(entry) === null)
+    const smooth = penalisedSmoothTerms(glmTerms, glmInteractions)
+    const regularized = typeof config.regularization === "string" && config.regularization !== ""
+    if (regularized && smooth.length > 0) {
+      issues.push({
+        code: "glm-smooth-regularization",
+        message:
+          `Regularization cannot be combined with automatically smoothed splines (${smooth.join(", ")}): ` +
+          "set Fixed df on those splines or turn regularization off.",
+      })
+    }
+    const robust = config.robust_standard_errors
+    if (typeof robust === "string" && robust !== "") {
+      const monotone = monotoneConstraintTerms(glmTerms)
+      const conflict = regularized
+        ? "regularization"
+        : monotone.length > 0
+          ? `monotonicity constraints (${monotone.join(", ")})`
+          : smooth.length > 0
+            ? `automatically smoothed splines (${smooth.join(", ")})`
+            : null
+      if (conflict !== null) {
+        issues.push({
+          code: "glm-robust-standard-errors",
+          message:
+            `Robust standard errors cannot be combined with ${conflict}: RustyStats marks that ` +
+            "inference as not valid. Turn robust standard errors off or remove the conflict.",
+        })
+      }
     }
     return issues
   }

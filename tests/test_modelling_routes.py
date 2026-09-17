@@ -23,7 +23,7 @@ from haute.routes._train_service import (
     _declared_categorical_levels_for_training,
     _friendly_error,
     _training_required_columns_by_node,
-    _validate_glm_family_link,
+    _validate_glm_config_values,
 )
 from tests.conftest import (
     make_edge,
@@ -1571,6 +1571,27 @@ class TestEstimateEndpoint:
             "max_selection_validation_rows": 12,
         }
 
+    @pytest.mark.parametrize(
+        "terms",
+        [
+            {"ghost": {"type": "linear"}},
+            {"x1": {"type": "linear"}, "ratio": {"type": "expression", "expr": "x1 / missing"}},
+        ],
+    )
+    def test_evaluation_preview_ignores_unfinished_terms(self, client, training_data, terms):
+        """The preview reads only the target and the evaluation key, so a GLM
+        term on a column that is not upstream does not fail the estimate."""
+        graph = _make_modelling_graph(training_data, algorithm="glm", params={})
+        config = graph["nodes"][1]["data"]["config"]
+        config.update({"family": "gaussian", "terms": terms})
+
+        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+
+        assert resp.status_code == 200, resp.text
+        preview = resp.json()["evaluation_preview"]
+        assert preview is not None
+        assert preview["development_rows"] == 60
+
     def test_estimate_maps_evaluation_preview_validation_failure_to_422(
         self,
         client,
@@ -2757,7 +2778,7 @@ class TestValidateConfig:
                 "algorithm": "glm",
                 "family": "poisson",
                 "link": "log",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "evaluation": _random_evaluation_config(),
             }
         )
@@ -2770,7 +2791,7 @@ class TestValidateConfig:
                 "algorithm": "glm",
                 "family": "poisson",
                 "link": "log",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "params": {"family": "binomial", "link": "identity"},
                 "evaluation": _random_evaluation_config(),
             }
@@ -2815,8 +2836,8 @@ class TestValidateConfig:
         assert exc_info.value.status_code == 400
         assert "family" in exc_info.value.detail.lower()
 
-    def test_glm_empty_factors_without_all_raises_400(self):
-        """An empty factor set must not silently auto-term over every column."""
+    def test_glm_empty_terms_raises_400(self):
+        """An empty term set must not silently auto-term over every column."""
         with pytest.raises(HTTPException) as exc_info:
             TrainService._validate_config(
                 {
@@ -2826,7 +2847,7 @@ class TestValidateConfig:
                 }
             )
         assert exc_info.value.status_code == 400
-        assert "factor" in exc_info.value.detail.lower()
+        assert "add a term to at least one feature" in exc_info.value.detail.lower()
 
     def test_glm_tweedie_without_variance_power_raises_400(self):
         with pytest.raises(HTTPException) as exc_info:
@@ -2835,7 +2856,7 @@ class TestValidateConfig:
                     "target": "y",
                     "algorithm": "glm",
                     "family": "tweedie",
-                    "all_factors": True,
+                    "terms": {"age": {"type": "linear"}},
                 }
             )
         assert exc_info.value.status_code == 400
@@ -2848,7 +2869,7 @@ class TestValidateConfig:
                     "target": "y",
                     "algorithm": "glm",
                     "family": "poisson",
-                    "all_factors": True,
+                    "terms": {"age": {"type": "linear"}},
                     "regularization": "elastic_net",
                 }
             )
@@ -2874,72 +2895,428 @@ class TestValidateConfig:
                 "algorithm": "glm",
                 "family": "gaussian",
                 "link": "",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "evaluation": _random_evaluation_config(),
             }
         )
 
 
 # ---------------------------------------------------------------------------
-# _validate_glm_family_link unit tests
+# Synchronous GLM schema gate on /train and /dispersion/estimate
 # ---------------------------------------------------------------------------
 
 
-class TestValidateGlmFamilyLink:
-    def test_unknown_family(self):
+_GLM_COLLIDING_TERMS: dict = {
+    "x": {"type": "linear"},
+    "x_sq": {"type": "expression", "expr": "x ** 2"},
+}
+
+
+@pytest.fixture()
+def glm_collision_data(tmp_path) -> str:
+    """Source whose unused ``x_sq`` column collides with an expression key."""
+    path = tmp_path / "glm_collision.parquet"
+    pl.DataFrame(
+        {"x": [1.0, 2.0, 3.0], "x_sq": [1.0, 4.0, 9.0], "y": [1.0, 2.0, 3.0]}
+    ).write_parquet(path)
+    return str(path)
+
+
+def _glm_schema_gate_graph(data_path: str | None, config: dict):
+    """Data Input → Modelling graph; ``data_path=None`` leaves the model unfed."""
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    if data_path is not None:
+        nodes.append(
+            {
+                "id": "source",
+                "data": {
+                    "label": "source",
+                    "nodeType": "dataInput",
+                    "config": make_ready_file_input_config(data_path),
+                },
+            }
+        )
+        edges.append(make_edge("source", "train").model_dump())
+    nodes.append(
+        {"id": "train", "data": {"label": "train", "nodeType": "modelling", "config": config}}
+    )
+    return make_graph({"nodes": nodes, "edges": edges})
+
+
+def _glm_transform_gate_graph(data_path: str, code: str, config: dict):
+    """Data Input → Polars → Modelling, with the user's own code in the middle."""
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataInput",
+                        "config": make_ready_file_input_config(data_path),
+                    },
+                },
+                {
+                    "id": "prep",
+                    "data": {"label": "prep", "nodeType": "polars", "config": {"code": code}},
+                },
+                {
+                    "id": "train",
+                    "data": {"label": "train", "nodeType": "modelling", "config": config},
+                },
+            ],
+            "edges": [
+                make_edge("source", "prep").model_dump(),
+                make_edge("prep", "train").model_dump(),
+            ],
+        }
+    )
+
+
+class TestGlmInputSchemaGate:
+    """GLM term columns are checked against the exact unprojected input schema
+    before a job is created, so a mismatch is a 422 on the request rather than
+    a job that fails later during background preparation."""
+
+    def _service(self):
+        from haute.routes._job_store import JobStore
+
+        store = JobStore()
+        return store, TrainService(store)
+
+    def test_training_route_rejects_expression_key_colliding_with_unprojected_column(
+        self, glm_collision_data
+    ):
+        """Upstream has an unused column ``x_sq``; the model keys an expression
+        ``x_sq``. Projection would drop the column, so the gate must see the
+        unprojected schema."""
+        from haute.schemas import TrainRequest
+
+        body = TrainRequest(
+            graph=_glm_schema_gate_graph(
+                glm_collision_data,
+                {
+                    "algorithm": "glm",
+                    "target": "y",
+                    "family": "gaussian",
+                    "terms": _GLM_COLLIDING_TERMS,
+                    "evaluation": _random_evaluation_config(),
+                },
+            ),
+            node_id="train",
+        )
+        store, service = self._service()
+
+        with pytest.raises(HTTPException) as raised:
+            service.start(body)
+
+        assert raised.value.status_code == 422
+        assert "names a column" in str(raised.value.detail)
+        assert not store.list_jobs()
+
+    def test_dispersion_route_rejects_expression_key_colliding_with_unprojected_column(
+        self, glm_collision_data
+    ):
+        """The dispersion route materialises the same frame, so it gates the
+        same way — a 422 before the estimation job exists."""
+        from haute.schemas import DispersionEstimateRequest
+
+        body = DispersionEstimateRequest(
+            graph=_glm_schema_gate_graph(
+                glm_collision_data,
+                {
+                    "algorithm": "glm",
+                    "target": "y",
+                    "family": "tweedie",
+                    "terms": _GLM_COLLIDING_TERMS,
+                    "evaluation": _random_evaluation_config(),
+                },
+            ),
+            node_id="train",
+            param="var_power",
+        )
+        store, service = self._service()
+
+        with pytest.raises(HTTPException) as raised:
+            service.start_dispersion_estimate(body)
+
+        assert raised.value.status_code == 422
+        assert "names a column" in str(raised.value.detail)
+        assert not store.list_jobs()
+
+    def test_training_route_returns_422_when_input_schema_cannot_be_resolved(self):
+        """An unfed modelling node has no schema to check against — an explicit
+        422 naming the cause, never a 500 and never the projected schema."""
+        from haute.schemas import TrainRequest
+
+        body = TrainRequest(
+            graph=_glm_schema_gate_graph(
+                None,
+                {
+                    "algorithm": "glm",
+                    "target": "y",
+                    "family": "gaussian",
+                    "terms": {"x": {"type": "linear"}},
+                    "evaluation": _random_evaluation_config(),
+                },
+            ),
+            node_id="train",
+        )
+        store, service = self._service()
+
+        with pytest.raises(HTTPException) as raised:
+            service.start(body)
+
+        assert raised.value.status_code == 422
+        detail = str(raised.value.detail)
+        assert "Training input schema could not be resolved" in detail
+        assert "No input data available" in detail
+        assert not store.list_jobs()
+
+    @pytest.mark.parametrize(
+        ("code", "error_name"),
+        [
+            ("df = source.with_columns(x2=undefined_name)", "NameError"),
+            ("", "NotImplementedError"),
+        ],
+    )
+    def test_user_transform_error_becomes_422_on_training_and_dispersion_routes(
+        self, glm_collision_data, code, error_name
+    ):
+        """The schema-only build runs the user's own transform code, so any
+        exception that code raises is the user's to fix — a named 422, never a
+        500 that reads as a Haute crash."""
+        from haute.schemas import DispersionEstimateRequest, TrainRequest
+
+        base = {
+            "algorithm": "glm",
+            "target": "y",
+            "terms": {"x": {"type": "linear"}},
+            "evaluation": _random_evaluation_config(),
+        }
+        store, service = self._service()
+
+        with pytest.raises(HTTPException) as raised:
+            service.start(
+                TrainRequest(
+                    graph=_glm_transform_gate_graph(
+                        glm_collision_data, code, {**base, "family": "gaussian"}
+                    ),
+                    node_id="train",
+                )
+            )
+        assert raised.value.status_code == 422
+        assert "could not be resolved" in str(raised.value.detail)
+        assert error_name in str(raised.value.detail)
+
+        with pytest.raises(HTTPException) as raised:
+            service.start_dispersion_estimate(
+                DispersionEstimateRequest(
+                    graph=_glm_transform_gate_graph(
+                        glm_collision_data, code, {**base, "family": "tweedie"}
+                    ),
+                    node_id="train",
+                    param="var_power",
+                )
+            )
+        assert raised.value.status_code == 422
+        assert "could not be resolved" in str(raised.value.detail)
+        assert error_name in str(raised.value.detail)
+        assert not store.list_jobs()
+
+
+# ---------------------------------------------------------------------------
+# GLM sink exclusions
+# ---------------------------------------------------------------------------
+
+
+def _inline_sink_service(monkeypatch: pytest.MonkeyPatch):
+    """Inline-protocol service plus the supervisor threads it launches."""
+    from haute.routes._job_store import JobStore
+    from tests.test_training_worker_protocol import _inline_protocol_runner
+
+    store = JobStore()
+    service = TrainService(store, protocol_runner=_inline_protocol_runner)
+    launched: list = []
+    launch_protocol = service._supervisor.launch_protocol
+
+    def capture_launch(*args, **kwargs):
+        thread = launch_protocol(*args, **kwargs)
+        launched.append(thread)
+        return thread
+
+    monkeypatch.setattr(service._supervisor, "launch_protocol", capture_launch)
+    return service, launched
+
+
+def _spy_on_sink_exclusions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[list[str] | None, list[str]]]:
+    """Record each ``_execute_and_sink`` call's ``exclude`` and the columns the
+    real sink actually wrote.
+
+    The real sink runs; its parquet is read here because the caller deletes it
+    (or hands ownership to the worker) as soon as preparation returns. Asserting
+    on ``exclude`` alone would pass even if preparation never produced a frame.
+    """
+    captured: list[tuple[list[str] | None, list[str]]] = []
+    original = TrainService._execute_and_sink
+
+    def spy(self, body, preamble_ns, row_limit, job_id, **kwargs):
+        prepared = original(self, body, preamble_ns, row_limit, job_id, **kwargs)
+        captured.append((kwargs.get("exclude"), pl.read_parquet(prepared).columns))
+        return prepared
+
+    monkeypatch.setattr(TrainService, "_execute_and_sink", spy)
+    return captured
+
+
+_GLM_STALE_EXCLUDE_CONFIG: dict = {
+    "algorithm": "glm",
+    "target": "y",
+    "terms": {"x": {"type": "linear"}},
+    "exclude": ["x"],
+}
+
+
+class TestGlmSinkExclusions:
+    """A GLM's column membership comes from its terms and interactions, so the
+    training and dispersion sinks never drop a column by ``exclude`` — a stale
+    entry left behind by a CatBoost run must not delete a live GLM term."""
+
+    def test_training_sink_keeps_excluded_glm_term_columns(
+        self, glm_collision_data, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
+        captured = _spy_on_sink_exclusions(monkeypatch)
+        from haute.schemas import TrainRequest
+        from tests.test_training_worker_protocol import _SuccessfulTrainingJob
+
+        body = TrainRequest(
+            graph=_glm_schema_gate_graph(
+                glm_collision_data,
+                {
+                    **_GLM_STALE_EXCLUDE_CONFIG,
+                    "family": "gaussian",
+                    "evaluation": _random_evaluation_config(),
+                },
+            ),
+            node_id="train",
+        )
+        service, launched = _inline_sink_service(monkeypatch)
+
+        with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
+            response = service.start(body)
+            service._join_preparation(response.job_id)
+            for thread in launched:
+                thread.join(timeout=10)
+
+        assert len(captured) == 1
+        exclude, columns = captured[0]
+        assert exclude is None
+        # ``x`` is the live GLM term the stale ``exclude`` would have dropped.
+        assert "x" in columns and "y" in columns
+        job = service._store.require_job(response.job_id)
+        assert job["status"] == "completed", job
+        assert launched
+
+    def test_dispersion_sink_keeps_excluded_glm_term_columns(
+        self, glm_collision_data, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
+        captured = _spy_on_sink_exclusions(monkeypatch)
+        from haute.schemas import DispersionEstimateRequest
+
+        body = DispersionEstimateRequest(
+            graph=_glm_schema_gate_graph(
+                glm_collision_data,
+                {
+                    **_GLM_STALE_EXCLUDE_CONFIG,
+                    "family": "tweedie",
+                    "evaluation": _random_evaluation_config(),
+                },
+            ),
+            node_id="train",
+            param="var_power",
+        )
+        service, launched = _inline_sink_service(monkeypatch)
+
+        response = service.start_dispersion_estimate(body)
+        for thread in launched:
+            thread.join(timeout=10)
+
+        assert len(captured) == 1
+        exclude, columns = captured[0]
+        assert exclude is None
+        assert "x" in columns and "y" in columns
+        job = service._store.require_job(response.job_id)
+        assert job["status"] == "completed", job
+
+
+# ---------------------------------------------------------------------------
+# _validate_glm_config_values unit tests
+# ---------------------------------------------------------------------------
+
+
+def _glm_values(**overrides: object) -> dict[str, object]:
+    return {
+        "algorithm": "glm",
+        "target": "y",
+        "family": "poisson",
+        "terms": {"x": {"type": "linear"}},
+        **overrides,
+    }
+
+
+class TestValidateGlmConfigValues:
+    def test_unknown_family_names_the_supported_families(self):
         with pytest.raises(HTTPException) as exc_info:
-            _validate_glm_family_link("exponential", "log")
+            _validate_glm_config_values(_glm_values(family="exponential"))
         assert exc_info.value.status_code == 400
         assert "exponential" in exc_info.value.detail
         assert "gaussian" in exc_info.value.detail
 
-    def test_invalid_link_for_family(self):
+    def test_invalid_link_names_the_family_links(self):
         with pytest.raises(HTTPException) as exc_info:
-            _validate_glm_family_link("binomial", "identity")
+            _validate_glm_config_values(_glm_values(family="gamma", link="logit"))
         assert exc_info.value.status_code == 400
-        assert "identity" in exc_info.value.detail
-        assert "logit" in exc_info.value.detail
+        assert exc_info.value.detail == (
+            "Link 'logit' is not valid for the gamma family. Valid links: log, identity."
+        )
 
-    def test_valid_family_link(self):
-        _validate_glm_family_link("gamma", "log")
-
-    def test_quasipoisson_accepted(self):
-        """Quasi-Poisson estimates its dispersion (no user parameter), so the
-        route validates it — RustyStats accepts only log/identity, no sqrt."""
-        _validate_glm_family_link("quasipoisson", "log")
-        _validate_glm_family_link("quasipoisson", "identity")
-        _validate_glm_family_link("quasipoisson", "")  # canonical link
-
-    def test_quasipoisson_rejects_bad_link(self):
+    @pytest.mark.parametrize(
+        ("family", "link"),
+        [
+            ("gaussian", "inverse"),
+            ("binomial", "probit"),
+            ("binomial", "cloglog"),
+            ("poisson", "sqrt"),
+            ("gamma", "inverse"),
+            ("inverse_gaussian", ""),
+        ],
+    )
+    def test_unsupported_links_and_inverse_gaussian_are_refused(self, family, link):
         with pytest.raises(HTTPException) as exc_info:
-            _validate_glm_family_link("quasipoisson", "logit")
+            _validate_glm_config_values(_glm_values(family=family, link=link))
         assert exc_info.value.status_code == 400
-        assert "logit" in exc_info.value.detail
 
-    def test_negbinomial_accepted(self):
-        """Neg. Binomial is offered now its theta gate exists: the training
-        objective requires an explicit theta (training_objective_issue), so
-        the silent theta=1.0 failover that held it out of #86 cannot fire.
-        RustyStats accepts only log/identity — no sqrt."""
-        _validate_glm_family_link("negbinomial", "log")
-        _validate_glm_family_link("negbinomial", "identity")
-        _validate_glm_family_link("negbinomial", "")  # canonical link
+    @pytest.mark.parametrize(
+        ("family", "link"),
+        [
+            ("quasipoisson", ""),
+            ("quasipoisson", "identity"),
+            ("negbinomial", "log"),
+            ("quasibinomial", "logit"),
+            ("binomial", "log"),
+            ("gaussian", "log"),
+        ],
+    )
+    def test_supported_family_links_pass(self, family, link):
+        _validate_glm_config_values(_glm_values(family=family, link=link))
 
-    def test_negbinomial_rejects_bad_link(self):
-        with pytest.raises(HTTPException) as exc_info:
-            _validate_glm_family_link("negbinomial", "sqrt")
-        assert exc_info.value.status_code == 400
-        assert "sqrt" in exc_info.value.detail
-
-    def test_empty_family_raises(self):
-        """The old early-return here was the silent gaussian-default channel."""
-        with pytest.raises(HTTPException) as exc_info:
-            _validate_glm_family_link("", "log")
-        assert exc_info.value.status_code == 400
-        assert "family" in exc_info.value.detail.lower()
-
-    def test_empty_link_skips(self):
-        _validate_glm_family_link("poisson", "")
+    def test_absent_family_is_left_to_the_objective_gate(self):
+        _validate_glm_config_values({"algorithm": "glm", "terms": {"x": {"type": "linear"}}})
 
 
 # ---------------------------------------------------------------------------
@@ -3027,8 +3404,8 @@ class TestDispersionEstimateEndpoint:
         assert final["n_fits"] > 0
 
     def test_train_negbinomial_without_theta_rejected_400(self, client, nb_training_data):
-        """The re-enabled family keeps the failover closed: an unset theta
-        gates at the route, never falls through to RustyStats' theta=1.0."""
+        """The re-enabled family gates early: an unset theta is a 400 at the
+        route, never a RustyStats refusal from inside a training job."""
         graph = _make_negbinomial_graph(nb_training_data)
         resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
         assert resp.status_code == 400
@@ -3067,7 +3444,7 @@ class TestDispersionEstimateEndpoint:
         assert "negbinomial" in resp.json()["detail"]
 
     def test_estimate_rejected_when_rest_of_objective_incomplete(self, client, nb_training_data):
-        """The profile is conditional on the design, so the factor gate still
+        """The profile is conditional on the design, so the term gate still
         applies — only the parameter being estimated is stubbed."""
         graph = _make_negbinomial_graph(nb_training_data, terms=None)
         resp = client.post(
@@ -3075,7 +3452,7 @@ class TestDispersionEstimateEndpoint:
             json={"graph": graph, "node_id": "train", "param": "theta"},
         )
         assert resp.status_code == 400
-        assert "factor" in resp.json()["detail"].lower()
+        assert "add a term to at least one feature" in resp.json()["detail"].lower()
 
     def test_estimate_rejected_for_unknown_param(self, client, nb_training_data):
         graph = _make_negbinomial_graph(nb_training_data)
@@ -3192,10 +3569,12 @@ class TestDispersionErrorPaths:
         assert job["status"] == "contract_error"
         assert "missing column" in job["message"]
 
-    def test_start_preserves_explicit_feature_that_is_also_excluded(
+    def test_start_keeps_only_role_columns_because_glm_ignores_catboost_levers(
         self,
         nb_training_data,
     ):
+        """feature_columns and exclude are CatBoost levers: a GLM's sink keeps
+        its role columns and reads its term columns through projection demand."""
         from haute._execution_context import ExecutionContext, ExecutionProfile
         from haute.schemas import DispersionEstimateRequest
 
@@ -3203,6 +3582,7 @@ class TestDispersionErrorPaths:
             nb_training_data,
             feature_columns=["x1"],
             exclude=["x1"],
+            theta=1.5,
         )
         store, service = self._service()
         body = DispersionEstimateRequest.model_validate(
@@ -3231,7 +3611,7 @@ class TestDispersionErrorPaths:
             response = service.start_dispersion_estimate(body)
 
         assert response.status == "started"
-        assert "x1" in captured["keep_columns"]
+        assert captured["keep_columns"] == ["y"]
 
     def test_start_maps_unexpected_exception_to_error(self, nb_training_data):
         from haute.schemas import DispersionEstimateRequest
@@ -3443,7 +3823,11 @@ class TestDispersionErrorPaths:
                     owns_tmp=False,
                     features=["other_column"],
                     cat_features=[],
+                    feature_dtypes={"other_column": "Float64"},
                 )
+
+            def _role_columns(self):
+                return {"y": "target"}
 
         store, service = self._service()
         with patch("haute.modelling.TrainingJob", FakeJob):

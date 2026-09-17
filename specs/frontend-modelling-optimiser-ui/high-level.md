@@ -42,7 +42,9 @@ results are supplied by API and result-store layers.
   short explanation; AvE and PDP are expanded in those introductions.
 - The completed summary uses responsive, themed cards with final-test performance
   first, separately labelled diagnostics, model information, and optional GLM fit
-  statistics/regularisation. Metric values are prominent. No reserved final test is stated
+  statistics, the regularisation actually applied, and smooth terms. When RustyStats marks a
+  GLM's inference invalid (penalties, monotonicity, smoothing), coefficients show dashes and the
+  reason instead of statistics. Metric values are prominent. No reserved final test is stated
   explicitly without presenting development diagnostics as held-out performance. Candidate selection and tuning
   retain their complete evidence in separately headed cards; warnings remain visible
   above the summary. The summary carries no export action or model path: saving the
@@ -134,17 +136,29 @@ result contracts rather than silently charting incorrect values.
 ## Modelling config panes
 
 With a supported algorithm (`catboost` or `glm`) selected, the modelling node
-panel presents six panes — **Target**, **Features**, **Params**, **Split**, **Train**, **Export** — through the
+panel presents **Target**, **Features**, **Split**, **Train**, and **Export** panes. CatBoost also
+has a **Params** pane between Features and Split. Both algorithms use the
 same shared equal-width pane-tab strip the Explore editor uses, hosted by the node panel
 ([frontend-node-editors](../frontend-node-editors/low-level.md#modelling-config-panes))
 and extended with the accessible active-training indicator by
 [frontend-preview-explore](../frontend-preview-explore/low-level.md#modelling-config-panes).
-The active pane is remembered per node in the UI store. Without an algorithm, the existing gateway
+One `modellingPanesFor(algorithm)` list drives both the tabs and the pane bodies. The active pane
+is remembered per node in the UI store; a remembered pane the algorithm lacks (GLM Params) opens
+Target, where GLM regularization lives. Without an algorithm, the existing gateway
 renders alone. A non-empty unsupported algorithm renders an explicit inline diagnostic and no pane
 strip; it never falls through to CatBoost. Pane ownership:
 
 - **Target** — target/weight/offset, a unified loss-function picker and variance power, metrics
-  (CatBoost); family/link/dispersion/intercept/metrics (GLM). CatBoost has no separate task
+  (CatBoost); family/link/dispersion/intercept/metrics and regularization (GLM). GLM families and
+  links come from the table the backend validates against (RustyStats supports only identity,
+  log, and logit links), and the Tweedie variance power is bounded to 1 to 2. GLM's
+  regularization section is always visible: choosing a type writes visible cross-validation
+  defaults (5 folds, minimum deviance, seed 42); penalty mode is Cross-validated or a Fixed alpha;
+  Elastic Net keeps its explicit L1 ratio gate; inline messages explain why regularization cannot
+  combine with automatically smoothed splines or robust standard errors; and a Solver disclosure
+  holds maximum iterations, tolerance, and robust standard errors. Its read-only
+  algorithm context reads **Algorithm Rustystats**, while the stored algorithm remains `glm`.
+  CatBoost has no separate task
   selector: choosing a loss derives and stores its regression/classification task, every supported
   loss remains visible, and metrics that are incompatible with the selected loss stay visible but
   disabled. Selecting Tweedie directly reveals its variance-power slider; when no prior value is
@@ -153,7 +167,7 @@ strip; it never falls through to CatBoost. Pane ownership:
   context. The gateway may set the algorithm only while it is unset; after selection, neither this
   pane nor any other supported-node editor action changes it. To configure the other algorithm,
   the user creates a separate modelling node, preserving the original node and all of its settings.
-- **Features** — both algorithms get the same always-expanded feature-card browser with a
+- **Features** — CatBoost gets an always-expanded feature-card browser with a
   case-insensitive name-substring search, upstream dtype labels, and the existing explicit
   not-found treatment/removal for stale exclusions. Each eligible feature has one compact,
   single-row bordered card: the name and dtype sit on the left, followed by the current-state
@@ -163,20 +177,24 @@ strip; it never falls through to CatBoost. Pane ownership:
   accent-text treatment as the Data Input **Provider** selector; they do not stretch across the
   card. **Include all** and **Exclude all** use the same compact green/red treatment and set every
   eligible feature, including features hidden by the current search. Columns consumed as target, weight,
-  offset, or active evaluation/metadata roles are not presented as trainable features. GLM then
-  adds its factor/term editor below the common browser. Each card places a three-option
+  offset, or active evaluation/metadata roles are not presented as trainable features. Each card
+  places a three-option
   monotonicity selector directly beside the inclusion button without a repeated visible label: a
   red downward arrow (`-1`), yellow dash (no
   stored constraint), and green upward arrow (`1`). Each choice uses the Provider-style compact
   control, with its soft tinted surface and accent border identifying the selected direction. The
-  selector is enabled only for final selected numeric
-  features: included CatBoost features, or included GLM `terms` (all included features when
-  `all_factors` is true). Excluding a feature is immediate and reversible: it does not ask for
-  confirmation or delete that feature's monotonic direction, GLM term, or interaction settings.
+  selector is enabled only for included numeric features. Excluding a feature is immediate and
+  reversible: it does not ask for confirmation or delete that feature's monotonic direction.
   The stored direction remains visibly selected in the greyed, disabled control, does not apply while the
-  feature is excluded, and becomes active again when the feature is re-included. Explicit GLM term
-  removal or narrowing from `all_factors` remains a confirmed atomic cleanup of dependent terms,
-  interactions, and monotonic constraints; Cancel preserves every field.
+  feature is excluded, and becomes active again when the feature is re-included. GLM's Features
+  pane is its term editor instead: a feature is in the model when it has a term, is read by an
+  expression, or is an interaction factor. Fit menus follow the column's dtype class (continuous,
+  integer, boolean, categorical; unsupported dtypes are hidden and counted), GLM monotonicity
+  lives on each term, and terms that cannot be fitted (role, missing, or unsupported columns, and
+  malformed entries) are listed with their reason and removal. Interaction cards show which main
+  effects Include main effects adds, which fits each slot may use, and any conflict the backend
+  would refuse, on every card involved. The GLM pane never writes CatBoost's `exclude`,
+  `feature_columns`, `monotone_constraints`, or `feature_weights`.
 - **Params** — immediately below the Hyperparameters heading, CatBoost shows a
   Target-style **Parameter strategy** radio group with **Fixed parameters** and
   **Tune parameters** choices. Exactly one strategy body is visible. Fixed parameters
@@ -198,9 +216,9 @@ strip; it never falls through to CatBoost. Pane ownership:
   complete; it never rewrites an existing evaluation choice. Selecting Fixed parameters removes
   tuning without changing the last valid fixed Parameters JSON.
   The editor component accepts algorithm label/default/reserved-key inputs
-  so another algorithm with a `params` object can reuse it without bespoke controls. GLM Params
-  retains the regularisation controls because GLM's canonical editable fields live at the node
-  top level rather than in `config.params`.
+  so another algorithm with a `params` object can reuse it without bespoke controls. GLM has no
+  Params pane; its Target-pane regularization fields remain at the node top level rather than
+  in `config.params`.
 - **Split** — one canonical version-1 evaluation workflow. It asks how data is
   structured (Random rows, Keep entities together, Respect time order), how candidates
   are validated (Single validation, Cross-validation, No validation), and whether an
@@ -300,13 +318,14 @@ written; the generic section store and any inert in-memory entries need no migra
 
 **Regression evidence.** Suites in
 `frontend/src/panels/__tests__/ModellingConfig.test.tsx` and under
-`frontend/src/panels/modelling/__tests__/` prove: six panes with the ownership above for both
-algorithms and the unsupported-algorithm diagnostic; CatBoost's unified all-loss picker,
+`frontend/src/panels/modelling/__tests__/` prove: six CatBoost panes and five GLM panes with the
+ownership above, always-visible GLM Target regularization, retired GLM Params selection resolving
+to Target, and the unsupported-algorithm diagnostic; CatBoost's unified all-loss picker,
 loss-derived task/default metrics, and visible disabled incompatible metrics; the common searched/dtype-labelled
-feature-card browser for CatBoost and GLM, including current-state per-card toggles and
+CatBoost feature-card browser, including current-state per-card toggles and
 search-independent bulk actions; confirmation-free reversible exclusion with dormant monotonic
-and GLM settings; inline arrow-based, role/final-selection-aware monotonic controls and confirmed
-explicit-factor cleanup; exact atomic dependent-cleanup/cancel semantics; unset-only algorithm selection, read-only selected-algorithm
+settings; inline arrow-based, role/final-selection-aware monotonic controls; the GLM term and
+interaction editors against the shared dtype-class and expression-grammar fixtures; unset-only algorithm selection, read-only selected-algorithm
 context, and the absence of an in-place change action; mutually exclusive fixed/tuned Params
 bodies, arbitrary params JSON round trips, valid fixed/search-space autosave, compact default
 draft presentation, invalid/non-object/reserved-key draft persistence without Apply/Revert or

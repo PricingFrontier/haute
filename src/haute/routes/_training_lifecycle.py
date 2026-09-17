@@ -69,10 +69,12 @@ from haute.modelling._evaluation import (
     EvaluationConfig,
     generate_evaluation_plan,
 )
+from haute.modelling._glm_terms import validate_glm_model_columns
 from haute.modelling._train_config import (
     TrainingConfigError,
     build_train_params,
     build_training_job_kwargs,
+    is_glm_config,
     parse_evaluation_config,
     parse_tuning_config,
     training_objective_issue,
@@ -115,7 +117,7 @@ from haute.routes._training_evaluation import (
     _DISPERSION_PARAM_FAMILIES,
     _DISPERSION_PARAM_STUBS,
     _evaluation_preview_payload,
-    _validate_glm_family_link,
+    _validate_glm_config_values,
 )
 from haute.routes._training_preparation import (
     TrainingPreparationOutcome,
@@ -129,10 +131,13 @@ from haute.routes._training_preparation import (
     _memory_limit_http_exception,
     _remove_prepared_parquet,
     _seeded_training_sample,
+    _training_metadata_reasons,
     _training_projection_keep_columns,
     _training_required_columns_by_node,
+    _training_sink_exclusions,
     create_training_parquet_path,
     prepare_training_data_worker,
+    resolve_training_input_schema,
 )
 from haute.routes._training_worker import (
     _assert_json_finite,
@@ -257,6 +262,10 @@ class TrainService:
             config = {**config, "categorical_levels": declared_categorical_levels}
 
         self._validate_config(config)
+        # Cheap pre-check so a busy server does not run the schema build first;
+        # the authoritative check repeats under the start lock.
+        self._check_no_concurrent_jobs()
+        self._validate_glm_input_schema(body, config)
 
         with self._start_lock:
             self._check_no_concurrent_jobs()
@@ -378,10 +387,12 @@ class TrainService:
                 profile=ExecutionProfile.TRAINING_PREP,
             )
             preamble_ns = self._compile_preamble(body.graph)
-            required_columns_by_node = _training_required_columns_by_node(
-                body.node_id,
-                config,
-            )
+            # The plan reads only the target and the evaluation key, so the
+            # preview demands nothing else: an unfinished GLM term or feature
+            # setting must not fail the estimate.
+            required_columns_by_node: dict[str, frozenset[str] | AllExceptColumns] = {
+                body.node_id: frozenset(selected_columns)
+            }
             from haute._polars_utils import (
                 DEFAULT_STREAMING_CHUNK_SIZE,
                 streaming_collect,
@@ -561,7 +572,7 @@ class TrainService:
                 preamble_ns,
                 row_limit,
                 job_id,
-                exclude=config.get("exclude") or None,
+                exclude=_training_sink_exclusions(config),
                 keep_columns=_training_projection_keep_columns(config),
                 required_columns_by_node=_training_required_columns_by_node(node_id, config),
                 execution_context=execution_context,
@@ -676,11 +687,14 @@ class TrainService:
         a profile-likelihood search in a supervised spawn worker. The estimate is
         an explicit user action: the resolved value lands in the node config
         where the training-objective gate requires it — never as a hidden
-        default (RustyStats fits silently at theta=1.0 / var_power=1.5).
+        default (RustyStats refuses to fit Negative Binomial without theta and
+        fits Tweedie at var_power=1.5 when unset).
         """
         node = _find_modelling_node(body.graph, body.node_id)
         config = dict(node.data.config)
         self._validate_dispersion_config(config, body.param)
+        self._check_no_concurrent_jobs()
+        preamble_ns = self._validate_glm_input_schema(body, config)
 
         with self._start_lock:
             self._check_no_concurrent_jobs()
@@ -700,7 +714,6 @@ class TrainService:
         execution_context: ExecutionContext | None = None
         launch_started = False
         try:
-            preamble_ns = self._compile_preamble(body.graph)
             _ram_warning, row_limit, _total_rows, _probe_cols = self._estimate_ram(
                 body.graph,
                 body.node_id,
@@ -711,7 +724,6 @@ class TrainService:
             row_limit = _clamp_row_limit(row_limit, config.get("row_limit"))
             row_limit = min(row_limit or _DISPERSION_ESTIMATE_ROW_CAP, _DISPERSION_ESTIMATE_ROW_CAP)
 
-            excluded = config.get("exclude", [])
             keep_cols = _training_projection_keep_columns(config)
             required_columns_by_node = _training_required_columns_by_node(
                 body.node_id,
@@ -733,7 +745,7 @@ class TrainService:
                 preamble_ns,
                 row_limit,
                 job_id,
-                exclude=excluded or None,
+                exclude=_training_sink_exclusions(config),
                 keep_columns=keep_cols,
                 required_columns_by_node=required_columns_by_node,
                 execution_context=execution_context,
@@ -813,15 +825,13 @@ class TrainService:
                     f"parameters: {', '.join(_DISPERSION_PARAM_FAMILIES)}."
                 ),
             )
-        if str(config.get("algorithm", "catboost")).lower() != "glm":
+        if not is_glm_config(config):
             raise HTTPException(
                 status_code=400,
                 detail="Dispersion estimation applies to GLM modelling nodes only.",
             )
-        train_params = build_train_params(config)
-        family = str(train_params.get("family", "") or "")
-        link = str(train_params.get("link", "") or "")
-        _validate_glm_family_link(family, link)
+        _validate_glm_config_values(config)
+        family = str(build_train_params(config).get("family", "") or "")
         if family != expected_family:
             raise HTTPException(
                 status_code=400,
@@ -1149,14 +1159,11 @@ class TrainService:
             )
 
         # Validity checks first, so a wrong value beats an incomplete one:
-        # GLM family/link combination (unknown family, bad link); CatBoost
-        # loss-vs-task. _validate_glm_family_link also raises on an empty
-        # family, and an absent loss is caught by the completeness gate below.
+        # GLM values (family/link, dispersion ranges, term contract,
+        # regularization and solver settings); CatBoost loss-vs-task. Absent
+        # values are caught by the completeness gate below.
         if algorithm == "glm":
-            train_params = build_train_params(config)
-            family = str(train_params.get("family", "") or "")
-            link = str(train_params.get("link", "") or "")
-            _validate_glm_family_link(family, link)
+            _validate_glm_config_values(config)
         else:
             loss_function = config.get("loss_function")
             if loss_function:
@@ -1200,6 +1207,89 @@ class TrainService:
                 )
         except TrainingConfigError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def _validate_glm_input_schema(
+        self,
+        body: TrainRequest | DispersionEstimateRequest,
+        config: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Reject GLM term/column mismatches against the exact input schema.
+
+        Runs synchronously before a job exists so the caller gets a 422 rather
+        than a job that fails during preparation. The schema is resolved
+        unprojected, so an expression keyed by an upstream column the model
+        never reads is still caught; role columns and dtype classes are
+        validated too. The schema build runs the pipeline's own code inside an
+        admitted execution context. Returns the compiled preamble so callers
+        can reuse it.
+        """
+        if not is_glm_config(config):
+            return None
+        params = build_train_params(config)
+        terms = params.get("terms")
+        if not terms:
+            return None
+        execution_context: ExecutionContext | None = None
+        try:
+            execution_context = create_admitted_execution_context(
+                operation="training_glm_schema",
+                profile=ExecutionProfile.TRAINING_PREP,
+            )
+            preamble_ns = self._compile_preamble(body.graph)
+            schema = resolve_training_input_schema(
+                body.graph,
+                body.node_id,
+                preamble_ns,
+                body.source,
+                execution_context=execution_context,
+            )
+            validate_glm_model_columns(
+                terms,
+                params.get("interactions") or [],
+                schema,
+                role_columns=_training_metadata_reasons(config),
+            )
+            return preamble_ns
+        except HauteValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
+            raise _memory_limit_http_exception(exc) from None
+        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+            raise contract_error_http_exception(exc) from None
+        except (ParseError, ConfigError, pl.exceptions.PolarsError, ValueError) as exc:
+            # A graph shape the engine cannot resolve (an unfed modelling node
+            # raises a bare ValueError before the resolver's own guard) is the
+            # user's to fix, exactly like a parse or schema failure: name the
+            # cause in a 422 rather than let it escape as a 500. Same reasoning
+            # as evaluation_preview's (TypeError, ValueError) branch above.
+            raise HTTPException(
+                status_code=422,
+                detail=f"Training input schema could not be resolved: {exc}",
+            ) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            # The schema-only build runs the user's own transform code, which
+            # can raise anything at all — an undefined name is a NameError, an
+            # empty transform a NotImplementedError. Those are the user's to
+            # fix exactly like a parse failure, so name the class and the node
+            # in a 422 rather than let an arbitrary exception become a 500.
+            logger.warning(
+                "glm_input_schema_unresolvable",
+                node_id=body.node_id,
+                error=str(exc),
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Training input schema could not be resolved at modelling node "
+                    f"{body.node_id!r}: {type(exc).__name__}: {exc}"
+                ),
+            ) from exc
+        finally:
+            if execution_context is not None:
+                execution_context.release_admission(preserve_primary_error=True)
 
     def _check_no_concurrent_jobs(self) -> None:
         """Reject if a training job is already running."""

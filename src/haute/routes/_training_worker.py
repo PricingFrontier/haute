@@ -430,7 +430,9 @@ def _training_response_payload(
         glm_coefficients=train_result.glm_coefficients,
         glm_relativities=train_result.glm_relativities,
         glm_fit_statistics=train_result.glm_fit_statistics,
-        glm_regularization_path=train_result.glm_regularization_path,
+        glm_inference=train_result.glm_inference,
+        glm_smooth_terms=train_result.glm_smooth_terms,
+        glm_regularization=train_result.glm_regularization,
         diagnostics_errors=train_result.diagnostics_errors,
         evaluation=evaluation_payload,
         tuning=tuning_payload,
@@ -627,11 +629,8 @@ def _run_dispersion_process_job(
             raise HauteValidationError(f"Unknown dispersion parameter {param!r}")
 
         from haute.modelling import TrainingJob
-        from haute.modelling._rustystats import (
-            _build_interactions,
-            _resolve_glm_terms,
-            estimate_glm_dispersion,
-        )
+        from haute.modelling._glm_terms import validate_glm_model_columns
+        from haute.modelling._rustystats import estimate_glm_dispersion
 
         execution_context = _child_execution_context(
             request,
@@ -653,32 +652,23 @@ def _run_dispersion_process_job(
             )
 
         prepared = job._prepare_data(progress, execution_context=execution_context)
-        features = prepared.features
-        cat_features = prepared.cat_features
-        raw_terms = train_params.get("terms") or {}
-        if raw_terms:
-            term_names = set(raw_terms)
-            missing = term_names - set(features)
-            if missing:
-                raise HauteValidationError(
-                    "GLM terms reference columns not present in the training data: "
-                    f"{sorted(missing)}."
-                )
-            features = [feature for feature in features if feature in term_names]
-            cat_features = [feature for feature in cat_features if feature in term_names]
-
-        terms = _resolve_glm_terms(train_params, features, cat_features)
-        interactions = _build_interactions(
-            train_params.get("interactions", []) or [],
-            terms,
-        )
         target = str(job_kwargs["target"])
         weight = job_kwargs.get("weight") or None
         offset = job_kwargs.get("offset") or None
+        # The profile is taken on exactly the training design: every column a
+        # term, expression, or interaction factor reads (including a factor
+        # whose main effect an interaction materialises), plus the role columns
+        # the fit needs.
+        model_columns = validate_glm_model_columns(
+            train_params["terms"],
+            train_params.get("interactions") or [],
+            prepared.feature_dtypes,
+            role_columns=job._role_columns(),
+        )
         needed = list(
             dict.fromkeys(
                 [
-                    *terms,
+                    *model_columns,
                     target,
                     *([weight] if weight else []),
                     *([offset] if offset else []),
@@ -704,15 +694,11 @@ def _run_dispersion_process_job(
 
         estimate = estimate_glm_dispersion(
             data=frame,
-            terms=terms,
+            params=train_params,
             target=target,
-            family=str(train_params.get("family")),
             param=param,
-            link=train_params.get("link") or None,
-            intercept=bool(train_params.get("intercept", True)),
             weight=weight,
             offset=offset,
-            interactions=interactions or None,
             on_fit=on_fit,
         )
         return WorkerResultManifest(

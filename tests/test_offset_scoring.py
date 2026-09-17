@@ -26,7 +26,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from haute.errors import FeatureMismatchError
+from haute.errors import ConfigError, FeatureMismatchError, HauteValidationError
 from haute.modelling._feature_contract import (
     build_contract,
     load_contract,
@@ -147,18 +147,43 @@ class TestGLMPredictOffset:
 
 
 class TestCatBoostPredictOffset:
-    def test_predict_reapplies_baseline(self) -> None:
+    def test_catboost_poisson_offset_is_a_multiplier(self) -> None:
         """CatBoost predictions with the offset kwarg must include the
-        baseline: for a Poisson loss the raw-score baseline multiplies the
-        response prediction by exp(baseline)."""
-        pytest.importorskip("catboost", reason="catboost optional dependency not installed")
+        baseline: for a Poisson loss the offset is an exposure multiplier, so
+        the prediction scales exactly with it (baseline log(exposure))."""
         df = _freq_frame()
         algo, model = _fit_catboost(df, offset="exposure")
 
         with_offset = algo.predict(model, df, ["age", "region"], offset="exposure")
         without = algo.predict(model, df, ["age", "region"])
-        expected_ratio = np.exp(df["exposure"].to_numpy())
+        expected_ratio = df["exposure"].to_numpy()
         np.testing.assert_allclose(with_offset / without, expected_ratio, rtol=1e-5)
+
+    def test_catboost_rmse_offset_is_additive(self) -> None:
+        """Under an identity-link loss the offset enters the raw score verbatim."""
+        df = _freq_frame()
+        algo, model = _fit_catboost(df, offset="exposure", loss="RMSE")
+
+        with_offset = algo.predict(model, df, ["age", "region"], offset="exposure")
+        without = algo.predict(model, df, ["age", "region"])
+        np.testing.assert_allclose(with_offset - without, df["exposure"].to_numpy(), rtol=1e-6)
+
+    def test_catboost_model_without_offset_link_metadata_is_refused(
+        self, haute_scratch: Path
+    ) -> None:
+        """A model recording an offset column but not its transform cannot be
+        scored the way it was trained, so loading it asks for a retrain."""
+        from haute._mlflow_io import load_local_model
+        from haute.modelling._algorithms import CATBOOST_OFFSET_LINK_METADATA_KEY
+
+        df = _freq_frame()
+        algo, model = _fit_catboost(df, offset="exposure")
+        del model.get_metadata()[CATBOOST_OFFSET_LINK_METADATA_KEY]
+        model_path = haute_scratch / "freq_without_link.cbm"
+        algo.save(model, model_path)
+
+        with pytest.raises(ConfigError, match="records offset column 'exposure' but not how"):
+            load_local_model(str(model_path), "regression")
 
     def test_predict_missing_offset_column_fails_loud(self) -> None:
         pytest.importorskip("catboost", reason="catboost optional dependency not installed")
@@ -310,6 +335,78 @@ class TestTrainingMetricsIncludeOffset:
         result = job.run()
         assert "exposure" not in result.features
         assert np.isfinite(result.metrics["rmse"])
+
+    @pytest.mark.parametrize(
+        ("loss_function", "params", "link"),
+        [
+            (None, {"loss_function": "Poisson"}, "log"),
+            ("Tweedie", {}, "log"),
+            (None, {}, "identity"),
+            ("RMSE", {"loss_function": "Poisson"}, "identity"),
+        ],
+    )
+    def test_catboost_offset_link_follows_the_loss_the_fit_uses(
+        self, loss_function: str | None, params: dict, link: str
+    ) -> None:
+        """The training baseline and the link stamped on the model both follow
+        the effective loss, whether it is a job setting or a ``params`` key."""
+        from haute.modelling._training_job import TrainingJob
+
+        job = TrainingJob(
+            name="cb_link",
+            data=_freq_frame(n=10),
+            target="claim_count",
+            params=params,
+            loss_function=loss_function,
+            offset="exposure",
+        )
+        assert job._offset_link() == link
+
+    @pytest.mark.parametrize("algorithm", ["glm", "catboost"])
+    def test_non_positive_log_link_offset_is_refused_before_fitting(
+        self, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch, algorithm: str
+    ) -> None:
+        from haute.modelling._training_job import TrainingJob
+
+        def fit_must_not_run(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("the model was fitted with a non-positive exposure")
+
+        algorithm_class = (
+            "haute.modelling._rustystats.GLMAlgorithm.fit"
+            if algorithm == "glm"
+            else "haute.modelling._algorithms.CatBoostAlgorithm.fit"
+        )
+        monkeypatch.setattr(algorithm_class, fit_must_not_run)
+        df = _freq_frame().with_columns(
+            pl.when(pl.int_range(pl.len()) == 0)
+            .then(0.0)
+            .when(pl.int_range(pl.len()) == 1)
+            .then(-1.0)
+            .when(pl.int_range(pl.len()) == 2)
+            .then(None)
+            .otherwise(pl.col("exposure"))
+            .alias("exposure")
+        )
+        params = (
+            {"terms": {"age": {"type": "linear"}}, "family": "poisson"}
+            if algorithm == "glm"
+            else {"iterations": 5, "depth": 2, "verbose": 0, "loss_function": "Poisson"}
+        )
+        job = TrainingJob(
+            name=f"{algorithm}_bad_exposure",
+            data=df,
+            target="claim_count",
+            algorithm=algorithm,
+            params=params,
+            offset="exposure",
+            metrics=["rmse"],
+            output_dir=str(haute_scratch),
+        )
+        with pytest.raises(
+            HauteValidationError,
+            match="'exposure' must be positive under a log link, but 3 training rows",
+        ):
+            job.run()
 
     def test_catboost_metrics_use_offset_inclusive_predictions(
         self, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
@@ -512,6 +609,32 @@ class TestCanvasScorerOffset:
                 df.drop("exposure", "claim_count").lazy(),
                 task="regression",
                 output_col="prediction",
+            ).collect()
+
+    @pytest.mark.parametrize("source", ["live", "batch"])
+    def test_scoring_refuses_non_positive_log_link_exposure(
+        self, haute_scratch: Path, source: str
+    ) -> None:
+        from haute._model_scorer import _run_score_pipeline
+
+        df, scoring_model = _glm_scoring_model(haute_scratch)
+        assert scoring_model.offset_link == "log"
+        frame = df.drop("claim_count").with_columns(
+            pl.when(pl.int_range(pl.len()) < 2)
+            .then(0.0)
+            .otherwise(pl.col("exposure"))
+            .alias("exposure")
+        )
+        with pytest.raises(
+            HauteValidationError,
+            match="Scoring: offset column 'exposure' must be positive under a log link, but 2 rows",
+        ):
+            _run_score_pipeline(
+                scoring_model,
+                frame.lazy(),
+                task="regression",
+                output_col="prediction",
+                source=source,
             ).collect()
 
     def test_glm_scoring_applies_offset(self, haute_scratch: Path) -> None:

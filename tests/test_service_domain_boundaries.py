@@ -256,7 +256,7 @@ def test_training_facade_is_declaration_only_and_helper_imports_stay_stable() ->
         "_run_training_process_job",
         "_seeded_training_sample",
         "_training_required_columns_by_node",
-        "_validate_glm_family_link",
+        "_validate_glm_config_values",
         "_worker_failure_payload",
     }
     assert not sorted(name for name in expected if not hasattr(facade, name))
@@ -266,7 +266,7 @@ def test_training_facade_is_declaration_only_and_helper_imports_stay_stable() ->
     assert facade._training_required_columns_by_node.__module__ == (
         "haute.routes._training_preparation"
     )
-    assert facade._validate_glm_family_link.__module__ == ("haute.routes._training_evaluation")
+    assert facade._validate_glm_config_values.__module__ == ("haute.routes._training_evaluation")
     assert facade._evaluation_preview_payload.__module__ == ("haute.routes._training_evaluation")
     assert facade._run_training_process_job.__module__ == "haute.routes._training_worker"
     assert facade._validate_training_artifacts.__module__ == "haute.routes._training_artifacts"

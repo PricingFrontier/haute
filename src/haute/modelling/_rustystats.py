@@ -1,13 +1,17 @@
 """RustyStats GLM algorithm implementation for Haute's training pipeline.
 
 Implements ``BaseAlgorithm`` so that ``TrainingJob(algorithm="glm", ...)``
-delegates to RustyStats for fitting, prediction, and serialization.
+delegates to RustyStats for fitting, prediction, and serialization. The term
+contract and interaction resolution live in :mod:`haute.modelling._glm_terms`;
+config validation lives in :mod:`haute.modelling._train_config`.
 """
 
 from __future__ import annotations
 
 import gc
-from collections.abc import Callable
+import math
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -23,117 +27,68 @@ from haute.modelling._algorithms import (
     _malloc_trim,
     _mem_checkpoint,
 )
+from haute.modelling._glm_terms import (
+    bounded_names,
+    glm_dtype_class,
+    resolve_categorical_levels,
+    resolve_glm_design,
+    validate_glm_model_columns,
+)
+from haute.modelling._train_config import (
+    glm_cross_validates,
+    glm_effective_link,
+    glm_params_issue,
+    validate_glm_params,
+)
 
 logger = get_logger(component="rustystats")
 
 
-class GLMInferenceUnavailableError(RuntimeError):
-    """Real GLM inference statistics (std errors, z-values, p-values) cannot be obtained.
+# ── Design preparation ───────────────────────────────────────────────────
 
-    Raised instead of fabricating placeholder statistics (the old behaviour
-    rendered SE=0.0 / p=1.0 as real, inventing significance). The training
-    job catches this, records a ``glm_coefficients`` entry in
-    ``diagnostics_errors`` for the UI, and omits the coefficient table —
-    the frontend payload contract requires every stat field on every row,
-    so partial rows are not an option.
+
+def _observed_category_labels(series: pl.Series) -> list[str]:
+    """Non-null labels exactly as RustyStats compares categorical levels.
+
+    RustyStats matches ``levels`` against ``column.to_numpy().astype(str)``
+    over the whole column, so an integer column with nulls is labelled
+    ``2.0`` rather than ``2``. Null rows are excluded from the labels.
     """
+    strings = np.asarray(series.to_numpy()).astype(str)
+    present = ~series.is_null().to_numpy()
+    return sorted(set(strings[present].tolist()))
 
 
-def _auto_terms(
-    features: list[str],
-    cat_features: list[str],
-) -> dict[str, dict[str, Any]]:
-    """Generate default term specs when none are provided.
+def prepare_glm_design(
+    params: Mapping[str, Any],
+    frame: pl.DataFrame,
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    """Resolve stored GLM params into the terms and interactions RustyStats fits.
 
-    Numeric features → ``linear``, categorical → ``categorical``.
+    Validates every model column against the frame's dtypes, translates
+    categorical reference levels using the frame's observed labels, and
+    resolves interactions independently of card order.
     """
-    cat_set = set(cat_features)
-    terms: dict[str, dict[str, Any]] = {}
-    for f in features:
-        if f in cat_set:
-            terms[f] = {"type": "categorical"}
-        else:
-            terms[f] = {"type": "linear"}
-    return terms
-
-
-def _build_interactions(
-    interactions_config: list[dict[str, Any]],
-    terms: dict[str, dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Convert Haute's interaction format to RustyStats format.
-
-    Haute stores: ``[{"factors": ["a", "b"], "include_main": true}]``
-    RustyStats wants: ``[{"a": {"type": "..."}, "b": {"type": "..."}, "include_main": false}]``
-
-    Each factor's term spec is inherited from the main terms dict.
-
-    Note: ``include_main`` is forced to ``False`` when ALL interaction
-    factors already appear in the main ``terms`` dict (which is the
-    normal case in Haute).  RustyStats' ``include_main: True`` *adds*
-    the main effects to the design matrix — duplicating them when
-    they're already present as standalone terms causes perfect
-    collinearity and a singular matrix error.
-    """
-    rs_interactions: list[dict[str, Any]] = []
-    for interaction in interactions_config:
-        # The config panel's "+ Add" creates {"factors": ["", ""]} until the
-        # user picks both columns — unset slots must not count towards the
-        # two-factor minimum or the fit crashes on a phantom interaction.
-        factors = [f for f in interaction.get("factors", []) if f]
-        if len(factors) < 2:
-            continue
-        rs_int: dict[str, Any] = {}
-        for factor in factors:
-            if factor in terms:
-                rs_int[factor] = dict(terms[factor])
-            else:
-                # Fallback: categorical for unknown factors
-                rs_int[factor] = {"type": "categorical"}
-
-        # Only set include_main=True when at least one factor is NOT
-        # already in the main terms dict (otherwise it causes singularity).
-        all_in_terms = all(f in terms for f in factors)
-        if all_in_terms:
-            rs_int["include_main"] = False
-        else:
-            rs_int["include_main"] = interaction.get("include_main", True)
-
-        rs_interactions.append(rs_int)
-    return rs_interactions
-
-
-def _align_coefs_and_names(
-    coefs: np.ndarray,
-    names: list[str],
-) -> tuple[np.ndarray, list[str]]:
-    """Align coefficient array and feature names, prepending (Intercept) if needed."""
-    if len(coefs) > len(names):
-        names = ["(Intercept)"] + names
-    min_len = min(len(coefs), len(names))
-    return coefs[:min_len], names[:min_len]
-
-
-def _resolve_glm_terms(
-    params: dict[str, Any],
-    features: list[str],
-    cat_features: list[str],
-) -> dict[str, dict[str, Any]]:
-    """Resolve the effective term specs for a GLM fit from its params.
-
-    Shared by ``GLMAlgorithm.fit`` and the dispersion-estimation service so
-    an estimate is always profiled on exactly the design training would use.
-    Auto-generates a term per column when the user opted into "all features"
-    (``all_factors``), or — for the direct-construction API that bypasses the
-    config gate — when no terms are specified. The config path
-    (``build_training_job_kwargs``) already refuses empty terms without
-    ``all_factors``, so via the UI this only ever runs as an explicit choice.
-    """
-    terms: dict[str, dict[str, Any]] = params.get("terms", {})
-    all_factors = bool(params.get("all_factors", False))
-    if all_factors or not terms:
-        return _auto_terms(features, cat_features)
-    return terms
+    terms = params.get("terms") or {}
+    if not terms:
+        raise HauteValidationError("GLM config has no terms. Add a term to at least one feature.")
+    interactions = params.get("interactions") or []
+    schema = {name: str(dtype) for name, dtype in frame.schema.items()}
+    validate_glm_model_columns(terms, interactions, schema)
+    observed = {
+        name: _observed_category_labels(frame[name])
+        for name, spec in terms.items()
+        if spec["type"] == "categorical" and ("levels" in spec or "reference" in spec)
+    }
+    resolved_terms = resolve_categorical_levels(terms, observed)
+    dtype_classes = {name: glm_dtype_class(dtype) for name, dtype in schema.items()}
+    rs_interactions, effective_terms = resolve_glm_design(
+        resolved_terms,
+        interactions,
+        dtype_classes,
+        reserved_names=frame.columns,
+    )
+    return effective_terms, rs_interactions
 
 
 def _build_glm_builder_kwargs(
@@ -141,35 +96,49 @@ def _build_glm_builder_kwargs(
     target: str,
     terms: dict[str, dict[str, Any]],
     data: pl.DataFrame,
-    family: str,
-    intercept: bool,
-    link: str | None = None,
-    var_power: float = 1.5,
-    theta: float | None = None,
+    params: Mapping[str, Any],
     weight: str | None = None,
     offset: str | None = None,
     interactions: list[dict[str, Any]] | None = None,
+    var_power: float | None = None,
+    theta: float | None = None,
 ) -> dict[str, Any]:
-    """Build kwargs dict for ``rs.glm_dict()`` used by ``fit()``."""
+    """Build kwargs for ``rs.glm_dict()``.
+
+    ``var_power`` and ``theta`` override the params values for profile
+    likelihood candidates.
+    """
+    family = str(params["family"])
     kwargs: dict[str, Any] = {
         "response": target,
         "terms": terms,
         "data": data,
         "family": family,
-        "intercept": intercept,
+        "intercept": params.get("intercept", True),
     }
+    link = params.get("link") or None
     if link:
         kwargs["link"] = link
     if family == "tweedie":
-        kwargs["var_power"] = var_power
-    if family == "negbinomial" and theta is not None:
-        # RustyStats does NOT estimate theta — leaving it unset silently
-        # fits at theta=1.0. The config path gates on an explicit theta
-        # (training_objective_issue); the direct-construction API keeps
-        # the library default for callers that bypass the config gate.
-        kwargs["theta"] = float(theta)
+        power = float(params["var_power"] if var_power is None else var_power)
+        kwargs["var_power"] = power
+        if power in (1.0, 2.0):
+            # RustyStats 0.9 restricts Tweedie to 1 < p < 2 unless extended
+            # support is enabled; the Poisson and Gamma endpoints need it.
+            kwargs["allow_extended_tweedie"] = True
+    if family == "negbinomial":
+        kwargs["theta"] = float(params["theta"] if theta is None else theta)
     if offset:
-        kwargs["offset"] = offset
+        # Haute's offset column is a positive multiplier under a log link and
+        # additive otherwise. RustyStats 0.9 takes ``offset`` verbatim on the
+        # link scale and reserves ``exposure`` for the raw, log-transformed rate
+        # denominator, so route by the effective link. RustyStats stores the
+        # spec on the fitted model and re-reads the column by name at
+        # prediction time.
+        if glm_effective_link(params) == "log":
+            kwargs["exposure"] = offset
+        else:
+            kwargs["offset"] = offset
     if weight:
         kwargs["weights"] = weight
     if interactions:
@@ -177,79 +146,97 @@ def _build_glm_builder_kwargs(
     return kwargs
 
 
+def glm_fit_kwargs(params: Mapping[str, Any]) -> dict[str, Any]:
+    """Build kwargs for ``FormulaGLMDict.fit()`` from validated GLM params.
+
+    A positive ``alpha`` is a fixed penalty and never passes ``regularization``,
+    because RustyStats ignores ``alpha`` whenever ``regularization`` is set.
+    """
+    kwargs: dict[str, Any] = {}
+    regularization = params.get("regularization") or None
+    if regularization:
+        l1_ratio = {"ridge": 0.0, "lasso": 1.0}.get(regularization)
+        if l1_ratio is None:
+            l1_ratio = float(params["l1_ratio"])
+        if glm_cross_validates(params):
+            kwargs["regularization"] = regularization
+            kwargs["cv"] = int(params["cv_folds"])
+            kwargs["selection"] = str(params["cv_selection"])
+            kwargs["cv_seed"] = int(params["cv_seed"])
+            if regularization == "elastic_net":
+                kwargs["l1_ratio"] = l1_ratio
+        else:
+            kwargs["alpha"] = float(params["alpha"])
+            kwargs["l1_ratio"] = l1_ratio
+    if params.get("max_iter") is not None:
+        kwargs["max_iter"] = int(params["max_iter"])
+    if params.get("tol") is not None:
+        kwargs["tol"] = float(params["tol"])
+    if params.get("robust_standard_errors"):
+        kwargs["store_design_matrix"] = True
+    return kwargs
+
+
+# ── Dispersion estimation ────────────────────────────────────────────────
+
 # Search bounds for profile-likelihood dispersion estimation. Theta is a
 # scale-like parameter, so it is profiled in log-space; practical Negative
 # Binomial dispersions live well inside [0.01, 1000]. Tweedie variance power
 # is profiled on the open interval (1, 2) the compound Poisson-gamma family
-# is defined on (matching the config panel's slider range).
+# is defined on.
 _DISPERSION_BOUNDS: dict[str, tuple[float, float]] = {
     "theta": (0.01, 1000.0),
     "var_power": (1.01, 1.99),
 }
+_DISPERSION_FAMILIES: dict[str, str] = {"theta": "negbinomial", "var_power": "tweedie"}
 
 
+@dataclass(frozen=True)
 class DispersionEstimate:
     """Result of a profile-likelihood dispersion estimation."""
 
-    __slots__ = ("param", "value", "llf", "n_fits")
-
-    def __init__(self, param: str, value: float, llf: float, n_fits: int) -> None:
-        self.param = param
-        self.value = value
-        self.llf = llf
-        self.n_fits = n_fits
+    param: str
+    value: float
+    llf: float
+    n_fits: int
 
 
 def estimate_glm_dispersion(
     *,
     data: pl.DataFrame,
-    terms: dict[str, dict[str, Any]],
+    params: Mapping[str, Any],
     target: str,
-    family: str,
     param: str,
-    link: str | None = None,
-    intercept: bool = True,
     weight: str | None = None,
     offset: str | None = None,
-    interactions: list[dict[str, Any]] | None = None,
     on_fit: Callable[[int], None] | None = None,
 ) -> DispersionEstimate:
     """Estimate a GLM dispersion parameter by profile likelihood.
 
-    RustyStats does not estimate Negative Binomial ``theta`` (unset silently
-    fits at 1.0) or Tweedie ``var_power`` (unset silently fits at 1.5), so
-    the config panel offers this estimate as an explicit user action — the
-    resolved value lands in the node config where the training-objective
-    gate requires it, never as a hidden default.
+    RustyStats refuses a Negative Binomial fit without ``theta`` and has no
+    estimator for the Tweedie variance power, so the config panel offers this
+    estimate as an explicit user action; the resolved value lands in the node
+    config where the objective gate requires it, never as a hidden default.
 
     Maximises the fitted model's log-likelihood over the single dispersion
-    parameter with a bounded 1-D search (deterministic; ~20-30 IRLS fits).
-    ``theta`` is profiled in log-space. Validated against statsmodels NB2:
-    the profile MLE matches ``1/alpha`` to 4 s.f. on synthetic data, with
-    coefficient parity to 4 d.p.
-
-    Raises
-    ------
-    ValueError
-        If *param* is not an estimable dispersion parameter, or the
-        family/param pairing is inconsistent, or every candidate fit fails.
+    parameter with a bounded 1-D search on the training design (deterministic;
+    about 20 to 30 fits). ``theta`` is profiled in log-space.
     """
-    import math
-
     import rustystats as rs
     from scipy.optimize import minimize_scalar
 
-    expected_family = {"theta": "negbinomial", "var_power": "tweedie"}
-    if param not in expected_family:
+    if param not in _DISPERSION_FAMILIES:
         raise HauteValidationError(
             f"Unknown dispersion parameter {param!r}. "
-            f"Estimable parameters: {', '.join(expected_family)}."
+            f"Estimable parameters: {', '.join(_DISPERSION_FAMILIES)}."
         )
-    if family != expected_family[param]:
+    family = params.get("family")
+    if family != _DISPERSION_FAMILIES[param]:
         raise HauteValidationError(
             f"Dispersion parameter {param!r} belongs to the "
-            f"{expected_family[param]} family, not {family!r}."
+            f"{_DISPERSION_FAMILIES[param]} family, not {family!r}."
         )
+    terms, interactions = prepare_glm_design(params, data)
 
     n_fits = 0
     last_error: Exception | None = None
@@ -264,14 +251,12 @@ def estimate_glm_dispersion(
             target=target,
             terms=terms,
             data=data,
-            family=family,
-            intercept=intercept,
-            link=link,
-            var_power=value if param == "var_power" else 1.5,
-            theta=value if param == "theta" else None,
+            params=params,
             weight=weight,
             offset=offset,
             interactions=interactions,
+            var_power=value if param == "var_power" else None,
+            theta=value if param == "theta" else None,
         )
         n_fits += 1
         try:
@@ -291,7 +276,7 @@ def estimate_glm_dispersion(
         value = float(math.exp(result.x))
     else:
         result = minimize_scalar(
-            lambda v: -_llf_at(v),
+            lambda candidate: -_llf_at(candidate),
             bounds=(lo, hi),
             method="bounded",
             options={"xatol": 1e-3},
@@ -306,6 +291,288 @@ def estimate_glm_dispersion(
             + (f" (last error: {last_error})" if last_error else ".")
         )
     return DispersionEstimate(param=param, value=value, llf=llf, n_fits=n_fits)
+
+
+# ── Result extraction ────────────────────────────────────────────────────
+
+_INFERENCE_REASONS: dict[str, str] = {
+    "naive_after_regularization": (
+        "The ridge penalty shrinks the coefficients, so standard errors and p-values are not valid."
+    ),
+    "naive_after_selection": (
+        "Lasso or elastic net selects variables, so standard errors and p-values are not valid."
+    ),
+    "naive_after_cv_selection": (
+        "The penalty was chosen by cross-validation, so standard errors and p-values are not valid."
+    ),
+    "constrained_boundary": (
+        "Monotonicity constraints restrict the coefficients, so standard errors and p-values "
+        "are not valid."
+    ),
+    "unavailable": (
+        "Automatically smoothed splines are penalised, so standard errors and p-values are "
+        "not valid."
+    ),
+    "covariance_skipped": (
+        "Covariance was not computed, so standard errors and p-values are unavailable."
+    ),
+    "singular_design": (
+        "Standard errors are not finite because the design is close to singular; check for "
+        "collinear or unscaled terms."
+    ),
+}
+
+
+def _significance_code(p_value: float) -> str:
+    """R-style significance code, matching RustyStats' ``significance_codes``."""
+    if p_value < 0.001:
+        return "***"
+    if p_value < 0.01:
+        return "**"
+    if p_value < 0.05:
+        return "*"
+    if p_value < 0.1:
+        return "."
+    return ""
+
+
+@dataclass(frozen=True)
+class GLMInference:
+    """Whether a fitted GLM's standard errors are valid, with the statistics."""
+
+    status: str
+    valid: bool
+    standard_errors: str | None
+    reason: str | None
+    std_error: np.ndarray | None = None
+    z_value: np.ndarray | None = None
+    p_value: np.ndarray | None = None
+    significance: list[str] | None = None
+    confidence_intervals: np.ndarray | None = None
+
+    def to_plain_data(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "valid": self.valid,
+            "standard_errors": self.standard_errors,
+            "reason": self.reason,
+        }
+
+
+def glm_inference(model: Any, robust_standard_errors: str | None) -> GLMInference:
+    """Read RustyStats' inference status and the statistics it allows.
+
+    RustyStats 0.9 marks inference invalid after penalties, selection,
+    constraints, and smoothing; only ``valid_standard`` fits report standard
+    errors. A valid status whose standard errors are not finite is reported as
+    ``singular_design`` rather than published as numbers.
+    """
+    status = getattr(model, "inference_status", None)
+    if not isinstance(status, str):
+        raise ValueError("RustyStats did not report an inference status for this model")
+    if status != "valid_standard":
+        reason = _INFERENCE_REASONS.get(status)
+        if reason is None:
+            raise ValueError(f"RustyStats reported an unknown inference status {status!r}")
+        return GLMInference(status=status, valid=False, standard_errors=None, reason=reason)
+    if robust_standard_errors:
+        std_error = np.asarray(model.bse_robust(robust_standard_errors), dtype=np.float64)
+        z_value = np.asarray(model.tvalues_robust(robust_standard_errors), dtype=np.float64)
+        p_value = np.asarray(model.pvalues_robust(robust_standard_errors), dtype=np.float64)
+        intervals = np.asarray(
+            model.conf_int_robust(alpha=0.05, cov_type=robust_standard_errors),
+            dtype=np.float64,
+        )
+    else:
+        std_error = np.asarray(model.bse(), dtype=np.float64)
+        z_value = np.asarray(model.tvalues(), dtype=np.float64)
+        p_value = np.asarray(model.pvalues(), dtype=np.float64)
+        intervals = np.asarray(model.conf_int(0.05), dtype=np.float64)
+    arrays = (std_error, z_value, p_value, intervals)
+    if not all(bool(np.all(np.isfinite(array))) for array in arrays):
+        return GLMInference(
+            status="singular_design",
+            valid=False,
+            standard_errors=None,
+            reason=_INFERENCE_REASONS["singular_design"],
+        )
+    return GLMInference(
+        status=status,
+        valid=True,
+        standard_errors=robust_standard_errors or "model",
+        reason=None,
+        std_error=std_error,
+        z_value=z_value,
+        p_value=p_value,
+        significance=[_significance_code(float(value)) for value in p_value],
+        confidence_intervals=intervals,
+    )
+
+
+def _coefficients(model: Any) -> tuple[list[str], np.ndarray]:
+    names = [str(name) for name in model.feature_names]
+    coefficients = np.asarray(model.params, dtype=np.float64)
+    if len(names) != len(coefficients):
+        raise ValueError(
+            f"RustyStats reported {len(coefficients)} coefficients for {len(names)} design columns"
+        )
+    return names, coefficients
+
+
+def glm_coefficient_rows(model: Any, inference: GLMInference) -> list[dict[str, Any]]:
+    """Coefficient table rows; inference fields are null unless inference is valid."""
+    names, coefficients = _coefficients(model)
+    non_finite = [names[index] for index in np.flatnonzero(~np.isfinite(coefficients))]
+    if non_finite:
+        raise ValueError(
+            f"RustyStats reported non-finite coefficients for {bounded_names(non_finite)}"
+        )
+    rows: list[dict[str, Any]] = []
+    for index, name in enumerate(names):
+        row: dict[str, Any] = {"feature": name, "coefficient": float(coefficients[index])}
+        if inference.valid:
+            assert inference.std_error is not None
+            assert inference.z_value is not None
+            assert inference.p_value is not None
+            assert inference.significance is not None
+            row.update(
+                std_error=float(inference.std_error[index]),
+                z_value=float(inference.z_value[index]),
+                p_value=float(inference.p_value[index]),
+                significance=inference.significance[index],
+            )
+        else:
+            row.update(std_error=None, z_value=None, p_value=None, significance=None)
+        rows.append(row)
+    return rows
+
+
+def glm_relativity_rows(model: Any, inference: GLMInference) -> list[dict[str, Any]]:
+    """Exponentiated coefficients for log-link models; empty for any other link."""
+    if str(model.link) != "log":
+        return []
+    names, coefficients = _coefficients(model)
+    with np.errstate(over="ignore", invalid="ignore"):
+        relativities = np.exp(coefficients)
+        bounds = (
+            np.exp(inference.confidence_intervals)
+            if inference.valid and inference.confidence_intervals is not None
+            else None
+        )
+    overflow = [names[index] for index in np.flatnonzero(~np.isfinite(relativities))]
+    if bounds is not None:
+        overflow.extend(
+            names[index]
+            for index in np.flatnonzero(~np.all(np.isfinite(bounds), axis=1))
+            if names[index] not in overflow
+        )
+    if overflow:
+        raise ValueError(
+            f"Relativities are not finite for {bounded_names(overflow)}: the coefficients or "
+            "their intervals are too large to exponentiate. Check for collinear or unscaled "
+            "terms, and for categorical levels whose response is always zero."
+        )
+    rows: list[dict[str, Any]] = []
+    for index, name in enumerate(names):
+        rows.append(
+            {
+                "feature": name,
+                "relativity": float(relativities[index]),
+                "ci_lower": float(bounds[index][0]) if bounds is not None else None,
+                "ci_upper": float(bounds[index][1]) if bounds is not None else None,
+            }
+        )
+    return rows
+
+
+def glm_fit_statistics(model: Any) -> dict[str, float]:
+    """Finite fit statistics RustyStats defines for this model."""
+    smooth = bool(model.has_smooth_terms())
+    raw: dict[str, Any] = {
+        "deviance": model.deviance,
+        "null_deviance": model.null_deviance(),
+        "n_obs": model.nobs,
+        "df_model": model.df_model,
+        "df_residual": model.df_resid,
+        "iterations": model.iterations,
+        "converged": 1.0 if model.converged else 0.0,
+        "scale": model.scale(),
+    }
+    if not model.is_quasi_likelihood:
+        raw["log_likelihood"] = model.llf()
+    for name, method in (("aic", model.aic), ("bic", model.bic)):
+        value = method()
+        if value is not None:
+            raw[name] = value
+    if smooth:
+        raw["total_edf"] = model.total_edf
+        raw["gcv"] = model.gcv
+    statistics = {name: float(value) for name, value in raw.items()}
+    non_finite = sorted(name for name, value in statistics.items() if not math.isfinite(value))
+    if non_finite:
+        raise ValueError(f"RustyStats reported non-finite fit statistics: {non_finite}")
+    return statistics
+
+
+def glm_smooth_term_rows(model: Any) -> list[dict[str, Any]]:
+    """Effective degrees of freedom and smoothing parameter per penalised spline."""
+    if not model.has_smooth_terms():
+        return []
+    rows: list[dict[str, Any]] = []
+    for term in model.smooth_terms:
+        edf = float(term.edf)
+        smoothing = float(term.lambda_)
+        if not (math.isfinite(edf) and math.isfinite(smoothing)):
+            raise ValueError(
+                f"RustyStats reported non-finite smoothing results for {term.variable!r}"
+            )
+        rows.append({"term": str(term.variable), "k": int(term.k), "edf": edf, "lambda": smoothing})
+    return rows
+
+
+def glm_regularization_summary(model: Any, params: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The penalty RustyStats applied, or ``None`` for an unpenalised fit."""
+    regularization = params.get("regularization") or None
+    if not regularization:
+        return None
+    cross_validated = glm_cross_validates(params)
+    alpha = float(model.alpha)
+    l1_ratio = model.l1_ratio
+    summary: dict[str, Any] = {
+        "penalty": regularization,
+        "mode": "cross_validation" if cross_validated else "fixed",
+        "alpha": alpha,
+        "l1_ratio": None if l1_ratio is None else float(l1_ratio),
+        "n_nonzero": int(model.n_nonzero()),
+        "cv_folds": int(model.n_cv_folds) if cross_validated else None,
+        "cv_selection": str(model.cv_selection_method) if cross_validated else None,
+        "cv_seed": int(params["cv_seed"]) if cross_validated else None,
+    }
+    if not math.isfinite(alpha) or (
+        summary["l1_ratio"] is not None and not math.isfinite(summary["l1_ratio"])
+    ):
+        raise ValueError("RustyStats reported a non-finite penalty")
+    return summary
+
+
+@dataclass
+class GLMResultReport:
+    """GLM-specific diagnostics for one fitted model.
+
+    ``errors`` names each optional diagnostic that failed; the training job
+    records them in ``diagnostics_errors`` without failing the run.
+    """
+
+    inference: dict[str, Any] | None = None
+    coefficients: list[dict[str, Any]] = field(default_factory=list)
+    relativities: list[dict[str, Any]] = field(default_factory=list)
+    fit_statistics: dict[str, float] = field(default_factory=dict)
+    smooth_terms: list[dict[str, Any]] = field(default_factory=list)
+    regularization: dict[str, Any] | None = None
+    errors: list[tuple[str, Exception]] = field(default_factory=list)
+
+
+# ── Algorithm ────────────────────────────────────────────────────────────
 
 
 class GLMAlgorithm(BaseAlgorithm):
@@ -327,97 +594,53 @@ class GLMAlgorithm(BaseAlgorithm):
         feature_weights: dict[str, float] | None = None,
         **kwargs: Any,
     ) -> FitResult:
-        """Fit a GLM using RustyStats dict API.
+        """Fit a GLM using the RustyStats dict API.
 
-        GLM-specific config (terms, family, link, regularization, etc.)
-        is passed via the ``params`` dict, which is assembled by
-        ``TrainingJob._train_model()``.
+        GLM configuration (terms, family, link, regularization, and so on)
+        arrives in ``params``. The design is resolved from ``train_df``'s
+        dtypes; ``features`` and ``cat_features`` only bound the columns read.
         """
         import rustystats as rs
 
-        _mem_checkpoint("glm fit() START")
-
         if train_df is None:
             raise HauteValidationError("GLMAlgorithm.fit() requires train_df (pool bypass)")
-
-        # Extract GLM-specific config from params
-        family = params.get("family", "gaussian")
-        link = params.get("link") or None  # empty string → None (canonical)
-        var_power = params.get("var_power", 1.5)
-        theta = params.get("theta")
-        intercept = params.get("intercept", True)
-        interactions_config = params.get("interactions", [])
-        regularization = params.get("regularization") or None
-        alpha = params.get("alpha", 0.0)
-        l1_ratio = params.get("l1_ratio", 0.0)
-
-        # Shared with the dispersion-estimation service so estimates are
-        # profiled on exactly this design (see _resolve_glm_terms).
-        terms = _resolve_glm_terms(params, features, cat_features)
-
-        if feature_weights:
-            logger.warning(
-                "glm_feature_weights_unsupported",
-                msg="feature_weights is not supported by RustyStats GLM and will be ignored",
-            )
-
-        # Apply monotone constraints from the top-level config
         if monotone_constraints:
-            for feat, direction in monotone_constraints.items():
-                if feat in terms:
-                    if direction > 0:
-                        terms[feat]["monotonicity"] = "increasing"
-                    elif direction < 0:
-                        terms[feat]["monotonicity"] = "decreasing"
+            raise HauteValidationError(
+                "monotone_constraints is a CatBoost lever; GLM monotonicity lives on each "
+                "term's 'monotonicity' key"
+            )
+        if feature_weights:
+            raise HauteValidationError(
+                "feature_weights is a CatBoost lever; RustyStats GLMs do not support it"
+            )
+        issue = glm_params_issue(params)
+        if issue is not None:
+            raise HauteValidationError(issue)
+        validate_glm_params(params)
 
-        # Build RustyStats interactions
-        rs_interactions = _build_interactions(interactions_config, terms)
-
-        _mem_checkpoint("glm building model")
-
-        # Build the GLM builder
-        builder_kwargs = _build_glm_builder_kwargs(
-            target=target,
-            terms=terms,
-            data=train_df,
-            family=family,
-            intercept=intercept,
-            link=link,
-            var_power=var_power,
-            theta=theta,
-            weight=weight,
-            offset=offset,
-            interactions=rs_interactions,
+        _mem_checkpoint("glm fit() START")
+        terms, rs_interactions = prepare_glm_design(params, train_df)
+        builder = rs.glm_dict(
+            **_build_glm_builder_kwargs(
+                target=target,
+                terms=terms,
+                data=train_df,
+                params=params,
+                weight=weight,
+                offset=offset,
+                interactions=rs_interactions,
+            )
         )
 
-        builder = rs.glm_dict(**builder_kwargs)
-
-        # Build fit kwargs
-        fit_kwargs: dict[str, Any] = {}
-        if regularization:
-            fit_kwargs["regularization"] = regularization
-            # RustyStats' internal CV sweeps alpha during regularization fits.
-            # 5 folds is the standard default used by sklearn's LassoCV /
-            # RidgeCV / ElasticNetCV and gives a good bias-variance trade-off.
-            fit_kwargs["cv"] = 5
-            if alpha > 0:
-                fit_kwargs["alpha"] = alpha
-            if regularization == "elastic_net":
-                fit_kwargs["l1_ratio"] = l1_ratio
-
-        # Signal start
         if on_iteration:
             on_iteration(0, 1, {})
-
         _mem_checkpoint("glm fitting")
-        result = builder.fit(**fit_kwargs)
+        result = builder.fit(**glm_fit_kwargs(params))
         _mem_checkpoint("glm fit() DONE")
-
-        # Signal completion
         if on_iteration:
             on_iteration(1, 1, {"deviance": float(result.deviance)})
 
-        # Build loss history (GLM converges in few IRLS steps, not iterative like GBM)
+        # A GLM converges in a few IRLS steps, not iteratively like a GBM.
         loss_history: list[dict[str, float]] = [
             {"iteration": 1.0, "train_deviance": float(result.deviance)},
         ]
@@ -442,10 +665,9 @@ class GLMAlgorithm(BaseAlgorithm):
         """Generate predictions on the response scale.
 
         When *offset* is set, the offset column is kept in the frame handed
-        to RustyStats, which extracts its fit-time offset column by name and
-        re-applies the exact fit-time transform (exposure columns are
-        log-transformed for log-link families).  Served predictions therefore
-        include the offset effect; a frame without the column raises.
+        to RustyStats, which re-reads its fit-time exposure (log link) or
+        offset (other links) column by name and re-applies the exact
+        fit-time transform. A frame without the column raises.
         """
         columns = list(features)
         if offset:
@@ -454,7 +676,7 @@ class GLMAlgorithm(BaseAlgorithm):
                     f"GLM predict: offset column {offset!r} is missing from "
                     f"the input data. The model was trained with this offset "
                     f"and predictions without it would be mis-scaled. "
-                    f"Available columns: {df.columns}"
+                    f"Available columns: {bounded_names(df.columns)}"
                 )
             if offset not in columns:
                 columns.append(offset)
@@ -464,212 +686,53 @@ class GLMAlgorithm(BaseAlgorithm):
     def feature_importance(self, model: Any) -> list[dict[str, Any]]:
         """Return absolute coefficient magnitudes as a proxy for importance.
 
-        This is a rough proxy — for GLMs, the coefficient table (with
-        standard errors and p-values) is the real diagnostic. This method
-        satisfies the ``BaseAlgorithm`` interface for the shared metrics
-        pipeline.
+        This is a rough proxy — for GLMs the coefficient table is the real
+        diagnostic. It satisfies the ``BaseAlgorithm`` interface for the shared
+        metrics pipeline.
         """
-        names = list(model.feature_names)
-        coefs = np.abs(np.asarray(model.coefficients))
-
-        coefs, names = _align_coefs_and_names(coefs, names)
-
-        pairs = sorted(zip(names, coefs), key=lambda x: x[1], reverse=True)
-        return [{"feature": name, "importance": float(imp)} for name, imp in pairs]
+        names, coefficients = _coefficients(model)
+        pairs = sorted(zip(names, np.abs(coefficients)), key=lambda pair: pair[1], reverse=True)
+        return [{"feature": name, "importance": float(value)} for name, value in pairs]
 
     def save(self, model: Any, path: Path) -> None:
         """Save model using RustyStats native binary serialization."""
         path.parent.mkdir(parents=True, exist_ok=True)
-        model_bytes = model.to_bytes()
         with open(path, "wb") as f:
-            f.write(model_bytes)
+            f.write(model.to_bytes())
 
-    # ------------------------------------------------------------------
-    # GLM-specific diagnostics (called by TrainingJob if hasattr)
-    # ------------------------------------------------------------------
-
-    def coefficients_table(self, model: Any) -> list[dict[str, Any]]:
-        """Return full coefficient table with SEs, z-stats, p-values.
-
-        Returns a list of dicts with normalized keys:
-        ``feature``, ``coefficient``, ``std_error``, ``z_value``,
-        ``p_value``, ``significance``.
-
-        Raises :class:`GLMInferenceUnavailableError` when real inference
-        statistics cannot be obtained (e.g. a model deserialized without
-        covariance data, or a library failure computing ``bse()`` /
-        ``pvalues()``). Placeholder statistics are never fabricated.
-        """
-        # Key mapping from RustyStats column names to our normalized names
-        key_map = {
-            "Feature": "feature",
-            "Estimate": "coefficient",
-            "Std. Error": "std_error",
-            "Std.Error": "std_error",
-            "z": "z_value",
-            "z value": "z_value",
-            "z.value": "z_value",
-            "Pr(>|z|)": "p_value",
-            "Signif": "significance",
-        }
-
+    def glm_result(self, model: Any, params: Mapping[str, Any]) -> GLMResultReport:
+        """Collect every GLM result diagnostic, recording failures by name."""
+        report = GLMResultReport()
         try:
-            coef_df = model.coef_table()
-            raw = coef_df.to_dicts()
-            # Normalize keys
-            return [
-                {key_map.get(k, k.lower().replace(" ", "_")): v for k, v in row.items()}
-                for row in raw
-            ]
+            inference = glm_inference(model, params.get("robust_standard_errors") or None)
+            report.inference = inference.to_plain_data()
         except Exception as exc:
-            logger.warning("coef_table_primary_failed", error=str(exc))
-            # Fallback: build the same table from the individual statistic
-            # arrays. These are still REAL statistics — only the formatted
-            # coef_table() accessor failed.
-            names = list(model.feature_names)
-            coefs = list(model.coefficients)
-            try:
-                ses = list(model.bse())
-                zvals = list(model.tvalues())
-                pvals = list(model.pvalues())
-                sigs = list(model.significance_codes())
-            except Exception as stats_exc:
-                raise GLMInferenceUnavailableError(
-                    "GLM inference statistics (std errors, z-values, p-values) "
-                    f"are unavailable for this model: {type(stats_exc).__name__}: "
-                    f"{stats_exc} (coef_table() failed first: "
-                    f"{type(exc).__name__}: {exc}). Refusing to fabricate "
-                    "placeholder statistics; the coefficient table is omitted."
-                ) from stats_exc
-
-            # Handle intercept
-            coefs_arr = np.asarray(coefs)
-            coefs_arr, names = _align_coefs_and_names(coefs_arr, names)
-            coefs = list(coefs_arr)
-
-            # Every emitted row needs a real value for every statistic —
-            # padding short arrays with 0.0/1.0 would be fabrication by index.
-            shortest = min(len(ses), len(zvals), len(pvals), len(sigs))
-            if shortest < len(coefs):
-                raise GLMInferenceUnavailableError(
-                    "GLM inference statistic arrays do not cover all "
-                    f"{len(coefs)} coefficients (shortest has {shortest} "
-                    "entries). Refusing to fabricate placeholder statistics "
-                    "for the uncovered coefficients; the coefficient table "
-                    "is omitted."
-                )
-
-            result = []
-            for i, name in enumerate(names):
-                if i < len(coefs):
-                    result.append(
-                        {
-                            "feature": name,
-                            "coefficient": float(coefs[i]),
-                            "std_error": float(ses[i]),
-                            "z_value": float(zvals[i]),
-                            "p_value": float(pvals[i]),
-                            "significance": str(sigs[i]),
-                        }
-                    )
-            return result
-
-    def relativities(self, model: Any) -> list[dict[str, Any]]:
-        """Return exp(coef) relativities with confidence intervals.
-
-        Returns dicts with normalized keys: ``feature``, ``relativity``,
-        ``ci_lower``, ``ci_upper``.
-        """
-        key_map = {
-            "Feature": "feature",
-            "Relativity": "relativity",
-            "CI_Lower": "ci_lower",
-            "CI_Upper": "ci_upper",
-        }
-
+            report.errors.append(("glm_inference", exc))
+            inference = None
+        if inference is not None:
+            for name, collect in (
+                ("glm_coefficients", glm_coefficient_rows),
+                ("glm_relativities", glm_relativity_rows),
+            ):
+                try:
+                    rows = collect(model, inference)
+                except Exception as exc:
+                    report.errors.append((name, exc))
+                    continue
+                if name == "glm_coefficients":
+                    report.coefficients = rows
+                else:
+                    report.relativities = rows
         try:
-            rel_df = model.relativities()
-            raw = rel_df.to_dicts()
-            return [{key_map.get(k, k.lower()): v for k, v in row.items()} for row in raw]
+            report.fit_statistics = glm_fit_statistics(model)
         except Exception as exc:
-            logger.warning("relativities_primary_failed", error=str(exc))
-            # Fallback: compute from coefficients
-            coefs = np.asarray(model.coefficients)
-            names = list(model.feature_names)
-            coefs, names = _align_coefs_and_names(coefs, names)
-
-            try:
-                ci = model.conf_int()  # (n, 2) array
-            except Exception as exc:
-                logger.warning("relativities_conf_int_failed", error=str(exc))
-                ci = None
-
-            result = []
-            for i, name in enumerate(names):
-                if i < len(coefs):
-                    entry: dict[str, Any] = {
-                        "feature": name,
-                        "relativity": float(np.exp(coefs[i])),
-                    }
-                    if ci is not None and i < len(ci):
-                        entry["ci_lower"] = float(np.exp(ci[i][0]))
-                        entry["ci_upper"] = float(np.exp(ci[i][1]))
-                    result.append(entry)
-            return result
-
-    def fit_statistics(self, model: Any) -> dict[str, float]:
-        """Return GLM fit statistics (AIC, BIC, deviance, etc.)."""
-        stats: dict[str, float] = {}
-
-        for attr, label in [
-            ("deviance", "deviance"),
-            ("nobs", "n_obs"),
-            ("df_model", "df_model"),
-            ("df_resid", "df_residual"),
-            ("iterations", "iterations"),
-        ]:
-            try:
-                stats[label] = float(getattr(model, attr))
-            except Exception as exc:
-                logger.warning("fit_stat_failed", attr=attr, error=str(exc))
-
-        for method, label in [
-            ("null_deviance", "null_deviance"),
-            ("aic", "aic"),
-            ("bic", "bic"),
-            ("llf", "log_likelihood"),
-        ]:
-            try:
-                stats[label] = float(getattr(model, method)())
-            except Exception as exc:
-                logger.warning("fit_stat_failed", attr=method, error=str(exc))
-
+            report.errors.append(("glm_fit_statistics", exc))
         try:
-            stats["converged"] = 1.0 if model.converged else 0.0
+            report.smooth_terms = glm_smooth_term_rows(model)
         except Exception as exc:
-            logger.warning("fit_stat_failed", attr="converged", error=str(exc))
-
-        return stats
-
-    def glm_diagnostics(
-        self,
-        model: Any,
-        data: pl.DataFrame,
-        cat_features: list[str],
-        features: list[str],
-    ) -> dict[str, Any]:
-        """Run RustyStats built-in diagnostics (A/E, Hosmer-Lemeshow, etc.).
-
-        Returns the diagnostics dict, or empty dict if diagnostics fail.
-        """
+            report.errors.append(("glm_smooth_terms", exc))
         try:
-            continuous = [f for f in features if f not in set(cat_features)]
-            diag = model.diagnostics(
-                data=data,
-                categorical_factors=cat_features,
-                continuous_factors=continuous,
-            )
-            return dict(diag.to_dict())
+            report.regularization = glm_regularization_summary(model, params)
         except Exception as exc:
-            logger.warning("glm_diagnostics_failed", error=str(exc))
-            return {}
+            report.errors.append(("glm_regularization", exc))
+        return report

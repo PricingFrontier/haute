@@ -35,7 +35,7 @@ from haute.errors import BoundedMemoryUnsupportedError, PreambleError
 from haute.projection import AllExcept
 from haute.routes._job_store import JobStore
 from haute.routes._train_service import TrainService
-from tests.conftest import make_edge, make_graph
+from tests.conftest import make_edge, make_graph, make_ready_file_input_config
 from tests.test_training_worker_protocol import _inline_protocol_runner, _SuccessfulTrainingJob
 
 _TEST_WORKER_MEMORY_LIMIT_BYTES = 512 * 1024**2
@@ -376,13 +376,32 @@ MINIMAL_EVALUATION = {
 
 
 class TestStartGlmMergeAndKeepColumns:
-    def _glm_graph(self):
+    def _glm_graph(self, scratch):
+        """Data Input → GLM modelling graph backed by a real frame.
+
+        ``start`` gates GLM term columns against the modelling node's exact
+        unprojected input schema before any job exists, so the source must
+        carry every column the config names.  ``scratch`` is the
+        ``haute_scratch`` fixture: the same temp directory as ``tmp_path``,
+        declared as the project root so the absolute source path resolves.
+        """
+        data_path = scratch / "glm_merge.parquet"
+        pl.DataFrame(
+            {
+                "age": [30.0, 40.0, 50.0],
+                "loss": [1.0, 2.0, 3.0],
+                "exposure": [1.0, 1.0, 1.0],
+                "log_exp": [0.0, 0.0, 0.0],
+                "x1": [0.1, 0.2, 0.3],
+                "junk": ["a", "b", "c"],
+            }
+        ).write_parquet(data_path)
         config = {
             "target": "loss",
             "algorithm": "glm",
             "family": "poisson",
             "link": "log",
-            "all_factors": True,
+            "terms": {"age": {"type": "linear"}},
             "weight": "exposure",
             "offset": "log_exp",
             "feature_columns": ["x1"],
@@ -398,7 +417,7 @@ class TestStartGlmMergeAndKeepColumns:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": {"path": "data.parquet"},
+                            "config": make_ready_file_input_config(data_path),
                         },
                     },
                     {
@@ -415,14 +434,14 @@ class TestStartGlmMergeAndKeepColumns:
         )
         return graph
 
-    def test_glm_keys_merged_and_offset_weight_kept(self):
+    def test_glm_keys_merged_and_offset_weight_kept(self, haute_scratch):
         """GLM top-level keys merge into train_params; weight+offset join keep_cols."""
         from haute.routes._job_store import JobStore
         from haute.schemas import TrainRequest
 
         store = JobStore()
         service = TrainService(store)
-        body = TrainRequest(graph=self._glm_graph(), node_id="train")
+        body = TrainRequest(graph=self._glm_graph(haute_scratch), node_id="train")
 
         captured: dict[str, object] = {}
 
@@ -462,18 +481,20 @@ class TestStartGlmMergeAndKeepColumns:
         # Protected columns: target + weight + offset. nick-dev builds these from a
         # set (_training_required_metadata_columns), so membership — not order — is
         # the contract; assert order-independently.
+        # feature_columns is a CatBoost lever, so a GLM keeps only role columns.
         keep = captured["keep_columns"]
-        assert set(keep) == {"loss", "exposure", "log_exp", "x1"}
-        # The excluded column is forwarded as the exclude list.
-        assert captured["exclude"] == ["junk", "x1"]
+        assert set(keep) == {"loss", "exposure", "log_exp"}
+        # A GLM feature is in the model exactly when it has a term or is an
+        # interaction factor, so the sink is never asked to drop by `exclude`.
+        assert captured["exclude"] is None
 
-    def test_start_stamps_explicit_timeout_before_preparation(self):
+    def test_start_stamps_explicit_timeout_before_preparation(self, haute_scratch):
         from haute.routes._job_store import JobStore
         from haute.schemas import TrainRequest
 
         store = JobStore()
         service = TrainService(store)
-        graph = self._glm_graph()
+        graph = self._glm_graph(haute_scratch)
         for node in graph.nodes:
             if node.id == "train":
                 node.data.config["timeout"] = 17
@@ -497,14 +518,14 @@ class TestStartGlmMergeAndKeepColumns:
         assert observed["timeout"] == 17
         assert store.require_job(response.job_id)["status"] == "error"
 
-    def test_failure_during_execute_marks_background_job_error(self):
+    def test_failure_during_execute_marks_background_job_error(self, haute_scratch):
         """A preparation exception is persisted instead of escaping its thread."""
         from haute.routes._job_store import JobStore
         from haute.schemas import TrainRequest
 
         store = JobStore()
         service = TrainService(store)
-        body = TrainRequest(graph=self._glm_graph(), node_id="train")
+        body = TrainRequest(graph=self._glm_graph(haute_scratch), node_id="train")
 
         with (
             patch.object(service, "_compile_preamble", return_value=None),

@@ -1,7 +1,7 @@
 /**
  * Tests for the GLM-specific UI components:
  *   - GLMTargetConfig (family, link, offset, metrics)
- *   - GLMFactorConfig (visual builder, interactions, JSON sync)
+ *   - GLMTermsConfig (terms pane routing)
  *   - GLMRegularizationConfig (type toggle, alpha, CV folds, L1 ratio)
  *   - GLMCoefficientsTab (sortable coefficients table)
  *   - GLMRelativitiesTab (bar chart with sort modes)
@@ -11,7 +11,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
 import { GLMTargetConfig } from "../modelling/GLMTargetConfig"
-import { GLMFactorConfig } from "../modelling/GLMFactorConfig"
 import { GLMRegularizationConfig } from "../modelling/GLMRegularizationConfig"
 import { GLMCoefficientsTab } from "../modelling/GLMCoefficientsTab"
 import { GLMRelativitiesTab } from "../modelling/GLMRelativitiesTab"
@@ -138,16 +137,48 @@ describe("GLMTargetConfig", () => {
 
   it("renders all backend-accepted family buttons", () => {
     render(<GLMTargetConfig config={baseConfig} onUpdate={onUpdate} columns={defaultColumns} />)
-    // Every family the backend _VALID_GLM_LINKS validates. Quasi-Poisson's
-    // dispersion is estimated from Pearson residuals (no user parameter);
-    // Neg. Binomial is offered now its theta gate exists — an explicit theta
-    // is required before training, closing the silent theta=1.0 failover.
+    // Every family in GLM_FAMILY_LINKS, which the backend validates against.
     for (const label of [
       "Poisson", "Gamma", "Tweedie", "Gaussian", "Binomial", "Quasi-Poisson",
-      "Neg. Binomial",
+      "Quasi-Binomial", "Neg. Binomial",
     ]) {
       expect(screen.getByRole("button", { name: label })).toBeTruthy()
     }
+  })
+
+  it("selecting Quasi-Binomial sets family, canonical link and classification metrics", () => {
+    render(<GLMTargetConfig config={baseConfig} onUpdate={onUpdate} columns={defaultColumns} />)
+    fireEvent.click(screen.getByRole("button", { name: "Quasi-Binomial" }))
+    expect(onUpdate).toHaveBeenCalledWith({ family: "quasibinomial", link: "", metrics: ["auc", "logloss"] })
+  })
+
+  it("offers each family's supported links and flags a saved unsupported link or family", () => {
+    const { unmount } = render(<GLMTargetConfig config={{ ...baseConfig, family: "binomial" }} onUpdate={onUpdate} columns={defaultColumns} />)
+    expect(screen.getByRole("button", { name: "auto (logit)" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "log" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "identity" })).toBeTruthy()
+    for (const unsupported of ["probit", "cloglog", "inverse", "sqrt"]) {
+      expect(screen.queryByRole("button", { name: unsupported })).toBeNull()
+    }
+    unmount()
+    const second = render(<GLMTargetConfig config={{ ...baseConfig, family: "gaussian", link: "sqrt" }} onUpdate={onUpdate} columns={defaultColumns} />)
+    expect(screen.getByRole("alert")).toHaveTextContent("The saved link sqrt is not available for Gaussian; choose one above.")
+    second.unmount()
+    render(<GLMTargetConfig config={{ ...baseConfig, family: "inverse_gaussian" }} onUpdate={onUpdate} columns={defaultColumns} />)
+    expect(screen.getByRole("alert")).toHaveTextContent("The saved family inverse_gaussian is not supported; choose one above.")
+    expect(screen.queryByText("Link Function")).toBeNull()
+  })
+
+  it("bounds the Tweedie variance power to 1 to 2", () => {
+    render(<GLMTargetConfig config={{ ...baseConfig, family: "tweedie", var_power: 1.5 }} onUpdate={onUpdate} columns={defaultColumns} />)
+    const slider = screen.getByRole("slider")
+    expect(slider).toHaveAttribute("min", "1")
+    expect(slider).toHaveAttribute("max", "2")
+  })
+
+  it("flags a theta that is not positive", () => {
+    render(<GLMTargetConfig config={{ ...baseConfig, family: "negbinomial", theta: 0 }} onUpdate={onUpdate} columns={defaultColumns} />)
+    expect(screen.getByRole("alert")).toHaveTextContent("Theta must be greater than 0.")
   })
 
   it("selecting Neg. Binomial sets family, canonical link and count metrics", () => {
@@ -194,7 +225,7 @@ describe("GLMTargetConfig", () => {
   it("shows the theta field only when family=negbinomial, empty by default", () => {
     // The gate starts from an empty field: an unselected theta must LOOK
     // unselected — faking a value here would show a chosen dispersion the
-    // config doesn't actually have (RustyStats would silently fit at 1.0).
+    // config doesn't actually have (RustyStats has no default to fall back on).
     const { unmount } = render(<GLMTargetConfig config={baseConfig} onUpdate={onUpdate} columns={defaultColumns} />)
     expect(screen.queryByText(/Dispersion theta/)).toBeNull()
     unmount()
@@ -317,403 +348,6 @@ describe("GLMTargetConfig", () => {
 })
 
 // ═════════════════════════════════════════════════════════════════
-// GLMFactorConfig
-// ═════════════════════════════════════════════════════════════════
-
-describe("GLMFactorConfig", () => {
-  const baseProps = {
-    config: { _nodeId: "n1", target: "claim_count", weight: "exposure", algorithm: "glm" },
-    onUpdate: vi.fn(),
-    columns: defaultColumns,
-    target: "claim_count",
-    weight: "exposure",
-    exclude: [] as string[],
-  }
-
-  // Config with some factors already added
-  const withFactors = {
-    ...baseProps,
-    config: {
-      ...baseProps.config,
-      terms: {
-        age: { type: "linear" },
-        region: { type: "categorical" },
-      },
-    },
-  }
-
-  beforeEach(() => {
-    baseProps.onUpdate.mockReset()
-    vi.stubGlobal("confirm", vi.fn(() => true))
-  })
-
-  // ── Empty state ──
-
-  it("starts with zero factors by default", () => {
-    render(<GLMFactorConfig {...baseProps} />)
-    expect(screen.getByText("(0)")).toBeTruthy()
-    expect(screen.getByText("No factors added yet. Add columns below to include them in the model.")).toBeTruthy()
-  })
-
-  it("shows 'Add factor...' dropdown with eligible columns", () => {
-    render(<GLMFactorConfig {...baseProps} />)
-    // The add dropdown should list age, region, severity (not claim_count or exposure)
-    const addSelect = screen.getByDisplayValue("Add factor...")
-    const options = within(addSelect as HTMLElement).getAllByRole("option")
-    const optionTexts = options.map(o => o.textContent)
-    expect(optionTexts).toContain("age (Float64)")
-    expect(optionTexts).toContain("region (Utf8)")
-    expect(optionTexts).toContain("severity (Float64)")
-    // target and weight excluded
-    expect(optionTexts.some(t => t?.startsWith("claim_count"))).toBe(false)
-    expect(optionTexts.some(t => t?.startsWith("exposure"))).toBe(false)
-  })
-
-  // ── Adding factors ──
-
-  it("selecting from dropdown adds a factor with smart default type", () => {
-    render(<GLMFactorConfig {...baseProps} />)
-    const addSelect = screen.getByDisplayValue("Add factor...")
-    fireEvent.change(addSelect, { target: { value: "region" } })
-    // region is Utf8 → should default to categorical
-    expect(baseProps.onUpdate).toHaveBeenCalledWith("terms", {
-      region: { type: "categorical" },
-    })
-  })
-
-  it("selecting numeric column defaults to linear", () => {
-    render(<GLMFactorConfig {...baseProps} />)
-    const addSelect = screen.getByDisplayValue("Add factor...")
-    fireEvent.change(addSelect, { target: { value: "age" } })
-    expect(baseProps.onUpdate).toHaveBeenCalledWith("terms", {
-      age: { type: "linear" },
-    })
-  })
-
-  // ── Displaying added factors ──
-
-  it("shows added factors as configurable rows", () => {
-    render(<GLMFactorConfig {...withFactors} />)
-    expect(screen.getByText("age")).toBeTruthy()
-    expect(screen.getByText("region")).toBeTruthy()
-    expect(screen.getByText("(2)")).toBeTruthy()
-    // severity not added → should not appear as a factor row
-    // (it appears in the add dropdown, but not as an active factor label)
-    const factorLabels = Array.from(document.querySelectorAll(".font-mono.truncate")).map(el => el.textContent)
-    expect(factorLabels).not.toContain("severity")
-  })
-
-  it("dropdown only shows remaining (un-added) columns", () => {
-    render(<GLMFactorConfig {...withFactors} />)
-    const addSelect = screen.getByDisplayValue("Add factor...")
-    const options = within(addSelect as HTMLElement).getAllByRole("option")
-    const optionTexts = options.map(o => o.textContent)
-    // age and region already added → only severity in dropdown
-    expect(optionTexts).toContain("severity (Float64)")
-    expect(optionTexts.some(t => t?.startsWith("age"))).toBe(false)
-    expect(optionTexts.some(t => t?.startsWith("region"))).toBe(false)
-  })
-
-  it("hides add controls when all columns are added", () => {
-    const config = {
-      ...baseProps.config,
-      terms: {
-        age: { type: "linear" },
-        region: { type: "categorical" },
-        severity: { type: "linear" },
-      },
-    }
-    render(<GLMFactorConfig {...baseProps} config={config} />)
-    // No more columns to add → dropdown should not be present
-    expect(screen.queryByDisplayValue("Add factor...")).toBeNull()
-  })
-
-  // ── Removing factors ──
-
-  it("each factor row has a remove button", () => {
-    render(<GLMFactorConfig {...withFactors} />)
-    const removeBtns = screen.getAllByTitle(/^Remove /)
-    expect(removeBtns.length).toBe(2) // age and region
-  })
-
-  it("clicking remove on a factor removes it from terms", () => {
-    render(<GLMFactorConfig {...withFactors} />)
-    const removeAge = screen.getByTitle("Remove age")
-    fireEvent.click(removeAge)
-    expect(baseProps.onUpdate).toHaveBeenCalledWith({
-      terms: {
-        region: { type: "categorical" },
-      },
-    })
-  })
-
-  it("cancels or atomically cleans dependencies when a selected factor is removed", () => {
-    const config = {
-      ...withFactors.config,
-      monotone_constraints: { age: 1, region: -1 },
-      interactions: [
-        { factors: ["age", "region"], include_main: true },
-        { factors: ["region", "severity"], include_main: false },
-      ],
-    }
-    const confirmMock = vi.mocked(confirm)
-    render(<GLMFactorConfig {...withFactors} config={config} />)
-
-    confirmMock.mockReturnValueOnce(false)
-    fireEvent.click(screen.getByTitle("Remove age"))
-    expect(baseProps.onUpdate).not.toHaveBeenCalled()
-
-    confirmMock.mockReturnValueOnce(true)
-    fireEvent.click(screen.getByTitle("Remove age"))
-    expect(baseProps.onUpdate).toHaveBeenCalledWith({
-      terms: { region: { type: "categorical" } },
-      monotone_constraints: { region: -1 },
-      interactions: [
-        { factors: ["region", "severity"], include_main: false },
-      ],
-    })
-  })
-
-  it("confirms and cleans features lost when all_factors narrows to explicit terms", () => {
-    const config = {
-      ...baseProps.config,
-      all_factors: true,
-      terms: { age: { type: "linear" } },
-      monotone_constraints: { region: -1, severity: 1 },
-      interactions: [
-        { factors: ["age", "region"], include_main: true },
-      ],
-    }
-    const confirmMock = vi.mocked(confirm)
-    render(<GLMFactorConfig {...baseProps} config={config} />)
-
-    confirmMock.mockReturnValueOnce(true)
-    fireEvent.click(screen.getByRole("checkbox", { name: /All features/ }))
-
-    expect(baseProps.onUpdate).toHaveBeenCalledWith({
-      all_factors: null,
-      monotone_constraints: null,
-      interactions: [],
-    })
-  })
-
-  // ── Factor configuration ──
-
-  it("changing term type updates config", () => {
-    render(<GLMFactorConfig {...withFactors} />)
-    const ageRow = screen.getByText("age").closest("div")!
-    const select = ageRow.querySelector("select")!
-    fireEvent.change(select, { target: { value: "bs" } })
-    expect(baseProps.onUpdate).toHaveBeenCalledWith("terms", expect.objectContaining({
-      age: { type: "bs" },
-    }))
-  })
-
-  it("spline type shows df input", () => {
-    const config = { ...baseProps.config, terms: { age: { type: "bs", df: 5 } } }
-    render(<GLMFactorConfig {...baseProps} config={config} />)
-    const dfInput = document.querySelector('input[placeholder="df"]') as HTMLInputElement
-    expect(dfInput).toBeTruthy()
-    expect(dfInput.value).toBe("5")
-  })
-
-  it("monotonicity toggle cycles through states", () => {
-    render(<GLMFactorConfig {...withFactors} />)
-    const ageRow = screen.getByText("age").closest("div")!
-    const monoBtn = within(ageRow).getByTitle(/No constraint/)
-    expect(monoBtn.textContent).toBe("─")
-
-    fireEvent.click(monoBtn)
-    expect(baseProps.onUpdate).toHaveBeenCalledWith("terms", expect.objectContaining({
-      age: expect.objectContaining({ monotonicity: "increasing" }),
-    }))
-  })
-
-  // ── Interactions ──
-
-  it("interactions section has Add button", () => {
-    render(<GLMFactorConfig {...baseProps} />)
-    expect(screen.getByText("Interactions")).toBeTruthy()
-    expect(screen.getByText("Add")).toBeTruthy()
-  })
-
-  it("clicking Add creates an interaction row", () => {
-    render(<GLMFactorConfig {...baseProps} />)
-    fireEvent.click(screen.getByText("Add"))
-    expect(baseProps.onUpdate).toHaveBeenCalledWith("interactions", [
-      { factors: ["", ""], include_main: true },
-    ])
-  })
-
-  it("interaction dropdowns only list added factors", () => {
-    const config = {
-      ...withFactors.config,
-      interactions: [{ factors: ["", ""], include_main: true }],
-    }
-    render(<GLMFactorConfig {...withFactors} config={config} />)
-    // Find the interaction dropdown by its "Select..." placeholder
-    const interactionSelects = screen.getAllByDisplayValue("Select...")
-    expect(interactionSelects.length).toBe(2)
-    const options = within(interactionSelects[0] as HTMLElement).getAllByRole("option")
-    const optionTexts = options.map(o => o.textContent)
-    expect(optionTexts).toContain("age")
-    expect(optionTexts).toContain("region")
-    expect(optionTexts).not.toContain("severity")
-  })
-
-  it("interaction row shows two dropdowns and main checkbox", () => {
-    const config = {
-      ...withFactors.config,
-      interactions: [{ factors: ["age", "region"], include_main: true }],
-    }
-    render(<GLMFactorConfig {...withFactors} config={config} />)
-    expect(screen.getByText("x")).toBeTruthy()
-    const checkboxes = screen.getAllByRole("checkbox")
-    expect(checkboxes.length).toBeGreaterThanOrEqual(1)
-  })
-
-  it("removing interaction calls onUpdate", () => {
-    const config = {
-      ...withFactors.config,
-      interactions: [{ factors: ["age", "region"], include_main: true }],
-    }
-    render(<GLMFactorConfig {...withFactors} config={config} />)
-    const removeBtn = screen.getByTitle("Remove interaction")
-    fireEvent.click(removeBtn)
-    expect(baseProps.onUpdate).toHaveBeenCalledWith("interactions", [])
-  })
-
-  // ── Builder / JSON mode toggle ──
-
-  it("shows Builder and JSON mode tabs", () => {
-    render(<GLMFactorConfig {...baseProps} />)
-    expect(screen.getByRole("button", { name: "Builder" })).toBeTruthy()
-    expect(screen.getByRole("button", { name: "JSON" })).toBeTruthy()
-  })
-
-  it("defaults to Builder mode", () => {
-    render(<GLMFactorConfig {...baseProps} />)
-    expect(screen.getByText("No factors added yet. Add columns below to include them in the model.")).toBeTruthy()
-    expect(document.querySelector("textarea")).toBeNull()
-  })
-
-  it("switching to JSON mode shows textarea", () => {
-    render(<GLMFactorConfig {...baseProps} />)
-    fireEvent.click(screen.getByRole("button", { name: "JSON" }))
-    expect(screen.getByText(/RustyStats terms dict/)).toBeTruthy()
-    expect(document.querySelector("textarea")).toBeTruthy()
-  })
-
-  it("JSON textarea reflects only added factors (empty when none)", () => {
-    render(<GLMFactorConfig {...baseProps} />)
-    fireEvent.click(screen.getByRole("button", { name: "JSON" }))
-    const textarea = document.querySelector("textarea") as HTMLTextAreaElement
-    expect(JSON.parse(textarea.value)).toEqual({})
-  })
-
-  it("JSON textarea reflects added factors", () => {
-    render(<GLMFactorConfig {...withFactors} />)
-    fireEvent.click(screen.getByRole("button", { name: "JSON" }))
-    const textarea = document.querySelector("textarea") as HTMLTextAreaElement
-    const parsed = JSON.parse(textarea.value)
-    expect(parsed).toHaveProperty("age")
-    expect(parsed).toHaveProperty("region")
-    expect(parsed).not.toHaveProperty("severity")
-  })
-
-  it("editing and blurring JSON commits terms to config", () => {
-    render(<GLMFactorConfig {...baseProps} />)
-    fireEvent.click(screen.getByRole("button", { name: "JSON" }))
-    const textarea = document.querySelector("textarea")!
-    fireEvent.change(textarea, { target: { value: '{"age": {"type": "ns", "df": 4}}' } })
-    fireEvent.blur(textarea)
-    expect(baseProps.onUpdate).toHaveBeenCalledWith("terms", { age: { type: "ns", df: 4 } })
-  })
-
-  it("atomically cleans dependencies when JSON removes an explicit term", () => {
-    const config = {
-      ...withFactors.config,
-      monotone_constraints: { age: 1, region: -1 },
-      interactions: [
-        { factors: ["age", "region"], include_main: true },
-      ],
-    }
-    render(<GLMFactorConfig {...withFactors} config={config} />)
-    fireEvent.click(screen.getByRole("button", { name: "JSON" }))
-    const textarea = document.querySelector("textarea")!
-    fireEvent.change(textarea, {
-      target: {
-        value: JSON.stringify({ region: { type: "categorical" } }),
-      },
-    })
-    fireEvent.blur(textarea)
-
-    expect(baseProps.onUpdate).toHaveBeenCalledWith({
-      terms: { region: { type: "categorical" } },
-      monotone_constraints: { region: -1 },
-      interactions: [],
-    })
-  })
-
-  it("pasting JSON from Atelier adds those factors", () => {
-    render(<GLMFactorConfig {...baseProps} />)
-    fireEvent.click(screen.getByRole("button", { name: "JSON" }))
-    const textarea = document.querySelector("textarea")!
-    const atelierJson = JSON.stringify({
-      age: { type: "bs", df: 5 },
-      region: { type: "categorical" },
-      severity: { type: "ns", df: 3, monotonicity: "increasing" },
-    })
-    fireEvent.change(textarea, { target: { value: atelierJson } })
-    fireEvent.blur(textarea)
-    expect(baseProps.onUpdate).toHaveBeenCalledWith("terms", {
-      age: { type: "bs", df: 5 },
-      region: { type: "categorical" },
-      severity: { type: "ns", df: 3, monotonicity: "increasing" },
-    })
-  })
-
-  it("invalid JSON shows error indicator", () => {
-    render(<GLMFactorConfig {...baseProps} />)
-    fireEvent.click(screen.getByRole("button", { name: "JSON" }))
-    const textarea = document.querySelector("textarea")!
-    fireEvent.change(textarea, { target: { value: "{bad" } })
-    fireEvent.blur(textarea)
-    expect(textarea.style.border).toContain("var(--danger)")
-  })
-
-  it("switching back to Builder after JSON edit shows updated factors", () => {
-    render(<GLMFactorConfig {...baseProps} />)
-    // Switch to JSON, paste terms, blur to commit
-    fireEvent.click(screen.getByRole("button", { name: "JSON" }))
-    const textarea = document.querySelector("textarea")!
-    fireEvent.change(textarea, { target: { value: '{"age": {"type": "linear"}}' } })
-    fireEvent.blur(textarea)
-    expect(baseProps.onUpdate).toHaveBeenCalledWith("terms", { age: { type: "linear" } })
-  })
-
-  it("mode tabs are hidden when section is collapsed", () => {
-    render(<GLMFactorConfig {...baseProps} />)
-    // Collapse
-    fireEvent.click(screen.getByText(/Factors/))
-    expect(screen.queryByRole("button", { name: "Builder" })).toBeNull()
-    expect(screen.queryByRole("button", { name: "JSON" })).toBeNull()
-  })
-
-  // ── Exclude ──
-
-  it("excluded columns are not available in add dropdown", () => {
-    render(<GLMFactorConfig {...baseProps} exclude={["age"]} />)
-    const addSelect = screen.getByDisplayValue("Add factor...")
-    const options = within(addSelect as HTMLElement).getAllByRole("option")
-    const optionTexts = options.map(o => o.textContent)
-    expect(optionTexts.some(t => t?.startsWith("age"))).toBe(false)
-    expect(optionTexts).toContain("region (Utf8)")
-    expect(optionTexts).toContain("severity (Float64)")
-  })
-})
-
-// ═════════════════════════════════════════════════════════════════
 // GLMRegularizationConfig
 // ═════════════════════════════════════════════════════════════════
 
@@ -722,56 +356,129 @@ describe("GLMRegularizationConfig", () => {
 
   beforeEach(() => onUpdate.mockReset())
 
-  it("renders collapsed by default", () => {
+  it("shows controls beneath a noninteractive Regularization heading", () => {
     render(<GLMRegularizationConfig config={{}} onUpdate={onUpdate} />)
-    expect(screen.getByText("Regularization")).toBeTruthy()
-    // Type buttons should NOT be visible (collapsed)
-    expect(screen.queryByRole("button", { name: "None" })).toBeNull()
-  })
-
-  it("expanding shows type toggle buttons", () => {
-    render(<GLMRegularizationConfig config={{}} onUpdate={onUpdate} />)
-    fireEvent.click(screen.getByText("Regularization"))
+    const heading = screen.getByRole("heading", { name: "Regularization" })
+    expect(heading.closest("button")).toBeNull()
     expect(screen.getByRole("button", { name: "None" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "Ridge" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "Lasso" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "Elastic Net" })).toBeTruthy()
   })
 
-  it("clicking Ridge sets regularization", () => {
-    render(<GLMRegularizationConfig config={{}} onUpdate={onUpdate} />)
-    fireEvent.click(screen.getByText("Regularization"))
+  it("choosing a regularization type writes visible cross-validation defaults only when absent", () => {
+    const { unmount } = render(<GLMRegularizationConfig config={{}} onUpdate={onUpdate} />)
     fireEvent.click(screen.getByRole("button", { name: "Ridge" }))
-    expect(onUpdate).toHaveBeenCalledWith("regularization", "ridge")
+    expect(onUpdate).toHaveBeenCalledWith({ regularization: "ridge", cv_folds: 5, cv_selection: "min", cv_seed: 42 })
+    unmount()
+    render(<GLMRegularizationConfig config={{ regularization: "ridge", cv_folds: 8, cv_selection: "1se", cv_seed: 7 }} onUpdate={onUpdate} />)
+    fireEvent.click(screen.getByRole("button", { name: "Lasso" }))
+    expect(onUpdate).toHaveBeenLastCalledWith({ regularization: "lasso" })
   })
 
   it("clicking None clears regularization", () => {
     render(<GLMRegularizationConfig config={{ regularization: "ridge" }} onUpdate={onUpdate} />)
-    fireEvent.click(screen.getByText("Regularization"))
     fireEvent.click(screen.getByRole("button", { name: "None" }))
     expect(onUpdate).toHaveBeenCalledWith("regularization", null)
   })
 
-  it("shows alpha input when regularization is active", () => {
-    render(<GLMRegularizationConfig config={{ regularization: "ridge" }} onUpdate={onUpdate} />)
-    fireEvent.click(screen.getByText("Regularization"))
-    expect(screen.getByText(/Alpha/)).toBeTruthy()
+  it("cross-validated mode edits folds, selection rule, and seed", () => {
+    render(<GLMRegularizationConfig config={{ regularization: "ridge", cv_folds: 5, cv_selection: "min", cv_seed: 42 }} onUpdate={onUpdate} />)
+    expect(screen.getByRole("button", { name: "Cross-validated" })).toHaveAttribute("aria-pressed", "true")
+    expect(screen.queryByRole("spinbutton", { name: "Regularization alpha" })).toBeNull()
+    const folds = screen.getByRole("spinbutton", { name: "Cross-validation folds" })
+    expect(folds).toHaveValue(5)
+    fireEvent.change(folds, { target: { value: "25" } })
+    fireEvent.blur(folds)
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter an integer from 2 to 20")
+    expect(onUpdate).not.toHaveBeenCalled()
+    fireEvent.change(folds, { target: { value: "10" } })
+    fireEvent.blur(folds)
+    expect(onUpdate).toHaveBeenCalledWith("cv_folds", 10)
+    fireEvent.change(screen.getByRole("combobox", { name: "Cross-validation selection rule" }), { target: { value: "1se" } })
+    expect(onUpdate).toHaveBeenCalledWith("cv_selection", "1se")
+    const seed = screen.getByRole("spinbutton", { name: "Cross-validation seed" })
+    fireEvent.change(seed, { target: { value: "7" } })
+    fireEvent.blur(seed)
+    expect(onUpdate).toHaveBeenCalledWith("cv_seed", 7)
+    fireEvent.click(screen.getByRole("button", { name: "Fixed" }))
+    expect(onUpdate).toHaveBeenCalledWith("alpha", 1)
+  })
+
+  it("fixed mode edits a positive alpha and returns to cross-validation", () => {
+    render(<GLMRegularizationConfig config={{ regularization: "ridge", alpha: 0.5 }} onUpdate={onUpdate} />)
+    expect(screen.getByRole("button", { name: "Fixed" })).toHaveAttribute("aria-pressed", "true")
+    const alpha = screen.getByRole("spinbutton", { name: "Regularization alpha" })
+    expect(alpha).toHaveValue(0.5)
+    fireEvent.change(alpha, { target: { value: "0" } })
+    fireEvent.blur(alpha)
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a number greater than 0")
+    fireEvent.change(alpha, { target: { value: "0.25" } })
+    fireEvent.blur(alpha)
+    expect(onUpdate).toHaveBeenCalledWith("alpha", 0.25)
+    fireEvent.click(screen.getByRole("button", { name: "Cross-validated" }))
+    expect(onUpdate).toHaveBeenCalledWith("alpha", null)
+  })
+
+  it("explains that regularization cannot be combined with automatic splines", () => {
+    render(
+      <GLMRegularizationConfig
+        config={{ regularization: "ridge", alpha: 0.5, terms: { age: { type: "bs" }, income: { type: "ns", df: 4 } }, interactions: [null] }}
+        onUpdate={onUpdate}
+      />,
+    )
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Regularization cannot be combined with automatically smoothed splines (age): set Fixed df on those splines or turn regularization off.",
+    )
+  })
+
+  it("the Solver disclosure edits iterations, tolerance, and robust standard errors", () => {
+    render(<GLMRegularizationConfig config={{ max_iter: 50 }} onUpdate={onUpdate} />)
+    const solver = screen.getByRole("button", { name: "Solver" })
+    expect(solver).toHaveAttribute("aria-expanded", "false")
+    expect(screen.getByRole("spinbutton", { name: "Maximum iterations", hidden: true })).not.toBeVisible()
+    fireEvent.click(solver)
+    const iterations = screen.getByRole("spinbutton", { name: "Maximum iterations" })
+    expect(iterations).toHaveValue(50)
+    fireEvent.change(iterations, { target: { value: "" } })
+    fireEvent.blur(iterations)
+    expect(onUpdate).toHaveBeenCalledWith("max_iter", null)
+    const tolerance = screen.getByRole("spinbutton", { name: "Convergence tolerance" })
+    fireEvent.change(tolerance, { target: { value: "1" } })
+    fireEvent.blur(tolerance)
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a number greater than 0 and less than 1")
+    fireEvent.change(tolerance, { target: { value: "0.000001" } })
+    fireEvent.blur(tolerance)
+    expect(onUpdate).toHaveBeenCalledWith("tol", 0.000001)
+    const robust = screen.getByRole("combobox", { name: "Robust standard errors" })
+    expect(Array.from(robust.querySelectorAll("option")).map((option) => option.value)).toEqual(["", "HC0", "HC1", "HC2", "HC3"])
+    fireEvent.change(robust, { target: { value: "HC1" } })
+    expect(onUpdate).toHaveBeenCalledWith("robust_standard_errors", "HC1")
+  })
+
+  it("shows a robust standard error conflict even while the Solver section is closed", () => {
+    render(
+      <GLMRegularizationConfig
+        config={{ robust_standard_errors: "HC1", terms: { age: { type: "linear", monotonicity: "increasing" } } }}
+        onUpdate={onUpdate}
+      />,
+    )
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Robust standard errors cannot be combined with monotonicity constraints (age): RustyStats marks that inference as not valid.",
+    )
   })
 
   it("L1 ratio controls only appear for elastic_net", () => {
     const { unmount } = render(<GLMRegularizationConfig config={{ regularization: "ridge" }} onUpdate={onUpdate} />)
-    fireEvent.click(screen.getByText("Regularization"))
     expect(screen.queryByText(/L1 ratio/)).toBeNull()
     unmount()
 
     render(<GLMRegularizationConfig config={{ regularization: "elastic_net", l1_ratio: null }} onUpdate={onUpdate} />)
-    fireEvent.click(screen.getByText("Regularization"))
     expect(screen.getAllByText(/L1 ratio/).length).toBeGreaterThan(0)
   })
 
   it("elastic_net gates the L1 ratio until it is set explicitly", () => {
     render(<GLMRegularizationConfig config={{ regularization: "elastic_net" }} onUpdate={onUpdate} />)
-    fireEvent.click(screen.getByText("Regularization"))
     // Unset: the mix must be chosen — a prompt and both collapse shortcuts.
     expect(screen.getByRole("button", { name: /Set L1 ratio mix/ })).toBeTruthy()
     expect(screen.getByRole("button", { name: /Fit Ridge \(0\)/ })).toBeTruthy()
@@ -780,7 +487,6 @@ describe("GLMRegularizationConfig", () => {
 
   it("Fit Ridge / Fit LASSO shortcuts set an explicit L1 ratio", () => {
     render(<GLMRegularizationConfig config={{ regularization: "elastic_net" }} onUpdate={onUpdate} />)
-    fireEvent.click(screen.getByText("Regularization"))
     fireEvent.click(screen.getByRole("button", { name: /Fit Ridge \(0\)/ }))
     expect(onUpdate).toHaveBeenCalledWith("l1_ratio", 0)
     fireEvent.click(screen.getByRole("button", { name: /Fit LASSO \(1\)/ }))
@@ -789,7 +495,6 @@ describe("GLMRegularizationConfig", () => {
 
   it("a set L1 ratio shows the mix slider, not the prompt", () => {
     render(<GLMRegularizationConfig config={{ regularization: "elastic_net", l1_ratio: 0.3 }} onUpdate={onUpdate} />)
-    fireEvent.click(screen.getByText("Regularization"))
     expect(screen.queryByRole("button", { name: /Set L1 ratio mix/ })).toBeNull()
     expect(screen.getByText("0.30")).toBeTruthy()
   })
@@ -873,6 +578,33 @@ describe("GLMCoefficientsTab", () => {
     expect(screen.getByText("No coefficient data available")).toBeTruthy()
   })
 
+  it("shows the reason, dashes, and design order when inference is not valid", () => {
+    const reason = "The ridge penalty shrinks the coefficients, so standard errors and p-values are not valid."
+    const result = makeTrainResult({
+      glm_inference: { status: "naive_after_regularization", valid: false, standard_errors: null, reason },
+      glm_coefficients: makeGlmCoefficients().map((row) => ({ ...row, std_error: null, z_value: null, p_value: null, significance: null })),
+    })
+    render(<GLMCoefficientsTab result={result} />)
+    expect(screen.getByRole("note")).toHaveTextContent(reason)
+    expect(screen.queryByText("Signif. codes:")).toBeNull()
+    const rows = Array.from(document.querySelectorAll("tbody tr"))
+    expect(rows.map((row) => row.querySelector("td")!.textContent)).toEqual(["(Intercept)", "age", "region_B", "region_C"])
+    expect(Array.from(rows[0].querySelectorAll("td")).slice(2).map((cell) => cell.textContent)).toEqual(["–", "–", "–", "–"])
+    fireEvent.click(screen.getByText("Std. Error"))
+    expect(Array.from(document.querySelectorAll("tbody tr")).map((row) => row.querySelector("td")!.textContent))
+      .toEqual(["(Intercept)", "age", "region_B", "region_C"])
+  })
+
+  it("names robust standard errors when they are used", () => {
+    const result = makeTrainResult({
+      glm_inference: { status: "valid_standard", valid: true, standard_errors: "HC1", reason: null },
+      glm_coefficients: makeGlmCoefficients(),
+    })
+    render(<GLMCoefficientsTab result={result} />)
+    expect(screen.getByText(/^Robust SE \(HC1\)/)).toBeTruthy()
+    expect(screen.getByText("Standard errors, z-values, and p-values are heteroskedasticity-robust (HC1).")).toBeTruthy()
+  })
+
   it("formats very small p-values in scientific notation", () => {
     const result = makeTrainResult({
       glm_coefficients: [
@@ -943,7 +675,7 @@ describe("GLMRelativitiesTab", () => {
   })
 
   it("hides CI note when no CI data", () => {
-    const rows = makeGlmRelativities().map(r => ({ feature: r.feature, relativity: r.relativity }))
+    const rows = makeGlmRelativities().map(r => ({ feature: r.feature, relativity: r.relativity, ci_lower: null, ci_upper: null }))
     const result = makeTrainResult({ glm_relativities: rows })
     render(<GLMRelativitiesTab result={result} />)
     expect(screen.queryByText("— CI whiskers")).toBeNull()
@@ -979,16 +711,39 @@ describe("SummaryTab (GLM extensions)", () => {
     expect(screen.queryByText("Fit statistics")).toBeNull()
   })
 
-  it("shows regularization info when present", () => {
+  it("shows the fixed penalty RustyStats applied", () => {
     const result = makeTrainResult({
-      glm_regularization_path: { selected_alpha: 0.001234, n_nonzero: 12 },
+      glm_regularization: {
+        penalty: "elastic_net",
+        mode: "fixed",
+        alpha: 0.001234,
+        l1_ratio: 0.3,
+        n_nonzero: 12,
+        cv_folds: null,
+        cv_selection: null,
+        cv_seed: null,
+      },
     })
     render(<SummaryTab result={result} />)
-    expect(screen.getByText("Regularization")).toBeTruthy()
-    expect(screen.getByText("Alpha")).toBeTruthy()
-    expect(screen.getByText("0.001234")).toBeTruthy()
-    expect(screen.getByText("Non-zero coefficients")).toBeTruthy()
-    expect(screen.getByText("12")).toBeTruthy()
+    const card = screen.getByRole("region", { name: "Regularization" })
+    const rows = Array.from(card.querySelectorAll("dl > div")).map((row) => [row.querySelector("dt")!.textContent, row.querySelector("dd")!.textContent])
+    expect(rows).toEqual([
+      ["Penalty", "Elastic Net"],
+      ["Alpha", "0.00123400"],
+      ["L1 ratio", "0.30"],
+      ["Non-zero coefficients", "12"],
+      ["Alpha chosen by", "Fixed"],
+    ])
+  })
+
+  it("lists smooth terms with their effective degrees of freedom", () => {
+    const result = makeTrainResult({ glm_smooth_terms: [{ term: "age", k: 10, edf: 3.214, lambda: 21.5 }] })
+    render(<SummaryTab result={result} />)
+    const table = screen.getByRole("table", { name: "Smooth terms" })
+    expect(Array.from(within(table).getAllByRole("row")).map((row) => row.textContent)).toEqual([
+      "TermBasis (k)EDFLambda",
+      "age103.2121.50",
+    ])
   })
 
   it("hides regularization when no path info", () => {
@@ -1040,7 +795,38 @@ describe("ModellingConfig (GLM routing)", () => {
     })
   })
 
-  it("GLM config routes target, features, and regularization to exclusive panes", () => {
+  it("a malformed interaction override renders a removable error card instead of failing the editor", () => {
+    const onUpdate = vi.fn()
+    const config = {
+      _nodeId: "n1",
+      algorithm: "glm",
+      target: "claim_count",
+      family: "poisson",
+      terms: { age: { type: "bs" } },
+      regularization: "ridge",
+      interactions: [{ factors: ["age", "region"], specs: { age: null }, include_main: true }],
+    }
+    const { rerender } = render(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <ModellingConfig config={config} onUpdate={onUpdate} upstreamColumns={defaultColumns} activePane="features" />
+      </GraphProvider>,
+    )
+    const card = screen.getByRole("group", { name: "Interaction 1" })
+    expect(within(card).getByText("Interaction 1 cannot be edited")).toBeTruthy()
+    expect(within(card).getByRole("alert")).toHaveTextContent("The fit for age in this interaction has no fit type.")
+    fireEvent.click(within(card).getByRole("button", { name: "Remove interaction 1" }))
+    expect(onUpdate).toHaveBeenCalledWith("interactions", [])
+    for (const pane of ["target", "train"] as const) {
+      rerender(
+        <GraphProvider allNodes={[]} edges={[]}>
+          <ModellingConfig config={config} onUpdate={onUpdate} upstreamColumns={defaultColumns} activePane={pane} />
+        </GraphProvider>,
+      )
+      expect(screen.getByRole("tabpanel")).toBeTruthy()
+    }
+  })
+
+  it("GLM config routes Rustystats target settings and regularization to the Target pane", () => {
     const config = {
       _nodeId: "n1",
       algorithm: "glm",
@@ -1058,9 +844,12 @@ describe("ModellingConfig (GLM routing)", () => {
         />
       </GraphProvider>,
     )
+    expect(screen.getByLabelText("Selected algorithm")).toHaveTextContent(/^Algorithm Rustystats$/)
     expect(screen.getByText("Target & Weight")).toBeTruthy()
     expect(screen.getByText("Family")).toBeTruthy()
-    expect(screen.queryByText("Factors")).toBeNull()
+    expect(screen.getByText("Regularization")).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Ridge" })).toBeVisible()
+    expect(screen.queryByText("Fit all with defaults")).toBeNull()
 
     rerender(
       <GraphProvider allNodes={[]} edges={[]}>
@@ -1073,20 +862,9 @@ describe("ModellingConfig (GLM routing)", () => {
       </GraphProvider>,
     )
     expect(screen.getByText("Features")).toBeTruthy()
-    expect(screen.getByText("Factors")).toBeTruthy()
+    expect(screen.getByText("Fit all with defaults")).toBeTruthy()
     expect(screen.queryByText("Family")).toBeNull()
-
-    rerender(
-      <GraphProvider allNodes={[]} edges={[]}>
-        <ModellingConfig
-          config={config}
-          onUpdate={vi.fn()}
-          upstreamColumns={defaultColumns}
-          activePane="params"
-        />
-      </GraphProvider>,
-    )
-    expect(screen.getByText("Regularization")).toBeTruthy()
+    expect(screen.queryByText("Regularization")).toBeNull()
 
     // Should NOT have CatBoost-specific sections
     expect(screen.queryByRole("button", { name: "regression" })).toBeNull()

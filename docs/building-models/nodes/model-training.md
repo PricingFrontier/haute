@@ -20,7 +20,8 @@ them to `output_dir`.
 | `name` | **Required.** Model name |
 | `target` | **Required.** Target column (the value you're predicting) |
 | `weight` | Weight column for weighted training (e.g. exposure) |
-| `exclude` | Columns to exclude from the model inputs (e.g. identifiers, dates, or target-related columns). All columns except the target, weight, and excluded columns are used as model features. If your data contains ID columns, dates, or columns derived from the target, add them here to prevent data leakage. |
+| `offset` | Offset column. Under a log link (a log-link GLM, or a CatBoost `Poisson` or `Tweedie` loss) it is a strictly positive exposure multiplier: 2× exposure gives 2× the expected count, and null, zero, or negative values are refused when training and when scoring. Under any other link it is added to the prediction. Different from `weight`, which weights the loss. |
+| `exclude` | CatBoost only. Columns to exclude from the model inputs (e.g. identifiers, dates, or target-related columns). All columns except the target, weight, offset, and excluded columns are used as model features. If your data contains ID columns, dates, or columns derived from the target, add them here to prevent data leakage. A GLM's features are its terms and interaction factors instead. |
 | `algorithm` | **Required.** `"catboost"` or `"glm"` |
 | `task` | **Required.** `"regression"` or `"classification"` |
 | `params` | Fixed CatBoost parameters (see below) |
@@ -228,36 +229,85 @@ device, callbacks, write directories, or random seed.
     {
       "algorithm": "glm",
       "task": "regression",
-      "target": "claim_frequency",
-      "weight": "exposure",
+      "target": "claim_count",
+      "offset": "exposure",
       "family": "poisson",
-      "link": "log",
       "terms": {
-        "driver_age":   { "type": "linear" },
-        "vehicle_age":  { "type": "linear" },
-        "area":         { "type": "categorical" }
+        "driver_age":   { "type": "bs", "df": 5 },
+        "vehicle_age":  { "type": "linear", "monotonicity": "decreasing" },
+        "area":         { "type": "categorical", "reference": "urban" }
       },
       "interactions": [
-        { "factors": ["driver_age", "vehicle_age"], "include_main": true }
+        { "factors": ["driver_age", "area"], "specs": {"driver_age": {"type": "linear"}}, "include_main": true }
       ],
       "intercept": true,
       "regularization": "ridge",
-      "alpha": 0.01
+      "cv_folds": 5,
+      "cv_selection": "min",
+      "cv_seed": 42
     }
     ```
 
     | Field | Description |
     |---|---|
-    | `terms` | Dict mapping feature names to term specs. Each has a `type` (`"linear"`, `"categorical"`, `"poly"`, `"spline"`) and optional `monotonicity` (`"increasing"` or `"decreasing"`). If omitted, terms are inferred from data types. |
-    | `family` | **Required.** Distribution family: `"gaussian"`, `"poisson"`, `"tweedie"`, etc. |
-    | `link` | Link function: `"log"`, `"identity"`, etc. Defaults to the canonical link for the family. |
-    | `offset` | Offset column  - a fixed term added to the linear predictor (e.g. log-exposure in a Poisson frequency model). This is different from `weight`: the `weight` field is an observation weight used in the loss function, so rows with higher weight have more influence on the model. Most frequency models use `weight` for exposure and do not need `offset`. |
-    | `interactions` | Interaction terms  - each has `factors` (list of feature names) and `include_main` (bool) |
-    | `regularization` | `"ridge"`, `"lasso"`, or `"elastic_net"` |
-    | `alpha` | Regularization strength |
-    | `l1_ratio` | Elastic net mixing parameter (0 = pure ridge, 1 = pure lasso) |
+    | `family` | **Required.** `"gaussian"`, `"poisson"`, `"quasipoisson"`, `"binomial"`, `"quasibinomial"`, `"gamma"`, `"tweedie"`, or `"negbinomial"`. |
+    | `link` | Leave unset for the family's canonical link (log for Poisson, Quasi-Poisson, Gamma, Tweedie, and Negative Binomial; logit for Binomial and Quasi-Binomial; identity for Gaussian). RustyStats supports only `"identity"`, `"log"`, and `"logit"`: Gaussian, Poisson, Quasi-Poisson, Gamma, Tweedie, and Negative Binomial accept log or identity, and Binomial and Quasi-Binomial accept logit, log, or identity. |
+    | `terms` | **Required.** Dict mapping a name to a term spec. A native spec is keyed by the column it fits; an `"expression"` spec (`{"type": "expression", "expr": "age ** 2"}`) or a second encoding (`{"type": "frequency_encoding", "variable": "area"}`) is keyed by a name that is not a column. |
+    | `interactions` | Each has `factors` (two or more columns) and `include_main`. See **Interactions** below. |
+    | `regularization` | `"ridge"`, `"lasso"`, or `"elastic_net"`. Cannot be combined with automatically smoothed splines. |
+    | `alpha` | A positive number fixes the penalty. Leave it unset (or 0) to choose the penalty by cross-validation. |
+    | `cv_folds`, `cv_selection`, `cv_seed` | Required when the penalty is cross-validated: folds from 2 to 20, `"min"` (lowest deviance) or `"1se"` (the largest penalty within one standard error), and a non-negative seed so the same data selects the same penalty. |
+    | `l1_ratio` | **Required** for elastic net: 0 fits ridge, 1 fits lasso. |
+    | `max_iter`, `tol` | Optional solver settings: maximum iterations (1 to 10000) and convergence tolerance (between 0 and 1). Leave unset for RustyStats' defaults. |
+    | `robust_standard_errors` | Optional `"HC0"`, `"HC1"`, `"HC2"`, or `"HC3"` heteroskedasticity-robust standard errors. Cannot be combined with regularization, monotonicity constraints, or automatically smoothed splines, whose standard errors are not valid. |
     | `intercept` | Whether to fit an intercept. Defaults to true. |
-    | `var_power` | Variance power for Tweedie distributions |
+    | `var_power` | **Required** for Tweedie: from 1 (Poisson) to 2 (Gamma). **Estimate from data** profiles it on the node's training data. |
+    | `theta` | **Required** for Negative Binomial: a positive dispersion. RustyStats refuses to fit without it; **Estimate from data** profiles the likelihood on the node's training data. |
+
+    `exclude`, `feature_columns`, `monotone_constraints`, and `feature_weights` apply only to CatBoost and are refused for a GLM.
+
+    **Terms.** Each column's dtype decides which fits it offers:
+
+    | Column dtype | Fits | Default |
+    |---|---|---|
+    | Float, Decimal | Linear, B-spline (`bs`), natural spline (`ns`), monotone spline (`ms`); numeric expressions | Linear |
+    | Integer | The float fits plus Categorical, Target encoding, and Frequency encoding | Linear |
+    | Boolean | Categorical, Target encoding, Frequency encoding | Categorical |
+    | String, Categorical, Enum | Categorical, Target encoding, Frequency encoding | Categorical |
+
+    Dates, times, durations, lists, structs, and binary columns cannot be fitted; the **Features** pane hides them and says how many it hid. Target, weight, offset, fold, identifier, and evaluation-key columns cannot be terms, expression columns, or interaction factors.
+
+    Spline fits offer **Auto / Fixed** degrees of freedom. Auto leaves `df` unset so RustyStats chooses the smoothing (the Summary lists each smooth term's effective degrees of freedom); Fixed stores `df`, an integer up to 20 and at least `degree + 1` for B-splines (degree 3 unless set) or at least 2 for natural and monotone splines. Advanced controls expose the basis size `k` (Auto only), interior `knots` (which replace `df`), and `boundary_knots`; set only one of `df`, `k`, and `knots`. Linear, B-spline, monotone spline, and expression terms accept `monotonicity` (`"increasing"` or `"decreasing"`).
+
+    A categorical fit shares the intercept with its first level in sorted order. Set `reference` to choose that baseline level, or `levels` to fit indicators only for the listed levels; they replace each other, and the rest (and levels unseen at scoring) share the intercept. Training refuses a reference or listed level the data does not contain and lists the observed labels. Quote numeric labels exactly as the column holds them, for example `"2"` for an integer column (or `"2.0"` if it also has nulls).
+
+    Target encoding offers **Auto / Fixed** prior weight (Auto leaves `prior_weight` unset; Fixed accepts a non-negative value) and, under Advanced, `n_permutations` from 1 to 100 (default 4).
+
+    Expressions have one of the forms `x`, `x ** n`, `x + y`, `x - y`, `x * y`, or `x / y`, where `y` is a column or a number. Columns in an expression must be numeric and named with letters, digits, and underscores, starting with a letter or underscore; compute logs and other transforms in an upstream Polars node.
+
+    Terms that cannot be fitted (a role column, a column no longer upstream, an unsupported dtype, or an entry with no fit type) are listed under **Unresolved terms** with the reason. Fix or remove them before training.
+
+    **Interactions.** In a **Product** interaction each feature fits as:
+
+    1. its override in `specs` (`linear`, `categorical`, `bs`, `ns`, or `target_encoding`), if set;
+    2. otherwise its main-effect term, when it has exactly one that interactions honour;
+    3. otherwise its dtype default.
+
+    A monotone spline, a monotone linear or B-spline term, a categorical term with `levels` or `reference`, a frequency encoding, or several main-effect terms for one feature cannot be used inside an interaction, so the card asks for an explicit fit. Categorical fits apply only over a categorical main effect, and linear, spline, and target-encoding fits never do. A categorical feature may use **Target enc.** when every other feature is **Linear**; this always adds the target-encoded main effect, even with **Include main effects** off. Different cards may fit the same feature with different local splines.
+
+    **Include main effects** adds a main effect for each feature that has none, using the fit its cards agree on; the **Features** pane tags that feature "Main effect from Interaction N". Cards that would add different main effects for one feature are refused together: add a main term for it, or give the cards the same fit. Features with a term keep it.
+
+    To target-encode a combination such as brand and region, select **Target encoding** on the interaction card:
+
+    ```json
+    {
+      "factors": ["brand", "region"],
+      "encoding": "target_encoding",
+      "include_main": false
+    }
+    ```
+
+    Joint encodings accept integer, boolean, and categorical features, use the raw columns, and accept `prior_weight` and `n_permutations`. Product, target-encoded, and frequency-encoded interactions can coexist over the same factors; a duplicate within one mode is refused.
 
 ## Reading the result
 
@@ -271,6 +321,13 @@ The Summary view keeps model-selection evidence distinct from final performance:
   as development diagnostics and are not presented as out-of-sample performance.
 - A tuned run shows the baseline, winning trial, improvement, selected parameters,
   final tree count, and exact total fit count.
+- A GLM shows its fit statistics, the penalty actually applied (with the folds, rule,
+  and seed when it was cross-validated), and each automatic spline's effective degrees
+  of freedom. Standard errors and p-values are valid only for an unpenalised,
+  unconstrained fit without automatic splines; otherwise the **Coefficients** view
+  shows dashes and says why. Relativities (exponentiated coefficients) exist only for
+  log-link models, and a relativity too large to compute is reported as a diagnostic
+  error naming the terms.
 
 The model, feature contract, evaluation plan/results/report, and optional tuning
 plan/trials/report are published together as that training result's own files, so a

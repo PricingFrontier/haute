@@ -42,7 +42,7 @@ describe("trainingConfigurationIssues", () => {
       "training-target",
       "evaluation-config",
       "glm-family",
-      "glm-factor-selection",
+      "glm-terms",
     ])
   })
 
@@ -52,7 +52,7 @@ describe("trainingConfigurationIssues", () => {
         algorithm: "glm",
         target: "loss",
         family: "tweedie",
-        all_factors: true,
+        terms: { age: { type: "linear" } },
         evaluation,
       },
       "glm-tweedie-variance-power",
@@ -62,7 +62,7 @@ describe("trainingConfigurationIssues", () => {
         algorithm: "glm",
         target: "loss",
         family: "negbinomial",
-        all_factors: true,
+        terms: { age: { type: "linear" } },
         evaluation,
       },
       "glm-negbin-theta",
@@ -72,8 +72,9 @@ describe("trainingConfigurationIssues", () => {
         algorithm: "glm",
         target: "loss",
         family: "poisson",
-        all_factors: true,
+        terms: { age: { type: "linear" } },
         regularization: "elastic_net",
+        alpha: 0.5,
         evaluation,
       },
       "glm-elastic-net-l1-ratio",
@@ -84,13 +85,61 @@ describe("trainingConfigurationIssues", () => {
     ])
   })
 
+  it.each([
+    [{}, ["folds", "selection rule", "seed"]],
+    [{ alpha: 0, cv_folds: 5, cv_selection: "min" }, ["seed"]],
+  ])("requires every cross-validation setting when the penalty is cross-validated %#", (settings, missing) => {
+    expect(trainingConfigurationIssues({
+      algorithm: "glm",
+      target: "loss",
+      family: "poisson",
+      terms: { age: { type: "linear" } },
+      regularization: "ridge",
+      evaluation,
+      ...settings,
+    })).toEqual([{
+      code: "glm-cross-validation",
+      message: `Set the cross-validation ${missing.join(", ")} so the selected penalty is reproducible.`,
+    }])
+  })
+
+  it("refuses regularization with automatic splines and robust standard errors with invalid inference", () => {
+    const base = { algorithm: "glm", target: "loss", family: "poisson", evaluation }
+    expect(trainingConfigurationIssues({
+      ...base,
+      terms: { age: { type: "bs" }, income: { type: "ns", df: 4 } },
+      interactions: [{ factors: ["income", "region"], specs: { income: { type: "ns" } }, include_main: true }, null],
+      regularization: "ridge",
+      alpha: 0.5,
+    })).toEqual([{
+      code: "glm-smooth-regularization",
+      message: "Regularization cannot be combined with automatically smoothed splines (age, Interaction 1 income): set Fixed df on those splines or turn regularization off.",
+    }])
+    const robust = (overrides: Record<string, unknown>) => trainingConfigurationIssues({
+      ...base,
+      terms: { age: { type: "linear" } },
+      robust_standard_errors: "HC1",
+      ...overrides,
+    }).filter((issue) => issue.code === "glm-robust-standard-errors").map((issue) => issue.message)
+    expect(robust({})).toEqual([])
+    expect(robust({ regularization: "lasso", alpha: 1 })).toEqual([
+      "Robust standard errors cannot be combined with regularization: RustyStats marks that inference as not valid. Turn robust standard errors off or remove the conflict.",
+    ])
+    expect(robust({ terms: { age: { type: "linear", monotonicity: "decreasing" } } })).toEqual([
+      "Robust standard errors cannot be combined with monotonicity constraints (age): RustyStats marks that inference as not valid. Turn robust standard errors off or remove the conflict.",
+    ])
+    expect(robust({ terms: { age: { type: "ms", df: 5 }, income: { type: "bs" } } })).toEqual([
+      "Robust standard errors cannot be combined with automatically smoothed splines (income): RustyStats marks that inference as not valid. Turn robust standard errors off or remove the conflict.",
+    ])
+  })
+
   it("returns no issues for a complete configuration", () => {
     expect(
       trainingConfigurationIssues({
         algorithm: "glm",
         target: "loss",
         family: "poisson",
-        all_factors: true,
+        terms: { age: { type: "linear" } },
         evaluation,
       }),
     ).toEqual([])

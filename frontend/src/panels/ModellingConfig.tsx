@@ -35,9 +35,11 @@ import type { OnUpdateConfig } from "./editors"
 import { useGraph } from "./useGraph"
 import { CommonFeatureConfig } from "./modelling/CommonFeatureConfig"
 import { ExportPane } from "./modelling/ExportPane"
-import { GLMFactorConfig } from "./modelling/GLMFactorConfig"
+import { GLMInteractionsConfig } from "./modelling/GLMInteractionsConfig"
 import { GLMRegularizationConfig } from "./modelling/GLMRegularizationConfig"
 import { GLMTargetConfig } from "./modelling/GLMTargetConfig"
+import { GLMTermsConfig } from "./modelling/GLMTermsConfig"
+import { resolveModellingPane } from "./modelling/modellingPanes"
 import {
   HyperparametersConfig,
 } from "./modelling/HyperparametersConfig"
@@ -289,7 +291,6 @@ export default function ModellingConfig({
   const params = configField<Record<string, unknown>>(config, "params", {})
   const target = configField(config, "target", "")
   const weight = configField(config, "weight", "")
-  const exclude = configField<string[]>(config, "exclude", [])
   const evaluation = configField<Record<string, unknown>>(
     config,
     "evaluation",
@@ -461,7 +462,9 @@ export default function ModellingConfig({
           glm_coefficients: [],
           glm_relativities: [],
           glm_fit_statistics: {},
-          glm_regularization_path: null,
+          glm_inference: null,
+          glm_smooth_terms: [],
+          glm_regularization: null,
           diagnostics_errors: [],
           feature_selection: null,
         },
@@ -536,13 +539,21 @@ export default function ModellingConfig({
     />
   )
 
+  // The same pane list as the tabs: a pane this algorithm lacks shows Target.
+  const pane = resolveModellingPane(algorithm, activePane)
   let paneBody: ReactElement | null = null
-  if (algorithm === "catboost") {
-    if (activePane === "target") {
+  if (pane === "split") {
+    paneBody = splitPane
+  } else if (pane === "train") {
+    paneBody = trainPane
+  } else if (pane === "export") {
+    paneBody = exportPane
+  } else if (algorithm === "catboost") {
+    if (pane === "target") {
       paneBody = <TargetAndTaskConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} target={target} weight={weight} metrics={metrics} />
-    } else if (activePane === "features") {
-      paneBody = <CommonFeatureConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} algorithm="catboost" />
-    } else if (activePane === "params") {
+    } else if (pane === "features") {
+      paneBody = <CommonFeatureConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
+    } else if (pane === "params") {
       paneBody = (
         <HyperparametersConfig
           algorithmLabel="CatBoost"
@@ -562,29 +573,25 @@ export default function ModellingConfig({
           )}
         />
       )
-    } else if (activePane === "split") {
-      paneBody = splitPane
-    } else if (activePane === "train") {
-      paneBody = trainPane
-    } else if (activePane === "export") {
-      paneBody = exportPane
     }
-  } else if (activePane === "target") {
-    paneBody = <GLMTargetConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} onEstimateDispersion={onEstimateDispersion} />
-  } else if (activePane === "features") {
-    paneBody = <><CommonFeatureConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} algorithm="glm" /><GLMFactorConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} target={target} weight={weight} exclude={exclude} /></>
-  } else if (activePane === "params") {
-    paneBody = <GLMRegularizationConfig config={config} onUpdate={onUpdate} />
-  } else if (activePane === "split") {
-    paneBody = splitPane
-  } else if (activePane === "train") {
-    paneBody = trainPane
-  } else if (activePane === "export") {
-    paneBody = exportPane
+  } else if (algorithm === "glm" && pane === "target") {
+    paneBody = (
+      <>
+        <GLMTargetConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} onEstimateDispersion={onEstimateDispersion} />
+        <GLMRegularizationConfig config={config} onUpdate={onUpdate} />
+      </>
+    )
+  } else if (algorithm === "glm" && pane === "features") {
+    paneBody = (
+      <>
+        <GLMTermsConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
+        <GLMInteractionsConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
+      </>
+    )
   }
 
   return (
-    <div id={`modelling-${activePane}-pane`} role="tabpanel" aria-labelledby={`modelling-${activePane}-tab`} className="px-4 py-3 space-y-4">
+    <div id={`modelling-${pane}-pane`} role="tabpanel" aria-labelledby={`modelling-${pane}-tab`} className="px-4 py-3 space-y-4">
       {paneBody}
     </div>
   )

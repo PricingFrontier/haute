@@ -160,7 +160,11 @@ def _train_glm(model_dir: Path) -> tuple[Path, Any, Any]:
 
     df = _training_frame()
     algo = GLMAlgorithm()
-    fit = algo.fit(df, FEATURES, CAT_FEATURES, TARGET, None, {"family": "gaussian"}, "regression")
+    params = {
+        "family": "gaussian",
+        "terms": {"x": {"type": "linear"}, "c": {"type": "categorical"}},
+    }
+    fit = algo.fit(df, FEATURES, CAT_FEATURES, TARGET, None, params, "regression")
     model_path = model_dir / "sev.rsglm"
     algo.save(fit.model, model_path)
     _write_contract(model_path)
@@ -383,7 +387,23 @@ class TestGlmButtonRoundTrip:
                 "deviance": 50.5,
                 "null_deviance": 200.0,
             },
-            glm_regularization_path={"selected_alpha": 0.1, "n_nonzero": 3},
+            glm_inference={
+                "status": "valid_standard",
+                "valid": True,
+                "standard_errors": "model",
+                "reason": None,
+            },
+            glm_smooth_terms=[{"term": "x", "k": 10, "edf": 3.5, "lambda": 12.0}],
+            glm_regularization={
+                "penalty": "ridge",
+                "mode": "fixed",
+                "alpha": 0.1,
+                "l1_ratio": 0.0,
+                "n_nonzero": 3,
+                "cv_folds": None,
+                "cv_selection": None,
+                "cv_seed": None,
+            },
         )
         config = {"algorithm": "glm", "task": "regression", "target": TARGET}
 
@@ -409,7 +429,9 @@ class TestGlmButtonRoundTrip:
             "glm_coefficients",
             "glm_relativities",
             "glm_fit_statistics",
-            "glm_regularization_path",
+            "glm_inference",
+            "glm_smooth_terms",
+            "glm_regularization",
         ):
             assert any(name.startswith(prefix) for name in glm_artifact_names), (
                 f"GLM artifact {prefix!r} missing from run; got {glm_artifact_names}"
@@ -491,7 +513,8 @@ class TestButtonLogConstruction:
             glm_coefficients=[{"feature": "x", "coefficient": 1.2}],
             glm_relativities=[{"feature": "c", "relativity": 1.5}],
             glm_fit_statistics=glm_stats,
-            glm_regularization_path={"selected_alpha": 0.1, "n_nonzero": 3},
+            glm_smooth_terms=[{"term": "x", "k": 10, "edf": 3.5, "lambda": 12.0}],
+            glm_regularization={"penalty": "lasso", "mode": "fixed", "alpha": 0.1},
         )
         config = {"algorithm": "glm", "task": "regression", "target": TARGET}
         fake = MLflowLogResult(
@@ -521,7 +544,8 @@ class TestButtonLogConstruction:
         assert diag.glm_coefficients == result.glm_coefficients
         assert diag.glm_relativities == result.glm_relativities
         assert diag.glm_fit_statistics == glm_stats
-        assert diag.glm_regularization_path == {"selected_alpha": 0.1, "n_nonzero": 3}
+        assert diag.glm_smooth_terms == result.glm_smooth_terms
+        assert diag.glm_regularization == {"penalty": "lasso", "mode": "fixed", "alpha": 0.1}
 
     def test_reads_per_model_contract_not_stale_shared_one(
         self, client, local_mlflow: Path

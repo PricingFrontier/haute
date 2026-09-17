@@ -85,6 +85,14 @@ def browser_model(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
     \"\"\"Browser E2E training node for async modelling flows.\"\"\"
     return raw_rows
 """
+_BROWSER_GLM_BLOCK = """
+
+
+@pipeline.modelling(config="config/model_training/browser_glm.json")
+def browser_glm(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
+    \"\"\"Browser E2E GLM node for the terms-pane flow.\"\"\"
+    return raw_rows
+"""
 _BROWSER_CANVAS_BLOCK = """
 
 
@@ -164,6 +172,29 @@ _BROWSER_MODEL_CONFIG = """{
   },
   "metrics": [
     "gini",
+    "rmse"
+  ],
+  "row_limit": 30,
+  "output_dir": ".haute_cache/browser_training"
+}
+"""
+_BROWSER_GLM_CONFIG = """{
+  "name": "browser_glm",
+  "target": "value",
+  "algorithm": "glm",
+  "task": "regression",
+  "family": "gaussian",
+  "terms": {},
+  "evaluation": {
+    "schema_version": 1,
+    "strategy": "random",
+    "seed": 42,
+    "validation": {
+      "method": "single",
+      "size": 0.2
+    }
+  },
+  "metrics": [
     "rmse"
   ],
   "row_limit": 30,
@@ -422,6 +453,8 @@ def _augment_starter_pipeline() -> None:
         source = source.rstrip() + _BROWSER_CORE_BLOCK
     if "def browser_model(" not in source:
         source = source.rstrip() + _BROWSER_MODEL_BLOCK
+    if "def browser_glm(" not in source:
+        source = source.rstrip() + _BROWSER_GLM_BLOCK
     if "def browser_mixed_banding(" not in source:
         source = source.rstrip() + _BROWSER_CANVAS_BLOCK
     if "def browser_optimiser(" not in source:
@@ -467,6 +500,7 @@ def _augment_starter_pipeline() -> None:
     config_dir = E2E_PROJECT_DIR / "rating" / "config" / "model_training"
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "browser_model.json").write_text(_BROWSER_MODEL_CONFIG, encoding="utf-8")
+    (config_dir / "browser_glm.json").write_text(_BROWSER_GLM_CONFIG, encoding="utf-8")
 
     banding_dir = E2E_PROJECT_DIR / "rating" / "config" / "banding"
     banding_dir.mkdir(parents=True, exist_ok=True)
@@ -522,6 +556,7 @@ def _scaffold_e2e_project() -> None:
             "proposer_age": [24 if i % 2 else 52 for i in ids],
             "channel": ["direct" if i % 2 else "broker" for i in ids],
             "vehicle_age": [2 if i % 4 < 2 else 9 for i in ids],
+            "mileage": [float(5000 + 731 * i + (i * i) % 97) for i in ids],
         }
     )
     data_dir = E2E_PROJECT_DIR / "data"

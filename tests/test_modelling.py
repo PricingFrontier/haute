@@ -9,6 +9,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from haute.errors import HauteValidationError
 from haute.modelling._algorithms import (
     ALGORITHM_REGISTRY,
     CatBoostAlgorithm,
@@ -1392,13 +1393,17 @@ class TestMonotonicConstraints:
         with pytest.raises(ValueError, match="final selected features.*unknown"):
             self._validation_job({"missing": 1}).run()
 
-    def test_monotone_constraints_reject_glm_non_term_feature(self) -> None:
-        with pytest.raises(ValueError, match="final selected features.*x2"):
+    def test_monotone_constraints_are_rejected_for_glm_at_construction(self) -> None:
+        """GLM monotonicity lives on each term, so the CatBoost lever is refused
+        when the job is built — never carried as far as ``run()``."""
+        with pytest.raises(
+            HauteValidationError, match="monotone_constraints only apply to CatBoost"
+        ):
             self._validation_job(
                 {"x2": 1},
                 algorithm="glm",
-                params={"terms": {"x1": {}}},
-            ).run()
+                params={"family": "gaussian", "terms": {"x1": {"type": "linear"}}},
+            )
 
     def test_monotone_constraints_reject_nonnumeric_feature(self) -> None:
         with pytest.raises(ValueError, match="numeric Int64 or Float64.*category"):

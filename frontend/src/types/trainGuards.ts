@@ -13,6 +13,8 @@ import {
   expectBoolean,
   expectExactKeys,
   expectInteger,
+  expectNullableNumber,
+  expectNullableString,
   expectNumber,
   expectPlainObject,
   expectSchemaVersionOne,
@@ -148,10 +150,10 @@ function parseGlmCoefficientRow(value: unknown, field: string): NonNullable<Trai
   return {
     feature: expectString("parseTrainResponse", obj.feature, `${field}.feature`),
     coefficient: expectNumber("parseTrainResponse", obj.coefficient, `${field}.coefficient`),
-    std_error: expectNumber("parseTrainResponse", obj.std_error, `${field}.std_error`),
-    z_value: expectNumber("parseTrainResponse", obj.z_value, `${field}.z_value`),
-    p_value: expectNumber("parseTrainResponse", obj.p_value, `${field}.p_value`),
-    significance: expectString("parseTrainResponse", obj.significance, `${field}.significance`),
+    std_error: expectNullableNumber("parseTrainResponse", obj.std_error, `${field}.std_error`),
+    z_value: expectNullableNumber("parseTrainResponse", obj.z_value, `${field}.z_value`),
+    p_value: expectNullableNumber("parseTrainResponse", obj.p_value, `${field}.p_value`),
+    significance: expectNullableString("parseTrainResponse", obj.significance, `${field}.significance`),
   }
 }
 
@@ -160,8 +162,42 @@ function parseGlmRelativityRow(value: unknown, field: string): NonNullable<Train
   return {
     feature: expectString("parseTrainResponse", obj.feature, `${field}.feature`),
     relativity: expectNumber("parseTrainResponse", obj.relativity, `${field}.relativity`),
-    ci_lower: obj.ci_lower === undefined ? undefined : expectNumber("parseTrainResponse", obj.ci_lower, `${field}.ci_lower`),
-    ci_upper: obj.ci_upper === undefined ? undefined : expectNumber("parseTrainResponse", obj.ci_upper, `${field}.ci_upper`),
+    ci_lower: expectNullableNumber("parseTrainResponse", obj.ci_lower, `${field}.ci_lower`),
+    ci_upper: expectNullableNumber("parseTrainResponse", obj.ci_upper, `${field}.ci_upper`),
+  }
+}
+
+function parseGlmInference(value: Record<string, unknown>): NonNullable<TrainResponse["glm_inference"]> {
+  const field = "glm_inference"
+  return {
+    status: expectString("parseTrainResponse", value.status, `${field}.status`),
+    valid: expectBoolean("parseTrainResponse", value.valid, `${field}.valid`),
+    standard_errors: expectNullableString("parseTrainResponse", value.standard_errors, `${field}.standard_errors`),
+    reason: expectNullableString("parseTrainResponse", value.reason, `${field}.reason`),
+  }
+}
+
+function parseGlmSmoothTerm(value: unknown, field: string): TrainResponse["glm_smooth_terms"][number] {
+  const obj = expectPlainObject("parseTrainResponse", value, field)
+  return {
+    term: expectString("parseTrainResponse", obj.term, `${field}.term`),
+    k: expectNumber("parseTrainResponse", obj.k, `${field}.k`),
+    edf: expectNumber("parseTrainResponse", obj.edf, `${field}.edf`),
+    lambda: expectNumber("parseTrainResponse", obj.lambda, `${field}.lambda`),
+  }
+}
+
+function parseGlmRegularization(value: Record<string, unknown>): NonNullable<TrainResponse["glm_regularization"]> {
+  const field = "glm_regularization"
+  return {
+    penalty: expectStringLiteral("parseTrainResponse", value.penalty, `${field}.penalty`, ["ridge", "lasso", "elastic_net"]),
+    mode: expectStringLiteral("parseTrainResponse", value.mode, `${field}.mode`, ["cross_validation", "fixed"]),
+    alpha: expectNumber("parseTrainResponse", value.alpha, `${field}.alpha`),
+    l1_ratio: expectNullableNumber("parseTrainResponse", value.l1_ratio, `${field}.l1_ratio`),
+    n_nonzero: expectNumber("parseTrainResponse", value.n_nonzero, `${field}.n_nonzero`),
+    cv_folds: expectNullableNumber("parseTrainResponse", value.cv_folds, `${field}.cv_folds`),
+    cv_selection: expectNullableString("parseTrainResponse", value.cv_selection, `${field}.cv_selection`),
+    cv_seed: expectNullableNumber("parseTrainResponse", value.cv_seed, `${field}.cv_seed`),
   }
 }
 
@@ -1104,7 +1140,8 @@ export function parseTrainResponse(value: unknown): TrainResponse {
   if (legacyFields.some((field) => field in obj)) {
     throw new Error("parseTrainResponse: legacy training result fields are not supported")
   }
-  const rawRegularization = optionalNullableObject("parseTrainResponse", obj, "glm_regularization_path")
+  const rawInference = optionalNullableObject("parseTrainResponse", obj, "glm_inference")
+  const rawRegularization = optionalNullableObject("parseTrainResponse", obj, "glm_regularization")
   const status = expectStringLiteral("parseTrainResponse", obj.status, "field `status`", ["started", "completed", "error"])
   const evaluation = obj.evaluation === undefined ? undefined : parseEvaluationReport(obj.evaluation)
   const tuning = obj.tuning === undefined ? undefined : parseTuningReport(obj.tuning)
@@ -1212,12 +1249,9 @@ export function parseTrainResponse(value: unknown): TrainResponse {
     glm_coefficients: parseArray("parseTrainResponse", obj.glm_coefficients, "glm_coefficients", parseGlmCoefficientRow),
     glm_relativities: parseArray("parseTrainResponse", obj.glm_relativities, "glm_relativities", parseGlmRelativityRow),
     glm_fit_statistics: expectMetricRecord(obj.glm_fit_statistics, "glm_fit_statistics", true),
-    glm_regularization_path: rawRegularization === null
-      ? null
-      : {
-          selected_alpha: rawRegularization.selected_alpha === undefined ? undefined : expectNumber("parseTrainResponse", rawRegularization.selected_alpha, "field `glm_regularization_path.selected_alpha`"),
-          n_nonzero: rawRegularization.n_nonzero === undefined ? undefined : expectNumber("parseTrainResponse", rawRegularization.n_nonzero, "field `glm_regularization_path.n_nonzero`"),
-        },
+    glm_inference: rawInference === null ? null : parseGlmInference(rawInference),
+    glm_smooth_terms: parseArray("parseTrainResponse", obj.glm_smooth_terms, "glm_smooth_terms", parseGlmSmoothTerm),
+    glm_regularization: rawRegularization === null ? null : parseGlmRegularization(rawRegularization),
     diagnostics_errors: parseArray("parseTrainResponse", obj.diagnostics_errors, "diagnostics_errors", parseTrainDiagnosticsError),
     feature_selection: obj.feature_selection === null
       ? null

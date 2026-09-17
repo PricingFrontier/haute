@@ -406,7 +406,9 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
                 glm_coefficients=result.glm_coefficients,
                 glm_relativities=result.glm_relativities,
                 glm_fit_statistics=result.glm_fit_statistics,
-                glm_regularization_path=result.glm_regularization_path,
+                glm_inference=result.glm_inference,
+                glm_smooth_terms=result.glm_smooth_terms,
+                glm_regularization=result.glm_regularization,
             )
             final_params = (
                 result.tuning.final_params

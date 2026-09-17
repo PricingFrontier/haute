@@ -135,7 +135,9 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
                 "glm_coefficients": {"type": "array", "items": "object"},
                 "glm_relativities": {"type": "array", "items": "object"},
                 "glm_fit_statistics": {"type": "object", "additionalProperties": "number"},
-                "glm_regularization_path": {"anyOf": ["object", "null"], "default": None},
+                "glm_inference": {"anyOf": ["object", "null"], "default": None},
+                "glm_smooth_terms": {"type": "array", "items": "object"},
+                "glm_regularization": {"anyOf": ["object", "null"], "default": None},
                 "diagnostics_errors": {"type": "array", "items": "object"},
                 "warning": {"anyOf": ["string", "null"], "default": None},
                 "total_source_rows": {"anyOf": ["integer", "null"], "default": None},
@@ -268,7 +270,9 @@ def test_train_response_exposes_glm_fields_used_by_frontend_modelling_panels() -
         "glm_coefficients",
         "glm_relativities",
         "glm_fit_statistics",
-        "glm_regularization_path",
+        "glm_inference",
+        "glm_smooth_terms",
+        "glm_regularization",
         "diagnostics_errors",
     ):
         assert field_name in properties

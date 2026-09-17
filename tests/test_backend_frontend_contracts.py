@@ -162,4 +162,10 @@ def test_train_fixture_preserves_glm_fields_consumed_by_frontend() -> None:
     assert validated.glm_coefficients
     assert validated.glm_relativities
     assert validated.glm_fit_statistics["aic"] == 1.2
+    assert validated.glm_inference == {
+        "status": "valid_standard",
+        "valid": True,
+        "standard_errors": "model",
+        "reason": None,
+    }
     assert validated.diagnostics_errors[0]["diagnostic"] == "shap"

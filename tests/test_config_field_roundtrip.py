@@ -64,8 +64,15 @@ def _examples():
             "regularization": "elastic_net",
             "alpha": 0.25,
             "l1_ratio": 0.75,
+            "cv_folds": 4,
+            "cv_selection": "1se",
+            "cv_seed": 7,
+            "max_iter": 50,
+            "tol": 1e-6,
+            "robust_standard_errors": "HC1",
             "intercept": False,
             "var_power": 1.5,
+            "theta": 2.5,
             "loss_function": "Poisson",
             "variance_power": 1.6,
             "monotone_constraints": {"_age": 1},
@@ -399,6 +406,31 @@ def test_every_field_example_survives_repeated_save(name, graph):
     _assert_semantically_equal(parsed, reparsed)
     assert second == third, name
     assert graph == original, "Saving mutated the caller's configuration"
+
+
+def test_theta_and_glm_controls_survive_a_sidecar_write():
+    graph = _corpus_graphs()[0]
+    node = next(node for node in graph.nodes if node.data.nodeType == NodeType.MODELLING)
+    controls = {
+        "algorithm": "glm",
+        "family": "negbinomial",
+        "theta": 2.5,
+        "link": "log",
+        "terms": {"_age": {"type": "bs", "df": 5}},
+        "regularization": "ridge",
+        "cv_folds": 4,
+        "cv_selection": "1se",
+        "cv_seed": 7,
+        "max_iter": 50,
+        "tol": 1e-6,
+        "robust_standard_errors": "HC3",
+    }
+    node.data.config.update(deepcopy(controls))
+
+    _first, parsed, _second = _roundtrip(graph)
+
+    restored = parsed.node_map[_sanitize_func_name(node.data.label)].data.config
+    assert {key: restored.get(key) for key in controls} == controls
 
 
 @pytest.mark.parametrize("field", ["selected_columns", "column_renames", "categorical_levels"])

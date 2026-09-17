@@ -270,18 +270,19 @@ class TestTrainingRequiredColumnsByNode:
     def test_returns_none_without_target(self) -> None:
         assert _training_required_columns_by_node("n", {"algorithm": "catboost"}) is None
 
-    def test_glm_demand_omits_dormant_excluded_terms(self) -> None:
+    def test_glm_demand_keeps_every_term_column_despite_a_stale_exclude(self) -> None:
+        """``exclude`` is a CatBoost lever: it never narrows a GLM's demand."""
         demand = _training_required_columns_by_node(
             "n",
             {
                 "algorithm": "glm",
                 "target": "target",
-                "terms": {"age": {}, "region": {}},
+                "terms": {"age": {"type": "linear"}, "region": {"type": "categorical"}},
                 "exclude": ["age"],
             },
         )
 
-        assert demand == {"n": frozenset({"target", "region"})}
+        assert demand == {"n": frozenset({"target", "age", "region"})}
 
 
 class TestTrainingFeatureSelection:
@@ -360,32 +361,37 @@ class TestTrainingFeatureSelection:
         ) in [(item.column, item.reason) for item in diagnostic.retained_metadata.items]
 
     def test_glm_terms_follow_schema_order_and_missing_columns_fail_before_execution(self) -> None:
+        schema = {
+            "feature_b": "Float64",
+            "target": "Float64",
+            "feature_a": "Float64",
+            "unused": "Float64",
+        }
         diagnostic = _build_training_feature_selection(
             {
                 "algorithm": "glm",
                 "target": "target",
-                "terms": {"feature_a": {}, "feature_b": {}},
+                "terms": {"feature_a": {"type": "linear"}, "feature_b": {"type": "linear"}},
             },
-            ["feature_b", "target", "feature_a", "unused"],
+            schema,
         )
 
         assert diagnostic.mode == "glm_terms"
         assert diagnostic.features.items == ["feature_b", "feature_a"]
         assert diagnostic.excluded_columns.items[-1].reason == "not_in_formula"
 
-        dormant = _build_training_feature_selection(
+        stale_exclude = _build_training_feature_selection(
             {
                 "algorithm": "glm",
                 "target": "target",
-                "terms": {"feature_a": {}, "feature_b": {}},
+                "terms": {"feature_a": {"type": "linear"}, "feature_b": {"type": "linear"}},
                 "exclude": ["feature_a"],
             },
-            ["feature_b", "target", "feature_a", "unused"],
+            schema,
         )
-        assert dormant.features.items == ["feature_b"]
-        assert [(item.column, item.reason) for item in dormant.excluded_columns.items] == [
+        assert stale_exclude.features.items == ["feature_b", "feature_a"]
+        assert [(item.column, item.reason) for item in stale_exclude.excluded_columns.items] == [
             ("target", "target"),
-            ("feature_a", "configured_exclusion"),
             ("unused", "not_in_formula"),
         ]
 
@@ -396,7 +402,7 @@ class TestTrainingFeatureSelection:
                     "target": "target",
                     "feature_columns": ["missing"],
                 },
-                ["target", "feature"],
+                {"target": "Float64", "feature": "Float64"},
             )
 
         with pytest.raises(ValueError, match="GLM terms reference columns.*missing"):
@@ -404,9 +410,19 @@ class TestTrainingFeatureSelection:
                 {
                     "algorithm": "glm",
                     "target": "target",
-                    "terms": {"missing": {}},
+                    "terms": {"missing": {"type": "linear"}},
                 },
-                ["target", "feature"],
+                {"target": "Float64", "feature": "Float64"},
+            )
+
+        with pytest.raises(ValueError, match="cannot use role columns: 'target' \\(target\\)"):
+            _build_training_feature_selection(
+                {
+                    "algorithm": "glm",
+                    "target": "target",
+                    "terms": {"target": {"type": "linear"}},
+                },
+                {"target": "Float64", "feature": "Float64"},
             )
 
     def test_empty_feature_set_fails_and_high_cardinality_detail_is_bounded(self) -> None:

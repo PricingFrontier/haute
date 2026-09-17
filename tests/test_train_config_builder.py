@@ -8,6 +8,8 @@ consumers must derive TrainingJob kwargs from it so they can never drift
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from haute.modelling._train_config import (
@@ -19,6 +21,8 @@ from haute.modelling._train_config import (
     effective_metrics,
 )
 
+ROOT = Path(__file__).resolve().parents[1]
+
 # Minimal canonical evaluation object — every public modelling config must
 # supply exactly one versioned evaluation contract.
 MINIMAL_EVALUATION = {
@@ -27,6 +31,9 @@ MINIMAL_EVALUATION = {
     "seed": 42,
     "validation": {"method": "single", "size": 0.2},
 }
+
+
+CV_SETTINGS = {"cv_folds": 5, "cv_selection": "min", "cv_seed": 42}
 
 
 class TestBuildTrainParams:
@@ -80,7 +87,10 @@ class TestBuildTrainParams:
         assert params["var_power"] == 1.5
         assert params["offset"] == "log_exposure"
 
-    def test_glm_excluded_feature_settings_are_dormant_and_reversible(self):
+    def test_glm_exclude_does_not_narrow_terms_or_interactions(self):
+        """``exclude`` is a CatBoost lever. A GLM feature is in the model
+        exactly when it has a term or is an interaction factor, so a stale
+        exclusion must never silently drop a configured term."""
         config = {
             "algorithm": "glm",
             "exclude": ["age"],
@@ -95,23 +105,9 @@ class TestBuildTrainParams:
             "family": "poisson",
         }
 
-        dormant = build_train_params(config)
-        assert dormant["terms"] == {"region": {"type": "categorical"}}
-        assert dormant["interactions"] == [
-            {"factors": ["region", "severity"], "include_main": False}
-        ]
-        assert config["terms"] == {
-            "age": {"type": "linear"},
-            "region": {"type": "categorical"},
-        }
-
-        restored = build_train_params({**config, "exclude": []})
-        assert restored["terms"] == config["terms"]
-        assert restored["interactions"] == config["interactions"]
-
-        explicitly_retained = build_train_params({**config, "feature_columns": ["age", "region"]})
-        assert explicitly_retained["terms"] == config["terms"]
-        assert explicitly_retained["interactions"] == config["interactions"]
+        params = build_train_params(config)
+        assert params["terms"] == config["terms"]
+        assert params["interactions"] == config["interactions"]
 
     def test_glm_missing_keys_are_skipped_not_defaulted(self):
         config = {"algorithm": "glm", "family": "tweedie"}
@@ -131,13 +127,18 @@ class TestBuildTrainParams:
     def test_glm_config_keys_complete(self):
         assert set(GLM_CONFIG_KEYS) == {
             "terms",
-            "all_factors",
             "family",
             "link",
             "interactions",
             "regularization",
             "alpha",
             "l1_ratio",
+            "cv_folds",
+            "cv_selection",
+            "cv_seed",
+            "max_iter",
+            "tol",
+            "robust_standard_errors",
             "intercept",
             "var_power",
             "theta",
@@ -337,20 +338,6 @@ class TestBuildTrainingJobKwargs:
         )
         assert all_dormant["monotone_constraints"] is None
 
-    def test_glm_rejects_when_every_configured_term_is_excluded(self):
-        with pytest.raises(TrainingConfigError, match="GLM config has no factors"):
-            build_training_job_kwargs(
-                {
-                    "target": "y",
-                    "algorithm": "glm",
-                    "family": "poisson",
-                    "terms": {"age": {"type": "linear"}},
-                    "exclude": ["age"],
-                    "evaluation": MINIMAL_EVALUATION,
-                },
-                data="d.parquet",
-            )
-
     def test_empty_string_optionals_normalised_to_none(self):
         """Live training passes ``config.get(k) or None`` — empty strings from
         UI configs must not become real column names."""
@@ -425,7 +412,7 @@ class TestExplicitObjectiveRequired:
                 "target": "y",
                 "algorithm": "glm",
                 "family": "gamma",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
@@ -554,7 +541,7 @@ class TestDefaultMetricsDerivation:
                 "target": "y",
                 "algorithm": "glm",
                 "family": family,
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "var_power": 1.5,
                 "theta": 1.5,
                 "evaluation": MINIMAL_EVALUATION,
@@ -596,7 +583,7 @@ class TestDefaultMetricsDerivation:
             "task": "regression",
             "algorithm": "glm",
             "family": "binomial",
-            "all_factors": True,
+            "terms": {"age": {"type": "linear"}},
         }
         assert effective_metrics(binomial_glm) == ["auc", "logloss"]
         assert effective_metrics(
@@ -649,7 +636,7 @@ class TestDefaultMetricsDerivation:
             data="d.parquet",
             target="y",
             algorithm="glm",
-            params={"family": "tweedie"},
+            params={"family": "tweedie", "var_power": 1.5, "terms": {"x": {"type": "linear"}}},
         )
         assert glm_job.metrics == ["gini", "tweedie_deviance"]
 
@@ -691,7 +678,7 @@ class TestFailoverGates:
                     "target": "y",
                     "algorithm": "glm",
                     "family": "tweedie",
-                    "all_factors": True,
+                    "terms": {"age": {"type": "linear"}},
                 },
                 data="d",
             )
@@ -702,7 +689,7 @@ class TestFailoverGates:
                 "target": "y",
                 "algorithm": "glm",
                 "family": "tweedie",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "var_power": 1.6,
                 "evaluation": MINIMAL_EVALUATION,
             },
@@ -713,14 +700,14 @@ class TestFailoverGates:
     # -- Negative Binomial dispersion (theta) ------------------------------
 
     def test_glm_negbinomial_without_theta_fails_loud(self):
-        """RustyStats does not estimate theta — unset fits silently at 1.0."""
+        """RustyStats does not estimate theta — unset makes it refuse to fit."""
         with pytest.raises(TrainingConfigError, match="theta"):
             build_training_job_kwargs(
                 {
                     "target": "y",
                     "algorithm": "glm",
                     "family": "negbinomial",
-                    "all_factors": True,
+                    "terms": {"age": {"type": "linear"}},
                 },
                 data="d",
             )
@@ -731,7 +718,7 @@ class TestFailoverGates:
                 "target": "y",
                 "algorithm": "glm",
                 "family": "negbinomial",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "theta": 2.5,
                 "evaluation": MINIMAL_EVALUATION,
             },
@@ -747,7 +734,7 @@ class TestFailoverGates:
                 "target": "y",
                 "algorithm": "glm",
                 "family": "quasipoisson",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
@@ -755,7 +742,7 @@ class TestFailoverGates:
 
     def test_negbinomial_theta_survives_script_export(self):
         """The exported standalone script must carry theta — an export that
-        drops it would train the silent theta=1.0 model the gate forbids."""
+        drops it would hit the RustyStats refusal the gate exists to prevent."""
         from haute.modelling import generate_training_script
 
         script = generate_training_script(
@@ -772,38 +759,51 @@ class TestFailoverGates:
         # params is rendered with repr(), so the key appears single-quoted.
         assert "'theta': 2.5" in script
 
-    # -- GLM factor set ---------------------------------------------------
-
-    def test_glm_empty_terms_without_all_factors_fails_loud(self):
-        with pytest.raises(TrainingConfigError, match="factor"):
-            build_training_job_kwargs(
-                {"target": "y", "algorithm": "glm", "family": "poisson"}, data="d"
-            )
-        with pytest.raises(TrainingConfigError, match="factor"):
+    def test_glm_negbinomial_theta_gate_names_the_library_refusal(self):
+        with pytest.raises(TrainingConfigError, match="RustyStats refuses to fit without it"):
             build_training_job_kwargs(
                 {
                     "target": "y",
                     "algorithm": "glm",
-                    "family": "poisson",
-                    "terms": {},
+                    "family": "negbinomial",
+                    "terms": {"age": {"type": "linear"}},
+                    "evaluation": MINIMAL_EVALUATION,
                 },
                 data="d",
             )
 
-    def test_glm_all_factors_is_an_explicit_choice(self):
-        kwargs = build_training_job_kwargs(
+    def test_exported_glm_script_keeps_exposure_semantics(self):
+        from haute.modelling import generate_training_script
+        from tests.test_glm_integration import _captured_export_kwargs
+
+        script = generate_training_script(
             {
                 "target": "y",
                 "algorithm": "glm",
                 "family": "poisson",
-                "all_factors": True,
+                "offset": "exposure",
+                "terms": {"age": {"type": "linear"}},
                 "evaluation": MINIMAL_EVALUATION,
             },
-            data="d",
+            "data.parquet",
         )
-        assert kwargs["params"]["all_factors"] is True
+        # The script hands the same offset column to TrainingJob, whose
+        # adapter maps it to RustyStats exposure= under a log link. Run the
+        # script rather than grep it: only the constructed kwargs prove the
+        # exported job is exposed the way live training is.
+        assert _captured_export_kwargs(script)["offset"] == "exposure"
 
-    def test_glm_configured_terms_pass_without_all_factors(self):
+    # -- GLM term set -----------------------------------------------------
+
+    def test_glm_empty_terms_fails_loud(self):
+        for config in (
+            {"target": "y", "algorithm": "glm", "family": "poisson"},
+            {"target": "y", "algorithm": "glm", "family": "poisson", "terms": {}},
+        ):
+            with pytest.raises(TrainingConfigError, match="Add a term to at least one feature"):
+                build_training_job_kwargs(config, data="d")
+
+    def test_glm_configured_terms_pass(self):
         kwargs = build_training_job_kwargs(
             {
                 "target": "y",
@@ -815,6 +815,46 @@ class TestFailoverGates:
             data="d",
         )
         assert kwargs["params"]["terms"] == {"age": {"type": "linear"}}
+        assert set(kwargs["params"]) <= set(GLM_CONFIG_KEYS)
+
+    def test_glm_ignores_exclude_and_clears_monotone_constraints(self):
+        kwargs = build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "poisson",
+                "terms": {"age": {"type": "linear"}, "region": {"type": "categorical"}},
+                "interactions": [{"factors": ["age", "region"], "include_main": True}],
+                "exclude": ["age"],
+                "monotone_constraints": {"age": 1},
+                "evaluation": MINIMAL_EVALUATION,
+            },
+            data="d",
+        )
+        assert kwargs["exclude"] == []
+        assert kwargs["monotone_constraints"] is None
+        assert kwargs["params"]["terms"] == {
+            "age": {"type": "linear"},
+            "region": {"type": "categorical"},
+        }
+        assert kwargs["params"]["interactions"] == [
+            {"factors": ["age", "region"], "include_main": True}
+        ]
+
+    def test_catboost_keeps_exclude_and_monotone_constraints(self):
+        kwargs = build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "catboost",
+                "loss_function": "RMSE",
+                "exclude": ["age"],
+                "monotone_constraints": {"age": 1, "income": -1},
+                "evaluation": MINIMAL_EVALUATION,
+            },
+            data="d",
+        )
+        assert kwargs["exclude"] == ["age"]
+        assert kwargs["monotone_constraints"] == {"income": -1}
 
     # -- Elastic-net mixing weight ----------------------------------------
 
@@ -825,7 +865,7 @@ class TestFailoverGates:
                     "target": "y",
                     "algorithm": "glm",
                     "family": "poisson",
-                    "all_factors": True,
+                    "terms": {"age": {"type": "linear"}},
                     "regularization": "elastic_net",
                 },
                 data="d",
@@ -837,9 +877,10 @@ class TestFailoverGates:
                 "target": "y",
                 "algorithm": "glm",
                 "family": "poisson",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "regularization": "elastic_net",
                 "l1_ratio": 0.0,
+                **CV_SETTINGS,
                 "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
@@ -852,8 +893,9 @@ class TestFailoverGates:
                 "target": "y",
                 "algorithm": "glm",
                 "family": "poisson",
-                "all_factors": True,
+                "terms": {"age": {"type": "linear"}},
                 "regularization": "ridge",
+                **CV_SETTINGS,
                 "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
@@ -886,3 +928,147 @@ class TestFailoverGates:
             )
             is None
         )
+
+
+def _glm_config(**overrides: object) -> dict[str, object]:
+    return {
+        "target": "y",
+        "algorithm": "glm",
+        "family": "poisson",
+        "terms": {"age": {"type": "linear"}},
+        "evaluation": MINIMAL_EVALUATION,
+        **overrides,
+    }
+
+
+class TestGlmValueContract:
+    def test_glm_jobs_receive_no_catboost_only_levers(self):
+        kwargs = build_training_job_kwargs(
+            _glm_config(
+                exclude=["age"],
+                feature_columns=["age"],
+                monotone_constraints={"age": 1},
+                feature_weights={"age": 2.0},
+            ),
+            data="d",
+        )
+        assert kwargs["exclude"] == []
+        assert kwargs["feature_columns"] is None
+        assert kwargs["monotone_constraints"] is None
+        assert kwargs["feature_weights"] is None
+
+    def test_cross_validation_settings_are_required_only_without_a_fixed_alpha(self):
+        with pytest.raises(TrainingConfigError, match="needs its folds, selection rule, seed"):
+            build_training_job_kwargs(_glm_config(regularization="lasso"), data="d")
+        with pytest.raises(TrainingConfigError, match="needs its seed"):
+            build_training_job_kwargs(
+                _glm_config(regularization="lasso", alpha=0, cv_folds=5, cv_selection="1se"),
+                data="d",
+            )
+        build_training_job_kwargs(_glm_config(regularization="lasso", alpha=0.25), data="d")
+
+    @pytest.mark.parametrize(
+        ("overrides", "message"),
+        [
+            ({"family": "inverse_gaussian"}, "Unknown GLM family 'inverse_gaussian'"),
+            ({"link": "sqrt"}, "Link 'sqrt' is not valid for the poisson family"),
+            ({"family": "tweedie", "var_power": 3.0}, "variance power must be from 1"),
+            ({"family": "tweedie", "var_power": True}, "variance power must be a number"),
+            ({"family": "negbinomial", "theta": 0}, "theta must be a finite positive number"),
+            ({"regularization": "group"}, "Unknown GLM regularization 'group'"),
+            ({"regularization": "ridge", "alpha": -1}, "alpha must be a finite non-negative"),
+            (
+                {"regularization": "elastic_net", "alpha": 1, "l1_ratio": 2},
+                "L1 ratio must be a number from 0 to 1",
+            ),
+            (
+                {"regularization": "ridge", **CV_SETTINGS, "cv_folds": 1},
+                "folds must be an integer from 2 to 20",
+            ),
+            (
+                {"regularization": "ridge", **CV_SETTINGS, "cv_selection": "max"},
+                "selection must be 'min'",
+            ),
+            (
+                {"regularization": "ridge", **CV_SETTINGS, "cv_seed": -3},
+                "seed must be a non-negative integer",
+            ),
+            ({"max_iter": 0}, "Maximum iterations must be an integer from 1 to 10000"),
+            ({"tol": 1}, "Tolerance must be a number greater than 0 and less than 1"),
+            ({"robust_standard_errors": "HC4"}, "Robust standard errors must be one of"),
+            ({"intercept": "yes"}, "intercept must be true or false"),
+            ({"terms": {"age": {"type": "linear", "df": 4}}}, "do not accept"),
+        ],
+    )
+    def test_invalid_glm_values_fail_before_a_job_exists(self, overrides, message):
+        with pytest.raises(TrainingConfigError, match=message):
+            build_training_job_kwargs(_glm_config(**overrides), data="d")
+
+    def test_regularization_with_penalised_spline_is_refused(self):
+        for regularization in (
+            {"regularization": "ridge", **CV_SETTINGS},
+            {"regularization": "ridge", "alpha": 0.5},
+        ):
+            with pytest.raises(
+                TrainingConfigError, match=r"automatically smoothed splines \('age'\)"
+            ):
+                build_training_job_kwargs(
+                    _glm_config(terms={"age": {"type": "bs"}}, **regularization), data="d"
+                )
+        build_training_job_kwargs(
+            _glm_config(terms={"age": {"type": "bs", "df": 5}}, regularization="ridge", alpha=0.5),
+            data="d",
+        )
+
+    @pytest.mark.parametrize(
+        ("overrides", "message"),
+        [
+            ({"regularization": "ridge", "alpha": 0.5}, "cannot be combined with regularization"),
+            (
+                {"terms": {"age": {"type": "linear", "monotonicity": "increasing"}}},
+                "monotonicity constraints \\('age'\\)",
+            ),
+            ({"terms": {"age": {"type": "ns"}}}, "automatically smoothed splines"),
+        ],
+    )
+    def test_robust_standard_errors_with_regularization_are_refused(self, overrides, message):
+        with pytest.raises(TrainingConfigError, match=message):
+            build_training_job_kwargs(
+                _glm_config(robust_standard_errors="HC1", **overrides), data="d"
+            )
+
+    def test_tweedie_power_outside_one_to_two_is_refused(self):
+        for power in (0.99, 2.01, 3, -1.5, float("nan"), float("inf")):
+            with pytest.raises(TrainingConfigError, match="variance power must be"):
+                build_training_job_kwargs(_glm_config(family="tweedie", var_power=power), data="d")
+        for power in (1, 1.0, 1.5, 2.0):
+            build_training_job_kwargs(_glm_config(family="tweedie", var_power=power), data="d")
+
+    def test_quasibinomial_defaults_to_classification_metrics(self):
+        assert default_metrics("regression", family="quasibinomial") == ["auc", "logloss"]
+
+    def test_family_link_table_matches_frontend_and_rustystats_default_links(self):
+        import json
+        import re
+
+        from rustystats.formula import get_default_link
+
+        from haute.modelling._train_config import GLM_FAMILY_LINKS
+
+        assert {family: links[0] for family, links in GLM_FAMILY_LINKS.items()} == {
+            family: get_default_link(family) for family in GLM_FAMILY_LINKS
+        }
+        assert {link for links in GLM_FAMILY_LINKS.values() for link in links} <= {
+            "identity",
+            "log",
+            "logit",
+        }
+
+        source = (ROOT / "frontend/src/panels/modelling/glmFamilies.ts").read_text(encoding="utf-8")
+        block = re.search(r"GLM_FAMILY_LINKS = \{(.*?)\} as const", source, re.DOTALL)
+        assert block is not None
+        frontend = {
+            family: json.loads(links)
+            for family, links in re.findall(r"(\w+): (\[[^\]]*\])", block.group(1))
+        }
+        assert frontend == {family: list(links) for family, links in GLM_FAMILY_LINKS.items()}

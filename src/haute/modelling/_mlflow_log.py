@@ -185,7 +185,9 @@ _DIAGNOSTIC_ARTIFACTS: tuple[tuple[str, str, str], ...] = (
     ("glm_coefficients", "glm_coefficients", "glm"),
     ("glm_relativities", "glm_relativities", "glm"),
     ("glm_fit_statistics", "glm_fit_statistics", "glm"),
-    ("glm_regularization_path", "glm_regularization_path", "glm"),
+    ("glm_inference", "glm_inference", "glm"),
+    ("glm_smooth_terms", "glm_smooth_terms", "glm"),
+    ("glm_regularization", "glm_regularization", "glm"),
 )
 
 

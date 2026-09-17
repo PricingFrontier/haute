@@ -42,12 +42,23 @@ def test_blank_scaffold_is_augmented_with_complete_browser_graph(
         'pipeline = haute.Pipeline("browser_fixture")'
     )
 
+    assert "def browser_model(" in source
+    assert "def browser_glm(" in source
+    model_training_dir = rating_dir / "config" / "model_training"
+    assert '"algorithm": "catboost"' in (model_training_dir / "browser_model.json").read_text(
+        encoding="utf-8"
+    )
+    assert '"algorithm": "glm"' in (model_training_dir / "browser_glm.json").read_text(
+        encoding="utf-8"
+    )
+
     graph = parse_pipeline_file(pipeline_path)
     assert {node.id for node in graph.nodes} == {
         "raw_rows",
         "enriched",
         "priced",
         "browser_model",
+        "browser_glm",
         "browser_mixed_banding",
         "browser_rating",
         "browser_optimiser_rows",

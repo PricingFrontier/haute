@@ -39,7 +39,9 @@ class ModelDiagnostics:
     glm_coefficients: list[dict[str, Any]] = field(default_factory=list)
     glm_relativities: list[dict[str, Any]] = field(default_factory=list)
     glm_fit_statistics: dict[str, float] = field(default_factory=dict)
-    glm_regularization_path: dict[str, Any] | None = None
+    glm_inference: dict[str, Any] | None = None
+    glm_smooth_terms: list[dict[str, Any]] = field(default_factory=list)
+    glm_regularization: dict[str, Any] | None = None
 
 
 @dataclass

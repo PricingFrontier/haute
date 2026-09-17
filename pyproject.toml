@@ -57,7 +57,7 @@ dependencies = [
     # Native structural filter for exact, complete structured-input inference.
     "msgspec>=0.21.1,<0.22",
     "price-contour>=0.4.1,<0.5",
-    "rustystats>=0.7.0,<0.8",
+    "rustystats>=0.9.0,<0.10",
     # Core: Model Scoring and the MLflow registry are first-class palette
     # features. The extra below pins supported Databricks clients and adds SQL.
     "mlflow>=3.11.0,<4",
