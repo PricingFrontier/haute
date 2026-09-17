@@ -60,4 +60,32 @@ describe("buildExploreCacheIdentity", () => {
     expect(identity(explore, [changedSource, explore, downstream])).not.toEqual(identity())
     expect(identity(explore, [source, explore, downstream], "import pandas as pd")).not.toEqual(identity())
   })
+
+  it.each([
+    ["the Explore node itself", "explore"],
+    ["a stepped ancestor", "source"],
+  ])("ignores generated step code but not the steps themselves, on %s", (_label, which) => {
+    const steps = [{ id: "l", kind: "limit", n: 2 }]
+    const stepped = (config: Record<string, unknown>) =>
+      which === "explore"
+        ? { ...explore, data: { ...explore.data, config } }
+        : { ...source, data: { ...source.data, config: { path: "claims.parquet", ...config } } }
+
+    const authored = stepped({ steps, code: "" })
+    const nodes = (node: SimpleNode) =>
+      which === "explore" ? [source, node, downstream] : [node, explore, downstream]
+    const target = (node: SimpleNode) => (which === "explore" ? node : explore)
+
+    // The render endpoint filling in the generated code is not a data change.
+    const rendered = stepped({ steps, code: "df = df.head(2)", _steps_error: "" })
+    expect(identity(target(rendered), nodes(rendered))).toEqual(
+      identity(target(authored), nodes(authored)),
+    )
+
+    // Editing the steps is.
+    const edited = stepped({ steps: [{ id: "l", kind: "limit", n: 3 }], code: "" })
+    expect(identity(target(edited), nodes(edited))).not.toEqual(
+      identity(target(authored), nodes(authored)),
+    )
+  })
 })

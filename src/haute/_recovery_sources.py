@@ -11,7 +11,7 @@ from typing import Any
 from haute._artifact_paths import conflict, read_artifact, safe_path
 from haute._ast_helpers import _extract_function_bodies, _get_decorator_kwargs
 from haute._code_extraction import _extract_explore_user_code
-from haute._config_builder import _attach_code_from_body
+from haute._config_builder import _attach_code_from_body, _reconcile_steps
 from haute._config_io import (
     _normalise_loaded_config,
     config_path_for_node,
@@ -20,6 +20,7 @@ from haute._config_io import (
 )
 from haute._node_config_recovery import node_config_schema
 from haute._pipeline_repair import PipelineRepairError
+from haute._polars_steps import STEPPED_NODE_TYPES
 from haute._recovery_schemas import RecoveryFieldChange
 from haute._types import GraphNode, NodeData, NodeType
 from haute.errors import HauteError
@@ -108,6 +109,21 @@ def read_raw_node_settings(
     raw = _attach_code_from_body(raw, node_type, body, params)
     if node_type == NodeType.EXPLORE:
         raw["code"] = _extract_explore_user_code(body, params)
+    if node_type in STEPPED_NODE_TYPES:
+        # The ``.py`` body is the runtime truth here as it is in ordinary
+        # parsing: without this, a hand-edited body would be silently
+        # regenerated from stale steps when ``NodeData`` materialises the
+        # recovered candidate, losing the authored edit.
+        reconciled = _reconcile_steps(raw, node_type, params, reference, function.name)
+        if "steps" in raw and "steps" not in reconciled:
+            changes.append(
+                RecoveryFieldChange(
+                    path="/steps",
+                    outcome="removed",
+                    reason=str(reconciled["_steps_discarded"]),
+                )
+            )
+        raw = reconciled
     if "source_type" in raw and "sourceType" not in raw:
         raw["sourceType"] = raw.pop("source_type")
         changes.append(

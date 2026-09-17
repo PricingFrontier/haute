@@ -4257,3 +4257,78 @@ def test_explore_hand_edited_body_discards_its_steps(tmp_path: Path) -> None:
     assert node.data.config["_steps_discarded"].startswith("Steps were discarded because")
     # Explore has no sidecar to retire.
     assert "_discarded_sidecar" not in node.data.config
+
+
+# ---------------------------------------------------------------------------
+# Recovery preserves a hand-edited body over stale steps
+# ---------------------------------------------------------------------------
+
+
+def _recovered_settings(root: Path, authored_id: str) -> tuple[dict[str, Any], list[Any]]:
+    """The raw settings recovery would offer for one node, plus its change notes."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute._recovery_sources import read_raw_node_settings
+
+    document = load_pipeline_editor_document(root / "main.py", project_root=root)
+    target = next(node for node in document.nodes if node.authored_id == authored_id)
+    _node_type, raw, changes, _function, _params, _reference = read_raw_node_settings(
+        root, document, target
+    )
+    return raw, changes
+
+
+@pytest.mark.parametrize("surface", ("explore", "dataInput"))
+def test_recovery_keeps_a_hand_edited_body_over_stale_steps(
+    project_root: Path, surface: str
+) -> None:
+    """Recovery is the ``.py``-is-truth path too: an edited body is never regenerated."""
+    quotes, _rates = _frames(project_root)
+    if surface == "explore":
+        node, node_id = _explore([step("l", "limit", n=2)]), "report"
+    else:
+        node, node_id = _stepped_input(quotes, [step("l", "limit", n=2)]), "quotes"
+    nodes = [node] if surface == "dataInput" else [quotes, node]
+    edges = [] if surface == "dataInput" else [make_edge("quotes", "report")]
+    graph = PipelineGraph(nodes=nodes, edges=edges)
+
+    code = graph_to_code(graph, pipeline_name="main")
+    _write_sidecars(project_root, graph)
+    # The author edited the generated body by hand; the steps are now stale.
+    (project_root / "main.py").write_text(
+        code.replace("df.head(2)", "df.head(3)"), encoding="utf-8"
+    )
+
+    raw, changes = _recovered_settings(project_root, node_id)
+    assert raw["code"] == "df = df.head(3)", surface
+    assert "steps" not in raw, surface
+    assert raw["_steps_discarded"].startswith("Steps were discarded because"), surface
+    assert any(change.path == "/steps" and change.outcome == "removed" for change in changes), (
+        surface
+    )
+
+    # The recovered candidate materialises to the edited body, not the steps.
+    recovered = GraphNode(
+        id=node_id,
+        data=NodeData(label=node_id, nodeType=node.data.nodeType, config=raw),
+    )
+    assert recovered.data.config["code"] == "df = df.head(3)", surface
+
+
+@pytest.mark.parametrize("surface", ("explore", "dataInput"))
+def test_recovery_keeps_steps_when_the_body_still_matches(project_root: Path, surface: str) -> None:
+    quotes, _rates = _frames(project_root)
+    steps = [step("l", "limit", n=2)]
+    if surface == "explore":
+        node, node_id = _explore(steps), "report"
+        graph = PipelineGraph(nodes=[quotes, node], edges=[make_edge("quotes", "report")])
+    else:
+        node, node_id = _stepped_input(quotes, steps), "quotes"
+        graph = PipelineGraph(nodes=[node], edges=[])
+
+    code = graph_to_code(graph, pipeline_name="main")
+    _write_sidecars(project_root, graph)
+    (project_root / "main.py").write_text(code, encoding="utf-8")
+
+    raw, _changes = _recovered_settings(project_root, node_id)
+    assert raw["steps"] == steps, surface
+    assert "_steps_discarded" not in raw, surface

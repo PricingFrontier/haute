@@ -33,7 +33,7 @@
 | `src/haute/routes/_runtime_path_errors.py` | Closed HTTP mapping for runtime-path failures: malformed path → 400, project-root escape → 403, selected by concrete exception type rather than message text. |
 | `src/haute/_node_config_recovery.py` | Current contracts and field reconciliation. |
 | `src/haute/_artifact_paths.py` | Contained project-relative artifact paths (traversal/alias/reparse-point rejection) and bounded artifact reads shared by recovery and the mutation lock. |
-| `src/haute/_recovery_sources.py` | Raw authored settings/code evidence and scaffold matching for the recover action. |
+| `src/haute/_recovery_sources.py` | Raw authored settings/code evidence and scaffold matching for the recover action. For a stepped node type it reconciles the recovered `steps` against the extracted body through the parser's own `_reconcile_steps`, so a hand-edited body is never regenerated from stale steps when the candidate materialises; a discarded list is reported as a `/steps` `removed` change. |
 | `src/haute/_recovery_schemas.py` | Engine field-outcome and issue types. |
 | `src/haute/_project_mutation_lock.py` | Cross-process project writer lock. |
 | `src/haute/_file_lock.py` | Shared OS file-lock primitives. |

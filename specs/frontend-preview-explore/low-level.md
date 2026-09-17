@@ -28,7 +28,7 @@
 | `frontend/src/panels/ExplorePreview.tsx` | Explore run/cancel/store lifecycle and Preview/Overview/Pivots/Charts tab composition. |
 | `frontend/src/api/types.ts`, `frontend/src/types/guards.ts`, `frontend/src/stores/useNodeResultsStore.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned Explore API contracts, runtime guards, and node-scoped report/pivot job/result state consumed by the preview panes. |
 | `frontend/src/panels/UtilityPanel.tsx` | Utility-module list/read/create/delete/editor UI with debounced, flushable saves and syntax-error display. `App.tsx` loads the panel through a lazy import only after the user opens Utility, keeping its editor and API path out of startup JavaScript. |
-| `frontend/src/panels/explore/cacheIdentity.ts` | Upstream-lineage/config identity for an Explore cache request. |
+| `frontend/src/panels/explore/cacheIdentity.ts` | Upstream-lineage/config identity for an Explore cache request; authored-step projection excludes generated step code on the node and its stepped ancestors. |
 | `frontend/src/panels/explore/overviewCardDefinitions.ts`, `frontend/src/panels/explore/overviewConfig.ts` | Ordered overview-card registry and defensive config reader. |
 | `frontend/src/panels/explore/ExploreOverviewPane.tsx` | Enabled-card/empty-state dispatcher. |
 | `frontend/src/panels/explore/pivotConfig.ts`, `frontend/src/panels/explore/pivotNumberFormat.ts`, `frontend/src/panels/explore/useExplorePivotActions.ts`, `frontend/src/panels/explore/useAutoUpdateExplorePivots.ts`, `frontend/src/panels/explore/ExplorePivotsPane.tsx`, `frontend/src/panels/explore/PivotTableGrid.tsx` | Pivot version-1 parsing, number-format helpers, calculation identity, and the shared result-freshness predicate; shared table/chart run and cancel lifecycle; deduplicated automatic scheduling for mounted consumers; enabled-section lifecycle; virtualised semantic matrix rendering. |
@@ -68,7 +68,10 @@
 1. `frontend/src/panels/explore/cacheIdentity.ts` finds all upstream nodes, removes Explore
    overview, shared-formula-library, pivot, and chart settings from data-affecting config, and
    includes submodels/preamble. Calculated-field definitions affect pivot calculations but never
-   the materialised Explore dataframe.
+   the materialised Explore dataframe. On the Explore node and on every stepped ancestor it
+   also removes the generated `code` and `_steps_error` a step list materialises
+   (`authoredPolarsConfig`), so a render response arriving after the report was computed
+   cannot invalidate its identity; editing the steps themselves still does.
 2. `frontend/src/panels/ExplorePreview.tsx` canonicalises that identity together with the active
    source. It posts that graph identity to `/api/explore/cache-status` on mount and whenever the
    identity changes; a rerender that preserves the identity (for example a canvas drag) does not
