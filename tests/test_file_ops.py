@@ -766,3 +766,58 @@ class TestAtomicCopyFiles:
         assert dst_a.read_bytes() == b"original-a"
         assert not dst_b.exists()
         assert not tuple(tmp_path.glob("*.tmp"))
+
+
+class TestRemoveTree:
+    """Best-effort tree removal that survives a transient Windows handle."""
+
+    def test_a_transient_sharing_violation_is_retried_until_the_tree_is_gone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import _file_ops
+
+        target = tmp_path / "staging"
+        (target / "nested").mkdir(parents=True)
+        (target / "nested" / "data.parquet").write_bytes(b"payload")
+        real_rmtree = _file_ops.shutil.rmtree
+        attempts: list[int] = []
+
+        def rmtree_locked_once(path, *args, **kwargs):
+            attempts.append(1)
+            if len(attempts) == 1:
+                error = OSError("The process cannot access the file")
+                error.winerror = 32
+                raise error
+            real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(_file_ops, "_IS_WINDOWS", True)
+        monkeypatch.setattr(_file_ops.shutil, "rmtree", rmtree_locked_once)
+
+        assert _file_ops.remove_tree(target) is True
+
+        assert attempts == [1, 1]
+        assert not target.exists()
+
+    def test_a_tree_that_cannot_be_removed_is_reported_rather_than_raised(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import _file_ops
+
+        target = tmp_path / "staging"
+        target.mkdir()
+
+        def rmtree_always_locked(_path, *_args, **_kwargs):
+            error = OSError("The process cannot access the file")
+            error.winerror = 32
+            raise error
+
+        monkeypatch.setattr(_file_ops, "_IS_WINDOWS", True)
+        monkeypatch.setattr(_file_ops.shutil, "rmtree", rmtree_always_locked)
+
+        assert _file_ops.remove_tree(target) is False
+        assert target.exists()
+
+    def test_an_absent_tree_counts_as_removed(self, tmp_path: Path) -> None:
+        from haute._file_ops import remove_tree
+
+        assert remove_tree(tmp_path / "never-existed") is True

@@ -29,7 +29,7 @@ it, and Explore cannot use data another consumer cached.
 
 **Plan:** Explore resolves its data point through the caching data-point resolver, builds or joins
 it through the node-data build service, and shows state through the `CACHE-S05` hook and
-button. The overview reads the `CACHE-S04` `profile` analysis for the point's
+button. The overview reads the shared `profile` analysis for the point's
 current data version, starting the profile job when absent. Pivot runs, pivot
 members, and charts lease the point frame for their whole calculation instead
 of scanning the Explore dataframe-cache entry. The pivot result cache key
@@ -45,7 +45,7 @@ analyses its own output; an Explore node and a Banding node on one parent share
 one build and one cache state; a pivot calculated before a refresh is never
 returned for the new generation.
 
-**Dependencies:** `CACHE-S04`, `CACHE-S05`; the node-data build service.
+**Dependencies:** `CACHE-S05`; the node-data build service, the data profile job, and the analysis-result store.
 
 **Evidence:** `src/haute/routes/_explore_service.py`;
 `src/haute/routes/_pivot_service.py`; `src/haute/routes/explore.py`;

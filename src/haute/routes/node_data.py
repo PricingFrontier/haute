@@ -13,6 +13,7 @@ from haute.routes.pipeline import _ensure_source_file, _validate_runtime_input_p
 from haute.schemas import (
     NodeDataClearResponse,
     NodeDataPointResponse,
+    NodeDataProfileResponse,
     NodeDataRequest,
     NodeDataRunRequest,
     NodeDataRunResponse,
@@ -44,6 +45,12 @@ def node_data_point(body: NodeDataRequest) -> NodeDataPointResponse:
 def run_node_data(body: NodeDataRunRequest) -> NodeDataRunResponse:
     """Start, join, or delegate caching of a consumer node's whole dataset."""
     return _node_data_service.run(_prepared(body))
+
+
+@router.post("/profile", response_model=NodeDataProfileResponse)
+def node_data_profile(body: NodeDataRequest) -> NodeDataProfileResponse:
+    """Return or start the data profile of a consumer node's current data version."""
+    return _node_data_service.profile(_prepared(body))
 
 
 @router.get("/status/{job_id}", response_model=NodeDataStatusResponse)

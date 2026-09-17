@@ -5,7 +5,8 @@
 | File | Responsibility |
 | --- | --- |
 | `src/haute/routes/explore.py` | FastAPI router (`/api/explore`): thin Explore materialisation and `/pivots` run/status/cancel/member endpoints. Graph-bearing requests share `flatten_graph`, `_ensure_source_file`, and `_validate_runtime_input_paths` before service delegation. |
-| `src/haute/routes/_explore_service.py` | Core service: cache-key derivation (`ExploreCacheSpec`), background job execution (`_run_job`, `_materialise_and_summarise_worker`), and all statistics/summary computation (`_build_frame_stats`, `_build_data_quality_summary`, `_build_categorical_summary`, `_build_overview_summary`). |
+| `src/haute/routes/_explore_service.py` | Core service: cache-key derivation (`ExploreCacheSpec`) and background job execution (`_run_job`, `_materialise_and_summarise_worker`), which calls the frame profile. |
+| `src/haute/_frame_profile.py` | The data profile computation itself: per-column statistics and the overview summary (`_build_frame_stats`, `_build_data_quality_summary`, `_build_categorical_summary`, `_build_overview_summary`), independent of any node or cache. |
 | `src/haute/_explore_cache.py` | Project-local durable Explore generations: strict metadata/current-report validation, leased current/stale reads, two-phase atomic publication, and restoration into the process dataframe execution cache. |
 | `src/haute/routes/_pivot_service.py` | Pivot service: requires the derived Explore dataframe-cache entry, validates fields/aggregations, applies typed exact-member filters, enforces cardinality before aggregation, runs latest-wins admitted jobs, and caches typed matrices by calculation identity. |
 | `src/haute/_cache.py` | Dataframe execution-cache invariant owned by [caching](../caching/low-level.md) and used by the execution path: the materialised Explore dataframe is reused independently of the in-process report cache. |
@@ -24,7 +25,7 @@
   `execution_facade.DataFrameExecutionCacheRequest`, the derived `dataframe_cache_key`, the
   derived `report_cache_key`, and a `family_key` tuple (`("explore", source_file, node_id,
   source)`) used to detect superseding runs of "the same" Explore node.
-- **`ExploreFrameStats`** (`_explore_service.py`, frozen dataclass) — the intermediate result of
+- **`ExploreFrameStats`** (`_frame_profile.py`, frozen dataclass) — the intermediate result of
   sequential column batches: `row_count`, `columns: list[ExploreColumnStat]`, and
   `overview_summary: ExploreOverviewSummary`.
 - **`ExploreColumnStat`** (`schemas.py`) — per-column stats. `distinct_count` is `None` exactly

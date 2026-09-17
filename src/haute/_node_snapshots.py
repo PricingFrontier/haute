@@ -50,7 +50,7 @@ from haute._cache import (
 )
 from haute._execution_context import ExecutionProfile
 from haute._file_lock import _acquire_file_lock, _release_file_lock
-from haute._file_ops import atomic_write_text
+from haute._file_ops import atomic_write_text, remove_tree
 from haute._json_shred._publication import (
     _assert_cache_path_ancestors_plain,
     _open_cache_lock_file,
@@ -1079,10 +1079,8 @@ class NodeSnapshotStore(SourceCacheStore):
         """Remove a terminated worker's staging directory named by its parent's token."""
         token = _validate_staging_token(staging_token)
         for staging in self.inputs_root.glob(f"*/.staging-{token}"):
-            if staging.is_dir() and not staging.is_symlink():
-                shutil.rmtree(staging, ignore_errors=True)
-                if staging.exists():
-                    logger.warning("node_snapshot_staging_discard_failed", path=str(staging))
+            if staging.is_dir() and not staging.is_symlink() and not remove_tree(staging):
+                logger.warning("node_snapshot_staging_discard_failed", path=str(staging))
 
     def _staged_metadata(
         self,

@@ -2059,6 +2059,7 @@ def test_materialise_explore_worker_builds_report_and_releases_child_admission(
 
     from haute._execution_admission import IsolatedExecutionBudget
     from haute._execution_context import ExecutionContext, ExecutionProfile
+    from haute._frame_profile import ExploreFrameStats
     from haute.routes import _explore_service as service_module
     from haute.schemas import ExploreOverviewSummary, ExploreRunRequest
 
@@ -2096,7 +2097,7 @@ def test_materialise_explore_worker_builds_report_and_releases_child_admission(
     monkeypatch.setattr(
         service_module,
         "_build_frame_stats",
-        lambda *_args, **_kwargs: service_module.ExploreFrameStats(
+        lambda *_args, **_kwargs: ExploreFrameStats(
             row_count=1,
             columns=[],
             overview_summary=ExploreOverviewSummary(),
@@ -3519,10 +3520,11 @@ def test_build_frame_stats_happy_path(explore_execution_context) -> None:
 def test_wide_frame_profiles_columns_in_bounded_sequential_batches(
     explore_execution_context, monkeypatch, has_unique_column
 ) -> None:
+    from haute import _frame_profile
     from haute.routes import _explore_service as service_mod
 
     calls = []
-    collect = service_mod.cancellable_streaming_collect
+    collect = _frame_profile.cancellable_streaming_collect
 
     def checked_collect(query, **kwargs):
         names = query.collect_schema().names()
@@ -3532,7 +3534,7 @@ def test_wide_frame_profiles_columns_in_bounded_sequential_batches(
             assert names == ["unique_rows"]
         return collect(query, **kwargs)
 
-    monkeypatch.setattr(service_mod, "cancellable_streaming_collect", checked_collect)
+    monkeypatch.setattr(_frame_profile, "cancellable_streaming_collect", checked_collect)
     data = {f"value_{index}": [1.0, 1.0, None, 3.0] for index in range(17)}
     if has_unique_column:
         data["value_16"] = [1.0, 2.0, None, 4.0]
@@ -3557,16 +3559,17 @@ def test_build_explore_frame_stats_uses_one_streaming_collect_without_categorica
     explore_execution_context,
     monkeypatch,
 ) -> None:
+    from haute import _frame_profile
     from haute.routes import _explore_service as service_mod
 
     calls = []
-    original_streaming_collect = service_mod.cancellable_streaming_collect
+    original_streaming_collect = _frame_profile.cancellable_streaming_collect
 
     def counted_streaming_collect(*args, **kwargs):
         calls.append(args[0])
         return original_streaming_collect(*args, **kwargs)
 
-    monkeypatch.setattr(service_mod, "cancellable_streaming_collect", counted_streaming_collect)
+    monkeypatch.setattr(_frame_profile, "cancellable_streaming_collect", counted_streaming_collect)
     lf = pl.DataFrame({"value": [None, 1.0, 2.0]}).lazy()
 
     frame_stats = service_mod._build_frame_stats(
@@ -3583,16 +3586,17 @@ def test_build_explore_frame_stats_uses_single_batched_collect_for_bounded_value
     explore_execution_context,
     monkeypatch,
 ) -> None:
+    from haute import _frame_profile
     from haute.routes import _explore_service as service_mod
 
     calls = []
-    original_streaming_collect = service_mod.cancellable_streaming_collect
+    original_streaming_collect = _frame_profile.cancellable_streaming_collect
 
     def counted_streaming_collect(*args, **kwargs):
         calls.append(args[0])
         return original_streaming_collect(*args, **kwargs)
 
-    monkeypatch.setattr(service_mod, "cancellable_streaming_collect", counted_streaming_collect)
+    monkeypatch.setattr(_frame_profile, "cancellable_streaming_collect", counted_streaming_collect)
     lf = pl.DataFrame(
         {
             "value": [None, "a", "b"],

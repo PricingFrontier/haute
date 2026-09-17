@@ -166,6 +166,19 @@ def _rating_step_demand(node: GraphNode) -> NodeSnapshotColumns:
     return NodeSnapshotColumns.of(columns)
 
 
+class PointDataChangedError(RuntimeError):
+    """The data a resolution named changed before a worker could read it."""
+
+    error_code = "node_data_changed"
+
+    def __init__(self, resolution: PointResolution) -> None:
+        super().__init__(
+            f"The data for node {resolution.point.producer_node_id!r} changed while it was "
+            "being analysed; run the analysis again."
+        )
+        self.resolution = resolution
+
+
 class PointColumnsMissingError(ValueError):
     """A column demand names columns the data point does not have."""
 
@@ -263,6 +276,17 @@ class DataPointResolver:
         if kind == "api_input_table":
             return self._resolve_api_input_table(point, demand)
         return self._resolve_node_output(point, demand)
+
+    def point_digest(self, point: DataPoint) -> str:
+        """Consumer-independent digest of a data point, the key of its analyses."""
+        payload = {
+            "schema_version": 1,
+            "pipeline_source_file": pipeline_source_file_key(self.graph),
+            "producer_node_id": point.producer_node_id,
+            "port_label": point.port_label,
+            "source": self.source,
+        }
+        return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
     def node_output_slot(self, node_id: str) -> NodeSnapshotSlot:
         return NodeSnapshotSlot(
@@ -458,6 +482,26 @@ class DataPointResolver:
         The yielded data version always names the data the scan reads.
         """
         resolution = self.resolve(point, demand)
+        with self.lease_resolved(resolution, execution_context=execution_context) as leased:
+            yield leased
+
+    @contextlib.contextmanager
+    def lease_resolved(
+        self,
+        resolution: PointResolution,
+        *,
+        exact: bool = False,
+        execution_context: ExecutionContext | None = None,
+    ) -> Iterator[LeasedPointFrame]:
+        """Lease the data a current resolution names.
+
+        A node output and a snapshot-backed Data Input always read exactly the
+        resolved generation. With ``exact`` — a spawned worker reading the
+        resolution its parent leased — a direct Parquet file or an API-input
+        cache that has moved on since resolution raises
+        :class:`PointDataChangedError` instead of being read under a new version.
+        """
+        point, demand = resolution.point, resolution.demand
         if resolution.state != "current":
             raise CacheRequiredError(resolution)
         assert resolution.data_version is not None
@@ -486,11 +530,14 @@ class DataPointResolver:
             data_version = resolution.data_version
             if resolution.kind == "data_input" and resolution.input_identity is not None:
                 assert resolution.input_generation_id is not None
-                stack.enter_context(
-                    self.store.lease_generation(
-                        resolution.input_identity, resolution.input_generation_id
+                try:
+                    stack.enter_context(
+                        self.store.lease_generation(
+                            resolution.input_identity, resolution.input_generation_id
+                        )
                     )
-                )
+                except SourceCacheGenerationMissingError:
+                    raise CacheRequiredError(self.resolve(point, demand)) from None
             try:
                 frame, served_meta = self._source_node_frame(
                     point, execution_context=execution_context
@@ -510,6 +557,12 @@ class DataPointResolver:
                 if current is None or current.generation_id != resolution.input_generation_id:
                     # The execution leased a newer generation than the one resolved.
                     raise CacheRequiredError(self.resolve(point, demand))
+            else:
+                observed = self._resolve_data_input(point, demand).data_version
+                assert observed is not None
+                data_version = observed
+            if exact and data_version != resolution.data_version:
+                raise PointDataChangedError(resolution)
             yield LeasedPointFrame(
                 kind=resolution.kind,
                 data_version=data_version,

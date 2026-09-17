@@ -178,6 +178,6 @@ failures are logged and return a generic 500.
 - **Failure and compatibility semantics.** The private dataframe-cache namespaces
   for training preparation, training evaluation preview, optimiser setup, and Data Output are
   removed without migration.
-- **Acceptance evidence.** Analysis-store tests for data-version isolation and
-  corrupt-document discard.
-- **Roadmap package.** [CACHE-S04](../roadmap/caching.md#cache-s04--analysis-results-and-the-data-profile-job).
+- **Acceptance evidence.** Frontend tests for two consumers of one point sharing a job and
+  deriving their own availability from one slot entry.
+- **Roadmap package.** [CACHE-S05](../roadmap/caching.md#cache-s05--shared-frontend-data-cache-hook-and-button).

@@ -26,7 +26,8 @@
 | `src/haute/routes/io_capabilities.py` | `/api/io-capabilities`, the versioned provider/format/cache capability contract consumed by the input and output editors. |
 | `src/haute/routes/input_cache.py` | `/api/input-cache/*`, the shared build/status/cancel/clear lifecycle for snapshot-backed inputs. |
 | `src/haute/routes/node_data.py` | `/api/node-data/point`, `/run`, `/status/{job_id}`, `/cancel/{job_id}`, and `/clear` for the data a consumer node reads. |
-| `src/haute/routes/_node_data_service.py` | `NodeDataService`: consumer point responses, delegation, explicit node-output build jobs in isolated workers, supersession, cancellation, and clear. |
+| `src/haute/routes/_node_data_service.py` | `NodeDataService`: consumer point responses, delegation, explicit node-output build jobs in isolated workers, the data-profile job, supersession, cancellation, and clear. |
+| `src/haute/routes/_synchronous_analysis.py` | Request-time analyses of a leased point: admitted execution, memoisation by data version, and client-disconnect cancellation. |
 | `src/haute/routes/utility.py` | `/api/utility` CRUD (list/read/create/update/delete) for `utility/*.py` helper modules, with AST syntax validation on every write. |
 | `src/haute/routes/_save_pipeline.py` | `SavePipelineService` — the transactional save orchestrator: singleton/name-collision/load-error validation, codegen invocation, config-file + sidecar writes, stale-config cleanup, and rollback. |
 | `src/haute/routes/_supersession.py` | `SupersessionCoordinator` / `_SupersessionState` — generation-counted "run latest, cancel/skip the rest" concurrency primitive used by preview and trace. |
@@ -550,7 +551,47 @@ cancelled or superseded ends with that reason), or the internal-error envelope. 
 staging directory carrying its token, which a killed worker could not remove. `clear` cancels
 the slot's running job, waits for that job's supervisor thread to finish so the worker can no
 longer publish, and then calls `NodeSnapshotStore.clear_slot`; for other kinds it answers
-`delegated`. An invalid API-input port is `node_data_point_invalid` (400) on every route.
+`delegated`; every kind's `clear` also cancels the point's running profiles and removes its
+stored analyses. An invalid API-input port is `node_data_point_invalid` (400) on every route.
+`status` serves both job kinds and reports `error`, `error_code`, and `error_detail` from the
+job, so a memory limit and a changed-data contract error are distinguishable from the message
+alone. Every resource failure carries `error_code` `memory_limit` with the execution payload as
+`error_detail`, whether the execution reported the limit, admission refused it, or the parent
+killed the worker over its RSS limit.
+
+### The data profile
+
+`POST /api/node-data/profile` answers with the point's profile for its current data version.
+Under a service-wide profile lock, the point is resolved for every column: a point that is not
+`current` is `cache_required` (the profile describes the whole dataset, so it is never computed
+from partial data), an `AnalysisResultStore` document for `(point digest, data version,
+profile, 1)` is `completed` with the result, a running profile of the same point and data
+version is `joined`, and otherwise a `node_profile` job is created and `started`. The job
+thread creates an admitted `explore_analysis` context, binds metrics publication, and holds
+`lease_resolved(resolution, exact=True)` for the whole job, so the worker reads exactly the
+data the parent resolved even if the point is refreshed or cleared meanwhile. It runs
+`_run_profile_worker` in an isolated worker (`HAUTE_NODE_DATA_PROFILE_TIMEOUT`, default
+1800 s), which sets the project root, leases the same resolution exactly, computes
+`_build_frame_stats` from `src/haute/_frame_profile.py` (owned by
+[explore-eda](../explore-eda/low-level.md)) in a `node_data_profile` stage, and for a direct
+file re-resolves afterwards so a rewrite during the read is reported rather than profiled. It
+returns a closed outcome carrying either the profile or a `public_contract`, `memory`,
+`contract`, or `changed` failure, validated by the parent through the same envelope as a
+build; the parent then writes the store and completes the job with the profile under the
+profile lock and the registry's latest-publication guard, so publication is indivisible against
+both a cancellation and a `clear` of the point: whichever of the two serialises first, a
+cleared point never keeps an analysis of the data that was removed, and a terminal admission,
+memory, cancellation, or changed-data outcome leaves the analysis store unchanged.
+
+Request-time analyses (`routes/_synchronous_analysis.py`) answer inside the request instead:
+`run_synchronous_analysis` serves the `SynchronousAnalysisCache` entry for the point's current
+data version, or admits an `explore_analysis` context, leases the point, computes under it,
+and memoises the result; a point that is not `current` raises `cache_required`, and an
+admission or memory-limit failure is HTTP 507 with the execution error payload.
+`run_until_disconnected` runs one of these off the event loop and cancels its context when the
+client disconnects or the request task itself is cancelled; either way it waits for the
+abandoned analysis to stop, so its admission and lease are always released, discarding whatever
+that analysis reports, before answering 499 or propagating the cancellation.
 
 ## Edge cases and invariants
 
@@ -716,6 +757,15 @@ entirely and leave every touched file in whatever state it happened to be in."
   and joined, a source replaced after execution read its rows never being published,
   cancellation during input preparation ending `cancelled`, delegation and direct reads for source kinds,
   invalid wiring and an invalid API-input port as 400, and a real isolated-worker build.
+- `tests/test_analysis_results.py` covers the profile route: an uncached point asking to be
+  cached, a profile computed once and then served from the store, a second request joining the
+  running profile, a refreshed point never returning the previous profile, admission failure,
+  a memory limit, and cancellation each ending in the typed terminal state with nothing
+  stored, clear removing a stored profile, a direct file becoming unavailable after a rewrite
+  or a Data Input rename, a file rewritten mid-profile reported as `node_data_changed`, and
+  the synchronous helper running once per data version, requiring a cached point, reporting
+  memory failures as 507, and stopping its analysis both on client disconnect and on
+  cancellation of the request task.
 - `tests/test_contract_error_adapter.py` verifies sync/background contract-error payload parity and rejects unversioned errors.
 - `tests/test_error_detail_sanitization.py` verifies safe public error details, logging, domain-error exposure, route-specific sanitization, and sensitive-information leak prevention.
 - `tests/test_error_response_shape.py` verifies standard error envelopes, flat syntax details, sanitized internal errors, and prohibition of dict route details.

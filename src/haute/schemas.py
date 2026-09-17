@@ -1298,14 +1298,37 @@ class NodeDataRunResponse(BaseModel):
     point: NodeDataPointResponse
 
 
+class NodeDataProfile(BaseModel):
+    """Per-column statistics and overview summary of one data version of a point."""
+
+    row_count: int
+    column_count: int
+    columns: list[ExploreColumnStat] = Field(default_factory=list)
+    overview_summary: ExploreOverviewSummary = Field(default_factory=ExploreOverviewSummary)
+    data_version: str
+    generated_at: float
+
+
+class NodeDataProfileResponse(BaseModel):
+    status: Literal["completed", "started", "joined", "cache_required"]
+    job_id: str | None = None
+    message: str = ""
+    result: NodeDataProfile | None = None
+    point: NodeDataPointResponse
+
+
 class NodeDataStatusResponse(BaseModel):
     status: JobStatus
     progress: float = 0.0
     message: str = ""
     terminal_reason: str | None = None
+    error: str | None = None
+    error_code: str | None = None
+    error_detail: ExecutionMemoryLimitErrorPayload | dict[str, Any] | str | None = None
     execution_metrics: ExecutionMetricsPayload | None = None
     generation_id: str | None = None
     outcome: Literal["published", "superseded"] | None = None
+    profile: NodeDataProfile | None = None
 
 
 class NodeDataClearResponse(BaseModel):

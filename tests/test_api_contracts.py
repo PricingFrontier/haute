@@ -543,6 +543,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/NodeDataPointResponse"},
         },
     },
+    "/api/node-data/profile": {
+        "POST": {
+            "request_ref": "#/components/schemas/NodeDataRequest",
+            "success_schema": {"$ref": "#/components/schemas/NodeDataProfileResponse"},
+        },
+    },
     "/api/node-data/run": {
         "POST": {
             "request_ref": "#/components/schemas/NodeDataRunRequest",

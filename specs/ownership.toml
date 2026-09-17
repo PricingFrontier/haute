@@ -270,6 +270,12 @@ consumers = ["execution-engine"]
 reason = "Pipeline configuration owns the column-contract model and lookup consumed at runtime."
 
 [[shared_file]]
+path = "src/haute/_frame_profile.py"
+primary = "explore-eda"
+consumers = ["server-api"]
+reason = "Explore owns the frame-profile computation; the node-data profile job runs it as the shared profile analysis."
+
+[[shared_file]]
 path = "src/haute/_git.py"
 primary = "git-integration"
 consumers = ["hosted-project-storage"]

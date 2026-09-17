@@ -16,7 +16,6 @@ and the [rating roadmap](rating.md).
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CACHE-S04 | Planned | P2 | Persist analysis results by data version and run the data profile as an isolated job. |
 | CACHE-S05 | Planned | P2 | Give every consumer one frontend data-cache hook and button. |
 | CACHE-S06 | Planned | P1 | Prove which execution profiles and projections produce identical node outputs. |
 | CACHE-S07 | Planned | P1 | Make every bounded execution seed from and capture into shared snapshots, replacing private caches and temporary checkpoints. |
@@ -25,62 +24,18 @@ and the [rating roadmap](rating.md).
 
 ## Planned improvements
 
-Delivery order is `CACHE-S04` →
-`CACHE-S05`, then the consumer packages `EDA-C01` and `RAT-B01` → `RAT-B02` →
-`RAT-B03`, then `CACHE-S06` → `CACHE-S07` → `CACHE-S09`. A later package must
+Delivery order is `CACHE-S05`, then the consumer packages `EDA-C01` and
+`RAT-B01` → `RAT-B02` → `RAT-B03`, then `CACHE-S06` → `CACHE-S07` →
+`CACHE-S09`. A later package must
 not bypass the resolver, lease, signature, or capture contracts of an earlier
 one. Every package builds on the node-output snapshot store (signature, slot
 index, column widening, retention, cross-process leases, and the publication
 rule) specified in the [IO layer](../io-layer/low-level.md#node-output-snapshots) and
 the data-point resolver and leased reads specified in
-[caching](../caching/low-level.md#data-points), and the node-data build service and
-routes specified in the [server API](../server-api/low-level.md#node-data-builds).
-
-### CACHE-S04 — Analysis results and the data profile job
-
-**Why:** Explore computes its data profile (per-column statistics and overview
-summary) inside the materialisation worker and stores it inside its private
-generation. Shared points need analyses that are independent of how the data
-was produced, keyed by the exact data they read, and computed under the same
-resource controls.
-
-**Plan:**
-
-- An analysis-result store under `.haute_cache/analyses` keeps one atomic,
-  schema-validated JSON document per
-  `(point identity digest, data_version, analysis kind, analysis version)`.
-  A document whose data version is no longer the point's current version is
-  never returned and is removed on read; `clear` of a point removes its
-  documents.
-- The `profile` analysis is the Explore frame-statistics computation, run as an
-  isolated-worker job with the existing admission, memory budget,
-  cancellation, and failure envelope. The parent leases the point for the
-  job's lifetime. Its result schema is the current column
-  statistics plus overview summary, with no Explore node identity in it.
-- Synchronous analyses (banding statistics, rating levels, pivot members) run
-  under an admitted execution context with `cancellable_streaming_collect`, as
-  pivot members already do: admission and memory-limit failures return HTTP 507
-  with the execution error payload; an interrupted request cancels its context.
-  Their in-process result LRU is keyed by `(point identity digest,
-  data_version, request digest)`.
-
-**Acceptance:**
-
-- A refreshed or widened point never returns the previous generation's profile
-  or statistics.
-- Profile job admission failure, memory-limit failure, and cancellation produce
-  the existing typed terminal states; the analysis store is unchanged after
-  each.
-- A profile for a direct-Parquet `data_input` point becomes unavailable after
-  the file is rewritten or the Data Input's selection or renames change.
-- A corrupt analysis document is discarded and recomputed, never returned.
-
-**Dependencies:** The node-data build service; the caching data-point resolver; the current Explore frame-statistics
-contract.
-
-**Evidence:** `src/haute/routes/_explore_service.py`;
-`src/haute/routes/_pivot_service.py`; `src/haute/_execution_admission.py`;
-`tests/test_explore_routes.py`; `tests/test_explore_pivot_routes.py`.
+[caching](../caching/low-level.md#data-points), the node-data build service, the data
+profile job, and the request-time analysis helper specified in the
+[server API](../server-api/low-level.md#node-data-builds), and the analysis-result store
+specified in [caching](../caching/low-level.md#analysis-results).
 
 ### CACHE-S05 — Shared frontend data-cache hook and button
 

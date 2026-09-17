@@ -84,7 +84,7 @@ counts disagree with execution.
   `source`, the in-editor `factor` (so unsaved edits are counted),
   `histogram_bins` (1–200, default 40), and `value_limit` (1–10000,
   default 500). It resolves the node's data point and runs under an
-  admitted execution context (CACHE-S04).
+  admitted execution context, as the request-time analysis helper does.
 - Response `status: "ok"` carries `total_rows`, `data_version`, `null_count`,
   and, per mode:
   - numeric modes (`continuous`, `breakpoints`): `non_finite_count`, `min` and
@@ -126,7 +126,7 @@ counts disagree with execution.
   labels, and preview fallback shapes matching the server shapes for the same
   rows.
 
-**Dependencies:** RAT-B01, CACHE-S04, CACHE-S05; the caching data-point resolver; the equal-width
+**Dependencies:** RAT-B01, CACHE-S05; the caching data-point resolver; the equal-width
 binning helper is shared with `EDA-E09`.
 
 **Evidence:** `frontend/src/panels/editors/BandingEditor.tsx`;

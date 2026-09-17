@@ -82,6 +82,10 @@ an exception note, and the uniquely named stage remains visible for diagnosis. W
 indexer, and concurrent-reader handles can transiently reject an otherwise valid replace with
 `ERROR_ACCESS_DENIED` or `ERROR_SHARING_VIOLATION`; only those two Win32 errors receive the
 bounded delays `10 ms, 25 ms, 50 ms, 100 ms`, after which the original error still propagates.
+`remove_tree` applies the same two Win32 codes and the same delays to a best-effort directory
+removal — discarding a dead worker's staging directory, which must not abort a job's cleanup —
+and returns whether the tree is gone so its caller reports a tree that survives instead of
+leaking the space silently.
 The codes are retried only on Windows; every error on another platform and every other Windows
 filesystem error fails immediately. This is retry of the same atomic operation, not
 an in-place or non-atomic fallback.
@@ -567,7 +571,9 @@ failure sections above are the maintained answers.
   declared schemas, projections, round trips, and bounded-memory policy.
 - `tests/test_polars_utils.py` and `tests/test_file_ops.py` cover bounded collect/sink
   behaviour, native-query cancellation, poll validation, unchanged native `fetch()` failures,
-  Parquet metadata, allocator dispatch, and atomic publication primitives.
+  Parquet metadata, allocator dispatch, atomic publication primitives, and a best-effort tree
+  removal retrying a transient Windows handle, reporting a tree it cannot remove, and treating
+  an absent tree as removed.
 - `tests/test_discovery.py` and `tests/test_path_case_audit.py` cover pipeline discovery,
   deduplication, unreadable files, retained resolver seams, and cross-platform path spelling.
 - `tests/test_input_cache_route.py` covers HTTP build/status/cancel/clear lifecycle and

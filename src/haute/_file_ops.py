@@ -72,6 +72,28 @@ def _replace_with_windows_contention_retry(source: Path, target: Path) -> None:
             time.sleep(delay)
 
 
+def remove_tree(path: Path) -> bool:
+    """Remove a directory tree best-effort, retrying transient Windows failures.
+
+    Returns whether the tree is gone. Windows fails a delete with
+    ERROR_ACCESS_DENIED or ERROR_SHARING_VIOLATION while an antivirus scanner or
+    indexer briefly holds a handle on a file that was just written, so those two
+    codes receive the same short bounded retry as an atomic replace. Callers use
+    this for cleanup they must not abort on, and report a tree that survives.
+    """
+    for delay in (*_WINDOWS_REPLACE_RETRY_DELAYS_SECONDS, None):
+        try:
+            shutil.rmtree(path)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError as exc:
+            if not _IS_WINDOWS or getattr(exc, "winerror", None) not in {5, 32} or delay is None:
+                return not path.exists()
+            time.sleep(delay)
+    return not path.exists()
+
+
 def atomic_write_bytes(path: Path, data: bytes) -> None:
     """Atomically write *data* to *path*.
 

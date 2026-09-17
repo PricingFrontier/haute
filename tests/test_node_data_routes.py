@@ -45,10 +45,18 @@ def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture(autouse=True)
 def _clean_node_data_jobs():
-    from haute.routes.node_data import _store
+    """Isolate each test: no jobs before, and no job thread still holding memory after.
+
+    A job releases its memory admission after it reports its terminal status, so a
+    test that only polls for that status can leave the reservation held while the
+    next test starts a job, which would then be refused admission.
+    """
+    from haute.routes.node_data import _node_data_service, _store
 
     _store.clear_all()
     yield
+    for thread in list(_node_data_service._threads.values()):
+        thread.join(60)
     _store.clear_all()
 
 

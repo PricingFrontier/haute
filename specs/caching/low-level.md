@@ -10,7 +10,8 @@
 | `src/haute/_dataframe_execution_cache.py` | Dataframe cache key, Parquet artifact LRU, materialization, validation, scan pins, and cleanup. |
 | `src/haute/_stat_gated_cache.py` | Bounded LRU, per-key single-flight cache gated by backing-file metadata. |
 | `src/haute/routes/json_cache.py` | Structured API-input (JSON/JSONL/NDJSON/XML) cache infer/build/progress/status/delete HTTP surface. |
-| `src/haute/_data_points.py` | Consumer-to-data-point mapping, point kinds and states, data versions, and leased point reads. |
+| `src/haute/_data_points.py` | Consumer-to-data-point mapping, point kinds and states, data versions, point identity digests, and leased point reads. |
+| `src/haute/_analysis_results.py` | Analysis documents keyed by data version under `.haute_cache/analyses`, and the in-process memo of synchronous analyses. |
 | `src/haute/_source_cache.py` | Cross-component dependency owned by [io-layer](../io-layer/low-level.md); IO-layer-owned source snapshot store consumed for canonical cache identity and immutable generations. |
 
 The shared `_source_cache.py` relationship is recorded in `specs/ownership.toml`; IO
@@ -188,6 +189,45 @@ stops the worker and discards staging.
     cache rebuilt after resolution is versioned as the new generation. A cache-only load
     that finds no serving layer, or a snapshot pointer that moved past the resolved
     generation, re-resolves and raises `cache_required`.
+- `lease_resolved(resolution, exact=False, execution_context=None)` is the same lease over
+  an already-resolved point, so a spawned worker reads exactly what its parent resolved and
+  leased. With `exact`, data whose version moved between resolution and read — a rewritten
+  direct file, or an API-input cache rebuilt under the load — raises
+  `PointDataChangedError` (`node_data_changed`) instead of being read under a new version.
+  `lease_frame` is `resolve` followed by a non-exact `lease_resolved`.
+- `point_digest(point)` is the consumer-independent identity of a data point: the SHA-256 of
+  the canonical `(schema version, resolved pipeline source file, producer node, port label,
+  source)`. It keys analyses of the point and never contains a consumer node or a column
+  demand, so every consumer of one point shares its analyses.
+
+### Analysis results
+
+`src/haute/_analysis_results.py` keeps analyses of a data point keyed by the exact data they
+were computed from, so a refreshed, widened, or rewritten point never serves an analysis of
+its previous data.
+
+- `AnalysisKey(point_digest, data_version, kind, version)` validates its fields: the digest is
+  a lowercase SHA-256 hex digest, the data version is non-empty, the kind is an identifier, and
+  the analysis version is a positive integer. The analysis version is the computation's own
+  contract version, raised when its result would change for unchanged data.
+- `AnalysisResultStore(project_root)` holds one atomic JSON document per key under
+  `<project>/.haute_cache/analyses/<point digest prefix>/<kind>-v<version>-<data version
+  digest>.json`. Directory and file names are truncated digests so a deeply nested project
+  stays inside the Windows path limit; every document carries the full key and is validated
+  against it on read.
+- `read(key, model)` returns the model only for exactly that key: it first removes every
+  document of the same point, kind, and analysis version under any other data version,
+  because that data can never be current again, and a document that is unparsable, keyed
+  differently, of an unknown schema version, or whose result fails validation is deleted and
+  reported as absent, so the analysis is recomputed rather than trusted.
+- `write(key, result)` writes the canonical-JSON document atomically. `clear_point(digest)`
+  removes every analysis of one point and tolerates only an absent directory: a deletion that
+  fails for any other reason is raised, because a clear that reports success must leave nothing
+  behind to serve.
+- `SynchronousAnalysisCache` memoises short, request-time analyses in process, keyed by
+  `(point digest, data version, request digest)`, where the request digest is the SHA-256 of
+  the canonical analysis request. It is an `LRUCache` of 64 entries by default and is never
+  durable: only the profile is stored on disk.
 
 ### Source snapshots
 
@@ -295,6 +335,13 @@ cache lifecycle changes.
   and a status probe returning `building` promptly while a build holds the cache locks.
 - `tests/test_node_snapshot_signature.py` covers the `node_snapshot_signature` field set
   and its invalidation matrix, including an instance node following its original.
+- `tests/test_analysis_results.py` covers a document served only for its own data version and
+  removed once the point moves on, other kinds and analysis versions of the same point being
+  kept, unparsable, mis-keyed, unknown-schema, and invalid-result documents being discarded
+  and recomputed, an otherwise valid document keyed to another point, data version, kind, or
+  analysis version being discarded, `clear_point` removing one point's analyses only and
+  raising a deletion failure instead of reporting success, invalid keys and digests being
+  rejected, and the synchronous memo keying by point, data version, and canonical request.
 - `tests/test_cache_identity_contract.py`, `tests/test_cache_fingerprint_injectivity.py`,
   `tests/test_caching_correctness.py`, `tests/test_cache_unification.py`,
   `tests/test_graph_fingerprint_cached.py`, and `tests/test_hashing.py` cover canonical
