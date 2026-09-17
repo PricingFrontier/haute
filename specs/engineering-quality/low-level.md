@@ -29,7 +29,7 @@
 | `frontend/e2e/core-flows.spec.ts` | Playwright coverage for core browser flows. |
 | `frontend/e2e/graph-editing-sequence.spec.ts` | Playwright witness, against the real backend, that a graph editing sequence (group and dissolve, disconnect, undo and redo, copy and paste, delete) conserves graph structure and previewed rows through save and reopen. |
 | `frontend/e2e/rename-execution.spec.ts` | Playwright witness, against the real backend, that renaming an upstream node keeps a downstream coded transform executable through preview, save and reload. |
-| `frontend/e2e/canvas-assurance.spec.ts` | Deterministic Chromium coverage and visual baselines for mixed Banding-to-Rating persistence and optimiser result/apply/MLflow-boundary journeys. |
+| `frontend/e2e/canvas-assurance.spec.ts` | Deterministic Chromium coverage and visual baselines for the loaded graph fitting inside the canvas, mixed Banding-to-Rating persistence, and optimiser result/apply/MLflow-boundary journeys. |
 | `frontend/e2e/data-io-nodes.spec.ts` | Playwright coverage for data-I/O node browser flows. |
 | `frontend/e2e/edge-join.spec.ts` | Deterministic full-browser Edge Join workflow: compatible-edge feedback and insertion, configuration/preview, save/reload topology, repeated joins, named API-input source-handle preservation, immediate unsaved-submodel drill/render identity coverage, and downstream trace highlighting. |
 | `frontend/e2e/active-node-reveal.spec.ts` | Deterministic Chromium witness that the active node stays visible beside its inspector and preview pane: a clicked node panned into the canvas corner is moved inside the narrowed canvas at unchanged zoom, and node search centres its node in that canvas at zoom 0.8. |

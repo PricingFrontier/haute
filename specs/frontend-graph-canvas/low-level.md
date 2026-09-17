@@ -29,6 +29,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/types/node.ts` | Shared node-data and persisted node-type contract owned by [frontend-shared](../frontend-shared/low-level.md) and consumed by the canvas. |
 | `frontend/src/hooks/useNodeHandlers.ts` | Node CRUD handlers: ordinary atomic delete, guarded submodel deletion, duplicate and instance creation that resolve authoritative identities before commit, reusable-submodel occurrence creation with deterministic fresh id/alias allocation, rename dialog, and in-flight-guarded ELK auto-layout. Resolver rejection, malformed output, or graph replacement leaves state untouched. |
 | `frontend/src/hooks/useEdgeHandlers.ts` | Connection/gesture handlers: `onConnectStart` plus pointer movement maintain the transient compatible edge-join candidate; `commitConnection`/`onConnectEnd` interpret React Flow handle-drag endings into a normal edge or a revalidated edge-join insertion; palette and edge-join nodes resolve identities before any graph/history mutation, with downstream join mappings finalized only from the server result. The hook also owns selection/preview, edge deletion, context menus, and drag/drop. |
+| `frontend/src/components/InitialViewFit.tsx` | Renderless child of the editor's `<ReactFlow>` that fits the graph into view (padding 0.15) once per canvas mount, the first time every node is measured. |
 | `frontend/src/hooks/useActiveNodeReveal.ts` | Keeps the inspector's active node visible in the canvas area its inspector and preview pane leave: arms on each active-node change or node-search centre request, re-checks when React Flow's canvas size or the armed node's measured size changes, glides only the first placement, and disarms on a user pan/zoom gesture. Returns `handleMoveStart` for React Flow's `onMoveStart` and `centreNode` for node search. |
 | `frontend/src/utils/nodeReveal.ts` | Pure `nodeRevealViewport` geometry: the zoom-preserving least pan that places a node `NODE_REVEAL_MARGIN_PX` inside the canvas (centring on an axis it cannot fit), or a centred placement at a requested zoom; `null` when a nearest placement needs no move. |
 | `frontend/src/hooks/usePipelineAPI.ts` | Pipeline editor-document load-on-mount; recovery-to-React-Flow adaptation; atomic document-status/revision plus graph ingestion; request-facing refs; preview lifecycle; and capability-fenced Save. |
@@ -577,7 +578,15 @@ reconciliation rather than dropping them or committing a second mutation.
     makes the response the clean saved baseline and clears history; no
     sequence of raw setters plus `markSaved` is permitted for a document
     load. It then seeds `nodeIdCounter` from `computeNextNodeId`. Aborted via
-    `AbortController` on unmount.
+    `AbortController` on unmount. The initial view fit is not React Flow's
+    `fitView` prop, which resolves on the first batch of node measurements and
+    fits only the nodes measured by then: `InitialViewFit`, rendered inside
+    `<ReactFlow>`, waits for React Flow's `nodesInitialized` (every controlled
+    node carries measured dimensions) and then calls `fitView({ padding: 0.15 })`
+    once per mount of the editor canvas (a remount after the comparison view
+    starts from a fresh viewport and fits again); later initialisation flips
+    within a mount (a node added, re-measured, or a document replaced) never
+    re-fit through it.
 16. **Preview fetch (`usePipelineAPI.fetchPreview` →
     `fetchPreviewImmediate`).** `fetchPreview` cancels any in-flight
     request/debounce, paints cached data (or a `"loading"` placeholder)
@@ -1619,6 +1628,11 @@ again through the editor and save paths.
   for column-relevant steps. All
   drag points are derived from live locator geometry and every assertion is
   an observable DOM, preview, trace, or persisted-pipeline outcome.
+- **Initial view fit.** `frontend/src/components/__tests__/InitialViewFit.test.tsx` pins no
+  fit while a node is unmeasured, one `fitView({ padding: 0.15 })` once all are, and no re-fit
+  on later initialisation flips. `frontend/e2e/canvas-assurance.spec.ts` proves every node of
+  the loaded pipeline ends inside the canvas in a real browser; React Flow's `fitView` prop
+  left that fixture at zoom 2 on its first node.
 - **Initial-load document fingerprint.** `tests/test_server.py` pins that both load
   routes name `pipeline_document_fingerprint` of the returned document and that a first
   resync carrying the loaded header produces no frame. `frontend/src/api/__tests__/client.test.ts`

@@ -376,7 +376,12 @@ candidate, with the error toast.
   area that remains once the inspector is open, not within the canvas as it
   was before the inspector opened.
 - **Pipeline load and save.** The pipeline loads once on mount with a
-  cold-start retry policy. Its versioned editor-document response is validated before state
+  cold-start retry policy. Once every node of the loaded document has been
+  measured, the canvas fits all of them into view (padding 0.15) once per
+  canvas mount — the editor canvas mounts on page load and again when it
+  returns from the comparison, source-only, or load-failure views, each time
+  with a fresh viewport; it never fits a partially measured graph, which would
+  zoom onto whichever nodes happened to be measured first. Its versioned editor-document response is validated before state
   changes, then adapted to React Flow; recovery wire nodes never enter the canonical graph
   store directly. `ready` documents retain normal behaviour. A `degraded` document renders
   every recoverable element, marks unavailable or blocked nodes separately from transient

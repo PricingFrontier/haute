@@ -82,6 +82,7 @@ import { isSubmodelInstanceConfig, nodeData } from "./types/node"
 import type { HauteNodeData } from "./types/node"
 import { useScopedNodeSave } from "./hooks/useScopedNodeSave"
 import { useActiveNodeReveal } from "./hooks/useActiveNodeReveal"
+import InitialViewFit from "./components/InitialViewFit"
 import { withNativeDeletePolicy } from "./utils/submodelDeletionPolicy"
 import { requestSubmodelCreation } from "./utils/submodelCreation"
 import { resolveEditorGraphIdentities } from "./utils/editorIdentities"
@@ -125,8 +126,6 @@ const defaultEdgeOptions = {
 }
 
 const connectionLineStyle = { stroke: 'var(--accent)', strokeWidth: 2, strokeDasharray: '6 3' }
-
-const fitViewOptions = { padding: 0.15 }
 
 // Zoom at which node search centres the chosen node.
 const NODE_SEARCH_FOCUS_ZOOM = 0.8
@@ -1594,8 +1593,6 @@ function FlowEditor() {
                 selectionMode={SelectionMode.Partial}
                 selectionKeyCode={null}
                 minZoom={0.1}
-                fitView
-                fitViewOptions={fitViewOptions}
                 proOptions={proOptions}
                 defaultEdgeOptions={defaultEdgeOptions}
                 connectionLineStyle={connectionLineStyle}
@@ -1603,6 +1600,7 @@ function FlowEditor() {
                 isValidConnection={isValidConnection}
               >
                 <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="rgba(255,255,255,.06)" />
+                <InitialViewFit />
               </ReactFlow>
             </div>
           </ErrorBoundary>

@@ -119,6 +119,27 @@ test.describe("frontend canvas assurance", () => {
     }
   })
 
+  test("fits every node of the loaded pipeline inside the canvas", async ({ page }) => {
+    await page.goto("/")
+    const canvas = page.locator(".react-flow")
+    const nodes = page.locator(".react-flow__node")
+    await expect(nodes.first()).toBeVisible()
+    expect(await nodes.count()).toBeGreaterThan(1)
+
+    await expect.poll(async () => {
+      const canvasBox = await canvas.boundingBox()
+      if (!canvasBox) return false
+      const nodeBoxes = await nodes.evaluateAll((elements) => elements.map((element) => {
+        const box = element.getBoundingClientRect()
+        return { x: box.x, y: box.y, right: box.right, bottom: box.bottom }
+      }))
+      return nodeBoxes.every((box) => box.x >= canvasBox.x
+        && box.y >= canvasBox.y
+        && box.right <= canvasBox.x + canvasBox.width
+        && box.bottom <= canvasBox.y + canvasBox.height)
+    }).toBe(true)
+  })
+
   test("discovers mixed Banding factors and rebuilds, edits, and reloads a three-factor Rating table by keyboard", async ({
     page,
   }) => {
