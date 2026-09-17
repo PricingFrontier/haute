@@ -3,7 +3,7 @@
  *
  * Tests: renders with default config, factor tabs, adding/removing factors,
  * type toggle, column selection with auto-type detection, add rule button,
- * summary section display, breakpoints mode, stash-and-restore, accessibility,
+ * no cross-factor summary, breakpoints mode, stash-and-restore, accessibility,
  * match counts, validation warnings, histogram, categorical value picker.
  */
 import { describe, it, expect, vi, afterEach } from "vitest"
@@ -163,7 +163,7 @@ describe("BandingEditor", () => {
       <BandingEditor config={{}} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
     // Type toggle options should not be visible
-    expect(screen.queryByText("Breakpoints")).toBeNull()
+    expect(screen.queryByText("Numeric")).toBeNull()
     // Advanced option removed from UI
     expect(screen.queryByText("Categorical")).toBeNull()
   })
@@ -285,34 +285,18 @@ describe("BandingEditor", () => {
     ]))
   })
 
-  it("summary section hidden when only 1 factor", () => {
-    const config = {
-      factors: [{
-        banding: "continuous",
-        column: "age",
-        outputColumn: "age_band",
-        rules: [{ op1: ">", val1: "25", op2: "", val2: "", assignment: "young" }],
-      }],
-    }
-    const { container } = render(
-      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
-    )
-    const summary = container.querySelector("[data-testid='banding-summary']")
-    expect(summary).toBeNull()
-  })
-
-  it("summary section shown when 2+ factors", () => {
+  it("does not list every factor in a summary below the default when 2+ factors", () => {
     const config = {
       factors: [
         { banding: "continuous", column: "age", outputColumn: "age_band", rules: [{ op1: ">", val1: "25", op2: "", val2: "", assignment: "young" }] },
         { banding: "categorical", column: "region", outputColumn: "region_group", rules: [{ value: "London", assignment: "South" }] },
       ],
     }
-    const { container } = render(
+    render(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
-    const summary = container.querySelector("[data-testid='banding-summary']")
-    expect(summary).toBeTruthy()
+    expect(screen.queryByTestId("banding-summary")).toBeNull()
+    expect(document.body.textContent).not.toContain("1 rule")
   })
 
   it("renders text input for column when no upstreamColumns", () => {
@@ -419,14 +403,14 @@ describe("BandingEditor", () => {
 
   // ─── Feature 2: Three-way banding type toggle ─────────────────
 
-  it("Breakpoints option appears in type toggle when factor is configured", () => {
+  it("Numeric option appears in type toggle when factor is configured", () => {
     const config = {
       factors: [{ banding: "continuous", column: "age", outputColumn: "age_band", rules: [] }],
     }
     render(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
-    expect(screen.getByText("Breakpoints")).toBeTruthy()
+    expect(screen.getByText("Numeric")).toBeTruthy()
     expect(screen.getByText("Categorical")).toBeTruthy()
   })
 
@@ -673,43 +657,6 @@ describe("BandingEditor", () => {
     )
     const allText = document.body.textContent || ""
     expect(allText.toLowerCase()).toContain("gap")
-  })
-
-  // ─── Feature 12: Summary ─────────────────────────────────────
-
-  it("summary rows are clickable and switch to that tab", () => {
-    const config = {
-      factors: [
-        { banding: "continuous", column: "age", outputColumn: "age_band", rules: [{ op1: ">", val1: "10", op2: "", val2: "", assignment: "a" }] },
-        { banding: "categorical", column: "region", outputColumn: "region_group", rules: [{ value: "London", assignment: "South" }] },
-      ],
-    }
-    render(
-      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
-    )
-    const summary = screen.getByTestId("banding-summary")
-    const summaryRows = summary.querySelectorAll("[data-testid^='summary-row-']")
-    expect(summaryRows.length).toBe(2)
-    fireEvent.click(summaryRows[1])
-    const tabs = screen.getAllByRole("tab")
-    expect(tabs[1].getAttribute("aria-selected")).toBe("true")
-  })
-
-  it("incomplete factors shown dimmed in summary", () => {
-    const config = {
-      factors: [
-        { banding: "continuous", column: "age", outputColumn: "age_band", rules: [{ op1: ">", val1: "10", op2: "", val2: "", assignment: "a" }] },
-        { banding: "continuous", column: "", outputColumn: "", rules: [] },
-      ],
-    }
-    render(
-      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
-    )
-    const summary = screen.getByTestId("banding-summary")
-    const rows = summary.querySelectorAll("[data-testid^='summary-row-']")
-    expect(rows.length).toBe(2)
-    const secondRow = rows[1] as HTMLElement
-    expect(secondRow.style.opacity).toBe("0.5")
   })
 
   // ─── Feature 13: Tab overflow -> horizontal scroll ─────────────

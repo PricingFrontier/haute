@@ -353,7 +353,7 @@ export default function BandingEditor({
               value={factor.banding}
               onChange={switchBandingType}
               options={[
-                { key: "breakpoints" as BandingMode, label: "Breakpoints" },
+                { key: "breakpoints" as BandingMode, label: "Numeric" },
                 { key: "categorical" as BandingMode, label: "Categorical" },
               ]}
               accentColor={accentColor}
@@ -563,43 +563,6 @@ export default function BandingEditor({
           className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
           style={INPUT_STYLE} />
       </div>
-
-      {/* Summary across all factors — only when 2+ factors */}
-      {factors.length > 1 && (
-        <div data-testid="banding-summary" className="rounded-lg px-3 py-2 space-y-1" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
-          {factors.map((f, i) => {
-            const complete = isFactorComplete(f)
-            return (
-              <div
-                key={i}
-                data-testid={`summary-row-${i}`}
-                className="text-[10px] leading-relaxed cursor-pointer rounded px-1 -mx-1 hover:bg-[rgba(0,0,0,0.05)]"
-                style={{ color: 'var(--text-muted)', opacity: complete ? 1 : 0.5 }}
-                onClick={() => setActiveIdx(i)}
-              >
-                {!complete && (
-                  <AlertTriangle size={10} className="inline-block mr-1 align-text-bottom" style={{ color: 'var(--warning-strong)' }} />
-                )}
-                <span className="font-mono font-medium" style={{ color: complete ? 'var(--text-secondary)' : 'var(--text-muted)' }}>
-                  {f.column || `(no column)`}
-                </span>
-                {f.outputColumn && (
-                  <>
-                    {' → '}
-                    <span className="font-mono font-medium" style={{ color: accentColor }}>{f.outputColumn}</span>
-                  </>
-                )}
-                {(f.rules || []).length > 0 && (
-                  <>
-                    {' · '}{f.rules.length} rule{f.rules.length !== 1 ? 's' : ''}
-                  </>
-                )}
-                {' · '}{f.banding}
-              </div>
-            )
-          })}
-        </div>
-      )}
     </div>
   )
 }
