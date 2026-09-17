@@ -4377,4 +4377,13 @@ def test_recovery_plans_a_malformed_step_container_without_raising(project_root:
         ),
     )
     assert plan.response.plan_hash
-    assert "df = df.head(2)" in json.dumps(plan.response.model_dump(), default=str)
+    # The proposed replacement itself must carry the authored body. Searching the
+    # whole response would pass on `previous_config` alone, even if the
+    # replacement dropped the code.
+    main_edit = next(edit for edit in plan.edits if edit.path.name == "main.py")
+    assert main_edit.after is not None
+    replacement = main_edit.after.decode("utf-8")
+    assert "df = df.head(2)" in replacement
+    sidecar_edit = next((edit for edit in plan.edits if edit.path.name == "quotes.json"), None)
+    if sidecar_edit is not None and sidecar_edit.after is not None:
+        assert "steps" not in json.loads(sidecar_edit.after.decode("utf-8"))
