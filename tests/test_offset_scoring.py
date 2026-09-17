@@ -368,7 +368,6 @@ class TestTrainingMetricsIncludeOffset:
     ) -> None:
         from haute.modelling._training_job import TrainingJob
 
-
         def fit_must_not_run(*_args: object, **_kwargs: object) -> None:
             raise AssertionError("the model was fitted with a non-positive exposure")
 
