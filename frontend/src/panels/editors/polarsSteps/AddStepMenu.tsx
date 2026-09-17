@@ -24,10 +24,13 @@ const GROUPS: Array<{ title: string; kinds: AddableKind[] }> = [
 export default function AddStepMenu({
   onAdd,
   disabled = false,
+  withhold,
   buttonRef,
 }: {
   onAdd: (kind: AddableKind) => void
   disabled?: boolean
+  /** Kinds the surface cannot use (join and concat while no input name is eligible). */
+  withhold?: ReadonlySet<AddableKind>
   buttonRef?: (element: HTMLButtonElement | null) => void
 }) {
   const [open, setOpen] = useState(false)
@@ -38,9 +41,10 @@ export default function AddStepMenu({
   const sections = GROUPS.map((group) => ({
     title: group.title,
     items: group.kinds
+      .filter((kind) => !withhold?.has(kind))
       .map((kind) => STEP_CATALOGUE.find((info) => info.kind === kind))
       .filter((info): info is StepKindInfo => info !== undefined),
-  }))
+  })).filter((section) => section.items.length > 0)
   const items: StepKindInfo[] = sections.flatMap((section) => section.items)
 
   useEffect(() => {

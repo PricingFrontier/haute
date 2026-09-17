@@ -21,7 +21,7 @@ from typing import Any, Literal, cast
 import polars as pl
 
 import haute.projection as projection
-from haute._code_extraction import INCOMPLETE_TRANSFORM_MESSAGE
+from haute._code_extraction import INCOMPLETE_STEPS_MESSAGE, INCOMPLETE_TRANSFORM_MESSAGE
 from haute._config_validation import (
     reject_removed_config_keys,
     resolve_exact_input_index,
@@ -62,9 +62,11 @@ from haute._output_assembler import (
     is_active_mapping_entry,
 )
 from haute._polars_steps import (
+    STEPPED_NODE_TYPES,
     STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
     PolarsStepError,
     render_polars_steps,
+    step_input_names,
 )
 from haute._rating import (
     _apply_banding_factors,
@@ -465,6 +467,12 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 @_register(NodeType.DATA_INPUT, opaque=True)
 def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
+    problem = stepped_code_problem(
+        config, NodeType.DATA_INPUT, step_input_names(NodeType.DATA_INPUT, [])
+    )
+    if problem is not None:
+        # Incomplete post-load steps must not read the source unchanged.
+        return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), True
     code = str(config.get("code") or "").strip()
     preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
@@ -1153,15 +1161,12 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         # code will execute with so an unknown input names its step.
         if _in_map is not None and not config.get("instanceOf"):
             raise ConfigError(STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE, node_id=ctx.node.id)
-        problem = config.get("_steps_error")
-        if problem is None:
-            names = set(_src_names)
-            if _orig_src:
-                names.update(build_instance_mapping(_orig_src, _src_names, _in_map))
-            try:
-                render_polars_steps(steps, sorted(names))
-            except PolarsStepError as exc:
-                problem = str(exc)
+        names = set(_src_names)
+        if _orig_src:
+            names.update(build_instance_mapping(_orig_src, _src_names, _in_map))
+        problem = stepped_code_problem(
+            config, NodeType.POLARS, step_input_names(NodeType.POLARS, sorted(names))
+        )
         if problem is not None:
             return (
                 ctx.func_name,
@@ -1199,6 +1204,31 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # With no upstream, mark the node as a source so the executor invokes the
     # placeholder instead of failing first with its generic no-input guard.
     return ctx.func_name, _incomplete_transform(INCOMPLETE_TRANSFORM_MESSAGE), incoming_count == 0
+
+
+def stepped_code_problem(
+    config: Mapping[str, Any], node_type: NodeType, names: Iterable[str]
+) -> str | None:
+    """Why a stepped node cannot run, or None when it can.
+
+    ``code`` is already the rendering of ``steps`` (materialised by
+    ``NodeData``); this re-validates the input references against *names*,
+    the names the code will execute with, so an unknown input names its step.
+    The same check guards the executor builders and the deploy interceptors,
+    which read ``config["code"]`` without a builder.
+    """
+    if node_type not in STEPPED_NODE_TYPES or not isinstance(config.get("steps"), list):
+        return None
+    problem = config.get("_steps_error")
+    if problem is not None:
+        return str(problem)
+    try:
+        render_polars_steps(
+            config["steps"], sorted(names), start=STEPPED_NODE_TYPES[node_type].start
+        )
+    except PolarsStepError as exc:
+        return str(exc)
+    return None
 
 
 def _incomplete_transform(message: str) -> Callable[..., _Frame]:

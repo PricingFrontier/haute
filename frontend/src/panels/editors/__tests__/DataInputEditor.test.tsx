@@ -499,6 +499,38 @@ describe("DataInputEditor", () => {
     })
   })
 
+  it.each([
+    ["an empty list", []],
+    ["a populated list", [{ id: "l", kind: "limit", n: 2 }]],
+  ])("keeps %s of post-load steps when the format or the provider changes", async (_label, steps) => {
+    const { onReplaceConfig } = renderEditor({
+      inputType: "file",
+      format: "csv",
+      mode: "scan",
+      path: "quotes.csv",
+      arguments: {},
+      steps,
+    })
+
+    fireEvent.change(await screen.findByLabelText("Format"), {
+      target: { value: "json" },
+    })
+    expect(onReplaceConfig).toHaveBeenLastCalledWith({
+      steps,
+      inputType: "file",
+      format: "json",
+      mode: "read",
+      arguments: {},
+      path: "quotes.csv",
+    })
+
+    const provider = await screen.findByRole("radiogroup", { name: "Provider" })
+    fireEvent.click(within(provider).getByRole("radio", { name: "Databricks" }))
+    expect(onReplaceConfig).toHaveBeenLastCalledWith(
+      expect.objectContaining({ steps, inputType: "databricks" }),
+    )
+  })
+
   it("switches to Parquet without authoring a cache-mode field", async () => {
     const { onReplaceConfig } = renderEditor({
       inputType: "file",

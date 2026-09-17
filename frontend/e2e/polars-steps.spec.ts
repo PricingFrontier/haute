@@ -147,4 +147,142 @@ test.describe("Transform step builder journey", () => {
     await panel.getByRole("button", { name: "Step 2: Free code", exact: true }).click()
     await expect(panel.locator(".cm-content .cm-line")).toHaveText(snippet.split("\n"))
   })
+
+  test("authors a Data Input's post-load steps on its Polars tab, saves them to its sidecar and reopens them", async ({ page }) => {
+    test.slow()
+    await openApp(page)
+
+    // Seed a Data Input in step mode (an empty list) over the fixture's sample data.
+    const saveStatus = await page.evaluate(async () => {
+      const headers: Record<string, string> = { "Content-Type": "application/json" }
+      const graphRes = await fetch("/api/pipeline", { headers })
+      if (!graphRes.ok) throw new Error(`GET /api/pipeline ${graphRes.status}`)
+      const document = await graphRes.json()
+      const nodes = document.nodes.map(
+        (node: {
+          recovery_id: string
+          label: string
+          decorator_name: string
+          node_type: string | null
+          description: string
+          display_position: { x: number; y: number }
+          config: Record<string, unknown> | null
+        }) => ({
+          id: node.recovery_id,
+          type: node.node_type ?? node.decorator_name,
+          position: node.display_position,
+          data: {
+            label: node.label,
+            description: node.description,
+            nodeType: node.node_type ?? node.decorator_name,
+            ...(node.config === null ? {} : { config: node.config }),
+          },
+        }),
+      )
+      const edges = document.edges.map(
+        (edge: {
+          recovery_id: string
+          source_recovery_id: string
+          target_recovery_id: string
+          source_handle: string | null
+          target_handle: string | null
+          source_port: string | null
+          target_port: string | null
+        }) => ({
+          id: edge.recovery_id,
+          source: edge.source_recovery_id,
+          target: edge.target_recovery_id,
+          sourceHandle: edge.source_handle,
+          targetHandle: edge.target_handle,
+          ...(edge.source_port === null ? {} : { sourcePort: edge.source_port }),
+          ...(edge.target_port === null ? {} : { targetPort: edge.target_port }),
+        }),
+      )
+      nodes.push({
+        id: "stepped_in",
+        type: "custom",
+        position: { x: 60, y: 520 },
+        data: {
+          label: "stepped_in",
+          nodeType: "dataInput",
+          config: {
+            inputType: "file",
+            format: "parquet",
+            mode: "scan",
+            path: "data/sample.parquet",
+            arguments: {},
+            steps: [],
+          },
+        },
+      })
+      const res = await fetch("/api/pipeline/save", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          name: document.pipeline_name ?? "main",
+          description: document.pipeline_description ?? "",
+          source_file: document.source_file,
+          base_revision: document.source_revision,
+          preamble: document.preamble ?? "",
+          preserved_blocks: document.preserved_blocks,
+          sources: document.sources,
+          active_source: document.active_source ?? "live",
+          graph: { nodes, edges },
+        }),
+      })
+      if (!res.ok) throw new Error(`POST /api/pipeline/save ${res.status}`)
+      return (await res.json()).status
+    })
+    expect(saveStatus).toBe("saved")
+    await page.reload()
+    await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
+
+    // The Polars tab shows the step builder in frame mode: df is the snapshot, no input selector.
+    await page.getByRole("button", { name: /Data Input node: stepped_in/i }).click()
+    const panel = page.getByTestId("node-panel")
+    await expect(panel).toBeVisible()
+    await panel.getByRole("button", { name: /^polars$/i }).click()
+    const editor = panel.getByTestId("polars-steps-editor")
+    await expect(editor).toBeVisible()
+    await expect(editor.getByTestId("polars-steps-frame-start")).toContainText("the opened input snapshot")
+    await expect(editor.getByLabel("Start from input")).toHaveCount(0)
+
+    // Join and concat are withheld (nothing to reference); a Limit step renders against the frame.
+    await editor.getByRole("button", { name: "Add step" }).click()
+    const menu = editor.getByRole("menu", { name: "Add step" })
+    await expect(menu.getByRole("menuitem", { name: "Join another input" })).toHaveCount(0)
+    await expect(menu.getByRole("menuitem", { name: "Group and aggregate" })).toBeVisible()
+    await menu.getByRole("menuitem", { name: "Limit rows" }).click()
+    await expect(editor.getByRole("button", { name: "Step 1: Limit rows", exact: true })).toHaveAttribute("aria-expanded", "true")
+    const rowLimit = editor.getByLabel("Row limit")
+    await rowLimit.fill("2")
+    await rowLimit.press("Enter")
+    await expect(editor.getByTestId("polars-generated-code")).toContainText("df = df.head(2)")
+
+    // The preview runs the stepped source.
+    await page.getByRole("button", { name: "Refresh" }).click()
+    const previewTable = page.getByRole("table").first()
+    await expect(previewTable).toBeVisible()
+    await expect(previewTable.getByRole("cell").first()).toBeVisible()
+
+    // Saving writes the steps into the Data Input's own sidecar and the rendering after the load scaffold.
+    await save(page)
+    const inputSidecarPath = resolve(e2eProjectRoot, "rating", "config", "data_input", "stepped_in.json")
+    await expect.poll(() => existsSync(inputSidecarPath)).toBe(true)
+    const sidecar = JSON.parse(readFileSync(inputSidecarPath, "utf8")) as { steps: Array<Record<string, unknown>>; code?: string }
+    expect(sidecar.steps).toEqual([expect.objectContaining({ kind: "limit", n: 2 })])
+    expect(sidecar.code).toBeUndefined()
+    const main = readFileSync(mainPath, "utf8")
+    expect(main).toContain("def stepped_in() -> pl.LazyFrame")
+    expect(main).toContain("df = df.head(2)")
+
+    // Reopening parses the sidecar back into the step card.
+    await page.reload()
+    await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
+    await page.getByRole("button", { name: /Data Input node: stepped_in/i }).click()
+    await expect(panel).toBeVisible()
+    await panel.getByRole("button", { name: /^polars$/i }).click()
+    await expect(panel.getByRole("button", { name: "Step 1: Limit rows", exact: true })).toBeVisible()
+    await expect(panel.getByTestId("polars-generated-code")).toContainText("df = df.head(2)")
+  })
 })

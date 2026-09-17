@@ -20,6 +20,7 @@ from haute._code_extraction import (
     _extract_scenario_expander_user_code,
     _extract_source_user_code,
     _extract_user_code,
+    normalise_user_code,
 )
 from haute._config_io import NODE_TYPE_TO_FOLDER, has_config_folder, load_node_config
 from haute._config_validation import (
@@ -34,9 +35,12 @@ from haute._explore_overview import validate_explore_overview
 from haute._explore_pivots import validate_explore_pivot_state
 from haute._logging import get_logger
 from haute._polars_steps import (
+    STEPPED_NODE_TYPES,
     STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
     PolarsStepError,
     render_polars_steps,
+    step_input_names,
+    stepped_surface_for,
 )
 from haute._types import (
     COLUMN_CONFIG_KEYS,
@@ -376,32 +380,50 @@ def _sidecar_required_error(node_type: NodeType, func_name: str) -> ConfigError:
     )
 
 
-def _reconcile_polars_steps(
+#: The extraction matcher kind each stepped node type's generated body uses.
+_EXTRACTION_KIND_BY_STEPPED_TYPE: dict[NodeType, str] = {
+    NodeType.POLARS: "polars",
+    NodeType.DATA_INPUT: "source",
+}
+
+
+def _reconcile_steps(
     config: dict[str, Any],
+    node_type: NodeType,
     param_names: list[str],
     config_ref: str,
     func_name: str,
 ) -> dict[str, Any]:
-    """Keep a polars sidecar's ``steps`` only while they still render the body.
+    """Keep a stepped sidecar's ``steps`` only while they still render the body.
 
     The ``.py`` body is the runtime truth. A body that differs from the
     rendering of the persisted steps was edited by hand, so the steps are
     discarded and the node becomes code-only: the config is marked with an
-    editor-state ``_steps_discarded`` reason and the sidecar path is kept in
-    ``_discarded_sidecar`` so the next save retires the file. An empty body
-    with unrenderable steps is how an incomplete step list is saved, so it
-    keeps its steps.
+    editor-state ``_steps_discarded`` reason and, for a transform (the one
+    optional sidecar), the sidecar path is kept in ``_discarded_sidecar`` so
+    the next save retires the file. An empty body with unrenderable steps is
+    how an incomplete step list is saved, so it keeps its steps.
+
+    The comparison is made on equal terms: the rendering is passed through
+    the same extraction the body received (``normalise_user_code``), because
+    a finaliser may normalise a rendering (a lone ``df = (df.head(2))``
+    free-code step loses its brackets) without anyone having edited it.
     """
     if "steps" not in config:
         return config
+    surface = stepped_surface_for(node_type)
     steps = config["steps"]
     if not isinstance(steps, list):
         raise ConfigError(
-            "Polars sidecar 'steps' must be a list.",
+            f"{node_type.value} sidecar 'steps' must be a list.",
             func_name=func_name,
             config_path=config_ref,
         )
-    if config.get("inputMapping") is not None and not config.get("instanceOf"):
+    if (
+        surface.inputs == "edges"
+        and config.get("inputMapping") is not None
+        and not config.get("instanceOf")
+    ):
         raise ConfigError(
             STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
             func_name=func_name,
@@ -409,18 +431,22 @@ def _reconcile_polars_steps(
         )
     body_code = str(config.get("code") or "")
     try:
-        rendered = render_polars_steps(steps, param_names).code
+        rendered = render_polars_steps(
+            steps, step_input_names(node_type, param_names), start=surface.start
+        ).code
     except PolarsStepError as exc:
         if not body_code:
             return config
         reason = f"the steps cannot be rendered ({exc})"
     else:
-        if rendered == body_code:
+        kind = _EXTRACTION_KIND_BY_STEPPED_TYPE[node_type]
+        if normalise_user_code(rendered, kind=kind, param_names=param_names) == body_code:
             return config
         reason = "the function body no longer matches the rendered steps"
     reconciled = {k: v for k, v in config.items() if k != "steps"}
     reconciled["_steps_discarded"] = f"Steps were discarded because {reason}."
-    reconciled["_discarded_sidecar"] = config_ref
+    if node_type == NodeType.POLARS:
+        reconciled["_discarded_sidecar"] = config_ref
     logger.warning(
         "polars_steps_discarded",
         func_name=func_name,
@@ -496,8 +522,8 @@ def _resolve_node_config(
             ) from exc
         # Code lives in the .py function body, not in the JSON file.
         config = _attach_code_from_body(loaded, node_type, body, param_names)
-        if node_type == NodeType.POLARS:
-            config = _reconcile_polars_steps(config, param_names, normalised_ref, func_name)
+        if node_type in STEPPED_NODE_TYPES:
+            config = _reconcile_steps(config, node_type, param_names, normalised_ref, func_name)
     elif has_config_folder(node_type):
         raise _sidecar_required_error(node_type, func_name)
     else:

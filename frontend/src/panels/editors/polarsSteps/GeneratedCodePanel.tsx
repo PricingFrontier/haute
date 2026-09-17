@@ -1,6 +1,7 @@
 import { ChevronDown, ChevronUp, Code, Lock } from "lucide-react"
 import { useId, useState } from "react"
 
+import type { StepStart } from "../../../utils/polarsStepInputs"
 import { stepDisplayLabel } from "./catalogue"
 
 /**
@@ -9,6 +10,7 @@ import { stepDisplayLabel } from "./catalogue"
  * shows validation errors, and carries the confirmed switch to code.
  */
 export default function GeneratedCodePanel({
+  start,
   code,
   pending,
   error,
@@ -18,6 +20,8 @@ export default function GeneratedCodePanel({
   switchDisabledReason,
   onSwitchToCode,
 }: {
+  /** Names the failing step the way the surface numbers its cards. */
+  start: StepStart
   code: string
   pending: boolean
   /** Latest render failure, if any. */
@@ -57,7 +61,7 @@ export default function GeneratedCodePanel({
       {error && (
         <div role="alert" className="mx-3 mb-2 flex flex-wrap items-center gap-2 text-[11px]" style={{ color: "var(--danger)" }}>
           <span>
-            {error.stepIndex != null ? `${stepDisplayLabel(error.stepIndex)}: ` : ""}
+            {error.stepIndex != null ? `${stepDisplayLabel(error.stepIndex, start)}: ` : ""}
             {error.message}
           </span>
           {error.stepIndex != null && onGoToError && (

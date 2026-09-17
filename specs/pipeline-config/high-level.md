@@ -299,8 +299,36 @@ the file is retired on the next save, and logs a warning; an empty body with
 unrenderable steps keeps the steps, because that is how an incomplete step list is
 saved. A sidecar whose `steps` value is not a list fails the parse with a `ConfigError`.
 
+**Stepped surfaces.** The same step list can author the post-load code of a Data
+Input. The renderer takes a required start mode: `input` is the transform's (the
+first step chooses the input and renders `df = <input>`), and `frame` is for a
+surface whose code runs with `df` already bound (a Data Input's opened snapshot). In
+frame mode an empty list renders to empty code without error, because the node then
+simply keeps its base behaviour, a `source` step is refused at any position with a
+step-indexed message, and `join`/`concat` references are checked against the
+surface's eligible input names, which for a Data Input is the empty list, so they are
+refused. One table (`STEPPED_NODE_TYPES` in `haute._polars_steps`) maps every stepped
+node type to its start mode and its input eligibility (`edges` for a transform,
+`none` for a Data Input), and every path that renders a node's steps (the node data
+model, the parser's reconcile, the executor builder, codegen, the deploy
+interceptors and the render endpoint) obtains the eligible names from it. A node
+type outside that table that carries a `steps` key (a Scenario Expander's grid size)
+is left alone. The node-data invariant, the sidecar filter and the reconcile rule
+apply to every stepped type: a Data Input's `steps` persist in its required
+`config/data_input/<name>.json` sidecar beside its source settings, `code` is always
+their rendering (or empty plus `_steps_error`), and on load the parser compares the
+code extracted from the body with the rendering after the same extraction, so a
+rendering the extractor normalises (a lone `df = (df.head(2))` free-code step loses
+its brackets) still reloads in step mode; the `_discarded_sidecar` marker is set only
+for the transform, whose sidecar is optional, while a Data Input's sidecar stays and
+is next written without `steps`. An unrenderable Data Input step list is saved
+behind the generated placeholder in the function body, so the module raises rather
+than silently reading the source unchanged, and reload keeps the steps behind empty
+code exactly as for a transform. A new Data Input starts in step mode with an
+empty list.
+
 A `free_code` step carries a `code` string containing Python statements and can
-appear anywhere after the source step. Its statements run inline, in order with
+appear anywhere after the source step (anywhere at all in frame mode). Its statements run inline, in order with
 the low-code steps: `df` is the current frame, `pl` is available, and earlier
 Define variable values can be used. Assign transformations back to `df`; later
 steps consume that frame. Multiline expressions, comments, local helpers and

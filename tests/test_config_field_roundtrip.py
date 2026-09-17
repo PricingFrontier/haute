@@ -226,6 +226,9 @@ def _examples():
                 "mode": "read",
                 "records": [{"_id": 17, "nested": {"_key": "value"}}],
                 "arguments": {"infer_schema_length": 1},
+                # Post-load steps: the sidecar owns them and codegen renders
+                # them after the load scaffold (`df = df.head(2)`).
+                "steps": [{"id": "l", "kind": "limit", "n": 2}],
             },
         ),
         (
@@ -284,8 +287,14 @@ def _examples():
     ]
     for index, (node_type, config) in enumerate(variants):
         variant = graph.model_copy(deep=True)
-        node = next(node for node in variant.nodes if node.data.nodeType == node_type)
-        node.data.config = {**config, "contract": "opaque", **deepcopy(_SHARED_COLUMN_CONFIG)}
+        position = next(
+            i for i, node in enumerate(variant.nodes) if node.data.nodeType == node_type
+        )
+        # Replace through the validated helper so a stepped example carries
+        # its materialised `code` exactly as the parsed graph will.
+        variant.nodes[position] = variant.nodes[position].with_config(
+            {**config, "contract": "opaque", **deepcopy(_SHARED_COLUMN_CONFIG)}
+        )
         yield f"{node_type.value}-variant-{index}", variant
     # A stepped transform persists its steps in the optional polars sidecar and
     # regenerates its body from them; the sidecar must survive save -> parse.

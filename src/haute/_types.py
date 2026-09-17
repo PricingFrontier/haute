@@ -107,6 +107,9 @@ class ApiInputConfig(TypedDict, total=False):
 class _DataInputCommon(TypedDict, total=False):
     arguments: dict[str, Any]
     code: str
+    #: Low-code post-load steps (frame mode); ``code`` is their rendering
+    #: whenever they are present (see ``NodeData``).
+    steps: list[dict[str, Any]]
 
 
 class _DataInputPolarsCommon(_DataInputCommon, total=False):
@@ -886,27 +889,36 @@ class NodeData(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _materialise_polars_steps(self) -> Self:
-        """Keep ``code`` equal to the rendering of ``steps`` on a stepped transform.
+    def _materialise_steps(self) -> Self:
+        """Keep ``code`` equal to the rendering of ``steps`` on a stepped node.
 
-        Every consumer of a transform reads ``config["code"]``; a stepped node
-        therefore never carries any other program than its rendered steps. A
-        step list that cannot be rendered materialises as empty code plus an
-        editor-state ``_steps_error`` message, so consumers see an incomplete
-        transform exactly as they see a code-less one. In-process config
-        replacement must go through ``GraphNode.with_config`` so this
-        validator runs; ``model_copy`` does not validate.
+        Every consumer of a node's program reads ``config["code"]``; a stepped
+        node therefore never carries any other program than its rendered
+        steps. A step list that cannot be rendered materialises as empty code
+        plus an editor-state ``_steps_error`` message, so consumers see an
+        incomplete node exactly as they see a code-less one. The render mode
+        comes from ``STEPPED_NODE_TYPES``; a ``steps`` key on a node type
+        outside that table (a Scenario Expander's grid size) is left alone.
+        In-process config replacement must go through ``GraphNode.with_config``
+        so this validator runs; ``model_copy`` does not validate.
         """
-        if self.nodeType != NodeType.POLARS or "steps" not in self.config:
+        if "steps" not in self.config:
             return self
-        from haute._polars_steps import PolarsStepError, render_polars_steps
+        from haute._polars_steps import (
+            STEPPED_NODE_TYPES,
+            PolarsStepError,
+            render_polars_steps,
+        )
 
+        surface = STEPPED_NODE_TYPES.get(self.nodeType)
+        if surface is None:
+            return self
         steps = self.config["steps"]
         if not isinstance(steps, list):
-            raise ValueError("Transform steps must be a list.")
+            raise ValueError("Steps must be a list.")
         config = dict(self.config)
         try:
-            rendered = render_polars_steps(steps)
+            rendered = render_polars_steps(steps, start=surface.start)
         except PolarsStepError as exc:
             config["code"] = ""
             config["_steps_error"] = str(exc)

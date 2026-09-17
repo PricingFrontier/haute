@@ -19,7 +19,8 @@ layer is primary and caching is a consumer.
 
 - `CacheConsumerContract` and `CheckedCacheInputs` define exact, versioned key fields.
 - `CACHE_CONFIG_FIELD_CLASSIFICATIONS` classifies every recognised node config field as
-  execution input or rationale-bearing presentation exclusion.
+  execution input or rationale-bearing presentation exclusion; a stepped surface's
+  `steps` list is classified `user_code` beside its `code` (transform and Data Input).
 - `GraphFingerprintMemo` pins utility-file hashes consistently within one request while a
   process-wide `StatGatedCache` serves unchanged files across requests.
 - `LineageCacheKeyRequest` carries graph, target node/port, upstream lineage, prepared

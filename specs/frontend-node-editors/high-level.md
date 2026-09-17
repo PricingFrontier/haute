@@ -351,6 +351,27 @@ stale line ranges to blame a different current step.
 
 Nodes whose config has no `steps` list render the code box exactly as before.
 
+**Stepped code pane.** The Transform editor's mode switch is a shared pane
+(`SteppedCodePane`): a `steps` list renders the step builder, anything else the code
+box, with the discard notice above it when steps were discarded on load. The pane
+takes a start mode. `input` is the Transform's, as described above. `frame` is for a
+surface whose code runs with `df` already bound: the "Start from" selector is replaced
+by a fixed card that says what `df` is (for a Data Input, the opened input snapshot),
+no start step is written or accepted (a persisted `source` step renders as an invalid
+card that can only be deleted), cards are numbered from Step 1, every card can be moved,
+the first card can be opened by "Go to error", and steps can be added without choosing
+an input. The pane's step editor renders against the surface's eligible input names,
+which come from the same table the backend uses (`edges` for a Transform, `none` for a
+Data Input) rather than from the input chips it displays, so it never offers a join the
+executor would refuse: while that list is empty the `Add step` chooser withholds join
+and concat and keeps group by, pivot and unpivot. Column suggestions use the same
+upstream columns the code box used. An empty frame-mode list renders to empty code, so
+the confirmed switch to code on an empty list writes empty code, and the node behaves
+exactly as with an empty code box until a step is added. The Data Input's Polars tab
+mounts this pane; a new Data Input starts in step mode with an empty list, and changing
+its provider or format keeps its steps as it keeps its code. The other Polars-tab
+surfaces keep the plain code box until their own packages.
+
 ## Design rationale
 
 The UI uses specialised editors rather than one schema-driven form because graph node contracts

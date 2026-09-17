@@ -697,6 +697,21 @@ def _score_graph_lazy(
             else:
                 bundled_data_path = remap.get(f"{nid}__snapshot.parquet")
         if bundled_data_path is not None:
+            from haute._builders import _incomplete_transform, stepped_code_problem
+            from haute._code_extraction import INCOMPLETE_STEPS_MESSAGE
+            from haute._polars_steps import step_input_names
+
+            # This interceptor bypasses the Data Input builder, so it applies
+            # the builder's own incomplete-step guard before any scan is built.
+            problem = stepped_code_problem(
+                config, NodeType.DATA_INPUT, step_input_names(NodeType.DATA_INPUT, [])
+            )
+            if problem is not None:
+                return (
+                    func_name,
+                    _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"),
+                    True,
+                )
             _bundled_data_path = bundled_data_path
             _code = str(config.get("code") or "").strip()
             _preamble = build_kwargs.get("preamble_ns")

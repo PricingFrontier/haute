@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 
 import { renderPolarsSteps } from "../../../api/client"
+import type { StepStart } from "../../../utils/polarsStepInputs"
 import type { Step } from "./types"
 
 export type RenderedStepsState = {
@@ -23,12 +24,14 @@ const DEBOUNCE_MS = 250
 /**
  * Render `steps` through the backend, debounced, tagging every request with
  * the steps revision it was made for so an older response can never replace a
- * newer one. `onRendered` fires with the code of a successful render for the
- * current revision only.
+ * newer one. `inputNames` are the surface's eligible input names and `start`
+ * its start mode; both travel with every request. `onRendered` fires with the
+ * code of a successful render for the current revision only.
  */
 export function useRenderedSteps(
   steps: Step[],
   inputNames: string[],
+  start: StepStart,
   onRendered?: (code: string) => void,
 ): RenderedStepsState {
   const revisionRef = useRef(0)
@@ -57,7 +60,7 @@ export function useRenderedSteps(
     setState((prev) => ({ ...prev, status: "pending", revision, stepLines: [] }))
     const controller = new AbortController()
     const timer = setTimeout(() => {
-      renderPolarsSteps({ steps, inputNames, signal: controller.signal })
+      renderPolarsSteps({ steps, inputNames, start, signal: controller.signal })
         .then((response) => {
           if (controller.signal.aborted || revision !== revisionRef.current) return
           if (response.ok) {
@@ -102,7 +105,7 @@ export function useRenderedSteps(
     // The serialised keys are the change signal; `steps`/`inputNames` are read
     // from the closure of the same render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stepsKey, namesKey])
+  }, [stepsKey, namesKey, start])
 
   return state
 }

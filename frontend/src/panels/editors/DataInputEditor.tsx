@@ -18,6 +18,8 @@ const INPUT_COMMON_KEYS = [
   "categorical_levels",
   "contract",
   "code",
+  // Post-load steps survive a provider or format change exactly as code does.
+  "steps",
 ] as const
 
 const DATABRICKS_KEYS = new Set([

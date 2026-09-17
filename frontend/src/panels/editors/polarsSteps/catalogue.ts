@@ -23,6 +23,7 @@ import type {
   WindowAggregation,
   WindowOnlyAggregation,
 } from "./types"
+import type { StepStart } from "../../../utils/polarsStepInputs"
 
 export type StepKindInfo = { kind: Exclude<StepKind, "source">; label: string; description: string }
 
@@ -619,7 +620,12 @@ function canonicalExpr(expr: Expr): Expr {
 }
 
 /** The display label for a schema index: index 0 is the start card. */
-export function stepDisplayLabel(index: number): string {
+/**
+ * What a step at schema `index` is called in messages. In `input` mode index
+ * 0 is the start card; in `frame` mode every index is a numbered step.
+ */
+export function stepDisplayLabel(index: number, start: StepStart = "input"): string {
+  if (start === "frame") return `Step ${index + 1}`
   return index === 0 ? "Start from" : `Step ${index}`
 }
 

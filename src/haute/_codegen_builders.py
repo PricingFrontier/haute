@@ -30,7 +30,11 @@ import math
 from collections.abc import Callable
 from typing import Any
 
-from haute._code_extraction import INCOMPLETE_TRANSFORM_BODY, POLARS_OUTPUT_DECLARATION
+from haute._code_extraction import (
+    INCOMPLETE_STEPS_BODY,
+    INCOMPLETE_TRANSFORM_BODY,
+    POLARS_OUTPUT_DECLARATION,
+)
 from haute._config_io import config_path_for_node
 from haute._config_validation import validate_optimiser_input_selectors
 from haute._edge_join import build_edge_join_kwargs, edge_join_config_to_decorator_kwargs
@@ -46,6 +50,7 @@ from haute._polars_steps import (
     STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
     PolarsStepError,
     render_polars_steps,
+    step_input_names,
 )
 from haute._rating import _normalise_combined_outputs
 from haute._rating_step_config import normalise_rating_tables
@@ -855,7 +860,22 @@ def _gen_data_input(node: GraphNode, source_names: list[str]) -> str:
     # invocation the canvas executor uses, anchored to the pipeline dir.
     cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
     code = str(config.get("code") or "").strip()
-    body = _wrap_external_code(code)
+    steps = config.get("steps")
+    if isinstance(steps, list):
+        # The sidecar owns the steps; the post-load lines are their frame-mode
+        # rendering, or the raising placeholder when they cannot be rendered
+        # (the save warns which step is incomplete), so a standalone run never
+        # reads the source unchanged past an incomplete step list.
+        try:
+            code = render_polars_steps(
+                steps, step_input_names(NodeType.DATA_INPUT, []), start="frame"
+            ).code
+        except PolarsStepError:
+            body = INCOMPLETE_STEPS_BODY.rstrip("\n")
+        else:
+            body = _wrap_external_code(code)
+    else:
+        body = _wrap_external_code(code)
     return (
         f"@pipeline.data_input(config={_safe_path(cfg_path)})\n"
         f"def {func_name}() -> pl.LazyFrame:\n"
@@ -934,7 +954,7 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
         # generated parameter names, or the incomplete placeholder when they
         # cannot be rendered yet (the save warns which step is incomplete).
         try:
-            code = render_polars_steps(steps, logical_source_names).code
+            code = render_polars_steps(steps, logical_source_names, start="input").code
         except PolarsStepError:
             code = ""
     if code and ("df" in source_names or "df" in logical_source_names):

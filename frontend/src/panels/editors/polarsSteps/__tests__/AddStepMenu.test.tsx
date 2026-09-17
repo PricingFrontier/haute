@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, cleanup, fireEvent } from "@testing-library/react"
+import { render, screen, cleanup, fireEvent, within } from "@testing-library/react"
 
 import AddStepMenu from "../AddStepMenu"
 
@@ -47,5 +47,17 @@ describe("AddStepMenu", () => {
     expect(button).toBeDisabled()
     fireEvent.click(button)
     expect(screen.queryByRole("menu")).not.toBeInTheDocument()
+  })
+
+  it("withholds only the named kinds and keeps the rest of their section", () => {
+    render(<AddStepMenu onAdd={vi.fn()} withhold={new Set(["join", "concat"] as const)} />)
+    fireEvent.click(screen.getByRole("button", { name: "Add step" }))
+    const combine = within(screen.getByRole("menu")).getByRole("group", { name: "Combine" })
+    expect(within(combine).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Group and aggregate",
+      "Pivot to columns",
+      "Unpivot to rows",
+    ])
+    expect(screen.getAllByRole("menuitem")).toHaveLength(15)
   })
 })

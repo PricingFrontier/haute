@@ -15,7 +15,7 @@
  */
 
 import { MODELLING_EXPORT_CONFIG_KEYS, MODELLING_NODE_TYPE } from "./modellingExportConfig"
-import { authoredPolarsConfig } from "./polarsStepInputs"
+import { authoredPolarsConfig, steppedSurfaceFor } from "./polarsStepInputs"
 
 const INPUT_KEYS = ["nodeType", "label", "description", "config", "code", "func_name"] as const
 type InputKey = (typeof INPUT_KEYS)[number]
@@ -96,7 +96,7 @@ function stringifyModellingConfig(value: unknown): string {
 }
 
 function stringifyNodeInputValue(data: Record<string, unknown>, key: InputKey): string {
-  if (key === "config" && data.nodeType === "polars") {
+  if (key === "config" && steppedSurfaceFor(String(data.nodeType)) !== undefined) {
     const config = data.config
     if (config !== null && typeof config === "object" && !Array.isArray(config)) {
       const cached = polarsConfigInputHashCache.get(config)

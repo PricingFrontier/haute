@@ -21,14 +21,14 @@ one reusable stepped-code pane and rolls it out to those surfaces.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| PST-S02 | Planned | P2 | Frame-start render mode, the shared stepped-code pane, and the Data Input rollout. |
 | PST-S03 | Planned | P2 | External File: steps over `obj` and the connected inputs, including input renames. |
 | PST-S04 | Planned | P3 | Rating Step and Model Score post-processing as steps. |
 | PST-S05 | Planned | P3 | Scenario Expander: rename its grid-size `steps` key, then steps over the expanded grid. |
 | PST-S06 | Decision | P3 | Explore's Polars Code pane as steps, once its persistence home is chosen. |
 
-Deliver in package order: PST-S02 establishes every shared seam, and each
-later package is a per-type rollout over those seams.
+Deliver in package order: the shared seams (the start mode, the surface table,
+the stepped-code pane and the fail-loud guards) are in place on Data Input, and
+each package is a per-type rollout over them.
 
 ## Shared design
 
@@ -266,84 +266,6 @@ only the rows it changes.
 
 ## Planned improvements
 
-### PST-S02 — Frame-start mode, the shared pane, and Data Input
-
-**Why:** Data Input is the simplest frame surface (no inputs, no `obj`, no
-renames) and the one users meet first, so it proves every shared seam without
-per-type complications.
-
-**Plan:**
-
-1. Leave Scenario Expander's integer `steps` alone (PST-S05 renames it);
-   every generic gate added here tests `isinstance(steps, list)` and the type
-   is not yet in `STEPPED_NODE_TYPES`.
-2. Renderer: add the required `start` argument and `STEPPED_NODE_TYPES` to
-   `_polars_steps.py`; frame-mode rules as above; update every existing caller
-   to pass `start="input"`.
-3. Schema and persistence: `PolarsStepsRenderRequest.start`; `steps` on the
-   `DATA_INPUT_CONFIG_TYPES` TypedDicts, the `_validated_data_input` allowed
-   sets and the Data Input cache classification (`user_code`);
-   `NodeData._materialise_steps`; `_reconcile_steps` comparing extracted
-   forms; placeholder recognition in the shared matcher pipeline;
-   `_stepped_code_problem` in `_build_data_input` (the guard runs before
-   `apply_source_scan` builds the scan) and in the scorer's bundled snapshot
-   interceptor; `_gen_data_input` renders steps in frame mode into
-   `_wrap_external_code` or emits the raising placeholder; save warning
-   generalised.
-4. Frontend: `SteppedCodePane`; `PolarsStepsEditor` `start` prop with the
-   fixed start card and join/concat withheld; `useRenderedSteps` and
-   `renderPolarsSteps` in `api/client.ts` carry `start`; `NodeEditorBody`
-   mounts the pane for Data Input with `inputNames` from `stepInputNames`;
-   `polarsStepInputs.ts` mirror table; `INPUT_COMMON_KEYS` in
-   `DataInputEditor.tsx`; `graphSnapshot.ts` and `shallowNodeHash.ts` gates;
-   `node_defaults.json` `dataInput.steps = []`.
-5. Specs and tests per the shared sections.
-
-**Acceptance:**
-
-- `render_polars_steps([], [], start="frame")` returns empty code; a `source`
-  step in frame mode fails with its index; every structured and free-code kind
-  renders byte-identically in both modes; `start` is required.
-- A Data Input node whose sidecar carries `steps` loads in step mode when the
-  extracted body equals the extracted rendering (including a sole free-code
-  step `df = (df.head(2))`), discards with `_steps_discarded` when the body
-  was edited, and keeps unrenderable steps behind the raising placeholder
-  (which extracts to empty code); the sidecar golden test covers a stepped
-  Data Input.
-- Executing a stepped Data Input applies the steps to the snapshot in canvas
-  preview, in the generated module and through the deploy scorer's bundled
-  snapshot path; one invalid step fails on all three: the builder and the
-  interceptor raise the `Step k: <message>` text, and the generated module
-  carries the raising placeholder rather than `return df` and raises its
-  constant message when run.
-- The render endpoint, reconcile, codegen and the executor all render a Data
-  Input's steps against an empty input list, so a `join` step is refused with
-  the same message on each path.
-- Changing a stepped Data Input's provider or format in `DataInputEditor`
-  keeps `steps` (new and populated lists, including the Databricks provider).
-- On the Data Input Polars tab: a new node shows the fixed start card and
-  `Add step` with join and concat withheld while group by, pivot and unpivot
-  remain; adding a Limit step renders `df = df.head(...)`; the generated-code
-  panel, badges and switch to code behave as on Transform; the discard notice
-  shows above the code box after a hand-edited load.
-- The import-time cache classification check passes with the new field.
-- The Transform builder's tests pass unchanged apart from the `start`
-  argument.
-
-**Dependencies:** none beyond the shipped Transform builder.
-
-**Evidence:** `src/haute/_polars_steps.py`; `src/haute/_types.py`
-(`NodeData._materialise_polars_steps`, `DATA_INPUT_CONFIG_TYPES`);
-`src/haute/_config_builder.py` (`_reconcile_polars_steps`,
-`_attach_code_from_body`); `src/haute/_builders.py` (`_build_data_input`,
-`_build_transform`); `src/haute/_codegen_builders.py` (`_gen_data_input`);
-`src/haute/_polars_io_registry.py` (`_validated_data_input`);
-`src/haute/routes/_save_pipeline.py` (`_validate_transforms_are_runnable`);
-`frontend/src/panels/editors/TransformEditor.tsx`;
-`frontend/src/panels/editors/polarsSteps/PolarsStepsEditor.tsx`;
-`frontend/src/panels/NodePanel.tsx` (`POLARS_TAB_TYPES`, `POLARS_TAB_HINTS`,
-`NodeEditorBody`); `frontend/src/utils/polarsStepInputs.ts`.
-
 ### PST-S03 — External File
 
 **Why:** External File is the only frame surface whose code can reach other
@@ -366,7 +288,7 @@ renaming that upstream node rewrites the reference inside the steps and never
 adds `inputMapping`; a Free code step reading `obj` runs in preview and in the
 generated module; the External File extractor round-trips the rendering.
 
-**Dependencies:** PST-S02.
+**Dependencies:** the shared seams already in place on Data Input.
 
 **Evidence:** `src/haute/_builders.py` (`_build_external_file`);
 `src/haute/_codegen_builders.py` (`_gen_external_file`,
@@ -377,7 +299,7 @@ generated module; the External File extractor round-trips the rendering.
 ### PST-S04 — Rating Step and Model Score
 
 **Why:** Both surfaces are post-processing over a single bound frame with no
-other inputs, so they are pure rollouts of PST-S02 with per-type extractors.
+other inputs, so they are pure rollouts of the shared seams with per-type extractors.
 
 **Plan:** Add both types to `STEPPED_NODE_TYPES` (frame); `steps` on
 `RatingStepConfig` and `ModelScoreConfig` with their cache classifications
@@ -401,7 +323,7 @@ contract fails in the deploy scorer before `_attach_bundled_model_contract_input
 loads the model, and before scoring on the non-bundled branch; the Model
 Score projection contract is opaque while steps exist.
 
-**Dependencies:** PST-S02.
+**Dependencies:** the shared seams already in place on Data Input.
 
 **Evidence:** `src/haute/_builders.py` (`_build_rating_step`,
 `_build_model_score`, `_model_score_columns`);
@@ -445,7 +367,7 @@ list-valued `steps` loads in step mode; the trace enrichment reports the
 numeric `stepCount` while structured steps are present; the rollout meets the
 PST-S04 acceptance for this type.
 
-**Dependencies:** PST-S02.
+**Dependencies:** the shared seams already in place on Data Input.
 
 **Evidence:** `src/haute/_types.py` (`SCENARIO_EXPANDER_CONFIG_KEYS`);
 `src/haute/_builders.py` (`_build_scenario_expander`);
@@ -471,9 +393,9 @@ folder entry, sidecar ownership in the save walks, and a decision on whether
 the overview, pivot and chart settings move into it or stay in the
 decorator) or a `steps=` decorator argument (no sidecar, but a large literal
 in generated code). This roadmap does not choose; the package is taken only
-after PST-S02 to PST-S05 have been used and that choice is made.
+after PST-S03 to PST-S05 have been used and that choice is made.
 
-**Plan (after the decision):** add `EXPLORE` to `STEPPED_NODE_TYPES` (frame,
+**Plan:** After the persistence decision, add `EXPLORE` to `STEPPED_NODE_TYPES` (frame,
 no inputs); persist `steps` per the decision; `ExploreCodeEditor` renders
 `SteppedCodePane`; `_gen_explore` renders steps after the `df = <param>` line
 or emits the raising placeholder; `_attach_code_from_body` or the
@@ -484,7 +406,7 @@ the materialised `code` like `authoredPolarsConfig`.
 chart settings through save and load of a stepped Explore, and the Explore
 report still runs on the stepped frame.
 
-**Dependencies:** PST-S02; the persistence decision above; the Explore config
+**Dependencies:** the shared seams already in place on Data Input; the persistence decision above; the Explore config
 fingerprint and report pipeline.
 
 **Evidence:** `frontend/src/panels/editors/ExploreCodeEditor.tsx`;
