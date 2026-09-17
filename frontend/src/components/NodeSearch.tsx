@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react"
-import { useReactFlow, useNodes } from "@xyflow/react"
+import { useNodes } from "@xyflow/react"
 import { Search } from "lucide-react"
 import { NODE_TYPE_META, type NodeTypeValue } from "../utils/nodeTypes"
 import { nodeData } from "../types/node"
 
 interface NodeSearchProps {
   onClose: () => void
+  /** Selects the node; the editor then centres it in the canvas area the inspector leaves. */
   onSelectNode: (nodeId: string) => void
 }
 
@@ -17,8 +18,6 @@ type NodeSearchResult = {
   id: string
   label: string
   meta: typeof NODE_TYPE_META[NodeTypeValue]
-  x: number
-  y: number
   normalizedLabel: string
   normalizedTypeName: string
   normalizedTypeLabel: string
@@ -36,7 +35,6 @@ export default function NodeSearch({ onClose, onSelectNode }: NodeSearchProps) {
   const [windowStart, setWindowStart] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
-  const { setCenter } = useReactFlow()
   const allNodes = useNodes()
 
   const indexedNodes = useMemo<NodeSearchResult[]>(() => allNodes.map((n) => {
@@ -49,8 +47,6 @@ export default function NodeSearch({ onClose, onSelectNode }: NodeSearchProps) {
       id: n.id,
       label,
       meta,
-      x: n.position.x,
-      y: n.position.y,
       normalizedLabel: label.toLowerCase(),
       normalizedTypeName: typeName.toLowerCase(),
       normalizedTypeLabel: typeLabel.toLowerCase(),
@@ -111,10 +107,9 @@ export default function NodeSearch({ onClose, onSelectNode }: NodeSearchProps) {
   const selectResult = useCallback((index: number) => {
     const item = results[index]
     if (!item) return
-    setCenter(item.x + 100, item.y + 25, { zoom: 0.8, duration: 300 })
     onSelectNode(item.id)
     onClose()
-  }, [results, setCenter, onSelectNode, onClose])
+  }, [results, onSelectNode, onClose])
 
   const handleQueryChange = useCallback((value: string) => {
     setQuery(value)

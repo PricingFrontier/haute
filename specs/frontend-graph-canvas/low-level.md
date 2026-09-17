@@ -29,6 +29,8 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/types/node.ts` | Shared node-data and persisted node-type contract owned by [frontend-shared](../frontend-shared/low-level.md) and consumed by the canvas. |
 | `frontend/src/hooks/useNodeHandlers.ts` | Node CRUD handlers: ordinary atomic delete, guarded submodel deletion, duplicate and instance creation that resolve authoritative identities before commit, reusable-submodel occurrence creation with deterministic fresh id/alias allocation, rename dialog, and in-flight-guarded ELK auto-layout. Resolver rejection, malformed output, or graph replacement leaves state untouched. |
 | `frontend/src/hooks/useEdgeHandlers.ts` | Connection/gesture handlers: `onConnectStart` plus pointer movement maintain the transient compatible edge-join candidate; `commitConnection`/`onConnectEnd` interpret React Flow handle-drag endings into a normal edge or a revalidated edge-join insertion; palette and edge-join nodes resolve identities before any graph/history mutation, with downstream join mappings finalized only from the server result. The hook also owns selection/preview, edge deletion, context menus, and drag/drop. |
+| `frontend/src/hooks/useActiveNodeReveal.ts` | Keeps the inspector's active node visible in the canvas area its inspector and preview pane leave: arms on each active-node change or node-search centre request, re-checks when React Flow's canvas size or the armed node's measured size changes, glides only the first placement, and disarms on a user pan/zoom gesture. Returns `handleMoveStart` for React Flow's `onMoveStart` and `centreNode` for node search. |
+| `frontend/src/utils/nodeReveal.ts` | Pure `nodeRevealViewport` geometry: the zoom-preserving least pan that places a node `NODE_REVEAL_MARGIN_PX` inside the canvas (centring on an axis it cannot fit), or a centred placement at a requested zoom; `null` when a nearest placement needs no move. |
 | `frontend/src/hooks/usePipelineAPI.ts` | Pipeline editor-document load-on-mount; recovery-to-React-Flow adaptation; atomic document-status/revision plus graph ingestion; request-facing refs; preview lifecycle; and capability-fenced Save. |
 | `frontend/src/stores/useDocumentStatusStore.ts` | Authoritative editor-document status, diagnostics, capabilities, raw revision, source-only text, and last accepted document identity. Graph state/history remain in `useGraphStore`. |
 | `frontend/src/types/pipelineDocument.ts` | Strict version-1 editor-document wire types/guards and the single adapter from recovery nodes/edges/submodels into render-only React Flow snapshots, including required node identities, edge input identities, submodel input-port identities, and reserved API-frame labels. Recovery wire values are never accepted as canonical graph values. |
@@ -838,6 +840,35 @@ reconciliation rather than dropping them or committing a second mutation.
     preview/apply dialog; see [node recovery actions](../server-api/node-recovery-actions.md).
     Failed literal submodel registrations retain an unavailable SUBMODEL card and
     disabled handles for authored connections even when no canonical definition exists.
+25. **Active node reveal (`useActiveNodeReveal`).** `FlowEditor` passes
+    `activePanelNodeId` to the hook and wires its `handleMoveStart` to React
+    Flow's `onMoveStart`; `handleNodeSearchSelect` selects the node and calls
+    `centreNode(nodeId, 0.8)` (`NodeSearch` itself no longer moves the view).
+    A layout effect arms the hook whenever the active id changes or a centre
+    request arrives: it records the node, a centred placement only when the
+    request names the node that is now active (nearest otherwise), and that the
+    first placement is still owed, then attempts it. Running in the layout
+    effect of the commit that mounted the inspector means the attempt already
+    sees the narrowed canvas. An attempt reads the node's
+    `internals.positionAbsolute` and `measured` size from the React Flow
+    store and the canvas's `clientWidth`/`clientHeight` from the store's
+    `domNode`; a node not yet measured (a just-dropped node) or an unmounted
+    canvas makes no move, and the measurement landing triggers the retry.
+    `nodeRevealViewport` computes the target from the store transform, or
+    from the target of a glide still in progress, so an overlapping check
+    refines that glide instead of truncating it. The owed first placement,
+    and any correction while a glide is in progress, animates for
+    `NODE_REVEAL_DURATION_MS` (200) — with linear interpolation when zoom is
+    unchanged, because d3's default smooth interpolation zooms out mid-flight
+    and would turn a pan into a visible zoom pulse, and smooth interpolation
+    for a node-search centring that changes zoom. Every other correction
+    applies with no duration. A store subscription schedules at most one attempt per
+    microtask when the store's canvas `width`/`height` or the armed node's
+    measured size changes; attempts never run inside the store listener.
+    `handleMoveStart` disarms only when React Flow reports a DOM event (wheel,
+    mouse, or touch gesture); programmatic moves — the hook's own glides,
+    `fitView`, auto-pan — report none and leave it armed. A null active id
+    disarms.
 
 ## Edge cases and invariants
 
@@ -1041,6 +1072,10 @@ array-only payload or omitted-edge compatibility branch is supported.
   the document store's `systemFailure`, marks graph state unsynchronised, and renders
   `PipelineLoadFailureView`; the next valid document transition clears the failure before
   publishing its graph.
+- **An active-node glide is tracked by its end time, not by `setViewport`'s
+  promise.** React Flow resolves that promise on the d3 transition's `end`
+  event, which never fires when a user gesture interrupts the transition, so
+  waiting on it would stall every later placement.
 
 ## Error handling
 
@@ -1573,6 +1608,24 @@ again through the editor and save paths.
   for column-relevant steps. All
   drag points are derived from live locator geometry and every assertion is
   an observable DOM, preview, trace, or persisted-pipeline outcome.
+- **Active node visibility.** `frontend/src/utils/__tests__/nodeReveal.test.ts`
+  pins the geometry: no move for a fully visible node (even inside the
+  margin), least pans on each edge at non-unit zoom, centring on an axis the
+  node cannot fit, and centred placement. `frontend/src/hooks/__tests__/useActiveNodeReveal.test.ts`
+  drives the hook against a vanilla store shaped like React Flow's: arming on
+  activation, no move for an unmounted canvas, waiting for a just-created
+  node's measurement and moving only outside the store listener, same-frame
+  compensation of a later resize (including once a glide has ended), refining
+  (and not interrupting) a glide in progress, placing the next active node while
+  an interrupted glide's promise never settles, disarming on a DOM gesture but
+  not on a programmatic move or
+  unrelated centre request, disarming on deactivation, and node-search
+  centring once, including for the already-active node.
+  `frontend/e2e/active-node-reveal.spec.ts` proves it in a real browser: a
+  node panned into the canvas's bottom-right corner is moved inside the canvas
+  once the inspector and preview pane open, at unchanged zoom, and a node
+  chosen in node search ends up horizontally centred in the narrowed canvas
+  at zoom 0.8.
 
 ## Recovery tracing boundary
 

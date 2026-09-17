@@ -20,6 +20,12 @@ vi.mock("@xyflow/react", () => ({
   BackgroundVariant: { Dots: "dots" },
 }))
 
+// The viewport-reveal hook reads the React Flow store, which this mock does not provide.
+vi.mock("../hooks/useActiveNodeReveal", () => {
+  const reveal = { handleMoveStart: () => {}, centreNode: () => {} }
+  return { useActiveNodeReveal: () => reveal }
+})
+
 vi.mock("../hooks/useGraphCanvasState", () => ({
   default: () => ({
     nodes: [],

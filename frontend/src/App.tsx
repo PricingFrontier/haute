@@ -81,6 +81,7 @@ import type { DrilledOccurrenceIdentity } from "./utils/submodelRuntimeTarget"
 import { isSubmodelInstanceConfig, nodeData } from "./types/node"
 import type { HauteNodeData } from "./types/node"
 import { useScopedNodeSave } from "./hooks/useScopedNodeSave"
+import { useActiveNodeReveal } from "./hooks/useActiveNodeReveal"
 import { withNativeDeletePolicy } from "./utils/submodelDeletionPolicy"
 import { requestSubmodelCreation } from "./utils/submodelCreation"
 import { resolveEditorGraphIdentities } from "./utils/editorIdentities"
@@ -126,6 +127,9 @@ const defaultEdgeOptions = {
 const connectionLineStyle = { stroke: 'var(--accent)', strokeWidth: 2, strokeDasharray: '6 3' }
 
 const fitViewOptions = { padding: 0.15 }
+
+// Zoom at which node search centres the chosen node.
+const NODE_SEARCH_FOCUS_ZOOM = 0.8
 
 const proOptions = { hideAttribution: true }
 
@@ -735,6 +739,7 @@ function FlowEditor() {
   const activePanelNodeCandidate = selectedNode?.id ?? lastSelectedId
   const panelNode = panelGraph.getNode(activePanelNodeCandidate)
   const activePanelNodeId = panelNode ? activePanelNodeCandidate : null
+  const { handleMoveStart: handleActiveNodeMoveStart, centreNode } = useActiveNodeReveal(activePanelNodeId)
 
   useEffect(() => {
     setPinnedPreviewNodeId(activePanelNodeId ?? null)
@@ -1352,7 +1357,8 @@ function FlowEditor() {
     setUtilityOpen(false)
     setImportsOpen(false)
     setGitOpen(false)
-  }, [setGitOpen, setImportsOpen, setUtilityOpen])
+    centreNode(node.id, NODE_SEARCH_FOCUS_ZOOM)
+  }, [centreNode, setGitOpen, setImportsOpen, setUtilityOpen])
 
   const handleImportAdded = useCallback((importLine: string) => {
     const current = preambleRef.current
@@ -1557,6 +1563,7 @@ function FlowEditor() {
                 nodesDraggable={!editingReadOnly}
                 nodesConnectable={!editingReadOnly}
                 onSelectionChange={onSelectionChange}
+                onMoveStart={handleActiveNodeMoveStart}
                 onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
                 onNodeMouseLeave={() => setHoveredNodeId(null)}
                 onNodeClick={(event, node) => { setUtilityOpen(false); setImportsOpen(false); setGitOpen(false); setHoveredNodeId(null); onNodeClick(event, node) }}

@@ -354,6 +354,27 @@ candidate, with the error toast.
   clears any prior node's preview, but does not issue a predictably failing
   execution request; Infer Tables followed by an explicit refresh is the
   normal first-preview flow.
+- **Active node visibility.** The inspector panel and the preview pane take
+  their space from the canvas, so opening them must not leave the node they
+  describe hidden behind them. Whenever a node becomes the inspector's active
+  node — clicking it, dropping it from the palette, inserting an edge-join,
+  choosing it in node search, or navigating to it from the recovery banner —
+  the editor keeps it inside the canvas area that remains. If any part of the
+  node lies outside that area, the view pans, without changing zoom, by the
+  least distance that places the node at least 40px inside the canvas edges;
+  on an axis where the node cannot fit with that margin it is centred
+  instead. A node that is already fully visible never moves the view. The
+  first placement glides over 200ms, matching the inspector's slide-in. While
+  the same node stays active, later layout changes — a lazily loaded preview
+  pane mounting, the inspector or preview pane being resized, the node's own
+  size changing — are compensated in the same frame, so the node never
+  appears covered. A user pan or zoom gesture ends this for the current node,
+  so the editor never pulls the view back after the user has deliberately
+  moved away; the next node to become active starts it again. Programmatic
+  view changes (fit view, auto-pan) do not end it. Node search is the one
+  centred placement: it centres the chosen node at zoom 0.8 within the canvas
+  area that remains once the inspector is open, not within the canvas as it
+  was before the inspector opened.
 - **Pipeline load and save.** The pipeline loads once on mount with a
   cold-start retry policy. Its versioned editor-document response is validated before state
   changes, then adapted to React Flow; recovery wire nodes never enter the canonical graph
