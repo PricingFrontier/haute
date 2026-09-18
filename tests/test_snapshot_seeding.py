@@ -178,12 +178,13 @@ def _request(
     *,
     required: dict[str, Any] | None,
     profile: ExecutionProfile,
+    source: str = "live",
     **fields: Any,
 ) -> SeedPlanRequest:
     return SeedPlanRequest(
         graph=graph,
         target_node_id=target,
-        source="live",
+        source=source,
         profile=profile,
         required_columns_by_node=required,
         **fields,
@@ -199,13 +200,14 @@ def _planned(
     required: dict[str, Any] | None = None,
     profile: ExecutionProfile = ExecutionProfile.TRAINING_PREP,
     context: ExecutionContext | None = None,
+    source: str = "live",
     **fields: Any,
 ) -> Iterator[tuple[SeedPlan, ExecutionContext, Callable[[], tuple[pl.LazyFrame, Counter[str]]]]]:
     """Open a plan and yield a callable that executes the graph under it."""
     from haute.executor import _compile_preamble, _pipeline_dir
 
     context = context if context is not None else _context(profile)
-    request = _request(graph, target, required=required, profile=profile, **fields)
+    request = _request(graph, target, required=required, profile=profile, source=source, **fields)
     with open_seed_plan(request, store=store, execution_context=context) as plan:
 
         def execute() -> tuple[pl.LazyFrame, Counter[str]]:
@@ -218,7 +220,7 @@ def _planned(
                     graph.preamble or "", pipeline_dir=_pipeline_dir(graph)
                 )
                 or None,
-                source="live",
+                source=source,
                 enforce_contracts=True,
                 required_columns_by_node=required,
                 execution_context=context,
@@ -238,10 +240,18 @@ def _run(
     required: dict[str, Any] | None = None,
     profile: ExecutionProfile = ExecutionProfile.TRAINING_PREP,
     context: ExecutionContext | None = None,
+    source: str = "live",
     **fields: Any,
 ) -> RunResult:
     with _planned(
-        graph, store, target, required=required, profile=profile, context=context, **fields
+        graph,
+        store,
+        target,
+        required=required,
+        profile=profile,
+        context=context,
+        source=source,
+        **fields,
     ) as (
         _plan,
         context,
@@ -252,8 +262,10 @@ def _run(
     return RunResult(frame, context.metrics_payload(status="completed"), calls)
 
 
-def _identity(store: NodeSnapshotStore, graph: PipelineGraph, node_id: str) -> SourceCacheIdentity:
-    resolver = DataPointResolver(graph, source="live", store=store)
+def _identity(
+    store: NodeSnapshotStore, graph: PipelineGraph, node_id: str, source: str = "live"
+) -> SourceCacheIdentity:
+    resolver = DataPointResolver(graph, source=source, store=store)
     return resolver.node_output_slot(node_id).identity(resolver.node_output_signature(node_id))
 
 
@@ -794,6 +806,209 @@ def test_pass_through_returns_the_selected_api_port(
 
     assert run.captures == {}
     assert run.frame["driver_id"].to_list() == [10, 11, 12]
+
+
+# ---------------------------------------------------------------------------
+# Batch Model Score
+# ---------------------------------------------------------------------------
+
+
+class _TenTimes:
+    """A deterministic model that counts how often it is asked to score."""
+
+    calls = 0
+
+    def predict(self, features: Any) -> Any:
+        import numpy as np
+
+        type(self).calls += 1
+        column = features["feature"] if hasattr(features, "__getitem__") else features
+        return np.asarray(column, dtype="float64") * 10.0
+
+
+@pytest.fixture()
+def scoring_model(monkeypatch: pytest.MonkeyPatch) -> type[_TenTimes]:
+    from haute import _mlflow_io
+
+    _TenTimes.calls = 0
+    monkeypatch.setattr(
+        _mlflow_io,
+        "load_mlflow_model",
+        lambda *_args, **_kwargs: _mlflow_io.ScoringModel(
+            _TenTimes(), ["feature"], flavor="pyfunc"
+        ),
+    )
+    return _TenTimes
+
+
+def _scored_graph(project: Path, **model_config: Any) -> PipelineGraph:
+    """``scoring → M (batch Model Score) → T``."""
+    from haute.modelling._feature_contract import build_contract, save_contract
+
+    pl.DataFrame(
+        {
+            "quote_id": [f"q{index}" for index in range(1, 6)],
+            "feature": [1.0, 2.0, 3.0, 4.0, 5.0],
+        }
+    ).write_parquet(project / "scoring.parquet")
+    contract_path = project / "feature_contract.json"
+    save_contract(
+        build_contract(
+            features=["feature"],
+            feature_types={"feature": "Float64"},
+            categorical_features=[],
+            target_name="target",
+            target_type="Float64",
+            task="regression",
+        ),
+        contract_path,
+    )
+    return _graph(
+        project,
+        [
+            ("scoring", NodeType.DATA_INPUT, _parquet(project / "scoring.parquet")),
+            (
+                "M",
+                NodeType.MODEL_SCORE,
+                {
+                    "sourceType": "run",
+                    "run_id": "run-1",
+                    "artifact_path": "model.pyfunc",
+                    "task": "regression",
+                    "output_column": "prediction",
+                    "feature_contract_path": str(contract_path),
+                    **model_config,
+                },
+            ),
+            ("T", NodeType.MODELLING, {}),
+        ],
+        [("scoring", "M"), ("M", "T")],
+    )
+
+
+@pytest.fixture()
+def engine_sinks(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Every file the engine itself sinks (not the scorer's own writes)."""
+    written: list[str] = []
+    sink = execute_lazy_module.bounded_sink
+
+    def counting(frame: Any, path: Any, **kwargs: Any) -> Any:
+        written.append(str(path))
+        return sink(frame, path, **kwargs)
+
+    monkeypatch.setattr(execute_lazy_module, "bounded_sink", counting)
+    return written
+
+
+def test_model_score_capture_is_the_scored_file(
+    project: Path,
+    store: NodeSnapshotStore,
+    scoring_model: type[_TenTimes],
+    engine_sinks: list[str],
+) -> None:
+    graph = _scored_graph(project)
+    run = _run(graph, store, source="batch")
+
+    assert run.captures["M"]["outcome"] == "published"
+    assert engine_sinks == []
+    assert run.frame["prediction"].to_list() == [10.0, 20.0, 30.0, 40.0, 50.0]
+    latest = store.latest_generation(_identity(store, graph, "M", "batch"))
+    assert latest is not None
+    assert_frame_equal(latest.lazy_frame.collect(), run.frame)
+
+
+def test_seeded_model_score_makes_zero_scoring_calls(
+    project: Path, store: NodeSnapshotStore, scoring_model: type[_TenTimes]
+) -> None:
+    graph = _scored_graph(project)
+    first = _run(graph, store, source="batch")
+    calls_after_first = scoring_model.calls
+    assert calls_after_first > 0
+
+    second = _run(graph, store, source="batch")
+
+    assert set(second.seeds) == {"M"}
+    assert scoring_model.calls == calls_after_first
+    assert not +second.calls
+    assert_frame_equal(second.frame, first.frame)
+
+
+@pytest.mark.parametrize(
+    ("model_config", "expected"),
+    [
+        (
+            {
+                "code": (
+                    "df = df.filter(pl.col('feature') > 2)"
+                    ".with_columns((pl.col('prediction') + 1).alias('prediction'))"
+                )
+            },
+            {"prediction": [31.0, 41.0, 51.0]},
+        ),
+        (
+            {"column_renames": {"quote_id": "qid"}},
+            {"qid": [f"q{index}" for index in range(1, 6)]},
+        ),
+    ],
+    ids=["post_code", "rename"],
+)
+def test_model_score_with_its_own_post_processing_sinks_its_final_frame(
+    project: Path,
+    store: NodeSnapshotStore,
+    scoring_model: type[_TenTimes],
+    engine_sinks: list[str],
+    model_config: dict[str, Any],
+    expected: dict[str, list[Any]],
+) -> None:
+    graph = _scored_graph(project, **model_config)
+    cold = _run(graph, store, source="batch")
+
+    assert len(engine_sinks) == 1
+    ((column, values),) = expected.items()
+    assert cold.frame[column].to_list() == values
+
+    warm = _run(graph, store, source="batch")
+    assert set(warm.seeds) == {"M"}
+    assert_frame_equal(warm.frame, cold.frame)
+
+
+def test_model_score_quota_rejection_keeps_scored_file(
+    project: Path,
+    scoring_model: type[_TenTimes],
+    engine_sinks: list[str],
+) -> None:
+    from haute._node_snapshots import NodeSnapshotSlot
+
+    graph = _scored_graph(project)
+    full = NodeSnapshotStore(project, max_generations=1)
+    # One pinned generation of an unrelated slot fills the quota.
+    filler = NodeSnapshotSlot(str(project / "other.py"), "filler", "batch", "bounded").identity(
+        "filler-signature"
+    )
+    artifact = full.stage_node_output(filler)
+    pl.DataFrame({"a": [1]}).write_parquet(artifact.data_path)
+    full.publish_node_output(
+        filler,
+        artifact,
+        columns=ALL,
+        dependencies={},
+        explicit=True,
+        profile=ExecutionProfile.NODE_SNAPSHOT,
+    ).close()
+
+    with _planned(graph, full, source="batch") as (_plan, context, execute):
+        output, _calls = execute()
+        first, second = output.collect(), output.collect()
+    metrics = context.metrics_payload(status="completed")
+
+    assert {
+        capture["node_id"]: capture["outcome"] for capture in metrics["shared_snapshot_captures"]
+    } == {"M": "quota"}
+    assert engine_sinks == []
+    assert scoring_model.calls == 1
+    assert_frame_equal(first, second)
+    assert first["prediction"].to_list() == [10.0, 20.0, 30.0, 40.0, 50.0]
+    assert not _staging_dirs(full)
 
 
 # ---------------------------------------------------------------------------

@@ -492,7 +492,7 @@ class NodeBoundaryRunner:
 
 
 if TYPE_CHECKING:
-    from haute._node_snapshots import NodeSnapshotColumns
+    from haute._node_snapshots import NodeSnapshotArtifact, NodeSnapshotColumns
     from haute._seed_plans import CaptureDecision, SeedPlan, SeedPlanDecision
 
 
@@ -1895,12 +1895,35 @@ def _execute_lazy(
                 execution_context.checkpoint(label="lazy_dataframe_cache_seed_hit", node_id=nid)
             continue
         boundary = boundary_runner.open(nid)
+        # A batch Model Score whose output is exactly its scored file writes
+        # that file straight into the capture's staging directory.
+        scored_capture = (
+            captures.stage_scored_output(
+                nid, node_map[nid], scenario=node_source_overrides.get(nid, source or "live")
+            )
+            if decision is not None and inputs_verified
+            else None
+        )
         with (
             execution_context.stage("lazy_build", node_id=nid)
             if execution_context is not None
             else contextlib.nullcontext()
         ):
-            lf, is_source, node = _build_lazy_node(boundary)
+            scored_prewritten = False
+            if scored_capture is None:
+                lf, is_source, node = _build_lazy_node(boundary)
+            else:
+                from haute._model_scorer import model_score_output_destination
+
+                try:
+                    with model_score_output_destination(
+                        scored_capture.data_path
+                    ) as score_destination:
+                        lf, is_source, node = _build_lazy_node(boundary)
+                    scored_prewritten = score_destination.used
+                except BaseException:
+                    scored_capture.close()
+                    raise
 
         cache_materialized = False
         if cache_request is not None and nid not in cache_hit_rejected_node_ids:
@@ -1973,7 +1996,13 @@ def _execute_lazy(
         elif decision is not None:
             closure = captures.record_closure(nid)
             if nid in decision.captures:
-                lf = captures.capture(nid, lf, closure)
+                lf = captures.capture(
+                    nid,
+                    lf,
+                    closure,
+                    artifact=scored_capture,
+                    prewritten=scored_prewritten,
+                )
                 cache_materialized = True
                 cache_backed_node_ids.add(nid)
                 column_cache[(nid, None)] = _columns_of(lf)
@@ -2185,13 +2214,47 @@ class _PlannedCaptures:
         if self._inputs_changed():
             raise SnapshotPlanInputsChangedError(target_node_id=self._decision.target_node_id)
 
+    def stage_scored_output(
+        self, node_id: str, node: GraphNode, *, scenario: str
+    ) -> NodeSnapshotArtifact | None:
+        """Stage a batch Model Score capture whose scored file is its whole output.
+
+        Only for a captured Model Score scoring in batch (any scenario but
+        ``live``) whose output is exactly what the scorer writes: no
+        post-processing code, no selected columns, no renames. Anything else
+        is sunk after the node is built, like every other capture.
+        """
+        assert self.plan is not None
+        capture = self.plan.decision.captures.get(node_id)
+        config = node.data.config
+        if (
+            capture is None
+            or node.data.nodeType != NodeType.MODEL_SCORE
+            or scenario == "live"
+            or str(config.get("code") or "").strip()
+            or config.get("selected_columns")
+            or config.get("column_renames")
+        ):
+            return None
+        return self.plan.store.stage_node_output(
+            capture.identity, staging_token=self.plan.staging_token
+        )
+
     def capture(
         self,
         node_id: str,
         frame: _Frame,
         closure: Mapping[str, str],
+        *,
+        artifact: NodeSnapshotArtifact | None = None,
+        prewritten: bool = False,
     ) -> pl.LazyFrame:
-        """Write one capture point through the bounded sink and continue from it."""
+        """Write one capture point through the bounded sink and continue from it.
+
+        With ``prewritten``, *artifact* already holds the node's output — a
+        batch Model Score's scored file — and is published without a second
+        write.
+        """
         from haute._node_snapshots import (
             NodeSnapshotColumns,
             NodeSnapshotMultiFrameUnsupportedError,
@@ -2205,8 +2268,17 @@ class _PlannedCaptures:
             raise NodeSnapshotMultiFrameUnsupportedError(
                 "A node that emits several frames cannot be captured as one snapshot."
             )
-        sink_lf = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
-        schema_cols = sink_lf.collect_schema().names()
+        store = plan.store
+        if artifact is None:
+            artifact = store.stage_node_output(capture.identity, staging_token=plan.staging_token)
+        sink_lf = pl.scan_parquet(artifact.data_path) if prewritten else frame
+        if isinstance(sink_lf, pl.DataFrame):
+            sink_lf = sink_lf.lazy()
+        try:
+            schema_cols = sink_lf.collect_schema().names()
+        except BaseException:
+            artifact.close()
+            raise
         if capture.columns.names is None:
             columns = NodeSnapshotColumns.all()
         else:
@@ -2215,6 +2287,7 @@ class _PlannedCaptures:
             strict = capture.strict_columns.names
             strict_missing = missing & set(strict) if strict is not None else missing
             if strict_missing:
+                artifact.close()
                 raise ContractMismatchError(
                     "A captured node's output lacks columns this run reads from it.",
                     node_id=node_id,
@@ -2229,17 +2302,18 @@ class _PlannedCaptures:
                 )
             ordered = projected_or_carrier_columns(schema_cols, wanted - missing)
             sink_lf = sink_lf.select(ordered)
-            columns = NodeSnapshotColumns.of(ordered)
-        store = plan.store
-        artifact = store.stage_node_output(capture.identity, staging_token=plan.staging_token)
+            # A scored file holds what the scorer was asked to write; it is
+            # published as that whole file.
+            columns = NodeSnapshotColumns.of(schema_cols if prewritten else ordered)
         context = self.execution_context
         try:
-            with (
-                context.stage("lazy_snapshot_capture", node_id=node_id)
-                if context is not None
-                else contextlib.nullcontext()
-            ):
-                bounded_sink(sink_lf, artifact.data_path, fast_checkpoint=True)
+            if not prewritten:
+                with (
+                    context.stage("lazy_snapshot_capture", node_id=node_id)
+                    if context is not None
+                    else contextlib.nullcontext()
+                ):
+                    bounded_sink(sink_lf, artifact.data_path, fast_checkpoint=True)
             _snapshot_fault_point("snapshot_capture_before_publish", node_id)
             if self._inputs_changed():
                 # Computed from inputs the plan's signatures do not describe:

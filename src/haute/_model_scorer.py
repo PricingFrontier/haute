@@ -12,6 +12,7 @@ import threading
 from collections.abc import Hashable, Iterable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
 import numpy as np
@@ -435,6 +436,43 @@ def _cleanup_registered_temp_files(paths: Iterable[str]) -> None:
             os.unlink(path)
         with _temp_cleanup_lock:
             _temp_files_to_clean.discard(path)
+
+
+class ScoreOutputDestination:
+    """Where the next batch-scored output is written instead of a temporary file.
+
+    Single use: the first batch score in its scope writes to :attr:`path` and
+    sets :attr:`used`; the file then belongs to whoever set the destination,
+    so it is never registered for temporary-file cleanup.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.used = False
+
+
+_score_output_destination: contextvars.ContextVar[ScoreOutputDestination | None] = (
+    contextvars.ContextVar("haute_model_score_output_destination", default=None)
+)
+
+
+@contextmanager
+def model_score_output_destination(path: Path) -> Iterator[ScoreOutputDestination]:
+    """Write the next batch-scored output within this scope to *path*."""
+    destination = ScoreOutputDestination(path)
+    token = _score_output_destination.set(destination)
+    try:
+        yield destination
+    finally:
+        _score_output_destination.reset(token)
+
+
+def _claim_score_output_destination() -> Path | None:
+    destination = _score_output_destination.get()
+    if destination is None or destination.used:
+        return None
+    destination.used = True
+    return destination.path
 
 
 @contextmanager
@@ -1075,6 +1113,8 @@ def _score_batched_unified(
         offset_column=offset_column,
     )
     input_path = _sink_to_temp(lf, columns=sink_columns)
+    destination = _claim_score_output_destination()
+    scored_to_destination = destination is not None
     try:
         scored_path = _batch_score_to_parquet(
             carrier,
@@ -1084,14 +1124,18 @@ def _score_batched_unified(
             task,
             write_projection=write_projection,
             categorical_levels=categorical_levels,
+            out_path=None if destination is None else str(destination),
         )
     finally:
         with suppress(FileNotFoundError):
             os.unlink(input_path)
-    _register_temp_cleanup(scored_path)
-    scoped_temp_paths = temporary_paths if temporary_paths is not None else _temp_file_scope.get()
-    if scoped_temp_paths is not None:
-        scoped_temp_paths.append(scored_path)
+    if not scored_to_destination:
+        _register_temp_cleanup(scored_path)
+        scoped_temp_paths = (
+            temporary_paths if temporary_paths is not None else _temp_file_scope.get()
+        )
+        if scoped_temp_paths is not None:
+            scoped_temp_paths.append(scored_path)
     return pl.scan_parquet(scored_path)
 
 
@@ -1818,8 +1862,12 @@ def _batch_score_to_parquet(
     *,
     write_projection: ScoreWriteProjection | None = None,
     categorical_levels: _CategoricalLevels = None,
+    out_path: str | None = None,
 ) -> str:
-    """Score a parquet file in batches, return path to scored output."""
+    """Score a parquet file in batches, return path to scored output.
+
+    The output goes to *out_path* when given, else to a new temporary file.
+    """
     import os
     import tempfile
 
@@ -1830,11 +1878,12 @@ def _batch_score_to_parquet(
         _prepare_predict_frame,
     )
 
-    fd, out_path = tempfile.mkstemp(
-        suffix=".parquet",
-        prefix="haute_score_out_",
-    )
-    os.close(fd)
+    if out_path is None:
+        fd, out_path = tempfile.mkstemp(
+            suffix=".parquet",
+            prefix="haute_score_out_",
+        )
+        os.close(fd)
 
     writer = None
     reader = None

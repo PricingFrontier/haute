@@ -131,7 +131,10 @@
   `_feature_validation_last_entry` (single-slot fast path, see Control
   flow); `_scenario_ctx: ContextVar[str]` (`"live"` vs `"batch"`, set by
   `Pipeline.run()`/`Pipeline.score()`); `_temp_files_to_clean` /
-  `_temp_file_scope` (batch-scorer temp-parquet cleanup bookkeeping).
+  `_temp_file_scope` (batch-scorer temp-parquet cleanup bookkeeping);
+  `_score_output_destination: ContextVar[ScoreOutputDestination | None]`
+  (set by `model_score_output_destination(path)`: the next batch score in
+  that scope writes its output to `path` and marks the destination used).
 
 ## Candidate-run contract
 
@@ -353,7 +356,13 @@ no reduced-arity path for earlier delegate signatures.
   pruned) input to a temp parquet, delegates to
   `_batch_score_to_parquet` (chunked prediction, see below), unlinks the
   input temp file, registers the output temp file for process-exit
-  cleanup, and returns a lazy scan of it.
+  cleanup, and returns a lazy scan of it. Inside a
+  `model_score_output_destination` scope the output is written to that
+  destination instead of a temporary file and is never registered for
+  cleanup: the planned lazy engine uses this to make a batch Model Score's
+  scored file the staged artifact of its shared-snapshot capture, so the
+  scored rows are written once (see the
+  [execution engine](../execution-engine/low-level.md)).
 
 ### Batched chunk loop — `_batch_score_to_parquet` (`_model_scorer.py`)
 

@@ -588,7 +588,12 @@ capture point is captured only after that check.
 
 Every capture point is written through `bounded_sink` (`fast_checkpoint=True`) into a
 staging directory under the plan's token: all columns for an all-column demand, otherwise
-the negotiated columns present in the schema, carrier-preserving. A negotiated column the
+the negotiated columns present in the schema, carrier-preserving. A batch Model Score
+(any scenario but `live`) whose output is exactly its scored file — no post-processing
+`code`, `selected_columns`, or `column_renames` — is not sunk at all: its capture is staged
+before the node is built, the node is built inside `model_score_output_destination`, and the
+scorer's file is published as the generation, holding the columns the scorer wrote. A
+Model Score with its own post-processing is sunk like any other capture. A negotiated column the
 node does not produce is logged (`snapshot_capture_column_unavailable`) and dropped; a
 missing column the run itself reads raises `ContractMismatchError`. After the
 `snapshot_capture_before_publish` fault point and a second runtime-input check, the capture
@@ -1893,7 +1898,10 @@ present a structural or schema result as execution evidence.
   computed once and read back from its staged artifact; both paused-run diamonds (a
   seeded `A` refreshed, and an uncaptured random `A`) keep run 1 on its own data; recorded
   dependency closures include a seed's own dependencies; an empty demand keeps its row
-  count seeded and cold; a two-input modelling node never builds its unselected branch; a
+  count seeded and cold; a batch Model Score publishes its scored file without a second
+  write, a re-run seeding it makes no scoring calls, one with post-processing code or a
+  rename is sunk after it, and a quota rejection keeps the scored file; a two-input
+  modelling node never builds its unselected branch; a
   pass-through returns the selected API-input port; best-effort and strict missing
   columns; a corrupt latest generation fails the run; inputs changed before collection
   and before publication; the metrics payload; and plan exclusivity and matching.
