@@ -19,6 +19,7 @@ from haute.errors import (
     RatingExtremaUndefinedError,
     RatingFactorDtypeContractError,
     RatingFactorMissingError,
+    SeedPlanExpiredError,
     SnapshotPlanInputsChangedError,
     TraceCorrelationUnsupportedError,
     is_public_contract_error,
@@ -32,6 +33,9 @@ CONTRACT_ERROR_TERMINAL_REASON: Literal["contract_error"] = "contract_error"
 MEMORY_LIMITED_TERMINAL_REASON: Literal["memory_limited"] = "memory_limited"
 MEMORY_LIMITED_HTTP_STATUS = 507
 MEMORY_LIMITED_ERROR_CODE = "memory_limit"
+# A trace whose preview's seed plan expired conflicts with data that moved
+# underneath it: the preview is refreshed, not the request corrected.
+SEED_PLAN_EXPIRED_HTTP_STATUS = 409
 
 # ``except`` accepts a tuple stored in a variable.  Exporting one canonical
 # tuple prevents synchronous and background adapters from drifting apart.
@@ -49,6 +53,7 @@ PUBLIC_CONTRACT_ERROR_TYPES: tuple[type[HauteError], ...] = (
     OutputNestingKeyError,
     InputPreparationError,
     SnapshotPlanInputsChangedError,
+    SeedPlanExpiredError,
 )
 
 
@@ -82,12 +87,15 @@ def contract_error_http_exception(exc: BaseException) -> HTTPException:
     """Map a public contract error to its synchronous-route response."""
 
     payload = contract_error_payload(exc)
-    status_code = (
-        MEMORY_LIMITED_HTTP_STATUS
-        if _is_memory_limited_contract_error(exc)
-        else CONTRACT_ERROR_HTTP_STATUS
-    )
-    return HTTPException(status_code=status_code, detail=payload)
+    return HTTPException(status_code=_contract_error_http_status(exc), detail=payload)
+
+
+def _contract_error_http_status(exc: BaseException) -> int:
+    if _is_memory_limited_contract_error(exc):
+        return MEMORY_LIMITED_HTTP_STATUS
+    if isinstance(exc, SeedPlanExpiredError):
+        return SEED_PLAN_EXPIRED_HTTP_STATUS
+    return CONTRACT_ERROR_HTTP_STATUS
 
 
 def contract_error_job_fields(exc: BaseException) -> dict[str, Any]:
@@ -105,5 +113,5 @@ def contract_error_job_fields(exc: BaseException) -> dict[str, Any]:
         "error": str(exc),
         "error_detail": payload,
         "error_code": payload["error_code"],
-        "http_status_code": CONTRACT_ERROR_HTTP_STATUS,
+        "http_status_code": _contract_error_http_status(exc),
     }

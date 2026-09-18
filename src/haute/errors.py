@@ -472,6 +472,27 @@ class SnapshotPlanInputsChangedError(ExecutionError):
         )
 
 
+class SeedPlanExpiredError(ExecutionError):
+    """Raised when a trace's seed plan names data that is no longer there.
+
+    A trace reads exactly the snapshot generations its preview read. When one
+    has been retired, or its point no longer has the identity the trace's graph
+    produces there, the preview it explains is out of date and must be run
+    again before its rows can be traced.
+    """
+
+    error_code = "preview_seed_plan_expired"
+    public_fields = ("node_id",)
+
+    def __init__(self, *, node_id: str) -> None:
+        self.node_id = node_id
+        super().__init__(
+            "The cached data this preview was computed from has changed; "
+            "refresh the preview and trace the row again.",
+            node_id=node_id,
+        )
+
+
 class ContractMismatchError(HauteError):
     """Raised when a declared column contract does not match observed columns.
 

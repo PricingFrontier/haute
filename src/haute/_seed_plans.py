@@ -38,7 +38,11 @@ from typing import TYPE_CHECKING, Literal
 import polars as pl
 
 import haute.projection as projection_planner
-from haute._builders import PASS_THROUGH_NODE_TYPES, pass_through_selected_edge
+from haute._builders import (
+    PASS_THROUGH_NODE_TYPES,
+    pass_through_selected_edge,
+    resolve_instance_nodes,
+)
 from haute._cache import GraphFingerprintMemo, canonical_json, graph_fingerprint
 from haute._data_points import DataPoint, DataPointResolver, point_kind
 from haute._execution_context import ExecutionContext, ExecutionProfile
@@ -47,6 +51,7 @@ from haute._node_snapshots import (
     BOUNDED_SEMANTICS_CLASS,
     NodeSnapshotArtifact,
     NodeSnapshotColumns,
+    NodeSnapshotGeneration,
     NodeSnapshotPublication,
     NodeSnapshotStore,
     snapshot_read_classes,
@@ -67,6 +72,7 @@ logger = get_logger(component="seed_plans")
 
 SEED_PLAN_FINGERPRINT_VERSION = 1
 _LEASE_ATTEMPTS = 3
+_PREVIEW_PREPARATION_ROUNDS = 3
 
 AllExcept = projection_planner.AllExcept
 Demand = frozenset[str] | None
@@ -306,14 +312,17 @@ class _Resolver:
     def __init__(self, request: SeedPlanRequest, store: NodeSnapshotStore) -> None:
         from haute._execute_lazy import PreparedExecutionRequest, _prepare_execution
 
+        # A preview request is only ever built for a lineage that
+        # ``preview_lineage_admitted`` accepted.
         if BOUNDED_SEMANTICS_CLASS not in snapshot_read_classes(request.profile) or (
-            snapshot_write_class(request.profile) != BOUNDED_SEMANTICS_CLASS
+            snapshot_write_class(request.profile, preview_admitted=True) != BOUNDED_SEMANTICS_CLASS
         ):
             raise ValueError(
                 f"Execution profile {ExecutionProfile(request.profile).value!r} "
                 "neither reads nor writes shared snapshots"
             )
         self.request = request
+        self.preview = ExecutionProfile(request.profile) == ExecutionProfile.PREVIEW_EAGER
         self.store = store
         self.points = DataPointResolver(request.graph, source=request.source, store=store)
         self.prepared: PreparedExecution = _prepare_execution(
@@ -345,9 +354,14 @@ class _Resolver:
             )
             if edge is not None:
                 self.pass_through_edges[node_id] = edge
+        # Instance nodes run their original's config; what a node does is read
+        # from that, while projection stays on the graph the engine plans.
+        self.effective_node_map: Mapping[str, GraphNode] = resolve_instance_nodes(
+            self.prepared.graph
+        ).node_map
         self.materialising = projection_planner.materialising_operators_by_node(
             self.order,
-            plan.node_map,
+            self.effective_node_map,
             relevant_edges=plan.relevant_edges,
             submodels=plan.submodels,
         )
@@ -510,6 +524,16 @@ class _Resolver:
                 or not self.is_node_output(node_id)
             ):
                 continue
+            if self.preview:
+                # A preview's row limit already stops every other read early;
+                # only a join or a materialising operation reads its full input.
+                edges = self.effective_edges(node_id)
+                inputs = {(edge.source, edge.sourceHandle) for edge in edges}
+                if node_id in self.materialising:
+                    captures[node_id] = CaptureKind.MATERIALISING
+                elif len(inputs) > 1:
+                    captures[node_id] = CaptureKind.STRUCTURAL
+                continue
             node_parents = parents[node_id]
             is_source = not self.prepared.incoming_edges_by_target.get(node_id)
             feeds_join = any(len(parents.get(child, ())) > 1 for child in children[node_id])
@@ -663,6 +687,45 @@ class _Resolver:
             ),
             fingerprint=seed_plan_fingerprint(state.seeds),
         )
+
+
+class _ListedResolver(_Resolver):
+    """Resolution over the generations a preview listed, for the trace that explains it.
+
+    A listed generation is seeded where it covers the demand, whether or not it
+    is still its slot's latest; nothing is captured. Ancestry agreement is the
+    base resolver's, so a listed seed built from a point the trace recomputes
+    is dropped with it.
+    """
+
+    def __init__(self, request: SeedPlanRequest, store: NodeSnapshotStore) -> None:
+        super().__init__(request, store)
+        self.listed: dict[str, NodeSnapshotGeneration] = {}
+
+    def seed_candidate(
+        self,
+        node_id: str,
+        demand: Demand,
+        *,
+        dropped: set[str],
+    ) -> SeedDecision | None:
+        described = self.listed.get(node_id)
+        if described is None or node_id in dropped:
+            return None
+        wanted = demand_columns(demand)
+        if not described.columns.covers(wanted):
+            return None
+        return SeedDecision(
+            node_id=node_id,
+            identity=described.identity,
+            generation_id=described.generation_id,
+            columns=described.columns,
+            demand=wanted,
+            dependencies=dict(described.dependencies),
+        )
+
+    def capture_points(self, executed: set[str]) -> dict[str, CaptureKind]:
+        return {}
 
 
 def resolve_seed_plan(request: SeedPlanRequest, *, store: NodeSnapshotStore) -> SeedPlanDecision:
@@ -893,26 +956,28 @@ def open_seed_plan(
     them. Only inputs the run can read are prepared: a branch reached solely
     through an unselected pass-through input is not. *deadline* is the run's
     monotonic deadline, which bounds that preparation.
+
+    A preview prepares less: see :func:`_open_preview_seed_plan`.
     """
     from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 
     if store is None:
-        from haute._sandbox import _get_project_root
-
-        store = NodeSnapshotStore(_get_project_root())
+        store = _project_store()
     resolver = _Resolver(request, store)
-    reachable: set[str] = set()
-    stack = [request.target_node_id, *resolver.consumed]
-    while stack:
-        node_id = stack.pop()
-        if node_id in reachable:
-            continue
-        reachable.add(node_id)
-        stack.extend(edge.source for edge in resolver.effective_edges(node_id))
-    graph_plan = resolver.prepared.graph_plan
+    reachable = _readable_node_ids(resolver)
+    if resolver.preview:
+        return _open_preview_seed_plan(
+            request,
+            resolver,
+            reachable,
+            store=store,
+            execution_context=execution_context,
+            staging_token=staging_token,
+            deadline=deadline,
+        )
     prepare_input_snapshots(
         [node_id for node_id in resolver.order if node_id in reachable],
-        graph_plan.node_map,
+        resolver.effective_node_map,
         profile=ExecutionProfile(request.profile),
         execution_context=execution_context,
         base_dir=preparation_base_dir(resolver.prepared.graph),
@@ -920,3 +985,277 @@ def open_seed_plan(
         deadline=deadline,
     )
     return open_resolved_seed_plan(request, store=store, staging_token=staging_token)
+
+
+def _project_store() -> NodeSnapshotStore:
+    from haute._sandbox import _get_project_root
+
+    return NodeSnapshotStore(_get_project_root())
+
+
+def _readable_node_ids(resolver: _Resolver) -> set[str]:
+    """Every node the request can read: its lineage along effective edges."""
+    reachable: set[str] = set()
+    stack = [resolver.request.target_node_id, *resolver.consumed]
+    while stack:
+        node_id = stack.pop()
+        if node_id in reachable:
+            continue
+        reachable.add(node_id)
+        stack.extend(edge.source for edge in resolver.effective_edges(node_id))
+    return reachable
+
+
+def _snapshot_backed_input_ids(resolver: _Resolver, readable: set[str]) -> list[str]:
+    """The snapshot-backed Data Inputs among *readable*, in execution order."""
+    from haute._input_preparation import _snapshot_backed_data_inputs
+
+    return [
+        node_id
+        for node_id, _config in _snapshot_backed_data_inputs(
+            [node_id for node_id in resolver.order if node_id in readable],
+            resolver.effective_node_map,
+        )
+    ]
+
+
+def _open_preview_seed_plan(
+    request: SeedPlanRequest,
+    resolver: _Resolver,
+    readable: set[str],
+    *,
+    store: NodeSnapshotStore,
+    execution_context: ExecutionContext | None,
+    staging_token: str | None,
+    deadline: float | None,
+) -> SeedPlan:
+    """Resolve first, then prepare only the inputs the preview's execution reads.
+
+    A node's signature signs each snapshot-backed input's generation pointer
+    and current source signature, so a stale, missing, or cleared input already
+    fails every seed below it before anything is prepared. Preparing an input
+    can move its pointer, which changes the signatures below it, so the plan is
+    resolved again after every preparation; after ``_PREVIEW_PREPARATION_ROUNDS``
+    rounds every readable input is prepared, and the next resolution cannot
+    read an unprepared one.
+    """
+    from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
+
+    snapshot_backed = _snapshot_backed_input_ids(resolver, readable)
+    token = staging_token if staging_token is not None else new_staging_token()
+    prepared: set[str] = set()
+    rounds = 0
+    while True:
+        plan = open_resolved_seed_plan(request, store=store, staging_token=token)
+        executed = plan.decision.executed_node_ids
+        unprepared = [
+            node_id
+            for node_id in snapshot_backed
+            if node_id in executed and node_id not in prepared
+        ]
+        if not unprepared:
+            return plan
+        plan.close()
+        rounds += 1
+        if rounds > _PREVIEW_PREPARATION_ROUNDS:
+            unprepared = [node_id for node_id in snapshot_backed if node_id not in prepared]
+        logger.info("preview_seed_plan_prepares_inputs", node_ids=unprepared, round=rounds)
+        prepare_input_snapshots(
+            unprepared,
+            resolver.effective_node_map,
+            profile=ExecutionProfile(request.profile),
+            execution_context=execution_context,
+            base_dir=preparation_base_dir(resolver.prepared.graph),
+            schema_only=False,
+            deadline=deadline,
+        )
+        prepared.update(unprepared)
+
+
+# ---------------------------------------------------------------------------
+# Previews
+# ---------------------------------------------------------------------------
+
+
+def preview_lineage_admitted(graph: PipelineGraph, target_node_id: str, *, source: str) -> bool:
+    """Whether a preview of *target_node_id* may read and write shared snapshots.
+
+    Decided per source of the target's lineage, before anything is prepared.
+    A Data Input executes from a Parquet scan or from its prepared snapshot, and
+    a structured (JSON, NDJSON, XML) API Input from its Parquet cache or a
+    direct shred of its file, exactly as a bounded run reads them; an API Input
+    reading a flat file is admitted when a schema-only bounded read of that file
+    succeeds (for a CSV, its header, which must declare its dtypes).
+    """
+    from haute._execute_lazy import PreparedExecutionRequest, _prepare_execution
+
+    canonical = _canonical_graph(graph)
+    prepared = _prepare_execution(
+        PreparedExecutionRequest(
+            graph=canonical,
+            target_node_id=target_node_id,
+            source=source,
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        )
+    )
+    node_map = prepared.graph_plan.node_map
+    return all(
+        _flat_file_api_input_is_bounded(node_map[node_id].data.config)
+        for node_id in prepared.graph_plan.order
+        if node_map[node_id].data.nodeType == NodeType.API_INPUT
+    )
+
+
+def _flat_file_api_input_is_bounded(config: Mapping[str, object]) -> bool:
+    """A schema-only bounded read of a flat-file API Input's file.
+
+    Only a bounded refusal decides admission. Any other failure — a missing
+    file, a bad path — is the preview's own read's to report at the node, so
+    the lineage is simply not admitted and the preview runs exactly as before.
+    """
+    from haute._api_input_schema import is_json_api_input_path
+    from haute._builders import _configured_pipeline_dir
+    from haute._node_apply import resolve_api_input_from_config
+    from haute.errors import BoundedMemoryUnsupportedError, HauteError
+
+    path = config.get("path")
+    if isinstance(path, str) and is_json_api_input_path(path):
+        return True
+    try:
+        frame = resolve_api_input_from_config(
+            dict(config),
+            base_dir=_configured_pipeline_dir(),
+            profile=ExecutionProfile.LAZY_SINK.value,
+        )
+        if isinstance(frame, dict):
+            for port_frame in frame.values():
+                port_frame.collect_schema()
+        else:
+            frame.collect_schema()
+    except BoundedMemoryUnsupportedError:
+        return False
+    except (OSError, ValueError, pl.exceptions.PolarsError, HauteError) as exc:
+        logger.info(
+            "preview_admission_probe_failed",
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return False
+    return True
+
+
+def preview_input_node_ids(
+    graph: PipelineGraph,
+    target_node_id: str,
+    *,
+    source: str,
+    required_columns_by_node: Mapping[str, Iterable[str] | AllExcept] | None = None,
+    store: NodeSnapshotStore | None = None,
+) -> tuple[str, ...]:
+    """The inputs a preview's execution would read, for the browser to prepare.
+
+    Snapshot-backed Data Inputs and structured API Inputs, in execution order.
+    For an admitted lineage these are the ones the preview's first resolution
+    executes, read without preparing or leasing anything; for any other
+    lineage, every one the target can read. The answer is advisory: if seeds
+    move before the preview runs, the preview prepares what it then reads.
+    """
+    from haute._api_input_schema import is_json_api_input_path
+
+    request = SeedPlanRequest(
+        graph=graph,
+        target_node_id=target_node_id,
+        source=source,
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        required_columns_by_node=required_columns_by_node,
+    )
+    resolver = _Resolver(request, store if store is not None else _project_store())
+    readable = _readable_node_ids(resolver)
+    snapshot_backed = set(_snapshot_backed_input_ids(resolver, readable))
+    node_map = resolver.effective_node_map
+    candidates: list[str] = []
+    for node_id in resolver.order:
+        if node_id not in readable:
+            continue
+        config = node_map[node_id].data.config
+        path = config.get("path")
+        structured = (
+            node_map[node_id].data.nodeType == NodeType.API_INPUT
+            and isinstance(path, str)
+            and is_json_api_input_path(path)
+        )
+        if node_id in snapshot_backed or structured:
+            candidates.append(node_id)
+    if not preview_lineage_admitted(graph, target_node_id, source=source):
+        return tuple(candidates)
+    executed = resolver.resolve().executed_node_ids
+    return tuple(node_id for node_id in candidates if node_id in executed)
+
+
+@dataclass(frozen=True, slots=True)
+class ListedSeed:
+    """One generation a preview read, as the trace that explains it names it."""
+
+    node_id: str
+    identity_digest: str
+    generation_id: str
+
+
+def open_listed_seed_plan(
+    request: SeedPlanRequest,
+    listed: Iterable[ListedSeed],
+    *,
+    store: NodeSnapshotStore | None = None,
+    staging_token: str | None = None,
+) -> SeedPlan:
+    """Lease the generations a preview listed and seed the trace from them.
+
+    Every listed generation is checked and leased first: a point no longer in
+    the target's lineage, an identity the request's graph no longer produces
+    there, or a generation that has been retired raises
+    :class:`~haute.errors.SeedPlanExpiredError`, while corruption and any other
+    storage failure propagate as the store's error. Only then is the plan
+    resolved: a listed generation that does not cover the request's demand is
+    not seeded, and a listed seed built from a point the request recomputes is
+    dropped with it. The plan captures nothing. Every listed lease is held
+    until the plan closes.
+    """
+    from haute.errors import SeedPlanExpiredError
+
+    if store is None:
+        store = _project_store()
+    resolver = _ListedResolver(request, store)
+    leases = contextlib.ExitStack()
+    try:
+        generations: dict[str, SourceCacheGeneration] = {}
+        for entry in listed:
+            node_id = entry.node_id
+            if node_id in resolver.listed:
+                raise ValueError(f"The seed plan lists node {node_id!r} twice")
+            if node_id not in resolver.order or not resolver.is_node_output(node_id):
+                raise SeedPlanExpiredError(node_id=node_id)
+            identity = resolver.identity(node_id)
+            if identity.digest != entry.identity_digest:
+                raise SeedPlanExpiredError(node_id=node_id)
+            try:
+                generation = leases.enter_context(
+                    store.lease_generation(identity, entry.generation_id)
+                )
+            except SourceCacheGenerationMissingError:
+                raise SeedPlanExpiredError(node_id=node_id) from None
+            resolver.listed[node_id] = store.describe_generation(identity, generation)
+            generations[identity.digest] = generation
+        decision = resolver.resolve()
+        plan = SeedPlan(
+            decision=decision,
+            store=store,
+            staging_token=staging_token if staging_token is not None else new_staging_token(),
+            owns_staging=True,
+        )
+        for seed in decision.seeds.values():
+            plan._generations[seed.identity.digest] = generations[seed.identity.digest]
+        plan._stack.callback(leases.pop_all().close)
+    except BaseException:
+        leases.close()
+        raise
+    return plan

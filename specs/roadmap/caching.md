@@ -166,8 +166,9 @@ present tense, and this contract is deleted with the package.
   XML) is admitted (its per-port Parquet cache or a direct shred, the same frames either way); a
   flat-file API Input is admitted when `read_data_source({..., "sourceType": "flat_file"},
   profile=LAZY_SINK)` followed by `collect_schema()` succeeds, which for a CSV reads its header.
-  `BoundedMemoryUnsupportedError` from that probe means not admitted; any other error
-  propagates.
+  `BoundedMemoryUnsupportedError` from that probe means not admitted; any other failure of the
+  probe also means not admitted and is left to the preview's own read, which reports it at
+  the node as today.
 - **Preview capture rule.** For a `PREVIEW_EAGER` request, `_Resolver.capture_points` makes an
   executed, non-pass-through `node_output` node a capture point when it has more than one
   effective parent (`STRUCTURAL`) or calls a materialising operation (`MATERIALISING`). Being
@@ -241,8 +242,8 @@ present tense, and this contract is deleted with the package.
 
 - Planner: preview capture points are joins and materialisations only, including a join or
   group-by target and a join feeding a join; a preview may seed its target; an API Input over an
-  undeclared-dtype CSV is not admitted while a Data Input over one is; a non-bounded probe error
-  propagates; a preview prepares only the inputs its execution reads; a stale input drops the
+  undeclared-dtype CSV is not admitted while a Data Input over one is; a failing probe leaves
+  the lineage unadmitted without raising; a preview prepares only the inputs its execution reads; a stale input drops the
   seeds below it before preparation; a moved pointer re-resolves; exhausted rounds prepare the
   whole lineage once; a listed plan leases exactly its generations, expires on a retired
   generation or changed signature, propagates corruption, skips a generation that does not cover

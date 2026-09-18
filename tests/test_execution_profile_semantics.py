@@ -552,8 +552,8 @@ def test_a_preview_of_these_is_the_bounded_data_in_order(fixture_name: str, proj
     assert preview.equals(bounded), f"{fixture_name} preview is not the bounded data"
 
 
-def test_the_preview_shares_no_snapshot_with_a_bounded_execution_yet() -> None:
-    """Today's mapping, and what has to happen before it changes.
+def test_an_admitted_preview_shares_the_bounded_class() -> None:
+    """The mapping, and the measurement it was decided against.
 
     Every bounded profile above agrees with every other, exactly, including row
     order, and repeats itself at the sink. The interactive preview agrees on
@@ -563,25 +563,30 @@ def test_the_preview_shares_no_snapshot_with_a_bounded_execution_yet() -> None:
     against a bounded order of `q1 q2 q3 q4 q5` every time.
 
     That is the measurement, and it does not settle the policy. Rows carry the
-    meaning in this domain and their order does not, so the decision is that
-    row order is not part of the snapshot contract and a preview's captures
-    will be admitted to the `bounded` class, with nothing gated on which
-    execution wrote a generation: an operation that reads row position is
+    meaning in this domain and their order does not, so row order is not part
+    of the snapshot contract: an admitted preview's captures are written into
+    the `bounded` class and runs seed from them, with nothing gated on which
+    execution wrote a generation. An operation that reads row position is
     written against an order the pipeline established with a `sort`, which a
-    seed cannot disturb. `PREVIEW_SHARES_BOUNDED_SEMANTICS` is therefore
-    false only until CACHE-S09 implements preview seeding and capture — this
-    test pins the mapping as it stands, so flipping it is a deliberate act with
-    that package rather than an accident.
+    seed cannot disturb. A preview whose lineage is not admitted never asks the
+    store for a class at all.
     """
     from haute._node_snapshots import (
+        BOUNDED_SEMANTICS_CLASS,
         PREVIEW_SHARES_BOUNDED_SEMANTICS,
         snapshot_read_classes,
         snapshot_write_class,
     )
 
-    assert PREVIEW_SHARES_BOUNDED_SEMANTICS is False
-    assert snapshot_write_class(ExecutionProfile.PREVIEW_EAGER, preview_admitted=True) is None
-    assert snapshot_read_classes(ExecutionProfile.PREVIEW_EAGER) == frozenset()
+    assert PREVIEW_SHARES_BOUNDED_SEMANTICS is True
+    assert (
+        snapshot_write_class(ExecutionProfile.PREVIEW_EAGER, preview_admitted=True)
+        == BOUNDED_SEMANTICS_CLASS
+    )
+    assert snapshot_write_class(ExecutionProfile.PREVIEW_EAGER) is None
+    assert snapshot_read_classes(ExecutionProfile.PREVIEW_EAGER) == frozenset(
+        {BOUNDED_SEMANTICS_CLASS}
+    )
 
 
 @pytest.mark.parametrize("row_limit", [1, 3, 500])

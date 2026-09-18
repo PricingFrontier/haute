@@ -265,9 +265,9 @@ delegates every non-`node_output` identity to `SourceCacheStore` unchanged.
   `bounded` for every bounded profile (`TRAINING_PREP`, `OPTIMISER_SETUP`,
   `EXPLORE_ANALYSIS`, `AUTO_RANGE`, `LAZY_SINK`, `CHUNKED_MAP_REDUCE`, `NODE_SNAPSHOT`) and
   `None` for deploy profiles; `snapshot_read_classes(profile)` returns `{bounded}` for the
-  same profiles. `PREVIEW_EAGER` reads and writes `bounded` only when
-  `PREVIEW_SHARES_BOUNDED_SEMANTICS` is true; it is false, and the execution-profile
-  semantics proof (`tests/test_execution_profile_semantics.py`) is why. Every bounded
+  same profiles. `PREVIEW_EAGER` reads `bounded`, and writes it when `preview_admitted`,
+  because `PREVIEW_SHARES_BOUNDED_SEMANTICS` is true; the execution-profile semantics proof
+  (`tests/test_execution_profile_semantics.py`) is what that was decided against. Every bounded
   profile materialises the same node identically — schema, values and row order — over a
   direct Parquet input, an input snapshot, an `apiInput` port served from its table cache,
   a declared-dtype CSV, a transform, a join, an aggregation and a Model Score node, under a
@@ -285,10 +285,8 @@ delegates every non-`node_output` identity to `SourceCacheStore` unchanged.
 
   That is the measurement. The policy over it is that row order is not part of the snapshot
   contract: rows carry the meaning here and their order does not, so a preview's captures
-  are admitted to the `bounded` class and a run may seed from them (CACHE-S09), with nothing
-  gated on which execution wrote a generation. `PREVIEW_SHARES_BOUNDED_SEMANTICS`
-  stays false until that package implements preview seeding and capture; it is a switch
-  waiting on its implementation, not a verdict against it.
+  are admitted to the `bounded` class and a run may seed from them, with nothing gated on
+  which execution wrote a generation.
 
   A capture must still be *sunk* rather than published from collected batches, whatever
   profile performed it, so that a generation's contents are the ones its writer computed.

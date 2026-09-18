@@ -87,9 +87,10 @@ def test_write_and_read_class_mappings() -> None:
     for profile in (ExecutionProfile.DEPLOY_LIVE, ExecutionProfile.DEPLOY_BATCH):
         assert snapshot_write_class(profile) is None
         assert snapshot_read_classes(profile) == frozenset()
-    # Until the preview semantics proof passes, preview neither writes nor reads.
-    assert snapshot_write_class(ExecutionProfile.PREVIEW_EAGER, preview_admitted=True) is None
-    assert snapshot_read_classes(ExecutionProfile.PREVIEW_EAGER) == frozenset()
+    # An admitted preview writes the bounded class; every preview may read it.
+    assert snapshot_write_class(ExecutionProfile.PREVIEW_EAGER, preview_admitted=True) == "bounded"
+    assert snapshot_write_class(ExecutionProfile.PREVIEW_EAGER) is None
+    assert snapshot_read_classes(ExecutionProfile.PREVIEW_EAGER) == frozenset({"bounded"})
 
 
 def test_edit_and_revert_finds_the_earlier_signature_without_a_build(tmp_path: Path) -> None:

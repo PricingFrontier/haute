@@ -91,10 +91,11 @@ Retention = Literal["pinned", "automatic"]
 SlotState = Literal["current", "stale", "missing", "corrupt"]
 PublicationOutcome = Literal["published", "superseded"]
 
-# CACHE-S06 decides whether interactive preview outputs equal bounded outputs.
-# Until that differential proof exists, previews neither read nor write shared
-# snapshots; flipping this constant changes only the two mappings below.
-PREVIEW_SHARES_BOUNDED_SEMANTICS = False
+# CACHE-S06 measured that an interactive preview carries the same rows and
+# schema as a bounded execution but not the same row order, and row order is
+# not part of the snapshot contract. An admitted preview therefore reads and
+# writes the ``bounded`` class; this constant changes only the two mappings below.
+PREVIEW_SHARES_BOUNDED_SEMANTICS = True
 
 _BOUNDED_SNAPSHOT_PROFILES = frozenset(
     {

@@ -1789,6 +1789,10 @@ present a structural or schema result as execution evidence.
   planned execution's inputs moved between plan resolution and its sources being bound.
   Public code `snapshot_plan_inputs_changed` with `target_node_id`, adapted to
   422 / `contract_error` like every public contract error; the run is started again.
+- `SeedPlanExpiredError` (`haute.errors`, extends `ExecutionError`) — a listed seed plan
+  names a generation that is gone or a point whose identity the graph no longer produces.
+  Public code `preview_seed_plan_expired` with `node_id`, adapted to 409; the preview it
+  came from is refreshed.
 - `CycleError` (`_topo.py`, extends `HauteError`) — raised from `topo_sort_ids` on a
   cyclic graph, listing every participating node.
 - `UnknownEdgeEndpointError` (`_topo.py`, extends `HauteError`) — strict topology

@@ -800,7 +800,7 @@ later write and cleanup checks still compare against the captured identities.
 | `HTTPException` (raised directly) | path validation, node lookup, syntax checks | 400 / 403 / 404 / 409 | `raise_node_not_found`, `raise_node_type_error`, `raise_pipeline_not_found`, `raise_validation_error` centralise the structured-log + raise pattern. |
 | Any other `Exception` | route catch-alls | 500 | Route handlers generally log and return `_INTERNAL_ERROR_DETAIL`; `_RequestIdMiddleware` is a separate backstop whose fixed detail is `Internal server error`. |
 
-The synchronous public-contract adapter maps this closed set to HTTP 422 (except `InputPreparationError` with `reason_code == "memory_limited"`, which maps to 507); background jobs
+The synchronous public-contract adapter maps this closed set to HTTP 422 (except `InputPreparationError` with `reason_code == "memory_limited"`, which maps to 507, and `SeedPlanExpiredError`, which maps to 409 because the preview a trace explains must be refreshed); background jobs
 use the same stable codes and named fields under terminal `contract_error` (or `memory_limited` for that memory case):
 
 | Exception | Stable code | Named fields |
@@ -818,6 +818,7 @@ use the same stable codes and named fields under terminal `contract_error` (or `
 | `LiveSwitchScenarioError` | `live_switch_scenario_missing` | `switch`, `scenario`, `available_mappings` |
 | `OutputNestingKeyError` | `output_nesting_key_null` | `frame`, `output_path`, `key` |
 | `SnapshotPlanInputsChangedError` | `snapshot_plan_inputs_changed` | `target_node_id` |
+| `SeedPlanExpiredError` | `preview_seed_plan_expired` | `node_id` |
 
 Except for handlers that return a `JSONResponse` directly, `HTTPException` responses use
 FastAPI's `{"detail": <string-or-object>}` envelope; this includes structured 507 memory

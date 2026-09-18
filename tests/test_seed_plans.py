@@ -15,9 +15,11 @@ from haute._execution_context import ExecutionProfile
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._seed_plans import (
     CaptureKind,
+    ListedSeed,
     SeedDecision,
     SeedPlan,
     SeedPlanRequest,
+    open_listed_seed_plan,
     open_resolved_seed_plan,
     open_seed_plan,
     resolve_seed_plan,
@@ -535,10 +537,7 @@ def test_partial_candidate_becomes_widening_capture(
     assert decision.captures["C"].strict_columns == NodeSnapshotColumns.of({"a"})
 
 
-@pytest.mark.parametrize(
-    "profile",
-    [ExecutionProfile.DEPLOY_LIVE, ExecutionProfile.DEPLOY_BATCH, ExecutionProfile.PREVIEW_EAGER],
-)
+@pytest.mark.parametrize("profile", [ExecutionProfile.DEPLOY_LIVE, ExecutionProfile.DEPLOY_BATCH])
 def test_profiles_without_a_class_are_rejected(
     project: Path, store: NodeSnapshotStore, profile: ExecutionProfile
 ) -> None:
@@ -1053,3 +1052,461 @@ def test_open_seed_plan_prepares_only_readable_inputs_first(
     assert [event for event, _ in events] == ["prepare", "resolve"]
     assert events[0][1] == ["src", "A", "T"]
     assert events[1][1] == project.resolve()
+
+
+# ---------------------------------------------------------------------------
+# Previews (CACHE-S09)
+# ---------------------------------------------------------------------------
+
+
+def _preview(graph: PipelineGraph, target: str, **fields: Any) -> SeedPlanRequest:
+    return _request(graph, target, profile=ExecutionProfile.PREVIEW_EAGER, **fields)
+
+
+def _joined(project: Path) -> PipelineGraph:
+    """``src → A``; ``A + other → J → X → G → Y``, with ``G`` a group-by."""
+    return _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("other", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("A", NodeType.POLARS, _code("df = src.with_columns((pl.col('a') * 2).alias('a2'))")),
+            ("J", NodeType.POLARS, _code("df = A.join(other, on='id', how='left')")),
+            ("X", NodeType.POLARS, _code("df = J.filter(pl.col('a') > 0)")),
+            ("G", NodeType.POLARS, _code("df = X.group_by('a').agg(pl.col('d').sum())")),
+            ("Y", NodeType.POLARS, _code("df = G.with_columns(pl.lit(1).alias('one'))")),
+        ],
+        [("src", "A"), ("A", "J"), ("other", "J"), ("J", "X"), ("X", "G"), ("G", "Y")],
+    )
+
+
+def _kinds(decision: Any) -> dict[str, CaptureKind]:
+    return {node: capture.kind for node, capture in decision.captures.items()}
+
+
+def test_preview_capture_points_are_joins_and_materialisations(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    decision = resolve_seed_plan(_preview(_joined(project), "Y"), store=store)
+    # ``A`` feeds a join and ``Y`` is the consumed target: neither is captured.
+    assert _kinds(decision) == {
+        "J": CaptureKind.MATERIALISING,
+        "G": CaptureKind.MATERIALISING,
+    }
+
+    # Two inputs without a materialising operation are a structural join.
+    concat = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("other", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("H", NodeType.POLARS, _code("df = pl.concat([src, other], how='diagonal')")),
+            ("Y", NodeType.POLARS, _code("df = H.with_columns(pl.lit(1).alias('one'))")),
+        ],
+        [("src", "H"), ("other", "H"), ("H", "Y")],
+    )
+    assert _kinds(resolve_seed_plan(_preview(concat, "Y"), store=store)) == {
+        "H": CaptureKind.STRUCTURAL
+    }
+
+
+def test_preview_captures_a_join_or_group_by_target_and_a_join_feeding_a_join(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    graph = _joined(project)
+    assert _kinds(resolve_seed_plan(_preview(graph, "J"), store=store)) == {
+        "J": CaptureKind.MATERIALISING
+    }
+    assert _kinds(resolve_seed_plan(_preview(graph, "G"), store=store)) == {
+        "J": CaptureKind.MATERIALISING,
+        "G": CaptureKind.MATERIALISING,
+    }
+
+    chained = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("other", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("third", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("J1", NodeType.POLARS, _code("df = src.join(other, on='id', how='left')")),
+            ("J2", NodeType.POLARS, _code("df = J1.join(third, on='id', how='left')")),
+            ("Y", NodeType.POLARS, _code("df = J2.with_columns(pl.lit(1).alias('one'))")),
+        ],
+        [("src", "J1"), ("other", "J1"), ("J1", "J2"), ("third", "J2"), ("J2", "Y")],
+    )
+    assert _kinds(resolve_seed_plan(_preview(chained, "Y"), store=store)) == {
+        "J1": CaptureKind.MATERIALISING,
+        "J2": CaptureKind.MATERIALISING,
+    }
+
+
+def test_preview_never_captures_a_plain_fan_out_feeder_target_or_model_score(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    fan_out = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("P", NodeType.POLARS, _code("df = src.with_columns((pl.col('a') * 2).alias('a2'))")),
+            ("Q1", NodeType.POLARS, _code("df = P.select('id', 'a')")),
+            ("Q2", NodeType.POLARS, _code("df = P.select('id', 'b')")),
+            ("K", NodeType.POLARS, _code("df = Q1.join(Q2, on='id')")),
+            ("Y", NodeType.POLARS, _code("df = K.with_columns(pl.lit(1).alias('one'))")),
+        ],
+        [("src", "P"), ("P", "Q1"), ("P", "Q2"), ("Q1", "K"), ("Q2", "K"), ("K", "Y")],
+    )
+    # A bounded run captures the fan-out ``P`` and both join feeders too.
+    assert _kinds(resolve_seed_plan(_preview(fan_out, "Y"), store=store)) == {
+        "K": CaptureKind.MATERIALISING
+    }
+    assert _kinds(resolve_seed_plan(_preview(_chain(project), "C"), store=store)) == {}
+
+    scored = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("M", NodeType.MODEL_SCORE, {}),
+            ("Y", NodeType.POLARS, _code("df = M.with_columns(pl.lit(1).alias('one'))")),
+        ],
+        [("src", "M"), ("M", "Y")],
+    )
+    # Under a row limit a Model Score scores row-locally: it is no capture point.
+    assert _kinds(resolve_seed_plan(_preview(scored, "Y", source="batch"), store=store)) == {}
+
+
+def test_preview_may_seed_its_target(project: Path, store: NodeSnapshotStore) -> None:
+    graph = _joined(project)
+    j1 = _publish(store, graph, "J")
+
+    decision = resolve_seed_plan(_preview(graph, "J"), store=store)
+
+    assert {node: seed.generation_id for node, seed in decision.seeds.items()} == {"J": j1}
+    assert decision.captures == {}
+    assert decision.executed_node_ids == frozenset()
+
+
+def _csv(path: Path) -> dict[str, Any]:
+    return {"inputType": "file", "format": "csv", "path": str(path)}
+
+
+def _csv_joined(project: Path) -> PipelineGraph:
+    """Two snapshot-backed CSV inputs joined, then banded: ``p + c → J → B``."""
+    pl.DataFrame({"id": [1, 2, 3], "a": [1, 2, 3]}).write_csv(project / "policies.csv")
+    pl.DataFrame({"id": [1, 2, 3], "d": [0.1, 0.2, 0.3]}).write_csv(project / "claims.csv")
+    return _graph(
+        project,
+        [
+            ("p", NodeType.DATA_INPUT, _csv(project / "policies.csv")),
+            ("c", NodeType.DATA_INPUT, _csv(project / "claims.csv")),
+            ("J", NodeType.POLARS, _code("df = p.join(c, on='id', how='left')")),
+            ("B", NodeType.POLARS, _code("df = J.with_columns(pl.lit(1).alias('band'))")),
+        ],
+        [("p", "J"), ("c", "J"), ("J", "B")],
+    )
+
+
+def _record_preparation(monkeypatch: pytest.MonkeyPatch, project: Path) -> list[list[str]]:
+    import haute._input_preparation as input_preparation
+
+    prepared: list[list[str]] = []
+    monkeypatch.setattr(
+        input_preparation,
+        "prepare_input_snapshots",
+        lambda order, *args, **kwargs: prepared.append(list(order)),
+    )
+    monkeypatch.setattr("haute._sandbox._get_project_root", lambda: project)
+    return prepared
+
+
+def test_preview_prepares_only_inputs_its_execution_reads(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph = _csv_joined(project)
+    prepared = _record_preparation(monkeypatch, project)
+    j1 = _publish(store, graph, "J")
+
+    with open_seed_plan(_preview(graph, "B"), store=store) as plan:
+        assert {node: seed.generation_id for node, seed in plan.decision.seeds.items()} == {"J": j1}
+    # Every input sits above the seed: nothing is prepared.
+    assert prepared == []
+
+
+def test_stale_input_drops_seeds_below_it_before_preparation(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph = _csv_joined(project)
+    prepared = _record_preparation(monkeypatch, project)
+    _publish(store, graph, "J")
+    # A rewritten source changes every signature below its input.
+    pl.DataFrame({"id": [1, 2, 3, 4], "a": [1, 2, 3, 4]}).write_csv(project / "policies.csv")
+
+    with open_seed_plan(_preview(graph, "B"), store=store) as plan:
+        assert plan.decision.seeds == {}
+        assert {"p", "c", "J"} <= plan.decision.executed_node_ids
+        assert set(plan.decision.captures) == {"J"}
+    assert prepared == [["p", "c"]]
+
+
+def test_a_capture_published_while_preparing_is_seeded(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute._input_preparation as input_preparation
+
+    graph = _csv_joined(project)
+    monkeypatch.setattr("haute._sandbox._get_project_root", lambda: project)
+    prepared: list[list[str]] = []
+    published: list[str] = []
+
+    def prepare(order: list[str], *args: Any, **kwargs: Any) -> None:
+        # Meanwhile another execution captured the join under the signatures
+        # the prepared inputs produce.
+        prepared.append(list(order))
+        published.append(_publish(store, graph, "J"))
+
+    monkeypatch.setattr(input_preparation, "prepare_input_snapshots", prepare)
+
+    with open_seed_plan(_preview(graph, "B"), store=store) as plan:
+        assert {node: seed.generation_id for node, seed in plan.decision.seeds.items()} == {
+            "J": published[0]
+        }
+        assert plan.decision.executed_node_ids == frozenset({"B"})
+    assert prepared == [["p", "c"]]
+
+
+def test_a_moved_input_pointer_re_resolves_under_the_prepared_signatures(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute._input_preparation as input_preparation
+    from haute._execution_admission import create_admitted_execution_context
+    from haute._native_memory_limit import native_memory_backend_scope
+    from haute._source_cache import SourceCacheStore
+
+    graph = _csv_joined(project)
+    monkeypatch.setattr("haute._sandbox._get_project_root", lambda: project)
+    before = _identity(store, graph, "J").digest
+    real_prepare = input_preparation.prepare_input_snapshots
+    prepared: list[list[str]] = []
+
+    def prepare(order: list[str], node_map: Any, **kwargs: Any) -> Any:
+        # Really build both input snapshots: their pointers move from missing
+        # to a generation, and every signature below them moves with them.
+        prepared.append(list(order))
+        context = create_admitted_execution_context(
+            operation="seed_plan_test", profile=ExecutionProfile.LAZY_SINK
+        )
+        try:
+            with native_memory_backend_scope("rlimit"):
+                return real_prepare(
+                    order,
+                    node_map,
+                    profile=ExecutionProfile.LAZY_SINK,
+                    execution_context=context,
+                    base_dir=kwargs["base_dir"],
+                    schema_only=False,
+                    store=SourceCacheStore(project),
+                )
+        finally:
+            context.release_admission()
+
+    monkeypatch.setattr(input_preparation, "prepare_input_snapshots", prepare)
+
+    with open_seed_plan(_preview(graph, "B"), store=store) as plan:
+        after = _identity(store, graph, "J").digest
+        assert after != before
+        # The capture is written under the signature the prepared inputs give.
+        assert plan.decision.captures["J"].identity.digest == after
+    assert prepared == [["p", "c"]]
+
+
+def test_preparation_rounds_exhausted_prepare_the_whole_lineage_once(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    names = ("i1", "i2", "i3", "i4", "i5")
+    for name in names:
+        pl.DataFrame({"id": [1, 2, 3], name: [1, 2, 3]}).write_csv(project / f"{name}.csv")
+    graph = _graph(
+        project,
+        [
+            *[(name, NodeType.DATA_INPUT, _csv(project / f"{name}.csv")) for name in names],
+            ("Y", NodeType.POLARS, _code("df = pl.concat([i1, i2, i3, i4, i5], how='diagonal')")),
+        ],
+        [(name, "Y") for name in names],
+    )
+    prepared = _record_preparation(monkeypatch, project)
+    # Seeds keep moving: every resolution executes an input the last did not.
+    executed = iter([{"i1"}, {"i2"}, {"i3"}, {"i4"}, {"i1", "i5"}])
+    closed: list[frozenset[str]] = []
+
+    class _Plan:
+        def __init__(self, ids: set[str]) -> None:
+            self.decision = type("Decision", (), {"executed_node_ids": frozenset(ids)})()
+
+        def close(self) -> None:
+            closed.append(self.decision.executed_node_ids)
+
+    monkeypatch.setattr(
+        seed_plans,
+        "open_resolved_seed_plan",
+        lambda request, *, store, staging_token: _Plan(next(executed)),
+    )
+
+    plan = open_seed_plan(_preview(graph, "Y"), store=store)
+
+    # Three rounds of what each resolution read, then the rest of the lineage.
+    assert prepared == [["i1"], ["i2"], ["i3"], ["i4", "i5"]]
+    assert plan.decision.executed_node_ids == frozenset({"i1", "i5"})
+    assert len(closed) == 4
+
+
+def _listed(store: NodeSnapshotStore, graph: PipelineGraph, node_id: str, gen: str) -> ListedSeed:
+    return ListedSeed(node_id, _identity(store, graph, node_id).digest, gen)
+
+
+def test_listed_plan_leases_exactly_the_listed_generations(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    graph = _joined(project)
+    j1 = _publish(store, graph, "J")
+    _publish(store, graph, "G")  # current and covering, but not listed
+    identity = _identity(store, graph, "J")
+
+    with open_listed_seed_plan(
+        _preview(graph, "Y"), [_listed(store, graph, "J", j1)], store=store
+    ) as plan:
+        assert {node: seed.generation_id for node, seed in plan.decision.seeds.items()} == {"J": j1}
+        assert plan.decision.captures == {}
+        # A refresh after the preview leaves its listed generation readable.
+        _publish(store, graph, "J", refresh=True)
+        assert plan.seed_frame("J").collect().height == 3
+    assert not _generation_dir(store, identity, j1).exists()
+
+
+def test_empty_listed_plan_seeds_nothing(project: Path, store: NodeSnapshotStore) -> None:
+    graph = _joined(project)
+    _publish(store, graph, "J")
+
+    with open_listed_seed_plan(_preview(graph, "Y"), [], store=store) as plan:
+        assert plan.decision.seeds == {}
+        assert plan.decision.captures == {}
+
+
+def test_listed_plan_expires_on_retired_generation_or_signature_change(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    from haute.errors import SeedPlanExpiredError
+
+    graph = _joined(project)
+    j1 = _publish(store, graph, "J")
+    listed = _listed(store, graph, "J", j1)
+    _publish(store, graph, "J", refresh=True)  # retires the unleased J1
+
+    with pytest.raises(SeedPlanExpiredError) as retired:
+        open_listed_seed_plan(_preview(graph, "Y"), [listed], store=store)
+    assert retired.value.node_id == "J"
+    assert retired.value.error_code == "preview_seed_plan_expired"
+
+    j2 = store.latest_generation(_identity(store, graph, "J"))
+    assert j2 is not None
+    current = _listed(store, graph, "J", j2.generation_id)
+    edited = graph.model_copy(
+        update={
+            "nodes": [
+                _node("A", NodeType.POLARS, _code("df = src.with_columns(pl.col('a').alias('a2'))"))
+                if node.id == "A"
+                else node
+                for node in graph.nodes
+            ]
+        }
+    )
+    with pytest.raises(SeedPlanExpiredError):
+        open_listed_seed_plan(_preview(edited, "Y"), [current], store=store)
+    # A point that left the target's lineage has expired too.
+    with pytest.raises(SeedPlanExpiredError):
+        open_listed_seed_plan(_preview(graph, "A"), [current], store=store)
+
+
+def test_listed_plan_propagates_corruption(project: Path, store: NodeSnapshotStore) -> None:
+    from haute._source_cache import SourceCacheCorruptError
+
+    graph = _joined(project)
+    j1 = _publish(store, graph, "J")
+    _corrupt(_generation_dir(store, _identity(store, graph, "J"), j1) / "data.parquet")
+
+    with pytest.raises(SourceCacheCorruptError):
+        open_listed_seed_plan(
+            _preview(graph, "Y"),
+            [_listed(store, graph, "J", j1)],
+            store=NodeSnapshotStore(project),
+        )
+
+
+def test_listed_plan_skips_a_generation_that_does_not_cover_the_demand(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    graph = _joined(project)
+    narrow = _publish(store, graph, "J", ["id", "a"])
+    identity = _identity(store, graph, "J")
+
+    with open_listed_seed_plan(
+        _preview(graph, "Y"), [_listed(store, graph, "J", narrow)], store=store
+    ) as plan:
+        assert plan.decision.seeds == {}
+        assert {"src", "other", "J"} <= plan.decision.executed_node_ids
+        # Still leased: the listed generation outlives a clear while the plan is open.
+        store.clear(identity)
+        assert _generation_dir(store, identity, narrow).is_dir()
+
+
+def test_listed_plan_drops_a_seed_built_from_a_recomputed_point(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    graph = _diamond(project)
+    narrow_a = _publish(store, graph, "A", ["id"])
+    a_digest = _identity(store, graph, "A").digest
+    b1 = _publish(store, graph, "B", dependencies={a_digest: narrow_a})
+
+    with open_listed_seed_plan(
+        _preview(graph, "D"),
+        [_listed(store, graph, "A", narrow_a), _listed(store, graph, "B", b1)],
+        store=store,
+    ) as plan:
+        # ``A`` does not cover what ``C`` reads, so the trace recomputes it, and
+        # ``B1`` was built from the ``A`` the trace no longer reads.
+        assert plan.decision.seeds == {}
+        assert {"A", "B", "C"} <= plan.decision.executed_node_ids
+
+
+def test_preview_planner_reads_instance_nodes_through_their_originals(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute._seed_plans import preview_input_node_ids
+
+    graph = _csv_joined(project)
+    graph = graph.model_copy(
+        update={
+            "nodes": [
+                *graph.nodes,
+                _node("G", NodeType.POLARS, _code("df = J.group_by('a').agg(pl.col('d').sum())")),
+                _node("GI", NodeType.POLARS, {"instanceOf": "G"}),
+                _node("pi", NodeType.DATA_INPUT, {"instanceOf": "p"}),
+                _node("K", NodeType.POLARS, _code("df = pi.join(GI, on='a', how='left')")),
+            ],
+            "edges": [
+                *graph.edges,
+                GraphEdge(id="g1", source="J", target="G"),
+                GraphEdge(id="g2", source="J", target="GI"),
+                GraphEdge(id="g3", source="pi", target="K"),
+                GraphEdge(id="g4", source="GI", target="K"),
+            ],
+        }
+    )
+    prepared = _record_preparation(monkeypatch, project)
+
+    # The instance runs its original's group-by, so it is a capture point.
+    decision = resolve_seed_plan(_preview(graph, "K"), store=store)
+    assert decision.captures["GI"].kind is CaptureKind.MATERIALISING
+    # And the Data Input instance reads its original's CSV snapshot.
+    listed = preview_input_node_ids(graph, "K", source="live", store=store)
+    assert sorted(listed) == ["c", "p", "pi"]
+    open_seed_plan(_preview(graph, "K"), store=store).close()
+    assert [sorted(order) for order in prepared] == [["c", "p", "pi"]]

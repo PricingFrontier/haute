@@ -213,13 +213,15 @@ stops the worker and discards staging.
 
 ### Seed plans
 
-`src/haute/_seed_plans.py` decides, before a bounded execution builds anything, which node
-outputs it reads from shared snapshots (**seeds**) and which full-data materialisations it
-writes to them (**captures**). The lazy engine executes under the resulting plan.
+`src/haute/_seed_plans.py` decides, before a bounded execution or an admitted preview builds
+anything, which node outputs it reads from shared snapshots (**seeds**) and which full-data
+materialisations it writes to them (**captures**). The lazy engine executes under the
+resulting plan.
 
 - **Eligibility.** The profile must both read and write the `bounded` class
-  (`snapshot_read_classes`, `snapshot_write_class`); deploy and preview profiles raise
-  `ValueError`. The prepared graph is `_prepare_execution` with the request's target, source,
+  (`snapshot_read_classes`, `snapshot_write_class` with `preview_admitted=True`); deploy
+  profiles raise `ValueError`. A `PREVIEW_EAGER` request is built only for a lineage
+  `preview_lineage_admitted` accepts (below). The prepared graph is `_prepare_execution` with the request's target, source,
   demand, and profile — the one the lazy engine runs. Consumed nodes and an explicit build's
   node outside the target's lineage raise `ValueError`.
 - **Effective edges.** A pass-through node (`PASS_THROUGH_NODE_TYPES` in `_builders.py`: Data
@@ -241,9 +243,17 @@ writes to them (**captures**). The lazy engine executes under the resulting plan
   and the explicit build's node, that are: `consumed` — the producer a consumed node resolves
   to along selected edges (a port producer is never captured); `model_score` — a Model Score
   whose scenario (per-node override, else the source) is not `live`; `materialising` — a node
-  `materialising_operators_by_node` names; or `structural` — a non-source node with more than
+  `materialising_operators_by_node` names, read from instance-resolved configs so an instance
+  runs its original's operations; or `structural` — a non-source node with more than
   one effective parent, more than one executed child, or an executed child with more than one
   effective parent.
+- **Preview capture points.** A `PREVIEW_EAGER` request, whose row limit already stops every
+  other read early, captures only the executed, non-pass-through `node_output` nodes that call a
+  materialising operation (`materialising`) or have more than one distinct effective input —
+  `(source, sourceHandle)` — (`structural`). Being consumed, fanning out, feeding a join, or
+  being a Model Score (which scores row-locally under a limit) does not by itself make a node a
+  capture point; a target, fan-out, or join feeder that is itself a join or materialisation is
+  captured. A preview may seed its own target.
 - **Negotiation.** Each capture's demand is the run's demand there, the best-effort capture
   columns, and the columns of its identity's latest generation, fresh or stale, so a rebuild
   never narrows a generation. All columns plan as `AllExcept()`, and a caller's unresolved
@@ -267,7 +277,41 @@ writes to them (**captures**). The lazy engine executes under the resulting plan
   re-resolves, at most three times, then raises `SourceCacheGenerationMissingError`.
   `open_seed_plan` first runs automatic input preparation for the nodes reachable along effective
   edges — signatures sign prepared generations, and a branch reached only through an unselected
-  pass-through input is never prepared.
+  pass-through input is never prepared. Preparation reads instance-resolved configs, so a Data
+  Input instance prepares its original's snapshot.
+- **Preview preparation.** A node's signature already signs each snapshot-backed input's
+  generation pointer and current source signature, so a stale, missing, or cleared input fails
+  every seed below it before anything is prepared. For a `PREVIEW_EAGER` request
+  `open_seed_plan` therefore opens the plan first, prepares the snapshot-backed Data Inputs among
+  `decision.executed_node_ids` it has not prepared yet, and opens it again — preparation may move
+  a pointer and with it every signature below — until a plan executes no unprepared input. After
+  three rounds (`_PREVIEW_PREPARATION_ROUNDS`) it prepares every readable input, so the next plan
+  terminates the loop. It never builds a structured API-input cache.
+- **Admission.** `preview_lineage_admitted(graph, target, source=)` decides per source of the
+  target's lineage (instance nodes resolved), before any preparation: a Data Input is admitted,
+  since it executes from a Parquet scan or its prepared snapshot; so is a structured (JSON,
+  NDJSON, XML) API Input, which reads its Parquet cache or shreds its file exactly as a bounded
+  run does; a flat-file API Input is admitted when `resolve_api_input_from_config` under
+  `LAZY_SINK` followed by `collect_schema()` succeeds — for a CSV, a header read that needs
+  declared dtypes. `BoundedMemoryUnsupportedError` means not admitted. Any other failure of that
+  read (a missing file, a bad path) is logged and also means not admitted: it is the preview's
+  own read's error to report at the node, and a preview of an unadmitted lineage runs as before.
+- **Preview inputs.** `preview_input_node_ids(graph, target, source=, required_columns_by_node=)`
+  returns, in execution order, the snapshot-backed Data Inputs and structured API Inputs a preview
+  would read: for an admitted lineage those its first resolution executes, read without preparing
+  or leasing; otherwise every one the target can read. It is advisory — a preview prepares what
+  its own plan reads.
+- **Listed plans.** `open_listed_seed_plan(request, listed)` is the plan of a trace, built from
+  the `ListedSeed(node_id, identity_digest, generation_id)` entries its preview returned. Every
+  entry is checked and leased first, in order: a node no longer in the target's lineage or not a
+  `node_output` point, an identity digest the request's graph no longer produces there, or a
+  generation `lease_generation` cannot find raises `SeedPlanExpiredError`; corruption and other
+  storage errors propagate. `_ListedResolver` then resolves with the base walk, negotiation, and
+  ancestry agreement, except that a listed node's candidate is its listed generation (current or
+  not) when it covers the demand, nothing else is a candidate, and nothing is captured — so a
+  listed generation that does not cover the demand is recomputed, and so is every listed seed
+  recording it. The plan holds every listed lease until it closes; a duplicated node raises
+  `ValueError`.
 - **Ownership.** A `SeedPlan` owns the publications and request-owned artifacts the run registers
   and records the dependency closure behind each node's frame (`record_closure`,
   `dependencies_for`); `seed_frame` is a seed's leased generation projected to its demand,
@@ -418,7 +462,22 @@ cache lifecycle changes.
   recorded generations, drops across rounds, consumed side inputs, leases through refresh and
   clear, re-resolution and giving up, handoff round trip, the plan fingerprint, ownership of
   registered publications and artifacts, token staging removal, and input preparation of only
-  readable inputs before resolution.
+  readable inputs before resolution. For previews it covers the capture rule (joins and
+  materialisations only, including a join or group-by target and a join feeding a join, never a
+  plain fan-out, feeder, target, or Model Score), seeding the target, preparing nothing above a
+  seed, a rewritten source dropping the seed below it before preparation, resolving again after
+  preparing, a real input build moving the capture to the prepared signature, exhausted rounds
+  preparing the rest of the lineage once, instance nodes read through their originals (a
+  group-by instance captured, a Data Input instance listed and prepared), and listed plans leasing
+  exactly their generations through a refresh, an empty list, expiry on a retired generation, an
+  edited lineage, or a point outside it, corruption propagating, a non-covering generation being
+  recomputed yet still leased through a clear, and a listed seed built from a recomputed point
+  being dropped.
+- `tests/test_preview_admission.py` covers an API Input over an undeclared-dtype CSV not being
+  admitted and over a declared one being admitted, a Data Input over the same CSV and a
+  structured API Input being admitted, a failing probe leaving the lineage unadmitted without
+  raising, an API Input outside the lineage not deciding it, and the preview inputs of a seeded,
+  an unseeded, and an unadmitted lineage.
 
 - `tests/test_runtime_input_cache_invalidation.py` — preview/trace cache keys invalidate on runtime file/artifact edits or disappearance, preserve stat-gate semantics, and share file signatures across preview/trace.
 
