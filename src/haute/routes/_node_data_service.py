@@ -148,8 +148,8 @@ class _NodeSnapshotWorkerOutcome:
     detail: str | None = None
     payload: dict[str, Any] | None = None
     terminal_reason: str | None = None
-    # What the worker's execution seeded and captured, for the job's metrics.
-    snapshot_evidence: dict[str, Any] | None = None
+    # What the worker's execution prepared, seeded, and captured, for the job's metrics.
+    worker_evidence: dict[str, Any] | None = None
 
 
 class _WorkerReportedError(RuntimeError):
@@ -324,7 +324,7 @@ def _build_node_snapshot(
             return _NodeSnapshotWorkerOutcome(
                 generation_id=generation_id,
                 outcome=publication.outcome,
-                snapshot_evidence=execution_context.shared_snapshot_evidence(),
+                worker_evidence=execution_context.worker_evidence(),
             )
 
 
@@ -485,8 +485,8 @@ def _validated_worker_success(outcome: object) -> _NodeSnapshotWorkerOutcome:
         )
     if outcome.outcome not in ("published", "superseded"):
         raise RuntimeError("node-snapshot worker omitted its publication outcome")
-    if outcome.snapshot_evidence is not None and not isinstance(outcome.snapshot_evidence, dict):
-        raise RuntimeError("node-snapshot worker returned invalid snapshot evidence")
+    if outcome.worker_evidence is not None and not isinstance(outcome.worker_evidence, dict):
+        raise RuntimeError("node-snapshot worker returned invalid evidence")
     if (outcome.outcome == "published") != isinstance(outcome.generation_id, str):
         raise RuntimeError("node-snapshot worker outcome and generation disagree")
     return outcome
@@ -1170,8 +1170,8 @@ class NodeDataService:
                         ),
                     )
                 )
-            if outcome.snapshot_evidence is not None:
-                execution_context.adopt_shared_snapshot_evidence(outcome.snapshot_evidence)
+            if outcome.worker_evidence is not None:
+                execution_context.adopt_worker_evidence(outcome.worker_evidence)
             # The worker has terminated and published whatever it published, so
             # anything left under its staging token is waste. It goes before the
             # terminal status below, so a client that sees the outcome never

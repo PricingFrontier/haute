@@ -76,6 +76,7 @@ def _prepare(
     schema_only: bool = False,
     spawn: Any = None,
     fields: list[str] | None = None,
+    deadline: float | None = None,
 ) -> tuple[InputPreparationRecord, ...]:
     graph = _graph(config, fields or ["id"])
     return prepare_input_snapshots(
@@ -87,6 +88,7 @@ def _prepare(
         schema_only=schema_only,
         store=store,
         spawn=spawn,
+        deadline=deadline,
     )
 
 
@@ -874,6 +876,48 @@ def test_the_worker_path_receives_the_budget_and_a_required_memory_limit(
     assert captured["config"].require_memory_limit is True
     assert record.execution == "worker"
     assert record.action == "built"
+
+
+@pytest.mark.parametrize(
+    ("own_seconds", "caller_seconds", "bound_seconds"),
+    [
+        pytest.param("3600", 30.0, 30.0, id="caller-deadline-earlier"),
+        pytest.param("20", 600.0, 20.0, id="own-budget-earlier"),
+    ],
+)
+def test_a_build_is_bounded_by_the_earlier_of_its_budget_and_the_callers_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    own_seconds: str,
+    caller_seconds: float,
+    bound_seconds: float,
+) -> None:
+    store = _project(tmp_path, monkeypatch)
+    path = tmp_path / "rows.csv"
+    pl.DataFrame({"id": [1, 2, 3]}).write_csv(path)
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
+    monkeypatch.setenv("HAUTE_INPUT_PREPARATION_TIMEOUT_SECONDS", own_seconds)
+    timeouts: list[float] = []
+
+    def spawn(function: Any, request: Any, budget: Any, *, config: Any) -> Any:
+        timeouts.append(config.timeout_seconds)
+        return build_input_snapshot_worker(request, budget)
+
+    context = _context()
+    try:
+        _prepare(
+            _csv_config(path),
+            store=store,
+            base_dir=tmp_path,
+            context=context,
+            spawn=spawn,
+            deadline=time.monotonic() + caller_seconds,
+        )
+    finally:
+        context.release_admission()
+
+    [timeout] = timeouts
+    assert bound_seconds - 5 < timeout <= bound_seconds
 
 
 def test_the_in_process_path_is_taken_under_a_declared_native_cap(

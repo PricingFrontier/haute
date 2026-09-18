@@ -6,7 +6,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -2408,9 +2408,12 @@ class TestTrainingProjection:
 
         assert outcome.failure is None
         assert captured["required_columns_by_node"] == seeds
-        cache_request = captured["dataframe_cache_request"]
-        assert cache_request is not None
-        assert set(cache_request.keys_by_node) == {"train"}
+        # The run executes under a seed plan planned for the same demand.
+        plan = captured["snapshot_plan"]
+        assert plan is not None
+        assert captured["prepare_inputs"] is False
+        assert plan.decision.target_node_id == "train"
+        assert seeds["train"] <= set(plan.decision.planning_required_columns["train"])
         assert outcome.parquet_path == parquet_path
         assert Path(parquet_path).exists()
         assert outcome.feature_selection is not None
@@ -2613,11 +2616,11 @@ class TestTrainingProjection:
         assert not Path(parquet_path).exists()
 
 
-class TestExecuteAndSinkCheckpointCleanup:
-    """Verify checkpoint_dir is cleaned up even when _execute_lazy raises."""
+class TestExecuteAndSinkPlanCleanup:
+    """Verify the seed plan is closed even when _execute_lazy raises."""
 
-    def test_checkpoint_dir_cleaned_on_error(self, tmp_path):
-        """If _execute_lazy raises, checkpoint_dir must still be cleaned up."""
+    def test_seed_plan_closed_on_error(self, tmp_path):
+        """If _execute_lazy raises, the plan's leases and staging are released."""
         from haute.routes._training_preparation import (
             TrainingPreparationRequest,
             prepare_training_data,
@@ -2649,12 +2652,10 @@ class TestExecuteAndSinkCheckpointCleanup:
             project_root=str(tmp_path),
         )
 
-        created_dirs: list[Path] = []
+        plans: list[Any] = []
 
         def failing_execute_lazy(*args, **kwargs):
-            cp_dir = kwargs.get("checkpoint_dir")
-            if cp_dir is not None:
-                created_dirs.append(cp_dir)
+            plans.append(kwargs["snapshot_plan"])
             raise RuntimeError("boom")
 
         with (
@@ -2673,9 +2674,9 @@ class TestExecuteAndSinkCheckpointCleanup:
         assert outcome.failure is not None
         assert outcome.failure.terminal_reason == "error"
         assert outcome.failure.http_status_code == 500
-        # Checkpoint dir should have been created and then cleaned up
-        assert len(created_dirs) == 1
-        assert not created_dirs[0].exists(), "checkpoint_dir should be cleaned up after error"
+        # The plan was opened for the run and closed when it failed.
+        assert len(plans) == 1
+        assert plans[0]._closed
 
 
 # ---------------------------------------------------------------------------
@@ -3403,6 +3404,40 @@ class TestDispersionEstimateEndpoint:
         assert final["value"] == pytest.approx(2.4487, abs=0.01)
         assert final["n_fits"] > 0
 
+    def test_theta_estimate_keeps_preparation_evidence(self, client, nb_training_data):
+        """The estimate worker reports last; the job keeps what preparation wrote."""
+        from haute.routes import modelling
+
+        graph = _make_negbinomial_graph(nb_training_data)
+        graph["nodes"].append(
+            {
+                "id": "prepared",
+                "data": {
+                    "label": "prepared",
+                    "nodeType": "polars",
+                    "config": {"code": "df = source"},
+                },
+            }
+        )
+        graph["edges"] = [
+            make_edge("source", "prepared").model_dump(),
+            make_edge("prepared", "train").model_dump(),
+        ]
+        resp = client.post(
+            "/api/modelling/dispersion/estimate",
+            json={"graph": graph, "node_id": "train", "param": "theta"},
+        )
+        assert resp.status_code == 200, resp.text
+        job_id = resp.json()["job_id"]
+
+        final = _poll_dispersion_until_done(client, job_id)
+        assert final["status"] == "completed", final
+        metrics = modelling._train_service._store.require_job(job_id)["execution_metrics"]
+        assert [
+            (capture["node_id"], capture["outcome"])
+            for capture in metrics["shared_snapshot_captures"]
+        ] == [("prepared", "published")]
+
     def test_train_negbinomial_without_theta_rejected_400(self, client, nb_training_data):
         """The re-enabled family gates early: an unset theta is a 400 at the
         route, never a RustyStats refusal from inside a training job."""
@@ -3520,6 +3555,49 @@ class TestDispersionErrorPaths:
         )
         assert thread is not None
         return job_id, tmp_parquet, thread
+
+    def test_failed_estimate_keeps_preparation_evidence(self, tmp_path: Path):
+        """A failed estimate worker's metrics carry what preparation recorded."""
+        from tests.test_training_worker_protocol import _context_with_preparation_evidence
+
+        store, service = self._service()
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "job_type": "dispersion_estimate",
+                "param": "theta",
+                "start_time": time.monotonic(),
+                "timeout": 60,
+            }
+        )
+        tmp_parquet = tmp_path / "estimate_data.parquet"
+        tmp_parquet.write_bytes(b"parquet")
+
+        class ExplodingJob:
+            def __init__(self, **_kwargs):
+                pass
+
+            def _prepare_data(self, *_args, **_kwargs):
+                raise RuntimeError("librs panic")
+
+        with patch("haute.modelling.TrainingJob", ExplodingJob):
+            thread = service._launch_dispersion_background(
+                job_id,
+                "train",
+                dict(_NB_ESTIMATION_CONFIG),
+                "theta",
+                str(tmp_parquet),
+                execution_context=_context_with_preparation_evidence(),
+            )
+            assert thread is not None
+            thread.join_and_raise(timeout=10)
+
+        job = store.require_job(job_id)
+        assert job["status"] == "error"
+        metrics = job["execution_metrics"]
+        assert metrics["operation"] == "dispersion_estimate"
+        assert [capture["node_id"] for capture in metrics["shared_snapshot_captures"]] == ["join"]
+        assert [warning["code"] for warning in metrics["warnings"]] == ["snapshot_capture_skipped"]
 
     def test_worker_fallback_stamps_curated_message(self, tmp_path: Path):
         """Entrypoint-level stamp pin: an unexpected in-worker exception must

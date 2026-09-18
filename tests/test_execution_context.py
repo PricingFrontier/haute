@@ -5557,3 +5557,58 @@ def test_input_preparation_records_reach_the_metrics_payload() -> None:
     ]
     validated = ExecutionMetricsPayload.model_validate(payload)
     assert validated.input_preparation[0].action == "refreshed"
+
+
+def test_worker_metrics_carry_the_parents_evidence_ahead_of_their_own() -> None:
+    from haute._execution_schemas import ExecutionMetricsPayload
+    from haute._input_preparation import InputPreparationRecord
+    from haute._node_snapshots import NodeSnapshotColumns
+    from haute._seed_plans import (
+        CaptureKind,
+        SharedSnapshotCaptureRecord,
+        SharedSnapshotSeedRecord,
+    )
+
+    parent = ExecutionContext(operation="parent", profile=ExecutionProfile.TRAINING_PREP)
+    parent.record_input_preparation(
+        InputPreparationRecord(
+            node_id="src",
+            identity_digest="a" * 64,
+            action="reused",
+            build_class="bounded",
+            execution="in_process",
+            memory_limit_bytes=None,
+            elapsed_seconds=0.0,
+            row_count=3,
+            size_bytes=64,
+            generation_id="8f0d4a2c-1c3b-4f5a-9c2d-0e1f2a3b4c5d",
+            warning_code="source_unavailable",
+        )
+    )
+    parent.record_execution_warning("snapshot_capture_superseded", node_id="A")
+    worker = ExecutionContext(operation="worker", profile=ExecutionProfile.TRAINING_PREP)
+    worker.record_shared_snapshot_seed(
+        SharedSnapshotSeedRecord("B", "b" * 64, "gen-b", NodeSnapshotColumns.all())
+    )
+    worker.record_shared_snapshot_capture(
+        SharedSnapshotCaptureRecord(
+            "C", "c" * 64, CaptureKind.CONSUMED, "quota", None, NodeSnapshotColumns.all()
+        )
+    )
+    worker.record_execution_warning("snapshot_capture_skipped", node_id="C", reason="quota")
+
+    merged = parent.metrics_with_worker_evidence(worker.metrics_payload())
+
+    assert merged["operation"] == "worker"
+    assert [record["node_id"] for record in merged["input_preparation"]] == ["src"]
+    assert merged["input_preparation"][0]["warning_code"] == "source_unavailable"
+    assert [seed["node_id"] for seed in merged["shared_snapshot_seeds"]] == ["B"]
+    assert [capture["node_id"] for capture in merged["shared_snapshot_captures"]] == ["C"]
+    assert [(warning["code"], warning["node_id"]) for warning in merged["warnings"]] == [
+        ("snapshot_capture_superseded", "A"),
+        ("snapshot_capture_skipped", "C"),
+    ]
+    # The parent now holds the worker's evidence, so a later worker's metrics
+    # carry both processes' evidence.
+    assert parent.worker_evidence()["shared_snapshot_seeds"] == merged["shared_snapshot_seeds"]
+    ExecutionMetricsPayload.model_validate(merged)

@@ -245,6 +245,18 @@
      temp parquet (`src/haute/routes/_training_preparation.py::create_training_parquet_path`); from that point
      supervision runs inside a `try` whose `except BaseException` backstop discards the path,
      so the only exit that keeps it is a successful hand-off;
+   - it prepares the lineage's inputs and opens the run's
+     [seed plan](../caching/low-level.md#seed-plans) itself (`open_seed_plan` with
+     `training_seed_plan_request`: `TRAINING_PREP`, the modelling node, its demand), because a
+     node's signature signs its prepared inputs; a failure there — input preparation, a corrupt
+     snapshot, admission — becomes the same job outcome the child would have reported
+     (`preparation_failure_outcome`, shared with the child), and a cancellation propagates.
+     The job's deadline (`start_time + timeout`) bounds that preparation (`open_seed_plan(...,
+     deadline=)`, which no automatic build or wait outlasts); a failure once the deadline has
+     passed, or a plan that opens with no budget left, is the job's `timed_out` and launches no
+     child, and the child is given only what preparation left of the budget. The plan's seed
+     leases are held until the child has exited, and closing it removes any capture staging a
+     killed child left under its token;
    - it launches exactly one spawn worker,
      `run_isolated_worker(prepare_training_data_worker, request, budget, config=...)`, with
      `worker_config_for_memory_policy(memory_limit_bytes=budget.memory_limit_bytes,
@@ -255,10 +267,20 @@
      `materialisation_estimate_unavailable` rejection an uncapped surface must raise;
    - the request is plain picklable data (`graph`, `node_id`, `job_id`, `source`,
      `parquet_path`, modelling `config`, `project_root`, `streaming_chunk_size`, `row_limit`,
-     `exclude`, `keep_columns`, `required_columns_by_node`, `preamble_supplied`); the child
-     never touches the `JobStore`.
+     `exclude`, `keep_columns`, `required_columns_by_node`, `preamble_supplied`, and the
+     plan's `seed_plan` handoff); the child never touches the `JobStore`.
+   - the job's `execution_metrics` are the reporting process's metrics carrying the whole
+     job's evidence (`ExecutionContext.metrics_with_worker_evidence`): the parent adopts the
+     preparation child's input preparation, seeds, captures, and warnings behind its own, and
+     the training and dispersion workers' metrics — completed, or reported with a failure
+     (the supervisor's `failure_metrics`) — carry that evidence ahead of theirs, so nothing
+     preparation read, wrote, or warned about is lost when a later process reports.
    `_training_preparation.py::prepare_training_data` is the child core: it recompiles the
-   preamble when supplied, runs the upstream pipeline lazily, derives the version-1
+   preamble when supplied, adopts the parent's seed plan (or, called without one, prepares
+   inputs and opens its own), runs the upstream pipeline lazily under it with
+   `prepare_inputs=False` — seeds read, the modelling node's producer and every join, fan-out,
+   and materialisation captured into shared snapshots, no checkpoint directory and no private
+   dataframe-cache namespace — holding the plan until the sink completes, derives the version-1
    feature-selection diagnostic from the materialised schema, rejects HTTP
    422/`contract_error` if target/metadata/exclusion rules leave no feature columns, validates
    the required columns actually arrived, projects away excluded columns while retaining
@@ -1269,6 +1291,25 @@ rows/features) and retry.
   `tests/test_training_worker_protocol.py::test_dispersion_worker_maps_estimator_failures`
   proves the dispersion worker applies the same taxonomy, keeping the dependency text
   out of the public message and in the diagnostic `error` field.
+- `tests/test_training_seeding.py` drives preparation through the supervising parent with the
+  child in process: a second run seeds the first run's capture with an equal frame and builds
+  nothing; a batch Model Score is scored once; a stale snapshot is never seeded; an `A → B`
+  chain seeds only `B` and never reads `A`; a refreshed root is seeded below a stale chain;
+  branches recording different generations recompute from sources; a single cached branch seeds
+  its recorded ancestor, and recomputes both branches once that ancestor is cleared; a child
+  whose seed is refreshed and cleared before it starts reads the leased rows; the evaluation
+  preview seeds a training capture and a training run widens the preview's; no checkpoint
+  directory or dataframe-cache entry is written; a child stopped, timed out, or killed at
+  its memory cap leaves no capture staging; preparation time comes out of the child's budget,
+  and preparation that ends past the job deadline — or fails after it — is the job's
+  `timed_out`; a plan-opening failure in the parent (cancellation, input-preparation contract
+  error, corrupt cache, admission refusal) is classified without launching the child, removes
+  the parquet, and releases admission once; the job's metrics keep the parent's input
+  preparation alongside the child's seeds and captures; and a training job run to completion
+  through the routes keeps preparation's captures and seeds. A failed fit
+  (`tests/test_training_worker_protocol.py::test_failed_fit_keeps_the_jobs_preparation_evidence`)
+  and a failed or completed dispersion estimate (`tests/test_modelling_routes.py`) keep them
+  too.
 - `tests/test_training_preparation_worker.py` pins the hard-capped preparation
   worker: exactly one `haute-training-prep` launch per preparation with the budget's
   `memory_limit_bytes`, the remaining job timeout, and a `stop_reason` that reads the
@@ -1475,7 +1516,12 @@ The implementation seams are:
 - `POST /api/modelling/estimate` calls the same planner over the same eligible rows and
   returns only bounded counts/ranges. The editor shows this neutral exact preview once
   enough fields are valid; malformed or incomplete configuration remains a click-time
-  validation issue rather than an estimate-warning state.
+  validation issue rather than an estimate-warning state. `TrainService.evaluation_preview`
+  materialises only the target and evaluation key in process, under its own seed plan
+  (`open_seed_plan` with `training_seed_plan_request`) held through collection: it reads a
+  training run's capture of the modelling node's producer when one covers its demand, and
+  otherwise captures that producer with its narrow demand, which the next training run
+  widens.
 
 Focused evidence lives in `tests/test_evaluation.py`,
 `tests/test_train_evaluation_config.py`, `tests/test_training_evaluation.py`,

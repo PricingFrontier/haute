@@ -558,9 +558,9 @@ data, so it is `NodeSnapshotInputsChangedError`; an identity that moved at eithe
 check (a source or snapshot changed while the build read it) is
 `NodeSnapshotInputsChangedError`, reported as a contract error and never published. It returns
 a closed `_NodeSnapshotWorkerOutcome` (generation id and `published`/`superseded` with the
-execution's `shared_snapshot_evidence()`, or a `public_contract`, `memory`, `quota`, or
-`contract` failure). The parent validates the envelope, adopts the child's seeds, captures, and
-warnings into its own execution context (`adopt_shared_snapshot_evidence`), and completes the
+execution's `worker_evidence()`, or a `public_contract`, `memory`, `quota`, or
+`contract` failure). The parent validates the envelope, adopts the child's input preparation, seeds,
+captures, and warnings into its own execution context (`adopt_worker_evidence`), and completes the
 job under the registry's latest-publication guard with `generation_id`, `outcome`, and
 execution metrics, or maps failures to `contract_error`, `memory_limited`,
 `error` (quota, with its actionable message), the cancellation or supersession reason, a public

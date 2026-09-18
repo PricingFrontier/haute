@@ -1234,14 +1234,16 @@ class ExecutionContext:
         with self._evidence_lock:
             self._shared_snapshot_captures.append(record)
 
-    def shared_snapshot_evidence(self) -> dict[str, list[dict[str, Any]]]:
-        """This execution's seeds, captures, and warnings, as payload dicts.
+    def worker_evidence(self) -> dict[str, list[dict[str, Any]]]:
+        """This execution's input preparation, seeds, captures, and warnings.
 
-        A spawned worker returns this so its supervising parent can report
-        what the worker read and wrote (:meth:`adopt_shared_snapshot_evidence`).
+        Returned as payload dicts under their metrics-payload keys. A spawned
+        worker returns this so its supervising parent can report what the
+        worker prepared, read, and wrote (:meth:`adopt_worker_evidence`).
         """
         with self._evidence_lock:
             return {
+                "input_preparation": [dict(record.to_dict()) for record in self._input_preparation],
                 "shared_snapshot_seeds": [
                     dict(record.to_dict()) for record in self._shared_snapshot_seeds
                 ],
@@ -1251,9 +1253,15 @@ class ExecutionContext:
                 "warnings": [dict(warning) for warning in self._execution_warnings],
             }
 
-    def adopt_shared_snapshot_evidence(self, evidence: Mapping[str, Any]) -> None:
-        """Report a worker's shared-snapshot evidence as this execution's own."""
+    def adopt_worker_evidence(self, evidence: Mapping[str, Any]) -> None:
+        """Report a worker's evidence as this execution's own.
+
+        *evidence* is a worker's :meth:`worker_evidence` or its whole metrics
+        payload, which carries the same keys.
+        """
         with self._evidence_lock:
+            for payload in evidence.get("input_preparation", ()):
+                self._input_preparation.append(_EvidenceRecord(dict(payload)))
             for payload in evidence.get("shared_snapshot_seeds", ()):
                 self._shared_snapshot_seeds.append(_EvidenceRecord(dict(payload)))
             for payload in evidence.get("shared_snapshot_captures", ()):
@@ -1266,6 +1274,17 @@ class ExecutionContext:
                         "reason": warning.get("reason"),
                     }
                 )
+
+    def metrics_with_worker_evidence(self, worker_metrics: Mapping[str, Any]) -> dict[str, Any]:
+        """Adopt a worker's metrics evidence and return them carrying all of it.
+
+        A job whose phases run in separate processes persists the metrics of
+        the process that reported last. Their evidence lists are replaced by
+        this execution's accumulated evidence, so what the parent and every
+        earlier worker prepared, read, wrote, and warned about is not lost.
+        """
+        self.adopt_worker_evidence(worker_metrics)
+        return {**worker_metrics, **self.worker_evidence()}
 
     def record_execution_warning(
         self, code: str, *, node_id: str | None = None, reason: str | None = None

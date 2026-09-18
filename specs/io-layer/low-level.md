@@ -160,7 +160,10 @@ an in-place or non-atomic fallback.
    the owner's typed preparation failure instead of rebuilding. The wait is
    polled, not indefinite: each poll checkpoints the waiter's own execution context
    (`input_snapshot_preparation_wait`), so cancellation raises `cancelled`, and the build
-   deadline bounds it as `timed_out`. The spawned build itself is cancellable — the worker
+   deadline bounds it as `timed_out`. The build deadline is the earlier of the build's own
+   budget (`HAUTE_INPUT_PREPARATION_TIMEOUT_SECONDS`) and the caller's `deadline`
+   (`prepare_input_snapshots(..., deadline=)`, a job's), so preparing an input never outlasts
+   the run it prepares for. The spawned build itself is cancellable — the worker
    config's `stop_reason` reports `cancelled` while the execution's cancellation token is
    cancelled, terminating the child.
 6. The structured warning `input_snapshot_auto_build` is logged once a build actually

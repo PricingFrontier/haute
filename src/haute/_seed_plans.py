@@ -884,13 +884,15 @@ def open_seed_plan(
     store: NodeSnapshotStore | None = None,
     execution_context: ExecutionContext | None = None,
     staging_token: str | None = None,
+    deadline: float | None = None,
 ) -> SeedPlan:
     """Prepare the run's inputs, then resolve and lease its seed plan.
 
     A node's signature signs its snapshot-backed inputs' generations, so the
     plan is resolved only after automatic input preparation has published
     them. Only inputs the run can read are prepared: a branch reached solely
-    through an unselected pass-through input is not.
+    through an unselected pass-through input is not. *deadline* is the run's
+    monotonic deadline, which bounds that preparation.
     """
     from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 
@@ -915,5 +917,6 @@ def open_seed_plan(
         execution_context=execution_context,
         base_dir=preparation_base_dir(resolver.prepared.graph),
         schema_only=False,
+        deadline=deadline,
     )
     return open_resolved_seed_plan(request, store=store, staging_token=staging_token)

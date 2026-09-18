@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import gc
 import os
-import shutil
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -29,15 +28,15 @@ from haute._execution_admission import (
 from haute._execution_context import (
     ExecutionContext,
     ExecutionMemoryLimitExceededError,
+    ExecutionProfile,
 )
 from haute._graph_utils import upstream_node_ids
 from haute._logging import get_logger
+from haute._seed_plans import SeedPlan, SeedPlanHandoff, SeedPlanRequest, open_seed_plan
 from haute._types import GraphNode, PipelineGraph
 from haute.errors import BoundedMemoryUnsupportedError, HauteValidationError
 from haute.execution import (
     AllExceptColumns,
-    build_dataframe_execution_cache_request,
-    dataframe_graph_input_fingerprint,
     execute_lazy_graph,
 )
 from haute.graph_utils import NodeType
@@ -560,6 +559,25 @@ class TrainingPreparationRequest:
     keep_columns: list[str] | None = None
     required_columns_by_node: dict[str, frozenset[str] | AllExceptColumns] | None = None
     preamble_supplied: bool = False
+    # The seed plan the supervising parent resolved and leases until this
+    # child exits. Without one, the child prepares inputs and opens its own.
+    seed_plan: SeedPlanHandoff | None = None
+
+
+def training_seed_plan_request(
+    graph: PipelineGraph,
+    node_id: str,
+    source: str,
+    required_columns_by_node: Mapping[str, Any] | None,
+) -> SeedPlanRequest:
+    """The seed plan a training preparation of *node_id* runs under."""
+    return SeedPlanRequest(
+        graph=graph,
+        target_node_id=node_id,
+        source=source,
+        profile=ExecutionProfile.TRAINING_PREP,
+        required_columns_by_node=required_columns_by_node,
+    )
 
 
 @dataclass(frozen=True)
@@ -748,40 +766,32 @@ def _execute_and_sink_training_frame(
         else None
     )
 
-    checkpoint_dir: Path | None = None
-    try:
-        _mem_checkpoint("before _execute_lazy")
-        checkpoint_dir = Path(tempfile.mkdtemp(prefix="haute_train_ckpt_"))
-        chunk_size = request.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
-        dataframe_cache_request = build_dataframe_execution_cache_request(
-            graph,
-            node_ids=[node_id],
-            namespace="training_prep",
-            source=request.source,
-            profile=execution_context.profile,
-            input_fingerprint=dataframe_graph_input_fingerprint(
-                graph,
-                target_node_id=node_id,
-                source=request.source,
+    # Seeded and captured through the shared snapshot store; the plan's leases
+    # and captures stay held until the frame below has been sunk. An adopted
+    # plan opens the very store its parent leased from.
+    with (
+        SeedPlan.adopt(request.seed_plan)
+        if request.seed_plan is not None
+        else open_seed_plan(
+            training_seed_plan_request(
+                graph, node_id, request.source, request.required_columns_by_node
             ),
-            target_node_id=node_id,
-            required_columns_by_node=request.required_columns_by_node,
-            enforce_contracts=True,
-            preamble_ns_supplied=preamble_ns is not None,
-            streaming_chunk_size=chunk_size,
+            execution_context=execution_context,
         )
-
+    ) as plan:
+        _mem_checkpoint("before _execute_lazy")
+        chunk_size = request.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
         lazy_outputs, _order, _parents, _id_to_name = execute_lazy_graph(
             graph,
             _build_node_fn,
             target_node_id=node_id,
             preamble_ns=preamble_ns,
             source=request.source,
-            checkpoint_dir=checkpoint_dir,
             enforce_contracts=True,
             required_columns_by_node=request.required_columns_by_node,
             execution_context=execution_context,
-            dataframe_cache_request=dataframe_cache_request,
+            prepare_inputs=False,
+            snapshot_plan=plan,
         )
 
         target_lf = lazy_outputs.get(node_id)
@@ -849,9 +859,74 @@ def _execute_and_sink_training_frame(
         _malloc_trim()
         _mem_checkpoint("sunk to temp parquet")
         return feature_selection
-    finally:
-        if checkpoint_dir is not None and checkpoint_dir.exists():
-            shutil.rmtree(checkpoint_dir, ignore_errors=True)
+
+
+def preparation_failure_outcome(
+    exc: Exception,
+    request: TrainingPreparationRequest,
+    *,
+    execution_metrics: dict[str, Any] | None,
+) -> TrainingPreparationOutcome:
+    """The job outcome of one preparation failure, wherever it happened.
+
+    Shared by the preparation child and its supervising parent, which prepares
+    inputs and resolves the seed plan before the child starts, so a failure is
+    reported the same way on either side of the process boundary. Every
+    outcome removes the parquet.
+    """
+    job_id = request.job_id
+    tmp_parquet = request.parquet_path
+    if isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
+        logger.warning(
+            "pipeline_exec_memory_limited",
+            error=str(exc),
+            node_id=request.node_id,
+        )
+        failure = _preparation_failure_from_http(
+            _memory_limit_http_exception(exc),
+            job_id=job_id,
+            terminal_reason="memory_limited",
+        )
+    elif isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES):
+        http_exc = contract_error_http_exception(exc)
+        failure = TrainingPreparationFailure(
+            terminal_reason=contract_error_terminal_reason(exc),
+            message=str(exc),
+            http_status_code=http_exc.status_code,
+            http_detail=http_exc.detail,
+            fields=contract_error_job_fields(exc),
+        )
+    elif isinstance(exc, BoundedMemoryUnsupportedError):
+        logger.warning(
+            "pipeline_bounded_streaming_unsupported",
+            error=str(exc),
+            node_id=request.node_id,
+        )
+        failure = _preparation_failure_from_http(
+            HTTPException(
+                status_code=422,
+                detail=f"Pipeline cannot run in bounded streaming mode: {exc}",
+            ),
+            job_id=job_id,
+            terminal_reason="contract_error",
+        )
+    elif isinstance(exc, HTTPException):
+        failure = _preparation_failure_from_http(exc, job_id=job_id)
+    else:
+        logger.error("pipeline_exec_failed", error=str(exc), node_id=request.node_id)
+        failure = _preparation_failure_from_http(
+            HTTPException(
+                status_code=500,
+                detail="Pipeline execution failed. Check the server logs for details.",
+            ),
+            job_id=job_id,
+            terminal_reason="error",
+        )
+    return _finalise_preparation_failure(
+        failure,
+        parquet_path=tmp_parquet,
+        execution_metrics=execution_metrics,
+    )
 
 
 def prepare_training_data(
@@ -868,7 +943,6 @@ def prepare_training_data(
     HTTP shape the former in-thread path produced. Every failure removes the
     parquet, so no partial artifact ever survives.
     """
-    job_id = request.job_id
     tmp_parquet = request.parquet_path
     try:
         feature_selection = _execute_and_sink_training_frame(
@@ -880,71 +954,9 @@ def prepare_training_data(
             request.config,
             execution_context=execution_context,
         )
-    except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
-        logger.warning(
-            "pipeline_exec_memory_limited",
-            error=str(exc),
-            node_id=request.node_id,
-        )
-        return _finalise_preparation_failure(
-            _preparation_failure_from_http(
-                _memory_limit_http_exception(exc),
-                job_id=job_id,
-                terminal_reason="memory_limited",
-            ),
-            parquet_path=tmp_parquet,
-            execution_metrics=execution_context.metrics_payload(),
-        )
-    except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-        http_exc = contract_error_http_exception(exc)
-        return _finalise_preparation_failure(
-            TrainingPreparationFailure(
-                terminal_reason=contract_error_terminal_reason(exc),
-                message=str(exc),
-                http_status_code=http_exc.status_code,
-                http_detail=http_exc.detail,
-                fields=contract_error_job_fields(exc),
-            ),
-            parquet_path=tmp_parquet,
-            execution_metrics=execution_context.metrics_payload(),
-        )
-    except BoundedMemoryUnsupportedError as exc:
-        logger.warning(
-            "pipeline_bounded_streaming_unsupported",
-            error=str(exc),
-            node_id=request.node_id,
-        )
-        return _finalise_preparation_failure(
-            _preparation_failure_from_http(
-                HTTPException(
-                    status_code=422,
-                    detail=f"Pipeline cannot run in bounded streaming mode: {exc}",
-                ),
-                job_id=job_id,
-                terminal_reason="contract_error",
-            ),
-            parquet_path=tmp_parquet,
-            execution_metrics=execution_context.metrics_payload(),
-        )
-    except HTTPException as exc:
-        return _finalise_preparation_failure(
-            _preparation_failure_from_http(exc, job_id=job_id),
-            parquet_path=tmp_parquet,
-            execution_metrics=execution_context.metrics_payload(),
-        )
     except Exception as exc:
-        logger.error("pipeline_exec_failed", error=str(exc), node_id=request.node_id)
-        return _finalise_preparation_failure(
-            _preparation_failure_from_http(
-                HTTPException(
-                    status_code=500,
-                    detail="Pipeline execution failed. Check the server logs for details.",
-                ),
-                job_id=job_id,
-                terminal_reason="error",
-            ),
-            parquet_path=tmp_parquet,
-            execution_metrics=execution_context.metrics_payload(),
+        return preparation_failure_outcome(
+            exc, request, execution_metrics=execution_context.metrics_payload()
         )
     execution_context.checkpoint(label="training_preparation_complete")
     return TrainingPreparationOutcome(

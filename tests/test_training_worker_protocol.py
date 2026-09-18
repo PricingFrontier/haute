@@ -444,7 +444,14 @@ def _staged_tuned_training_manifest(tmp_path: Path):
     )
 
 
-def _launch(service: TrainService, store: JobStore, tmp_path: Path, output_dir: Path):
+def _launch(
+    service: TrainService,
+    store: JobStore,
+    tmp_path: Path,
+    output_dir: Path,
+    *,
+    execution_context: ExecutionContext | None = None,
+):
     prepared = tmp_path / "prepared.parquet"
     prepared.write_bytes(b"prepared")
     job_id = store.create_job(
@@ -465,7 +472,8 @@ def _launch(service: TrainService, store: JobStore, tmp_path: Path, output_dir: 
         str(prepared),
         None,
         10,
-        execution_context=ExecutionContext(
+        execution_context=execution_context
+        or ExecutionContext(
             operation="training_pipeline",
             profile=ExecutionProfile.TRAINING_PREP,
             memory_limit_bytes=_TEST_WORKER_MEMORY_LIMIT_BYTES,
@@ -474,6 +482,57 @@ def _launch(service: TrainService, store: JobStore, tmp_path: Path, output_dir: 
     assert thread is not None
     thread.join_and_raise(timeout=10)
     return job_id, prepared
+
+
+def _context_with_preparation_evidence() -> ExecutionContext:
+    """A job context that has already recorded a capture and a warning in preparation."""
+    from haute._node_snapshots import NodeSnapshotColumns
+    from haute._seed_plans import CaptureKind, SharedSnapshotCaptureRecord
+
+    context = ExecutionContext(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_limit_bytes=_TEST_WORKER_MEMORY_LIMIT_BYTES,
+    )
+    context.record_shared_snapshot_capture(
+        SharedSnapshotCaptureRecord(
+            node_id="join",
+            identity_digest="c" * 64,
+            kind=CaptureKind.CONSUMED,
+            outcome="published",
+            generation_id="gen-join",
+            columns=NodeSnapshotColumns.all(),
+        )
+    )
+    context.record_execution_warning("snapshot_capture_skipped", node_id="side", reason="quota")
+    return context
+
+
+def test_failed_fit_keeps_the_jobs_preparation_evidence(tmp_path: Path) -> None:
+    class ContractFailingJob:
+        def __init__(self, **_kwargs):
+            raise PreambleError("invalid training preamble", source_line=7)
+
+    store = JobStore()
+    service = TrainService(store, protocol_runner=_inline_protocol_runner)
+    with patch("haute.modelling.TrainingJob", ContractFailingJob):
+        job_id, _prepared = _launch(
+            service,
+            store,
+            tmp_path,
+            tmp_path / "outputs",
+            execution_context=_context_with_preparation_evidence(),
+        )
+
+    job = store.require_job(job_id)
+    assert job["status"] == "contract_error"
+    metrics = job["execution_metrics"]
+    # The failed worker's own metrics, carrying what preparation recorded.
+    assert metrics["operation"] == "training_job"
+    assert [capture["node_id"] for capture in metrics["shared_snapshot_captures"]] == ["join"]
+    assert [(warning["code"], warning["node_id"]) for warning in metrics["warnings"]] == [
+        ("snapshot_capture_skipped", "side")
+    ]
 
 
 def test_training_entrypoint_stages_complete_evaluation_and_public_response(tmp_path: Path) -> None:

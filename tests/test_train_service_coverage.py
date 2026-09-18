@@ -10,6 +10,7 @@ training job stuck in the wrong state, so these assert on job-store state too.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from pathlib import Path
@@ -559,22 +560,21 @@ class TestStartGlmMergeAndKeepColumns:
 
 class TestPreparationWithExecutionContext:
     def test_context_stages_sink_and_publishes_metrics(self, tmp_path):
-        """The sink runs inside a staged region, the checkpoint dir is cleaned
-        up, and the outcome carries the metrics payload the supervisor stores."""
+        """The sink runs inside a staged region, the execution runs under a
+        seed plan with no checkpoint directory, and the outcome carries the
+        metrics payload the supervisor stores."""
         body = _source_only_request()
         parquet_path = tmp_path / "prepared.parquet"
 
         lf = pl.LazyFrame({"y": [1.0, 2.0], "x1": [0.1, 0.2]})
         sunk_frames: list[object] = []
-        checkpoint_dirs: list[Path] = []
+        executions: list[dict[str, object]] = []
 
         def fake_bounded_sink(frame, path, **kwargs):
             sunk_frames.append(frame)
 
         def lazy_returns_target(*args, **kwargs):
-            checkpoint_dir = kwargs.get("checkpoint_dir")
-            if checkpoint_dir is not None:
-                checkpoint_dirs.append(checkpoint_dir)
+            executions.append(kwargs)
             return ({"n": lf}, [], {}, {})
 
         context = _training_execution_context()
@@ -603,7 +603,10 @@ class TestPreparationWithExecutionContext:
         metrics = outcome.execution_metrics
         assert metrics is not None
         assert "training_sink_write" in metrics["stage_elapsed_ms"]
-        assert checkpoint_dirs and not checkpoint_dirs[0].exists()
+        assert len(executions) == 1
+        assert executions[0]["snapshot_plan"] is not None
+        assert executions[0]["prepare_inputs"] is False
+        assert "checkpoint_dir" not in executions[0]
 
     def test_all_except_demand_columns_required_and_missing_raises_422(self, tmp_path):
         """An AllExcept node demand contributes its required_columns to the
@@ -815,26 +818,16 @@ class TestPreparationCleanupAbsentPaths:
 
         The child owns removal on every failure arm; with nothing at the path
         the removal is a no-op and must not turn a typed failure into a
-        filesystem error. The dataframe-cache request is irrelevant once
-        execute_lazy_graph is mocked, so stub it to prevent this test's mkdtemp
-        patch from becoming the process-wide cache root.
+        filesystem error.
         """
-        import tempfile as _tempfile
-
         body = _source_only_request()
         parquet_path = tmp_path / "never_created.parquet"
-        ckpt_missing = tmp_path / "haute_ckpt_absent"
 
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_side_effect,
-            ),
-            patch.object(_tempfile, "mkdtemp", return_value=str(ckpt_missing)),
-            patch(
-                "haute.routes._training_preparation.build_dataframe_execution_cache_request",
-                return_value=MagicMock(),
             ),
             p1,
             p2,
@@ -844,7 +837,6 @@ class TestPreparationCleanupAbsentPaths:
         ):
             outcome = _prepare(_preparation_request(body, parquet_path))
         assert not parquet_path.exists()
-        assert not ckpt_missing.exists()
         return outcome
 
     def test_memory_limit_when_temp_absent(self, tmp_path: Path):
@@ -1475,15 +1467,12 @@ class TestEvaluationPreviewFailures:
                 return_value=context,
             ),
             patch.object(TrainService, "_compile_preamble", return_value=None),
+            # These cases are about the data the execution returns, so the
+            # seed plan it runs under is not the subject here.
             patch.object(
                 _train_service,
-                "dataframe_graph_input_fingerprint",
-                return_value="fingerprint",
-            ),
-            patch.object(
-                _train_service,
-                "build_dataframe_execution_cache_request",
-                return_value=None,
+                "open_seed_plan",
+                return_value=contextlib.nullcontext(),
             ),
             patch.object(
                 _train_service,

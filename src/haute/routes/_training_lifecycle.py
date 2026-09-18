@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -32,6 +33,7 @@ from haute._execution_context import (
 )
 from haute._logging import get_logger
 from haute._sandbox import _get_project_root
+from haute._seed_plans import open_seed_plan
 from haute._types import PipelineGraph
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
@@ -59,8 +61,6 @@ from haute.errors import (
 )
 from haute.execution import (
     AllExceptColumns,
-    build_dataframe_execution_cache_request,
-    dataframe_graph_input_fingerprint,
     execute_lazy_graph,
 )
 from haute.modelling._algorithms import ALGORITHM_REGISTRY, resolve_loss_function
@@ -136,8 +136,10 @@ from haute.routes._training_preparation import (
     _training_required_columns_by_node,
     _training_sink_exclusions,
     create_training_parquet_path,
+    preparation_failure_outcome,
     prepare_training_data_worker,
     resolve_training_input_schema,
+    training_seed_plan_request,
 )
 from haute.routes._training_worker import (
     _assert_json_finite,
@@ -394,65 +396,56 @@ class TrainService:
                 body.node_id: frozenset(selected_columns)
             }
             from haute._polars_utils import (
-                DEFAULT_STREAMING_CHUNK_SIZE,
                 streaming_collect,
             )
             from haute.executor import _build_node_fn
 
-            cache_request = build_dataframe_execution_cache_request(
-                body.graph,
-                node_ids=[body.node_id],
-                namespace="training_evaluation_preview",
-                source=body.source,
-                profile=execution_context.profile,
-                input_fingerprint=dataframe_graph_input_fingerprint(
-                    body.graph,
-                    target_node_id=body.node_id,
-                    source=body.source,
+            # Seeded from and captured into shared snapshots: a training run
+            # after this preview reads what the preview computed, and vice versa.
+            with open_seed_plan(
+                training_seed_plan_request(
+                    body.graph, body.node_id, body.source, required_columns_by_node
                 ),
-                target_node_id=body.node_id,
-                required_columns_by_node=required_columns_by_node,
-                enforce_contracts=True,
-                preamble_ns_supplied=preamble_ns is not None,
-                streaming_chunk_size=DEFAULT_STREAMING_CHUNK_SIZE,
-            )
-            lazy_outputs, *_ = execute_lazy_graph(
-                body.graph,
-                _build_node_fn,
-                target_node_id=body.node_id,
-                preamble_ns=preamble_ns,
-                source=body.source,
-                enforce_contracts=True,
-                required_columns_by_node=required_columns_by_node,
                 execution_context=execution_context,
-                dataframe_cache_request=cache_request,
-            )
-            evaluation_lf = lazy_outputs.get(body.node_id)
-            if evaluation_lf is None:
-                raise HauteValidationError("No training data arrived at the modelling node.")
-            if row_limit is not None:
-                evaluation_lf = _seeded_training_sample(
-                    evaluation_lf,
-                    row_limit,
+            ) as seed_plan:
+                lazy_outputs, *_ = execute_lazy_graph(
+                    body.graph,
+                    _build_node_fn,
+                    target_node_id=body.node_id,
+                    preamble_ns=preamble_ns,
+                    source=body.source,
+                    enforce_contracts=True,
+                    required_columns_by_node=required_columns_by_node,
+                    execution_context=execution_context,
+                    prepare_inputs=False,
+                    snapshot_plan=seed_plan,
                 )
-            available_columns = set(evaluation_lf.collect_schema().names())
-            missing_columns = sorted(set(selected_columns) - available_columns)
-            if missing_columns:
-                raise HauteValidationError(
-                    f"evaluation preview is missing required column(s): {missing_columns}"
+                evaluation_lf = lazy_outputs.get(body.node_id)
+                if evaluation_lf is None:
+                    raise HauteValidationError("No training data arrived at the modelling node.")
+                if row_limit is not None:
+                    evaluation_lf = _seeded_training_sample(
+                        evaluation_lf,
+                        row_limit,
+                    )
+                available_columns = set(evaluation_lf.collect_schema().names())
+                missing_columns = sorted(set(selected_columns) - available_columns)
+                if missing_columns:
+                    raise HauteValidationError(
+                        f"evaluation preview is missing required column(s): {missing_columns}"
+                    )
+                projection = [
+                    (
+                        pl.col(column).cast(pl.String).alias(column)
+                        if column == evaluation.date_column
+                        else pl.col(column)
+                    )
+                    for column in selected_columns
+                ]
+                frame = streaming_collect(
+                    evaluation_lf.filter(pl.col(target).is_not_null()).select(projection),
+                    execution_context=execution_context,
                 )
-            projection = [
-                (
-                    pl.col(column).cast(pl.String).alias(column)
-                    if column == evaluation.date_column
-                    else pl.col(column)
-                )
-                for column in selected_columns
-            ]
-            frame = streaming_collect(
-                evaluation_lf.filter(pl.col(target).is_not_null()).select(projection),
-                execution_context=execution_context,
-            )
             if frame.height < 1:
                 raise HauteValidationError(f"Target column {target!r} contains only null values")
             target_values = frame[target].to_list() if task == "classification" else None
@@ -970,7 +963,10 @@ class TrainService:
                 "value": value,
                 "llf": llf,
                 "n_fits": n_fits,
-                "execution_metrics": execution_metrics,
+                # Preparation's evidence stays on the job's metrics.
+                "execution_metrics": execution_context.metrics_with_worker_evidence(
+                    execution_metrics
+                ),
                 "progress": 1.0,
             }
             _assert_json_finite(fields)
@@ -995,6 +991,8 @@ class TrainService:
                 completed_fields=completed_fields,
                 on_finished=cleanup,
                 start_time=start_time,
+                # A failed worker's metrics keep preparation's evidence too.
+                failure_metrics=execution_context.metrics_with_worker_evidence,
             )
         except Exception as exc:
             cleanup()
@@ -1498,6 +1496,7 @@ class TrainService:
                 tmp_parquet=tmp_parquet,
                 start_time=start_time,
                 timeout_seconds=timeout_seconds,
+                execution_context=execution_context,
             )
         except BaseException:
             # Ownership backstop: no exit from supervision may leave the
@@ -1541,8 +1540,15 @@ class TrainService:
         tmp_parquet: str,
         start_time: float,
         timeout_seconds: float,
+        execution_context: ExecutionContext,
     ) -> str:
-        """Run the preparation child and map its single outcome onto the job."""
+        """Run the preparation child and map its single outcome onto the job.
+
+        Inputs are prepared and the seed plan resolved here, under the parent's
+        admitted context, because a node's signature signs its prepared inputs;
+        the plan's seed leases are held until the child has exited, and the
+        child adopts the same generations.
+        """
         request = TrainingPreparationRequest(
             graph=body.graph,
             node_id=body.node_id,
@@ -1570,47 +1576,77 @@ class TrainService:
             preamble_supplied=preamble_ns is not None,
         )
 
-        try:
-            outcome = run_isolated_worker(
-                prepare_training_data_worker,
-                request,
-                budget,
-                config=worker_config,
-            )
-        except IsolatedWorkerStoppedError:
-            self._discard_prepared_parquet(job_id, tmp_parquet)
-            raise ExecutionCancelledError("training_preparation", job_id=job_id) from None
-        except IsolatedWorkerTimeoutError:
+        def timed_out() -> ExecutionCancelledError:
             self._discard_prepared_parquet(job_id, tmp_parquet)
             self.timeout(job_id, timeout=int(timeout_seconds), start_time=start_time)
-            raise ExecutionCancelledError("training_preparation", job_id=job_id) from None
-        except IsolatedWorkerError as exc:
-            self._discard_prepared_parquet(job_id, tmp_parquet)
-            if isolated_worker_failure_is_memory(exc):
-                http_exc = HTTPException(
-                    status_code=507,
-                    detail=isolated_worker_memory_detail(
-                        exc,
-                        operation=budget.operation,
-                        memory_limit_bytes=budget.memory_limit_bytes,
-                    ),
-                )
-                message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
-                self._lifecycle.transition(
-                    job_id,
-                    to="memory_limited",
-                    message=message,
-                    fields=fields,
-                )
-                raise http_exc from None
-            logger.error(
-                "training_preparation_worker_failed",
-                job_id=job_id,
-                node_id=body.node_id,
-                error=str(exc),
-                error_type=type(exc).__name__,
+            return ExecutionCancelledError("training_preparation", job_id=job_id)
+
+        outcome: object
+        try:
+            # The job's deadline bounds the parent's input preparation too.
+            plan = open_seed_plan(
+                training_seed_plan_request(
+                    body.graph, body.node_id, body.source, request.required_columns_by_node
+                ),
+                execution_context=execution_context,
+                deadline=start_time + timeout_seconds,
             )
-            raise self._fail_preparation_worker(job_id) from None
+        except ExecutionCancelledError:
+            self._discard_prepared_parquet(job_id, tmp_parquet)
+            raise
+        except Exception as exc:
+            if time.monotonic() - start_time >= timeout_seconds:
+                # Whatever stopped preparation, the job had run out of time.
+                raise timed_out() from exc
+            # Preparation and plan resolution fail exactly as the child would.
+            # The parent's own metrics are recorded below.
+            outcome = preparation_failure_outcome(exc, request, execution_metrics=None)
+        else:
+            with plan:
+                request = replace(request, seed_plan=plan.handoff())
+                # The child gets what preparation has left of the job's budget.
+                remaining = timeout_seconds - (time.monotonic() - start_time)
+                if remaining <= 0:
+                    raise timed_out()
+                try:
+                    outcome = run_isolated_worker(
+                        prepare_training_data_worker,
+                        request,
+                        budget,
+                        config=replace(worker_config, timeout_seconds=remaining),
+                    )
+                except IsolatedWorkerStoppedError:
+                    self._discard_prepared_parquet(job_id, tmp_parquet)
+                    raise ExecutionCancelledError("training_preparation", job_id=job_id) from None
+                except IsolatedWorkerTimeoutError:
+                    raise timed_out() from None
+                except IsolatedWorkerError as exc:
+                    self._discard_prepared_parquet(job_id, tmp_parquet)
+                    if isolated_worker_failure_is_memory(exc):
+                        http_exc = HTTPException(
+                            status_code=507,
+                            detail=isolated_worker_memory_detail(
+                                exc,
+                                operation=budget.operation,
+                                memory_limit_bytes=budget.memory_limit_bytes,
+                            ),
+                        )
+                        message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
+                        self._lifecycle.transition(
+                            job_id,
+                            to="memory_limited",
+                            message=message,
+                            fields=fields,
+                        )
+                        raise http_exc from None
+                    logger.error(
+                        "training_preparation_worker_failed",
+                        job_id=job_id,
+                        node_id=body.node_id,
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    )
+                    raise self._fail_preparation_worker(job_id) from None
 
         if not isinstance(outcome, TrainingPreparationOutcome):
             self._discard_prepared_parquet(job_id, tmp_parquet)
@@ -1623,8 +1659,17 @@ class TrainService:
             )
             raise self._fail_preparation_worker(job_id)
 
-        if outcome.execution_metrics is not None:
-            self._store.update_job(job_id, execution_metrics=outcome.execution_metrics)
+        # The job records the child's metrics carrying the parent's preparation
+        # and plan evidence ahead of the child's own, or the parent's metrics
+        # when the child reported none.
+        self._store.update_job(
+            job_id,
+            execution_metrics=(
+                execution_context.metrics_payload()
+                if outcome.execution_metrics is None
+                else execution_context.metrics_with_worker_evidence(outcome.execution_metrics)
+            ),
+        )
 
         failure = outcome.failure
         if failure is not None:
@@ -1898,6 +1943,8 @@ class TrainService:
             execution_metrics = result.metadata.get("execution_metrics")
             if not isinstance(execution_metrics, dict):
                 raise WorkerProtocolError("Training execution metrics must be an object")
+            # Preparation's evidence stays on the job's metrics.
+            execution_metrics = execution_context.metrics_with_worker_evidence(execution_metrics)
             identity = result.metadata.get("training_identity_sha256")
             if not isinstance(identity, str) or len(identity) != 64:
                 raise WorkerProtocolError("Training identity digest must be a SHA-256 hex string")
@@ -2044,6 +2091,8 @@ class TrainService:
                 completed_fields=completed_fields,
                 on_finished=cleanup,
                 start_time=start_time,
+                # A failed worker's metrics keep preparation's evidence too.
+                failure_metrics=execution_context.metrics_with_worker_evidence,
             )
         except Exception as exc:
             cleanup()
