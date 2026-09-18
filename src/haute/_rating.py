@@ -197,7 +197,8 @@ def banding_rule_claim_expr(
         chain = pl.when(cond).then(claim) if chain is None else chain.when(cond).then(claim)
     if chain is None:
         raise ValueError(_no_usable_rule_message(output_column, "continuous"))
-    return chain.otherwise(unclaimed).alias("claim")
+    claimed: pl.Expr = chain.otherwise(unclaimed).alias("claim")
+    return claimed
 
 
 def _no_usable_rule_message(output_column: str, mode: str) -> str:
