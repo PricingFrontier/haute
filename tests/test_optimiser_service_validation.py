@@ -16,6 +16,7 @@ Covers remediation items:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import time
@@ -398,7 +399,7 @@ def _group_by_contract_error() -> GroupByExecutionUnsupportedError:
     )
 
 
-def test_execute_pipeline_adapts_public_contract_errors(tmp_path) -> None:
+def test_execute_pipeline_adapts_public_contract_errors() -> None:
     store = JobStore()
     service = OptimiserSolveService(store)
     job_id = store.create_job({"status": "running"})
@@ -408,10 +409,9 @@ def test_execute_pipeline_adapts_public_contract_errors(tmp_path) -> None:
             "node_id": "opt",
         }
     )
-    checkpoint_dir = tmp_path / "checkpoints"
-    checkpoint_dir.mkdir()
 
     with (
+        contextlib.ExitStack() as resources,
         patch(
             "haute.routes._optimiser_service.execute_lazy_graph",
             side_effect=_group_by_contract_error(),
@@ -421,7 +421,7 @@ def test_execute_pipeline_adapts_public_contract_errors(tmp_path) -> None:
         patch("haute.executor._resolve_batch_scenario", return_value="batch"),
     ):
         with pytest.raises(HTTPException) as exc_info:
-            service._execute_pipeline(body, job_id, checkpoint_dir)
+            service._execute_pipeline(body, job_id, resources)
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail["error_code"] == "group_by_execution_unsupported"

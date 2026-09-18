@@ -358,7 +358,7 @@ class TestOptimiserExecutePipelineChunkSize:
 
         captured: list[int | None] = []
 
-        from contextlib import contextmanager
+        from contextlib import ExitStack, contextmanager
 
         def fake_ctx(chunk_size):
             captured.append(chunk_size)
@@ -370,6 +370,7 @@ class TestOptimiserExecutePipelineChunkSize:
             return _cm()
 
         with (
+            ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 return_value=({"opt": lf}, ["opt"], {}, {}),
@@ -382,9 +383,7 @@ class TestOptimiserExecutePipelineChunkSize:
                 side_effect=fake_ctx,
             ),
         ):
-            tmp = haute_scratch / "haute_test_chunk"
-            tmp.mkdir()
-            svc._execute_pipeline(body, "job-id", tmp)
+            svc._execute_pipeline(body, "job-id", resources)
         return captured
 
     def test_uses_request_value(self, haute_scratch):

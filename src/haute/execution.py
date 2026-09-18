@@ -141,6 +141,7 @@ __all__ = [
     "materialize_lazy_frame_with_cache",
     "plan_prepared_execution_strategy",
     "plan_execution_strategy",
+    "plan_projection",
     "preview_lineage_cache_key",
     "prune_source_switch_edges",
     "ratebook_factor_required_columns",
@@ -267,24 +268,7 @@ def plan_execution_strategy(
         source=request.source,
     )
     children_of = _children_of(prepared.order, prepared.parents_of)
-    required_columns_by_node = normalise_required_columns_by_node(
-        request.required_columns_by_node,
-        prepared.order,
-    )
-    projection_plan = compute_prepared_plan(
-        prepared.order,
-        children_of,
-        prepared.node_map,
-        required_columns_by_node=required_columns_by_node,
-        relevant_edges=prepared.relevant_edges,
-        submodels=prepared.submodels,
-        selector_aliases=preamble_selector_aliases(request.graph.preamble or ""),
-    )
-    projection_plan = with_api_input_port_projection_boundaries(
-        projection_plan,
-        prepared.node_map,
-        prepared.relevant_edges,
-    )
+    required_columns_by_node, projection_plan = _prepared_projection_plan(prepared, request)
     materialising_sequences = _only_nodes(
         materialising_operator_sequences_by_node(
             prepared.order,
@@ -330,6 +314,46 @@ def plan_execution_strategy(
     if execution_context is not None:
         execution_context.projection_plan = result
     return result
+
+
+def plan_projection(request: ProjectionRequest) -> ProjectionPlan:
+    """Return the column demand *request*'s execution plans at every node.
+
+    The projection half of :func:`plan_execution_strategy`, for a caller that
+    needs another execution's demand — auto-range captures the columns the
+    following solve reads — without planning, estimating, or admitting it.
+    """
+    prepared = prepare_graph(
+        request.graph,
+        request.target_node_id,
+        source=request.source,
+    )
+    return _prepared_projection_plan(prepared, request)[1]
+
+
+def _prepared_projection_plan(
+    prepared: PreparedGraph,
+    request: ProjectionRequest,
+) -> tuple[dict[str, set[str] | AllExceptColumns], ProjectionPlan]:
+    required_columns_by_node = normalise_required_columns_by_node(
+        request.required_columns_by_node,
+        prepared.order,
+    )
+    projection_plan = compute_prepared_plan(
+        prepared.order,
+        _children_of(prepared.order, prepared.parents_of),
+        prepared.node_map,
+        required_columns_by_node=required_columns_by_node,
+        relevant_edges=prepared.relevant_edges,
+        submodels=prepared.submodels,
+        selector_aliases=preamble_selector_aliases(request.graph.preamble or ""),
+    )
+    projection_plan = with_api_input_port_projection_boundaries(
+        projection_plan,
+        prepared.node_map,
+        prepared.relevant_edges,
+    )
+    return required_columns_by_node, projection_plan
 
 
 def _estimate_materialising_boundaries(

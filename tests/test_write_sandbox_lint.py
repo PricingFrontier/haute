@@ -541,7 +541,6 @@ EXPECTED_VIOLATIONS: dict[str, int] = {
     "tests/test_mlflow_io.py": 4,
     "tests/test_mlflow_io_concurrency.py": 12,
     "tests/test_model_score_executor.py": 1,
-    "tests/test_optimiser_routes.py": 2,
     "tests/test_optimiser_service_coverage.py": 2,
     # ``main()`` regenerates the checked-in compatibility corpus offline; it
     # never runs under pytest.

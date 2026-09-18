@@ -6,7 +6,7 @@
 |---|---|
 | `src/haute/_cpu_performance.py` | Process-local Windows HighQoS read/set/verify policy, invoked at CLI, server and worker startup; preserves unrelated power-policy bits and reports unsupported or rejected native operations. |
 | `src/haute/executor.py` | GUI-facing eager entry point: `execute_graph()` (preview, with the `_preview_cache` `LRUCache`), `write_data_output()` (batch/data-output writes), preamble compilation + single-flight cache (`_compile_preamble`), preview-column projection/schema-warning assembly, and output-destination containment. |
-| `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points, runtime-input fingerprints, `preview_lineage_cache_key`, `PREVIEW_EXECUTION_SEMANTICS_VERSION`, and the process-default dataframe execution-cache singleton. It is the stable application import boundary, but is not currently a thin re-export module. |
+| `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points (and `plan_projection`, the projection half of `plan_execution_strategy`, for a caller that needs another execution's per-node column demand without planning or admitting it), runtime-input fingerprints, `preview_lineage_cache_key`, `PREVIEW_EXECUTION_SEMANTICS_VERSION`, and the process-default dataframe execution-cache singleton. It is the stable application import boundary, but is not currently a thin re-export module. |
 | `src/haute/_path_resolution.py` | Cross-component dependency owned by [sandbox-security](../sandbox-security/low-level.md); canonical local-runtime-path resolution: separator normalization, project/pipeline candidate choice, symlink-aware containment, selected-external-pipeline root inference, and the context-local root used by eager/lazy builders. |
 | `src/haute/_execute_lazy.py` | The shared execution core: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), `_execute_lazy` (lazy plan + structural parquet checkpointing + dataframe-cache seeding), and `_execute_eager_core`/`EagerResult` (eager materialisation and preview error adaptation). |
 | `src/haute/_contracts.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution consumes the shared column-contract model and registry lookup. |
@@ -375,9 +375,9 @@ order (and `executor.execute_graph` calls it before its request planning), so a 
 stale snapshot generation is built or refreshed — under the current native cap in-process,
 or in a spawned hard-capped worker admitted from the execution's budget — before the RAM
 estimator reads generation metadata, and before the preview path computes its runtime
-identity, so a refreshed generation's pointer is the one keyed. The Explore and
-training-preparation surfaces build their dataframe-cache request before the engine
-prepares, so after a refresh that entry is keyed by the superseded pointer and misses once;
+identity, so a refreshed generation's pointer is the one keyed. A caller that still builds a
+dataframe-cache request before the engine prepares (Data Output, and deploy scoring's
+`deploy_score` namespace) is keyed by the superseded pointer after a refresh and misses once;
 the next execution keys the new pointer, and correctness never depends on it because the
 current source signature is part of every key. `schema_only` executions,
 executions without an admitted context, and planned executions skip it (a seed plan

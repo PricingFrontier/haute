@@ -4073,7 +4073,9 @@ async def test_sink_route_does_not_fall_back_after_isolated_timeout(monkeypatch,
     fallback.assert_not_called()
 
 
-def test_optimiser_execute_pipeline_forwards_execution_context(tmp_path) -> None:
+def test_optimiser_execute_pipeline_forwards_execution_context() -> None:
+    import contextlib
+
     from haute.routes._job_store import JobStore
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserSolveRequest
@@ -4110,6 +4112,7 @@ def test_optimiser_execute_pipeline_forwards_execution_context(tmp_path) -> None
         return {"opt": pl.DataFrame({"a": [1]}).lazy()}, ["opt"], {}, {}
 
     with (
+        contextlib.ExitStack() as resources,
         patch("haute.routes._optimiser_service.execute_lazy_graph", side_effect=fake_execute_lazy),
         patch("haute.executor._resolve_batch_scenario", return_value="batch"),
         patch("haute.executor._compile_preamble", return_value={}),
@@ -4117,7 +4120,7 @@ def test_optimiser_execute_pipeline_forwards_execution_context(tmp_path) -> None
         service._execute_pipeline(
             body,
             job_id,
-            tmp_path,
+            resources,
             execution_context=context,
         )
 

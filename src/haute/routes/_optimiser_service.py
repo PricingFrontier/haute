@@ -73,6 +73,7 @@ from haute._rating import (
     rating_dtype_descriptor,
     rating_dtype_from_descriptor,
 )
+from haute._seed_plans import SeedPlanRequest, open_seed_plan
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -88,9 +89,9 @@ from haute.errors import (
     SchemaMismatchError,
 )
 from haute.execution import (
-    build_dataframe_execution_cache_request,
-    dataframe_graph_input_fingerprint,
+    ProjectionRequest,
     execute_lazy_graph,
+    plan_projection,
     prune_source_switch_edges,
     ratebook_factor_required_columns,
 )
@@ -779,41 +780,53 @@ def _optimiser_side_input_ids(graph: PipelineGraph, node_id: str) -> frozenset[s
     return frozenset(preserved)
 
 
-def _optimiser_dataframe_cache_node_ids(
-    graph: PipelineGraph,
-    *,
-    optimiser_node_id: str,
-    execution_target_node_id: str,
-    explicit_target_node: bool,
-) -> tuple[str, ...]:
-    """Return optimiser setup outputs that callers consume after lazy execution."""
-
-    if explicit_target_node:
-        candidates = {execution_target_node_id}
-    else:
-        optimiser_node = _find_optimiser_node(graph, optimiser_node_id)
-        preserved = set(_optimiser_side_input_ids(graph, optimiser_node_id))
+def _setup_execution_target_node_id(graph: PipelineGraph, node_id: str) -> str:
+    """The node setup executes to: an online Optimiser's configured data input, else itself."""
+    optimiser_node = _find_optimiser_node(graph, node_id)
+    configured_data_input = optimiser_node.data.config.get("data_input")
+    if (
+        optimiser_node.data.config.get("mode", "online") == "online"
+        and isinstance(configured_data_input, str)
+        and configured_data_input
+    ):
         data_input_id = _resolve_optimiser_data_input_id(
             graph,
-            optimiser_node_id,
+            node_id,
             optimiser_node.data.config,
         )
         if isinstance(data_input_id, str) and data_input_id:
-            preserved.add(data_input_id)
-        candidates = preserved or {execution_target_node_id}
+            return data_input_id
+    return node_id
 
-    target_lineage = set(upstream_node_ids(execution_target_node_id, graph.parents_of))
-    target_lineage.add(execution_target_node_id)
-    # The per-node dataframe cache materialises one LazyFrame per node id, so a
-    # multi-frame apiInput (dict-of-frames output) can never be a cache
-    # candidate — the executor fails loud on caching a frame bundle.
-    return tuple(
-        node.id
-        for node in graph.nodes
-        if node.id in candidates
-        and node.id in target_lineage
-        and node.data.nodeType is not NodeType.API_INPUT
+
+def _solve_columns_by_node(
+    graph: PipelineGraph,
+    node_id: str,
+    config: dict[str, Any],
+    *,
+    source: str,
+) -> dict[str, frozenset[str]]:
+    """The columns the solve's setup reads at every node it executes.
+
+    A node the solve reads whole (no concrete demand) is left out: a capture
+    cannot promise it, so the solve recomputes that node as before.
+    """
+    projection = plan_projection(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id=_setup_execution_target_node_id(graph, node_id),
+            profile=ExecutionProfile.OPTIMISER_SETUP,
+            required_columns_by_node=_optimiser_solve_required_columns_by_node(
+                graph, node_id, config
+            ),
+            source=source,
+        )
     )
+    return {
+        needed_node_id: frozenset(columns)
+        for needed_node_id, columns in projection.needed_by_node.items()
+        if columns is not None
+    }
 
 
 def _optimiser_input_required_columns(config: dict[str, Any]) -> frozenset[str]:
@@ -3139,10 +3152,9 @@ class OptimiserSolveService:
             if isinstance(raw_start_time, int | float) and not isinstance(raw_start_time, bool)
             else time.monotonic()
         )
-        # ``TemporaryDirectory`` removes the checkpoint dir even on signal/
-        # crash; an interrupted long solve will not leak GBs of staging data.
-        with tempfile.TemporaryDirectory(prefix="haute_opt_") as raw_dir:
-            checkpoint_dir = Path(raw_dir)
+        # The seed plan entered on this stack stays held until setup has read
+        # every frame it needs, and releases on any exit.
+        with contextlib.ExitStack() as resources:
             try:
                 execution_context = create_admitted_execution_context(
                     operation="optimiser_solve",
@@ -3164,7 +3176,7 @@ class OptimiserSolveService:
                 lazy_outputs = self._execute_pipeline(
                     body,
                     job_id,
-                    checkpoint_dir,
+                    resources,
                     required_columns_by_node=required_columns_by_node,
                     execution_context=execution_context,
                 )
@@ -3915,11 +3927,9 @@ class OptimiserSolveService:
                 execution_context=execution_context,
             )
 
-        # ``TemporaryDirectory`` ensures the checkpoint dir is removed even
-        # on signal/abort, where ``mkdtemp`` + ``rmtree`` in finally would leak.
+        # The seed plan entered on this stack is released on every exit.
         try:
-            with tempfile.TemporaryDirectory(prefix="haute_frontier_range_") as raw_dir:
-                checkpoint_dir = Path(raw_dir)
+            with contextlib.ExitStack() as resources:
                 self._store.atomic_update(
                     job_id,
                     {
@@ -3933,7 +3943,7 @@ class OptimiserSolveService:
                 lazy_outputs = self._execute_pipeline(
                     body,
                     job_id,
-                    checkpoint_dir,
+                    resources,
                     required_columns_by_node=required_columns_by_node,
                     execution_context=execution_context,
                 )
@@ -4153,10 +4163,9 @@ class OptimiserSolveService:
         try:
             self._raise_if_frontier_auto_range_stopped(job_id)
             with (
-                tempfile.TemporaryDirectory(prefix="haute_frontier_range_") as raw_dir,
+                contextlib.ExitStack() as resources,
                 tempfile.TemporaryDirectory(prefix="haute_frontier_range_parts_") as parts_dir,
             ):
-                checkpoint_dir = Path(raw_dir)
                 self._store.atomic_update(
                     job_id,
                     {
@@ -4182,7 +4191,7 @@ class OptimiserSolveService:
                 lazy_outputs = self._execute_pipeline(
                     body,
                     job_id,
-                    checkpoint_dir,
+                    resources,
                     required_columns_by_node=base_required,
                     target_node_id=streaming_plan.base_node_id,
                     execution_context=execution_context,
@@ -4571,16 +4580,18 @@ class OptimiserSolveService:
         self,
         body: OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest,
         job_id: str,
-        checkpoint_dir: Path,
+        resources: contextlib.ExitStack,
         *,
         required_columns_by_node: Mapping[str, Iterable[str]] | None = None,
         target_node_id: str | None = None,
         execution_context: ExecutionContext | None = None,
         preamble_fingerprint: str | None = None,
     ) -> dict[str, Any]:
-        """Execute the pipeline lazily up to the optimiser node.
+        """Execute the pipeline lazily up to the optimiser node, under a seed plan.
 
-        The caller owns *checkpoint_dir* lifecycle (creation + cleanup).
+        The plan is entered on the caller's *resources* stack, so its seed
+        leases and captures stay held until the caller has finished reading
+        the returned frames.
         """
         body = _with_flattened_optimiser_graph(body)
         try:
@@ -4615,111 +4626,72 @@ class OptimiserSolveService:
 
             chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
             with temporary_streaming_chunk_size(chunk_size):
-                execution_target_node_id = target_node_id or body.node_id
-                if target_node_id is None:
-                    optimiser_node = _find_optimiser_node(body.graph, body.node_id)
-                    configured_data_input = optimiser_node.data.config.get("data_input")
-                    if (
-                        optimiser_node.data.config.get("mode", "online") == "online"
-                        and isinstance(configured_data_input, str)
-                        and configured_data_input
-                    ):
-                        data_input_id = _resolve_optimiser_data_input_id(
-                            body.graph,
-                            body.node_id,
-                            optimiser_node.data.config,
-                        )
-                        if isinstance(data_input_id, str) and data_input_id:
-                            execution_target_node_id = data_input_id
-                preserved_node_ids = _optimiser_side_input_ids(body.graph, body.node_id)
-                cache_node_ids = _optimiser_dataframe_cache_node_ids(
-                    body.graph,
-                    optimiser_node_id=body.node_id,
-                    execution_target_node_id=execution_target_node_id,
-                    explicit_target_node=target_node_id is not None,
+                execution_target_node_id = target_node_id or _setup_execution_target_node_id(
+                    body.graph, body.node_id
                 )
-                # Opportunistic cache warming for the later solve.  The
-                # cache key advertises solver-required columns so a
-                # subsequent OPTIMISER_SETUP run can hit it, but the
-                # executor still runs with the narrower auto-range
-                # projection demand.  When the node's actual output
-                # happens to include the solver columns (e.g. passthrough
-                # nodes that don't drop upstream columns), the artifact
-                # is reusable; when it doesn't, the seed-time column
-                # check rejects the hit and the solve rebuilds.  This
-                # preserves AUTO_RANGE's narrow-projection contract
-                # because the executor's demand is unchanged.
-                #
-                # The merge invariant in ``_execute_lazy`` requires that
-                # ``auto_range_required ⊆ solver_required`` so the
-                # re-derived expected_key still matches the cache key.
-                # ``_optimiser_solve_required_columns_by_node`` and
-                # ``_auto_range_required_columns_by_node`` satisfy this
-                # by construction (auto-range columns are a subset of
-                # solver columns).
-                cache_required_columns_by_node = required_columns_by_node
+                preserved_node_ids = _optimiser_side_input_ids(body.graph, body.node_id)
+                # Every node setup reads afterwards: an explicit target alone;
+                # otherwise the resolved execution target (an Optimiser resolves
+                # to its data input) and each banding side input from its own
+                # edges that the run executes, API inputs included. The plan
+                # decides separately which of them it can capture.
+                consumed_node_ids: tuple[str, ...] = (execution_target_node_id,)
+                if target_node_id is None:
+                    target_lineage = set(
+                        upstream_node_ids(execution_target_node_id, body.graph.parents_of)
+                    )
+                    consumed_node_ids += tuple(sorted(preserved_node_ids & target_lineage))
+                # Auto-range captures, at whichever nodes it captures, the
+                # columns the following solve reads there — the data input, or
+                # the streaming base below the scenario expander — so the solve
+                # seeds instead of recomputing. A column a node does not produce
+                # is simply not captured.
+                capture_columns_by_node: Mapping[str, frozenset[str]] = {}
                 if (
                     execution_context is not None
                     and execution_context.profile == ExecutionProfile.AUTO_RANGE
                 ):
                     optimiser_node = _find_optimiser_node(body.graph, body.node_id)
-                    mode = str(optimiser_node.data.config.get("mode", "online"))
-                    if mode in {"online", "ratebook"}:
-                        solver_required_columns_by_node = _optimiser_solve_required_columns_by_node(
+                    if str(optimiser_node.data.config.get("mode", "online")) in {
+                        "online",
+                        "ratebook",
+                    }:
+                        capture_columns_by_node = _solve_columns_by_node(
                             body.graph,
                             body.node_id,
                             optimiser_node.data.config,
+                            source=scenario,
                         )
-                        solver_cache_node_ids = set(cache_node_ids).intersection(
-                            solver_required_columns_by_node
-                        )
-                        if solver_cache_node_ids:
-                            cache_required_columns = dict(required_columns_by_node or {})
-                            for node_id in solver_cache_node_ids:
-                                cache_required_columns[node_id] = solver_required_columns_by_node[
-                                    node_id
-                                ]
-                            cache_required_columns_by_node = cache_required_columns
-                # Every candidate can be filtered away (e.g. the only setup
-                # input is a multi-frame apiInput, which the per-node cache
-                # cannot materialise) — run uncached rather than build a
-                # request the cache layer rejects as empty.
-                dataframe_cache_request = None
-                if cache_node_ids:
-                    dataframe_cache_request = build_dataframe_execution_cache_request(
-                        body.graph,
-                        node_ids=cache_node_ids,
-                        namespace="optimiser_setup",
-                        source=scenario,
-                        profile=(
-                            execution_context.profile
-                            if execution_context is not None
-                            else ExecutionProfile.LAZY_SINK
-                        ),
-                        input_fingerprint=dataframe_graph_input_fingerprint(
-                            body.graph,
+                plan = resources.enter_context(
+                    open_seed_plan(
+                        SeedPlanRequest(
+                            graph=body.graph,
                             target_node_id=execution_target_node_id,
                             source=scenario,
+                            profile=(
+                                execution_context.profile
+                                if execution_context is not None
+                                else ExecutionProfile.LAZY_SINK
+                            ),
+                            consumed_node_ids=consumed_node_ids,
+                            required_columns_by_node=required_columns_by_node,
+                            capture_columns_by_node=capture_columns_by_node,
                         ),
-                        target_node_id=execution_target_node_id,
-                        preserve_node_ids=preserved_node_ids,
-                        required_columns_by_node=cache_required_columns_by_node,
-                        enforce_contracts=True,
-                        preamble_ns_supplied=preamble_ns is not None,
-                        streaming_chunk_size=chunk_size,
+                        execution_context=execution_context,
                     )
+                )
                 lazy_outputs, *_ = execute_lazy_graph(
                     body.graph,
                     _build_node_fn,
                     target_node_id=execution_target_node_id,
                     preamble_ns=preamble_ns,
                     source=scenario,
-                    checkpoint_dir=checkpoint_dir,
                     enforce_contracts=True,
                     preserve_node_ids=preserved_node_ids,
                     required_columns_by_node=required_columns_by_node,
                     execution_context=execution_context,
-                    dataframe_cache_request=dataframe_cache_request,
+                    prepare_inputs=False,
+                    snapshot_plan=plan,
                 )
             return lazy_outputs
         except HTTPException:
