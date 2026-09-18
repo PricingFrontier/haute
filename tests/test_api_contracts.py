@@ -744,6 +744,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             },
         },
     },
+    "/api/rating/levels": {
+        "POST": {
+            "request_ref": "#/components/schemas/RatingLevelsRequest",
+            "success_schema": {"$ref": "#/components/schemas/RatingLevelsResponse"},
+        },
+    },
     "/api/schema": {
         "GET": {
             "request_ref": None,

@@ -1,0 +1,40 @@
+{
+  "status": "ok",
+  "point": {
+    "consumer_node_id": "rating",
+    "point": {"producer_node_id": "join", "port_label": null},
+    "slot_key": "join||live",
+    "kind": "node_output",
+    "state": "current",
+    "demand": ["region", "cover"],
+    "data_version": "b41f0a2c9d5e4f7a",
+    "row_count": 1000,
+    "size_bytes": 40960,
+    "retention": "pinned",
+    "generation": null,
+    "job": null,
+    "reads_directly": false,
+    "build_endpoint": null,
+    "clear_endpoint": null
+  },
+  "data_version": "b41f0a2c9d5e4f7a",
+  "total_rows": 1000,
+  "columns": [
+    {
+      "column": "region",
+      "values": [
+        {"value": "North", "count": 750},
+        {"value": "South", "count": 249},
+        {"value": "Orkney", "count": 1}
+      ],
+      "distinct_count": 3,
+      "null_count": 0
+    },
+    {
+      "column": "cover",
+      "values": [{"value": "Comprehensive", "count": 900}],
+      "distinct_count": 1,
+      "null_count": 100
+    }
+  ]
+}

@@ -87,6 +87,7 @@ from haute.routes.node_data import router as node_data_router
 from haute.routes.optimiser import router as optimiser_router
 from haute.routes.output_assemble import router as output_assemble_router
 from haute.routes.pipeline import router as pipeline_router
+from haute.routes.rating import router as rating_router
 from haute.routes.submodel import router as submodel_router
 from haute.routes.utility import router as utility_router
 from haute.schemas import SessionStatusResponse
@@ -579,6 +580,7 @@ app.include_router(submodel_router)
 app.include_router(explore_router)
 app.include_router(node_data_router)
 app.include_router(banding_router)
+app.include_router(rating_router)
 app.include_router(modelling_router)
 app.include_router(optimiser_router)
 app.include_router(mlflow_router)

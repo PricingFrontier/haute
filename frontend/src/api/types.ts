@@ -1118,6 +1118,28 @@ export interface BandingStatsResponse {
   unmatched_count?: number | null
 }
 
+export interface RatingLevelValue {
+  value: string
+  count: number
+}
+
+/** What one column offers as rating levels, neither missing nor blank. */
+export interface RatingLevelColumn {
+  column: string
+  values: RatingLevelValue[]
+  distinct_count: number
+  null_count: number
+}
+
+/** Whole-dataset levels for raw rating factor columns, or why there are none. */
+export interface RatingLevelsResponse {
+  status: "ok" | "cache_required"
+  point: NodeDataPointResponse
+  data_version?: string | null
+  total_rows: number
+  columns: RatingLevelColumn[]
+}
+
 export interface NodeDataProfileResponse {
   status: "completed" | "started" | "joined" | "cache_required"
   job_id?: string | null

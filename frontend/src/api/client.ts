@@ -77,6 +77,7 @@ import type {
   NodeDataClearResponse,
   NodeDataPointResponse,
   BandingStatsResponse,
+  RatingLevelsResponse,
   NodeDataProfileResponse,
   NodeDataRunResponse,
   NodeDataStatusResponse,
@@ -119,6 +120,7 @@ import {
   parseNodeDataClearResponse,
   parseNodeDataPointResponse,
   parseBandingStatsResponse,
+  parseRatingLevelsResponse,
   parseNodeDataProfileResponse,
   parseNodeDataRunResponse,
   parseNodeDataStatusResponse,
@@ -1268,6 +1270,29 @@ export function getBandingStats(args: BandingStatsArgs): Promise<BandingStatsRes
     },
     { signal },
   ).then(parseBandingStatsResponse)
+}
+
+export interface RatingLevelsArgs {
+  graph: GraphPayload
+  node_id: string
+  source?: string
+  columns: string[]
+  valueLimit?: number
+  signal?: AbortSignal
+}
+
+export function getRatingLevels(args: RatingLevelsArgs): Promise<RatingLevelsResponse> {
+  const { signal, columns, valueLimit, ...payload } = args
+  return post<unknown>(
+    "/api/rating/levels",
+    {
+      ...payload,
+      source: payload.source ?? "live",
+      columns,
+      ...(valueLimit === undefined ? {} : { value_limit: valueLimit }),
+    },
+    { signal },
+  ).then(parseRatingLevelsResponse)
 }
 
 export function clearNodeData(args: NodeDataArgs): Promise<NodeDataClearResponse> {

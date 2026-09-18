@@ -209,6 +209,11 @@ Out of scope (owned by neighbouring components):
   in the Calculation and Nodes tabs. Rating enrichment also receives the exact
   factor dtypes from the consumed parent frame; it does not reimplement lookup
   or rule matching.
+- **[server-api](../server-api/high-level.md)** — `routes/_rating_levels.py`
+  publishes the levels of a Rating Step's raw factor columns over the node's
+  shared data point, keyed by the same `_rating_key_expr` the lookup joins on,
+  so a level offered in the editor is a level a run matches. It reads that
+  module's key expression rather than rendering values its own way.
 - **modelling / optimiser** — the optimiser's ratebook-apply path is a
   downstream consumer, not a peer: it constructs synthetic rating-table specs
   from a saved artifact's factor tables and ordered `factor_dtypes` descriptors,
@@ -269,19 +274,3 @@ Out of scope (owned by neighbouring components):
   entries without a non-empty factor list raises `ValueError` before the frame
   is touched. Executor-built nodes and generated standalone pipeline code use
   the same normalisation contract.
-
-## Approved change contract — rule claims and whole-dataset banding statistics
-
-- **Current limitation.** Rating factor levels still come only from preview rows, so a level that
-  appears nowhere in the preview is missing from the editor.
-- **Unresolved target.** Rating factor levels, keyed by the lookup's own key expression, are
-  computed server-side over the Rating Step node's shared data point, and the editor reads them
-  instead of listing what the preview happened to contain.
-- **Non-goals.** Banding output values, the rating lookup, rating-table combination, and
-  generated code are unchanged.
-- **Failure and compatibility semantics.** Rules that execution rejects return the same message
-  as a 422. A point that is not current returns cache-required with its state; statistics are
-  never computed from stale data. Admission or memory-limit failure returns 507.
-- **Acceptance evidence.** Route tests for level keys and every failure response; editor tests
-  showing levels from the shared point rather than preview rows.
-- **Roadmap package.** [RAT-B03](../roadmap/rating.md#rat-b03--whole-dataset-rating-factor-levels).

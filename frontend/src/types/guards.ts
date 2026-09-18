@@ -124,6 +124,7 @@ import type {
   NodeDataPointResponse,
   NodeDataProfile,
   BandingStatsResponse,
+  RatingLevelsResponse,
   NodeDataProfileResponse,
   NodeDataRunResponse,
   NodeDataStatusResponse,
@@ -2027,6 +2028,53 @@ export function parseBandingStatsResponse(value: unknown): BandingStatsResponse 
       (count, index) => expectNumber(parser, count, `field \`rule_counts[${index}]\``),
     ),
     unmatched_count: optionalNullableNumber(parser, obj, "unmatched_count"),
+  }
+}
+
+export function parseRatingLevelsResponse(value: unknown): RatingLevelsResponse {
+  const parser = "parseRatingLevelsResponse"
+  const obj = expectPlainObject(parser, value)
+  return {
+    status: expectStringLiteral(parser, obj.status, "field `status`", [
+      "ok",
+      "cache_required",
+    ] as const),
+    point: parseNodeDataPointResponse(obj.point),
+    data_version: optionalNullableString(parser, obj, "data_version"),
+    total_rows: expectNumber(parser, obj.total_rows ?? 0, "field `total_rows`"),
+    columns: expectArray(parser, obj.columns ?? [], "field `columns`").map((entry, index) => {
+      const item = expectPlainObject(parser, entry)
+      return {
+        column: expectString(parser, item.column, `field \`columns[${index}].column\``),
+        values: expectArray(parser, item.values ?? [], `field \`columns[${index}].values\``).map(
+          (level, position) => {
+            const value = expectPlainObject(parser, level)
+            return {
+              value: expectString(
+                parser,
+                value.value,
+                `field \`columns[${index}].values[${position}].value\``,
+              ),
+              count: expectNumber(
+                parser,
+                value.count,
+                `field \`columns[${index}].values[${position}].count\``,
+              ),
+            }
+          },
+        ),
+        distinct_count: expectNumber(
+          parser,
+          item.distinct_count ?? 0,
+          `field \`columns[${index}].distinct_count\``,
+        ),
+        null_count: expectNumber(
+          parser,
+          item.null_count ?? 0,
+          `field \`columns[${index}].null_count\``,
+        ),
+      }
+    }),
   }
 }
 

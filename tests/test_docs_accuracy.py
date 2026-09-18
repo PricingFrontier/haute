@@ -145,7 +145,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "modelling",
     "optimiser",
     "polars-steps",
-    "rating",
 )
 _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = ()
 _COMPONENT_PACKAGE_HEADING = re.compile(

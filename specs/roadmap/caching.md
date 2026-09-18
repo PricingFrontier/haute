@@ -8,9 +8,8 @@ one analysis-result surface, and one execution rule under which every
 full-data materialisation both reads and writes that store. Current behaviour is
 specified in [caching](../caching/high-level.md), the
 [IO layer](../io-layer/high-level.md), and the
-[execution engine](../execution-engine/high-level.md). Explore and rating
-consumers of these packages are owned by the [Explore / EDA roadmap](explore-eda.md)
-and the [rating roadmap](rating.md).
+[execution engine](../execution-engine/high-level.md). Explore consumers of
+these packages are owned by the [Explore / EDA roadmap](explore-eda.md).
 
 ## Priorities
 
@@ -23,8 +22,7 @@ and the [rating roadmap](rating.md).
 
 ## Planned improvements
 
-Delivery order is the consumer packages `RAT-B01` → `RAT-B02` → `RAT-B03`,
-then `CACHE-S06` → `CACHE-S07` → `CACHE-S09`. A later package must
+Delivery order is `CACHE-S06` → `CACHE-S07` → `CACHE-S09`. A later package must
 not bypass the resolver, lease, signature, or capture contracts of an earlier
 one. Every package builds on the node-output snapshot store (signature, slot
 index, column widening, retention, cross-process leases, and the publication

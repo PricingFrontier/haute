@@ -1440,6 +1440,58 @@ class BandingStatsResponse(BaseModel):
     unmatched_count: int | None = None
 
 
+# ---------------------------------------------------------------------------
+# /api/rating
+# ---------------------------------------------------------------------------
+
+
+class RatingLevelsRequest(BaseModel):
+    """The levels of raw rating factor columns over the whole dataset.
+
+    The node says which data point to read; the columns are the ones the editor
+    needs levels for, which is the factors its tables actually rate on rather
+    than every column that could be one.
+    """
+
+    graph: Graph
+    node_id: str
+    # Each column is one pass over the data, so the request is bounded; the
+    # editor asks for the factors in use, which is far fewer than this.
+    columns: list[str] = Field(min_length=1, max_length=100)
+    source: str = "live"
+    value_limit: int = Field(default=1000, ge=1, le=10_000)
+
+
+class RatingLevelValue(BaseModel):
+    """One level, keyed the way the rating lookup keys it."""
+
+    value: str
+    count: int = Field(ge=0)
+
+
+class RatingLevelColumn(BaseModel):
+    """What one column offers as rating levels.
+
+    `distinct_count` counts the levels that could be chosen — neither missing
+    nor blank — so it is the number `values` would hold without the cap.
+    """
+
+    column: str
+    values: list[RatingLevelValue] = Field(default_factory=list)
+    distinct_count: int = 0
+    null_count: int = 0
+
+
+class RatingLevelsResponse(BaseModel):
+    """Whole-dataset levels for the columns asked about, or why there are none."""
+
+    status: Literal["ok", "cache_required"]
+    point: NodeDataPointResponse
+    data_version: str | None = None
+    total_rows: int = 0
+    columns: list[RatingLevelColumn] = Field(default_factory=list)
+
+
 class ExplorePivotMembersRequest(BaseModel):
     graph: Graph
     node_id: str

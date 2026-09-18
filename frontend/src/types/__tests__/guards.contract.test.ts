@@ -59,6 +59,7 @@ import {
   parseUtilityReadResponse,
   parseUtilityWriteResponse,
   parseNodeDataProfileResponse,
+  parseRatingLevelsResponse,
 } from "../guards"
 import {
   parseTrainEstimateResponse,
@@ -1409,6 +1410,48 @@ describe("API response guards", () => {
         failure: null,
       }),
     ).toThrow(/parseExplorePivot/i)
+  })
+
+  it("reads rating levels, defaulting the counts a cache-required answer omits", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("rating_levels_response")
+
+    const answered = parseRatingLevelsResponse(fixture)
+    expect(answered.columns[0].values).toEqual([
+      { value: "North", count: 750 },
+      { value: "South", count: 249 },
+      { value: "Orkney", count: 1 },
+    ])
+    expect(answered.columns[0].distinct_count).toBe(3)
+
+    // A cache-required answer carries the point and nothing else; the reader
+    // must not invent levels, and must not throw over their absence either.
+    const unanswered = parseRatingLevelsResponse({
+      status: "cache_required",
+      point: fixture.point,
+    })
+    expect(unanswered.columns).toEqual([])
+    expect(unanswered.total_rows).toBe(0)
+    expect(unanswered.data_version).toBeNull()
+  })
+
+  it("rejects rating levels that are not levels", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("rating_levels_response")
+
+    expect(() =>
+      parseRatingLevelsResponse({ ...fixture, status: "partial" }),
+    ).toThrow(/parseRatingLevels/i)
+    expect(() =>
+      parseRatingLevelsResponse({
+        ...fixture,
+        columns: [{ column: 7, values: [], distinct_count: 0, null_count: 0 }],
+      }),
+    ).toThrow(/columns\[0\]\.column/)
+    expect(() =>
+      parseRatingLevelsResponse({
+        ...fixture,
+        columns: [{ column: "region", values: [{ value: null, count: 1 }] }],
+      }),
+    ).toThrow(/columns\[0\]\.values\[0\]\.value/)
   })
 
   it("rejects malformed profile payloads", () => {

@@ -17,6 +17,9 @@ import {
 } from "./rating/ratingTableUtils"
 import { OneWayEditor } from "./rating/OneWayEditor"
 import { TwoWayGrid } from "./rating/TwoWayGrid"
+import useRatingLevels from "./rating/useRatingLevels"
+import DataCacheButton from "../../components/DataCacheButton"
+import type { SimpleNode } from "./_shared"
 import { useGraph } from "../useGraph"
 import useUIStore, { type RatingStepEditorSection } from "../../stores/useUIStore"
 
@@ -103,6 +106,46 @@ function combinedOutputHasIssue(
   return outputNameIssue || operationIssue || baseValueIssue
 }
 
+/**
+ * The largest rating table this editor will build or draw.
+ *
+ * Whole-dataset levels are real levels: a postcode or vehicle-model column has
+ * thousands, and two of them as factors is a million editable cells — which no
+ * browser will draw and nobody would fill in by hand. Rebuilding three such
+ * factors would allocate the product of all three. Past this size the editor
+ * says what it would take rather than locking up trying.
+ */
+const MAX_EDITABLE_TABLE_CELLS = 20000
+
+/**
+ * How many cells those factors make — every dimension, not just the ones it
+ * takes to pass the cap, because this number is shown to the user and a table
+ * reported as 40,000 cells when it is 400,000 is a worse answer than none.
+ * A table has at most three factors of at most `value_limit` levels, so the
+ * product is exact.
+ */
+function cartesianCellCount(factors: string[], levels: Record<string, string[]>): number {
+  let cells = 1
+  for (const factor of factors) {
+    const count = (levels[factor] || []).length
+    if (count === 0) return 0
+    cells *= count
+  }
+  return cells
+}
+
+/** The table those factors would make, as the editor says it. */
+function describeTableSize(
+  factors: string[],
+  levels: Record<string, string[]>,
+  cells: number,
+): string {
+  const dimensions = factors
+    .map(factor => `${factor} (${(levels[factor] || []).length})`)
+    .join(" × ")
+  return `${dimensions} would be ${cells.toLocaleString()} cells`
+}
+
 function onlyNonBandedLevels(
   levels: Record<string, string[]>,
   configuredBandingOutputs: string[],
@@ -145,11 +188,16 @@ export default function RatingStepEditor({
   errorLine?: number | null
   nodeId?: string
 }) {
-  const { allNodes } = useGraph()
+  const graph = useGraph()
+  const { allNodes } = graph
   const rememberedSection = useUIStore((s) => nodeId ? s.ratingStepEditorSections[nodeId] : undefined)
   const setRememberedSection = useUIStore((s) => s.setRatingStepEditorSection)
   const [activeTab, setActiveTab] = useState(0)
-  const [sliceIdx, setSliceIdx] = useState(0)
+  // The chosen slice is the level itself: levels can arrive, and an index
+  // would then name a different one without the user touching anything.
+  const [sliceLevel, setSliceLevel] = useState<string | null>(null)
+  // Why a factor the user picked was not added, kept until they move on.
+  const [factorLimitNotice, setFactorLimitNotice] = useState<string | null>(null)
   const [activeSection, setActiveSectionState] = useState<RatingSection>(() => (
     rememberedSection ?? resolveInitialSection(config)
   ))
@@ -160,9 +208,42 @@ export default function RatingStepEditor({
   const bandingLevels = bandingClassification.levels
   const rawStringLevels = extractPreviewCategoricalLevels(previewRows, upstreamColumns)
   const savedEntryLevels = extractTableEntryFactorLevels(tables)
+
+  // The whole dataset this node reads, when it is cached: a level that appears
+  // in none of the preview rows is still a level the tables can rate on. Only
+  // the raw factor columns are asked about — a banded output is named by the
+  // banding config rather than by the data, and asking is a pass over it.
+  const node = nodeId ? allNodes.find((candidate: SimpleNode) => candidate.id === nodeId) ?? null : null
+  const ratedColumns = tables
+    .flatMap(candidate => candidate.factors)
+    .filter(factor => factor && !bandingClassification.configuredOutputs.includes(factor))
+  const {
+    cache,
+    levels: datasetLevels,
+    totalRows: datasetRows,
+    basis: levelsBasis,
+    error: levelsError,
+  } = useRatingLevels({
+    node,
+    allNodes,
+    edges: graph.edges,
+    submodels: graph.submodels,
+    preamble: graph.preamble,
+    columns: ratedColumns,
+  })
+
+  // Whole-dataset levels are *added* to what the editor already shows, never
+  // put in front of it. They arrive while the user is typing, and a row that
+  // moved under a half-finished edit would take the value meant for its
+  // neighbour; the server's count order decides what its cap keeps, not where
+  // a row sits on screen. Levels already in a saved table stay for the same
+  // reason: a rate must not vanish from the editor that shows it.
   const rawFactorLevels = mergeFactorLevels(
-    onlyNonBandedLevels(rawStringLevels, bandingClassification.configuredOutputs),
-    onlyNonBandedLevels(savedEntryLevels, bandingClassification.configuredOutputs),
+    mergeFactorLevels(
+      onlyNonBandedLevels(rawStringLevels, bandingClassification.configuredOutputs),
+      onlyNonBandedLevels(savedEntryLevels, bandingClassification.configuredOutputs),
+    ),
+    onlyNonBandedLevels(datasetLevels, bandingClassification.configuredOutputs),
   )
   const factorLevels = mergeFactorLevels(bandingLevels, rawFactorLevels)
   const combinedOutputs = normaliseCombinedOutputs(config)
@@ -246,7 +327,7 @@ export default function RatingStepEditor({
   useEffect(() => {
     if (activeSection !== "tables" || activeTableVisible || firstVisibleTableIdx === null) return
     setActiveTab(firstVisibleTableIdx)
-    setSliceIdx(0)
+    setSliceLevel(null)
   }, [activeSection, activeTableVisible, firstVisibleTableIdx])
 
   const commitTables = (next: RatingTable[]) => onUpdate("tables", next)
@@ -258,7 +339,27 @@ export default function RatingStepEditor({
 
   const setFactors = (idx: number, newFactors: string[]) => {
     const t = tables[idx]
-    const rebuilt = buildCartesianEntries(newFactors, factorLevels, t.entries, t.defaultValue)
+    // An entry must carry a value for every one of its table's factors, so a
+    // factor this editor cannot build entries for is not committed at all:
+    // leaving the old entries under a new factor writes a configuration the
+    // server rejects and the pipeline cannot run.
+    const cells = cartesianCellCount(newFactors, factorLevels)
+    const adds = newFactors.some(factor => !t.factors.includes(factor))
+    if (adds && cells > MAX_EDITABLE_TABLE_CELLS) {
+      setFactorLimitNotice(
+        `${describeTableSize(newFactors, factorLevels, cells)} — too many to edit here. ` +
+          `Band the column first, or rate it in a table of its own.`,
+      )
+      return
+    }
+    setFactorLimitNotice(null)
+    // Dropping a factor from a table that levels have already made oversized
+    // must stay possible, and the entries keep a value for every remaining
+    // factor, so they are left alone rather than expanded again.
+    const rebuilt =
+      cells > MAX_EDITABLE_TABLE_CELLS
+        ? t.entries
+        : buildCartesianEntries(newFactors, factorLevels, t.entries, t.defaultValue)
     const factorDtypes = newFactors.reduce<Record<string, RatingFactorDtype>>((result, factor) => {
       const descriptor = t.factorDtypes?.[factor]
       if (descriptor) result[factor] = descriptor
@@ -289,7 +390,8 @@ export default function RatingStepEditor({
 
   const selectTable = (idx: number) => {
     setActiveTab(idx)
-    setSliceIdx(0)
+    setSliceLevel(null)
+    setFactorLimitNotice(null)
   }
 
   const addTable = () => {
@@ -345,20 +447,46 @@ export default function RatingStepEditor({
 
   const rebuildCurrentEntries = () => {
     const t = tables[safeIdx]
+    if (cartesianCellCount(t.factors, factorLevels) > MAX_EDITABLE_TABLE_CELLS) return
     const rebuilt = buildCartesianEntries(t.factors, factorLevels, t.entries, t.defaultValue)
     updateTable(safeIdx, { entries: rebuilt })
   }
 
   const factorCount = table.factors.length
+  // Every combination of the table's factors, which is what rebuilding builds
+  // and — for the two gridded dimensions — what drawing it draws.
+  const tableCellCount = cartesianCellCount(table.factors, factorLevels)
+  const tableTooLarge = tableCellCount > MAX_EDITABLE_TABLE_CELLS
 
   // For 3-way: factor[2] is the slice dimension
   const sliceFactor = factorCount === 3 ? table.factors[2] : null
   const sliceLevels = sliceFactor ? (factorLevels[sliceFactor] || []) : []
-  const safeSliceIdx = Math.min(sliceIdx, Math.max(0, sliceLevels.length - 1))
+  const selectedSlice =
+    sliceLevel !== null && sliceLevels.includes(sliceLevel) ? sliceLevel : sliceLevels[0]
+
+  const levelsBasisLabel =
+    levelsBasis === "all"
+      ? `Levels from all rows · ${datasetRows.toLocaleString()}`
+      : levelsBasis === "stale"
+        ? "Cached data is out of date"
+        : `Levels from a sample · ${(previewRows?.length ?? 0).toLocaleString()} rows`
 
   return (
     <div className="px-4 py-3 space-y-3 overflow-y-auto">
       <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
+
+      {node && (
+        <div className="flex items-center justify-between gap-2" data-testid="rating-levels-basis">
+          <span
+            className="text-[11px]"
+            style={{ color: levelsError ? "var(--danger)" : "var(--text-muted)" }}
+            title={levelsError ?? undefined}
+          >
+            {levelsError ? `Reading the whole dataset failed: ${levelsError}` : levelsBasisLabel}
+          </span>
+          <DataCacheButton cache={cache} />
+        </div>
+      )}
 
       {bandingClassification.zeroLevelOutputs.length > 0 && (
         <div
@@ -629,8 +757,8 @@ export default function RatingStepEditor({
 
       {/* Rebuild button */}
       {factorCount > 0 && (
-        <button onClick={rebuildCurrentEntries}
-          className="accent-hover-btn w-full px-2 py-1.5 text-[11px] font-medium rounded-lg"
+        <button onClick={rebuildCurrentEntries} disabled={tableTooLarge}
+          className="accent-hover-btn w-full px-2 py-1.5 text-[11px] font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
           style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', color: 'var(--text-secondary)', ['--node-accent' as string]: accentColor }}>
           ↻ Rebuild from factor levels
         </button>
@@ -642,26 +770,55 @@ export default function RatingStepEditor({
           Select at least one factor to populate the rating table
         </div>
       )}
-      {factorCount === 1 && (
+      {factorLimitNotice && (
+        <div
+          role="status"
+          data-testid="rating-factor-limit"
+          className="px-3 py-2 text-[11px] rounded-lg"
+          style={{
+            background: "var(--warning-soft)",
+            border: "1px solid var(--warning-border)",
+            color: "var(--text-secondary)",
+          }}
+        >
+          {factorLimitNotice}
+        </div>
+      )}
+      {factorCount > 0 && tableTooLarge && (
+        <div
+          role="status"
+          data-testid="rating-table-too-large"
+          className="px-3 py-3 text-center text-[11px] rounded-lg"
+          style={{
+            background: "var(--warning-soft)",
+            border: "1px solid var(--warning-border)",
+            color: "var(--text-secondary)",
+          }}
+        >
+          {describeTableSize(table.factors, factorLevels, tableCellCount)} — too many to edit
+          here. Band the column first, or rate it in a table of its own.
+        </div>
+      )}
+      {factorCount === 1 && !tableTooLarge && (
         <OneWayEditor table={table} bandingLevels={factorLevels}
           onUpdateEntries={(e) => onUpdateEntries(safeIdx, e)} />
       )}
-      {factorCount === 2 && (
+      {factorCount === 2 && !tableTooLarge && (
         <TwoWayGrid table={table} bandingLevels={factorLevels}
           onUpdateEntries={(e) => onUpdateEntries(safeIdx, e)} />
       )}
-      {factorCount === 3 && (
+      {factorCount === 3 && !tableTooLarge && (
         <div className="space-y-2">
           <div className="flex items-center gap-2">
             <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>
               {sliceFactor}
             </label>
-            <select aria-label={`${sliceFactor} slice`} value={safeSliceIdx}
-              onChange={(e) => setSliceIdx(Number(e.target.value))}
+            <select aria-label={`${sliceFactor} slice`} value={selectedSlice ?? ""}
+              onChange={(e) => setSliceLevel(e.target.value)}
               className="flex-1 px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none"
               style={INPUT_STYLE}>
-              {sliceLevels.map((level, i) => (
-                <option key={level} value={i}>{level}</option>
+              {sliceLevels.map((level) => (
+                <option key={level} value={level}>{level}</option>
               ))}
             </select>
           </div>
@@ -670,7 +827,7 @@ export default function RatingStepEditor({
               onUpdateEntries={(e) => onUpdateEntries(safeIdx, e)}
               factorOverrides={{
                 factors: [table.factors[0], table.factors[1]],
-                sliceKey: { [table.factors[2]]: sliceLevels[safeSliceIdx] },
+                sliceKey: { [table.factors[2]]: selectedSlice },
               }} />
           )}
         </div>

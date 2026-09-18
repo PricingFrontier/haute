@@ -27,6 +27,8 @@
 | `src/haute/routes/input_cache.py` | `/api/input-cache/*`, the shared build/status/cancel/clear lifecycle for snapshot-backed inputs. |
 | `src/haute/routes/node_data.py` | `/api/node-data/point`, `/run`, `/status/{job_id}`, `/cancel/{job_id}`, and `/clear` for the data a consumer node reads. |
 | `src/haute/routes/banding.py` | FastAPI router (`/api/banding`): whole-dataset statistics for the banding factor being edited, delegating to `_banding_stats.py`. |
+| `src/haute/routes/rating.py` | FastAPI router (`/api/rating`): whole-dataset levels for the raw factor columns a Rating Step rates on, delegating to `_rating_levels.py`. |
+| `src/haute/routes/_rating_levels.py` | Reads those levels over the node's shared data point under `run_synchronous_analysis`, keyed by the rating lookup's own key expression. |
 | `src/haute/routes/_node_data_service.py` | `NodeDataService`: consumer point responses, delegation, explicit node-output build jobs in isolated workers, the data-profile job, supersession, cancellation, and clear. |
 | `src/haute/routes/_synchronous_analysis.py` | Request-time analyses of a leased point: admitted execution, memoisation by data version, and client-disconnect cancellation. |
 | `src/haute/routes/utility.py` | `/api/utility` CRUD (list/read/create/update/delete) for `utility/*.py` helper modules, with AST syntax validation on every write. |
@@ -647,6 +649,38 @@ failure is HTTP 507 with the execution error payload.
 client disconnects or the request task itself is cancelled; either way it waits for the
 abandoned analysis to stop, so its admission and lease are always released, discarding whatever
 that analysis reports, before answering 499 or propagating the cancellation.
+
+### Rating factor levels
+
+`POST /api/rating/levels` (`routes/rating.py`, `routes/_rating_levels.py`) answers which levels the
+raw factor columns of a Rating Step actually hold, over the whole point its node reads. The editor
+listed the levels of preview rows, so a level appearing only outside them could not be given a rate
+and its rows silently took the table's default.
+
+The request names `columns` (1–100, read once each in the order first asked) and a `value_limit`
+(1–10000, default 1000). The point is resolved for the node's demand *widened by those columns*, on
+the same rule as the banding statistics above, and the response carries that same widened reading.
+`status: "cache_required"` with the point is the whole answer when the point is not current or its
+data changed underneath the request; otherwise the levels are read through `run_synchronous_analysis`
+— admitted, leased, cancellable, and memoised per data version and request — and the route runs it
+through `run_until_disconnected`, so a superseded request stops its scan. `data_version` is the
+version the lease served, for the same reason it is on the banding response.
+
+Each column's `values` are `{value, count}` pairs keyed by the rating lookup's own
+`_rating_key_expr`, so a level chosen in the editor is one the lookup joins on rather than a
+rendering of the value that merely looks like it. They are sorted by count descending then value
+ascending and capped at `value_limit`, so what the cap keeps is what the data is mostly made of.
+`distinct_count` counts the levels that could be chosen — the number `values` would hold without
+the cap — and `null_count` the missing rows. A missing value and a blank string are neither of them
+something to rate on, so neither is a level: only the missing ones are counted. `total_rows` is the
+rows those levels were read from, which the editor reports.
+
+Two conditions are HTTP 422: a column the data does not have (whether the projection or the schema
+finds it), and a column that is not text — `String`, `Categorical` or `Enum`, the kinds the preview
+path has always offered, because a number's levels are banding's job. As with the banding
+statistics, `HTTPException.detail` stays a plain string and the two are told apart by their
+messages. Invalid consumer wiring is HTTP 400, and admission or memory-limit failure is HTTP 507
+through the shared analysis helper.
 
 ## Edge cases and invariants
 

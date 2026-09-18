@@ -49,6 +49,21 @@ backend API modules own validation and persistence.
 - Banding exposes categorical/numeric rule editing, preview-derived suggestions and histogram
   context. Rating supports one- and two-way factor tables, value-level matching, statistics,
   paste/copy and downloadable table data.
+- Banding and Rating say whose rows their numbers describe. Both show the shared data-cache
+  control, and when the node's data point is cached both read the whole dataset: Banding its
+  distribution, values and per-rule counts, Rating the levels of the raw factor columns its
+  tables rate on, so a level absent from the preview can still be given a rate. Without a
+  current point — or with one the node has moved on from — each says so and falls back to the
+  preview sample rather than presenting a sample's answer as the data's. A failure is shown in
+  place of that label, carrying the server's own message, and the preview basis continues.
+- Levels the data adds are appended to the ones the Rating Step editor already shows, never put
+  in front of them: they arrive while the user is typing, and a row that moved would take the
+  value meant for its neighbour. The slice of a three-factor table is held as the level itself
+  rather than a position for the same reason. A table whose factors would make more cells than
+  the editor can edit is not drawn or rebuilt; it says how many cells it would take instead, and
+  a factor that would take a table past that size is not added at all, because entries the editor
+  cannot build would leave the table without a value for its own factor. Dropping a factor stays
+  possible whatever the size, so a table the data has made oversized can still be shrunk.
 - IO editors obtain supported formats and their arguments from the server. API/data input,
   output, external-file, transform, explore, live-switch, scenario, submodel,
   model-score and optimiser-apply editors render only their own configuration contract.
@@ -448,18 +463,3 @@ fields with on-demand previous-configuration and diff views; updating a submodel
 its contents and consumer code. In degraded documents, `scoped_editable` nodes keep their
 normal editors and save through the node-scoped save, which adopts the authoritative
 document while whole-graph fences stay in place.
-
-## Approved change contract — whole-dataset counts in Banding and Rating Step editors
-
-- **Current limitation.** `frontend/src/panels/editors/BandingEditor.tsx` computes distributions,
-  category values, and match counts over the whole data point it reads, but
-  `frontend/src/panels/editors/RatingStepEditor.tsx` still lists raw factor levels from preview
-  rows, so it misses levels outside the preview.
-- **Unresolved target.** The Rating Step editor shows the shared data-cache button and, with a
-  current data point, lists server levels; without one it keeps the preview computation.
-- **Non-goals.** Rating-table editing, banding statistics, and saved config are unchanged.
-- **Failure and compatibility semantics.** A levels failure is shown in the editor and leaves the
-  last successful result marked as not current; a cache-required response switches the editor to
-  the preview basis.
-- **Acceptance evidence.** Editor tests for preview versus whole-dataset rating levels.
-- **Roadmap package.** [RAT-B03](../roadmap/rating.md#rat-b03--whole-dataset-rating-factor-levels).

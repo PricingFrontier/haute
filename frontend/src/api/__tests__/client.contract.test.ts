@@ -27,6 +27,7 @@ import {
   buildInputCache,
   fetchSchema,
   getNodeDataPoint,
+  getRatingLevels,
   getNodeDataProfile,
   getNodeDataStatus,
   runNodeData,
@@ -527,6 +528,52 @@ describe("client runtime contracts", () => {
     expect(result.state).toBe("partial")
     expect(result.generation?.columns).toEqual(["premium", "region"])
     expect(result.job?.job_id).toBe("node-data-7f2c")
+  })
+
+  it("getRatingLevels posts the columns and parses the levels of each one", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("rating_levels_response")))
+
+    const result = await getRatingLevels({
+      graph: dummyGraph, node_id: "rating", columns: ["region", "cover"],
+    })
+
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/rating/levels")
+    // No limit asked for is no limit sent: the server owns the default.
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
+      graph: dummyGraph, node_id: "rating", source: "live", columns: ["region", "cover"],
+    })
+    expect(result.status).toBe("ok")
+    expect(result.total_rows).toBe(1000)
+    expect(result.columns.map(column => column.column)).toEqual(["region", "cover"])
+    expect(result.columns[0].values[2]).toEqual({ value: "Orkney", count: 1 })
+    expect(result.columns[1].null_count).toBe(100)
+    expect(result.data_version).toBe(result.point.data_version)
+  })
+
+  it("getRatingLevels sends a value limit under the name the server reads", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("rating_levels_response")))
+
+    await getRatingLevels({
+      graph: dummyGraph, node_id: "rating", columns: ["region"], valueLimit: 25, source: "staging",
+    })
+
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
+      graph: dummyGraph, node_id: "rating", source: "staging", columns: ["region"], value_limit: 25,
+    })
+  })
+
+  it("getRatingLevels refuses a response that is not the levels contract", async () => {
+    const fixture = loadUiContractFixture("rating_levels_response") as Record<string, unknown>
+    mockFetch.mockReturnValue(
+      jsonResponse({
+        ...fixture,
+        columns: [{ column: "region", values: [{ value: "North", count: "many" }] }],
+      }),
+    )
+
+    await expect(
+      getRatingLevels({ graph: dummyGraph, node_id: "rating", columns: ["region"] }),
+    ).rejects.toThrow(/columns\[0\]\.values\[0\]\.count/)
   })
 
   it("runNodeData sends refresh and the streaming chunk size, and parses the started job", async () => {
