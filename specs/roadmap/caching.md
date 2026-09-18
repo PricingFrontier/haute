@@ -226,20 +226,13 @@ editors.
 - **Row order is not part of the snapshot contract.** The execution-profile
   semantics proof found the interactive preview does not reproduce a join's row
   order between runs, while the bounded sink does. Rows carry the meaning in
-  this domain and their order does not, so a preview capture is admitted
-  regardless — but "cached and recomputed agree" is the property this whole
-  layer exists to keep, and there are ordinary operations that read position:
-  the registry classes `forward_fill`, `backward_fill`, `interpolate`,
-  `unique`, `first`, `last`, `head`, `tail`, `shift`, `diff`, `pct_change`,
-  the `cum_*` and `rolling_*` families, `rank` and `with_row_index` as
-  `ORDER_DEPENDENT`. A `group_by(...).agg(pl.col(x).first())` over a seeded
-  join would answer from whichever order the capture froze.
-  So each generation records whether its order is reproducible — true when a
-  bounded execution sank it, false when a preview captured it — and the seed
-  planner consults that flag only when the lineage below the candidate seed
-  contains an `ORDER_DEPENDENT` operation, in which case a preview-written
-  generation is not seeded and the node is recomputed. Everywhere else, which
-  is nearly everywhere, a preview capture is seeded like any other.
+  this domain and their order does not, so a preview capture is seeded like any
+  other generation and nothing is gated on which execution wrote it. The
+  operations that read row position — the registry's `ORDER_DEPENDENT` class,
+  such as `forward_fill`, `unique`, `first` and the `cum_*` family — are
+  written against an order the pipeline itself established with a `sort`,
+  which a seed cannot disturb; one written against an incidental order was
+  already answering arbitrarily before any of this.
 - **Seeding.** An admitted preview resolves a CACHE-S07 seed plan (upstream of
   or equal to the target, freshness, column coverage, ancestry agreement
   including recomputed branches). Seeded nodes produce their snapshot frame for
@@ -325,9 +318,6 @@ editors.
   of an unadmitted preview; a second preview of a different node below `join`
   seeds from that capture, and neither source is scanned.
 - A training run after that preview seeds from the preview's `join` capture.
-- The same pipeline with `group_by(...).agg(pl.col("premium").first())` below
-  the join does not seed the preview's capture, recomputes the join, and
-  produces the rows it would have produced with no cache at all.
 - A preview through only a filter and a rename captures nothing.
 - A preview of a lineage reading an undeclared-dtype CSV seeds and captures
   nothing and returns today's rows.

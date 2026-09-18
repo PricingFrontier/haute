@@ -565,9 +565,10 @@ def test_the_preview_shares_no_snapshot_with_a_bounded_execution_yet() -> None:
     That is the measurement, and it does not settle the policy. Rows carry the
     meaning in this domain and their order does not, so the decision is that
     row order is not part of the snapshot contract and a preview's captures
-    will be admitted to the `bounded` class, guarded only where an
-    `ORDER_DEPENDENT` operation sits below the seed and would read the order a
-    capture happened to freeze. `PREVIEW_SHARES_BOUNDED_SEMANTICS` is therefore
+    will be admitted to the `bounded` class, with nothing gated on which
+    execution wrote a generation: an operation that reads row position is
+    written against an order the pipeline established with a `sort`, which a
+    seed cannot disturb. `PREVIEW_SHARES_BOUNDED_SEMANTICS` is therefore
     false only until CACHE-S09 implements preview seeding and capture — this
     test pins the mapping as it stands, so flipping it is a deliberate act with
     that package rather than an accident.

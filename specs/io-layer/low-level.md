@@ -282,8 +282,8 @@ delegates every non-`node_output` identity to `SourceCacheStore` unchanged.
 
   That is the measurement. The policy over it is that row order is not part of the snapshot
   contract: rows carry the meaning here and their order does not, so a preview's captures
-  are admitted to the `bounded` class and a run may seed from them (CACHE-S09), guarded only
-  where an `ORDER_DEPENDENT` operation sits below the seed. `PREVIEW_SHARES_BOUNDED_SEMANTICS`
+  are admitted to the `bounded` class and a run may seed from them (CACHE-S09), with nothing
+  gated on which execution wrote a generation. `PREVIEW_SHARES_BOUNDED_SEMANTICS`
   stays false until that package implements preview seeding and capture; it is a switch
   waiting on its implementation, not a verdict against it.
 
