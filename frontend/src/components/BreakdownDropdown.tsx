@@ -38,7 +38,7 @@ export default function BreakdownDropdown({
     <div ref={ref} className="relative flex items-center gap-1">
       <button
         onClick={() => { if (hasData) setOpen((v) => !v) }}
-        className="flex items-center gap-1 px-1 py-0.5 rounded transition-colors hover-breakdown"
+        className="flex items-center gap-1 px-1.5 h-[26px] rounded transition-colors hover-breakdown"
         data-hover-enabled={!open && hasData}
         data-open={open}
         style={{

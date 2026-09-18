@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useCallback } from "react"
-import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, Bot, Loader2, Group, Link2 } from "lucide-react"
+import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, Bot, Loader2, Group, Link2, BookOpen } from "lucide-react"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import type { NodeTiming, NodeMemory } from "../api/types"
 import BreakdownDropdown, { type BreakdownItem } from "./BreakdownDropdown"
@@ -12,7 +12,8 @@ import MlflowSettingsModal from "./MlflowSettingsModal"
 declare const __APP_VERSION__: string
 
 function formatTiming(ms: number): string {
-  return ms < 1000 ? `${ms.toFixed(1)}ms` : `${(ms / 1000).toFixed(2)}s`
+  const rounded = Math.round(ms)
+  return rounded < 1000 ? `${rounded} ms` : `${(ms / 1000).toFixed(2)} s`
 }
 
 function formatMemory(bytes: number): string {
@@ -86,7 +87,10 @@ export default function Toolbar({
   const removeSource = useSettingsStore((s) => s.removeSource)
   const assistantOpen = useUIStore((s) => s.assistantOpen)
   const setAssistantOpen = useUIStore((s) => s.setAssistantOpen)
-  const rowLimitWidthCh = Math.max(4, String(rowLimit).length)
+  const numericInputWidthCh = useMemo(
+    () => Math.max(8, String(rowLimit).length, String(streamingChunkSize).length),
+    [rowLimit, streamingChunkSize],
+  )
   const [addingSource, setAddingSource] = useState(false)
   const [newSourceName, setNewSourceName] = useState("")
   const [sourceError, setSourceError] = useState<string | null>(null)
@@ -112,18 +116,32 @@ export default function Toolbar({
 
   return (
     <header role="toolbar" aria-label="Pipeline toolbar" className="min-h-11 flex flex-wrap items-center gap-y-2 px-4 py-1.5 shrink-0 [&>div]:shrink-0" style={{ background: 'var(--chrome)', borderBottom: '1px solid var(--chrome-border)' }}>
-      <div className="flex items-center gap-2.5">
-        <h1 className="text-sm font-bold tracking-tight" style={{ color: 'var(--text-primary)' }}>Haute</h1>
-        <span className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>v{__APP_VERSION__}</span>
-        {dirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse-dot" title="Unsaved changes" />}
-        <span
-          className={`w-2 h-2 rounded-full shrink-0${wsStatus === "reconnecting" ? " animate-pulse-dot" : ""}`}
-          style={{ background: wsConfig.color }}
-          title={wsConfig.title}
-        />
+      {/* Haute brand column — lowercase "haute" heading taking ~2/3 vertical space, centered version underneath, status dots centered at the row-gap level to the right.
+          Width is pinned to 165px (180px node palette + 1px border - 16px header px-4 padding) so the Source label starts at exactly x + 1 = 181px from the left edge of the page. */}
+      <div className="h-[56px] w-[165px] flex items-center gap-2 select-none" data-testid="toolbar-brand">
+        <div className="flex flex-col items-center justify-center">
+          <h1 className="text-[24px] font-bold tracking-tight leading-none" style={{ color: 'var(--text-primary)' }}>
+            haute
+          </h1>
+          <span className="text-[10px] font-mono tracking-tight leading-none mt-1" style={{ color: 'var(--text-muted)' }}>
+            v{__APP_VERSION__}
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5" data-testid="toolbar-status-dots">
+          <span
+            className={`w-2 h-2 rounded-full shrink-0${wsStatus === "reconnecting" ? " animate-pulse-dot" : ""}`}
+            style={{ background: wsConfig.color }}
+            title={wsConfig.title}
+          />
+          <span
+            className={`w-1.5 h-1.5 rounded-full shrink-0 ${dirty ? "bg-amber-400 animate-pulse-dot" : "invisible"}`}
+            title={dirty ? "Unsaved changes" : undefined}
+            aria-hidden={!dirty ? true : undefined}
+          />
+        </div>
       </div>
       {/* Source selector — custom dropdown */}
-      <div ref={sourceRef} className="relative flex items-center gap-1 ml-12">
+      <div ref={sourceRef} className="relative flex items-center gap-1">
         <label className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>Source</label>
         {addingSource ? (
           <form
@@ -240,177 +258,124 @@ export default function Toolbar({
           </div>
         )}
       </div>
-      {/* Row limit — next to source */}
-      <div className="flex items-center gap-1 ml-2.5" title="Row limit for preview (0 = no limit)">
-        <label htmlFor="toolbar-rows-input" className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>Rows</label>
-        <input
-          id="toolbar-rows-input"
-          type="number"
-          min={0}
-          step={100}
-          value={rowLimit}
-          onChange={(e) => setRowLimit(Math.max(0, parseInt(e.target.value) || 0))}
-          className="toolbar-number-input px-1.5 py-0.5 text-[12px] font-mono rounded text-center focus:outline-none"
-          /* Four digits at minimum, growing to retain the complete configured
-             value because row limits have no upper bound. */
-          style={{ width: `calc(${rowLimitWidthCh}ch + 16px)`, background: 'var(--chrome-hover)', border: '1px solid var(--chrome-border)', color: 'var(--text-primary)' }}
-        />
+      {/* Rows & Chunk configuration column — Preview Rows on top of Chunk Rows */}
+      <div className="flex flex-col gap-1 ml-2.5 w-fit" data-testid="toolbar-rows-chunk">
+        <div className="flex items-center gap-1.5" title="Row limit for preview (0 = no limit)">
+          <label htmlFor="toolbar-rows-input" className="text-[11px] font-medium whitespace-nowrap min-w-[80px]" style={{ color: 'var(--text-muted)' }}>
+            Preview Rows:
+          </label>
+          <input
+            id="toolbar-rows-input"
+            type="number"
+            min={0}
+            step={100}
+            value={rowLimit}
+            onChange={(e) => setRowLimit(Math.max(0, parseInt(e.target.value) || 0))}
+            className="toolbar-number-input px-1.5 h-[26px] text-[12px] font-mono rounded text-center focus:outline-none"
+            /* Both numeric fields share an equal width that expands if either value
+               exceeds the standard 8-character width (e.g. large chunk sizes or row limits). */
+            style={{ width: `calc(${numericInputWidthCh}ch + 16px)`, background: 'var(--chrome-hover)', border: '1px solid var(--chrome-border)', color: 'var(--text-primary)' }}
+          />
+        </div>
+        <div className="flex items-center gap-1.5" title="Streaming chunk size (rows per streaming chunk). Default 500000. Lower this if you OOM on wide schemas.">
+          <label htmlFor="toolbar-chunk-input" className="text-[11px] font-medium whitespace-nowrap min-w-[80px]" style={{ color: 'var(--text-muted)' }}>
+            Chunk Rows:
+          </label>
+          <input
+            id="toolbar-chunk-input"
+            type="number"
+            min={MIN_STREAMING_CHUNK_SIZE}
+            max={MAX_STREAMING_CHUNK_SIZE}
+            step={10000}
+            value={streamingChunkSize}
+            onChange={(e) => {
+              const raw = e.target.value.trim()
+              if (raw === "") return
+              const parsed = Number(raw)
+              if (!Number.isFinite(parsed)) return
+              setStreamingChunkSize(parsed)
+            }}
+            className="toolbar-number-input px-1.5 h-[26px] text-[12px] font-mono rounded text-center focus:outline-none"
+            /* Synchronized width matching preview rows input. */
+            style={{ width: `calc(${numericInputWidthCh}ch + 16px)`, background: 'var(--chrome-hover)', border: '1px solid var(--chrome-border)', color: 'var(--text-primary)' }}
+          />
+        </div>
       </div>
-      {/* Streaming chunk size — next to row limit */}
-      <div className="flex items-center gap-1 ml-2.5" title="Streaming chunk size (rows per streaming chunk). Default 500000. Lower this if you OOM on wide schemas.">
-        <label htmlFor="toolbar-chunk-input" className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>Chunk</label>
-        <input
-          id="toolbar-chunk-input"
-          type="number"
-          min={MIN_STREAMING_CHUNK_SIZE}
-          max={MAX_STREAMING_CHUNK_SIZE}
-          step={10000}
-          value={streamingChunkSize}
-          onChange={(e) => {
-            const raw = e.target.value.trim()
-            if (raw === "") return
-            const parsed = Number(raw)
-            if (!Number.isFinite(parsed)) return
-            setStreamingChunkSize(parsed)
-          }}
-          className="toolbar-number-input px-1.5 py-0.5 text-[12px] font-mono rounded text-center focus:outline-none"
-          /* Eight digits cover the complete 10,000,000 backend maximum. */
-          style={{ width: 'calc(8ch + 16px)', background: 'var(--chrome-hover)', border: '1px solid var(--chrome-border)', color: 'var(--text-primary)' }}
-        />
-      </div>
-      {/* Undo / Redo.  Grouped so they take the shared 10px gap — as bare
-          icons they sat flush against each other, which only became visible
-          once they grew borders. */}
-      <div className="flex items-center gap-2.5 ml-2.5">
-        <button
-          data-testid="toolbar-undo"
-          onClick={onUndo}
-          disabled={editingDisabled || !canUndo}
-          aria-label="Undo"
-          className="toolbar-btn p-1.5 rounded-md"
-          title="Undo (Ctrl+Z)"
-        >
-          <Undo2 size={14} aria-hidden="true" />
-        </button>
-        <button
-          data-testid="toolbar-redo"
-          onClick={onRedo}
-          disabled={editingDisabled || !canRedo}
-          aria-label="Redo"
-          className="toolbar-btn p-1.5 rounded-md"
-          title="Redo (Ctrl+Shift+Z)"
-        >
-          <Redo2 size={14} aria-hidden="true" />
-        </button>
-      </div>
-      {/* Timing + memory breakdowns */}
-      <div className="ml-2.5">
+      {/* Timing + memory breakdowns column — Timing at the top, Memory at the bottom */}
+      <div className="ml-2.5 flex flex-col gap-1 w-fit" data-testid="toolbar-breakdowns">
         <BreakdownDropdown
           icon={Timer}
           title="Pipeline Timing"
           items={timingItems}
           formatValue={formatTiming}
         />
+        <BreakdownDropdown
+          icon={HardDrive}
+          title="Pipeline Memory"
+          items={memoryItems}
+          formatValue={formatMemory}
+          valueWidth="w-14"
+        />
       </div>
-      <BreakdownDropdown
-        icon={HardDrive}
-        title="Pipeline Memory"
-        items={memoryItems}
-        formatValue={formatMemory}
-        valueWidth="w-14"
-      />
       {/* 10px is the toolbar's one spacing value: between adjacent buttons and
           between sections alike.  Only a label and the field it names sit
           closer (4px), so they still read as one control. */}
       <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2.5">
-        {/* Selection actions.  These use ``aria-disabled`` rather than the
-            ``disabled`` attribute: a disabled button is removed from the tab
-            order AND swallows pointer events, so its title never appears —
-            precisely when the user most needs to know why it's unavailable.
-            The click is NOT guarded here: the handler owns the policy and
-            answers an unavailable click with the same toast Ctrl+G gives, so
-            the reason reaches the keyboard and touch users a `title` cannot.
-            ``can*`` therefore drives presentation only. */}
-        <button
-          data-testid="toolbar-submodel"
-          onClick={onCreateSubmodel}
-          aria-disabled={!canCreateSubmodel}
-          className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center gap-1"
-          title="Group the selected nodes into a submodel — select 2 or more (Ctrl+G)"
-        >
-          <Group size={13} aria-hidden="true" />
-          Submodel
-        </button>
-        <button
-          data-testid="toolbar-instance"
-          onClick={onCreateInstance}
-          aria-disabled={!canCreateInstance}
-          className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center gap-1"
-          title="Create a linked instance of the selected node — select exactly one"
-        >
-          <Link2 size={13} aria-hidden="true" />
-          Instance
-        </button>
-        <button
-          data-testid="toolbar-utility"
-          onClick={onOpenUtility}
-          disabled={editingDisabled}
-          className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center gap-1"
-          title="Utility scripts — reusable functions"
-        >
-          <FileCode2 size={13} />
-          Utility
-        </button>
-        <button
-          data-testid="toolbar-imports"
-          onClick={onOpenImports}
-          disabled={editingDisabled}
-          className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center gap-1"
-          title="Pipeline imports — utility and library imports"
-        >
-          <Package size={13} />
-          Imports
-        </button>
-        <button
-          data-testid="toolbar-assistant"
-          onClick={() => setAssistantOpen(!assistantOpen)}
-          disabled={editingDisabled}
-          aria-label="Assistant"
-          aria-pressed={assistantOpen}
-          className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center gap-1"
-          title="Pricing assistant"
-        >
-          <Bot size={13} />
-          Assistant
-        </button>
-        {/* View controls — zoom, centre, layout.  Grouped for reading order
-            only; the divider that used to sit between zoom and Centre is gone,
-            since with the container gap either side of it that one seam was
-            21px wide against 10px everywhere else. */}
-        <div className="flex items-center gap-2.5">
+        {/* Undo / Redo column — Undo at the top, Redo underneath, leading the right-hand action bar */}
+        <div className="flex flex-col gap-1 w-fit" data-testid="toolbar-undo-redo">
           <button
-            data-testid="toolbar-zoom-out"
-            onClick={onZoomOut}
-            aria-label="Zoom out"
-            className="toolbar-btn p-1.5 rounded-md"
-            title="Zoom out"
+            data-testid="toolbar-undo"
+            onClick={onUndo}
+            disabled={editingDisabled || !canUndo}
+            aria-label="Undo"
+            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
+            title="Undo (Ctrl+Z)"
           >
-            <ZoomOut size={14} aria-hidden="true" />
+            <Undo2 size={13} aria-hidden="true" />
+            Undo
           </button>
+          <button
+            data-testid="toolbar-redo"
+            onClick={onRedo}
+            disabled={editingDisabled || !canRedo}
+            aria-label="Redo"
+            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
+            title="Redo (Ctrl+Shift+Z)"
+          >
+            <Redo2 size={13} aria-hidden="true" />
+            Redo
+          </button>
+        </div>
+        {/* Zoom controls column — Zoom In on top of Zoom Out */}
+        <div className="flex flex-col gap-1 w-fit">
           <button
             data-testid="toolbar-zoom-in"
             onClick={onZoomIn}
             aria-label="Zoom in"
-            className="toolbar-btn p-1.5 rounded-md"
+            className="toolbar-btn px-2 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
             title="Zoom in"
           >
-            <ZoomIn size={14} aria-hidden="true" />
+            <ZoomIn size={13} aria-hidden="true" />
+            Zoom In
           </button>
+          <button
+            data-testid="toolbar-zoom-out"
+            onClick={onZoomOut}
+            aria-label="Zoom out"
+            className="toolbar-btn px-2 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
+            title="Zoom out"
+          >
+            <ZoomOut size={13} aria-hidden="true" />
+            Zoom Out
+          </button>
+        </div>
+        {/* Centre and Layout column — Centre on top of Layout */}
+        <div className="flex flex-col gap-1 w-fit">
           <button
             data-testid="toolbar-centre"
             onClick={onCentre}
             disabled={nodeCount === 0}
-            className="toolbar-btn px-2 py-1 text-[12px] font-medium rounded-md"
+            className="toolbar-btn px-2 py-1 text-[12px] font-medium rounded-md flex items-center justify-center w-full"
             title="Fit all nodes in view"
           >
             Centre
@@ -426,7 +391,7 @@ export default function Toolbar({
                and an ``aria-label`` that keeps the accessible name honest
                without costing any width. */
             aria-label={isAutoLayouting ? "Laying out" : "Layout"}
-            className="toolbar-btn relative px-2 py-1 text-[12px] font-medium rounded-md inline-flex items-center justify-center whitespace-nowrap"
+            className="toolbar-btn relative px-2 py-1 text-[12px] font-medium rounded-md inline-flex items-center justify-center whitespace-nowrap w-full"
             title={isAutoLayouting ? "Auto-arranging nodes" : "Auto-arrange nodes"}
           >
             {/* The spinner is overlaid on the hidden label rather than laid out
@@ -442,31 +407,115 @@ export default function Toolbar({
             )}
           </button>
         </div>
-        <BranchIndicator />
-        {/* Save then Commit, in the order the work happens: a save is itself a
-            commit to the save branch, and Commit rolls those saves into a
-            milestone.  Two filled buttons, distinguished by hue rather than by
-            one being demoted. */}
-        <button
-          data-testid="toolbar-save"
-          onClick={onSave}
-          disabled={editingDisabled}
-          className="px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-colors hover:bg-[var(--accent-hover)]"
-          style={{ background: 'var(--accent)' }}
-          title="Save — Ctrl+S"
-        >
-          Save
-        </button>
-        <button
-          data-testid="toolbar-save-commit"
-          onClick={onSaveCommit}
-          disabled={editingDisabled}
-          className="px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-colors hover:bg-[var(--success-fill-hover)]"
-          style={{ background: 'var(--success-fill)' }}
-          title="Commit — record a milestone on your working branch"
-        >
-          Commit
-        </button>
+        {/* Selection actions.  These use ``aria-disabled`` rather than the
+            ``disabled`` attribute: a disabled button is removed from the tab
+            order AND swallows pointer events, so its title never appears —
+            precisely when the user most needs to know why it's unavailable.
+            The click is NOT guarded here: the handler owns the policy and
+            answers an unavailable click with the same toast Ctrl+G gives, so
+            the reason reaches the keyboard and touch users a `title` cannot.
+            ``can*`` therefore drives presentation only. */}
+        {/* Submodel and Instance column — Submodel on top of Instance */}
+        <div className="flex flex-col gap-1 w-fit">
+          <button
+            data-testid="toolbar-submodel"
+            onClick={onCreateSubmodel}
+            aria-disabled={!canCreateSubmodel}
+            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
+            title="Group the selected nodes into a submodel — select 2 or more (Ctrl+G)"
+          >
+            <Group size={13} aria-hidden="true" />
+            Submodel
+          </button>
+          <button
+            data-testid="toolbar-instance"
+            onClick={onCreateInstance}
+            aria-disabled={!canCreateInstance}
+            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
+            title="Create a linked instance of the selected node — select exactly one"
+          >
+            <Link2 size={13} aria-hidden="true" />
+            Instance
+          </button>
+        </div>
+        {/* Utility and Imports column — Utility on top of Imports */}
+        <div className="flex flex-col gap-1 w-fit">
+          <button
+            data-testid="toolbar-utility"
+            onClick={onOpenUtility}
+            disabled={editingDisabled}
+            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
+            title="Utility scripts — reusable functions"
+          >
+            <FileCode2 size={13} />
+            Utility
+          </button>
+          <button
+            data-testid="toolbar-imports"
+            onClick={onOpenImports}
+            disabled={editingDisabled}
+            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
+            title="Pipeline imports — utility and library imports"
+          >
+            <Package size={13} />
+            Imports
+          </button>
+        </div>
+        {/* Assistant and Documentation column — equal width, paired with branch name & save/commit */}
+        <div className="flex flex-col gap-1 w-fit">
+          <button
+            data-testid="toolbar-assistant"
+            onClick={() => setAssistantOpen(!assistantOpen)}
+            disabled={editingDisabled}
+            aria-label="Assistant"
+            aria-pressed={assistantOpen}
+            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
+            title="Pricing assistant"
+          >
+            <Bot size={13} />
+            Assistant
+          </button>
+          <a
+            data-testid="toolbar-documentation"
+            href="https://pricingfrontier.github.io/haute/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full text-center"
+            title="Documentation — opens in a new tab"
+          >
+            <BookOpen size={13} />
+            Documentation
+          </a>
+        </div>
+        <BranchIndicator>
+          {/* Save then Commit, in the order the work happens: a save is itself a
+              commit to the save branch, and Commit rolls those saves into a
+              milestone.  Two filled buttons, distinguished by hue rather than by
+              one being demoted. The widths expand with flex-1 while keeping a
+              fixed distance apart, matching the branch name button above. */}
+          <div className="flex items-center gap-1.5 w-full">
+            <button
+              data-testid="toolbar-save"
+              onClick={onSave}
+              disabled={editingDisabled}
+              className="flex-1 px-2 py-1 text-[12px] font-semibold text-white rounded-md transition-colors hover:bg-[var(--accent-hover)] text-center"
+              style={{ background: 'var(--accent)' }}
+              title="Save — Ctrl+S"
+            >
+              Save
+            </button>
+            <button
+              data-testid="toolbar-save-commit"
+              onClick={onSaveCommit}
+              disabled={editingDisabled}
+              className="flex-1 px-2 py-1 text-[12px] font-semibold text-white rounded-md transition-colors hover:bg-[var(--success-fill-hover)] text-center"
+              style={{ background: 'var(--success-fill)' }}
+              title="Commit — record a milestone on your working branch"
+            >
+              Commit
+            </button>
+          </div>
+        </BranchIndicator>
       </div>
       {mlflowSettingsOpen && <MlflowSettingsModal onClose={closeMlflowSettings} />}
     </header>

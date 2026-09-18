@@ -92,10 +92,27 @@ describe("BranchIndicator", () => {
   it("shows the branch name when ready, without the save SHA", () => {
     useGitStore.setState({ status: status({}) })
     render(<BranchIndicator />)
-    expect(screen.getByTestId("branch-indicator-name")).toHaveTextContent("dev")
+    const btn = screen.getByTestId("branch-indicator-name")
+    expect(btn).toHaveTextContent("dev")
+    expect(btn).toHaveClass("min-w-[136px]")
+    expect(btn).toHaveClass("max-w-[220px]")
+    expect(btn).toHaveClass("w-full")
     expect(screen.queryByTestId("branch-indicator-sha")).toBeNull()
     // The commit code belongs to the history panel, not the toolbar.
     expect(screen.getByTestId("toolbar-branch-indicator")).not.toHaveTextContent("abc1234")
+  })
+
+  it("renders children in a stacked column with the branch name button", () => {
+    useGitStore.setState({ status: status({}) })
+    render(
+      <BranchIndicator>
+        <div data-testid="test-child">Child Content</div>
+      </BranchIndicator>,
+    )
+    const child = screen.getByTestId("test-child")
+    const btn = screen.getByTestId("branch-indicator-name")
+    expect(child.parentElement).toBe(btn.parentElement)
+    expect(child.parentElement).toHaveClass("flex-col")
   })
 
   it("clicking the branch name opens the Git panel (hosts the manager, S28)", () => {

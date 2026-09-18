@@ -215,10 +215,14 @@ parent re-renders update callback refs without refocusing the dialog or
 rebuilding its listener. `Tooltip` is a zero-delay, self-clamping hover
 label that repositions to avoid clipping the viewport edge. `ContextMenu` is
 the right-click node menu with roving-tabindex arrow-key navigation.
-`Toolbar` is the app's top chrome: it displays the package-derived browser
-version alongside the source selector, row-limit/chunk-size inputs, undo/redo,
-timing/memory breakdowns, the Submodel/Instance selection actions, and Save
-and Commit as two sibling filled buttons.
+`Toolbar` is the app's top chrome: it organizes controls into a 56px 2-tier stacked
+column layout. The brand section displays the lowercase brand heading and
+package-derived browser version alongside live status dots, aligned to the node palette
+boundary (x = 181px). Adjacent columns house the source selector, preview/chunk row limits
+with synchronized width expansion, integer-ms timing and memory breakdowns, undo/redo with
+text labels, zoom in/out, centre/layout, Submodel/Instance selection actions, utility/imports,
+assistant and an external Documentation link, and the working branch indicator stacked above
+equal-width Save and Commit buttons.
 `NodeSearch` is the Ctrl+K command palette, windowed to
 render only visible rows for large graphs; the application loads its module
 only when the palette is opened, so this user-triggered surface is not part

@@ -115,7 +115,11 @@ function ForkChip() {
  * name in every case except a newest-save folded inside a collapsed milestone.
  * The commit code belongs to the history panel, which shows it in context.
  */
-export default function BranchIndicator() {
+interface BranchIndicatorProps {
+  children?: React.ReactNode
+}
+
+export default function BranchIndicator({ children }: BranchIndicatorProps = {}) {
   const status = useGitStore((s) => s.status)
   const loading = useGitStore((s) => s.loading)
   const statusError = useGitStore((s) => s.statusError)
@@ -134,14 +138,29 @@ export default function BranchIndicator() {
     requestExpandBranches()
   }
 
-  if (statusError) {
+  const wrapWithChildren = (content: React.ReactNode) => {
+    if (!children) return content
     return (
-      <div data-testid="toolbar-branch-indicator" data-branch-state="error">
-        <span>Git unavailable: {statusError}</span>
+      <div className="flex flex-col gap-1 w-fit">
+        {content}
+        {children}
+      </div>
+    )
+  }
+
+  if (statusError) {
+    return wrapWithChildren(
+      <div
+        data-testid="toolbar-branch-indicator"
+        data-branch-state="error"
+        className="toolbar-btn flex items-center justify-center gap-1 px-2.5 py-1 text-[11px] font-medium min-w-[136px] max-w-[220px] w-full"
+      >
+        <span className="truncate">Git unavailable: {statusError}</span>
         <button
           type="button"
           data-testid="branch-indicator-retry"
           onClick={() => void loadStatus()}
+          className="shrink-0 underline"
         >
           Retry
         </button>
@@ -151,35 +170,41 @@ export default function BranchIndicator() {
 
   if (status === null) {
     if (loading) {
-      return (
-        <span data-testid="toolbar-branch-indicator" data-branch-state="checking">
+      return wrapWithChildren(
+        <span
+          data-testid="toolbar-branch-indicator"
+          data-branch-state="checking"
+          className="toolbar-btn flex items-center justify-center px-2.5 py-1 text-[12px] font-medium text-[var(--text-muted)] min-w-[136px] max-w-[220px] w-full"
+        >
           Checking Git…
         </span>
       )
     }
-    return null
+    return children ? <div className="flex flex-col gap-1 w-fit min-w-[136px] max-w-[220px]">{children}</div> : null
   }
 
   const ready = status.state === "ready"
 
   if (!ready) {
     if (status.state === "git-unavailable") {
-      return (
+      return wrapWithChildren(
         <span
           data-testid="toolbar-branch-indicator"
           data-branch-state="git-unavailable"
           title="No git executable is available in this environment."
+          className="toolbar-btn flex items-center justify-center px-2.5 py-1 text-[12px] font-medium text-[var(--text-muted)] min-w-[136px] max-w-[220px] w-full"
         >
           Git unavailable
         </span>
       )
     }
     if (status.state === "no-repository") {
-      return (
+      return wrapWithChildren(
         <span
           data-testid="toolbar-branch-indicator"
           data-branch-state="no-repository"
           title="Run git init in this project to enable version control."
+          className="toolbar-btn flex items-center justify-center px-2.5 py-1 text-[12px] font-medium text-[var(--text-muted)] min-w-[136px] max-w-[220px] w-full"
         >
           Git not initialised
         </span>
@@ -192,20 +217,18 @@ export default function BranchIndicator() {
         : status.state === "detached"
           ? { label: `Detached at ${status.head_sha?.slice(0, 7) ?? "unknown"}`, modal: "select" as const }
           : { label: "Git needs attention", modal: "select" as const }
-    return (
+    return wrapWithChildren(
       <button
         type="button"
         data-testid="toolbar-branch-indicator"
         data-branch-state={status.state}
         onClick={() => openModal(stateMeta.modal)}
-        /* Same button shell as the ready state; the danger colour overrides
-           the shared foreground so an unresolved Git state still stands out. */
-        className="toolbar-btn flex items-center gap-1 px-2.5 py-1 text-[12px] font-medium rounded-md"
+        className="toolbar-btn flex items-center justify-center gap-1 px-2.5 py-1 text-[12px] font-medium rounded-md min-w-[136px] max-w-[220px] w-full"
         style={{ color: "var(--danger)" }}
         title={`${stateMeta.label} — click to resolve in the Git panel`}
       >
-        <GitBranch size={13} aria-hidden="true" />
-        {stateMeta.label}
+        <GitBranch size={13} aria-hidden="true" className="shrink-0" />
+        <span className="truncate">{stateMeta.label}</span>
       </button>
     )
   }
@@ -215,19 +238,21 @@ export default function BranchIndicator() {
   // rather than a control) and underlined on hover, while every other action
   // in the bar is a raised button that brightens instead.
   return (
-    <div data-testid="toolbar-branch-indicator" data-branch-state="ready" className="flex items-center">
-      <button
-        type="button"
-        data-testid="branch-indicator-name"
-        onClick={openOnCurrent}
-        className="toolbar-btn flex items-center gap-1 px-2.5 py-1 text-[12px] font-medium font-mono rounded-md max-w-[180px] truncate"
-        title={`Working branch: ${status.working_branch} — click to manage branches`}
-      >
-        <GitBranch size={13} aria-hidden="true" />
-        <span className="truncate">{status.working_branch}</span>
-      </button>
+    <div data-testid="toolbar-branch-indicator" data-branch-state="ready" className="flex items-center gap-1.5">
       <StorageChip />
       <ForkChip />
+      {wrapWithChildren(
+        <button
+          type="button"
+          data-testid="branch-indicator-name"
+          onClick={openOnCurrent}
+          className="toolbar-btn flex items-center justify-center gap-1 px-2.5 py-1 text-[12px] font-medium font-mono rounded-md min-w-[136px] max-w-[220px] w-full truncate"
+          title={`Working branch: ${status.working_branch} — click to manage branches`}
+        >
+          <GitBranch size={13} aria-hidden="true" className="shrink-0" />
+          <span className="truncate">{status.working_branch}</span>
+        </button>
+      )}
     </div>
   )
 }
