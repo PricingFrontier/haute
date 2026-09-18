@@ -1382,6 +1382,64 @@ class ExplorePivotStatusResponse(BaseModel):
     execution_metrics: ExecutionMetricsPayload | None = None
 
 
+# ---------------------------------------------------------------------------
+# /api/banding
+# ---------------------------------------------------------------------------
+
+
+class BandingStatsRequest(BaseModel):
+    """Statistics for one banding factor over the whole dataset its node reads.
+
+    The factor is the one in the editor rather than the one in the saved graph,
+    so counts follow what the user is editing; the node only says which data
+    point to read.
+    """
+
+    graph: Graph
+    node_id: str
+    factor: dict[str, Any]
+    source: str = "live"
+    histogram_bins: int = Field(default=40, ge=1, le=200)
+    value_limit: int = Field(default=500, ge=1, le=10_000)
+
+
+class BandingHistogramBin(BaseModel):
+    """One `[lower, upper)` interval of a numeric distribution, the last closed."""
+
+    lower: float
+    upper: float
+    count: int = Field(ge=0)
+
+
+class BandingValueCount(BaseModel):
+    """One categorical value, as the text execution matches it by."""
+
+    value: str
+    count: int = Field(ge=0)
+
+
+class BandingStatsResponse(BaseModel):
+    """Whole-dataset statistics for one factor, or why there are none."""
+
+    status: Literal["ok", "cache_required"]
+    point: NodeDataPointResponse
+    data_version: str | None = None
+    total_rows: int = 0
+    null_count: int = 0
+    # Numeric modes only: values no bin can hold, and the extent of those it can.
+    non_finite_count: int | None = None
+    minimum: float | None = None
+    maximum: float | None = None
+    bins: list[BandingHistogramBin] = Field(default_factory=list)
+    # Categorical mode only.
+    values: list[BandingValueCount] = Field(default_factory=list)
+    distinct_count: int | None = None
+    other_count: int | None = None
+    # Both modes, when the factor has rules: counts aligned to the user's rules.
+    rule_counts: list[int] = Field(default_factory=list)
+    unmatched_count: int | None = None
+
+
 class ExplorePivotMembersRequest(BaseModel):
     graph: Graph
     node_id: str

@@ -2,7 +2,7 @@ import { useState } from "react"
 import { X, Plus, Copy, AlertTriangle } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import { CommittedTextField } from "../../components/form"
-import type { InputSource, OnUpdateConfig } from "./_shared"
+import type { InputSource, OnUpdateConfig, SimpleNode } from "./_shared"
 import type { ContinuousRule, CategoricalRule, BandingFactor, BandingMode, BreakpointRule } from "../../types/banding"
 import {
   normaliseBandingFactors,
@@ -18,6 +18,10 @@ import {
 import { BandingRulesGrid } from "./banding/BandingRulesGrid"
 import { BreakpointGrid } from "./banding/BreakpointGrid"
 import { BandingHistogram } from "./banding/BandingHistogram"
+import { equalWidthBins } from "./banding/bandingBins"
+import useBandingStats from "./banding/useBandingStats"
+import DataCacheButton from "../../components/DataCacheButton"
+import { useGraph } from "../useGraph"
 import { GenerateBandsDialog } from "./banding/GenerateBandsDialog"
 import { CategoricalValuePicker } from "./banding/CategoricalValuePicker"
 import { withAlpha } from "../../utils/color"
@@ -34,6 +38,7 @@ export default function BandingEditor({
   upstreamColumns = [],
   accentColor,
   previewRows,
+  nodeId,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
@@ -43,6 +48,8 @@ export default function BandingEditor({
   accentColor: string
   /** Preview rows from the banding node's output (includes input columns). */
   previewRows?: Record<string, unknown>[]
+  /** The node being edited, so its shared data point can be read. */
+  nodeId?: string
 }) {
   const factors = normaliseBandingFactors(config)
   const [activeIdx, setActiveIdx] = useState(0)
@@ -51,6 +58,19 @@ export default function BandingEditor({
   const [showGenerateDialog, setShowGenerateDialog] = useState(false)
 
   const colMap = Object.fromEntries(upstreamColumns.map(c => [c.name, c.dtype]))
+
+  // The whole dataset this node reads, when it is cached: the counts, values
+  // and distribution below are execution's rather than a sample's.
+  const graph = useGraph()
+  const node = nodeId ? graph.allNodes.find((candidate: SimpleNode) => candidate.id === nodeId) ?? null : null
+  const { cache, stats, loading: statsLoading, basis, error: statsError } = useBandingStats({
+    node,
+    allNodes: graph.allNodes,
+    edges: graph.edges,
+    submodels: graph.submodels,
+    preamble: graph.preamble,
+    factor: factors[safeIdx] ?? null,
+  })
 
   const commitFactors = (next: BandingFactor[]) => {
     onUpdate("factors", next)
@@ -134,44 +154,58 @@ export default function BandingEditor({
   const shouldShowTabs = factors.length > 1 || !singleUnconfigured
 
   // ─── Match counts ─────────────────────────────────────────────
-  const matchCounts = (() => {
+  const previewMatchCounts = (() => {
     if (!previewRows?.length || !factor.column) return undefined
     const column = factor.column
     const rules = factor.rules || []
     if (!rules.length) return undefined
 
     if (factor.banding === "categorical") {
-      return rules.map(r => {
-        const cat = r as CategoricalRule
-        return previewRows.filter(row => String(row[column] ?? "") === cat.value).length
+      // Execution builds one remap in rule order, so a value named by several
+      // rules is claimed by the *last* of them, and a rule missing either its
+      // value or its assignment claims nothing at all.
+      const counts = new Array<number>(rules.length).fill(0)
+      const claimant = new Map<string, number>()
+      rules.forEach((rule, index) => {
+        const { value, assignment } = rule as CategoricalRule
+        if (value && assignment) claimant.set(value, index)
       })
+      for (const row of previewRows) {
+        const raw = row[column]
+        if (raw === null || raw === undefined) continue
+        const index = claimant.get(String(raw))
+        if (index !== undefined) counts[index] += 1
+      }
+      return counts
     }
-    // For breakpoints, convert to continuous rules first, then evaluate
-    if (factor.banding === "breakpoints") {
-      const bpRules = rules as BreakpointRule[]
-      const contRules = breakpointsToRules(bpRules, factor.rightClosed ?? true)
-      return contRules.map(cont => {
-        return previewRows.filter(row => {
-          const val = Number(row[column])
-          if (isNaN(val)) return false
-          return matchesContinuousRule(val, cont)
-        }).length
-      })
+    // Breakpoints are evaluated as the intervals they become, but counted
+    // against the breakpoint the user wrote.
+    const sources =
+      factor.banding === "breakpoints"
+        ? breakpointsToRules(rules as BreakpointRule[], factor.rightClosed ?? true).map(
+            (rule, index) => ({ rule, index }),
+          )
+        : (rules as ContinuousRule[]).map((rule, index) => ({ rule, index }))
+    const counts = new Array<number>(rules.length).fill(0)
+    for (const row of previewRows) {
+      const raw = row[column]
+      if (raw === null || raw === undefined || raw === "") continue
+      const value = Number(raw)
+      if (isNaN(value)) continue
+      const claimed = sources.find(({ rule }) => matchesContinuousRule(value, rule))
+      // A converted interval keeps its position only when the conversion did
+      // not reorder; where it did, the count belongs to the interval shown.
+      if (claimed && claimed.index < counts.length) counts[claimed.index] += 1
     }
-    // For continuous, evaluate each rule directly
-    return rules.map(r => {
-      const cont = r as ContinuousRule
-      return previewRows.filter(row => {
-        const val = Number(row[column])
-        if (isNaN(val)) return false
-        return matchesContinuousRule(val, cont)
-      }).length
-    })
+    return counts
   })()
 
-  const totalRows = previewRows?.length ?? 0
+  // Whole-dataset counts when the point is cached; the sample's otherwise.
+  const matchCounts = stats?.rule_counts.length ? stats.rule_counts : previewMatchCounts
+  const totalRows = stats ? stats.total_rows : previewRows?.length ?? 0
   const matchedRows = matchCounts ? matchCounts.reduce((a, b) => a + b, 0) : 0
-  const unmatchedCount = totalRows - matchedRows
+  const unmatchedCount =
+    stats?.unmatched_count ?? Math.max(totalRows - matchedRows, 0)
 
   // ─── Validation warnings ──────────────────────────────────────
   const warnings = (() => {
@@ -207,15 +241,8 @@ export default function BandingEditor({
 
   // ─── Histogram data ───────────────────────────────────────────
   const histogramData = (() => {
-    if ((factor.banding !== "continuous" && factor.banding !== "breakpoints") || !factor.column || !previewRows?.length) {
-      return null
-    }
-    const values: number[] = []
-    for (const row of previewRows) {
-      const v = Number(row[factor.column])
-      if (!isNaN(v)) values.push(v)
-    }
-    if (values.length === 0) return null
+    if (factor.banding !== "continuous" && factor.banding !== "breakpoints") return null
+    if (!factor.column) return null
 
     const boundaries: number[] = []
     for (const r of (factor.rules || [])) {
@@ -225,15 +252,37 @@ export default function BandingEditor({
         if (!isNaN(n)) boundaries.push(n)
       }
     }
-    return { values, boundaries }
+    // The whole dataset's distribution when it is cached; the same shape built
+    // from preview rows otherwise, so the picture never mixes the two.
+    if (stats) {
+      return stats.bins.length ? { bins: stats.bins, boundaries } : null
+    }
+    if (!previewRows?.length) return null
+    const values: number[] = []
+    for (const row of previewRows) {
+      // A missing value is missing, not zero: `Number(null)` is 0, which would
+      // put an observation at the origin and stretch the extent to reach it.
+      const raw = row[factor.column]
+      if (raw === null || raw === undefined || raw === "") continue
+      const v = Number(raw)
+      if (!isNaN(v)) values.push(v)
+    }
+    const bins = equalWidthBins(values, 40)
+    return bins.length ? { bins, boundaries } : null
   })()
 
   // ─── Categorical available values ─────────────────────────────
   const categoricalValues = (() => {
-    if (factor.banding !== "categorical" || !factor.column || !previewRows?.length) return null
+    if (factor.banding !== "categorical" || !factor.column) return null
+    // Every value in the data, as the text execution matches on, when the point
+    // is cached: a rare category is missing from a sample by definition.
+    if (stats) return stats.values.map(({ value, count }) => ({ value, count }))
+    if (!previewRows?.length) return null
     const counts = new Map<string, number>()
     for (const row of previewRows) {
-      const v = String(row[factor.column] ?? "")
+      const raw = row[factor.column]
+      if (raw === null || raw === undefined) continue
+      const v = String(raw)
       if (v) counts.set(v, (counts.get(v) || 0) + 1)
     }
     return Array.from(counts.entries())
@@ -243,10 +292,15 @@ export default function BandingEditor({
 
   // ─── Data min/max for generate dialog ─────────────────────────
   const dataMinMax = (() => {
+    if (stats && stats.minimum !== null && stats.minimum !== undefined) {
+      return { dataMin: stats.minimum, dataMax: stats.maximum ?? undefined }
+    }
     if (!factor.column || !previewRows?.length) return { dataMin: undefined, dataMax: undefined }
     let min = Infinity, max = -Infinity
     for (const row of previewRows) {
-      const v = Number(row[factor.column])
+      const raw = row[factor.column]
+      if (raw === null || raw === undefined || raw === "") continue
+      const v = Number(raw)
       if (!isNaN(v)) { if (v < min) min = v; if (v > max) max = v }
     }
     return min <= max ? { dataMin: min, dataMax: max } : { dataMin: undefined, dataMax: undefined }
@@ -272,9 +326,33 @@ export default function BandingEditor({
   const breakpointsEmpty = factor.banding === "breakpoints" && (factor.rules || []).length === 0
 
 
+  const basisLabel =
+    basis === "all"
+      ? `All rows · ${totalRows.toLocaleString()}`
+      : basis === "stale"
+        ? "Cached data is out of date"
+        : `Sample · ${(previewRows?.length ?? 0).toLocaleString()} rows`
+
   return (
     <div className="px-4 py-3 space-y-3 overflow-y-auto">
       <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
+
+      {node && (
+        <div className="flex items-center justify-between gap-2" data-testid="banding-data-basis">
+          <span
+            className="text-[11px]"
+            style={{ color: statsError ? "var(--danger)" : "var(--text-muted)" }}
+            title={statsError ?? undefined}
+          >
+            {statsLoading
+              ? "Counting…"
+              : statsError
+                ? `Counting the whole dataset failed: ${statsError}`
+                : basisLabel}
+          </span>
+          <DataCacheButton cache={cache} />
+        </div>
+      )}
 
       {/* Factor tabs — hidden when single unconfigured factor */}
       {shouldShowTabs && (
@@ -413,7 +491,7 @@ export default function BandingEditor({
       {/* Histogram */}
       {histogramData && (
         <BandingHistogram
-          values={histogramData.values}
+          bins={histogramData.bins}
           boundaries={histogramData.boundaries}
           accentColor={accentColor}
         />

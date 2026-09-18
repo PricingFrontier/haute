@@ -73,6 +73,7 @@ from haute.routes._optimiser_service import (
 )
 from haute.routes._training_artifacts import reap_stale_training_artifacts
 from haute.routes.assistant import router as assistant_router
+from haute.routes.banding import router as banding_router
 from haute.routes.databricks import router as databricks_router
 from haute.routes.explore import router as explore_router
 from haute.routes.files import router as files_router
@@ -577,6 +578,7 @@ app.include_router(json_cache_router)
 app.include_router(submodel_router)
 app.include_router(explore_router)
 app.include_router(node_data_router)
+app.include_router(banding_router)
 app.include_router(modelling_router)
 app.include_router(optimiser_router)
 app.include_router(mlflow_router)

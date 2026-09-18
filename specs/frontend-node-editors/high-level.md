@@ -452,20 +452,14 @@ document while whole-graph fences stay in place.
 ## Approved change contract — whole-dataset counts in Banding and Rating Step editors
 
 - **Current limitation.** `frontend/src/panels/editors/BandingEditor.tsx` computes distributions,
-  category values, and match counts from preview rows in the browser, and
-  `frontend/src/panels/editors/RatingStepEditor.tsx` lists raw factor levels from preview rows, so
-  both miss data outside the preview and banding counts can disagree with execution.
-- **Unresolved target.** Both editors show the shared data-cache button. With a current data point
-  the Banding editor shows server statistics requested 250 ms after the last edit, aborting the
-  previous request, and the Rating Step editor lists server levels. Without one they keep the
-  preview computation. The Banding editor labels its basis as a sample with its row count, all rows
-  with the total, or out-of-date cached data with a refresh action, and never shows full-data
-  counts for a stale point. The histogram renders server-shaped bins in both cases.
-- **Non-goals.** Rule editing, breakpoint generation, rating-table editing, and saved config are
-  unchanged.
-- **Failure and compatibility semantics.** A statistics or levels failure is shown in the editor
-  and leaves the last successful result marked as not current; a cache-required response switches
-  the editor to the preview basis.
-- **Acceptance evidence.** Editor tests for debounce, superseded-request abort, the three basis
-  labels, preview and server shape parity, and preview versus whole-dataset rating levels.
-- **Roadmap package.** [RAT-B02](../roadmap/rating.md#rat-b02--whole-dataset-banding-statistics).
+  category values, and match counts over the whole data point it reads, but
+  `frontend/src/panels/editors/RatingStepEditor.tsx` still lists raw factor levels from preview
+  rows, so it misses levels outside the preview.
+- **Unresolved target.** The Rating Step editor shows the shared data-cache button and, with a
+  current data point, lists server levels; without one it keeps the preview computation.
+- **Non-goals.** Rating-table editing, banding statistics, and saved config are unchanged.
+- **Failure and compatibility semantics.** A levels failure is shown in the editor and leaves the
+  last successful result marked as not current; a cache-required response switches the editor to
+  the preview basis.
+- **Acceptance evidence.** Editor tests for preview versus whole-dataset rating levels.
+- **Roadmap package.** [RAT-B03](../roadmap/rating.md#rat-b03--whole-dataset-rating-factor-levels).

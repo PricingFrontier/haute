@@ -550,6 +550,11 @@ afterEach(() => {
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
+// A startup check, a save gate and a branch confirmation each cross several
+// effects and mocked requests; a whole parallel suite run makes that slower
+// than the one-second default without making it wrong.
+const MODAL_TIMEOUT_MS = 10_000
+
 describe("App integration — mounts and renders main chrome", () => {
   it("does not open websocket sync while the initial pipeline load is pending", async () => {
     let resolveLoad!: (value: Awaited<ReturnType<typeof api.loadPipeline>>) => void
@@ -1267,20 +1272,29 @@ describe("App integration — save pipeline", () => {
     await waitForAppReady()
 
     // The startup check itself surfaces the selection modal (state unset).
-    await waitFor(() => {
-      expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument()
-    })
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument()
+      },
+      { timeout: MODAL_TIMEOUT_MS },
+    )
     // Dismiss the startup modal to isolate the save-gate path.
     fireEvent.keyDown(document, { key: "Escape" })
-    await waitFor(() => {
-      expect(screen.queryByTestId("working-branch-modal")).toBeNull()
-    })
+    await waitFor(
+      () => {
+        expect(screen.queryByTestId("working-branch-modal")).toBeNull()
+      },
+      { timeout: MODAL_TIMEOUT_MS },
+    )
 
     // Clicking Save must NOT save directly — it re-opens the gate modal.
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
-    await waitFor(() => {
-      expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument()
-    })
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument()
+      },
+      { timeout: MODAL_TIMEOUT_MS },
+    )
     expect(vi.mocked(api.savePipeline)).not.toHaveBeenCalled()
 
     // Confirming the branch sets it and lets the queued save proceed.
@@ -1344,13 +1358,19 @@ describe("App integration — save pipeline", () => {
     await waitForAppReady()
 
     // Dismiss the startup chooser to isolate the commit-gate path.
-    await waitFor(() => expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument())
+    await waitFor(
+      () => expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument(),
+      { timeout: MODAL_TIMEOUT_MS },
+    )
     fireEvent.keyDown(document, { key: "Escape" })
     await waitFor(() => expect(screen.queryByTestId("working-branch-modal")).toBeNull())
 
     // Commit with no working branch → re-opens the chooser (queued action).
     fireEvent.click(screen.getByTestId("toolbar-save-commit"))
-    await waitFor(() => expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument())
+    await waitFor(
+      () => expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument(),
+      { timeout: MODAL_TIMEOUT_MS },
+    )
     expect(vi.mocked(api.commitMilestone)).not.toHaveBeenCalled()
 
     // Confirm a branch → save flushes, then the milestone modal opens.

@@ -32,6 +32,7 @@ from haute._data_points import (
 )
 from haute._execution_admission import ExecutionAdmissionError, create_admitted_execution_context
 from haute._execution_context import (
+    ExecutionCancellationToken,
     ExecutionCancelledError,
     ExecutionContext,
     ExecutionMemoryLimitExceededError,
@@ -1380,13 +1381,19 @@ class PivotService:
         # match queries the column expression never produces.
         return label.str.to_lowercase().str.contains(search.lower(), literal=True)
 
-    def members(self, body: ExplorePivotMembersRequest) -> ExplorePivotMembersResponse:
+    def members(
+        self,
+        body: ExplorePivotMembersRequest,
+        *,
+        cancellation_token: ExecutionCancellationToken | None = None,
+    ) -> ExplorePivotMembersResponse:
         """List the members of one pivot dimension over the whole leased point.
 
         This answers inside the request through the shared synchronous-analysis
         helper, so it runs under an admitted execution context, is memoised per
-        data version and request, and reports an admission or memory-limit
-        failure as HTTP 507 with the execution payload.
+        data version and request, reports an admission or memory-limit failure
+        as HTTP 507 with the execution payload, and stops when the client that
+        asked goes away rather than scanning on for nobody.
         """
         consumer, resolver = self._consumer(body)
         request = {
@@ -1407,6 +1414,7 @@ class PivotService:
                 request=request,
                 cache=self._members_cache,
                 compute=lambda leased, context: self._member_options(body, leased.scan, context),
+                cancellation_token=cancellation_token,
             )
         except (CacheRequiredError, PointDataChangedError):
             # Either the point holds no whole dataset, or the file moved on

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from haute.graph_utils import flatten_graph
 from haute.routes._job_store import get_job_store
 from haute.routes._pivot_service import PivotService
+from haute.routes._synchronous_analysis import run_until_disconnected
 from haute.routes.pipeline import _ensure_source_file, _validate_runtime_input_paths
 from haute.schemas import (
     ExplorePivotMembersRequest,
@@ -42,8 +43,14 @@ def cancel_pivot(job_id: str) -> ExplorePivotStatusResponse:
 
 
 @router.post("/pivots/members", response_model=ExplorePivotMembersResponse)
-def pivot_members(body: ExplorePivotMembersRequest) -> ExplorePivotMembersResponse:
+async def pivot_members(
+    body: ExplorePivotMembersRequest, request: Request
+) -> ExplorePivotMembersResponse:
+    """List one dimension's members; a client that leaves cancels the scan."""
     graph = flatten_graph(body.graph)
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
-    return _pivot_service.members(body.model_copy(update={"graph": graph}))
+    prepared = body.model_copy(update={"graph": graph})
+    return await run_until_disconnected(
+        request, lambda token: _pivot_service.members(prepared, cancellation_token=token)
+    )

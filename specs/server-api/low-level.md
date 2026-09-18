@@ -26,6 +26,7 @@
 | `src/haute/routes/io_capabilities.py` | `/api/io-capabilities`, the versioned provider/format/cache capability contract consumed by the input and output editors. |
 | `src/haute/routes/input_cache.py` | `/api/input-cache/*`, the shared build/status/cancel/clear lifecycle for snapshot-backed inputs. |
 | `src/haute/routes/node_data.py` | `/api/node-data/point`, `/run`, `/status/{job_id}`, `/cancel/{job_id}`, and `/clear` for the data a consumer node reads. |
+| `src/haute/routes/banding.py` | FastAPI router (`/api/banding`): whole-dataset statistics for the banding factor being edited, delegating to `_banding_stats.py`. |
 | `src/haute/routes/_node_data_service.py` | `NodeDataService`: consumer point responses, delegation, explicit node-output build jobs in isolated workers, the data-profile job, supersession, cancellation, and clear. |
 | `src/haute/routes/_synchronous_analysis.py` | Request-time analyses of a leased point: admitted execution, memoisation by data version, and client-disconnect cancellation. |
 | `src/haute/routes/utility.py` | `/api/utility` CRUD (list/read/create/update/delete) for `utility/*.py` helper modules, with AST syntax validation on every write. |
@@ -585,6 +586,55 @@ profile lock and the registry's latest-publication guard, so publication is indi
 both a cancellation and a `clear` of the point: whichever of the two serialises first, a
 cleared point never keeps an analysis of the data that was removed, and a terminal admission,
 memory, cancellation, or changed-data outcome leaves the analysis store unchanged.
+
+### Banding statistics
+
+`POST /api/banding/stats` (`routes/banding.py`, `routes/_banding_stats.py`) answers what one
+banding factor's data looks like over the whole point its node reads. The factor comes from the
+editor rather than the saved graph, so the numbers follow what the user is editing; the node only
+says which point to read. Because the edited factor may name a column the saved node does not, the
+request resolves the point for the node's demand *widened by that column*, so a snapshot without it
+reads as not current for this request instead of answering from data that lacks it — and the
+`point` in the response is that same widened reading.
+
+`status: "cache_required"` with the point is the whole answer when the point is not current or its
+data changed underneath the request. Otherwise the statistics are computed through
+`run_synchronous_analysis`, so they run under an admitted `explore_analysis` context, hold the
+lease for the collection, and are memoised per data version and request — the request digest
+covers the column, mode, rules, closure, bin count and value limit, so an edit that cannot change
+the numbers does not recompute them. The route runs the analysis through
+`run_until_disconnected`, so the editor superseding its own request on the next keystroke stops
+that scan instead of leaving a whole-dataset collection holding its admission and lease for an
+answer nobody will read; `/api/explore/pivots/members` answers the same way.
+
+`data_version` is the version the *lease served*, not the one the point reported when the request
+resolved: a refresh between the two makes those different, and the editor decides whether it may
+show whole-dataset counts by comparing this version with the one its point currently holds, so a
+result labelled with a version it was not computed from would be shown as current.
+
+For a numeric mode (`continuous`, `breakpoints`) the response carries `non_finite_count`, `minimum`
+and `maximum` over the finite values, and `bins` from the shared `_binning.equal_width_bins`:
+equal-width `[lower, upper)` intervals with the last closed at the maximum, one bin for a constant
+column, and no bins at all for a column with no finite value. Every numeric dtype is measured as a
+float, including `Decimal`, which has no `is_finite` of its own and raises on the check. A value is
+counted in the bin whose *published* edges contain it — `bin_edges` derives the edges and the count
+is placed against those numbers — because deriving an index by arithmetic instead is a second
+calculation that can round differently from the edge it should agree with: over 40 bins of `[0, 1]`
+it put `0.3` in the bin whose lower edge is `0.30000000000000004`, above the value itself. For `categorical` it carries `values`
+as `{value, count}` on the column cast to the text execution matches on — sorted by count
+descending then value ascending and capped at `value_limit` — with `distinct_count` over non-null
+values and `other_count` for the non-null rows outside the returned ones; nulls count only in
+`null_count`, and `"NaN"` and `"inf"` are ordinary values. When the factor has rules, `rule_counts`
+is aligned to the user's rules and `unmatched_count` is the rest, both from
+[`banding_rule_claim_expr`](../rating/low-level.md#which-rule-claimed-a-row--bandingruleclaimexpr-ratingpy),
+so the editor shows the counts a run would produce.
+
+Three conditions are HTTP 422: a column the data does not have (whether the projection or the
+schema finds it), a numeric mode on a column it cannot compare, and rules execution itself would
+refuse — the last carrying execution's own message. The repository keeps `HTTPException.detail` a
+plain string, so these are told apart by their messages rather than by a code in the body. Invalid
+consumer wiring is HTTP 400, and admission or memory-limit failure is HTTP 507 through the shared
+analysis helper.
 
 Request-time analyses (`routes/_synchronous_analysis.py`) answer inside the request instead:
 `run_synchronous_analysis` serves the `SynchronousAnalysisCache` entry for the point's current

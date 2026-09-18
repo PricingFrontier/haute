@@ -572,17 +572,15 @@ No migration registry, `Upgrade node` action, automatic load-time rewrite, or
 guessed legacy version exists in this scope. Problems without a safe
 remove-only plan continue through raw source/config inspection.
 
-## Approved change contract — node-data, banding statistics, and rating level routes
+## Approved change contract — rating level route
 
-- **Current limitation.** There is no route for whole-dataset banding statistics or rating
-  levels.
-- **Unresolved target.** A banding-statistics route and a rating-levels route serve
-  whole-dataset results for a current data point.
-- **Non-goals.** Input-cache and JSON-cache routes, pivot run/status/cancel semantics, and job
-  lifecycle states are unchanged.
+- **Current limitation.** There is no route for whole-dataset rating factor levels.
+- **Unresolved target.** A rating-levels route serves whole-dataset levels for a current data
+  point.
+- **Non-goals.** Input-cache and JSON-cache routes, banding statistics, pivot run/status/cancel
+  semantics, and job lifecycle states are unchanged.
 - **Failure and compatibility semantics.** An invalid consumer wiring returns 400; a point that
-  is not current returns a cache-required body with its state; invalid columns or rules return
-  422; admission or memory-limit failure returns 507 with the execution error payload.
-- **Acceptance evidence.** Route tests for bins, caps, null accounting, level keys, and each
-  failure response.
-- **Roadmap package.** [RAT-B02](../roadmap/rating.md#rat-b02--whole-dataset-banding-statistics).
+  is not current returns a cache-required body with its state; invalid columns return 422;
+  admission or memory-limit failure returns 507 with the execution error payload.
+- **Acceptance evidence.** Route tests for level keys and each failure response.
+- **Roadmap package.** [RAT-B03](../roadmap/rating.md#rat-b03--whole-dataset-rating-factor-levels).

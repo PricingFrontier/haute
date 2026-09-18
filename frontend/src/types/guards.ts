@@ -123,6 +123,7 @@ import type {
   NodeDataColumns,
   NodeDataPointResponse,
   NodeDataProfile,
+  BandingStatsResponse,
   NodeDataProfileResponse,
   NodeDataRunResponse,
   NodeDataStatusResponse,
@@ -1987,6 +1988,45 @@ export function parseNodeDataProfile(value: unknown): NodeDataProfile {
     ),
     data_version: expectString(parser, obj.data_version, "field `data_version`"),
     generated_at: expectNumber(parser, obj.generated_at, "field `generated_at`"),
+  }
+}
+
+export function parseBandingStatsResponse(value: unknown): BandingStatsResponse {
+  const parser = "parseBandingStatsResponse"
+  const obj = expectPlainObject(parser, value)
+  return {
+    status: expectStringLiteral(parser, obj.status, "field `status`", [
+      "ok",
+      "cache_required",
+    ] as const),
+    point: parseNodeDataPointResponse(obj.point),
+    data_version: optionalNullableString(parser, obj, "data_version"),
+    total_rows: expectNumber(parser, obj.total_rows ?? 0, "field `total_rows`"),
+    null_count: expectNumber(parser, obj.null_count ?? 0, "field `null_count`"),
+    non_finite_count: optionalNullableNumber(parser, obj, "non_finite_count"),
+    minimum: optionalNullableNumber(parser, obj, "minimum"),
+    maximum: optionalNullableNumber(parser, obj, "maximum"),
+    bins: expectArray(parser, obj.bins ?? [], "field `bins`").map((bin, index) => {
+      const item = expectPlainObject(parser, bin)
+      return {
+        lower: expectNumber(parser, item.lower, `field \`bins[${index}].lower\``),
+        upper: expectNumber(parser, item.upper, `field \`bins[${index}].upper\``),
+        count: expectNumber(parser, item.count, `field \`bins[${index}].count\``),
+      }
+    }),
+    values: expectArray(parser, obj.values ?? [], "field `values`").map((entry, index) => {
+      const item = expectPlainObject(parser, entry)
+      return {
+        value: expectString(parser, item.value, `field \`values[${index}].value\``),
+        count: expectNumber(parser, item.count, `field \`values[${index}].count\``),
+      }
+    }),
+    distinct_count: optionalNullableNumber(parser, obj, "distinct_count"),
+    other_count: optionalNullableNumber(parser, obj, "other_count"),
+    rule_counts: expectArray(parser, obj.rule_counts ?? [], "field `rule_counts`").map(
+      (count, index) => expectNumber(parser, count, `field \`rule_counts[${index}]\``),
+    ),
+    unmatched_count: optionalNullableNumber(parser, obj, "unmatched_count"),
   }
 }
 

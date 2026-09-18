@@ -507,6 +507,18 @@ class NodeDataService:
         consumer, resolver = self._resolver(body)
         return self._point_response(consumer, resolver)
 
+    def point_for(
+        self, consumer: ConsumerPoint, resolver: DataPointResolver
+    ) -> NodeDataPointResponse:
+        """The point for an explicit consumer and column demand.
+
+        A caller that reads more than the saved node does — an editor asking
+        about the factor being edited — reports the point for what it is about
+        to read, so a point missing that column reads as not current rather
+        than current for somebody else's demand.
+        """
+        return self._point_response(consumer, resolver)
+
     def _point_response(
         self, consumer: ConsumerPoint, resolver: DataPointResolver
     ) -> NodeDataPointResponse:

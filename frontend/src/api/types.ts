@@ -1086,6 +1086,38 @@ export interface NodeDataProfile {
   generated_at: number
 }
 
+export interface BandingHistogramBin {
+  lower: number
+  upper: number
+  count: number
+}
+
+export interface BandingValueCount {
+  value: string
+  count: number
+}
+
+/** Whole-dataset statistics for one banding factor, or why there are none. */
+export interface BandingStatsResponse {
+  status: "ok" | "cache_required"
+  point: NodeDataPointResponse
+  data_version?: string | null
+  total_rows: number
+  null_count: number
+  /** Numeric modes: values no bin can hold, and the extent of those it can. */
+  non_finite_count?: number | null
+  minimum?: number | null
+  maximum?: number | null
+  bins: BandingHistogramBin[]
+  /** Categorical mode. */
+  values: BandingValueCount[]
+  distinct_count?: number | null
+  other_count?: number | null
+  /** Counts aligned to the user's rules, and the rows no rule claimed. */
+  rule_counts: number[]
+  unmatched_count?: number | null
+}
+
 export interface NodeDataProfileResponse {
   status: "completed" | "started" | "joined" | "cache_required"
   job_id?: string | null

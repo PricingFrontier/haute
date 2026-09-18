@@ -81,6 +81,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/AssistantStatusResponse"},
         },
     },
+    "/api/banding/stats": {
+        "POST": {
+            "request_ref": "#/components/schemas/BandingStatsRequest",
+            "success_schema": {"$ref": "#/components/schemas/BandingStatsResponse"},
+        },
+    },
     "/api/databricks/catalogs": {
         "GET": {
             "request_ref": None,

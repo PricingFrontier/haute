@@ -76,6 +76,7 @@ import type {
   MlflowRun,
   NodeDataClearResponse,
   NodeDataPointResponse,
+  BandingStatsResponse,
   NodeDataProfileResponse,
   NodeDataRunResponse,
   NodeDataStatusResponse,
@@ -117,6 +118,7 @@ import {
   parseExplorePivotStatusResponse,
   parseNodeDataClearResponse,
   parseNodeDataPointResponse,
+  parseBandingStatsResponse,
   parseNodeDataProfileResponse,
   parseNodeDataRunResponse,
   parseNodeDataStatusResponse,
@@ -1244,6 +1246,28 @@ export function getNodeDataProfile(args: NodeDataArgs): Promise<NodeDataProfileR
     },
     { signal },
   ).then(parseNodeDataProfileResponse)
+}
+
+export interface BandingStatsArgs extends NodeDataArgs {
+  /** The factor in the editor, so counts follow what is being edited. */
+  factor: Record<string, unknown>
+  histogramBins?: number
+  valueLimit?: number
+}
+
+export function getBandingStats(args: BandingStatsArgs): Promise<BandingStatsResponse> {
+  const { signal, factor, histogramBins, valueLimit, ...payload } = args
+  return post<unknown>(
+    "/api/banding/stats",
+    {
+      ...payload,
+      source: payload.source ?? "live",
+      factor,
+      ...(histogramBins === undefined ? {} : { histogram_bins: histogramBins }),
+      ...(valueLimit === undefined ? {} : { value_limit: valueLimit }),
+    },
+    { signal },
+  ).then(parseBandingStatsResponse)
 }
 
 export function clearNodeData(args: NodeDataArgs): Promise<NodeDataClearResponse> {

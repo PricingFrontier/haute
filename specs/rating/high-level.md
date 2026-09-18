@@ -272,23 +272,16 @@ Out of scope (owned by neighbouring components):
 
 ## Approved change contract — rule claims and whole-dataset banding statistics
 
-- **Current limitation.** Banding match counts, distributions, and category values are still
-  computed in the browser from preview rows with a separate implementation of the banding rules,
-  which disagrees with execution for categorical text casts, duplicate categorical values, rules
-  with empty assignments, and non-finite numeric values. Rating factor levels also come only from
-  preview rows. The rule-claim index that agrees with execution now exists
-  (`banding_rule_claim_expr`), but nothing serves it to the editors.
-- **Unresolved target.** Banding statistics (equal-width bins, capped categorical value counts,
-  per-rule claim counts from that index, unmatched count, null and non-finite counts) and rating
-  factor levels (keyed by the lookup's own key expression) are computed server-side over the
-  Banding or Rating Step node's shared data point, and the editors read them instead of
-  recomputing from preview rows.
+- **Current limitation.** Rating factor levels still come only from preview rows, so a level that
+  appears nowhere in the preview is missing from the editor.
+- **Unresolved target.** Rating factor levels, keyed by the lookup's own key expression, are
+  computed server-side over the Rating Step node's shared data point, and the editor reads them
+  instead of listing what the preview happened to contain.
 - **Non-goals.** Banding output values, the rating lookup, rating-table combination, and
   generated code are unchanged.
 - **Failure and compatibility semantics.** Rules that execution rejects return the same message
   as a 422. A point that is not current returns cache-required with its state; statistics are
   never computed from stale data. Admission or memory-limit failure returns 507.
-- **Acceptance evidence.** Route tests for bins, caps, null accounting, per-rule counts, and
-  every failure response; editor tests showing statistics from the shared point rather than
-  preview rows.
-- **Roadmap package.** [RAT-B02](../roadmap/rating.md#rat-b02--whole-dataset-banding-statistics).
+- **Acceptance evidence.** Route tests for level keys and every failure response; editor tests
+  showing levels from the shared point rather than preview rows.
+- **Roadmap package.** [RAT-B03](../roadmap/rating.md#rat-b03--whole-dataset-rating-factor-levels).

@@ -37,6 +37,11 @@ import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import type { MutableRefObject } from "react"
 import usePipelineAPI, { DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT } from "../usePipelineAPI"
+
+// Each step of a cascade crosses a mocked request and several effects, which a
+// whole parallel suite run makes slower without making it wrong. The deadline
+// only has to fail a cascade that never advances.
+const CASCADE_TIMEOUT_MS = 10_000
 import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
@@ -223,7 +228,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
 
     act(() => { result.current.fetchPreview(A) })
     // Wait for fetchPreview debounce (200ms) so A's previewNode is invoked
-    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: 1000 })
+    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: CASCADE_TIMEOUT_MS })
 
     // B should NOT have fired yet — cascade is gated on A resolving
     expect(callOrder).toEqual(["A"])
@@ -298,7 +303,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     useSettingsStore.setState({ activeSource: "live" })
 
     act(() => { result.current.fetchPreview(A) })
-    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: 1000 })
+    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: CASCADE_TIMEOUT_MS })
     expect(deferreds.get("A")!.source).toBe("live")
 
     // Flip the source while A is still pending
@@ -373,7 +378,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     useSettingsStore.setState({ rowLimit: 100 })
 
     act(() => { result.current.fetchPreview(A) })
-    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: 1000 })
+    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: CASCADE_TIMEOUT_MS })
     expect(deferreds.get("A")!.rowLimit).toBe(100)
 
     // Flip rowLimit while A is still pending
@@ -433,7 +438,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => { result.current.fetchPreview(A) })
-    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: 1000 })
+    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: CASCADE_TIMEOUT_MS })
 
     // Resolve A with columns different from what it had (none) → triggers B cascade
     act(() => {
@@ -500,7 +505,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
 
     // First fetchPreview — root A
     act(() => { result.current.fetchPreview(A) })
-    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: 1000 })
+    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: CASCADE_TIMEOUT_MS })
 
     // Resolve A → B cascade starts
     act(() => {
@@ -590,7 +595,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => { result.current.fetchPreview(A) })
-    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: 1000 })
+    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: CASCADE_TIMEOUT_MS })
 
     act(() => {
       deferreds.get("A")!.resolve({
@@ -671,7 +676,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => { result.current.fetchPreview(A) })
-    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: 1000 })
+    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: CASCADE_TIMEOUT_MS })
 
     act(() => {
       deferreds.get("A")!.resolve({
@@ -734,7 +739,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => { result.current.fetchPreview(A) })
-    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: 1000 })
+    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: CASCADE_TIMEOUT_MS })
 
     act(() => {
       deferreds.get("A")!.resolve({
@@ -775,7 +780,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => { result.current.fetchPreview(A) })
-    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: 1000 })
+    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: CASCADE_TIMEOUT_MS })
 
     act(() => {
       deferreds.get("A")!.resolve({
@@ -818,7 +823,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => { result.current.fetchPreview(A) })
-    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: 1000 })
+    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: CASCADE_TIMEOUT_MS })
 
     act(() => {
       deferreds.get("A")!.resolve({
@@ -870,7 +875,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => { result.current.fetchPreview(A) })
-    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: 1000 })
+    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: CASCADE_TIMEOUT_MS })
 
     act(() => {
       deferreds.get("A")!.resolve({
@@ -959,7 +964,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => { result.current.fetchPreview(A) })
-    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: 1000 })
+    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: CASCADE_TIMEOUT_MS })
 
     act(() => {
       deferreds.get("A")!.resolve({
@@ -1053,7 +1058,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => { result.current.fetchPreview(leaf) })
-    await waitFor(() => expect(callOrder).toEqual(["leaf"]), { timeout: 1000 })
+    await waitFor(() => expect(callOrder).toEqual(["leaf"]), { timeout: CASCADE_TIMEOUT_MS })
 
     act(() => {
       deferreds.get("leaf")!.resolve({
@@ -1100,7 +1105,7 @@ describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => { result.current.fetchPreview(A) })
-    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: 1000 })
+    await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: CASCADE_TIMEOUT_MS })
 
     act(() => {
       deferreds.get("A")!.resolve({
