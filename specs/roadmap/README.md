@@ -23,7 +23,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Modelling](modelling.md) | RustyStats 0.9.0 upgrade, GLM terms pane, per-feature fits, interaction fits | `MOD-T00` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P11` |
 | [Polars step builder](polars-steps.md) | Low-code step authoring on the remaining Polars code surfaces | — |
-| [Rating](rating.md) | Banding rule claims, whole-dataset banding statistics and rating levels | `RAT-B01` |
+| [Rating](rating.md) | Whole-dataset banding statistics and rating levels | `RAT-B02` |
 
 ## Working protocol
 

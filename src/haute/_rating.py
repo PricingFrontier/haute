@@ -87,6 +87,126 @@ def _banding_condition(col: pl.Expr, rule: dict[str, Any]) -> pl.Expr | None:
     return result
 
 
+def banding_numeric_column_expr(col: pl.Expr, dtype: Any) -> pl.Expr:
+    """The column a numeric banding rule is compared against.
+
+    NaN and infinity are not values a range claims: comparing them would let
+    them match an arbitrary rule, so they are made missing first and fall to the
+    default with everything else that is absent. The expression stays local to
+    one banding output — aliasing it back onto the source column would change
+    that column for every downstream node.
+    """
+    if dtype in (pl.Float32, pl.Float64):
+        return pl.when(col.is_nan() | col.is_infinite()).then(pl.lit(None)).otherwise(col)
+    return col
+
+
+def banding_categorical_claims(rules: list[dict[str, Any]]) -> dict[str, tuple[int, str]]:
+    """Map each claimed value to its rule: ``value -> (index in rules, assignment)``.
+
+    Execution builds one remap in rule order, so a value repeated across rules
+    is claimed by the *last* of them, and a rule missing either its value or its
+    assignment claims nothing.
+    """
+    claims: dict[str, tuple[int, str]] = {}
+    for index, rule in enumerate(rules):
+        value = rule.get("value", "")
+        assignment = rule.get("assignment", "")
+        if value in (None, "") or assignment in (None, ""):
+            continue
+        claims[str(value)] = (index, str(assignment))
+    return claims
+
+
+def banding_continuous_claims(
+    banding_type: str,
+    rules: list[dict[str, Any]],
+    *,
+    right_closed: bool = True,
+) -> list[tuple[int, dict[str, Any]]]:
+    """The continuous rules execution evaluates, in order, each with its source index.
+
+    Breakpoints are converted to intervals first, and execution evaluates those
+    intervals sorted by boundary with the open-ended one last — so a rule's
+    index is its position in *rules* as the user wrote them, not its position in
+    the chain.
+    """
+    if banding_type == "breakpoints":
+        return [
+            (source, rule)
+            for rule, source in _breakpoints_to_rules_with_sources(rules, right_closed=right_closed)
+        ]
+    return list(enumerate(rules))
+
+
+def banding_rule_claim_expr(
+    column_expr: pl.Expr,
+    dtype: Any,
+    mode: str,
+    rules: list[dict[str, Any]] | dict[str, Any],
+    right_closed: bool = True,
+    *,
+    output_column: str = "",
+) -> pl.Expr:
+    """Per row, the index in *rules* of the rule that claims it, or null.
+
+    A claim is exactly the rule whose assignment :func:`_apply_banding` writes
+    for that row, because both are built from the same preparation: the same
+    normalisation, the same breakpoint intervals, the same last-wins categorical
+    remap, the same refusal of a rule without an assignment, and the same
+    treatment of NaN and infinity as missing. A row no rule claims takes the
+    default, so a null claim is exactly a defaulted row — which grouping the
+    output column cannot tell you, because rules may share an assignment and the
+    default may equal one.
+
+    Rules execution would reject raise the same :class:`ValueError` it raises.
+    """
+    if mode not in SUPPORTED_BANDING_TYPES:
+        allowed = ", ".join(sorted(SUPPORTED_BANDING_TYPES))
+        raise ValueError(
+            f"Banding has unsupported banding type {mode!r}; expected one of: {allowed}"
+        )
+    prepared = normalise_banding_rules(mode, rules)
+    unclaimed = pl.lit(None, dtype=pl.Int32)
+    if not prepared:
+        # A factor with no rules is a no-op in execution, so every row is
+        # unclaimed — one null per row, not a single null.
+        return pl.repeat(None, pl.len(), dtype=pl.Int32).alias("claim")
+
+    if mode == "categorical":
+        claims = banding_categorical_claims(prepared)
+        if not claims:
+            raise ValueError(_no_usable_rule_message(output_column, "categorical"))
+        return (
+            column_expr.cast(pl.Utf8)
+            .replace_strict(
+                {value: index for value, (index, _assignment) in claims.items()},
+                default=None,
+                return_dtype=pl.Int32,
+            )
+            .alias("claim")
+        )
+
+    col = banding_numeric_column_expr(column_expr, dtype)
+    chain: Any = None
+    for index, rule in banding_continuous_claims(mode, prepared, right_closed=right_closed):
+        cond = _banding_condition(col, rule)
+        if cond is None or not str(rule.get("assignment", "")):
+            continue
+        claim = pl.lit(index, dtype=pl.Int32)
+        chain = pl.when(cond).then(claim) if chain is None else chain.when(cond).then(claim)
+    if chain is None:
+        raise ValueError(_no_usable_rule_message(output_column, "continuous"))
+    return chain.otherwise(unclaimed).alias("claim")
+
+
+def _no_usable_rule_message(output_column: str, mode: str) -> str:
+    """Execution's message for rules that define nothing it can apply."""
+    if output_column:
+        return f"Banding output {output_column!r} has no usable {mode} rule"
+    return f"Banding rules have no usable {mode} rule"
+
+
 def _apply_banding(
     lf: _Frame,
     column: str,
@@ -113,12 +233,10 @@ def _apply_banding(
 
     if banding_type == "categorical":
         # Build a remap dict: value → assignment
-        remap: dict[str, str] = {}
-        for rule in rules:
-            val = rule.get("value", "")
-            assignment = rule.get("assignment", "")
-            if (val is not None and val != "") and (assignment is not None and assignment != ""):
-                remap[str(val)] = str(assignment)
+        remap = {
+            value: assignment
+            for value, (_index, assignment) in banding_categorical_claims(rules).items()
+        }
         if not remap:
             if has_configured_rules:
                 raise ValueError(f"Banding output {output_column!r} has no usable categorical rule")
@@ -136,13 +254,7 @@ def _apply_banding(
         schema = lf.collect_schema()
     else:
         schema = dict(zip(lf.columns, lf.dtypes))  # type: ignore[assignment]
-    col_dtype = schema.get(column)
-    if col_dtype in (pl.Float32, pl.Float64):
-        # Build the NaN/Inf-safe expression LOCALLY and feed it into the
-        # rule chain below.  Aliasing it back onto the source ``column``
-        # would overwrite NaN/Inf for every downstream node, not just this
-        # banding output — only ``output_column`` may be added/changed.
-        col = pl.when(col.is_nan() | col.is_infinite()).then(pl.lit(None)).otherwise(col)
+    col = banding_numeric_column_expr(col, schema.get(column))
 
     # Continuous: build a when/then chain
     chain: Any = None
@@ -168,6 +280,19 @@ def _breakpoints_to_rules(
     breakpoints: list[dict[str, Any]] | dict[str, Any],
     right_closed: bool = True,
 ) -> list[dict[str, Any]]:
+    """The intervals execution evaluates, without which breakpoint defined each."""
+    return [
+        rule
+        for rule, _source in _breakpoints_to_rules_with_sources(
+            breakpoints, right_closed=right_closed
+        )
+    ]
+
+
+def _breakpoints_to_rules_with_sources(
+    breakpoints: list[dict[str, Any]] | dict[str, Any],
+    right_closed: bool = True,
+) -> list[tuple[dict[str, Any], int]]:
     """Convert breakpoint-format rules to continuous banding rules.
 
     Each breakpoint has a ``boundary`` (numeric string) and a ``label``.
@@ -184,12 +309,14 @@ def _breakpoints_to_rules(
     # Separate breakpoints with boundaries from the open-ended tail
     bounded: list[dict[str, Any]] = []
     open_ended: dict[str, Any] | None = None
+    open_ended_source = -1
     open_ended_count = 0
-    for bp in breakpoints:
+    for source, bp in enumerate(breakpoints):
         boundary = str(bp.get("boundary", "") or "").strip()
         label = str(bp.get("label", "") or "")
         if not boundary:
             open_ended = bp
+            open_ended_source = source
             open_ended_count += 1
         else:
             try:
@@ -198,7 +325,7 @@ def _breakpoints_to_rules(
                 raise ValueError(f"Breakpoint has non-numeric boundary '{boundary}'")
             if not math.isfinite(num):
                 raise ValueError(f"Breakpoint has non-finite boundary '{boundary}'")
-            bounded.append({"boundary": num, "label": label})
+            bounded.append({"boundary": num, "label": label, "source": source})
 
     # Reject more than one open-ended boundary: only the last would ever win,
     # so extras would be silently dropped (fail loud instead).
@@ -228,7 +355,7 @@ def _breakpoints_to_rules(
             raise ValueError(f"Duplicate breakpoint boundary '{entry['boundary']}'")
         seen_boundaries.add(entry["boundary"])
 
-    rules: list[dict[str, Any]] = []
+    rules: list[tuple[dict[str, Any], int]] = []
     prev_boundary: float | None = None
 
     for entry in bounded:
@@ -257,16 +384,14 @@ def _breakpoints_to_rules(
                 rule["op2"] = "<"
                 rule["val2"] = b
 
-        rules.append(rule)
+        rules.append((rule, entry["source"]))
         prev_boundary = b
 
     # Open-ended tail
     if open_ended is not None and prev_boundary is not None:
         label = str(open_ended.get("label", "") or "")
-        if right_closed:
-            rules.append({"op1": ">", "val1": prev_boundary, "assignment": label})
-        else:
-            rules.append({"op1": ">=", "val1": prev_boundary, "assignment": label})
+        op = ">" if right_closed else ">="
+        rules.append(({"op1": op, "val1": prev_boundary, "assignment": label}, open_ended_source))
 
     return rules
 

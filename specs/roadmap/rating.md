@@ -13,64 +13,12 @@ the [caching roadmap](caching.md).
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| RAT-B01 | Planned | P1 | Derive per-rule banding claims from the same rules execution applies. |
 | RAT-B02 | Planned | P2 | Serve whole-dataset banding statistics and show them in the Banding editor. |
 | RAT-B03 | Planned | P2 | Serve whole-dataset raw factor levels to the Rating Step editor. |
 
 ## Planned improvements
 
-Delivery order is `RAT-B01` → `RAT-B02` → `RAT-B03`.
-
-### RAT-B01 — Rule-claim index for banding
-
-**Why:** The Banding editor computes match counts with a TypeScript
-re-implementation of banding. It disagrees with execution: execution matches
-categorical rules on the column cast to text (a Float `1.0` is `"1.0"`, not
-`"1"`), resolves duplicate categorical values last-wins, lets a continuous rule
-with an empty assignment claim nothing, and sends null, NaN, and infinite
-numeric values to the default. Grouping execution's output column cannot
-recover per-rule counts because several rules may share an assignment and the
-default may equal an assignment.
-
-**Plan:** Extract the rule preparation `_apply_banding` already performs
-(`normalise_banding_rules`, `_breakpoints_to_rules`, `_banding_condition`, the
-non-finite float sanitisation, and the categorical remap) into shared helpers.
-Add `banding_rule_claim_expr(column_expr, dtype, mode, rules, right_closed)`
-returning, per row, the index in the user's `rules` list of the rule that
-claims it, or null. `_apply_banding` keeps its output expression unchanged and
-is built from the same helpers. Invalid rules raise the same `ValueError` that
-execution raises.
-
-**Acceptance:** Hand-calculated vectors, each asserted as
-`rule_counts` (aligned to the user's rule order) plus `unmatched_count`:
-
-- Breakpoints, Float64 `x = [1, 5, 10, 10.5, 20, null, NaN, inf]`, rules
-  `[{boundary: "10", label: "low"}, {boundary: "", label: "high"},
-  {boundary: "5", label: "low"}]`, default `"low"`:
-  right-closed → `[1, 2, 2]`, unmatched `3`; left-closed → `[1, 3, 1]`,
-  unmatched `3`. The repeated `"low"` label and the default equal to it do not
-  merge counts.
-- Categorical, Float64 `f = [1.0, 2.0, NaN, null, 1.0, inf]`, rules
-  `[{value: "1.0", assignment: "A"}, {value: "NaN", assignment: "B"},
-  {value: "1", assignment: "A"}, {value: "1.0", assignment: "C"},
-  {value: "inf", assignment: ""}]`, default `"C"`: `[0, 1, 0, 2, 0]`,
-  unmatched `3` (`2.0`, null, `inf`).
-- Categorical, Int64 `[1, 2, null]`, rules `[{value: "1", assignment: "A"}]`:
-  `[1]`, unmatched `2`. Boolean `[true, false, null]`, rules
-  `[{value: "true", assignment: "T"}]`: `[1]`, unmatched `2`.
-- Continuous, Float64 `[1, 7, 12]`, rules
-  `[{op1: ">", val1: "0", op2: "<=", val2: "10", assignment: ""},
-  {op1: ">", val1: "5", assignment: "GT5"}]`: `[0, 2]`, unmatched `1`.
-- A property test over generated frames and rules asserts that for every row
-  with a non-null claim, `_apply_banding` outputs that rule's assignment, and
-  for every unclaimed row it outputs the default (or null without one).
-- Existing `tests/test_banding.py` expectations are unchanged.
-
-**Dependencies:** The current rating banding contract.
-
-**Evidence:** `src/haute/_rating.py`; `src/haute/_banding_config.py`;
-`frontend/src/panels/editors/banding/bandingUtils.ts`;
-`frontend/src/panels/editors/BandingEditor.tsx`; `tests/test_banding.py`.
+Delivery order is `RAT-B02` → `RAT-B03`.
 
 ### RAT-B02 — Whole-dataset banding statistics
 
