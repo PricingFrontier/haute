@@ -11,6 +11,7 @@
 | `src/haute/_stat_gated_cache.py` | Bounded LRU, per-key single-flight cache gated by backing-file metadata. |
 | `src/haute/routes/json_cache.py` | Structured API-input (JSON/JSONL/NDJSON/XML) cache infer/build/progress/status/delete HTTP surface. |
 | `src/haute/_data_points.py` | Consumer-to-data-point mapping, point kinds and states, data versions, point identity digests, and leased point reads. |
+| `src/haute/_seed_plans.py` | Seed plans for bounded executions: which node outputs a run reads from shared snapshots and which it captures, column negotiation, ancestry agreement, the plan fingerprint, and leased plans with their worker handoff. |
 | `src/haute/_analysis_results.py` | Analysis documents keyed by data version under `.haute_cache/analyses`, and the in-process memo of synchronous analyses. |
 | `src/haute/_source_cache.py` | Cross-component dependency owned by [io-layer](../io-layer/low-level.md); IO-layer-owned source snapshot store consumed for canonical cache identity and immutable generations. |
 
@@ -33,6 +34,16 @@ layer is primary and caching is a consumer.
   `DataFrameExecutionCacheRequest` define artifact identity and validated metadata.
 - `DataFrameExecutionCache` extends `LRUCache` with materialization locks, store-window pins,
   scan refcounts, and artifact unlinking.
+- `SeedPlanRequest` names one bounded execution before it builds anything: the lineage
+  target, the nodes the caller reads afterwards (`consumed_node_ids`, default the target),
+  source, profile, the caller's column demand, best-effort `capture_columns_by_node`,
+  per-node source overrides, `refresh`, and an explicit build's node. `SeedPlanDecision` is
+  its pickle-safe resolution: seeds (`SeedDecision`: identity, generation id, generation
+  columns, demand, recorded dependencies), captures (`CaptureDecision`: identity,
+  `CaptureKind`, negotiated and strict columns), the executed nodes, the selected edge of
+  every executed pass-through node, the planning demands, the lineage and runtime-input
+  fingerprints, and the plan fingerprint. `SeedPlan` holds the seed leases and whatever the
+  run registers; `SeedPlanHandoff` carries a plan to a spawned worker.
 
 ### Checked cache-input inventory
 
@@ -200,6 +211,71 @@ stops the worker and discards staging.
   source)`. It keys analyses of the point and never contains a consumer node or a column
   demand, so every consumer of one point shares its analyses.
 
+### Seed plans
+
+`src/haute/_seed_plans.py` decides, before a bounded execution builds anything, which node
+outputs it reads from shared snapshots (**seeds**) and which full-data materialisations it
+writes to them (**captures**). The lazy engine executes under the resulting plan.
+
+- **Eligibility.** The profile must both read and write the `bounded` class
+  (`snapshot_read_classes`, `snapshot_write_class`); deploy and preview profiles raise
+  `ValueError`. The prepared graph is `_prepare_execution` with the request's target, source,
+  demand, and profile — the one the lazy engine runs. Consumed nodes and an explicit build's
+  node outside the target's lineage raise `ValueError`.
+- **Effective edges.** A pass-through node (`PASS_THROUGH_NODE_TYPES` in `_builders.py`: Data
+  Output, modelling, Optimiser, submodel, submodel port) *is* its selected input:
+  `pass_through_selected_edge` returns the incoming edge its builder returns — the first, or for
+  an Optimiser with `data_input` the edge that input names. It is an edge, not a parent id, so
+  two ports of one API input stay distinct. That edge is the node's only effective one; every
+  other node's effective edges are its relevant incoming edges.
+- **Demand.** A node's demand is the engine's own projection — `compute_prepared_plan` then
+  `with_api_input_port_projection_boundaries` over the prepared graph — of the caller's
+  `required_columns_by_node`: its `needed_by_node` column set, or all columns.
+- **Walk.** From the target and every consumed node along effective edges, a visited node is a
+  seed when the request is not a refresh, it is not the explicit build's node or a dropped seed,
+  it is a `node_output` point, and its identity's latest generation (resolver slot and signature)
+  is fresh and covers its demand; an empty demand is covered by any generation. The walk stops
+  at a seed and never reads the metadata of anything above it. Every other visited node is
+  executed.
+- **Capture points** are executed nodes, other than pass-through types, non-`node_output` points,
+  and the explicit build's node, that are: `consumed` — the producer a consumed node resolves
+  to along selected edges (a port producer is never captured); `model_score` — a Model Score
+  whose scenario (per-node override, else the source) is not `live`; `materialising` — a node
+  `materialising_operators_by_node` names; or `structural` — a non-source node with more than
+  one effective parent, more than one executed child, or an executed child with more than one
+  effective parent.
+- **Negotiation.** Each capture's demand is the run's demand there, the best-effort capture
+  columns, and the columns of its identity's latest generation, fresh or stale, so a rebuild
+  never narrows a generation. All columns plan as `AllExcept()`, and a caller's unresolved
+  `AllExcept` demand stays all columns. The projection is re-planned with those demands; a seed
+  that no longer covers its re-planned demand is dropped and the walk runs again with the
+  re-planned demand, until none drops.
+- **Ancestry agreement.** Seeds that record different generations of one identity are all
+  dropped, and so is every seed recording an identity whose node the run still executes: a
+  current, fresh, covering generation of that node would already have been seeded where the walk
+  reached it, so an executed one would feed its readers other data than the seed was built from.
+  A dependency nothing else in the run reads imposes nothing, so a linear chain keeps its seed
+  after an ancestor is cleared. Resolution restarts until nothing drops; a dropped seed is never
+  re-added.
+- **Decision.** A capture records the negotiated columns it writes and the strict columns the run
+  itself needs. `runtime_input_fingerprint` is `dataframe_graph_input_fingerprint` over only the
+  executed nodes (a seed's inputs cannot change what the run reads); `lineage_fingerprint` is the
+  graph fingerprint of the target's upstream subgraph; `fingerprint` is `seed-plan:v1:` and the
+  SHA-256 of the sorted `(identity digest, generation id)` pairs of the seeds only.
+- **Leasing.** `open_resolved_seed_plan` resolves, leases every seed with `lease_generation`, and
+  confirms each is still its identity's latest generation. A seed retired or replaced in between
+  re-resolves, at most three times, then raises `SourceCacheGenerationMissingError`.
+  `open_seed_plan` first runs automatic input preparation for the nodes reachable along effective
+  edges — signatures sign prepared generations, and a branch reached only through an unselected
+  pass-through input is never prepared.
+- **Ownership.** A `SeedPlan` owns the publications and request-owned artifacts the run registers
+  and records the dependency closure behind each node's frame (`record_closure`,
+  `dependencies_for`). `close()` closes them, releases the seed leases, and, in the process that
+  opened the plan, removes any staging directory left under its staging token; a supervising
+  parent closes only after its worker has exited. `handoff()` returns a `SeedPlanHandoff`
+  (decision, project root, staging token), and `SeedPlan.adopt` leases the same generations in
+  the worker without the currency check and never removes the parent's staging.
+
 ### Analysis results
 
 `src/haute/_analysis_results.py` keeps analyses of a data point keyed by the exact data they
@@ -266,6 +342,9 @@ and tested by the [IO layer](../io-layer/low-level.md).
   run read from cache?". A valid `working/` wins since that is what the next run
   reads, and `cached=False` requires both layers to be invalid.
 - Dataframe cache artifacts are not part of persistent startup reaping.
+- A seed plan never seeds a stale generation, never reads metadata above a seed, never seeds
+  an explicit build's own node, and seeds nothing on a refresh.
+- A pass-through node is never captured; the producer its selected edge names is.
 
 ## Error handling
 
@@ -273,6 +352,10 @@ Contract/key errors are `ValueError`/`TypeError` at construction. `StatGatedCach
 stat and loader exceptions and raises `RuntimeError` after two moving gates.
 
 `CacheArtifactMissingError` and `CacheArtifactCorruptError` cause ordinary-hit eviction.
+Seed-plan resolution raises `ValueError` for a profile outside the `bounded` class or a node
+outside the target's lineage, propagates `SourceCacheCorruptError` from any generation it
+reads, and raises `SourceCacheGenerationMissingError` once seeds have moved under it three
+times.
 `CacheArtifactTooLargeError` rejects the new artifact while retaining any previous same-key
 entry. `DataFrameExecutionCacheError` reports impossible identity/store-window states.
 
@@ -318,6 +401,22 @@ ordering above are the answers and must be updated together when a consumer or
 cache lifecycle changes.
 
 ## Testing
+
+- `tests/test_seed_plans.py` covers the capture rule (join feeders, joins, fan-outs,
+  materialising `group_by` and `sort`, batch but not live Model Score, consumed producers through
+  pass-throughs, nothing for a blank Data Input), pass-through selection agreeing with the built
+  function for modelling, Data Output, and Optimisers with and without `data_input`, a two-input
+  modelling node that is neither a join nor builds its unselected branch, an Optimiser's second
+  input and an API input's second port, the walk stopping at the first fresh covering generation
+  without reading anything above it, stale and partial generations, class-less profiles, explicit
+  builds seeding strictly upstream, refresh, disjoint-demand negotiation, a narrow upstream seed
+  dropped and widened, best-effort capture columns, an unresolved `AllExcept` capturing all
+  columns, a linear chain keeping its seed after an ancestor clear, a recomputed branch seeding
+  the recorded ancestor or dropping the seed when it is cleared or does not cover, conflicting
+  recorded generations, drops across rounds, consumed side inputs, leases through refresh and
+  clear, re-resolution and giving up, handoff round trip, the plan fingerprint, ownership of
+  registered publications and artifacts, token staging removal, and input preparation of only
+  readable inputs before resolution.
 
 - `tests/test_runtime_input_cache_invalidation.py` — preview/trace cache keys invalidate on runtime file/artifact edits or disappearance, preserve stat-gate semantics, and share file signatures across preview/trace.
 

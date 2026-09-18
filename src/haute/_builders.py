@@ -45,7 +45,7 @@ from haute._edge_join import (
     resolve_edge_join_role_indices,
 )
 from haute._execution_context import ExecutionProfile, current_execution_context
-from haute._graph_utils import _sanitize_func_name, build_instance_mapping
+from haute._graph_utils import _sanitize_func_name, build_instance_mapping, edge_input_name
 from haute._io import _select_columns
 from haute._logging import get_logger
 from haute._node_apply import (
@@ -85,7 +85,7 @@ from haute._registry import (
 from haute._registry import (
     register_exec as _register_exec_in_registry,
 )
-from haute._types import GraphNode, NodeType, PipelineGraph, _Frame
+from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph, _Frame
 from haute._user_exec import _exec_user_code
 from haute.errors import ConfigError, RatingFactorDtypeContractError
 
@@ -347,6 +347,60 @@ def _modelling_passthrough_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) ->
     raise RuntimeError(
         f"Unsupported modelling input policy: {MODELLING_NODE_SEMANTICS.input_policy!r}"
     )
+
+
+# Node types whose builder always returns one of the node's inputs unchanged:
+# their output *is* that input's data. A stubbed Model Score or Optimiser Apply
+# that happens to pass its input through is not listed: that is a configuration
+# state, not what the node type is.
+PASS_THROUGH_NODE_TYPES: frozenset[NodeType] = frozenset(
+    {
+        NodeType.DATA_OUTPUT,
+        MODELLING_NODE_SEMANTICS.node_type,
+        NodeType.OPTIMISER,
+        NodeType.SUBMODEL,
+        NodeType.SUBMODEL_PORT,
+    }
+)
+
+
+def pass_through_selected_edge(
+    node: GraphNode,
+    incoming_edges: list[GraphEdge] | tuple[GraphEdge, ...],
+    node_map: Mapping[str, GraphNode],
+    *,
+    submodels: Mapping[str, Any] | None = None,
+) -> GraphEdge | None:
+    """Return the incoming edge whose frame a pass-through node returns.
+
+    ``incoming_edges`` are the node's connected edges in the order its builder
+    receives them. The answer is an edge, not a parent id: two ports of one
+    API input share a source node but carry different tables. ``None`` means
+    the node is not a pass-through or has nothing connected. An Optimiser that
+    must name its data input and does not raises the builder's own error.
+    """
+    node_type = node.data.nodeType
+    if node_type not in PASS_THROUGH_NODE_TYPES or not incoming_edges:
+        return None
+    if node_type == MODELLING_NODE_SEMANTICS.node_type and (
+        MODELLING_NODE_SEMANTICS.input_policy is not NodeInputPolicy.FIRST_CONNECTED
+    ):
+        raise RuntimeError(
+            f"Unsupported modelling input policy: {MODELLING_NODE_SEMANTICS.input_policy!r}"
+        )
+    if node_type == NodeType.OPTIMISER:
+        names = [
+            edge_input_name(edge, node_map[edge.source], submodels=submodels)
+            for edge in incoming_edges
+        ]
+        data_input = resolve_optimiser_data_input(
+            node.data.config,
+            names,
+            node_label=_sanitize_func_name(node.data.label),
+        )
+        if data_input is not None:
+            return incoming_edges[names.index(data_input)]
+    return incoming_edges[0]
 
 
 def _explore_fn(df: _Frame) -> _Frame:
