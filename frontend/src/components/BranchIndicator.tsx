@@ -2,6 +2,7 @@ import { GitBranch } from "lucide-react"
 
 import useGitStore from "../stores/useGitStore"
 import useUIStore from "../stores/useUIStore"
+import Tooltip from "./Tooltip"
 
 /** The sync/storage chip shown beside the branch indicator once a working
  *  branch is ready (S28 durable-storage surface). Hidden entirely when this
@@ -150,21 +151,30 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
 
   if (statusError) {
     return wrapWithChildren(
-      <div
-        data-testid="toolbar-branch-indicator"
-        data-branch-state="error"
-        className="toolbar-btn flex items-center justify-center gap-1 px-2.5 py-1 text-[11px] font-medium min-w-[136px] max-w-[220px] w-full"
+      <Tooltip
+        label={`Git unavailable: ${statusError}`}
+        side="bottom"
+        className="max-w-[220px]"
       >
-        <span className="truncate">Git unavailable: {statusError}</span>
-        <button
-          type="button"
-          data-testid="branch-indicator-retry"
-          onClick={() => void loadStatus()}
-          className="shrink-0 underline"
-        >
-          Retry
-        </button>
-      </div>
+        {(describedBy) => (
+          <span
+            data-testid="toolbar-branch-indicator"
+            data-branch-state="error"
+            className="toolbar-btn flex items-center justify-center gap-1 px-2.5 py-1 text-[11px] font-medium min-w-[136px] max-w-[220px] w-full"
+          >
+            <span className="truncate">Git unavailable: {statusError}</span>
+            <button
+              type="button"
+              data-testid="branch-indicator-retry"
+              aria-describedby={describedBy}
+              onClick={() => void loadStatus()}
+              className="shrink-0 underline"
+            >
+              Retry
+            </button>
+          </span>
+        )}
+      </Tooltip>
     )
   }
 

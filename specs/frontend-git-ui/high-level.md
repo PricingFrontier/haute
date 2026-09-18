@@ -65,11 +65,13 @@ Out of scope (owned by neighbouring components):
 **Toolbar indicator.** While the first readiness request is in flight it shows a quiet
 checking state. A transport/server failure produces a visible "Git unavailable" state with
 the backend detail and a Retry action; it is not confused with a project that has no
-repository. Successful responses render distinct labels and remediation for no repository,
-unset working branch, invalid state, attached divergence, and detached HEAD (including its
-short SHA). A ready state shows the working branch name alone; clicking it opens the panel
-on the current branch. The indicator carries no save SHA — the commit code belongs to the
-history panel, which shows it in context.
+repository. When the compact toolbar truncates the detail, the complete diagnostic remains
+available in a tooltip on hover over the error or keyboard focus on Retry, and describes
+the Retry button for assistive technology. Successful responses render distinct labels and
+remediation for no repository, unset working branch, invalid state, attached divergence,
+and detached HEAD (including its short SHA). A ready state shows the working branch name
+alone; clicking it opens the panel on the current branch. The indicator carries no save
+SHA — the commit code belongs to the history panel, which shows it in context.
 
 **Panel — save history.** The panel shows, top to bottom: the remote push control, the
 branch manager, an optional "peeking another branch" banner, out-of-version (pending)

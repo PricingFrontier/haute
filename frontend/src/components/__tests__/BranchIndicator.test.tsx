@@ -52,12 +52,29 @@ describe("BranchIndicator", () => {
     expect(screen.getByTestId("toolbar-branch-indicator")).toHaveTextContent("Checking Git")
   })
 
-  it("shows a retryable Git-unavailable error", () => {
+  it("keeps full Git errors readable on hover and Retry focus", () => {
     const loadStatus = vi.fn()
-    useGitStore.setState({ statusError: "Git service stopped", loadStatus })
+    const error = "Unable to read Git status because the project directory is no longer accessible."
+    const label = `Git unavailable: ${error}`
+    useGitStore.setState({ statusError: error, loadStatus })
     render(<BranchIndicator />)
-    expect(screen.getByTestId("toolbar-branch-indicator")).toHaveTextContent("Git unavailable: Git service stopped")
-    fireEvent.click(screen.getByTestId("branch-indicator-retry"))
+    const indicator = screen.getByTestId("toolbar-branch-indicator")
+    const retry = screen.getByRole("button", { name: "Retry" })
+    expect(indicator).toHaveTextContent(label)
+
+    fireEvent.mouseEnter(indicator)
+    const tooltip = screen.getByRole("tooltip", { name: label })
+    expect(tooltip).not.toHaveClass("hidden")
+    fireEvent.mouseLeave(indicator)
+    expect(tooltip).toHaveClass("hidden")
+
+    fireEvent.focus(retry)
+    expect(tooltip).not.toHaveClass("hidden")
+    expect(retry).toHaveAccessibleDescription(label)
+    fireEvent.blur(retry)
+    expect(tooltip).toHaveClass("hidden")
+
+    fireEvent.click(retry)
     expect(loadStatus).toHaveBeenCalledOnce()
   })
 
