@@ -168,6 +168,11 @@ def _generation_dir(
     return store.inputs_root / identity.digest / "generations" / generation
 
 
+def _corrupt(data_path: Path) -> None:
+    """Replace a generation's data, under the project sandbox, with unreadable bytes."""
+    data_path.write_bytes(b"corrupt")
+
+
 # ---------------------------------------------------------------------------
 # Capture points
 # ---------------------------------------------------------------------------
@@ -778,7 +783,7 @@ def test_corrupt_generation_fails_resolution(project: Path, store: NodeSnapshotS
     graph = _chain(project)
     generation = _publish(store, graph, "C")
     identity = _identity(store, graph, "C")
-    (_generation_dir(store, identity, generation) / "data.parquet").write_bytes(b"corrupt")
+    _corrupt(_generation_dir(store, identity, generation) / "data.parquet")
 
     with pytest.raises(SourceCacheCorruptError):
         resolve_seed_plan(_request(graph, required={"T": ["a"]}), store=NodeSnapshotStore(project))
@@ -1032,7 +1037,10 @@ def test_open_seed_plan_prepares_only_readable_inputs_first(
     def prepare(order: list[str], *args: Any, **kwargs: Any) -> None:
         events.append(("prepare", list(order)))
 
-    def resolved(request: SeedPlanRequest, *, store: NodeSnapshotStore) -> Any:
+    def resolved(
+        request: SeedPlanRequest, *, store: NodeSnapshotStore, staging_token: str | None
+    ) -> Any:
+        assert staging_token == "a1b2c3d4e5f6"
         events.append(("resolve", store.root))
         return SeedPlan(decision=None, store=store, staging_token="t", owns_staging=False)  # type: ignore[arg-type]
 
@@ -1040,7 +1048,7 @@ def test_open_seed_plan_prepares_only_readable_inputs_first(
     monkeypatch.setattr(seed_plans, "open_resolved_seed_plan", resolved)
     monkeypatch.setattr("haute._sandbox._get_project_root", lambda: project)
 
-    open_seed_plan(_request(_two_input_modelling(project)))
+    open_seed_plan(_request(_two_input_modelling(project)), staging_token="a1b2c3d4e5f6")
 
     assert [event for event, _ in events] == ["prepare", "resolve"]
     assert events[0][1] == ["src", "A", "T"]

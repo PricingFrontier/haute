@@ -838,6 +838,16 @@ def _resource_current_rss_bytes() -> int | None:
     return rss if rss > 10_000_000 else rss * 1024
 
 
+@dataclass(frozen=True, slots=True)
+class _EvidenceRecord:
+    """A record reported by another process, kept in its payload form."""
+
+    payload: Mapping[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(self.payload)
+
+
 @dataclass(slots=True, weakref_slot=True)
 class ExecutionContext:
     """Shared per-run execution controls and instrumentation."""
@@ -1223,6 +1233,39 @@ class ExecutionContext:
         """Record one full-data materialisation this execution wrote to shared snapshots."""
         with self._evidence_lock:
             self._shared_snapshot_captures.append(record)
+
+    def shared_snapshot_evidence(self) -> dict[str, list[dict[str, Any]]]:
+        """This execution's seeds, captures, and warnings, as payload dicts.
+
+        A spawned worker returns this so its supervising parent can report
+        what the worker read and wrote (:meth:`adopt_shared_snapshot_evidence`).
+        """
+        with self._evidence_lock:
+            return {
+                "shared_snapshot_seeds": [
+                    dict(record.to_dict()) for record in self._shared_snapshot_seeds
+                ],
+                "shared_snapshot_captures": [
+                    dict(record.to_dict()) for record in self._shared_snapshot_captures
+                ],
+                "warnings": [dict(warning) for warning in self._execution_warnings],
+            }
+
+    def adopt_shared_snapshot_evidence(self, evidence: Mapping[str, Any]) -> None:
+        """Report a worker's shared-snapshot evidence as this execution's own."""
+        with self._evidence_lock:
+            for payload in evidence.get("shared_snapshot_seeds", ()):
+                self._shared_snapshot_seeds.append(_EvidenceRecord(dict(payload)))
+            for payload in evidence.get("shared_snapshot_captures", ()):
+                self._shared_snapshot_captures.append(_EvidenceRecord(dict(payload)))
+            for warning in evidence.get("warnings", ()):
+                self._execution_warnings.append(
+                    {
+                        "code": warning.get("code"),
+                        "node_id": warning.get("node_id"),
+                        "reason": warning.get("reason"),
+                    }
+                )
 
     def record_execution_warning(
         self, code: str, *, node_id: str | None = None, reason: str | None = None

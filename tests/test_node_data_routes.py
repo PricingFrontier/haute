@@ -900,3 +900,268 @@ def test_a_real_isolated_worker_builds_and_publishes(client: TestClient, project
     point = client.post("/api/node-data/point", json=_body(graph, "banding")).json()
     assert point["state"] == "current"
     assert point["row_count"] == 1000
+
+
+# ---------------------------------------------------------------------------
+# Explicit builds seed and capture (CACHE-S07)
+# ---------------------------------------------------------------------------
+
+
+def _chain_graph(project: Path) -> dict[str, Any]:
+    """``source → A → B → C``, each read by a blank Explore that caches it."""
+
+    def polars(node_id: str, code: str) -> dict[str, Any]:
+        return {
+            "id": node_id,
+            "data": {"label": node_id, "nodeType": "polars", "config": {"code": code}},
+        }
+
+    def explore(node_id: str) -> dict[str, Any]:
+        return {"id": node_id, "data": {"label": node_id, "nodeType": "explore", "config": {}}}
+
+    graph = make_graph(
+        {
+            "source_file": str(project / "main.py"),
+            "preamble": "import polars as pl",
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataInput",
+                        "config": {
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "path": str(project / "quotes.parquet"),
+                            "arguments": {},
+                        },
+                    },
+                },
+                polars("A", "df = source.with_columns((pl.col('premium') * 2).alias('double'))"),
+                polars("B", "df = A.filter(pl.col('premium') >= 0)"),
+                polars("C", "df = B.with_columns(pl.lit(1).alias('one'))"),
+                explore("explore_a"),
+                explore("explore_b"),
+                explore("explore_c"),
+            ],
+            "edges": [
+                make_edge("source", "A").model_dump(),
+                make_edge("A", "B").model_dump(),
+                make_edge("B", "C").model_dump(),
+                make_edge("A", "explore_a").model_dump(),
+                make_edge("B", "explore_b").model_dump(),
+                make_edge("C", "explore_c").model_dump(),
+            ],
+        }
+    )
+    return graph.model_dump()
+
+
+def _cache(
+    client: TestClient, graph: dict[str, Any], consumer: str, **extra: Any
+) -> dict[str, Any]:
+    run = client.post("/api/node-data/run", json=_body(graph, consumer, **extra)).json()
+    job = _poll(client, run["job_id"])
+    assert job["status"] == "completed", str(job.get("error_detail") or job.get("error"))
+    return job
+
+
+def _resolver(project: Path, graph: dict[str, Any]) -> DataPointResolver:
+    from haute._types import PipelineGraph
+
+    return DataPointResolver(
+        PipelineGraph.model_validate(graph), source="live", store=NodeSnapshotStore(project)
+    )
+
+
+def _state(project: Path, graph: dict[str, Any], node_id: str) -> str:
+    resolution = _resolver(project, graph).resolve(
+        DataPoint(node_id, None), NodeSnapshotColumns.all()
+    )
+    return resolution.state
+
+
+def _digest(project: Path, graph: dict[str, Any], node_id: str) -> str:
+    resolver = _resolver(project, graph)
+    return (
+        resolver.node_output_slot(node_id).identity(resolver.node_output_signature(node_id)).digest
+    )
+
+
+def _dependencies(project: Path, graph: dict[str, Any], node_id: str) -> dict[str, str]:
+    resolver = _resolver(project, graph)
+    identity = resolver.node_output_slot(node_id).identity(resolver.node_output_signature(node_id))
+    latest = resolver.store.latest_generation(identity)
+    assert latest is not None
+    return dict(latest.dependencies)
+
+
+def _clear(client: TestClient, graph: dict[str, Any], *consumers: str) -> None:
+    for consumer in consumers:
+        assert client.post("/api/node-data/clear", json=_body(graph, consumer)).status_code == 200
+
+
+@pytest.mark.usefixtures("in_process_worker")
+def test_build_seeds_strictly_upstream_and_records_it(client: TestClient, project: Path) -> None:
+    graph = _chain_graph(project)
+
+    # Cache A, then B: B is built from A's snapshot and records it.
+    a1 = _cache(client, graph, "explore_a")["generation_id"]
+    built_b = _cache(client, graph, "explore_b")
+    assert [seed["node_id"] for seed in built_b["execution_metrics"]["shared_snapshot_seeds"]] == [
+        "A"
+    ]
+    assert _dependencies(project, graph, "B") == {_digest(project, graph, "A"): a1}
+    assert (_state(project, graph, "A"), _state(project, graph, "B")) == ("current", "current")
+    # Refreshing A to a new generation stales B.
+    _cache(client, graph, "explore_a", refresh=True)
+    assert _state(project, graph, "B") == "stale"
+
+    # Cache A, then B, then clear A: B stays current.
+    _clear(client, graph, "explore_a", "explore_b")
+    _cache(client, graph, "explore_a")
+    _cache(client, graph, "explore_b")
+    _clear(client, graph, "explore_a")
+    assert _state(project, graph, "B") == "current"
+
+    # Cache B, then A: B was built from the source and stays current.
+    _clear(client, graph, "explore_a", "explore_b")
+    _cache(client, graph, "explore_b")
+    _cache(client, graph, "explore_a")
+    assert _dependencies(project, graph, "B") == {}
+    assert _state(project, graph, "B") == "current"
+
+
+@pytest.mark.usefixtures("in_process_worker")
+def test_build_chain_refresh_stales_descendants(client: TestClient, project: Path) -> None:
+    graph = _chain_graph(project)
+    for consumer in ("explore_a", "explore_b", "explore_c"):
+        _cache(client, graph, consumer)
+    assert _dependencies(project, graph, "C").keys() == {
+        _digest(project, graph, "A"),
+        _digest(project, graph, "B"),
+    }
+
+    _cache(client, graph, "explore_a", refresh=True)
+
+    assert _state(project, graph, "B") == "stale"
+    assert _state(project, graph, "C") == "stale"
+
+
+@pytest.mark.usefixtures("in_process_worker")
+def test_refresh_build_seeds_nothing_and_captures(client: TestClient, project: Path) -> None:
+    # ``A`` fans out and ``B`` feeds a join, so a build of ``J`` captures both.
+    graph = _chain_graph(project)
+    graph["nodes"].append(
+        {
+            "id": "J",
+            "data": {
+                "label": "J",
+                "nodeType": "polars",
+                "config": {"code": "df = A.join(B, on='policy_id', how='left', validate='1:1')"},
+            },
+        }
+    )
+    graph["nodes"].append(
+        {"id": "explore_j", "data": {"label": "explore_j", "nodeType": "explore", "config": {}}}
+    )
+    graph["edges"] += [
+        make_edge("A", "J").model_dump(),
+        make_edge("B", "J").model_dump(),
+        make_edge("J", "explore_j").model_dump(),
+    ]
+
+    first = _cache(client, graph, "explore_j")["execution_metrics"]
+    assert {
+        capture["node_id"]: capture["outcome"] for capture in first["shared_snapshot_captures"]
+    } == {
+        "A": "published",
+        "B": "published",
+    }
+    refreshed = _cache(client, graph, "explore_j", refresh=True)["execution_metrics"]
+    assert refreshed["shared_snapshot_seeds"] == []
+    assert {capture["node_id"] for capture in refreshed["shared_snapshot_captures"]} == {"A", "B"}
+
+
+@pytest.mark.parametrize(
+    "stopped",
+    ["cancelled", "timed_out", "memory_limited"],
+)
+def test_terminated_build_worker_leaves_no_capture_staging(
+    client: TestClient,
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stopped: str,
+) -> None:
+    from haute._worker_isolation import (
+        IsolatedWorkerMemoryLimitExceededError,
+        IsolatedWorkerStoppedError,
+        IsolatedWorkerTimeoutError,
+    )
+
+    graph = _chain_graph(project)
+    staged: list[Path] = []
+
+    def killed_after_capture_staging(function, request, budget, *, config):
+        # A capture of an intermediate node is staged under the plan's token
+        # before the worker dies.
+        store = NodeSnapshotStore(request.project_root)
+        resolver = DataPointResolver(request.graph, source=request.source, store=store)
+        identity = resolver.node_output_slot("A").identity(resolver.node_output_signature("A"))
+        artifact = store.stage_node_output(identity, staging_token=request.seed_plan.staging_token)
+        _write(artifact.data_path, b"partial parquet")
+        staged.append(artifact.directory)
+        if stopped == "timed_out":
+            raise IsolatedWorkerTimeoutError(timeout_seconds=1.0)
+        if stopped == "memory_limited":
+            raise IsolatedWorkerMemoryLimitExceededError(rss_bytes=2048, rss_limit_bytes=1024)
+        raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
+
+    monkeypatch.setattr(service_mod, "run_isolated_worker", killed_after_capture_staging)
+    run = client.post("/api/node-data/run", json=_body(graph, "explore_b")).json()
+
+    assert _poll(client, run["job_id"])["status"] == stopped
+    assert len(staged) == 1
+    assert not staged[0].exists()
+    assert list(project.glob(".haute_cache/inputs/*/.staging-*")) == []
+
+
+@pytest.mark.usefixtures("in_process_worker")
+def test_a_build_whose_seed_is_replaced_before_it_publishes_is_not_reported_cached(
+    client: TestClient, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute._node_snapshots as node_snapshots
+    from haute._execution_context import ExecutionProfile
+
+    graph = _chain_graph(project)
+    _cache(client, graph, "explore_a")
+    resolver = _resolver(project, graph)
+    a_identity = resolver.node_output_slot("A").identity(resolver.node_output_signature("A"))
+    refreshed: list[bool] = []
+
+    def refresh_a_before_b_publishes(name: str) -> None:
+        if name != "publish_before_recheck" or refreshed:
+            return
+        refreshed.append(True)
+        store = NodeSnapshotStore(project)
+        artifact = store.stage_node_output(a_identity)
+        pl.DataFrame({"policy_id": [1]}).write_parquet(artifact.data_path)
+        store.publish_node_output(
+            a_identity,
+            artifact,
+            columns=NodeSnapshotColumns.all(),
+            dependencies={},
+            explicit=True,
+            profile=ExecutionProfile.NODE_SNAPSHOT,
+            refresh=True,
+        ).close()
+
+    monkeypatch.setattr(node_snapshots, "_fault_point", refresh_a_before_b_publishes)
+    run = client.post("/api/node-data/run", json=_body(graph, "explore_b")).json()
+    job = _poll(client, run["job_id"])
+
+    assert refreshed == [True]
+    assert job["status"] == "contract_error"
+    assert "changed while its data was being cached" in job["message"]
+    assert _state(project, graph, "B") == "missing"

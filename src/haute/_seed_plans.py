@@ -852,9 +852,15 @@ def open_resolved_seed_plan(
     request: SeedPlanRequest,
     *,
     store: NodeSnapshotStore,
+    staging_token: str | None = None,
 ) -> SeedPlan:
-    """Resolve and lease; a seed that moved before its lease re-resolves."""
-    token = new_staging_token()
+    """Resolve and lease; a seed that moved before its lease re-resolves.
+
+    A caller that already owns a staging token (an explicit build names one so
+    it can discard a killed worker's staging) passes it, and the plan's
+    captures stage under the same token.
+    """
+    token = staging_token if staging_token is not None else new_staging_token()
     for attempt in range(_LEASE_ATTEMPTS):
         decision = resolve_seed_plan(request, store=store)
         try:
@@ -877,6 +883,7 @@ def open_seed_plan(
     *,
     store: NodeSnapshotStore | None = None,
     execution_context: ExecutionContext | None = None,
+    staging_token: str | None = None,
 ) -> SeedPlan:
     """Prepare the run's inputs, then resolve and lease its seed plan.
 
@@ -909,4 +916,4 @@ def open_seed_plan(
         base_dir=preparation_base_dir(resolver.prepared.graph),
         schema_only=False,
     )
-    return open_resolved_seed_plan(request, store=store)
+    return open_resolved_seed_plan(request, store=store, staging_token=staging_token)

@@ -539,22 +539,35 @@ supervisor thread. The thread first joins the superseded job's thread, then crea
 inputs itself (`prepare_graph` then `prepare_input_snapshots` under that context). Preparation
 can build or refresh input snapshots whose generations belong to the signature, so the thread
 then binds the build to the identity of the prepared inputs, re-keys the running job under that
-identity (so `point` and joins still find it), and runs `_run_node_snapshot_worker` in an
-isolated worker with `HAUTE_NODE_SNAPSHOT_TIMEOUT` (default 1800 s). The child sets the project
-root, confirms the bound identity, executes the node with `enforce_contracts=True` and
-`prepare_inputs=False`, rejects a multi-frame output (`node_snapshot_multi_frame_unsupported`),
-sinks the frame into staging named by the parent's token, confirms the identity again, and
-publishes with `explicit=True` and the request's `refresh`; an identity that moved at either
+identity (so `point` and joins still find it), opens a
+[seed plan](../caching/low-level.md#seed-plans) for the build (`NODE_SNAPSHOT`, the built node
+as `build_node_id` so only strictly upstream points are seeded, the request's `refresh`, which
+seeds nothing but still captures) whose captures stage under the build's own token, and — with
+that plan leased until the worker has exited — runs `_run_node_snapshot_worker` in an
+isolated worker with `HAUTE_NODE_SNAPSHOT_TIMEOUT` (default 1800 s), passing the plan's handoff
+in the request. The child sets the project root, confirms the bound identity, adopts the plan
+(leasing the same generations), executes the node under it with `enforce_contracts=True` and
+`prepare_inputs=False` — intermediate capture points are published as automatic generations —
+rejects a multi-frame output (`node_snapshot_multi_frame_unsupported`), sinks the frame into
+staging named by the parent's token, confirms the identity again, and publishes with
+`explicit=True`, the request's `refresh`, and as `dependencies` the closure the plan recorded
+for the node, so replacing any snapshot it seeded or captured makes it stale. A superseded
+publication counts as cached only when a current, full-width generation of the node exists;
+otherwise something the build read was replaced while it ran and nothing holds the node's
+data, so it is `NodeSnapshotInputsChangedError`; an identity that moved at either
 check (a source or snapshot changed while the build read it) is
 `NodeSnapshotInputsChangedError`, reported as a contract error and never published. It returns
-a closed `_NodeSnapshotWorkerOutcome` (generation id and `published`/`superseded`, or a
-`public_contract`, `memory`, `quota`, or `contract` failure). The parent validates the envelope
-and completes the job under the registry's latest-publication guard with `generation_id`,
-`outcome`, and execution metrics, or maps failures to `contract_error`, `memory_limited`,
+a closed `_NodeSnapshotWorkerOutcome` (generation id and `published`/`superseded` with the
+execution's `shared_snapshot_evidence()`, or a `public_contract`, `memory`, `quota`, or
+`contract` failure). The parent validates the envelope, adopts the child's seeds, captures, and
+warnings into its own execution context (`adopt_shared_snapshot_evidence`), and completes the
+job under the registry's latest-publication guard with `generation_id`, `outcome`, and
+execution metrics, or maps failures to `contract_error`, `memory_limited`,
 `error` (quota, with its actionable message), the cancellation or supersession reason, a public
 contract error from input preparation (except that a preparation failure after the job was
 cancelled or superseded ends with that reason), or the internal-error envelope. After the worker has terminated, the supervisor discards any
-staging directory carrying its token, which a killed worker could not remove. `clear` cancels
+staging directory carrying its token — the build's own and its captures' — which a killed
+worker could not remove. `clear` cancels
 the slot's running job, waits for that job's supervisor thread to finish so the worker can no
 longer publish, and then calls `NodeSnapshotStore.clear_slot`; for other kinds it answers
 `delegated`; every kind's `clear` also cancels the point's running profiles and removes its
@@ -846,7 +859,14 @@ entirely and leave every touched file in whatever state it happened to be in."
   its CSV input snapshot completing current, a build paused after preparation found by `point`
   and joined, a source replaced after execution read its rows never being published,
   cancellation during input preparation ending `cancelled`, delegation and direct reads for source kinds,
-  invalid wiring and an invalid API-input port as 400, and a real isolated-worker build.
+  invalid wiring and an invalid API-input port as 400, and a real isolated-worker build. Seed
+  plans in builds: caching `A` then `B` seeds `A`, records it in `B`'s dependencies and in the
+  job's metrics, and refreshing `A` stales `B`; clearing `A` leaves `B` current; caching `B`
+  before `A` leaves `B` current; refreshing the root of `A → B → C` stales both descendants; a
+  refresh build seeds nothing yet still captures its fan-out and join feeder; a build whose seed
+  is refreshed before it publishes ends `contract_error` rather than reporting the node cached;
+  and a build worker stopped, timed out, or killed at its memory cap ends with that status and
+  removes the capture it had staged.
 - `tests/test_analysis_results.py` covers the profile route: an uncached point asking to be
   cached, a profile computed once and then served from the store, a second request joining the
   running profile, a refreshed point never returning the previous profile, admission failure,

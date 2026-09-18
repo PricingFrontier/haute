@@ -8,9 +8,10 @@ API-input tables keep their existing build routes, which ``run`` delegates to.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -49,6 +50,12 @@ from haute._node_snapshots import (
     NodeSnapshotQuotaRejectedError,
     NodeSnapshotSlot,
     NodeSnapshotStore,
+)
+from haute._seed_plans import (
+    SeedPlan,
+    SeedPlanHandoff,
+    SeedPlanRequest,
+    open_resolved_seed_plan,
 )
 from haute._source_cache import SourceCacheIdentity, new_staging_token
 from haute._worker_isolation import (
@@ -126,8 +133,11 @@ class _NodeSnapshotWorkerRequest:
     project_root: str
     streaming_chunk_size: int | None
     # Parent-chosen, so the parent can discard the staging directory of a
-    # worker killed by cancellation, timeout, or the memory cap.
+    # worker killed by cancellation, timeout, or the memory cap. The seed
+    # plan's captures stage under the same token.
     staging_token: str
+    # The seed plan the parent resolved and leases until the worker exits.
+    seed_plan: SeedPlanHandoff | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +148,8 @@ class _NodeSnapshotWorkerOutcome:
     detail: str | None = None
     payload: dict[str, Any] | None = None
     terminal_reason: str | None = None
+    # What the worker's execution seeded and captured, for the job's metrics.
+    snapshot_evidence: dict[str, Any] | None = None
 
 
 class _WorkerReportedError(RuntimeError):
@@ -248,57 +260,83 @@ def _build_node_snapshot(
         raise changed
     graph = DataPointResolver(request.graph, source=request.source, store=store).graph
     preamble_ns = _compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
-    outputs, *_ = execute_lazy_graph(
-        graph,
-        _build_node_fn,
-        target_node_id=request.node_id,
-        preamble_ns=preamble_ns or None,
-        source=request.source,
-        enforce_contracts=True,
-        execution_context=execution_context,
-        prepare_inputs=False,
-    )
-    output = outputs[request.node_id]
-    if isinstance(output, dict):
-        raise NodeSnapshotMultiFrameUnsupportedError(
-            "A node that emits several frames cannot be cached as one node-output snapshot."
+    with (
+        SeedPlan.adopt(request.seed_plan, store)
+        if request.seed_plan is not None
+        else contextlib.nullcontext()
+    ) as plan:
+        outputs, *_ = execute_lazy_graph(
+            graph,
+            _build_node_fn,
+            target_node_id=request.node_id,
+            preamble_ns=preamble_ns or None,
+            source=request.source,
+            enforce_contracts=True,
+            execution_context=execution_context,
+            prepare_inputs=False,
+            snapshot_plan=plan,
         )
-    artifact = store.stage_node_output(identity, staging_token=request.staging_token)
-    try:
-        with execution_context.stage("node_snapshot_write"):
-            bounded_sink(
-                output.lazy() if isinstance(output, pl.DataFrame) else output,
-                artifact.data_path,
-                fast_checkpoint=True,
-                streaming_chunk_size=request.streaming_chunk_size,
+        output = outputs[request.node_id]
+        if isinstance(output, dict):
+            raise NodeSnapshotMultiFrameUnsupportedError(
+                "A node that emits several frames cannot be cached as one node-output snapshot."
             )
-        if _node_identity(request.graph, request.node_id, request.source, store).digest != (
-            identity.digest
-        ):
-            raise changed
-        publication = store.publish_node_output(
-            identity,
-            artifact,
-            columns=NodeSnapshotColumns.all(),
-            dependencies={},
-            explicit=True,
-            profile=ExecutionProfile.NODE_SNAPSHOT,
-            refresh=request.refresh,
-        )
-    except NodeSnapshotQuotaRejectedError as exc:
-        exc.artifact.close()
-        raise
-    except BaseException:
-        artifact.close()
-        raise
-    with publication:
-        generation_id = (
-            publication.generation.generation_id if publication.generation is not None else None
-        )
-        return _NodeSnapshotWorkerOutcome(
-            generation_id=generation_id,
-            outcome=publication.outcome,
-        )
+        artifact = store.stage_node_output(identity, staging_token=request.staging_token)
+        try:
+            with execution_context.stage("node_snapshot_write"):
+                bounded_sink(
+                    output.lazy() if isinstance(output, pl.DataFrame) else output,
+                    artifact.data_path,
+                    fast_checkpoint=True,
+                    streaming_chunk_size=request.streaming_chunk_size,
+                )
+            if _node_identity(request.graph, request.node_id, request.source, store).digest != (
+                identity.digest
+            ):
+                raise changed
+            publication = store.publish_node_output(
+                identity,
+                artifact,
+                columns=NodeSnapshotColumns.all(),
+                # The generations this build read, seeded or captured upstream:
+                # replacing any of them makes this snapshot stale.
+                dependencies=plan.dependencies_for(request.node_id) if plan is not None else {},
+                explicit=True,
+                profile=ExecutionProfile.NODE_SNAPSHOT,
+                refresh=request.refresh,
+            )
+        except NodeSnapshotQuotaRejectedError as exc:
+            exc.artifact.close()
+            raise
+        except BaseException:
+            artifact.close()
+            raise
+        with publication:
+            if publication.outcome == "superseded" and not _cached_by_another_build(
+                store, identity
+            ):
+                # Not published because something this build read was replaced
+                # while it ran: nothing current holds this node's data.
+                raise changed
+            generation_id = (
+                publication.generation.generation_id if publication.generation is not None else None
+            )
+            return _NodeSnapshotWorkerOutcome(
+                generation_id=generation_id,
+                outcome=publication.outcome,
+                snapshot_evidence=execution_context.shared_snapshot_evidence(),
+            )
+
+
+def _cached_by_another_build(store: NodeSnapshotStore, identity: SourceCacheIdentity) -> bool:
+    """Whether a current, full-width generation of *identity* exists.
+
+    An explicit build is superseded either because another build already
+    published the same data — then the node is cached — or because a
+    generation it read was replaced while it ran, and then it is not.
+    """
+    latest = store.latest_generation(identity)
+    return latest is not None and latest.fresh and latest.columns.is_all
 
 
 PROFILE_ANALYSIS_KIND = "profile"
@@ -447,6 +485,8 @@ def _validated_worker_success(outcome: object) -> _NodeSnapshotWorkerOutcome:
         )
     if outcome.outcome not in ("published", "superseded"):
         raise RuntimeError("node-snapshot worker omitted its publication outcome")
+    if outcome.snapshot_evidence is not None and not isinstance(outcome.snapshot_evidence, dict):
+        raise RuntimeError("node-snapshot worker returned invalid snapshot evidence")
     if (outcome.outcome == "published") != isinstance(outcome.generation_id, str):
         raise RuntimeError("node-snapshot worker outcome and generation disagree")
     return outcome
@@ -1049,8 +1089,6 @@ class NodeDataService:
         worker publish under the signature of the inputs it reads, and re-keying
         the running job lets ``point`` and joins find it under that identity.
         """
-        from dataclasses import replace
-
         from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
         from haute.execution import prepare_graph
 
@@ -1102,20 +1140,38 @@ class NodeDataService:
             )
             bind_running_execution_metrics_publisher(self._store, job_id, execution_context)
             request = self._prepare_inputs(job_id, request, execution_context)
-            budget = isolated_execution_budget(execution_context)
-            outcome = _validated_worker_success(
-                run_isolated_worker(
-                    _run_node_snapshot_worker,
-                    request,
-                    budget,
-                    config=worker_config_for_memory_policy(
-                        memory_limit_bytes=budget.memory_limit_bytes,
-                        timeout_seconds=float_env("HAUTE_NODE_SNAPSHOT_TIMEOUT", 1800.0),
-                        stop_reason=lambda: token.terminal_reason if token.cancelled else None,
-                        process_name=f"haute-node-snapshot-worker-{job_id}",
-                    ),
+            # Resolved after preparation, because signatures sign prepared
+            # generations; leased here until the worker has exited, and its
+            # captures stage under this build's own token.
+            with open_resolved_seed_plan(
+                SeedPlanRequest(
+                    graph=request.graph,
+                    target_node_id=request.node_id,
+                    source=request.source,
+                    profile=ExecutionProfile.NODE_SNAPSHOT,
+                    refresh=request.refresh,
+                    build_node_id=request.node_id,
+                ),
+                store=NodeSnapshotStore(request.project_root),
+                staging_token=request.staging_token,
+            ) as plan:
+                request = replace(request, seed_plan=plan.handoff())
+                budget = isolated_execution_budget(execution_context)
+                outcome = _validated_worker_success(
+                    run_isolated_worker(
+                        _run_node_snapshot_worker,
+                        request,
+                        budget,
+                        config=worker_config_for_memory_policy(
+                            memory_limit_bytes=budget.memory_limit_bytes,
+                            timeout_seconds=float_env("HAUTE_NODE_SNAPSHOT_TIMEOUT", 1800.0),
+                            stop_reason=lambda: token.terminal_reason if token.cancelled else None,
+                            process_name=f"haute-node-snapshot-worker-{job_id}",
+                        ),
+                    )
                 )
-            )
+            if outcome.snapshot_evidence is not None:
+                execution_context.adopt_shared_snapshot_evidence(outcome.snapshot_evidence)
             # The worker has terminated and published whatever it published, so
             # anything left under its staging token is waste. It goes before the
             # terminal status below, so a client that sees the outcome never
