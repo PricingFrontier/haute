@@ -30,11 +30,13 @@ running heavy work in a child process the parent can kill on timeout or memory l
   graph, extending the cache when a new target requires more of the graph, and
   discarding entries once source data or graph shape changes.
 - Column-contract enforcement at node input/output boundaries (via `_contracts.py`'s
-  `Contract`, consumed here) and the column-projection planning that lets checkpoints
+  `Contract`, consumed here) and the column-projection planning that lets captures
   and lazy scans avoid materialising unused columns.
-- Structural parquet checkpointing of the lazy plan at fan-in/fan-out/join-feeder
-  boundaries when the caller supplies a checkpoint directory (the normal sink path
-  does) to bound Polars plan duplication.
+- Seed plans: a bounded execution runs under a leased
+  [seed plan](../caching/low-level.md#seed-plans), reading fresh shared snapshots
+  and capturing fan-in/fan-out/join-feeder, materialising, batch Model Score, and
+  consumed points into the shared snapshot store, which bounds Polars plan duplication
+  and lets the next execution start there.
 - `ExecutionContext`/`ExecutionProfile`: the per-run cancellation token, optional
   memory budget, stage-timing/RSS-sampling instrumentation, and admission control used
   by route/service long-running operations (preview, sink, training prep, optimiser
@@ -489,12 +491,12 @@ keep reporting the failing line so the editor can name the failing step.
   batch sink run *the same per-node logic*, differing only in when the result is
   collected. Divergence between "what preview shows" and "what the batch run
   produces" would otherwise be a permanent trust problem for users.
-- **Eager-with-caching for interactivity, lazy-with-checkpointing for throughput.**
+- **Eager-with-caching for interactivity, lazy-with-captures for throughput.**
   Interactive preview needs low click-to-result latency on the *same* graph across
   many small edits — caching materialised DataFrames keyed by a graph fingerprint
   wins. Batch/deploy/training need to process rows that may not fit in memory at all —
-  Polars' lazy engine, with the executor breaking join-chain plan duplication via
-  periodic parquet checkpoints, wins there instead. Running one
+  Polars' lazy engine, with the executor breaking join-chain plan duplication by
+  capturing structural points into shared snapshots, wins there instead. Running one
   strategy for both would either make preview too slow (rebuild the whole plan per
   click) or make batch runs memory-unsafe (materialise everything eagerly).
   A JSON source's SHA-256 content proof is likewise the sole raw-file content proof
@@ -513,16 +515,16 @@ keep reporting the failing line so the editor can name the failing step.
   A full preview-cache hit also reuses the immutable strategy result that produced the
   cached frame, so it retains projection warnings and provenance without repeating
   footer estimation. Any miss or cache extension plans afresh before materialisation.
-- **Parquet checkpointing only at structural fan-in/fan-out/join-feeder points.**
-  Polars duplicates the upstream plan for every downstream branch of a lazy frame
-  (a known upstream limitation — pola-rs/polars#24206); checkpointing *every* node
-  would erase the benefit of staying lazy at all, so the engine only checkpoints where
-  a node has more than one parent, more than one child, or feeds a join. The
-  decision is acted on only when `checkpoint_dir` is non-`None`; direct lazy callers
-  may intentionally omit checkpointing.
-
-  The checkpoint action set is intentionally `SKIP` or `PARQUET` only;
-  in-memory `.collect().lazy()` checkpointing is not supported behaviour.
+- **Materialise only at capture points.** Polars duplicates the upstream plan for
+  every downstream branch of a lazy frame (a known upstream limitation —
+  pola-rs/polars#24206); materialising *every* node would erase the benefit of staying
+  lazy at all, so a planned run writes only its capture points — a node with more than
+  one parent or child along effective edges or that feeds a join, a materialising
+  operation, a batch Model Score, and the producer a caller consumes — through the
+  bounded sink into the shared snapshot store, and continues from what it wrote. A run
+  without a plan captures nothing — only a caller's dataframe-cache request (deploy
+  scoring) materialises there — and there is no checkpoint directory.
+  In-memory `.collect().lazy()` materialisation is not supported behaviour.
 - **Profile-scoped memory budgets, not one global limit.** A preview click and a
   10M-row training run have wildly different acceptable memory footprints and
   latency expectations. `ExecutionProfile` lets each call site (preview route,
@@ -725,48 +727,52 @@ keep reporting the failing line so the editor can name the failing step.
   admission estimate uses the greatest upstream/intermediate bound, so a target-row
   downsample is never presented as protection for a larger join or source boundary.
 
-## Approved change contract — executions seed from and capture into shared snapshots
+## Bounded executions seed from and capture into shared snapshots
 
-- **Current limitation.** Training preparation, training evaluation preview, optimiser setup,
-  and Data Output runs recompute every upstream node even when an earlier run already computed it,
-  write the full output of joins and fan-outs to temporary checkpoints deleted after the run, and
-  keep their target materialisation in a private process-local namespace.
-- **Unresolved target.** An execution request resolves a seed plan once, before building cache
-  keys, by walking upstream from its target: on each path the first node-output point at or
-  upstream of the target with a fresh snapshot in the request's semantics class that covers the
-  execution's column demand becomes a seed, and points above a seed are not consulted. Before
-  projection planning, each capture point's demand is merged with its current generation's
-  columns and propagated upstream, and any seed that cannot supply the propagated columns is
-  dropped, so one execution publishes the widened column set. An execution always continues from
-  its own captured artifact and never switches to a generation another execution published while
-  it was computing; a capture never replaces a fresh generation unless widening it, and never
-  narrows an identity's columns. A preview response is cached only under the key of the plan a new request
-  would choose after its captures, and every preview-cache hit re-validates the generations it lists:
-  retired, missing, or non-current generations are cache misses, while corruption and other storage
-  failures propagate. Every
-  consumer in the execution of an upstream snapshot a seed was built from, seeded or recomputed,
-  must read the same generation of it; a seed that cannot satisfy that is dropped. Seeds are leased
-  for the whole job, including final collection. Every full-data materialisation the execution
-  performs (the nodes the checkpoint rule selects, nodes calling materialising frame operations,
-  batch Model Score output, and the materialised target) is captured into the shared store instead
-  of a temporary checkpoint or a private namespace, and execution continues from the captured
-  generation. Worker processes capture directly through the store's cross-process locks. The seed plan's
-  generation identities join the runtime input fingerprint. Seeding and capture are disabled for
-  deploy scoring; a refresh disables seeding but still captures. Admitted previews seed and capture
-  the same way at joins and materialising operations; traces seed only from the plan of the preview
-  they explain.
+Training preparation, the training evaluation preview, optimiser setup (including
+auto-range and the input estimate), Data Output runs, and explicit node-data builds each
+resolve a seed plan once, after input preparation, by walking upstream from the target
+along effective edges: on each path the first node-output point at or upstream of the target
+with a fresh snapshot in the request's semantics class that covers the execution's column
+demand becomes a seed, and points above a seed are not consulted. Before projection planning,
+each capture point's demand is merged with its current generation's columns and propagated
+upstream, and any seed that cannot supply the propagated columns is dropped, so one execution
+publishes the widened column set. Every consumer in the execution of an upstream snapshot a
+seed was built from, seeded or recomputed, reads the same generation of it; a seed that cannot
+satisfy that is dropped. Seeds are leased for the whole job, including final collection, and a
+spawned worker reads only the generations its parent leased.
+
+Every full-data materialisation the execution performs — the fan-in, fan-out, and
+join-feeder points, nodes calling materialising frame operations, batch Model Score output,
+and the producer the caller consumes — is captured into the shared store through the bounded
+sink, and execution continues from what it wrote: never from a generation another execution
+published while it was computing. A capture never replaces a fresh generation unless widening
+it and never narrows an identity's columns; a capture rejected for quota, or not published
+under the publication rule, continues from its own staged artifact as a request-owned file
+without recomputing the node and is reported as `snapshot_capture_skipped`, while any other
+store failure fails the execution. Worker processes capture directly through the store's
+cross-process locks. There is no temporary checkpoint directory and no private
+dataframe-cache namespace. Deploy scoring neither seeds nor captures; a refresh disables
+seeding but still captures; a profile whose outputs are not proven identical to the
+snapshot's semantics class neither seeds nor captures.
+
+## Approved change contract — previews and traces seed from and capture into shared snapshots
+
+- **Current limitation.** Admitted previews and traces neither read nor write shared
+  snapshots: a preview below a captured join recomputes it, and the preview response cache
+  is keyed without the generations a preview could have read.
+- **Unresolved target.** Admitted previews seed and capture the way bounded executions do, at
+  joins and materialising operations; traces seed only from the plan of the preview they
+  explain. A preview response is cached only under the key of the plan a new request would
+  choose after its captures, and every preview-cache hit re-validates the generations it lists:
+  retired, missing, or non-current generations are cache misses, while corruption and other
+  storage failures propagate. The seed plan's generation identities join the runtime input
+  fingerprint.
 - **Non-goals.** Preview row-limit semantics (limit at collection, never at sources), deploy
   scoring, and the projection planner's column demand rules are unchanged.
-- **Failure and compatibility semantics.** A stale snapshot is never seeded. A spawned worker
-  reads only the generations its parent leased. A profile whose outputs are not proven identical
-  to the snapshot's semantics class neither seeds nor captures. A capture rejected for quota after
-  automatic eviction, or not published under the publication rule, continues from its own completed
-  staged artifact as a request-owned temporary file without recomputing the node and is reported as
-  `snapshot_capture_skipped`; any other store failure fails the execution.
-- **Acceptance evidence.** A differential test proving identical outputs across the bounded
-  profiles and projections that share a class; a second training run seeding from the first run's
-  captures with an equal frame, no source scan, and no scoring calls behind a batch Model Score; an
-  optimiser run seeding from a training run's captured join; one execution publishing a widened
-  column set; a quota-rejected capture computed once with identical rows; downstream cache misses
+- **Failure and compatibility semantics.** A stale snapshot is never seeded, and a preview
+  profile not proven identical to the snapshot's semantics class neither seeds nor captures.
+- **Acceptance evidence.** A preview below a captured join seeds it and scans no source; a
+  preview-cache hit whose listed generation was retired is a miss; downstream cache misses
   after a seeded snapshot is refreshed.
-- **Roadmap package.** [CACHE-S07](../roadmap/caching.md#cache-s07--executions-seed-from-and-capture-into-shared-snapshots).
+- **Roadmap package.** [CACHE-S09](../roadmap/caching.md#cache-s09--previews-and-traces-seed-from-and-capture-into-shared-snapshots).

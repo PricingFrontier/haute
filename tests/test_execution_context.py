@@ -2733,7 +2733,10 @@ def test_lazy_graph_execution_checks_cancellation_before_node_work() -> None:
         _execute_lazy(graph, build_node_fn, execution_context=context)
 
 
-def test_lazy_graph_execution_records_build_and_checkpoint_stages(tmp_path) -> None:
+def test_lazy_graph_execution_records_build_and_capture_stages(tmp_path) -> None:
+    from haute._node_snapshots import NodeSnapshotStore
+    from haute._seed_plans import SeedPlanRequest, open_resolved_seed_plan
+
     graph = make_graph(
         {
             "nodes": [
@@ -2762,6 +2765,14 @@ def test_lazy_graph_execution_records_build_and_checkpoint_stages(tmp_path) -> N
                     },
                 },
                 {
+                    "id": "both",
+                    "data": {
+                        "label": "both",
+                        "nodeType": NodeType.POLARS.value,
+                        "config": {},
+                    },
+                },
+                {
                     "id": "right",
                     "data": {
                         "label": "right",
@@ -2774,6 +2785,8 @@ def test_lazy_graph_execution_records_build_and_checkpoint_stages(tmp_path) -> N
                 make_edge("source", "mid").model_dump(),
                 make_edge("mid", "left").model_dump(),
                 make_edge("mid", "right").model_dump(),
+                make_edge("left", "both").model_dump(),
+                make_edge("right", "both").model_dump(),
             ],
         }
     )
@@ -2788,25 +2801,37 @@ def test_lazy_graph_execution_records_build_and_checkpoint_stages(tmp_path) -> N
             return node.id, lambda: pl.DataFrame({"a": [1, 2]}).lazy(), True
         if node.id == "mid":
             return node.id, lambda df: df.with_columns((pl.col("a") + 1).alias("b")), False
+        if node.id == "both":
+            return node.id, lambda left, right: pl.concat([left, right]), False
         return node.id, lambda df: df.select("b"), False
 
-    outputs, *_ = _execute_lazy(
-        graph,
-        build_node_fn,
-        checkpoint_dir=tmp_path,
-        execution_context=context,
+    request = SeedPlanRequest(
+        graph=graph,
+        target_node_id="both",
+        source="live",
+        profile=ExecutionProfile.LAZY_SINK,
     )
-
-    assert outputs["left"].collect()["b"].to_list() == [2, 3]
+    with open_resolved_seed_plan(request, store=NodeSnapshotStore(tmp_path)) as plan:
+        outputs, *_ = _execute_lazy(
+            graph,
+            build_node_fn,
+            target_node_id="both",
+            execution_context=context,
+            prepare_inputs=False,
+            snapshot_plan=plan,
+        )
+        assert outputs["both"].collect()["b"].to_list() == [2, 3, 2, 3]
     metrics = context.metrics.snapshot()
     assert [metric.node_id for metric in metrics if metric.name == "lazy_build"] == [
         "source",
         "mid",
         "left",
         "right",
+        "both",
     ]
+    # The fan-out is materialised as a capture into the shared snapshot store.
     assert any(
-        metric.name == "lazy_checkpoint_parquet" and metric.node_id == "mid" for metric in metrics
+        metric.name == "lazy_snapshot_capture" and metric.node_id == "mid" for metric in metrics
     )
 
 

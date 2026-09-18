@@ -1,13 +1,16 @@
-"""Tests for checkpoint projection — backward column analysis.
+"""Tests for capture projection — backward column analysis.
 
 Covers:
   - get_column_contract          — builder-registered column contracts
   - prepared projection plans     — backward pass computing minimal column sets
-  - checkpoint projection in _execute_lazy — end-to-end parquet projection
+  - capture projection in _execute_lazy — what a planned run writes into the
+    shared snapshot store at a join, fan-out, or join feeder
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import polars as pl
@@ -18,6 +21,8 @@ from haute._execute_lazy import _execute_lazy
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._native_memory_limit import native_memory_backend_scope
+from haute._node_snapshots import NodeSnapshotStore
+from haute._seed_plans import CaptureKind, SeedPlanRequest, open_resolved_seed_plan
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -906,7 +911,7 @@ class TestUnprovableProjectionDiagnostics:
         assert pair_value(plan.edge_demands, "left", "join") == {"quote_id", "left_value"}
         assert pair_value(plan.edge_demands, "right", "join") == {"quote_id", "right_value"}
 
-    def test_lazy_execution_required_seed_projects_fan_in(self, tmp_path):
+    def test_lazy_execution_required_seed_projects_fan_in(self):
         nodes = [
             _source_node("left"),
             _source_node("right"),
@@ -929,7 +934,6 @@ class TestUnprovableProjectionDiagnostics:
             graph,
             build_fn,
             target_node_id="out",
-            checkpoint_dir=tmp_path,
             required_columns_by_node={"out": {"quote_id"}},
             execution_context=ExecutionContext(
                 operation="test",
@@ -939,10 +943,7 @@ class TestUnprovableProjectionDiagnostics:
 
         assert outputs["out"].collect().to_dict(as_series=False) == {"quote_id": ["q1"]}
 
-    def test_lazy_execution_bounded_profile_without_required_seed(
-        self,
-        tmp_path,
-    ):
+    def test_lazy_execution_bounded_profile_without_required_seed(self):
         nodes = [
             _source_node("left"),
             _source_node("right"),
@@ -965,7 +966,6 @@ class TestUnprovableProjectionDiagnostics:
             graph,
             build_fn,
             target_node_id="out",
-            checkpoint_dir=tmp_path,
             execution_context=ExecutionContext(
                 operation="test",
                 profile=ExecutionProfile.LAZY_SINK,
@@ -976,8 +976,127 @@ class TestUnprovableProjectionDiagnostics:
 
 
 # ===========================================================================
-# Integration: checkpoint projection in _execute_lazy
+# Integration: capture projection in _execute_lazy
 # ===========================================================================
+
+
+def _run_planned(
+    root: Path,
+    graph: PipelineGraph,
+    build_fn: Any,
+    *,
+    target: str,
+    required: dict[str, Any] | None = None,
+    source: str = "live",
+    generations: dict[str, Path] | None = None,
+) -> tuple[dict[str, pl.DataFrame], dict[str, list[str]], dict[str, CaptureKind]]:
+    """Execute *graph* toward *target* under a seed plan, as every bounded caller runs.
+
+    Returns the collected outputs, the columns each capture wrote into the
+    shared snapshot store, and each capture's kind; *generations*, when given,
+    receives each capture's published data file. The injected sources carry no
+    readable metadata, so a hard worker cap bounds any join instead of an
+    estimate.
+    """
+    store = NodeSnapshotStore(root)
+    request = SeedPlanRequest(
+        graph=graph,
+        target_node_id=target,
+        source=source,
+        profile=ExecutionProfile.LAZY_SINK,
+        required_columns_by_node=required,
+    )
+    context = create_admitted_execution_context(
+        operation="capture_projection_test",
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    try:
+        with (
+            native_memory_backend_scope("rlimit"),
+            open_resolved_seed_plan(request, store=store) as plan,
+        ):
+            outputs, *_ = _execute_lazy(
+                graph,
+                build_fn,
+                target_node_id=target,
+                source=source,
+                required_columns_by_node=required,
+                execution_context=context,
+                prepare_inputs=False,
+                snapshot_plan=plan,
+            )
+            frames = {
+                node_id: frame.collect()
+                for node_id, frame in outputs.items()
+                if isinstance(frame, pl.LazyFrame)
+            }
+            written: dict[str, list[str]] = {}
+            for node_id, capture in plan.decision.captures.items():
+                latest = store.latest_generation(capture.identity)
+                if latest is not None:
+                    written[node_id] = pl.read_parquet(latest.generation.data_path).columns
+                    if generations is not None:
+                        generations[node_id] = latest.generation.data_path
+            kinds = {node_id: capture.kind for node_id, capture in plan.decision.captures.items()}
+    finally:
+        context.release_admission()
+    return frames, written, kinds
+
+
+def _output_select_build_fn(data: dict[str, list[Any]]):
+    """Sources yield *data*; an OUTPUT selects its fields; ``both`` stacks its inputs."""
+
+    def build_fn(node: GraphNode, **_kw: Any):
+        if node.data.nodeType == NodeType.DATA_INPUT:
+            return node.id, lambda: pl.DataFrame(data).lazy(), True
+        if node.data.nodeType == NodeType.OUTPUT:
+            mapping = node.data.config.get("outputMapping") or []
+            fields = sorted({e["source_column"] for e in mapping if e.get("enabled", True)})
+            if fields:
+                return node.id, lambda *dfs, _f=fields: dfs[0].select(_f), False
+        if node.id == "both":
+            return node.id, lambda *dfs: pl.concat(dfs, how="diagonal_relaxed"), False
+        return node.id, lambda *dfs: dfs[0], False
+
+    return build_fn
+
+
+def _both(reads: dict[str, list[str]]) -> GraphNode:
+    """A single target that stacks its inputs, reading exactly *reads* from each parent.
+
+    A plan runs toward one target, so a fan-out's branches meet here; its
+    per-parent contract keeps it from widening what the branches read.
+    """
+    return _node(
+        "both",
+        NodeType.POLARS,
+        contract={
+            "inputs": sorted({column for columns in reads.values() for column in columns}),
+            "outputs": [],
+            "inputs_by_parent": reads,
+        },
+    )
+
+
+def _reads_of(graph: PipelineGraph) -> dict[str, list[str]]:
+    """The caller's demand at ``both``: exactly what its contract says it reads."""
+    return {"both": list(graph.node_map["both"].data.config["contract"]["inputs"])}
+
+
+def _fan_out_to_both(
+    mid: GraphNode, left: GraphNode, right: GraphNode, *, reads: dict[str, list[str]]
+) -> PipelineGraph:
+    """``src → mid → left, right → both``: one target whose lineage fans out at ``mid``."""
+    return PipelineGraph(
+        nodes=[_source_node("src"), mid, left, right, _both(reads)],
+        edges=[
+            _e("src", mid.id),
+            _e(mid.id, left.id),
+            _e(mid.id, right.id),
+            _e(left.id, "both"),
+            _e(right.id, "both"),
+        ],
+    )
 
 
 def _wide_build_fn(node: GraphNode, source_names=None, **kwargs):
@@ -1027,6 +1146,9 @@ def _wide_build_fn(node: GraphNode, source_names=None, **kwargs):
 
         return nid, output_fn, False
 
+    if nid == "both":
+        return nid, lambda *dfs: pl.concat(dfs, how="diagonal_relaxed"), False
+
     # Default passthrough (for join / fan-out triggers)
     def join_fn(*dfs):
         result = dfs[0]
@@ -1037,19 +1159,15 @@ def _wide_build_fn(node: GraphNode, source_names=None, **kwargs):
     return nid, join_fn, False
 
 
-class TestCheckpointProjection:
-    """Integration tests for checkpoint projection in _execute_lazy."""
+class TestCaptureProjection:
+    """A planned run writes each capture with only the columns the run needs there."""
 
-    def test_cardinality_only_fanout_checkpoint_retains_one_carrier(self, tmp_path):
-        nodes = [
-            _source_node("src"),
+    def test_cardinality_only_fanout_capture_retains_one_carrier(self, tmp_path):
+        graph = _fan_out_to_both(
             _node("mid", NodeType.LIVE_SWITCH),
             _transform_node("left", code="df = df.select(pl.len().alias('row_count'))"),
             _transform_node("right", code="df = df.select(pl.len().alias('row_count'))"),
-        ]
-        graph = PipelineGraph(
-            nodes=nodes,
-            edges=[_e("src", "mid"), _e("mid", "left"), _e("mid", "right")],
+            reads={"left": ["row_count"], "right": ["row_count"]},
         )
 
         def build_fn(node, **_kwargs):
@@ -1061,188 +1179,103 @@ class TestCheckpointProjection:
                 )
             if node.id == "mid":
                 return node.id, lambda frame: frame, False
+            if node.id == "both":
+                return node.id, lambda *dfs: pl.concat(dfs), False
             return (
                 node.id,
                 lambda frame: frame.select(pl.len().alias("row_count")),
                 False,
             )
 
-        outputs, *_ = _execute_lazy(graph, build_fn, checkpoint_dir=tmp_path)
+        frames, written, kinds = _run_planned(
+            tmp_path, graph, build_fn, target="both", required=_reads_of(graph)
+        )
 
-        assert pl.read_parquet(tmp_path / "mid.parquet").columns == ["a"]
-        assert outputs["left"].collect().item() == 3
-        assert outputs["right"].collect().item() == 3
+        assert kinds["mid"] is CaptureKind.STRUCTURAL
+        assert written["mid"] == ["a"]
+        assert frames["both"]["row_count"].to_list() == [3, 3]
 
     def test_projection_drops_unneeded_columns(self, tmp_path):
-        """Checkpoint parquet only contains columns needed downstream.
-
-        Source(10 cols) → mid(fan-out) → Output1(fields=[a, b])
-                                       → Output2(fields=[b, c])
-
-        mid fans out to 2 children → checkpointed.
-        Needed = {a, b} ∪ {b, c} = {a, b, c}.
-        """
-        nodes = [
-            _source_node("src"),
-            _node("mid", NodeType.LIVE_SWITCH),  # passthrough, will fan out
+        """A fan-out capture holds only what its consumers read: {a, b} ∪ {b, c}."""
+        graph = _fan_out_to_both(
+            _node("mid", NodeType.LIVE_SWITCH),
             _output_node("o1", fields=["a", "b"]),
             _output_node("o2", fields=["b", "c"]),
-        ]
-        edges = [_e("src", "mid"), _e("mid", "o1"), _e("mid", "o2")]
-        g = PipelineGraph(nodes=nodes, edges=edges)
+            reads={"o1": ["a", "b"], "o2": ["b", "c"]},
+        )
+        build_fn = _output_select_build_fn({"a": [1], "b": [2], "c": [3], "d": [4], "extra": [5]})
 
-        def build_fn(node, **kw):
-            if node.data.nodeType == NodeType.DATA_INPUT:
-                data = {"a": [1], "b": [2], "c": [3], "d": [4], "extra": [5]}
-                return node.id, lambda: pl.DataFrame(data).lazy(), True
-            if node.data.nodeType == NodeType.OUTPUT:
-                mapping = node.data.config.get("outputMapping") or []
-                fields = sorted({e["source_column"] for e in mapping if e.get("enabled", True)})
-                if fields:
-                    return node.id, lambda *dfs, _f=fields: dfs[0].select(_f), False
-            return node.id, lambda *dfs: dfs[0], False
+        frames, written, _kinds = _run_planned(
+            tmp_path, graph, build_fn, target="both", required=_reads_of(graph)
+        )
 
-        outputs, *_ = _execute_lazy(g, build_fn, checkpoint_dir=tmp_path)
-
-        # The checkpoint for mid should exist
-        assert (tmp_path / "mid.parquet").exists()
-
-        # Read the checkpoint: should only have {a, b, c}, NOT d or extra
-        checkpoint_df = pl.read_parquet(tmp_path / "mid.parquet")
-        assert set(checkpoint_df.columns) == {"a", "b", "c"}
-
-        # Final outputs should still be correct
-        o1 = outputs["o1"].collect()
-        assert set(o1.columns) == {"a", "b"}
-        o2 = outputs["o2"].collect()
-        assert set(o2.columns) == {"b", "c"}
+        assert set(written["mid"]) == {"a", "b", "c"}
+        assert set(frames["both"].columns) == {"a", "b", "c"}
 
     def test_simple_expression_projection_writes_only_needed_fanout_columns(self, tmp_path):
-        """Expression dependency extraction narrows fan-out checkpoints.
+        """Expression dependency extraction narrows a fan-out capture."""
+        graph = PipelineGraph(
+            nodes=[
+                _source_node("src"),
+                _node("mid", NodeType.LIVE_SWITCH),
+                _transform_node("t", code="df = df.with_columns(pl.col('a'))"),
+                _output_node("o1", fields=["a"]),
+                _output_node("o2", fields=["b"]),
+                _both({"o1": ["a"], "o2": ["b"]}),
+            ],
+            edges=[
+                _e("src", "mid"),
+                _e("mid", "t"),
+                _e("t", "o1"),
+                _e("mid", "o2"),
+                _e("o1", "both"),
+                _e("o2", "both"),
+            ],
+        )
+        build_fn = _output_select_build_fn({"a": [1], "b": [2], "c": [3]})
 
-        Source → mid(fan-out) → POLARS(simple expression) → Output(fields=[a])
-                               → Output(fields=[b])
-        """
-        nodes = [
-            _source_node("src"),
-            _node("mid", NodeType.LIVE_SWITCH),
-            _transform_node("t", code="df = df.with_columns(pl.col('a'))"),
-            _output_node("o1", fields=["a"]),
-            _output_node("o2", fields=["b"]),
-        ]
-        edges = [
-            _e("src", "mid"),
-            _e("mid", "t"),
-            _e("t", "o1"),
-            _e("mid", "o2"),
-        ]
-        g = PipelineGraph(nodes=nodes, edges=edges)
+        _frames, written, _kinds = _run_planned(
+            tmp_path, graph, build_fn, target="both", required=_reads_of(graph)
+        )
 
-        def build_fn(node, **kw):
-            if node.data.nodeType == NodeType.DATA_INPUT:
-                data = {"a": [1], "b": [2], "c": [3]}
-                return node.id, lambda: pl.DataFrame(data).lazy(), True
-            return node.id, lambda *dfs: dfs[0], False
-
-        _execute_lazy(g, build_fn, checkpoint_dir=tmp_path)
-
-        # The POLARS child now proves it needs only ``a`` while the sibling
-        # output needs ``b``; the unrelated ``c`` column should be dropped.
-        checkpoint_df = pl.read_parquet(tmp_path / "mid.parquet")
-        assert set(checkpoint_df.columns) == {"a", "b"}
+        # The POLARS child proves it needs only ``a`` while the sibling output
+        # needs ``b``; the unrelated ``c`` column is not written.
+        assert set(written["mid"]) == {"a", "b"}
 
     def test_projection_with_banding(self, tmp_path):
-        """Banding creates a column; only needed input columns survive checkpoint.
-
-        Source(a, b, c, extra) → Banding(col:a, out:a_band)
-        Banding fans out → Output1(fields=[a_band]) + Output2(fields=[a_band, b])
-
-        Banding creates {a_band}, reads {a}.
-        Output1 needs {a_band}, Output2 needs {a_band, b}.
-        Banding needed from source: ({a_band, b} - {a_band}) | {a} = {a, b}
-        Source checkpoint should have {a, b}, NOT {c, extra}.
-        """
-        nodes = [
-            _source_node("src"),
+        """Banding creates a column; its capture holds that and what its consumers read."""
+        graph = _fan_out_to_both(
             _banding_node("band", factors=[{"column": "a", "outputColumn": "a_band"}]),
             _output_node("o1", fields=["a_band"]),
             _output_node("o2", fields=["a_band", "b"]),
-        ]
-        edges = [
-            _e("src", "band"),
-            _e("band", "o1"),
-            _e("band", "o2"),
-        ]
-        g = PipelineGraph(nodes=nodes, edges=edges)
+            reads={"o1": ["a_band"], "o2": ["a_band", "b"]},
+        )
 
-        outputs, *_ = _execute_lazy(g, _wide_build_fn, checkpoint_dir=tmp_path)
+        _frames, written, _kinds = _run_planned(
+            tmp_path, graph, _wide_build_fn, target="both", required=_reads_of(graph)
+        )
 
-        # Band fans out → checkpointed.  But the SOURCE feeds only band
-        # (single child), so source is NOT checkpointed.  Band IS checkpointed.
-        assert (tmp_path / "band.parquet").exists()
+        assert set(written["band"]) == {"a_band", "b"}
 
-        # Band's checkpoint should contain: what o1 and o2 need from band's output.
-        # o1 needs {a_band}, o2 needs {a_band, b}.
-        # Both are passthrough OUTPUTs: produced=∅, referenced=∅.
-        # Needed from band: {a_band} ∪ {a_band, b} = {a_band, b}.
-        # But band needs to produce a_band, so the checkpoint contains
-        # band's output projected to {a_band, b}.
-        checkpoint_df = pl.read_parquet(tmp_path / "band.parquet")
-        assert set(checkpoint_df.columns) == {"a_band", "b"}
-
-    def test_no_projection_without_checkpoint_dir(self):
-        """Without checkpoint_dir, no projection computation happens."""
-        nodes = [
-            _source_node("src"),
-            _output_node("out", fields=["a"]),
-        ]
-        g = PipelineGraph(nodes=nodes, edges=[_e("src", "out")])
-
-        def build_fn(node, **kw):
-            if node.data.nodeType == NodeType.DATA_INPUT:
-                return node.id, lambda: pl.DataFrame({"a": [1], "b": [2]}).lazy(), True
-            return node.id, lambda *dfs: dfs[0], False
-
-        # Should not raise, and no files created
-        outputs, *_ = _execute_lazy(g, build_fn)
-        df = outputs["out"].collect()
-        # Without checkpoint_dir, output still has all columns (no projection)
-        assert "b" in df.columns or "a" in df.columns
-
-    def test_projection_preserves_all_when_no_output_fields(self, tmp_path):
-        """OUTPUT with no fields → None needed → checkpoint keeps everything."""
-        nodes = [
-            _source_node("src"),
+    def test_projection_preserves_all_without_a_concrete_demand(self, tmp_path):
+        """No fields and an opaque consumer → no concrete demand → the capture keeps all."""
+        graph = _fan_out_to_both(
             _node("mid", NodeType.LIVE_SWITCH),
             _output_node("o1", fields=[]),
             _output_node("o2", fields=[]),
-        ]
-        edges = [_e("src", "mid"), _e("mid", "o1"), _e("mid", "o2")]
-        g = PipelineGraph(nodes=nodes, edges=edges)
+            reads={"o1": ["a"], "o2": ["a"]},
+        )
+        build_fn = _output_select_build_fn({"a": [1], "b": [2], "c": [3]})
 
-        def build_fn(node, **kw):
-            if node.data.nodeType == NodeType.DATA_INPUT:
-                data = {"a": [1], "b": [2], "c": [3]}
-                return node.id, lambda: pl.DataFrame(data).lazy(), True
-            return node.id, lambda *dfs: dfs[0], False
+        # No caller demand: ``both`` is a terminal opaque output, so it reads
+        # every column of its branches, and they of ``mid``.
+        _frames, written, _kinds = _run_planned(tmp_path, graph, build_fn, target="both")
 
-        _execute_lazy(g, build_fn, checkpoint_dir=tmp_path)
-
-        checkpoint_df = pl.read_parquet(tmp_path / "mid.parquet")
-        assert set(checkpoint_df.columns) == {"a", "b", "c"}
+        assert set(written["mid"]) == {"a", "b", "c"}
 
     def test_projection_with_selected_columns(self, tmp_path):
-        """selected_columns + checkpoint projection compose correctly.
-
-        Source → mid(selected_columns=[a, b, c], fan-out)
-               → Output1(fields=[a])
-               → Output2(fields=[b])
-
-        selected_columns narrows to {a, b, c} first.
-        Then projection narrows to {a, b} (union of output fields).
-        """
-        nodes = [
-            _source_node("src"),
+        """selected_columns narrows to {a, b, c}; the capture then to {a, b}."""
+        graph = _fan_out_to_both(
             GraphNode(
                 id="mid",
                 data=NodeData(
@@ -1253,38 +1286,27 @@ class TestCheckpointProjection:
             ),
             _output_node("o1", fields=["a"]),
             _output_node("o2", fields=["b"]),
-        ]
-        edges = [_e("src", "mid"), _e("mid", "o1"), _e("mid", "o2")]
-        g = PipelineGraph(nodes=nodes, edges=edges)
+            reads={"o1": ["a"], "o2": ["b"]},
+        )
+        build_fn = _output_select_build_fn({"a": [1], "b": [2], "c": [3], "d": [4]})
 
-        def build_fn(node, **kw):
-            if node.data.nodeType == NodeType.DATA_INPUT:
-                data = {"a": [1], "b": [2], "c": [3], "d": [4]}
-                return node.id, lambda: pl.DataFrame(data).lazy(), True
-            return node.id, lambda *dfs: dfs[0], False
+        _frames, written, _kinds = _run_planned(
+            tmp_path, graph, build_fn, target="both", required=_reads_of(graph)
+        )
 
-        _execute_lazy(g, build_fn, checkpoint_dir=tmp_path)
+        assert set(written["mid"]) == {"a", "b"}
 
-        # selected_columns={a,b,c} applied first, then projection to {a,b}
-        checkpoint_df = pl.read_parquet(tmp_path / "mid.parquet")
-        assert set(checkpoint_df.columns) == {"a", "b"}
-
-    def test_join_checkpoint_projected(self, tmp_path):
-        """Join node checkpoint only contains columns needed downstream.
-
-        Source1(key, a, extra1) + Source2(key, b, extra2)
-          → Join(on key) → Output(fields=[key, a, b])
-
-        Join checkpoint should have {key, a, b}, not extra1/extra2.
-        """
-        nodes = [
-            _source_node("s1"),
-            _source_node("s2"),
-            _transform_node("j"),  # POLARS node for join
-            _output_node("out", fields=["key", "a", "b"]),
-        ]
-        edges = [_e("s1", "j"), _e("s2", "j"), _e("j", "out")]
-        g = PipelineGraph(nodes=nodes, edges=edges)
+    def test_join_capture_projected(self, tmp_path):
+        """A join's capture holds only what its consumer reads, not either side's extras."""
+        g = PipelineGraph(
+            nodes=[
+                _source_node("s1"),
+                _source_node("s2"),
+                _transform_node("j"),
+                _output_node("out", fields=["key", "a", "b"]),
+            ],
+            edges=[_e("s1", "j"), _e("s2", "j"), _e("j", "out")],
+        )
 
         def build_fn(node, **kw):
             nid = node.id
@@ -1297,31 +1319,17 @@ class TestCheckpointProjection:
             if nid == "out":
                 mapping = node.data.config.get("outputMapping") or []
                 fields = sorted({e["source_column"] for e in mapping if e.get("enabled", True)})
-                if fields:
-                    return nid, lambda *dfs, _f=fields: dfs[0].select(_f), False
+                return nid, lambda *dfs, _f=fields: dfs[0].select(_f), False
+            return nid, lambda *dfs: dfs[0].join(dfs[1], on="key", how="left"), False
 
-            # Join
-            def join_fn(*dfs):
-                return dfs[0].join(dfs[1], on="key", how="left")
+        frames, written, kinds = _run_planned(tmp_path, g, build_fn, target="out")
 
-            return nid, join_fn, False
+        assert kinds["j"] is CaptureKind.STRUCTURAL
+        assert set(written["j"]) == {"key", "a", "b"}
+        assert set(frames["out"].columns) == {"key", "a", "b"}
 
-        outputs, *_ = _execute_lazy(g, build_fn, checkpoint_dir=tmp_path)
-
-        # j has 2 parents → checkpointed. But POLARS is opaque,
-        # so needed["j"] is determined by its child OUTPUT(fields=[key,a,b]),
-        # but j itself is opaque so j's parents won't be projected.
-        # The checkpoint for j WILL be projected because needed["j"]
-        # is computed from its children (OUTPUT).
-        assert (tmp_path / "j.parquet").exists()
-        checkpoint_df = pl.read_parquet(tmp_path / "j.parquet")
-        assert set(checkpoint_df.columns) == {"key", "a", "b"}
-
-        out_df = outputs["out"].collect()
-        assert set(out_df.columns) == {"key", "a", "b"}
-
-    def test_join_parent_checkpoints_use_inputs_by_parent(self, tmp_path):
-        """Join-feeder checkpoints are projected with parent-specific needs."""
+    def test_join_feeder_captures_use_inputs_by_parent(self, tmp_path):
+        """Join-feeder captures are projected with parent-specific needs."""
         nodes = [
             _source_node("left_src"),
             _source_node("right_src"),
@@ -1353,18 +1361,10 @@ class TestCheckpointProjection:
         def build_fn(node, **kw):
             nid = node.id
             if nid == "left_src":
-                data = {
-                    "key": [1, 2],
-                    "left_value": [10, 20],
-                    "left_unused": [999, 999],
-                }
+                data = {"key": [1, 2], "left_value": [10, 20], "left_unused": [999, 999]}
                 return nid, lambda d=data: pl.DataFrame(d).lazy(), True
             if nid == "right_src":
-                data = {
-                    "key": [1, 2],
-                    "right_value": [100, 200],
-                    "right_unused": [888, 888],
-                }
+                data = {"key": [1, 2], "right_value": [100, 200], "right_unused": [888, 888]}
                 return nid, lambda d=data: pl.DataFrame(d).lazy(), True
             if nid == "j":
                 return nid, lambda *dfs: dfs[0].join(dfs[1], on="key", how="left"), False
@@ -1374,52 +1374,32 @@ class TestCheckpointProjection:
                 return nid, lambda *dfs, _f=fields: dfs[0].select(_f), False
             return nid, lambda *dfs: dfs[0], False
 
-        outputs, *_ = _execute_lazy(g, build_fn, checkpoint_dir=tmp_path)
+        frames, written, _kinds = _run_planned(tmp_path, g, build_fn, target="out")
 
-        left_checkpoint = pl.read_parquet(tmp_path / "left_mid.parquet")
-        right_checkpoint = pl.read_parquet(tmp_path / "right_mid.parquet")
-        join_checkpoint = pl.read_parquet(tmp_path / "j.parquet")
-
-        assert left_checkpoint.columns == ["key", "left_value"]
-        assert right_checkpoint.columns == ["key", "right_value"]
-        assert join_checkpoint.columns == ["key", "left_value", "right_value"]
-
-        out_df = outputs["out"].collect().sort("key")
-        assert out_df.to_dict(as_series=False) == {
+        assert written["left_mid"] == ["key", "left_value"]
+        assert written["right_mid"] == ["key", "right_value"]
+        assert written["j"] == ["key", "left_value", "right_value"]
+        assert frames["out"].sort("key").to_dict(as_series=False) == {
             "key": [1, 2],
             "left_value": [10, 20],
             "right_value": [100, 200],
         }
 
-    def test_checkpoint_projection_raises_when_required_column_missing(self, tmp_path):
-        """Checkpoint projection should fail loudly on impossible schemas."""
-        nodes = [
-            _source_node("src"),
+    def test_a_read_column_missing_below_a_capture_fails_loudly(self, tmp_path):
+        """A run that reads a column no node produces fails loudly, before any capture."""
+        graph = _fan_out_to_both(
             _node("mid", NodeType.LIVE_SWITCH),
             _output_node("needs_present", fields=["a"]),
             _output_node("needs_missing", fields=["missing"]),
-        ]
-        edges = [
-            _e("src", "mid"),
-            _e("mid", "needs_present"),
-            _e("mid", "needs_missing"),
-        ]
-        g = PipelineGraph(nodes=nodes, edges=edges)
-
-        def build_fn(node, **kw):
-            if node.id == "src":
-                return node.id, lambda: pl.DataFrame({"a": [1]}).lazy(), True
-            if node.data.nodeType == NodeType.OUTPUT:
-                mapping = node.data.config.get("outputMapping") or []
-                fields = sorted({e["source_column"] for e in mapping if e.get("enabled", True)})
-                return node.id, lambda *dfs, _f=fields: dfs[0].select(_f), False
-            return node.id, lambda *dfs: dfs[0], False
+            reads={"needs_present": ["a"], "needs_missing": ["missing"]},
+        )
+        build_fn = _output_select_build_fn({"a": [1]})
 
         with pytest.raises(ContractMismatchError, match="missing"):
-            _execute_lazy(g, build_fn, checkpoint_dir=tmp_path)
+            _run_planned(tmp_path, graph, build_fn, target="both", required=_reads_of(graph))
 
-    def test_checkpoint_rejects_a_builder_that_omits_its_declared_output(self, tmp_path):
-        """A produced column is validated where the structural checkpoint writes it."""
+    def test_capture_rejects_a_builder_that_omits_its_declared_output(self, tmp_path):
+        """A produced column is validated where the capture writes it."""
         nodes = [
             _source_node("src"),
             _banding_node(
@@ -1444,31 +1424,155 @@ class TestCheckpointProjection:
                 return node.id, lambda: pl.LazyFrame({"a": [1, 2]}), True
             if node.id == "mid":
                 # Deliberately violate the registered banding contract so the
-                # checkpoint's runtime-schema assertion is the observer.
+                # capture's runtime-schema assertion is the observer.
                 return node.id, lambda frame: frame, False
             if node.id in {"left", "right"}:
                 return node.id, lambda frame: frame.select("band"), False
             return node.id, lambda left, right: left.join(right, on="band"), False
 
-        # The sink joins, which EXEC-P07 admits as a materialisation boundary,
-        # so this run needs an admitted context; the injected source carries no
-        # readable metadata, so a hard worker cap bounds the run instead of an
-        # estimate. Neither changes what this test observes.
-        with (
-            native_memory_backend_scope("rlimit"),
-            pytest.raises(
-                ContractMismatchError,
-                match="Checkpoint projection references columns missing",
-            ),
-        ):
-            _execute_lazy(
-                graph,
-                build_fn,
-                target_node_id="sink",
-                checkpoint_dir=tmp_path,
-                required_columns_by_node={"sink": {"band"}},
-                execution_context=create_admitted_execution_context(
-                    operation="test_checkpoint_projection",
-                    profile=ExecutionProfile.LAZY_SINK,
+        with pytest.raises(ContractMismatchError, match="lacks columns"):
+            _run_planned(tmp_path, graph, build_fn, target="sink", required={"sink": {"band"}})
+
+    def test_case_distinct_node_ids_capture_separately(self, tmp_path):
+        """Case-insensitive filesystems must not alias separate graph nodes' captures."""
+        g = PipelineGraph(
+            nodes=[
+                _source_node("s1"),
+                _source_node("s2"),
+                _transform_node("join"),
+                _transform_node("JOIN"),
+                _transform_node("both"),
+            ],
+            edges=[
+                _e("s1", "join"),
+                _e("s2", "join"),
+                _e("s1", "JOIN"),
+                _e("s2", "JOIN"),
+                _e("join", "both"),
+                _e("JOIN", "both"),
+            ],
+        )
+
+        def build_fn(node, **kwargs):
+            # The two joins write different data, so an aliased generation shows.
+            if node.id in {"join", "JOIN"}:
+                tag = node.id
+
+                def tagged_join(left, right, _tag=tag):
+                    return left.join(right, on="key", how="left", suffix="_r").with_columns(
+                        pl.lit(_tag).alias("tag")
+                    )
+
+                return node.id, tagged_join, False
+            return _wide_build_fn(node, **kwargs)
+
+        generations: dict[str, Path] = {}
+        frames, _written, _kinds = _run_planned(
+            tmp_path, g, build_fn, target="both", generations=generations
+        )
+
+        # Two generations whose paths differ even case-folded, each holding its
+        # own node's rows.
+        join_path, upper_path = generations["join"], generations["JOIN"]
+        assert str(join_path).casefold() != str(upper_path).casefold()
+        assert join_path.is_file() and upper_path.is_file()
+        assert pl.read_parquet(join_path)["tag"].unique().to_list() == ["join"]
+        assert pl.read_parquet(upper_path)["tag"].unique().to_list() == ["JOIN"]
+        assert sorted(frames["both"]["tag"].to_list()) == ["JOIN"] * 3 + ["join"] * 3
+
+    @pytest.mark.parametrize(
+        "malicious_node_id",
+        ["../escaped", r"..\escaped", "nested/escaped", r"nested\escaped"],
+        ids=["up", "upw", "nest", "nestw"],
+    )
+    def test_id_not_path(self, tmp_path, malicious_node_id):
+        """Capture storage treats graph node ids as data, never as path syntax.
+
+        (Short test and root names keep the store's staging paths inside Windows
+        MAX_PATH under pytest-xdist's temporary roots.)
+        """
+        root = tmp_path / "p"
+        root.mkdir()
+        g = PipelineGraph(
+            nodes=[
+                _source_node("s1"),
+                _source_node("s2"),
+                _transform_node(malicious_node_id),
+                _output_node("out", fields=["key", "a"]),
+            ],
+            edges=[
+                _e("s1", malicious_node_id),
+                _e("s2", malicious_node_id),
+                _e(malicious_node_id, "out"),
+            ],
+        )
+
+        frames, written, _kinds = _run_planned(root, g, _wide_build_fn, target="out")
+
+        assert malicious_node_id in written
+        assert not (tmp_path / "escaped.parquet").exists()
+        assert not list(tmp_path.glob("escaped*"))
+        assert not (root / "nested").exists()
+        assert frames["out"].height == 3
+
+    def test_live_switch_with_two_parents_is_captured(self, tmp_path):
+        """A live switch that keeps both parents (unknown scenario) is a join."""
+        g = PipelineGraph(
+            nodes=[
+                _source_node("live_in"),
+                _source_node("batch_in"),
+                GraphNode(
+                    id="sw",
+                    data=NodeData(
+                        label="sw",
+                        nodeType=NodeType.LIVE_SWITCH,
+                        config={"input_scenario_map": {"live_in": "live", "batch_in": "batch"}},
+                    ),
                 ),
-            )
+                _output_node("out", fields=["key"]),
+            ],
+            edges=[_e("live_in", "sw"), _e("batch_in", "sw"), _e("sw", "out")],
+        )
+
+        # A scenario outside the map keeps both edges.
+        _frames, written, kinds = _run_planned(
+            tmp_path, g, _wide_build_fn, target="out", source="unknown"
+        )
+
+        assert kinds["sw"] is CaptureKind.STRUCTURAL
+        assert "sw" in written
+
+    def test_a_parent_is_released_once_its_consumer_is_captured(self, tmp_path):
+        """A parent whose only consumer is captured has its frame dropped.
+
+        Graph:  src → t → g (group-by: a materialising capture) → out
+
+        ``t`` is not itself captured (one child, feeding no join), so once ``g``
+        is written its frame has no remaining consumer and is released.
+        """
+        g = PipelineGraph(
+            nodes=[
+                _source_node("src"),
+                _transform_node("t", code="df = df.with_columns(pl.col('a') + 1)"),
+                _transform_node("g", code="df = df.group_by('key').agg(pl.col('a').sum())"),
+                _output_node("out", fields=["key", "a"]),
+            ],
+            edges=[_e("src", "t"), _e("t", "g"), _e("g", "out")],
+        )
+
+        def build_fn(node, **_kw):
+            if node.id == "src":
+                data = {"key": [1, 1, 2], "a": [1, 2, 3], "extra": [0, 0, 0]}
+                return node.id, lambda: pl.DataFrame(data).lazy(), True
+            if node.id == "t":
+                return node.id, lambda frame: frame.with_columns(pl.col("a") + 1), False
+            if node.id == "g":
+                return node.id, lambda frame: frame.group_by("key").agg(pl.col("a").sum()), False
+            return node.id, lambda frame: frame.select("key", "a"), False
+
+        frames, written, kinds = _run_planned(tmp_path, g, build_fn, target="out")
+
+        assert kinds["g"] is CaptureKind.MATERIALISING
+        assert "t" not in kinds
+        assert "t" not in frames
+        assert frames["out"].sort("key").to_dict(as_series=False) == {"key": [1, 2], "a": [5, 4]}

@@ -8,7 +8,7 @@
 | `src/haute/executor.py` | GUI-facing eager entry point: `execute_graph()` (preview, with the `_preview_cache` `LRUCache`), `write_data_output()` (batch/data-output writes), preamble compilation + single-flight cache (`_compile_preamble`), preview-column projection/schema-warning assembly, and output-destination containment. |
 | `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points (and `plan_projection`, the projection half of `plan_execution_strategy`, for a caller that needs another execution's per-node column demand without planning or admitting it), runtime-input fingerprints, `preview_lineage_cache_key`, `PREVIEW_EXECUTION_SEMANTICS_VERSION`, and the process-default dataframe execution-cache singleton. It is the stable application import boundary, but is not currently a thin re-export module. |
 | `src/haute/_path_resolution.py` | Cross-component dependency owned by [sandbox-security](../sandbox-security/low-level.md); canonical local-runtime-path resolution: separator normalization, project/pipeline candidate choice, symlink-aware containment, selected-external-pipeline root inference, and the context-local root used by eager/lazy builders. |
-| `src/haute/_execute_lazy.py` | The shared execution core: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), `_execute_lazy` (lazy plan + structural parquet checkpointing + dataframe-cache seeding), and `_execute_eager_core`/`EagerResult` (eager materialisation and preview error adaptation). |
+| `src/haute/_execute_lazy.py` | The shared execution core: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), `_execute_lazy` (lazy plan + seed-plan seeding and capture + dataframe-cache seeding), and `_execute_eager_core`/`EagerResult` (eager materialisation and preview error adaptation). |
 | `src/haute/_contracts.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution consumes the shared column-contract model and registry lookup. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution reads the canonical node registry. |
 | `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, profile-independent projection decisions, fan-in edge demands, materialisation/opaque boundaries, demand-only source-scan projection (a node's configured column selection bounds what may be demanded but is never pushed into or validated against a physical read), and bounded strategy diagnostics. |
@@ -525,7 +525,7 @@ stat-gated runtime-path fingerprint contract.
 
 An exact empty edge demand means that the consumer needs row cardinality but no
 user column (for example `select(pl.len())`). Polars cannot preserve non-zero row
-cardinality in a zero-column frame, so source, edge, and checkpoint projection
+cardinality in a zero-column frame, so source, edge, and capture projection
 retain exactly one deterministic schema-ordered carrier column. The carrier is a
 physical execution detail, not a logical demand: it is removed naturally by the
 consumer and must never broaden to the whole source or collapse the row count.
@@ -535,22 +535,18 @@ Consumes the same `PreparedExecution` and `NodeBoundaryRunner` as eager executio
 plus: optional seeding from a
 `DataFrameExecutionCacheRequest` (skips rebuilding any node whose entire downstream
 lineage is already cache-covered, via a reverse topo pass computing
-`cache_covers_downstream`), a fuller backward projection analysis (a checkpoint dir,
-a non-live source, or explicit required columns triggers it; the execution profile
+`cache_covers_downstream`), a fuller backward projection analysis (a seed plan, a
+non-live source, or explicit required columns triggers it; the execution profile
 never does), then `_build_funcs()` for the nodes still needing construction. Each node's lazy
 frame is built by `_build_lazy_node()` (contract-checked the same way as eager),
 optionally materialised into the shared dataframe cache
-(`materialize_lazy_frame_with_cache`), and then passed through
-`_checkpoint_decision()` — `SKIP` for sources and batch-mode `MODEL_SCORE` (which
-already checkpoints internally via its own `scan_parquet`), `PARQUET` for any node with
-more than one parent, more than one child, or that feeds a join. When the dataframe
-cache did not already materialise the node **and** `checkpoint_dir` is non-`None`, a
-`PARQUET` decision writes a projected (`needed_cols`-filtered) parquet file, replaces
-the in-memory `LazyFrame` with `pl.scan_parquet(tmp)`, and calls
-`_release_consumed_parents()` to drop now-unreferenced parent frames. With no
-checkpoint directory, the decision has no materialisation effect. `gc.collect()`/
-`_malloc_trim()` run every
-`_GC_BATCH_INTERVAL` (3) checkpoints, not every one, since Polars/Arrow buffers are
+(`materialize_lazy_frame_with_cache`), and — under a seed plan — captured when it is one
+of the plan's capture points (below), after which `_release_consumed_parents()` drops
+parent frames with no remaining consumer (a source, a preserved output, or a captured or
+cache-backed node — a cheap scan of a held file — is kept). Without a plan nothing is
+captured into shared snapshots and nothing is checkpointed; the only materialisation left is a
+caller's own dataframe-cache request (deploy scoring's). `gc.collect()`/`_malloc_trim()` run every
+`_GC_BATCH_INTERVAL` (3) materialisations, not every one, since Polars/Arrow buffers are
 freed immediately on `del` and full GC only matters for cyclic Python garbage.
 
 When a dataframe-cache key names a broader concrete `required_columns` set than the
@@ -560,15 +556,15 @@ and intermediate projections must retain every passthrough dependency needed to 
 the declared artifact. A narrow runtime request may warm a broader cache entry, but it
 must never silently prune a cache-key column and then skip the cache write. If a column
 required only by that broader cache key is absent from the actual runtime schema, cache
-population is skipped and the cache-only demand is removed from both edge and structural
-checkpoint projections. A missing cache-only column must never fail otherwise-valid
+population is skipped and the cache-only demand is removed from the edge projections.
+A missing cache-only column must never fail otherwise-valid
 runtime execution; a missing runtime-required column still raises the typed contract
 mismatch at the first proven boundary.
 
 **Planned executions (`snapshot_plan`).** `_execute_lazy` given a leased
 [seed plan](../caching/low-level.md#seed-plans) runs exactly that plan. The plan must have
 been resolved for this target, source, profile, and lineage fingerprint, and is exclusive
-with `checkpoint_dir` and `dataframe_cache_request` (`ValueError` otherwise). Planning
+with `dataframe_cache_request` (`ValueError` otherwise). Planning
 demand is the plan's negotiated demand, handled like a broader cache key above: a negotiated
 column the run itself does not need is best-effort. Each seed enters through the cached-seed
 path as its leased generation projected to its demand (carrier-preserving), and only the
@@ -604,14 +600,9 @@ only what it was built from. Execution continues from the publication's frame. A
 publication, a changed input, or a `NodeSnapshotQuotaRejectedError` continues from the
 run's own staged artifact, which the plan owns and removes when it closes; any other store
 error propagates after the staged artifact is removed. The consumed nodes are preserved
-outputs. A capture replaces the checkpoint at that node, and no checkpoint directory is used.
-
-Checkpoint paths never interpolate an arbitrary node id. `_checkpoint_filename`
-preserves readable `<node_id>.parquet` names for the lower-case safe grammar (at
-most 200 characters and not a Windows reserved stem); traversal syntax,
-platform-reserved names, and overlong ids use deterministic
-`node=<sha256>.parquet`. The `=` delimiter is outside the authored-safe grammar, so
-the readable and digest namespaces cannot collide.
+outputs. A capture's storage never interpolates a node id: the store keys it by the
+identity digest of its slot, so traversal syntax, platform-reserved names, overlong ids,
+and case-distinct ids all get their own opaque generation directory.
 
 A Data Output run executes under a seed plan (`executor.data_output_seed_plan_request`: the
 batch scenario, the Data Output node consumed — a pass-through, so its producer is seeded or
@@ -1456,11 +1447,12 @@ present a structural or schema result as execution evidence.
   continues from what this run wrote — its publication or its own staged artifact —
   never from a generation another run published meanwhile, and every capture is
   written by the bounded sink, never from collected batches.
-- **Checkpoint actions are `SKIP` or `PARQUET` only.** No execution path performs
-  an in-memory `.collect().lazy()` checkpoint, and no dormant action advertises it.
-- **Checkpoint filenames are one safe component.** Ordinary safe node ids preserve
-  their readable filename; every unsafe spelling is hashed into the disjoint
-  `node=<sha256>.parquet` namespace before joining it to `checkpoint_dir`.
+- **Materialisation is a capture or a cache entry, never in memory.** No execution
+  path performs an in-memory `.collect().lazy()` materialisation, and a run without a
+  seed plan captures nothing and writes no checkpoint; only a caller's dataframe-cache
+  request (deploy scoring) materialises there.
+- **A capture's path is never a node id.** Captures are stored under their slot's
+  identity digest, so no node-id spelling can escape or alias the store.
 - **RAM estimation returns `None` rather than guessing** when parquet metadata, the
   target row-cardinality proof, or the canonical detailed target schema is unavailable
   (for example Databricks sources or opaque row expansion) — callers must treat `None`
@@ -2008,9 +2000,17 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   contract-resolution-degradation behaviour.
 - **`test_execute_lazy_dataframe_cache.py`** — dataframe-execution-cache seeding/
   skip-covered-node logic inside `_execute_lazy`.
-- **`test_execute_lazy_paths.py`**, **`test_checkpoint_projection.py`**,
+- **`test_execute_lazy_paths.py`**, **`test_capture_projection.py`**,
   **`test_projection_planner.py`** — backward column-projection analysis and its
-  effect on checkpoint/eager collection width.
+  effect on capture/eager collection width. `test_capture_projection.py`'s
+  `TestCaptureProjection` runs synthetic graphs under seed plans: a fan-out, join, or
+  join-feeder capture holds only what its consumers read (a single carrier for a
+  cardinality-only read; everything without a concrete demand); banding and
+  `selected_columns` compose with it; a column the run reads that no node produces
+  fails loudly, and so does a builder omitting a declared output at its capture; a
+  capture's storage cannot be steered by a node id (traversal, nested, or case-distinct
+  spellings); a two-parent live switch is captured; and a parent whose only consumer is
+  captured is released.
 - **`test_executor.py`** — `execute_graph`/`write_data_output`/preamble
   compilation end to end. `TestTargetPreviewRowLimit` pins the limit at the previewed node (a join, a filter, an
   aggregation, per-node limits under full materialisation, invalid limits), and
@@ -2124,8 +2124,9 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
 - **`test_boundary_operator_equivalence.py`** — full-versus-planned equivalence for every
   admitted boundary operator (sort, reverse, shift, `shift`/`diff`/`pct_change` columns, top_k, bottom_k, unique, join inner/left with
   duplicate keys and `validate='m:1'`, join_asof, over, explode under a native cap): each graph
-  materialises the boundary mid-graph through the real lazy executor under admission, asserts
-  the boundary was planned (`materialisation_boundaries` and `blocking_operator`), and compares
+  materialises the boundary mid-graph through the real lazy executor under admission and a
+  seed plan, asserts the boundary was planned (`materialisation_boundaries` and
+  `blocking_operator`) and captured as a `materialising` capture, and compares
   with plain Polars on ordering (exact in-order equality for the order-defining operators),
   schema (names and dtypes), row multiplicity (heights and multiset equality after a
   deterministic sort), and multi-input column retention (both join ports' columns, suffixes

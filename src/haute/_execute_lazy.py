@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import contextlib
 import gc
-import hashlib
 import re
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
 import polars as pl
@@ -19,7 +16,6 @@ import haute.execution as execution_facade
 import haute.projection as projection_planner
 from haute._builders import _passthrough_fn
 from haute._column_lineage import analyze_polars_lineage
-from haute._config_io import is_windows_reserved_filename
 from haute._contracts import Contract, get_column_contract
 from haute._edge_join import (
     build_edge_join_kwargs,
@@ -68,23 +64,6 @@ from haute.errors import (
 
 logger = get_logger(component="execute")
 
-_CHECKPOINT_SAFE_NODE_ID = re.compile(r"\A[a-z0-9_][a-z0-9_.-]{0,199}\Z")
-
-
-def _checkpoint_filename(node_id: str) -> str:
-    """Return a single safe filename component for a graph node checkpoint.
-
-    Existing ordinary node ids retain readable checkpoint names. Any id with
-    path syntax, a platform-reserved name, or excessive length is represented
-    by a deterministic digest instead of being interpolated into a path.
-    """
-    if _CHECKPOINT_SAFE_NODE_ID.fullmatch(node_id) and not is_windows_reserved_filename(node_id):
-        return f"{node_id}.parquet"
-    digest = hashlib.sha256(node_id.encode("utf-8")).hexdigest()
-    # ``=`` is deliberately outside _CHECKPOINT_SAFE_NODE_ID, so an authored
-    # safe id cannot collide with the digest namespace.
-    return f"node={digest}.parquet"
-
 
 def _lazy_frame_for_cache(lf: Any, node_id: str) -> pl.LazyFrame:
     """Coerce a node output to a LazyFrame for cache materialization.
@@ -92,10 +71,10 @@ def _lazy_frame_for_cache(lf: Any, node_id: str) -> pl.LazyFrame:
     A multi-frame source emits a ``dict[label, LazyFrame]``; caching the whole
     bundle is undefined (the in-RAM cache is keyed per node, not per frame), so
     fail loud with a clear message rather than ``AttributeError`` on
-    ``dict.lazy()``. Multi-frame sources are normally skipped by the parquet
-    checkpoint path (sources aren't checkpointed), but the in-RAM cache path is
-    gated only on the cache request, so this guard makes the unsupported
-    combination explicit instead of crashing opaquely.
+    ``dict.lazy()``. A multi-frame source is never a capture point (an API
+    input is not a node-output point), but the cache path is gated only on the
+    cache request, so this guard makes the unsupported combination explicit
+    instead of crashing opaquely.
     """
     if isinstance(lf, dict):
         raise RuntimeError(
@@ -502,57 +481,15 @@ def _snapshot_fault_point(name: str, node_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Adaptive checkpoint strategy
+# Materialisation housekeeping
 # ---------------------------------------------------------------------------
 
-# Number of checkpoints between gc.collect() + _malloc_trim() calls.
+# Number of materialisations between gc.collect() + _malloc_trim() calls.
 # Polars objects use Rust Arc refcounting and are freed immediately on
 # ``del``; Python gc.collect() only helps with cyclic garbage (rare here).
-# Batching avoids the overhead of scanning all Python objects per checkpoint.
+# Batching avoids the overhead of scanning all Python objects per
+# materialisation.
 _GC_BATCH_INTERVAL = 3
-
-
-class _CheckpointAction(StrEnum):
-    """What to do at a potential checkpoint boundary."""
-
-    SKIP = "skip"
-    """Keep the LazyFrame as-is — no materialization needed."""
-
-    PARQUET = "parquet"
-    """Sink to a temp parquet file and replace with ``scan_parquet``.
-    The safest option — frees RAM and isolates the query plan."""
-
-
-def _checkpoint_decision(
-    nid: str,
-    is_source: bool,
-    n_parents: int,
-    n_children: int,
-    feeds_join: bool,
-    node_map: dict[str, GraphNode],
-    scenario: str,
-) -> _CheckpointAction:
-    """Decide whether and how to checkpoint a node's output.
-
-    Uses the same three structural triggers as before (joins, fan-outs,
-    join-feeders) but skips MODEL_SCORE nodes in batch mode because
-    the batched scorer already sinks to temp parquet and returns
-    ``scan_parquet(scored_path)`` — an implicit checkpoint.  Adding
-    another parquet round-trip on top is pure waste.
-    """
-    if is_source:
-        return _CheckpointAction.SKIP
-
-    needs_checkpoint = n_parents > 1 or n_children > 1 or feeds_join
-    if not needs_checkpoint:
-        return _CheckpointAction.SKIP
-
-    # MODEL_SCORE in batch mode already returns scan_parquet — skip.
-    node = node_map.get(nid)
-    if node is not None and node.data.nodeType == NodeType.MODEL_SCORE and scenario != "live":
-        return _CheckpointAction.SKIP
-
-    return _CheckpointAction.PARQUET
 
 
 # ---------------------------------------------------------------------------
@@ -1067,7 +1004,6 @@ def _execute_lazy(
     target_node_id: str | None = None,
     preamble_ns: dict | None = None,
     source: str = "live",
-    checkpoint_dir: Path | None = None,
     enforce_contracts: bool = False,
     preserve_node_ids: set[str] | frozenset[str] | None = None,
     required_columns_by_node: Mapping[str, Iterable[str] | projection_planner.AllExceptColumns]
@@ -1092,12 +1028,6 @@ def _execute_lazy(
         build_node_fn: Function (node_dict, source_names) -> (name, fn, is_source).
         target_node_id: If set, only execute ancestors of this node.
         source: Active execution source (``"live"`` = eager scoring).
-        checkpoint_dir: If set, multi-input nodes (joins) and fan-out
-            nodes (>1 downstream consumer) are checkpointed to parquet
-            files in this directory and replaced with ``scan_parquet``
-            references.  This breaks both chained-join memory
-            accumulation and plan duplication across branches
-            (GitHub pola-rs/polars#24206).
         preserve_node_ids: Non-source intermediate outputs that must remain
             available to the caller after their final downstream consumer has
             executed. Optimiser ratebook solves use this for the selected
@@ -1139,8 +1069,10 @@ def _execute_lazy(
             and nothing needed only by them is built; a pass-through node is
             its selected input; every capture point is written through the
             bounded sink into the shared snapshot store and execution continues
-            from what was written. Input preparation already ran when the plan
-            was opened. Exclusive with ``checkpoint_dir`` and
+            from what was written — a join, fan-out, or join feeder is
+            materialised this way, breaking chained-join memory accumulation
+            and plan duplication across branches (pola-rs/polars#24206). Input
+            preparation already ran when the plan was opened. Exclusive with
             ``dataframe_cache_request``.
 
     Returns:
@@ -1169,7 +1101,6 @@ def _execute_lazy(
                 if execution_context is not None
                 else ExecutionProfile.LAZY_SINK
             ),
-            checkpoint_dir=checkpoint_dir,
             dataframe_cache_request=dataframe_cache_request,
         )
     preserved_outputs = frozenset(preserve_node_ids or ()) | frozenset(
@@ -1212,10 +1143,10 @@ def _execute_lazy(
         }
     cache_request = dataframe_cache_request
 
-    # Count downstream consumers per node so we can checkpoint fan-out
-    # points (nodes whose output feeds >1 consumer).  Without this,
-    # Polars duplicates the entire upstream plan for each branch —
-    # e.g. a 38 GB JSONL scan runs twice when two siblings share a parent.
+    # Count downstream consumers per node so a parent's frame is released
+    # once every consumer has been materialised. (A fan-out point is a capture
+    # under a seed plan, so Polars does not duplicate its upstream plan per
+    # branch — e.g. a 38 GB JSONL scan read twice for two sibling consumers.)
     children_count = dict(prepared_execution.children_count)
     children_of = prepared_execution.children_of
 
@@ -1385,11 +1316,10 @@ def _execute_lazy(
         skip_cache_covered_nodes = {node_id for node_id in order if node_id not in needed_by_plan}
 
     # Backward column analysis: compute the minimal set of columns
-    # needed at each node's output so checkpoints can project away
-    # unneeded columns before writing to parquet.  Batch MODEL_SCORE
-    # nodes also consume this demand locally so their internal temp
-    # parquet write can avoid unused passthrough columns even when the
-    # outer checkpoint layer skips model-score nodes.
+    # needed at each node's output so materialisations (captures, cache
+    # entries) can project away unneeded columns before writing.  Batch
+    # MODEL_SCORE nodes also consume this demand locally so their scored
+    # file carries no unused passthrough columns.
     strategy_profile = (
         execution_context.profile if execution_context is not None else ExecutionProfile.LAZY_SINK
     )
@@ -1537,14 +1467,14 @@ def _execute_lazy(
     lazy_outputs: dict[str, _Frame] = {}
 
     # Separate mutable counter for tracking remaining downstream consumers.
-    # Decremented at checkpoint time so we know when a parent's LazyFrame
-    # can be safely deleted (freeing Polars/Rust Arrow buffers).
+    # Decremented when a consumer is materialised so we know when a parent's
+    # LazyFrame can be safely deleted (freeing Polars/Rust Arrow buffers).
     remaining: dict[str, int] = dict(children_count)
 
     # Batch gc.collect() calls — Polars objects use Rust Arc refcounting
     # and are freed immediately on ``del``.  gc.collect() only helps with
     # cyclic Python garbage (rare here) and adds 50-200 ms per call.
-    checkpoints_since_gc = 0
+    materialisations_since_gc = 0
 
     def _release_consumed_parents(nid: str) -> None:
         # Drop parent LazyFrame refs that have no remaining consumers
@@ -1925,7 +1855,6 @@ def _execute_lazy(
                     scored_capture.close()
                     raise
 
-        cache_materialized = False
         if cache_request is not None and nid not in cache_hit_rejected_node_ids:
             materialize_cache_key = cache_request.keys_by_node.get(nid)
             if materialize_cache_key is not None:
@@ -1975,15 +1904,14 @@ def _execute_lazy(
                     else:
                         if cached_lf is not None:
                             lf = cached_lf
-                            cache_materialized = True
                             cache_backed_node_ids.add(nid)
                             column_cache[(nid, None)] = _columns_of(lf)
                             _release_consumed_parents(nid)
-                            checkpoints_since_gc += 1
-                            if checkpoints_since_gc >= _GC_BATCH_INTERVAL:
+                            materialisations_since_gc += 1
+                            if materialisations_since_gc >= _GC_BATCH_INTERVAL:
                                 gc.collect()
                                 _malloc_trim()
-                                checkpoints_since_gc = 0
+                                materialisations_since_gc = 0
                             logger.info("dataframe_execution_cache_materialized", node_id=nid)
                             if execution_context is not None:
                                 execution_context.checkpoint(
@@ -2003,109 +1931,14 @@ def _execute_lazy(
                     artifact=scored_capture,
                     prewritten=scored_prewritten,
                 )
-                cache_materialized = True
                 cache_backed_node_ids.add(nid)
                 column_cache[(nid, None)] = _columns_of(lf)
                 _release_consumed_parents(nid)
-                checkpoints_since_gc += 1
-                if checkpoints_since_gc >= _GC_BATCH_INTERVAL:
+                materialisations_since_gc += 1
+                if materialisations_since_gc >= _GC_BATCH_INTERVAL:
                     gc.collect()
                     _malloc_trim()
-                    checkpoints_since_gc = 0
-
-        # Adaptive checkpoint to break Polars plan duplication.
-        #
-        # Three structural triggers (joins, fan-outs, join-feeders) are
-        # evaluated by _checkpoint_decision:
-        #   PARQUET      — disk round-trip, safest, frees RAM
-        #   SKIP         — keep the LazyFrame as-is (source nodes,
-        #                  batch MODEL_SCORE which already checkpoints
-        #                  internally, or nodes that don't need it)
-        n_parents = len(parents_of.get(nid, []))
-        n_children = children_count.get(nid, 0)
-        feeds_join = any(len(parents_of.get(cid, [])) > 1 for cid in children_of.get(nid, []))
-
-        action = _checkpoint_decision(
-            nid,
-            is_source,
-            n_parents,
-            n_children,
-            feeds_join,
-            node_map,
-            node_source_overrides.get(nid, source or "live"),
-        )
-
-        if (
-            not cache_materialized
-            and checkpoint_dir is not None
-            and action == _CheckpointAction.PARQUET
-        ):
-            tmp = checkpoint_dir / _checkpoint_filename(nid)
-
-            # Project to only the columns needed downstream before
-            # writing the checkpoint.  This avoids writing (and later
-            # re-reading) columns that no downstream node will use —
-            # e.g. 100 source columns when the model only needs 8.
-            sink_lf = lf if isinstance(lf, pl.LazyFrame) else lf.lazy()
-            projection = needed_cols.get(nid)
-            if projection is not None:
-                schema_cols = sink_lf.collect_schema().names()
-                schema_set = set(schema_cols)
-                missing = projection - schema_set
-                runtime_projection = runtime_projection_plan.needed_by_node.get(nid)
-                runtime_required = set(runtime_projection or ())
-                runtime_missing = missing & runtime_required
-                if runtime_missing:
-                    raise ContractMismatchError(
-                        "Checkpoint projection references columns missing "
-                        "from the node output schema.",
-                        node_id=nid,
-                        node_type=node.data.nodeType.value,
-                        missing=sorted(runtime_missing),
-                        required_columns=sorted(runtime_required),
-                        output_columns=sorted(schema_set),
-                    )
-                cache_only_missing = missing - runtime_missing
-                if cache_only_missing:
-                    logger.warning(
-                        "dataframe_execution_cache_checkpoint_column_missing",
-                        node_id=nid,
-                        missing=sorted(cache_only_missing),
-                    )
-                effective_projection = set(projection) - cache_only_missing
-                valid = projected_or_carrier_columns(schema_cols, effective_projection)
-                if valid and len(valid) < len(schema_cols):
-                    logger.info(
-                        "checkpoint_projection",
-                        node_id=nid,
-                        total_cols=len(schema_cols),
-                        projected_cols=len(valid),
-                    )
-                    sink_lf = sink_lf.select(valid)
-                    column_cache[(nid, None)] = frozenset(valid)
-
-            with (
-                execution_context.stage("lazy_checkpoint_parquet", node_id=nid)
-                if execution_context is not None
-                else contextlib.nullcontext()
-            ):
-                bounded_sink(sink_lf, tmp, fast_checkpoint=True)
-
-            # Drop the old LazyFrame (and any cached Arrow buffers it
-            # holds) before replacing with a fresh scan reference.
-            del lf
-            _release_consumed_parents(nid)
-
-            checkpoints_since_gc += 1
-            if checkpoints_since_gc >= _GC_BATCH_INTERVAL:
-                gc.collect()
-                _malloc_trim()
-                checkpoints_since_gc = 0
-
-            lf = pl.scan_parquet(tmp)
-            logger.info("checkpoint_parquet", node_id=nid, path=str(tmp))
-            if execution_context is not None:
-                execution_context.checkpoint(label="after_checkpoint", node_id=nid)
+                    materialisations_since_gc = 0
 
         lazy_outputs[nid] = lf
 
@@ -2121,16 +1954,13 @@ def _check_snapshot_plan(
     target_node_id: str | None,
     source: str,
     profile: ExecutionProfile,
-    checkpoint_dir: Path | None,
     dataframe_cache_request: object | None,
 ) -> None:
     """A plan runs only the execution it was resolved for, and only on its own."""
     from haute._seed_plans import seed_plan_lineage_fingerprint
 
-    if checkpoint_dir is not None or dataframe_cache_request is not None:
-        raise ValueError(
-            "A seed plan replaces checkpoints and the dataframe cache; pass neither with it"
-        )
+    if dataframe_cache_request is not None:
+        raise ValueError("A seed plan replaces the dataframe cache; pass no cache request with it")
     if (
         target_node_id != decision.target_node_id
         or (source or "live") != decision.source

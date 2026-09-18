@@ -126,6 +126,15 @@ context; schema-only or unadmitted callers receive the IO layer's explicit
 caches key a snapshot-backed input by its generation pointer and its current
 source signature, so a rewritten source misses every cache.
 
+Full data at a pipeline point is materialised once into one shared layer and reused: every
+bounded execution (training preparation and its evaluation preview, optimiser setup and
+auto-range, Data Output runs) and every explicit node-data build reads the node-output
+snapshots that already cover what it needs and writes the full-data materialisations it
+performs, instead of recomputing upstream work or writing temporary checkpoints and private
+dataframe-cache entries. The execution engine specifies the seed plan that governs this.
+Analysis results are stored by point identity and data version, so a refreshed or widened
+generation never serves a previous generation's results.
+
 ## Design rationale
 
 Exact input contracts make omissions reviewable and fail loudly on drift. Versioned keys
@@ -162,22 +171,19 @@ source modification during build or stopped workers return 409; memory-limit exh
 unsupported caps, and admission rejections return 507; timeouts return 504; unexpected
 failures are logged and return a generic 500.
 
-## Approved change contract — one shared layer for full-data materialisations
+## Approved change contract — previews in the shared materialisation layer
 
-- **Current limitation.** Each dataframe-cache consumer puts its own namespace, profile, and
-  execution policy in its key, so the same pipeline point is recomputed and stored once per
-  consumer, only in the process-local cache; runs also write temporary checkpoints that are deleted
-  afterwards. Explore alone persists its data, keyed by the Explore node.
-- **Unresolved target.** Every bounded execution,
-  explicit build, and admitted preview writes the full-data materialisations it performs into this
-  layer and reads from it. Analysis results are stored by point identity and data version, so a
-  refreshed or widened generation never serves a previous generation's results.
-- **Non-goals.** Stat-gated caches, the preview response cache, and deploy scoring's process-local
-  dataframe cache are unchanged. The preview/trace lineage key keeps its field set; only its runtime
-  input fingerprint gains the generations of any snapshots a preview or trace seeds from.
-- **Failure and compatibility semantics.** The private dataframe-cache namespaces
-  for training preparation, training evaluation preview, optimiser setup, and Data Output are
-  removed without migration.
-- **Acceptance evidence.** Every bounded execution reads a materialisation an earlier one
-  wrote, and writes the ones it performs, with no private namespace left behind.
-- **Roadmap package.** [CACHE-S07](../roadmap/caching.md#cache-s07--executions-seed-from-and-capture-into-shared-snapshots).
+- **Current limitation.** Bounded executions and explicit builds read and write the shared
+  layer, but an admitted preview computes every upstream point itself and writes none of the
+  full-data materialisations it performs.
+- **Unresolved target.** An admitted preview writes the full-data materialisations it performs
+  (its joins and materialising operations) into this layer and reads from it, so a preview
+  below a point a run or build already materialised starts there.
+- **Non-goals.** Stat-gated caches, the preview response cache's field set, and deploy scoring's
+  process-local dataframe cache are unchanged; only the preview/trace runtime input fingerprint
+  gains the generations of any snapshots a preview or trace seeds from.
+- **Failure and compatibility semantics.** A preview profile whose outputs are not proven
+  identical to the snapshot's semantics class neither reads nor writes the layer.
+- **Acceptance evidence.** A preview reads a materialisation a run wrote, and a run reads one a
+  preview wrote.
+- **Roadmap package.** [CACHE-S09](../roadmap/caching.md#cache-s09--previews-and-traces-seed-from-and-capture-into-shared-snapshots).

@@ -1452,7 +1452,6 @@ def execute_lazy_graph(
     target_node_id: str | None = None,
     preamble_ns: dict[str, Any] | None = None,
     source: str = "live",
-    checkpoint_dir: Path | None = None,
     enforce_contracts: bool = False,
     preserve_node_ids: set[str] | frozenset[str] | None = None,
     required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
@@ -1472,7 +1471,8 @@ def execute_lazy_graph(
     Supply ``runtime_source_frames_by_node`` when source nodes are injected
     DataFrames and group-by admission must estimate those request-local inputs.
     A ``snapshot_plan`` (``haute._seed_plans``) makes the run seed from and
-    capture into shared snapshots instead of using checkpoints.
+    capture into shared snapshots; without one nothing is captured, and only a
+    ``dataframe_cache_request`` (deploy scoring) materialises node outputs.
     """
     from haute._execute_lazy import _execute_lazy
 
@@ -1482,7 +1482,6 @@ def execute_lazy_graph(
         target_node_id=target_node_id,
         preamble_ns=preamble_ns,
         source=source,
-        checkpoint_dir=checkpoint_dir,
         enforce_contracts=enforce_contracts,
         preserve_node_ids=preserve_node_ids,
         required_columns_by_node=required_columns_by_node,

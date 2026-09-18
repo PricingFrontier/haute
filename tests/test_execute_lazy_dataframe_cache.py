@@ -555,7 +555,7 @@ def test_execute_lazy_dataframe_cache_skips_broader_key_when_columns_missing(
     }
 
 
-def test_missing_cache_only_column_does_not_break_structural_checkpoint(
+def test_missing_cache_only_column_skips_the_cache_write(
     tmp_path: Path,
 ) -> None:
     graph = PipelineGraph(
@@ -606,15 +606,13 @@ def test_missing_cache_only_column_does_not_break_structural_checkpoint(
             False,
         )
 
-    checkpoint_dir = tmp_path / "checkpoints"
-    checkpoint_dir.mkdir()
     # The synthetic source node carries no readable metadata, so the join's
     # estimate is unavailable; the declared native cap lets it run warned, as
     # it does inside the production hard-capped worker.
     # The sink's join is a materialisation boundary; production surfaces always
     # supply an admitted context (and release it afterwards), so the test does too.
     context = create_admitted_execution_context(
-        operation="execute_lazy_cache_structural_checkpoint",
+        operation="execute_lazy_cache_missing_column",
         profile=ExecutionProfile.LAZY_SINK,
     )
     try:
@@ -624,7 +622,6 @@ def test_missing_cache_only_column_does_not_break_structural_checkpoint(
                 build_node,
                 target_node_id="sink",
                 source="batch",
-                checkpoint_dir=checkpoint_dir,
                 required_columns_by_node={
                     "mid": frozenset({"x"}),
                     "sink": frozenset({"x"}),
@@ -635,8 +632,9 @@ def test_missing_cache_only_column_does_not_break_structural_checkpoint(
     finally:
         context.release_admission(preserve_primary_error=True)
 
+    # A column only the cache key asked for is missing, so nothing is cached,
+    # and the run itself is unaffected.
     assert cache.get(cache_request.keys_by_node["mid"]) is None
-    assert pl.read_parquet(checkpoint_dir / "mid.parquet").columns == ["x"]
     assert outputs["sink"].collect().sort("x").to_dict(as_series=False) == {"x": [1, 2, 3]}
 
 

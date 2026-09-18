@@ -1913,7 +1913,7 @@ def test_bounded_lazy_execution_projects_simple_uncontracted_user_code() -> None
     )
 
 
-def test_lazy_checkpoint_does_not_project_stale_contract_outputs_into_edge_join(
+def test_lazy_capture_does_not_project_stale_contract_outputs_into_edge_join(
     tmp_path,
 ) -> None:
     graph = make_graph(
@@ -2078,31 +2078,48 @@ def test_lazy_checkpoint_does_not_project_stale_contract_outputs_into_edge_join(
             )
         return node.id, lambda df: df, False
 
+    from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+    from haute._seed_plans import SeedPlanRequest, open_resolved_seed_plan
+
     context = ExecutionContext(
-        operation="test_stale_contract_checkpoint_projection",
+        operation="test_stale_contract_capture_projection",
         profile=ExecutionProfile.OPTIMISER_SETUP,
     )
-    outputs, *_ = _execute_lazy(
-        graph,
-        build_node_fn,
+    required = {
+        "optimiser_input": {
+            "quote_id",
+            "scenario_index",
+            "premium_multiplier",
+            "conversion_prediction",
+            "expected_margin",
+        }
+    }
+    store = NodeSnapshotStore(tmp_path)
+    request = SeedPlanRequest(
+        graph=graph,
         target_node_id="optimiser_input",
-        checkpoint_dir=tmp_path,
-        enforce_contracts=True,
-        required_columns_by_node={
-            "optimiser_input": {
-                "quote_id",
-                "scenario_index",
-                "premium_multiplier",
-                "conversion_prediction",
-                "expected_margin",
-            }
-        },
-        execution_context=context,
+        source="live",
+        profile=ExecutionProfile.OPTIMISER_SETUP,
+        required_columns_by_node=required,
     )
+    with open_resolved_seed_plan(request, store=store) as plan:
+        outputs, *_ = _execute_lazy(
+            graph,
+            build_node_fn,
+            target_node_id="optimiser_input",
+            enforce_contracts=True,
+            required_columns_by_node=required,
+            execution_context=context,
+            prepare_inputs=False,
+            snapshot_plan=plan,
+        )
+        result = outputs["optimiser_input"].collect()
+        join_capture = store.latest_generation(plan.decision.captures["join_premiums"].identity)
 
-    result = outputs["optimiser_input"].collect()
-
-    assert (tmp_path / "join_premiums.parquet").exists()
+    # The edge join is captured whole: stale downstream contract outputs do not
+    # narrow what it writes.
+    assert join_capture is not None
+    assert join_capture.columns == NodeSnapshotColumns.all()
     assert context.projection_plan is not None
     assert context.projection_plan.needed_by_node["join_premiums"] is None
     assert result.select("quote_id", "scenario_index").to_dict(as_series=False) == {

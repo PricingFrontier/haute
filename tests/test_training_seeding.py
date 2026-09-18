@@ -927,3 +927,227 @@ def test_completed_training_job_keeps_preparation_evidence(project: Path) -> Non
     assert [seed["node_id"] for seed in second["execution_metrics"]["shared_snapshot_seeds"]] == [
         "B"
     ]
+
+
+def test_concurrent_training_workers_publish_each_capture_once(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    """Two preparation workers in their own processes, both planned before either
+    publishes, publish each captured identity once; the later one is superseded
+    and continues from its own data."""
+    import threading
+
+    from haute._execution_admission import (
+        create_admitted_execution_context,
+        isolated_execution_budget,
+    )
+    from haute._seed_plans import open_seed_plan
+    from haute._worker_isolation import run_isolated_worker, worker_config_for_memory_policy
+    from haute.routes._training_preparation import (
+        TrainingPreparationOutcome,
+        TrainingPreparationRequest,
+        _training_required_columns_by_node,
+        create_training_parquet_path,
+        training_seed_plan_request,
+    )
+
+    graph = _graph(
+        project,
+        [
+            ("src", "dataInput", _data_input(project, "quotes.parquet")),
+            ("other", "dataInput", _data_input(project, "claims.parquet")),
+            ("J", "polars", {"code": "df = src.join(other, on='id', validate='1:1')"}),
+            (
+                "B",
+                "polars",
+                {"code": "df = J.with_columns((pl.col('a') + pl.col('d')).alias('e'))"},
+            ),
+        ],
+        [("src", "J"), ("other", "J"), ("J", "B"), ("B", "train")],
+    )
+    pipeline = PipelineGraph.model_validate(graph)
+    config = dict(pipeline.node_map["train"].data.config)
+    required = _training_required_columns_by_node("train", config)
+    contexts = []
+    plans = []
+    requests = []
+    try:
+        # Both plans are resolved before either worker starts: neither can seed
+        # the other's capture, so both execute and both capture.
+        for index in range(2):
+            context = create_admitted_execution_context(
+                operation="training_pipeline",
+                profile=ExecutionProfile.TRAINING_PREP,
+                job_id=f"race-{index}",
+            )
+            contexts.append(context)
+            plan = open_seed_plan(
+                training_seed_plan_request(pipeline, "train", "live", required),
+                execution_context=context,
+            )
+            plans.append(plan)
+            requests.append(
+                TrainingPreparationRequest(
+                    graph=pipeline,
+                    node_id="train",
+                    job_id=f"race-{index}",
+                    source="live",
+                    parquet_path=create_training_parquet_path(),
+                    config=config,
+                    project_root=str(project),
+                    streaming_chunk_size=None,
+                    row_limit=None,
+                    exclude=None,
+                    keep_columns=None,
+                    required_columns_by_node=required,
+                    preamble_supplied=True,
+                    seed_plan=plan.handoff(),
+                )
+            )
+        assert all(set(plan.decision.captures) == {"J", "B"} for plan in plans)
+        outcomes: list[object] = [None, None]
+
+        def prepare(index: int) -> None:
+            budget = isolated_execution_budget(contexts[index])
+            outcomes[index] = run_isolated_worker(
+                prepare_training_data_worker,
+                requests[index],
+                budget,
+                config=worker_config_for_memory_policy(
+                    memory_limit_bytes=budget.memory_limit_bytes,
+                    timeout_seconds=300.0,
+                    stop_reason=lambda: None,
+                    process_name=f"haute-training-prep-race-{index}",
+                ),
+            )
+
+        workers = [threading.Thread(target=prepare, args=(index,)) for index in range(2)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=300)
+        assert not any(worker.is_alive() for worker in workers)
+    finally:
+        for plan in plans:
+            plan.close()
+        for context in contexts:
+            context.release_admission()
+
+    frames = []
+    captures_by_node: dict[str, list[str]] = {"J": [], "B": []}
+    for outcome, request in zip(outcomes, requests, strict=True):
+        assert isinstance(outcome, TrainingPreparationOutcome), outcome
+        assert outcome.failure is None, outcome.failure
+        assert outcome.execution_metrics is not None
+        for capture in outcome.execution_metrics["shared_snapshot_captures"]:
+            captures_by_node[capture["node_id"]].append(capture["outcome"])
+        frames.append(pl.read_parquet(request.parquet_path))
+        Path(request.parquet_path).unlink()
+    # Each identity is published once; the later publisher is superseded.
+    for node_id in ("J", "B"):
+        assert sorted(captures_by_node[node_id]) == ["published", "superseded"], node_id
+        identity = _identity(store, graph, node_id)
+        generations = [
+            path for path in store.identity_path(identity).glob("generations/*") if path.is_dir()
+        ]
+        assert len(generations) == 1, node_id
+    assert_frame_equal(frames[0], frames[1], check_row_order=False)
+    assert _staging(project) == []
+
+
+def test_no_bounded_caller_creates_a_checkpoint_directory(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Training preparation, the evaluation preview, optimiser setup, and a Data
+    Output write — every bounded caller — write no checkpoint directory, and the
+    process dataframe cache stays empty."""
+    import tempfile
+
+    from haute._dataframe_execution_cache import DataFrameExecutionCache
+    from haute.executor import write_data_output
+    from haute.routes._job_store import JobStore
+    from haute.routes._train_service import TrainService
+    from haute.schemas import TrainEstimateRequest
+    from tests.test_optimiser_seeding import _online_chain, _setup
+
+    created: list[str] = []
+    mkdtemp = tempfile.mkdtemp
+
+    def recording_mkdtemp(*args: Any, **kwargs: Any) -> str:
+        path = mkdtemp(*args, **kwargs)
+        created.append(Path(path).name)
+        return path
+
+    stored: list[Any] = []
+    monkeypatch.setattr(tempfile, "mkdtemp", recording_mkdtemp)
+    monkeypatch.setattr(
+        DataFrameExecutionCache,
+        "store_artifact",
+        lambda self, *args, **kwargs: stored.append(args),
+    )
+    for profile in ("TRAINING", "OPTIMISER_SETUP", "AUTO_RANGE", "LAZY_SINK"):
+        monkeypatch.setenv(f"HAUTE_{profile}_MEMORY_LIMIT_MB", "1024")
+    # The optimiser reads its own scored quotes, beside the training data.
+    optimiser_project = project / "optimiser"
+    optimiser_project.mkdir()
+    (optimiser_project / "main.py").write_text("# pipeline\n", encoding="utf-8")
+    pl.DataFrame(
+        {
+            "quote_id": [f"q{quote}" for quote in range(4) for _ in range(2)],
+            "scenario_index": [0, 1] * 4,
+            "scenario_value": [0.9, 1.1] * 4,
+            "expected_income": [float(value) for value in range(8)],
+            "volume": [1.0] * 8,
+        }
+    ).write_parquet(optimiser_project / "quotes.parquet")
+
+    training_graph = _chain(project)
+    training = _train(monkeypatch, training_graph)
+    TrainService(JobStore()).evaluation_preview(
+        TrainEstimateRequest.model_validate({"graph": training_graph, "node_id": "train"}),
+        row_limit=None,
+    )
+    optimiser_graph = _online_chain(optimiser_project)
+    _setup(monkeypatch, optimiser_graph, read=("D",))
+    _setup(monkeypatch, optimiser_graph, read=("D",), profile=ExecutionProfile.AUTO_RANGE)
+    output_graph = PipelineGraph.model_validate(
+        {
+            **training_graph,
+            "nodes": [
+                *(node for node in training_graph["nodes"] if node["id"] != "train"),
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "dataOutput",
+                        "config": {
+                            "outputType": "file",
+                            "format": "parquet",
+                            "path": str(project / "out.parquet"),
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                *(edge for edge in training_graph["edges"] if edge["target"] != "train"),
+                {"id": "e_out", "source": "B", "target": "out"},
+            ],
+        }
+    )
+    write_data_output(output_graph, "out", overwrite=True, project_root=project)
+
+    assert training.job["status"] == "running", training.job.get("message")
+    checkpoint_prefixes = (
+        "haute_train_ckpt_",
+        "haute_opt_",
+        "haute_frontier_range_",
+        "haute_sink_",
+        "haute_dfexec_cache_",
+    )
+    assert [
+        name
+        for name in created
+        if name.startswith(checkpoint_prefixes)
+        and not name.startswith("haute_frontier_range_parts_")
+    ] == []
+    assert stored == []

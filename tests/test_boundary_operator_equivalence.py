@@ -11,8 +11,9 @@ Polars lazy evaluation of the same operations. Each graph places the operator
 mid-graph, with a row-local node downstream, so the boundary is genuinely
 materialised inside a longer plan rather than at the sink. Each test also
 asserts through the executed graph's own diagnostic that the boundary was
-planned at that node, and that the executor really wrote that node's
-checkpoint under ``checkpoint_dir`` -- so none of them can pass on a
+planned at that node, and that the run -- executed under a seed plan, as every
+bounded caller runs -- really captured that node's frame into the shared
+snapshot store as a materialising capture, so none of them can pass on a
 non-boundary path, or on a boundary that silently stayed lazy.
 
 The four properties, per the roadmap acceptance:
@@ -43,6 +44,8 @@ import pytest
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._native_memory_limit import native_memory_backend_scope
+from haute._node_snapshots import NodeSnapshotStore
+from haute._seed_plans import CaptureKind, SeedPlanRequest, open_seed_plan
 from haute.execution import execute_lazy_graph
 from haute.executor import _build_node_fn
 from tests.conftest import make_edge, make_graph, make_ready_file_input_config
@@ -169,31 +172,52 @@ def _boundary_graph(sources: dict[str, Path], operator_code: str):
     )
 
 
-def _execute(graph, context: ExecutionContext, checkpoint_dir: Path) -> pl.DataFrame:
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    frames, *_ = execute_lazy_graph(
-        graph,
-        _build_node_fn,
+def _execute(
+    graph, context: ExecutionContext, root: Path
+) -> tuple[pl.DataFrame, tuple[CaptureKind, int] | None]:
+    """Run *graph* to ``tail`` under a seed plan; return it and the boundary's capture."""
+    store = NodeSnapshotStore(root)
+    request = SeedPlanRequest(
+        graph=graph,
         target_node_id="tail",
-        execution_context=context,
-        checkpoint_dir=checkpoint_dir,
+        source="live",
+        profile=context.profile,
     )
-    frame = frames["tail"]
-    return frame.collect() if isinstance(frame, pl.LazyFrame) else frame
+    with open_seed_plan(request, store=store, execution_context=context) as plan:
+        frames, *_ = execute_lazy_graph(
+            graph,
+            _build_node_fn,
+            target_node_id="tail",
+            execution_context=context,
+            prepare_inputs=False,
+            snapshot_plan=plan,
+        )
+        frame = frames["tail"]
+        collected = frame.collect() if isinstance(frame, pl.LazyFrame) else frame
+        captured = _captured_boundary(store, plan)
+    return collected, captured
 
 
-def _assert_boundary_was_checkpointed(checkpoint_dir: Path) -> None:
-    """The boundary node's frame really was written to disk.
+def _captured_boundary(store: NodeSnapshotStore, plan) -> tuple[CaptureKind, int] | None:
+    capture = plan.decision.captures.get("op")
+    if capture is None:
+        return None
+    latest = store.latest_generation(capture.identity)
+    return capture.kind, (0 if latest is None else latest.generation.data_path.stat().st_size)
 
-    Every graph here gives the boundary node two parents, which is one of the
-    executor's structural checkpoint triggers, so what this proves is that the
-    two-parent trigger fired and the node was materialised to a checkpoint --
-    not, on its own, that the operator was planned as a boundary. That claim is
-    ``_assert_boundary_was_planned``'s.
+
+def _assert_boundary_was_captured(captured: tuple[CaptureKind, int] | None) -> None:
+    """The boundary node's frame really was written, as a materialising capture.
+
+    A materialising operation is a capture point in its own right, whatever its
+    parents, so the capture kind proves the node was materialised *because* of
+    its operator; that the operator was planned as a boundary is
+    ``_assert_boundary_was_planned``'s claim.
     """
-    written = sorted(path.name for path in checkpoint_dir.glob("*.parquet"))
-    assert "op.parquet" in written, written
-    assert (checkpoint_dir / "op.parquet").stat().st_size > 0
+    assert captured is not None, "the boundary node was not captured"
+    kind, size_bytes = captured
+    assert kind is CaptureKind.MATERIALISING
+    assert size_bytes > 0
 
 
 def _assert_boundary_was_planned(context: ExecutionContext, operator: str) -> None:
@@ -230,11 +254,10 @@ def _run_single_input(
     spare_path = tmp_path / "spare.parquet"
     _write_left(left_path)
     _write_spare(spare_path)
-    checkpoint_dir = tmp_path / "checkpoints"
-    # ``spare`` is never referenced by the operator code. It is wired in so the
-    # boundary node has two parents, which is what makes the executor checkpoint
-    # it: without a second parent the boundary would stay lazy and the
-    # checkpoint assertion below could not observe anything.
+    # ``spare`` is never referenced by the operator code. It gives the boundary
+    # node a second parent, so the capture below is attributed to the operator
+    # (a materialising capture) even where a two-parent node would also be
+    # captured structurally.
     graph = _boundary_graph({"src": left_path, "spare": spare_path}, operator_code)
     context = create_admitted_execution_context(
         operation=f"equivalence_{operator}",
@@ -245,12 +268,12 @@ def _run_single_input(
         # ``explode`` expands rows by a data-dependent factor, so it has no
         # estimate; a hard worker cap is the documented way to run it anyway.
         with native_memory_backend_scope("rlimit"):
-            planned = _execute(graph, context, checkpoint_dir)
+            planned, captured = _execute(graph, context, tmp_path)
     else:
-        planned = _execute(graph, context, checkpoint_dir)
+        planned, captured = _execute(graph, context, tmp_path)
 
     _assert_boundary_was_planned(context, operator)
-    _assert_boundary_was_checkpointed(checkpoint_dir)
+    _assert_boundary_was_captured(captured)
     return planned, pl.scan_parquet(left_path)
 
 
@@ -385,7 +408,7 @@ def test_interpolate_streams_and_is_not_planned_as_a_boundary(tmp_path: Path) ->
         profile=ExecutionProfile.LAZY_SINK,
     )
 
-    planned = _execute(graph, context, tmp_path / "checkpoints")
+    planned, _captured = _execute(graph, context, tmp_path)
 
     result = context.projection_plan
     assert result is not None
@@ -436,17 +459,16 @@ def _run_two_input(
     right_path = tmp_path / right_name
     _write_left(left_path)
     right_writer(right_path)
-    checkpoint_dir = tmp_path / "checkpoints"
     graph = _boundary_graph({"left": left_path, "right": right_path}, operator_code)
     context = create_admitted_execution_context(
         operation=f"equivalence_{operator}",
         profile=ExecutionProfile.LAZY_SINK,
     )
 
-    planned = _execute(graph, context, checkpoint_dir)
+    planned, captured = _execute(graph, context, tmp_path)
 
     _assert_boundary_was_planned(context, operator)
-    _assert_boundary_was_checkpointed(checkpoint_dir)
+    _assert_boundary_was_captured(captured)
     return planned, pl.scan_parquet(left_path), pl.scan_parquet(right_path)
 
 
