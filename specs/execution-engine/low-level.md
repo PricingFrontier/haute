@@ -376,8 +376,8 @@ stale snapshot generation is built or refreshed — under the current native cap
 or in a spawned hard-capped worker admitted from the execution's budget — before the RAM
 estimator reads generation metadata, and before the preview path computes its runtime
 identity, so a refreshed generation's pointer is the one keyed. A caller that still builds a
-dataframe-cache request before the engine prepares (Data Output, and deploy scoring's
-`deploy_score` namespace) is keyed by the superseded pointer after a refresh and misses once;
+dataframe-cache request before the engine prepares (deploy scoring's `deploy_score`
+namespace) is keyed by the superseded pointer after a refresh and misses once;
 the next execution keys the new pointer, and correctness never depends on it because the
 current source signature is part of every key. `schema_only` executions,
 executions without an admitted context, and planned executions skip it (a seed plan
@@ -612,6 +612,25 @@ most 200 characters and not a Windows reserved stem); traversal syntax,
 platform-reserved names, and overlong ids use deterministic
 `node=<sha256>.parquet`. The `=` delimiter is outside the authored-safe grammar, so
 the readable and digest namespaces cannot collide.
+
+A Data Output run executes under a seed plan (`executor.data_output_seed_plan_request`: the
+batch scenario, the Data Output node consumed — a pass-through, so its producer is seeded or
+captured with the node's `selected_columns` — `LAZY_SINK`). `POST /api/pipeline/write-output`'s
+parent prepares inputs and opens the plan under its admitted context, bounded by the sink
+timeout (`open_seed_plan(..., deadline=)`), and hands it to the sink worker, which adopts it
+(`prepare_data_output(..., seed_plan=)`) and so stages its captures under the parent's token;
+the parent closes the plan after the worker exits, which removes whatever a killed worker left
+staged. The worker receives what preparation left of the sink timeout, a preparation failure
+after the deadline is the sink's timeout (504), and the request's cancellation reaches parent
+preparation through the cancellation gate (`WorkerCancellationGate.on_request` cancels the
+parent context), so a cancelled preparation starts no worker — and the gate is checked again
+once the plan is open, so neither does a preparation that completed after the request went
+away. The worker's response metrics
+carry the parent's input preparation ahead of its own evidence
+(`ExecutionContext.metrics_with_worker_evidence`). An in-process write (`write_data_output`)
+prepares inputs and opens its own plan. Either way the plan is held, and the request's
+`streaming_chunk_size` (or the default) is in effect, until the output is written; no
+checkpoint directory and no dataframe-cache entry is written.
 
 `executor.write_data_output()` then writes the terminal lazy frame. A sink-capable `dataOutput`
 format uses a bounded Polars sink. Writer-only formats and

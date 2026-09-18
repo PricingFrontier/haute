@@ -107,55 +107,58 @@ def _make_optimiser_graph(data_path: str, *, mode: str = "online") -> dict:
 
 
 class TestDataOutputExecutionThreading:
-    """``write_data_output`` passes its chunk size into graph execution."""
+    """``write_data_output`` runs its execution and write under its chunk size."""
 
-    def test_uses_request_value(self, tmp_path):
+    def _run(self, tmp_path, *, streaming_chunk_size: int | None) -> list[tuple[str, int | None]]:
+        from contextlib import contextmanager
+
         from haute.executor import write_data_output
 
         out_path = str(tmp_path / "out.parquet")
         graph = _make_sink_graph(out_path)
+        events: list[tuple[str, int | None]] = []
 
-        captured: dict[str, object] = {}
+        @contextmanager
+        def recording_chunk_size(chunk_size):
+            events.append(("enter", chunk_size))
+            yield
+            events.append(("exit", chunk_size))
 
         def fake_execute_lazy(*_args, **kwargs):
-            captured.update(kwargs)
+            events.append(("execute", None))
             return {"sink": lf}, ["s", "sink"], {}, {}
+
+        from haute._polars_io_registry import write_polars_output
+
+        def recording_write(*args, **kwargs):
+            events.append(("write", None))
+            return write_polars_output(*args, **kwargs)
 
         lf = pl.DataFrame({"x": [1, 2, 3]}).lazy()
         with (
             patch(
-                "haute.executor._execute_lazy",
-                side_effect=fake_execute_lazy,
+                "haute._polars_utils.temporary_streaming_chunk_size",
+                side_effect=recording_chunk_size,
             ),
+            patch("haute.executor._execute_lazy", side_effect=fake_execute_lazy),
+            patch("haute._polars_io_registry.write_polars_output", side_effect=recording_write),
         ):
-            write_data_output(graph, "sink", streaming_chunk_size=12345)
+            write_data_output(graph, "sink", streaming_chunk_size=streaming_chunk_size)
+        return events
 
-        assert captured["dataframe_cache_request"].streaming_chunk_size == 12345
+    def test_uses_request_value(self, tmp_path):
+        events = self._run(tmp_path, streaming_chunk_size=12345)
+        # Execution and the write both happen inside the scope.
+        assert events == [("enter", 12345), ("execute", None), ("write", None), ("exit", 12345)]
 
     def test_default_when_missing(self, tmp_path):
-        from haute.executor import write_data_output
-
-        out_path = str(tmp_path / "out.parquet")
-        graph = _make_sink_graph(out_path)
-
-        captured: dict[str, object] = {}
-
-        def fake_execute_lazy(*_args, **kwargs):
-            captured.update(kwargs)
-            return {"sink": lf}, ["s", "sink"], {}, {}
-
-        lf = pl.DataFrame({"x": [1]}).lazy()
-        with (
-            patch(
-                "haute.executor._execute_lazy",
-                side_effect=fake_execute_lazy,
-            ),
-        ):
-            write_data_output(graph, "sink")
-
-        assert (
-            captured["dataframe_cache_request"].streaming_chunk_size == DEFAULT_STREAMING_CHUNK_SIZE
-        )
+        events = self._run(tmp_path, streaming_chunk_size=None)
+        assert events == [
+            ("enter", DEFAULT_STREAMING_CHUNK_SIZE),
+            ("execute", None),
+            ("write", None),
+            ("exit", DEFAULT_STREAMING_CHUNK_SIZE),
+        ]
 
 
 class TestSinkRouteThreading:

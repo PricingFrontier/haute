@@ -25,12 +25,11 @@ import signal
 import stat as stat_module
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import uuid
 from collections.abc import Mapping
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager, ExitStack, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -59,6 +58,7 @@ from haute._path_resolution import (
 )
 from haute._registry import ensure_registry_ready
 from haute._sandbox import safe_globals, validate_user_code
+from haute._seed_plans import SeedPlan, SeedPlanHandoff, SeedPlanRequest, open_seed_plan
 from haute._types import NodeData
 from haute._validation_error import HauteValidationError
 from haute.errors import PreambleError
@@ -1894,6 +1894,70 @@ def resolve_data_output_path(
     return _contain_output_path(graph, target, project_root=root), path
 
 
+def _data_output_config(graph: PipelineGraph, output_node_id: str) -> dict[str, Any]:
+    output_node = graph.node_map.get(output_node_id)
+    if output_node is None:
+        raise ValueError(f"Data Output node '{output_node_id}' not found")
+    if output_node.data.nodeType != NodeType.DATA_OUTPUT:
+        raise ValueError(f"Node '{output_node_id}' is not a Data Output")
+
+    from haute._polars_io_registry import validate_data_output_config
+
+    return validate_data_output_config(output_node.data.config)
+
+
+def _data_output_required_columns(
+    config: Mapping[str, Any], output_node_id: str
+) -> dict[str, frozenset[str]] | None:
+    selected_columns = config.get("selected_columns")
+    if not selected_columns:
+        return None
+    if isinstance(selected_columns, str | bytes):
+        raise ValueError("Data Output selected_columns must be a list of column names")
+    selected_seed: set[str] = set()
+    for column in selected_columns:
+        if not isinstance(column, str) or not column:
+            raise ValueError("Data Output selected_columns must contain non-empty string names")
+        selected_seed.add(column)
+    return {output_node_id: frozenset(selected_seed)}
+
+
+def _data_output_scenario(graph: PipelineGraph, source: str) -> str:
+    # Sinks are never used in live serving — model scoring must use the
+    # disk-batched path (any scenario != "live").  But the scenario name
+    # must match a value in the source-switch ISM so edge pruning routes
+    # to the correct branch.  Resolve the first non-live ISM value from
+    # the graph; fall back to "batch" if there are no live_switch nodes.
+    if source == "live":
+        return _resolve_batch_scenario(graph) or "batch"
+    return source
+
+
+def data_output_seed_plan_request(
+    graph: PipelineGraph,
+    output_node_id: str,
+    source: str = "live",
+    *,
+    profile: ExecutionProfile = ExecutionProfile.LAZY_SINK,
+) -> SeedPlanRequest:
+    """The seed plan a Data Output run executes under.
+
+    The Data Output node is a pass-through, so the plan seeds or captures its
+    selected producer with the node's selected columns. A parent supervising a
+    Data Output worker opens it and hands it over; an in-process write opens
+    its own.
+    """
+    config = _data_output_config(graph, output_node_id)
+    return SeedPlanRequest(
+        graph=graph,
+        target_node_id=output_node_id,
+        source=_data_output_scenario(graph, source),
+        profile=profile,
+        consumed_node_ids=(output_node_id,),
+        required_columns_by_node=_data_output_required_columns(config, output_node_id),
+    )
+
+
 def prepare_data_output(
     graph: PipelineGraph,
     output_node_id: str,
@@ -1904,6 +1968,7 @@ def prepare_data_output(
     project_root: str | Path | None = None,  # pragma: no mutate
     overwrite: bool = False,  # pragma: no mutate
     staging_path: str | Path | None = None,  # pragma: no mutate
+    seed_plan: SeedPlanHandoff | None = None,  # pragma: no mutate
 ) -> PreparedDataOutput:
     """Execute a Data Output, leaving file publication to the parent caller.
 
@@ -1920,6 +1985,10 @@ def prepare_data_output(
     File outputs are fully written, synced, and signed at an exact sibling
     staging path but remain invisible. Database/lakehouse writers retain their
     native transactional commit and return a transactional manifest.
+
+    The run executes under a seed plan: the worker path adopts the one its
+    supervising parent opened (*seed_plan*), and an in-process write prepares
+    inputs and opens its own. The plan is held until the output is written.
     """
     if execution_context is None:
         admitted_context = create_admitted_execution_context(
@@ -1936,19 +2005,12 @@ def prepare_data_output(
                 project_root=project_root,
                 overwrite=overwrite,
                 staging_path=staging_path,
+                seed_plan=seed_plan,
             )
         finally:
             admitted_context.release_admission(preserve_primary_error=True)
 
-    output_node = graph.node_map.get(output_node_id)
-    if output_node is None:
-        raise ValueError(f"Data Output node '{output_node_id}' not found")
-    if output_node.data.nodeType != NodeType.DATA_OUTPUT:
-        raise ValueError(f"Node '{output_node_id}' is not a Data Output")
-
-    from haute._polars_io_registry import validate_data_output_config
-
-    config = validate_data_output_config(output_node.data.config)
+    config = _data_output_config(graph, output_node_id)
     from haute._polars_io_registry import format_for_config, format_group
 
     root = _infer_project_root(
@@ -1960,18 +2022,7 @@ def prepare_data_output(
     if is_file_target and out is not None and out.exists() and not overwrite:
         raise DataOutputDestinationExistsError(path)
 
-    selected_columns = config.get("selected_columns")
-
-    required_columns_by_node: dict[str, frozenset[str]] | None = None  # pragma: no mutate
-    if selected_columns:
-        if isinstance(selected_columns, str | bytes):
-            raise ValueError("Data Output selected_columns must be a list of column names")
-        selected_seed: set[str] = set()
-        for column in selected_columns:
-            if not isinstance(column, str) or not column:
-                raise ValueError("Data Output selected_columns must contain non-empty string names")
-            selected_seed.add(column)
-        required_columns_by_node = {output_node_id: frozenset(selected_seed)}
+    required_columns_by_node = _data_output_required_columns(config, output_node_id)
 
     staging_out: Path | None = None  # pragma: no mutate
     if out is not None:
@@ -1989,31 +2040,27 @@ def prepare_data_output(
     if staging_path is not None and staging_out is None:
         raise ValueError("Only atomic file outputs accept a staging path")
 
-    # Sinks are never used in live serving — model scoring must use the
-    # disk-batched path (any scenario != "live").  But the scenario name
-    # must match a value in the source-switch ISM so edge pruning routes
-    # to the correct branch.  Resolve the first non-live ISM value from
-    # the graph; fall back to "batch" if there are no live_switch nodes.
-    if source == "live":
-        output_scenario = _resolve_batch_scenario(graph) or "batch"
-    else:
-        output_scenario = source
+    output_scenario = _data_output_scenario(graph, source)
 
     from haute._polars_utils import (
         DEFAULT_STREAMING_CHUNK_SIZE,
         _malloc_trim,
         streaming_collect,
+        temporary_streaming_chunk_size,
     )
 
-    # Create a temp directory for join checkpoints.  Multi-input nodes
-    # are sunk to parquet here so Polars sees each join as an independent
-    # plan, avoiding chained-join memory accumulation (#24206).
-    # The directory (and all checkpoint files) is cleaned up in finally.
-    tmp_dir = tempfile.mkdtemp(prefix="haute_sink_")
-    checkpoint_path = Path(tmp_dir)
+    # Joins and fan-outs are captured into shared snapshots under the seed
+    # plan, so Polars sees each as an independent plan (#24206) and the next
+    # run starts there. The plan is held until the output is written.
+    plans = ExitStack()
     retain_staging = False
 
     try:
+        # The request's chunk size governs the whole run: every capture and
+        # the output write stream with it.
+        plans.enter_context(
+            temporary_streaming_chunk_size(streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE)
+        )
         # Pin a preamble fingerprint snapshot at admission so chunk execution
         # shares one namespace without re-hashing.
         pinned = preamble_execution_fingerprint(
@@ -2027,24 +2074,18 @@ def prepare_data_output(
         )
 
         def _run_lazy() -> pl.LazyFrame:
-            import haute.execution as execution_facade
-
-            dataframe_cache_request = execution_facade.build_dataframe_execution_cache_request(
-                graph,
-                node_ids=[output_node_id],
-                namespace="data_output",
-                source=output_scenario,
-                profile=execution_context.profile,
-                input_fingerprint=execution_facade.dataframe_graph_input_fingerprint(
-                    graph,
-                    target_node_id=output_node_id,
-                    source=output_scenario,
-                ),
-                target_node_id=output_node_id,
-                required_columns_by_node=required_columns_by_node,
-                enforce_contracts=True,
-                preamble_ns_supplied=bool(preamble_ns),
-                streaming_chunk_size=streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE,
+            plan = plans.enter_context(
+                SeedPlan.adopt(seed_plan)
+                if seed_plan is not None
+                else open_seed_plan(
+                    data_output_seed_plan_request(
+                        graph,
+                        output_node_id,
+                        source,
+                        profile=execution_context.profile,
+                    ),
+                    execution_context=execution_context,
+                )
             )
             lazy_outputs, _order, _parents, _names = _execute_lazy(
                 graph,
@@ -2052,11 +2093,11 @@ def prepare_data_output(
                 target_node_id=output_node_id,
                 preamble_ns=preamble_ns or None,
                 source=output_scenario,
-                checkpoint_dir=checkpoint_path,
                 enforce_contracts=True,
                 required_columns_by_node=required_columns_by_node,
                 execution_context=execution_context,
-                dataframe_cache_request=dataframe_cache_request,
+                prepare_inputs=False,
+                snapshot_plan=plan,
             )
             lf = lazy_outputs.get(output_node_id)
             if lf is None:
@@ -2176,12 +2217,14 @@ def prepare_data_output(
         retain_staging = staging_out is not None
         return prepared
     finally:
-        if staging_out is not None and not retain_staging:
-            _cleanup_output_staging_path(
-                staging_out,
-                project_root=root,
-            )
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        try:
+            plans.close()
+        finally:
+            if staging_out is not None and not retain_staging:
+                _cleanup_output_staging_path(
+                    staging_out,
+                    project_root=root,
+                )
 
 
 def _prepared_output_paths(prepared: PreparedDataOutput) -> tuple[Path, Path, Path]:

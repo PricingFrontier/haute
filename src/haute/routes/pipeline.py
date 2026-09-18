@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -67,6 +68,7 @@ from haute._polars_io_registry import (
 from haute._polars_steps import PolarsStepError, render_polars_steps
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, temporary_streaming_chunk_size
 from haute._sandbox import _get_project_root
+from haute._seed_plans import SeedPlanHandoff, open_seed_plan
 from haute._submodel_instances import qualified_runtime_node_id, resolve_submodel_instances
 from haute._topo import ancestors
 from haute._types import GraphEdge, GraphNode, NodeData, SubmodelDefinition
@@ -99,6 +101,7 @@ from haute.executor import (
     PreviewProjectionError,
     _preview_cache,
     commit_prepared_data_output,
+    data_output_seed_plan_request,
     discard_data_output_staging_path,
     discard_prepared_data_output,
     execute_graph,
@@ -1830,9 +1833,10 @@ def _prepare_data_output_worker(
     project_root: str,
     overwrite: bool,
     staging_path: str | None,
+    seed_plan: SeedPlanHandoff,
     budget: IsolatedExecutionBudget,
 ) -> _OutputWriteWorkerOutcome:
-    """Execute one sink while leaving file publication to the parent."""
+    """Execute one sink under the parent's seed plan, leaving publication to the parent."""
     context: ExecutionContext | None = None
     try:
         context = create_isolated_execution_context(budget)
@@ -1845,6 +1849,7 @@ def _prepare_data_output_worker(
             project_root=project_root,
             overwrite=overwrite,
             staging_path=staging_path,
+            seed_plan=seed_plan,
         )
         return _OutputWriteWorkerOutcome(prepared=prepared)
     except PUBLIC_CONTRACT_ERROR_TYPES as exc:
@@ -1868,6 +1873,23 @@ def _prepare_data_output_worker(
             context.release_admission(preserve_primary_error=True)
 
 
+def _with_parent_evidence(
+    prepared: PreparedDataOutput,
+    execution_context: ExecutionContext,
+) -> PreparedDataOutput:
+    """The worker's result, its metrics carrying the parent's preparation evidence."""
+    metrics = prepared.response.execution_metrics
+    if metrics is None:
+        return prepared
+    merged = execution_context.metrics_with_worker_evidence(metrics.model_dump(mode="json"))
+    return replace(
+        prepared,
+        response=prepared.response.model_copy(
+            update={"execution_metrics": ExecutionMetricsPayload.model_validate(merged)}
+        ),
+    )
+
+
 def _output_write_transaction(
     graph: PipelineGraph,
     output_node_id: str,
@@ -1881,31 +1903,67 @@ def _output_write_transaction(
     cancellation_requested: WorkerCancellationGate,
     *,
     display_path: str,
+    execution_context: ExecutionContext,
 ) -> WriteOutputResponse:
-    """Supervise a sink child and own its only publication boundary."""
+    """Prepare inputs and open the seed plan, supervise the sink child, and publish.
+
+    A node's signature signs its prepared inputs, so this process prepares them
+    and resolves the plan; the child adopts it, and its leases and capture
+    staging are released only after the child has exited. The sink timeout
+    bounds preparation and the child together.
+    """
     prepared: PreparedDataOutput | None = None
     primary_error: BaseException | None = None
+    deadline = time.monotonic() + _sink_timeout()
     try:
         if cancellation_requested.is_set():
             raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
-        config = worker_config_for_memory_policy(
-            memory_limit_bytes=budget.memory_limit_bytes,
-            timeout_seconds=_sink_timeout(),
-            stop_reason=(lambda: "cancelled" if cancellation_requested.is_set() else None),
-            process_name="haute-output-write",
-        )
-        outcome = run_isolated_worker(
-            _prepare_data_output_worker,
-            graph,
-            output_node_id,
-            source,
-            streaming_chunk_size,
-            str(project_root),
-            overwrite,
-            None if staging_path is None else str(staging_path),
-            budget,
-            config=config,
-        )
+        # Preparing inputs here stops with the request.
+        cancellation_requested.on_request(execution_context.cancellation_token.cancel)
+        try:
+            plan = open_seed_plan(
+                data_output_seed_plan_request(
+                    graph,
+                    output_node_id,
+                    source,
+                    profile=execution_context.profile,
+                ),
+                execution_context=execution_context,
+                deadline=deadline,
+            )
+        except Exception as exc:
+            if cancellation_requested.is_set():
+                raise IsolatedWorkerStoppedError(terminal_reason="cancelled") from exc
+            if time.monotonic() >= deadline:
+                raise IsolatedWorkerTimeoutError(timeout_seconds=_sink_timeout()) from exc
+            raise
+        with plan:
+            # Preparation can finish (a cancelled build reconciled as published)
+            # after the request went away; nothing is launched for it then.
+            if cancellation_requested.is_set():
+                raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise IsolatedWorkerTimeoutError(timeout_seconds=_sink_timeout())
+            config = worker_config_for_memory_policy(
+                memory_limit_bytes=budget.memory_limit_bytes,
+                timeout_seconds=remaining,
+                stop_reason=(lambda: "cancelled" if cancellation_requested.is_set() else None),
+                process_name="haute-output-write",
+            )
+            outcome = run_isolated_worker(
+                _prepare_data_output_worker,
+                graph,
+                output_node_id,
+                source,
+                streaming_chunk_size,
+                str(project_root),
+                overwrite,
+                None if staging_path is None else str(staging_path),
+                plan.handoff(),
+                budget,
+                config=config,
+            )
         if not isinstance(outcome, _OutputWriteWorkerOutcome):
             raise RuntimeError("Output worker returned an invalid outcome")
         if outcome.failure_kind is not None:
@@ -1925,7 +1983,7 @@ def _output_write_transaction(
             overwrite=overwrite,
             transactional=staging_path is None,
         )
-        prepared = outcome.prepared
+        prepared = _with_parent_evidence(outcome.prepared, execution_context)
         return commit_prepared_data_output(
             prepared,
             publication_guard=cancellation_requested.publication_guard(),
@@ -2005,6 +2063,7 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
 
         def _transaction(cancellation_requested: WorkerCancellationGate) -> WriteOutputResponse:
             assert budget is not None
+            assert output_context is not None
             return _output_write_transaction(
                 graph,
                 body.node_id,
@@ -2017,6 +2076,7 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
                 budget,
                 cancellation_requested,
                 display_path=display_path,
+                execution_context=output_context,
             )
 
         result = await run_cancellable_worker_transaction(

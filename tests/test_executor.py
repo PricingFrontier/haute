@@ -1718,11 +1718,10 @@ class TestExecuteSink:
         df = pl.read_parquet(out)
         assert set(df.columns) >= {"key", "a", "b"}
 
-    def test_sink_passes_checkpoint_dir(self, tmp_path):
-        """write_data_output must pass a checkpoint_dir to _execute_lazy."""
+    def test_sink_runs_under_a_seed_plan(self, tmp_path):
+        """write_data_output executes under the seed plan it opened, with no checkpoint dir."""
         graph, _ = _make_sink_graph(tmp_path)
 
-        from pathlib import Path
         from unittest.mock import patch
 
         from haute._execute_lazy import _execute_lazy as original
@@ -1737,32 +1736,29 @@ class TestExecuteSink:
             write_data_output(graph, output_node_id="sink")
 
         assert len(captured_kwargs) == 1
-        cp_dir = captured_kwargs[0].get("checkpoint_dir")
-        assert cp_dir is not None
-        assert isinstance(cp_dir, Path)
+        assert captured_kwargs[0]["snapshot_plan"] is not None
+        assert captured_kwargs[0]["prepare_inputs"] is False
+        assert "checkpoint_dir" not in captured_kwargs[0]
 
-    def test_sink_cleans_up_checkpoint_dir(self, tmp_path):
-        """Checkpoint temp directory should be removed after sink completes."""
+    def test_sink_releases_its_plan_after_the_write(self, tmp_path):
+        """The seed plan stays open through the write and is closed once it completes."""
         graph, _ = _make_sink_graph(tmp_path)
 
-        from pathlib import Path
         from unittest.mock import patch
 
         from haute._execute_lazy import _execute_lazy as original
 
-        created_dirs: list[Path] = []
+        plans: list = []
 
         def spy(*args, **kwargs):
-            cp_dir = kwargs.get("checkpoint_dir")
-            if cp_dir is not None:
-                created_dirs.append(cp_dir)
+            plans.append(kwargs["snapshot_plan"])
             return original(*args, **kwargs)
 
         with patch("haute.executor._execute_lazy", side_effect=spy):
             write_data_output(graph, output_node_id="sink")
 
-        assert len(created_dirs) == 1
-        assert not created_dirs[0].exists(), "checkpoint dir should be cleaned up"
+        assert len(plans) == 1
+        assert plans[0]._closed
 
     def test_live_scenario_resolves_batch_from_ism(self, tmp_path):
         """When scenario='live', write_data_output resolves the batch scenario

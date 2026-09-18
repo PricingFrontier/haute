@@ -420,6 +420,13 @@ the same destination. Destination preview and explicit writes share this resolve
 bounded sink discipline. Sidecar loading and parent-directory preparation are owned by the
 generated pipeline/runtime seam.
 
+The frame a Data Output writes is computed under a seed plan (the execution-engine
+specification owns it): the node's producer is read from a shared snapshot when a fresh one
+covers the output's columns, and otherwise it — and every join, fan-out, and materialisation
+above it — is captured, so a second write, a training run, or an optimiser setup on the same
+batch upstream starts there. The write-output route's parent prepares inputs before the sink
+worker starts, so an automatic snapshot build happens in the parent, within the sink timeout.
+
 ### Streaming collection
 
 `execution_collect()` is the one context-aware collection seam. With no active context it
@@ -586,6 +593,7 @@ failure sections above are the maintained answers.
 - `tests/test_pipeline_runtime_path_validation.py` verifies runtime path/graph validation, HTTP status mapping, sidecar/codegen case-collision and reserved-name protections, and safe rename/delete semantics.
 - `tests/test_read_user_text.py` verifies robust text/config/pipeline decoding across encodings and malformed inputs.
 - `tests/test_sink.py` verifies sink execution errors, parquet/CSV output, directory creation, scenario handling, compute failures, and response metadata.
+- `tests/test_data_output_seeding.py` drives writes through the write-output route with the sink worker in process: a second write seeds the producer the first captured and builds nothing; a write after a batch training run seeds that run's capture; an in-process `write_data_output` seeds and captures too; no `haute_sink_` directory or dataframe-cache entry is written; a worker stopped, timed out, or killed at its cap leaves no capture staging and publishes nothing; the worker stages under the parent's token; the response metrics keep the parent's input preparation; a capture the quota refuses is read from the run's own staging through the write, with the plan and the request's chunk size held until the write completes; preparation that ends past the sink timeout — returning or failing — is a 504 that starts no worker, and otherwise the worker gets the remainder; a request cancelled during preparation stops it, and one cancelled while preparation still succeeds starts no worker; and a parent plan-opening failure (contract, corrupt cache, admission) starts no worker.
 
 - `tests/test_execution_profile_semantics.py` proves what a node's data is under every
   profile that may read or write a snapshot: that the bounded profiles agree with each

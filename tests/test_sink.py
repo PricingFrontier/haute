@@ -174,9 +174,10 @@ class TestExecuteSinkParquet:
             write_data_output(graph, "sink", project_root=tmp_path)
 
         assert captured_kwargs["required_columns_by_node"] == {"sink": frozenset({"x", "z"})}
-        cache_request = captured_kwargs["dataframe_cache_request"]
-        assert cache_request is not None
-        assert set(cache_request.keys_by_node) == {"sink"}
+        # The run's seed plan was resolved with the same demand.
+        plan = captured_kwargs["snapshot_plan"]
+        assert plan.decision.planning_required_columns["sink"] == {"x", "z"}
+        assert "dataframe_cache_request" not in captured_kwargs
 
 
 class TestExecuteSinkCSV:
