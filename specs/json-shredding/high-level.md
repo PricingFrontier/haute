@@ -203,6 +203,15 @@ exactly one of each is required. Those handles are the sole role authority, so t
 frame edges from one API Input are valid. Roles come solely from `targetHandle`; no
 `baseInput`/`joinInput` config key exists. A handle-less or partially handled join is invalid.
 
+Every path in an input or output mapping is read against the array-outer JSON formalism and
+must start `$[:]`. The canonical form has one spelling per feature — `[:]` selects every row
+of a list, a dotted identifier steps into an object — and any piece of data has exactly one
+canonical path. Bracket-quoted names are accepted for interoperability, assemble identically,
+and are never rewritten; constructs that do not statically locate data (wildcards, indices,
+ranges, filters, descendants) are rejected. The full grammar, the validity gate, and the
+transport-agnostic JSON invariants are stated in the low-level specification's path-grammar
+section.
+
 ## Design rationale
 
 **Object nesting is relationally transparent; only arrays create tables.** This is a
