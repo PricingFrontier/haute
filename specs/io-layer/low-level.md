@@ -263,8 +263,27 @@ delegates every non-`node_output` identity to `SourceCacheStore` unchanged.
   `EXPLORE_ANALYSIS`, `AUTO_RANGE`, `LAZY_SINK`, `CHUNKED_MAP_REDUCE`, `NODE_SNAPSHOT`) and
   `None` for deploy profiles; `snapshot_read_classes(profile)` returns `{bounded}` for the
   same profiles. `PREVIEW_EAGER` reads and writes `bounded` only when
-  `PREVIEW_SHARES_BOUNDED_SEMANTICS` is true, which the execution-profile semantics proof
-  decides; it is false.
+  `PREVIEW_SHARES_BOUNDED_SEMANTICS` is true; it is false, and the execution-profile
+  semantics proof (`tests/test_execution_profile_semantics.py`) is why. Every bounded
+  profile materialises the same node identically — schema, values and row order — over a
+  direct Parquet input, an input snapshot, an `apiInput` port served from its table cache,
+  a declared-dtype CSV, a transform, a join, an aggregation and a Model Score node, under a
+  full and a projected column demand, and refuses the sources it cannot read with the same
+  error under each. A projected read is the full read restricted to those columns, dtypes
+  included.
+
+  Row order, however, belongs to the *seam*, not to the profile. A generation is what
+  `bounded_sink` wrote, and that is reproducible: the same join sank in the same order on
+  every run. Neither of the other two materialisation seams promises it. Concatenating
+  `bounded_collect_batches(..., maintain_order=True)` for a 20,000-row `1:1` join produced
+  a frame beginning at `q1820` on one run and `q0` on the next — the seam the chunked,
+  deploy-container and optimiser-apply paths consume — and the interactive preview reordered
+  a five-row join from run to run. Both carry the same rows and the same schema.
+
+  So the preview is not admitted to the `bounded` class: a stored generation is rows in an
+  order, and a head, a row limit or a row-local score reads that order. For the same reason
+  a capture must be *sunk* rather than published from collected batches, whatever profile
+  performed it.
 - **Layout.** Node-output identities live beside input identities under
   `.haute_cache/inputs/<identity digest>/` (`current.json`, `generations/<id>/`,
   `.staging-<token>/`, `.retired-<hex>/`). Each generation's `meta.json` carries a
@@ -556,6 +575,11 @@ failure sections above are the maintained answers.
 - `tests/test_read_user_text.py` verifies robust text/config/pipeline decoding across encodings and malformed inputs.
 - `tests/test_sink.py` verifies sink execution errors, parquet/CSV output, directory creation, scenario handling, compute failures, and response metadata.
 
+- `tests/test_execution_profile_semantics.py` proves what a node's data is under every
+  profile that may read or write a snapshot: that the bounded profiles agree with each
+  other and repeat themselves, that a projected read is the full read restricted to those
+  columns, that they refuse the same sources the same way, and that the interactive preview
+  does not promise the bounded row order and so shares no snapshot with them.
 - `tests/test_source_cache.py` covers canonical/redacted identity, atomic refresh,
   immutable generations, leases, corruption, quota, same-identity single flight,
   age-gated staging reclamation, quota-visible staging, digest memoization, non-destructive

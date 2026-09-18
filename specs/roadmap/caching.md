@@ -15,14 +15,13 @@ these packages are owned by the [Explore / EDA roadmap](explore-eda.md).
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CACHE-S06 | Planned | P1 | Prove which execution profiles and projections produce identical node outputs. |
 | CACHE-S07 | Planned | P1 | Make every bounded execution seed from and capture into shared snapshots, replacing private caches and temporary checkpoints. |
-| CACHE-S09 | Planned | P2 | Make previews and traces seed from and capture into shared snapshots. |
+| CACHE-S09 | Decision | P2 | Previews cannot join the `bounded` class; choose how they share materialisations, if at all. |
 | CACHE-S08 | Deferred | P3 | Fold the API-input table cache into the shared snapshot store with per-table validity. |
 
 ## Planned improvements
 
-Delivery order is `CACHE-S06` → `CACHE-S07` → `CACHE-S09`. A later package must
+Delivery order is `CACHE-S07`; `CACHE-S09` needs a decision first. A later package must
 not bypass the resolver, lease, signature, or capture contracts of an earlier
 one. Every package builds on the node-output snapshot store (signature, slot
 index, column widening, retention, cross-process leases, and the publication
@@ -34,41 +33,6 @@ profile job, and the request-time analysis helper specified in the
 specified in [caching](../caching/low-level.md#analysis-results), and the shared frontend
 data cache specified in
 [frontend shared](../frontend-shared/low-level.md#the-shared-data-cache).
-
-### CACHE-S06 — Execution-profile and projection data semantics proof
-
-**Why:** Execution profiles change source reads: bounded profiles reject plain
-JSON, require declared CSV dtypes, and project source scans, while preview does
-not. Reusing a snapshot across profiles, or serving a narrow reader from a wide
-generation, is safe only where the outputs are identical.
-
-**Plan:** Add a differential test that materialises the same point under every
-bounded profile (`TRAINING_PREP`, `OPTIMISER_SETUP`, `EXPLORE_ANALYSIS`,
-`AUTO_RANGE`, `LAZY_SINK`, `CHUNKED_MAP_REDUCE`, `NODE_SNAPSHOT`) through the
-current source paths: a canonical Data Input over direct Parquet
-(`read_polars_input`), a published input snapshot, an `apiInput` port served
-from its table cache, a CSV Data Input with declared dtypes, a transform, a
-join, an aggregation, and a Model Score node. Frame fixtures assert identical
-schema and values. Each frame fixture is also materialised with a projected
-column demand and compared with the full output restricted to those columns.
-Rejection fixtures (a bounded CSV read without declared dtypes, plain JSON)
-assert the same typed error under every bounded profile instead of frame
-equality. Any profile that differs gets its own semantics class before
-CACHE-S07 starts. The frame fixtures are also run under `PREVIEW_EAGER` with no
-row limit and with row limits 1, 3, and larger than the frame. Without a limit
-the preview output must equal the bounded output; with limit `N` each collected
-node must equal the first `N` rows of the bounded output. The Model Score
-fixture runs with a limit so the row-local scoring path that a non-zero limit
-selects is compared. That result decides whether preview may read and write
-`bounded` snapshots (CACHE-S09).
-
-**Acceptance:** The differential test passes, and the snapshot write and read
-mappings match its findings, including the `PREVIEW_EAGER` decision.
-
-**Dependencies:** The IO-layer snapshot write and read class mappings.
-
-**Evidence:** `src/haute/_polars_utils.py`; `src/haute/_io.py`;
-`src/haute/_input_providers.py`; `src/haute/_builders.py`.
 
 ### CACHE-S07 — Executions seed from and capture into shared snapshots
 
@@ -135,7 +99,12 @@ therefore produced and written again on every run.
   Score nodes (whose scored Parquet file becomes the staged artifact instead of
   a private temporary file), and the target the caller materialises. Each
   capture writes the negotiated planning demand at that node under the
-  node-output publication rule as an `automatic` generation, then continues
+  node-output publication rule as an `automatic` generation. It writes it
+  through the bounded sink, never from collected streaming batches: the
+  execution-profile semantics proof found that batch collection does not
+  reproduce a join's row order between runs while the sink does, so a
+  generation published from batches would hold an order the next execution
+  need not produce. It then continues
   from its own artifact (a lease on the generation it published, or a
   request-owned temporary file when it did not publish), exactly where the
   temporary checkpoint scan is used today. Its `dependencies` are the closure of
@@ -224,7 +193,7 @@ therefore produced and written again on every run.
 - A paused seeded worker survives refresh and clear of its seed (the resolver's
   paused-reader contract).
 
-**Dependencies:** CACHE-S06; the node-data build service; the current checkpoint rule,
+**Dependencies:** the node-data build service; the current checkpoint rule,
 dataframe-cache seed path, and runtime graph-input fingerprint contracts.
 
 **Evidence:** `src/haute/_execute_lazy.py`; `src/haute/execution.py`;
@@ -246,11 +215,25 @@ editors.
 
 **Plan:**
 
-- **Admission.** A preview lineage is admitted to shared snapshots when the
-  snapshot class mappings let `PREVIEW_EAGER` read and write `bounded` and a
-  schema-only bounded preparation of the lineage's sources succeeds (every CSV
-  it reads has declared dtypes and it reads no plain JSON). A lineage that is not
-  admitted neither seeds nor captures and behaves as today.
+- **Admission — decided against, and this package now turns on the choice that
+  replaces it.** This plan was written to admit a preview lineage when the
+  snapshot class mappings let `PREVIEW_EAGER` read and write `bounded`. The
+  execution-profile semantics proof decided they never will: the interactive
+  preview reorders a join's rows between runs, so a generation it published
+  would not be the data a bounded execution produces, and a generation it read
+  would carry an order it never promised. What remains is a product choice, and
+  nothing below should be built until it is made:
+  - **A preview class of its own.** Preview lineages seed from and capture into
+    `preview` generations that only previews read. Previews stop repeating each
+    other's work, which is most of the value here, but a run never reuses a
+    preview's work and the acceptance below loses its training case.
+  - **Make the preview reproducible.** Give the interactive path the ordering
+    the sink has, then admit it to `bounded`. This buys the whole package, at
+    the cost of constraining the preview engine's execution.
+  - **Drop the package.** Previews keep paying for their own upstream work.
+  Every bullet below assumes a lineage that has been admitted somehow, and the
+  seed, capture, freshness and expiry rules hold under either of the first two
+  choices; only which class the generations carry differs.
 - **Seeding.** An admitted preview resolves a CACHE-S07 seed plan (upstream of
   or equal to the target, freshness, column coverage, ancestry agreement
   including recomputed branches). Seeded nodes produce their snapshot frame for
@@ -335,7 +318,9 @@ editors.
   captures `join` (the response lists the capture) and returns exactly the rows
   of an unadmitted preview; a second preview of a different node below `join`
   seeds from that capture, and neither source is scanned.
-- A training run after that preview seeds from the preview's `join` capture.
+- A training run after that preview seeds from the preview's `join` capture
+  **only under the second choice above**; under a preview-only class it does
+  not, and the run recomputes `join` itself.
 - A preview through only a filter and a rename captures nothing.
 - A preview of a lineage reading an undeclared-dtype CSV seeds and captures
   nothing and returns today's rows.
@@ -374,15 +359,17 @@ editors.
   lease, or after a refresh or widening whose previous generation has been
   retired, returns 409 `preview_seed_plan_expired`; a graph edit that changes
   the seed's signature returns 409.
-- When CACHE-S06 finds preview and bounded outputs differ, previews and traces
-  never seed or capture.
+- Previews and traces seed and capture only within their own semantics class:
+  the execution-profile semantics proof found the interactive preview does not
+  promise the row order a bounded execution produces, so a preview neither
+  reads nor writes a `bounded` generation.
 - Frontend tests: a preview fetched before a snapshot publishes is refetched
   after the epoch increments; a preview's own capture does not refetch it; the
   panel lists the seeded node labels; a completed trace is hidden, and an
   in-flight trace is aborted and its late response discarded, when the snapshot
   it depends on is refreshed or cleared.
 
-**Dependencies:** CACHE-S05, CACHE-S06, CACHE-S07; the preview/trace lineage
+**Dependencies:** CACHE-S05, CACHE-S07; the preview/trace lineage
 key and trace omission contracts.
 
 **Evidence:** `src/haute/executor.py`; `src/haute/execution.py`;

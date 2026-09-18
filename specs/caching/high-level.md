@@ -178,6 +178,6 @@ failures are logged and return a generic 500.
 - **Failure and compatibility semantics.** The private dataframe-cache namespaces
   for training preparation, training evaluation preview, optimiser setup, and Data Output are
   removed without migration.
-- **Acceptance evidence.** A differential test that materialises the same point under every
-  bounded profile and projection and asserts identical frames.
-- **Roadmap package.** [CACHE-S06](../roadmap/caching.md#cache-s06--execution-profile-and-projection-data-semantics-proof).
+- **Acceptance evidence.** Every bounded execution reads a materialisation an earlier one
+  wrote, and writes the ones it performs, with no private namespace left behind.
+- **Roadmap package.** [CACHE-S07](../roadmap/caching.md#cache-s07--executions-seed-from-and-capture-into-shared-snapshots).
