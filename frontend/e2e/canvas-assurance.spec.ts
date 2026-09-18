@@ -64,7 +64,7 @@ async function expectCanvasScreenshot(
   locator: Locator,
   name: string,
 ): Promise<void> {
-  await expect.soft(locator).toHaveScreenshot(name, {
+  await expect(locator).toHaveScreenshot(name, {
     animations: "disabled",
     caret: "hide",
     maxDiffPixelRatio: 0.02,
