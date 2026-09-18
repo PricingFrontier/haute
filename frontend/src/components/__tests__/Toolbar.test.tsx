@@ -8,6 +8,7 @@ vi.mock("../MlflowSettingsModal", () => ({
 import Toolbar from "../Toolbar"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useUIStore from "../../stores/useUIStore"
+import useGitStore from "../../stores/useGitStore"
 
 function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
   return {
@@ -48,9 +49,20 @@ describe("Toolbar", () => {
 
   afterEach(cleanup)
 
-  it("renders Haute brand name", () => {
+  it("renders haute brand name with version centered underneath", () => {
     render(<Toolbar {...makeProps()} />)
-    expect(screen.getByText("Haute")).toBeInTheDocument()
+    const brand = screen.getByTestId("toolbar-brand")
+    expect(brand).toBeInTheDocument()
+
+    const heading = screen.getByRole("heading", { level: 1, name: "haute" })
+    const version = screen.getByText("v999.0.0-test")
+    expect(brand).toContainElement(heading)
+    expect(brand).toContainElement(version)
+
+    // Heading and version are stacked in a centered column container
+    expect(heading.parentElement).toHaveClass("flex-col", "items-center")
+    // Heading precedes version in document order (brand on top, version underneath)
+    expect(heading.compareDocumentPosition(version) & 4).toBeTruthy()
   })
 
   it("renders no MLflow control", () => {
@@ -89,6 +101,231 @@ describe("Toolbar", () => {
     expect(screen.queryByTestId("toolbar-save-menu")).toBeNull()
     fireEvent.click(screen.getByTestId("toolbar-save-commit"))
     expect(props.onSaveCommit).toHaveBeenCalledOnce()
+  })
+
+  it("renders Save and Commit underneath the branch indicator", () => {
+    useGitStore.setState({
+      status: {
+        state: "ready",
+        working_branch: "dev",
+        clean: true,
+        commits_ahead: 0,
+        divergence_reason: null,
+        storage: "unsupported",
+        sync: null,
+      } as never,
+    })
+    render(<Toolbar {...makeProps()} />)
+    const branchIndicator = screen.getByTestId("toolbar-branch-indicator")
+    const branchNameBtn = screen.getByTestId("branch-indicator-name")
+    const saveBtn = screen.getByTestId("toolbar-save")
+    const commitBtn = screen.getByTestId("toolbar-save-commit")
+
+    expect(branchIndicator).toContainElement(saveBtn)
+    expect(branchIndicator).toContainElement(commitBtn)
+
+    const columnContainer = branchNameBtn.parentElement
+    expect(columnContainer).toBeInTheDocument()
+    expect(columnContainer).toHaveClass("flex-col")
+    expect(columnContainer).toContainElement(saveBtn)
+    expect(columnContainer).toContainElement(commitBtn)
+
+    const saveCommitRow = saveBtn.parentElement
+    expect(saveCommitRow).toHaveClass("w-full")
+    expect(saveBtn).toHaveClass("flex-1")
+    expect(commitBtn).toHaveClass("flex-1")
+  })
+
+  it("renders Assistant next to the branch name and Documentation underneath with equal width", () => {
+    useGitStore.setState({
+      status: {
+        state: "ready",
+        working_branch: "dev",
+        clean: true,
+        commits_ahead: 0,
+        divergence_reason: null,
+        storage: "unsupported",
+        sync: null,
+      } as never,
+    })
+    render(<Toolbar {...makeProps()} />)
+    const assistantBtn = screen.getByTestId("toolbar-assistant")
+    const docBtn = screen.getByTestId("toolbar-documentation")
+    const branchIndicator = screen.getByTestId("toolbar-branch-indicator")
+
+    expect(docBtn).toHaveAttribute("href", "https://pricingfrontier.github.io/haute/")
+    expect(docBtn).toHaveAttribute("target", "_blank")
+    expect(docBtn).toHaveAttribute("rel", "noopener noreferrer")
+    expect(docBtn).toHaveTextContent(/documentation/i)
+
+    const assistantColumn = assistantBtn.parentElement
+    expect(assistantColumn).toBeInTheDocument()
+    expect(assistantColumn).toHaveClass("flex-col")
+    expect(assistantColumn).toContainElement(docBtn)
+    expect(assistantBtn).toHaveClass("w-full")
+    expect(docBtn).toHaveClass("w-full")
+
+    expect(assistantColumn).not.toBeNull()
+    expect(assistantColumn!.compareDocumentPosition(branchIndicator) & 4).toBeTruthy()
+  })
+
+  it("renders Centre on top of Layout in a column next to Submodel/Instance", () => {
+    render(<Toolbar {...makeProps()} />)
+    const centreBtn = screen.getByTestId("toolbar-centre")
+    const layoutBtn = screen.getByTestId("toolbar-layout")
+    const submodelBtn = screen.getByTestId("toolbar-submodel")
+
+    const centreColumn = centreBtn.parentElement
+    expect(centreColumn).toBeInTheDocument()
+    expect(centreColumn).toHaveClass("flex-col")
+    expect(centreColumn).toContainElement(layoutBtn)
+    expect(centreBtn).toHaveClass("w-full")
+    expect(layoutBtn).toHaveClass("w-full")
+
+    expect(centreBtn.compareDocumentPosition(layoutBtn) & 4).toBeTruthy()
+
+    const submodelColumn = submodelBtn.parentElement
+    expect(centreColumn).not.toBeNull()
+    expect(submodelColumn).not.toBeNull()
+    expect(centreColumn!.compareDocumentPosition(submodelColumn!) & 4).toBeTruthy()
+  })
+
+  it("renders Zoom In on top of Zoom Out with text labels in a column next to Centre/Layout", () => {
+    render(<Toolbar {...makeProps()} />)
+    const zoomInBtn = screen.getByTestId("toolbar-zoom-in")
+    const zoomOutBtn = screen.getByTestId("toolbar-zoom-out")
+    const centreBtn = screen.getByTestId("toolbar-centre")
+
+    const zoomColumn = zoomInBtn.parentElement
+    expect(zoomColumn).toBeInTheDocument()
+    expect(zoomColumn).toHaveClass("flex-col")
+    expect(zoomColumn).toContainElement(zoomOutBtn)
+
+    expect(zoomInBtn).toHaveTextContent(/zoom in/i)
+    expect(zoomOutBtn).toHaveTextContent(/zoom out/i)
+    expect(zoomInBtn).toHaveClass("w-full")
+    expect(zoomOutBtn).toHaveClass("w-full")
+
+    expect(zoomInBtn.compareDocumentPosition(zoomOutBtn) & 4).toBeTruthy()
+
+    const centreColumn = centreBtn.parentElement
+    expect(zoomColumn).not.toBeNull()
+    expect(centreColumn).not.toBeNull()
+    expect(zoomColumn!.compareDocumentPosition(centreColumn!) & 4).toBeTruthy()
+  })
+
+  it("renders Utility on top of Imports in a column next to Assistant/Documentation", () => {
+    render(<Toolbar {...makeProps()} />)
+    const utilityBtn = screen.getByTestId("toolbar-utility")
+    const importsBtn = screen.getByTestId("toolbar-imports")
+    const assistantBtn = screen.getByTestId("toolbar-assistant")
+
+    const utilityColumn = utilityBtn.parentElement
+    expect(utilityColumn).toBeInTheDocument()
+    expect(utilityColumn).toHaveClass("flex-col")
+    expect(utilityColumn).toContainElement(importsBtn)
+
+    expect(utilityBtn).toHaveTextContent(/utility/i)
+    expect(importsBtn).toHaveTextContent(/imports/i)
+    expect(utilityBtn).toHaveClass("w-full")
+    expect(importsBtn).toHaveClass("w-full")
+
+    expect(utilityBtn.compareDocumentPosition(importsBtn) & 4).toBeTruthy()
+
+    const assistantColumn = assistantBtn.parentElement
+    expect(utilityColumn).not.toBeNull()
+    expect(assistantColumn).not.toBeNull()
+    expect(utilityColumn!.compareDocumentPosition(assistantColumn!) & 4).toBeTruthy()
+  })
+
+  it("renders Submodel on top of Instance in a column next to Utility/Imports", () => {
+    render(<Toolbar {...makeProps()} />)
+    const submodelBtn = screen.getByTestId("toolbar-submodel")
+    const instanceBtn = screen.getByTestId("toolbar-instance")
+    const utilityBtn = screen.getByTestId("toolbar-utility")
+
+    const submodelColumn = submodelBtn.parentElement
+    expect(submodelColumn).toBeInTheDocument()
+    expect(submodelColumn).toHaveClass("flex-col")
+    expect(submodelColumn).toContainElement(instanceBtn)
+
+    expect(submodelBtn).toHaveTextContent(/submodel/i)
+    expect(instanceBtn).toHaveTextContent(/instance/i)
+    expect(submodelBtn).toHaveClass("w-full")
+    expect(instanceBtn).toHaveClass("w-full")
+
+    expect(submodelBtn.compareDocumentPosition(instanceBtn) & 4).toBeTruthy()
+
+    const utilityColumn = utilityBtn.parentElement
+    expect(submodelColumn).not.toBeNull()
+    expect(utilityColumn).not.toBeNull()
+    expect(submodelColumn!.compareDocumentPosition(utilityColumn!) & 4).toBeTruthy()
+  })
+
+  it("renders Timing on top of Memory in a stacked column", () => {
+    render(<Toolbar {...makeProps()} />)
+    const breakdownsContainer = screen.getByTestId("toolbar-breakdowns")
+    expect(breakdownsContainer).toHaveClass("flex-col")
+
+    const timingBtn = screen.getByTitle("Pipeline Timing")
+    const memoryBtn = screen.getByTitle("Pipeline Memory")
+
+    expect(breakdownsContainer).toContainElement(timingBtn)
+    expect(breakdownsContainer).toContainElement(memoryBtn)
+    expect(timingBtn.compareDocumentPosition(memoryBtn) & 4).toBeTruthy()
+  })
+
+  it("formats timing in milliseconds without decimal places and with a space before the unit", () => {
+    const { rerender } = render(<Toolbar {...makeProps({ timings: [{ node_id: "n1", label: "Node 1", timing_ms: 42.4 }] })} />)
+    expect(screen.getByText("42 ms")).toBeInTheDocument()
+
+    rerender(<Toolbar {...makeProps({ timings: [{ node_id: "n1", label: "Node 1", timing_ms: 42.6 }] })} />)
+    expect(screen.getByText("43 ms")).toBeInTheDocument()
+
+    rerender(<Toolbar {...makeProps({ timings: [{ node_id: "n1", label: "Node 1", timing_ms: 0 }] })} />)
+    expect(screen.getByText("0 ms")).toBeInTheDocument()
+
+    rerender(<Toolbar {...makeProps({ timings: [{ node_id: "n1", label: "Node 1", timing_ms: 1500 }] })} />)
+    expect(screen.getByText("1.50 s")).toBeInTheDocument()
+  })
+
+  it("renders Undo on top of Redo with text labels leading the right-hand action bar", () => {
+    render(<Toolbar {...makeProps()} />)
+    const undoRedoContainer = screen.getByTestId("toolbar-undo-redo")
+    expect(undoRedoContainer).toHaveClass("flex-col")
+
+    const undoBtn = screen.getByTestId("toolbar-undo")
+    const redoBtn = screen.getByTestId("toolbar-redo")
+    const zoomInBtn = screen.getByTestId("toolbar-zoom-in")
+
+    expect(undoRedoContainer).toContainElement(undoBtn)
+    expect(undoRedoContainer).toContainElement(redoBtn)
+
+    expect(undoBtn).toHaveTextContent(/undo/i)
+    expect(redoBtn).toHaveTextContent(/redo/i)
+    expect(undoBtn).toHaveClass("w-full")
+    expect(redoBtn).toHaveClass("w-full")
+
+    expect(undoBtn.compareDocumentPosition(redoBtn) & 4).toBeTruthy()
+
+    const zoomColumn = zoomInBtn.parentElement
+    expect(undoRedoContainer.compareDocumentPosition(zoomColumn!) & 4).toBeTruthy()
+  })
+
+  it("renders Preview Rows on top of Chunk Rows in a stacked column to the left of Timing/Memory", () => {
+    render(<Toolbar {...makeProps()} />)
+    const rowsChunkContainer = screen.getByTestId("toolbar-rows-chunk")
+    expect(rowsChunkContainer).toHaveClass("flex-col")
+
+    const rowsInput = screen.getByLabelText(/preview rows/i)
+    const chunkInput = screen.getByLabelText(/chunk rows/i)
+
+    expect(rowsChunkContainer).toContainElement(rowsInput)
+    expect(rowsChunkContainer).toContainElement(chunkInput)
+    expect(rowsInput.compareDocumentPosition(chunkInput) & 4).toBeTruthy()
+
+    const breakdownsContainer = screen.getByTestId("toolbar-breakdowns")
+    expect(rowsChunkContainer.compareDocumentPosition(breakdownsContainer) & 4).toBeTruthy()
   })
 
   it("Layout button is disabled when nodeCount is 0", () => {
@@ -256,12 +493,33 @@ describe("Toolbar", () => {
     expect(screen.getByTitle("Unsaved changes")).toBeInTheDocument()
   })
 
+  it("places the websocket status dot to the left of the unsaved indicator", () => {
+    render(<Toolbar {...makeProps({ dirty: true, wsStatus: "connected" })} />)
+    const wsDot = screen.getByTitle("Live sync connected")
+    const unsavedDot = screen.getByTitle("Unsaved changes")
+    expect(wsDot.compareDocumentPosition(unsavedDot) & 4).toBeTruthy()
+  })
+
+  it("reserves space for the unsaved indicator when clean to prevent layout shift", () => {
+    const { container } = render(<Toolbar {...makeProps({ dirty: false })} />)
+    const unsavedSlot = container.querySelector(".w-1\\.5.h-1\\.5")
+    expect(unsavedSlot).toBeInTheDocument()
+    expect(unsavedSlot).toHaveClass("invisible")
+  })
+
+  it("centers the status dots at the toolbar row-gap level without bottom alignment", () => {
+    render(<Toolbar {...makeProps({ dirty: true })} />)
+    const dotsContainer = screen.getByTestId("toolbar-status-dots")
+    expect(dotsContainer).toBeInTheDocument()
+    expect(dotsContainer).not.toHaveClass("self-end")
+  })
+
   function getRowLimitInput(): HTMLInputElement {
-    return screen.getByLabelText("Rows") as HTMLInputElement
+    return screen.getByLabelText(/preview rows/i) as HTMLInputElement
   }
 
   function getChunkInput(): HTMLInputElement {
-    return screen.getByLabelText("Chunk") as HTMLInputElement
+    return screen.getByLabelText(/chunk rows/i) as HTMLInputElement
   }
 
   it("row limit input changes the store value", () => {
@@ -330,12 +588,27 @@ describe("Toolbar", () => {
     expect(getChunkInput()).toHaveAttribute("max", "10000000")
   })
 
-  it("sizes numeric fields for the complete configured value and valid maximum", () => {
+  it("sizes numeric fields with synchronized width for complete configured values and valid maximum", () => {
     useSettingsStore.setState({ rowLimit: 125_000, streamingChunkSize: 10_000_000 })
     render(<Toolbar {...makeProps()} />)
 
-    expect(getRowLimitInput()).toHaveStyle({ width: "calc(6ch + 16px)" })
+    expect(getRowLimitInput()).toHaveStyle({ width: "calc(8ch + 16px)" })
     expect(getChunkInput()).toHaveStyle({ width: "calc(8ch + 16px)" })
+  })
+
+  it("expands both numeric fields together when either value exceeds 8 digits", () => {
+    useSettingsStore.setState({ rowLimit: 125_000_000, streamingChunkSize: 500_000 })
+    const { unmount } = render(<Toolbar {...makeProps()} />)
+
+    expect(getRowLimitInput()).toHaveStyle({ width: "calc(9ch + 16px)" })
+    expect(getChunkInput()).toHaveStyle({ width: "calc(9ch + 16px)" })
+    unmount()
+
+    useSettingsStore.setState({ rowLimit: 1_000, streamingChunkSize: 100_000_000 })
+    render(<Toolbar {...makeProps()} />)
+
+    expect(getRowLimitInput()).toHaveStyle({ width: "calc(9ch + 16px)" })
+    expect(getChunkInput()).toHaveStyle({ width: "calc(9ch + 16px)" })
   })
 
   it("zoom in button calls onZoomIn", () => {
@@ -401,6 +674,18 @@ describe("Toolbar", () => {
     render(<Toolbar {...makeProps()} />)
     const trigger = screen.getByTitle("Data source")
     expect(trigger.textContent).toContain("live")
+  })
+
+  it("positions Source text directly after brand width aligned to node toolbar width (x + 1)", () => {
+    render(<Toolbar {...makeProps()} />)
+    const brand = screen.getByTestId("toolbar-brand")
+    expect(brand).toHaveClass("w-[165px]")
+
+    const sourceLabel = screen.getByText("Source")
+    const sourceContainer = sourceLabel.parentElement
+    expect(sourceContainer).not.toHaveClass("ml-12")
+    // Brand container immediately precedes sourceContainer in document order
+    expect(brand.nextElementSibling).toBe(sourceContainer)
   })
 
   it("source selector shows all sources when opened", () => {

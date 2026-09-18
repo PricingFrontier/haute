@@ -110,7 +110,11 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // whole 2 KiB allowance, leaving the ceiling no room to catch the accidental
 // eager import it exists for. The merged initial bundle is 281.1 KiB; 283 KiB
 // restores about 2 KiB of headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 283
+// Reorganizing the toolbar into stacked control groups and surfacing full Git
+// error diagnostics with an accessible Tooltip adds ~2.0 KiB of deliberate eager
+// UI core to the always-mounted toolbar. The merged initial bundle is 283.1 KiB;
+// 285 KiB restores ~1.9 KiB of headroom while keeping startup caps tight.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 285
 
 // Chunks that should only be fetched when their preview or editor is needed.
 // If one appears as a startup modulepreload, the app has likely
