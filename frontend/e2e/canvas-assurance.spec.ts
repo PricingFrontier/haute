@@ -25,6 +25,9 @@ const optimiserArtifactPath = resolve(
 )
 const desktopViewport = { width: 1440, height: 900 }
 const narrowViewport = { width: 1024, height: 768 }
+const mixedBandingDesktopSnapshot = process.platform === "linux"
+  ? "mixed-banding-desktop-1440x900-linux.png"
+  : "mixed-banding-desktop-1440x900.png"
 const mixedBandingNarrowSnapshot = process.platform === "linux"
   ? "mixed-banding-narrow-1024x768-linux.png"
   : "mixed-banding-narrow-1024x768.png"
@@ -61,7 +64,7 @@ async function expectCanvasScreenshot(
   locator: Locator,
   name: string,
 ): Promise<void> {
-  await expect(locator).toHaveScreenshot(name, {
+  await expect.soft(locator).toHaveScreenshot(name, {
     animations: "disabled",
     caret: "hide",
     maxDiffPixelRatio: 0.02,
@@ -179,7 +182,7 @@ test.describe("frontend canvas assurance", () => {
 
     await expectCanvasScreenshot(
       bandingPanel,
-      "mixed-banding-desktop-1440x900.png",
+      mixedBandingDesktopSnapshot,
     )
     await page.setViewportSize(narrowViewport)
     await expectCanvasScreenshot(
