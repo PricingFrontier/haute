@@ -56,6 +56,9 @@ backend API modules own validation and persistence.
   current point — or with one the node has moved on from — each says so and falls back to the
   preview sample rather than presenting a sample's answer as the data's. A failure is shown in
   place of that label, carrying the server's own message, and the preview basis continues.
+- The Rating Step editor says none of this when nothing in it reads the data: a table whose
+  factors are all banded outputs takes its levels from the banding configuration, so it shows
+  neither a basis nor the cache control.
 - Levels the data adds are appended to the ones the Rating Step editor already shows, never put
   in front of them: they arrive while the user is typing, and a row that moved would take the
   value meant for its neighbour. The slice of a three-factor table is held as the level itself

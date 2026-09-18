@@ -529,6 +529,52 @@ describe("RatingStepEditor levels", () => {
     expect((moved as HTMLSelectElement).value).toBe("Orkney")
   })
 
+  it("says nothing about data a table of banded outputs never reads", async () => {
+    // Its levels come from the banding config, so there is no sample to name
+    // and nothing for the cache control to be about.
+    const bandingNode = {
+      id: "banding_1",
+      type: "banding",
+      data: {
+        label: "Banding",
+        description: "",
+        nodeType: "banding",
+        config: {
+          factors: [
+            {
+              banding: "continuous",
+              column: "premium",
+              outputColumn: "premium_band",
+              rules: [{ op1: ">", val1: "0", op2: "", val2: "", assignment: "high" }],
+            },
+          ],
+        },
+      },
+    }
+    renderEditor(
+      editor({
+        config: {
+          tables: [
+            {
+              factors: ["premium_band"],
+              outputColumn: "premium_factor",
+              defaultValue: "1.0",
+              entries: [],
+            },
+          ],
+        },
+      }),
+      [sourceNode, bandingNode, ratingNode],
+    )
+
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+
+    expect(screen.queryByTestId("rating-levels-basis")).not.toBeInTheDocument()
+    expect(screen.getByRole("rowheader", { name: "high" })).toBeInTheDocument()
+  })
+
   it("says what the server said when the levels cannot be read", async () => {
     // The client puts "HTTP 422" in `message` and the server's explanation in
     // `detail`, so showing `message` would tell the user nothing.

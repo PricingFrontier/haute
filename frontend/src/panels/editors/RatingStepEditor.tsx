@@ -475,7 +475,10 @@ export default function RatingStepEditor({
     <div className="px-4 py-3 space-y-3 overflow-y-auto">
       <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
 
-      {node && (
+      {/* Only when something here reads the data. A table rating purely on
+          banded outputs takes its levels from the banding config, so neither
+          the basis nor the cache control has anything to say about it. */}
+      {node && ratedColumns.length > 0 && (
         <div className="flex items-center justify-between gap-2" data-testid="rating-levels-basis">
           <span
             className="text-[11px]"
