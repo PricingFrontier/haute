@@ -158,7 +158,8 @@ fabricated.
 - **Unresolved target.** When the backend seeds a preview from snapshots, the preview panel shows
   "Using cached data from" with the seeded node labels. Preview results record the node-data epoch
   they were fetched under and are refetched when a snapshot is published, widened, evicted, or
-  cleared, except that a preview's own captures do not refetch that preview. A trace request carries
+  cleared, except that a preview's own captures do not refetch that preview when nothing else
+  changed the epoch while it was in flight. A trace request carries
   the seed plan of the preview it explains; trace validity includes that preview's identity and the
   epoch, so when either changes the displayed trace and highlight are hidden, an in-flight trace is
   aborted, and a late response is discarded.

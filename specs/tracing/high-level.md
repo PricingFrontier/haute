@@ -367,7 +367,8 @@ Out of scope (owned elsewhere, linked where relevant):
   including an empty plan. The plan lists every snapshot generation the preview read, whether the
   preview seeded it or captured it itself, and the trace reads exactly those generations and
   captures nothing, so it still shows the preview's rows even for a preview that computed and
-  captured a join for the first time. Correlation stops at each seeded point, which is a
+  captured a join for the first time. A listed generation lacking columns the trace reads there
+  is recomputed instead, with every listed seed built from it. Correlation stops at each seeded point, which is a
   step whose row comes from the snapshot. Only nodes the execution skipped because of seeding are
   reported as trace omissions with the reason `snapshot_seed` naming the seed; a node that still
   executed for another branch stays traceable.
@@ -375,8 +376,8 @@ Out of scope (owned elsewhere, linked where relevant):
   for executed nodes.
 - **Failure and compatibility semantics.** When a generation in the carried seed plan has been
   retired, or its signature no longer matches the trace's graph, the trace returns HTTP 409
-  `preview_seed_plan_expired` and the preview must be refreshed. When preview outputs are not proven
-  equal to the snapshots' semantics class, traces seed nothing and behave as today.
+  `preview_seed_plan_expired` and the preview must be refreshed. A preview whose lineage was not
+  admitted carries an empty seed plan, and its traces seed nothing and behave as today.
 - **Acceptance evidence.** A trace from a preview seeded by a join snapshot returns the preview's
   row and reports the join's sources as `snapshot_seed` omissions; a trace after a first preview
   that captured a join over sampled input returns the identical row without scanning the sources; a diamond with one cached branch

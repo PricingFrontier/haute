@@ -182,8 +182,9 @@ failures are logged and return a generic 500.
 - **Non-goals.** Stat-gated caches, the preview response cache's field set, and deploy scoring's
   process-local dataframe cache are unchanged; only the preview/trace runtime input fingerprint
   gains the generations of any snapshots a preview or trace seeds from.
-- **Failure and compatibility semantics.** A preview profile whose outputs are not proven
-  identical to the snapshot's semantics class neither reads nor writes the layer.
+- **Failure and compatibility semantics.** A preview whose lineage is not admitted — an API
+  Input in it reads a flat file that a schema-only bounded read refuses — neither reads nor
+  writes the layer.
 - **Acceptance evidence.** A preview reads a materialisation a run wrote, and a run reads one a
   preview wrote.
 - **Roadmap package.** [CACHE-S09](../roadmap/caching.md#cache-s09--previews-and-traces-seed-from-and-capture-into-shared-snapshots).

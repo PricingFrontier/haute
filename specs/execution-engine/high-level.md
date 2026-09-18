@@ -771,7 +771,8 @@ snapshot's semantics class neither seeds nor captures.
 - **Non-goals.** Preview row-limit semantics (limit at collection, never at sources), deploy
   scoring, and the projection planner's column demand rules are unchanged.
 - **Failure and compatibility semantics.** A stale snapshot is never seeded, and a preview
-  profile not proven identical to the snapshot's semantics class neither seeds nor captures.
+  whose lineage is not admitted — an API Input in it reads a flat file that a schema-only
+  bounded read refuses — neither seeds nor captures.
 - **Acceptance evidence.** A preview below a captured join seeds it and scans no source; a
   preview-cache hit whose listed generation was retired is a miss; downstream cache misses
   after a seeded snapshot is refreshed.

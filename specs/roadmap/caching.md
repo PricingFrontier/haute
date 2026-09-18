@@ -45,9 +45,14 @@ editors.
 **Plan:**
 
 - **Admission.** A preview lineage is admitted to shared snapshots when a
-  schema-only bounded preparation of its sources succeeds (every CSV it reads
-  has declared dtypes and it reads no plain JSON). A lineage that is not
-  admitted neither seeds nor captures and behaves as today. A preview's
+  schema-only bounded preparation of its sources succeeds. Data Inputs always
+  pass, because they execute from a Parquet scan or from their prepared
+  snapshot, and so do structured (JSON, NDJSON, XML) API Inputs, which read
+  their Parquet cache or shred the file directly exactly as a bounded run
+  does; an API Input reading a flat file passes when a schema-only bounded
+  read of that file succeeds, so a CSV it reads must declare its dtypes. A
+  lineage that is not admitted neither seeds nor captures and behaves as
+  today. A preview's
   captures are written into the `bounded` class and a run may seed from them:
   a preview's materialisations are over the full data, because the preview row
   limit applies when each node is collected rather than to its sources, so what
@@ -104,7 +109,13 @@ editors.
   execution runs in an isolated worker, the resolver's parent-lease handoff
   applies.
 - Input preparation before a preview (snapshot-backed Data Inputs, API-input
-  JSON caches) runs only for sources the seeded execution still reads.
+  JSON caches) runs only for sources the seeded execution still reads. A
+  node's signature already signs each snapshot-backed input's generation
+  pointer and current source, so the backend resolves the plan first, then
+  prepares the Data Inputs it executes, and resolves again if a pointer moved.
+  The browser, which builds snapshots and API-input caches before a preview so
+  it can show their progress, asks the backend which inputs the seeded
+  execution reads and ensures only those.
 - The preview response carries `seed_plan`: every snapshot generation the
   preview's collected rows were computed from — the seeds it read and the
   generations it captured and then read — each with its point, node label,
@@ -117,7 +128,9 @@ editors.
   carries the `seed_plan` of the preview it explains, and the trace uses
   exactly those generations, seeded and captured alike: an empty list means no
   seeding even if snapshots now exist. A preview that skipped a capture
-  recomputes that node in its trace, as today. Before executing, the trace leases each named generation with
+  recomputes that node in its trace, as today; so does a listed generation
+  that lacks columns the trace reads there (a capture written for a
+  column-projected preview), together with every listed seed built from it. Before executing, the trace leases each named generation with
   `lease_generation` and checks that its identity's signature equals the
   signature the trace's graph produces for that point. If a generation has
   been retired or is missing, or its signature no longer matches, the trace
@@ -140,6 +153,113 @@ editors.
   in-flight trace request is aborted, and a late trace response for the
   previous identity is discarded.
 
+**Low-level contract.** What the steps implement, stated before the code exists so tests can
+be written against it; each step folds its part into the component low-level specs in the
+present tense, and this contract is deleted with the package.
+
+- **Semantics.** `PREVIEW_SHARES_BOUNDED_SEMANTICS` in `_node_snapshots.py` is `True`:
+  `PREVIEW_EAGER` reads the `bounded` class and writes it when `preview_admitted`. The seed
+  planner accepts a `PREVIEW_EAGER` request, which only an admitted lineage builds.
+- **Admission.** `_seed_plans.preview_lineage_admitted(graph, target_node_id, *, source) -> bool`
+  decides per source node of the target's lineage, before any preparation: a Data Input is
+  admitted (a direct Parquet scan, or a prepared snapshot); a structured API Input (JSON, NDJSON,
+  XML) is admitted (its per-port Parquet cache or a direct shred, the same frames either way); a
+  flat-file API Input is admitted when `read_data_source({..., "sourceType": "flat_file"},
+  profile=LAZY_SINK)` followed by `collect_schema()` succeeds, which for a CSV reads its header.
+  `BoundedMemoryUnsupportedError` from that probe means not admitted; any other error
+  propagates.
+- **Preview capture rule.** For a `PREVIEW_EAGER` request, `_Resolver.capture_points` makes an
+  executed, non-pass-through `node_output` node a capture point when it has more than one
+  effective parent (`STRUCTURAL`) or calls a materialising operation (`MATERIALISING`). Being
+  consumed, fanning out, feeding a join, or being a Model Score does not by itself make a node a
+  capture point; a consumed target, fan-out, or join feeder that is itself a join or
+  materialisation is captured. A preview may seed its own target.
+- **Preview preparation.** For a `PREVIEW_EAGER` request, `open_seed_plan` resolves against the
+  inputs as they stand, prepares the snapshot-backed Data Inputs among
+  `decision.executed_node_ids`, and resolves again when preparation moved a pointer, repeating
+  while a resolution executes a Data Input not yet prepared, at most three rounds; after them it
+  prepares every Data Input of the target's lineage and resolves once more. It never builds a
+  structured API-input cache. `preview_input_node_ids(graph, target_node_id, *, source,
+  required_columns_by_node)` runs admission and the first resolution without preparing or leasing
+  and returns the snapshot-backed Data Inputs and structured API Inputs that resolution executes,
+  or, for an unadmitted lineage, every such input of the target's lineage.
+- **Listed plans.** `open_listed_seed_plan(request, entries, *, store)` builds the trace's plan
+  from the preview's `seed_plan`. For every entry, in order, it checks that the identity's
+  signature equals the signature the request's graph produces for that point and leases the
+  generation; a missing or retired generation or a signature mismatch raises
+  `SeedPlanExpiredError` (`preview_seed_plan_expired`, HTTP 409), and corruption and other storage
+  failures propagate. It then seeds each listed point whose generation covers the request's
+  demand there and drops the rest, and applies ancestry agreement to a fixed point: a listed seed
+  whose recorded dependencies name a point the execution now runs is dropped. The plan captures
+  nothing.
+- **Eager engine.** `_execute_lazy._execute_eager_core(..., snapshot_plan=None)` runs under a plan
+  through the same `_PlannedCaptures` as the lazy engine: nodes above a seed are neither built nor
+  run; a seeded node's frame is `SeedPlan.seed_frame`; each capture point is sunk through
+  `bounded_sink` before anything downstream is collected, and consumers read the publication or,
+  on quota rejection or supersession, the request-owned artifact (`snapshot_capture_skipped`);
+  the row limit applies only at collection; store errors propagate past `swallow_errors`.
+- **Preview execution.** `executor.execute_graph(..., shared_snapshots=False)`; the preview route
+  passes `True`. With it and an admitted lineage, execution computes the lineage runtime-input
+  identity once, opens the plan, and keys the preview cache by that identity hashed with
+  `extra={"seed_plan": seed_plan_fingerprint(seeds)}`. A cache hit leases every generation its
+  entry lists and confirms each identity is current for the graph's signature at that point; a
+  missing or retired generation or a non-current identity evicts the entry and executes, and every
+  other store error propagates. A plan without captures stores under its key. A plan with captures
+  never stores under its pre-execution key: after execution it recomputes the runtime-input
+  identity and stores nothing if it moved, then resolves the plan a new request would choose and
+  stores under the key built from the pre-execution identity and that plan's fingerprint only when
+  every generation in that plan is one the execution read. A partial cache hit under a plan with
+  captures executes as a miss.
+- **Workers.** The preview route issues a staging token per request and passes it to the
+  interactive worker, whose plan stages captures under it; the route calls
+  `discard_node_output_staging(token)` after the worker returns, fails, times out, or is
+  superseded.
+- **Schemas.** `PreviewSeedPlanEntry`: `node_id: str`, `port_label: str | None` (always `null`),
+  `node_label: str`, `identity_digest: str`, `generation_id: str`, `columns: list[str] | None`
+  (`null` means all), `created_at: str` (ISO-8601 UTC), `kind: "seeded" | "captured"`.
+  `PreviewNodeResponse.seed_plan: list[PreviewSeedPlanEntry]` lists, in topological order, every
+  generation the collected rows were computed from: every seed the plan read and every capture
+  published and then read, never a request-owned artifact. `TraceSeedPlanEntry`: `node_id`,
+  `port_label`, `identity_digest`, `generation_id`; `TraceRequest.seed_plan:
+  list[TraceSeedPlanEntry]` is required and may be empty. `POST /api/pipeline/preview/inputs`
+  takes `PreviewInputsRequest` (`graph`, `node_id`, `source`, `requested_preview_columns`,
+  `port_label`) and returns `PreviewInputsResponse` (`input_node_ids: list[str]`).
+- **Trace.** `trace.execute_trace(..., seed_plan)` opens a listed plan and executes under it; its
+  cache key carries the fingerprint of the points it seeds. Correlation stops at a seeded point,
+  whose uncapped plan is its seed's scan. Each node the execution skipped because of seeding is an
+  omission with reason `snapshot_seed`, linked to a correlation diagnostic with code and reason
+  `snapshot_seed`, severity `info`, and `seed_node_ids` naming the seeds it was skipped through;
+  column-relevance pruning applies as to every omission.
+- **Frontend.** `useNodeResultsStore.setPreview` records the node-data epoch a request was sent
+  under and a stored preview matches its request context only at that epoch. A response with
+  `captured` entries increments the epoch after it is applied; the stored preview is re-stamped
+  with the new epoch only when the epoch still equals its request epoch. Preview call sites ask
+  `preview/inputs` which inputs to ensure. `useTracing` sends the displayed preview's `seed_plan`
+  and includes it and the epoch in its semantic context.
+
+**Testing.**
+
+- Planner: preview capture points are joins and materialisations only, including a join or
+  group-by target and a join feeding a join; a preview may seed its target; an API Input over an
+  undeclared-dtype CSV is not admitted while a Data Input over one is; a non-bounded probe error
+  propagates; a preview prepares only the inputs its execution reads; a stale input drops the
+  seeds below it before preparation; a moved pointer re-resolves; exhausted rounds prepare the
+  whole lineage once; a listed plan leases exactly its generations, expires on a retired
+  generation or changed signature, propagates corruption, skips a generation that does not cover
+  its demand, and drops a seed built from a point it recomputes.
+- Eager engine: a seeded node builds nothing above it; a capture under a row limit is the full
+  output, including a join below a limited Model Score; the limit-boundary example below; a
+  quota-rejected capture continues from its own artifact; a filter and rename capture nothing; a
+  capture store error propagates instead of becoming a node error.
+- Preview: every acceptance bullet below; an input change after a capture stores nothing; an
+  input change between the re-check and storage keys the entry by the executed identity, so the
+  next preview misses it; a post-capture plan naming a generation the preview did not read stores
+  nothing; a partial hit under captures executes as a miss; a killed preview worker leaves no
+  capture staging; `preview/inputs` lists only the inputs the seeded execution reads, and an
+  unused unavailable input is neither built nor fails the preview.
+- Trace: every trace acceptance bullet below; a trace of a column-projected capture executes that
+  point; a trace reuses the preview entry stored under the plan it seeds.
+
 **Acceptance:**
 
 - Pipeline `policies + claims → join → banding`: the first banding preview
@@ -148,8 +268,9 @@ editors.
   seeds from that capture, and neither source is scanned.
 - A training run after that preview seeds from the preview's `join` capture.
 - A preview through only a filter and a rename captures nothing.
-- A preview of a lineage reading an undeclared-dtype CSV seeds and captures
-  nothing and returns today's rows.
+- A preview of a lineage in which an API Input reads an undeclared-dtype CSV
+  seeds and captures nothing and returns today's rows; a Data Input reading
+  the same CSV is admitted, because it executes from its snapshot.
 - Refreshing the `join` snapshot to a new generation makes the next banding
   preview miss its backend cache entry and return the new generation's rows.
 - A stale `join` snapshot is not seeded; the next preview captures under the
@@ -185,10 +306,8 @@ editors.
   lease, or after a refresh or widening whose previous generation has been
   retired, returns 409 `preview_seed_plan_expired`; a graph edit that changes
   the seed's signature returns 409.
-- Previews and traces seed and capture only within their own semantics class:
-  the execution-profile semantics proof found the interactive preview does not
-  promise the row order a bounded execution produces, so a preview neither
-  reads nor writes a `bounded` generation.
+- An admitted preview reads and writes `bounded` generations, which runs read
+  too; a preview whose lineage is not admitted neither reads nor writes any.
 - Frontend tests: a preview fetched before a snapshot publishes is refetched
   after the epoch increments; a preview's own capture does not refetch it; the
   panel lists the seeded node labels; a completed trace is hidden, and an
