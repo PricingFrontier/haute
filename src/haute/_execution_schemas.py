@@ -432,6 +432,38 @@ class InputPreparationRecordPayload(BaseModel):
     warning_code: str | None = None
 
 
+class SharedSnapshotSeedPayload(BaseModel):
+    """One node output an execution read from a shared snapshot generation."""
+
+    node_id: str
+    identity_digest: str
+    generation_id: str
+    columns: Literal["all"] | list[str]
+
+
+class SharedSnapshotCapturePayload(BaseModel):
+    """One full-data materialisation an execution wrote to shared snapshots.
+
+    ``published`` names the generation the execution continued from; otherwise
+    it continued from its own staged artifact and ``generation_id`` is null.
+    """
+
+    node_id: str
+    identity_digest: str
+    kind: Literal["structural", "materialising", "model_score", "consumed"]
+    outcome: Literal["published", "superseded", "quota"]
+    generation_id: str | None = None
+    columns: Literal["all"] | list[str]
+
+
+class ExecutionWarningPayload(BaseModel):
+    """A non-fatal condition an execution continued past."""
+
+    code: str
+    node_id: str | None = None
+    reason: str | None = None
+
+
 class ExecutionMetricsPayload(BaseModel):
     schema_version: int = 1
     operation: str = ""
@@ -493,6 +525,9 @@ class ExecutionMetricsPayload(BaseModel):
     observed_peak_rss_growth_bytes: int | None = Field(default=None, ge=0)
     cancellation_latency_ms: float | None = Field(default=None, ge=0)
     input_preparation: list[InputPreparationRecordPayload] = Field(default_factory=list)
+    shared_snapshot_seeds: list[SharedSnapshotSeedPayload] = Field(default_factory=list)
+    shared_snapshot_captures: list[SharedSnapshotCapturePayload] = Field(default_factory=list)
+    warnings: list[ExecutionWarningPayload] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_calibration_evidence(self) -> ExecutionMetricsPayload:

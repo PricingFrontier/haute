@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
 import polars as pl
 
@@ -489,6 +489,16 @@ class NodeBoundaryRunner:
         ):
             return
         _assert_outputs_satisfy_contract(boundary.node, boundary.contract, output_columns)
+
+
+if TYPE_CHECKING:
+    from haute._node_snapshots import NodeSnapshotColumns
+    from haute._seed_plans import CaptureDecision, SeedPlan, SeedPlanDecision
+
+
+def _snapshot_fault_point(name: str, node_id: str) -> None:
+    """Deterministic pause point for interleaving tests of planned captures."""
+    del name, node_id
 
 
 # ---------------------------------------------------------------------------
@@ -1068,6 +1078,7 @@ def _execute_lazy(
     schema_only: bool = False,
     runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
     prepare_inputs: bool = True,
+    snapshot_plan: SeedPlan | None = None,
 ) -> tuple[dict[str, _Frame], list[str], dict[str, list[str]], dict[str, str]]:
     """Execute a graph lazily and return per-node LazyFrames.
 
@@ -1123,6 +1134,14 @@ def _execute_lazy(
             its document.
         runtime_source_frames_by_node: Request-local DataFrames injected at
             source nodes, used for group-by materialisation estimation.
+        snapshot_plan: A resolved, leased seed plan for this exact execution
+            (``haute._seed_plans``). Seeded nodes read their leased generation
+            and nothing needed only by them is built; a pass-through node is
+            its selected input; every capture point is written through the
+            bounded sink into the shared snapshot store and execution continues
+            from what was written. Input preparation already ran when the plan
+            was opened. Exclusive with ``checkpoint_dir`` and
+            ``dataframe_cache_request``.
 
     Returns:
         (lazy_outputs, order, parents_of, id_to_name)
@@ -1136,8 +1155,26 @@ def _execute_lazy(
             profile=execution_context.profile if execution_context is not None else None,
         )
     )
+    requested_graph = graph
     graph = prepared_execution.graph
-    preserved_outputs = frozenset(preserve_node_ids or ())
+    decision = snapshot_plan.decision if snapshot_plan is not None else None
+    if decision is not None:
+        _check_snapshot_plan(
+            decision,
+            requested_graph,
+            target_node_id=target_node_id,
+            source=source,
+            profile=(
+                execution_context.profile
+                if execution_context is not None
+                else ExecutionProfile.LAZY_SINK
+            ),
+            checkpoint_dir=checkpoint_dir,
+            dataframe_cache_request=dataframe_cache_request,
+        )
+    preserved_outputs = frozenset(preserve_node_ids or ()) | frozenset(
+        decision.consumed_node_ids if decision is not None else ()
+    )
     node_source_overrides = dict(source_by_node or {})
     if execution_context is not None:
         execution_context.checkpoint(label="lazy_start")
@@ -1156,14 +1193,23 @@ def _execute_lazy(
         execution_context=execution_context,
         base_dir=preparation_base_dir(graph),
         # Deploy scoring reads bundled artifacts through its own build_node_fn
-        # intercept, so its canonical configs must never be prepared here.
-        schema_only=schema_only or not prepare_inputs,
+        # intercept, so its canonical configs must never be prepared here. A
+        # seed plan was opened after preparing exactly the inputs it reads.
+        schema_only=schema_only or not prepare_inputs or decision is not None,
     )
     normalised_required_columns = prepared_execution.normalised_required_columns
     planning_required_columns: dict[
         str,
         set[str] | projection_planner.AllExceptColumns,
     ] = dict(normalised_required_columns)
+    if decision is not None:
+        # Captures widen demand before planning, exactly as the plan negotiated.
+        planning_required_columns = {
+            node_id: (
+                demand if isinstance(demand, projection_planner.AllExceptColumns) else set(demand)
+            )
+            for node_id, demand in decision.planning_required_columns.items()
+        }
     cache_request = dataframe_cache_request
 
     # Count downstream consumers per node so we can checkpoint fan-out
@@ -1318,6 +1364,25 @@ def _execute_lazy(
             for node_id, covered in cache_covers_downstream.items()
             if covered and node_id not in cached_seed_outputs
         }
+    if decision is not None and snapshot_plan is not None:
+        from haute._seed_plans import SharedSnapshotSeedRecord
+
+        for node_id, seed in decision.seeds.items():
+            cached_seed_outputs[node_id] = snapshot_plan.seed_frame(node_id)
+            cache_backed_node_ids.add(node_id)
+            if execution_context is not None:
+                execution_context.record_shared_snapshot_seed(
+                    SharedSnapshotSeedRecord(
+                        node_id=node_id,
+                        identity_digest=seed.identity.digest,
+                        generation_id=seed.generation_id,
+                        columns=seed.demand,
+                    )
+                )
+        # The plan decided what runs: seeds, and the nodes still built below
+        # them along effective edges. Nothing else is built.
+        needed_by_plan = set(decision.executed_node_ids) | set(decision.seeds)
+        skip_cache_covered_nodes = {node_id for node_id in order if node_id not in needed_by_plan}
 
     # Backward column analysis: compute the minimal set of columns
     # needed at each node's output so checkpoints can project away
@@ -1328,12 +1393,19 @@ def _execute_lazy(
     strategy_profile = (
         execution_context.profile if execution_context is not None else ExecutionProfile.LAZY_SINK
     )
-    group_by_operators = projection_planner.materialising_operators_by_node(
-        order,
-        node_map,
-        relevant_edges=relevant_edges,
-        submodels=graph.submodels,
-    )
+    # A planned execution admits and estimates only what it builds: nothing on
+    # an unselected pass-through branch, nothing a seed covers.
+    planned_node_ids = decision.executed_node_ids if decision is not None else None
+    group_by_operators = {
+        node_id: operator
+        for node_id, operator in projection_planner.materialising_operators_by_node(
+            order,
+            node_map,
+            relevant_edges=relevant_edges,
+            submodels=graph.submodels,
+        ).items()
+        if planned_node_ids is None or node_id in planned_node_ids
+    }
     if group_by_operators and not schema_only:
         # A materialising group-by needs the request planner's source-aware RAM
         # estimate. The prepared-only planner deliberately cannot derive one
@@ -1348,6 +1420,10 @@ def _execute_lazy(
             ),
             execution_context=execution_context,
             runtime_source_frames_by_node=runtime_source_frames_by_node,
+            materialising_node_ids=planned_node_ids,
+            estimation_graph=(
+                snapshot_plan.estimation_graph(graph) if snapshot_plan is not None else None
+            ),
         )
     else:
         public_strategy_result = execution_facade.plan_prepared_execution_strategy(
@@ -1361,6 +1437,7 @@ def _execute_lazy(
             relevant_edges=relevant_edges,
             submodels=graph.submodels,
             selector_aliases=preamble_selector_aliases(graph.preamble or ""),
+            materialising_node_ids=planned_node_ids,
         )
     public_projection_plan = public_strategy_result.projection_plan
     projection_plan = public_projection_plan
@@ -1422,7 +1499,9 @@ def _execute_lazy(
         build_order = [
             node_id
             for node_id in order
-            if node_id not in skip_cache_covered_nodes and node_id not in cached_seed_outputs
+            if node_id not in skip_cache_covered_nodes
+            and node_id not in cached_seed_outputs
+            and (decision is None or node_id not in decision.pass_through_edges)
         ]
         funcs = _build_funcs(
             build_order,
@@ -1758,8 +1837,54 @@ def _execute_lazy(
 
         return lf, is_source, node
 
-    for nid in order:
+    execution_order = list(order)
+    captures = _PlannedCaptures(
+        snapshot_plan,
+        requested_graph,
+        execution_context=execution_context,
+        incoming_edges_by_target=incoming_edges_by_target,
+    )
+    if decision is not None:
+        # Sources first: they have no parents, so this stays topological, and
+        # every input the run reads is bound before anything is collected.
+        execution_order = [nid for nid in order if not parents_of.get(nid)] + [
+            nid for nid in order if parents_of.get(nid)
+        ]
+    inputs_verified = decision is None
+    deferred_source_captures: list[str] = []
+
+    def _verify_then_capture_sources() -> None:
+        # Every source is bound before this runs; nothing is collected until
+        # the inputs are proven to be the ones the plan was resolved against.
+        nonlocal inputs_verified
+        captures.verify_inputs()
+        inputs_verified = True
+        for source_id in deferred_source_captures:
+            captured = captures.capture(
+                source_id, lazy_outputs[source_id], captures.record_closure(source_id)
+            )
+            lazy_outputs[source_id] = captured
+            cache_backed_node_ids.add(source_id)
+            column_cache[(source_id, None)] = _columns_of(captured)
+        deferred_source_captures.clear()
+
+    for nid in execution_order:
         if nid in skip_cache_covered_nodes:
+            continue
+        if not inputs_verified and parents_of.get(nid):
+            _verify_then_capture_sources()
+        if decision is not None and nid in decision.pass_through_edges:
+            if execution_context is not None:
+                execution_context.checkpoint(label="before_node", node_id=nid)
+            edge = decision.pass_through_edges[nid]
+            selected = select_edge_source_output(lazy_outputs[edge.source], edge)
+            passed: pl.LazyFrame | pl.DataFrame
+            passed, _projected_cols = _apply_edge_projection(edge, selected)
+            passed = _apply_selected_columns(passed, node_map[nid].data.config)
+            passed = _apply_column_renames(passed, node_map[nid].data.config)
+            lazy_outputs[nid] = passed if isinstance(passed, pl.LazyFrame) else passed.lazy()
+            captures.record_closure(nid)
+            _release_consumed_parents(nid)
             continue
         cached_seed = cached_seed_outputs.get(nid)
         if cached_seed is not None:
@@ -1842,6 +1967,22 @@ def _execute_lazy(
                                     label="after_dataframe_cache_materialize",
                                     node_id=nid,
                                 )
+
+        if decision is not None and not inputs_verified and nid in decision.captures:
+            deferred_source_captures.append(nid)
+        elif decision is not None:
+            closure = captures.record_closure(nid)
+            if nid in decision.captures:
+                lf = captures.capture(nid, lf, closure)
+                cache_materialized = True
+                cache_backed_node_ids.add(nid)
+                column_cache[(nid, None)] = _columns_of(lf)
+                _release_consumed_parents(nid)
+                checkpoints_since_gc += 1
+                if checkpoints_since_gc >= _GC_BATCH_INTERVAL:
+                    gc.collect()
+                    _malloc_trim()
+                    checkpoints_since_gc = 0
 
         # Adaptive checkpoint to break Polars plan duplication.
         #
@@ -1939,7 +2080,234 @@ def _execute_lazy(
 
         lazy_outputs[nid] = lf
 
+    if not inputs_verified:
+        _verify_then_capture_sources()
     return lazy_outputs, order, parents_of, id_to_name
+
+
+def _check_snapshot_plan(
+    decision: SeedPlanDecision,
+    graph: PipelineGraph,
+    *,
+    target_node_id: str | None,
+    source: str,
+    profile: ExecutionProfile,
+    checkpoint_dir: Path | None,
+    dataframe_cache_request: object | None,
+) -> None:
+    """A plan runs only the execution it was resolved for, and only on its own."""
+    from haute._seed_plans import seed_plan_lineage_fingerprint
+
+    if checkpoint_dir is not None or dataframe_cache_request is not None:
+        raise ValueError(
+            "A seed plan replaces checkpoints and the dataframe cache; pass neither with it"
+        )
+    if (
+        target_node_id != decision.target_node_id
+        or (source or "live") != decision.source
+        or ExecutionProfile(profile) != decision.profile
+        or seed_plan_lineage_fingerprint(graph, decision.target_node_id)
+        != decision.lineage_fingerprint
+    ):
+        raise ValueError("The seed plan was resolved for a different execution")
+
+
+class _PlannedCaptures:
+    """Dependency closures and captures of one planned lazy execution."""
+
+    def __init__(
+        self,
+        plan: SeedPlan | None,
+        graph: PipelineGraph,
+        *,
+        execution_context: ExecutionContext | None,
+        incoming_edges_by_target: Mapping[str, Sequence[GraphEdge]],
+    ) -> None:
+        self.plan = plan
+        self.graph = graph
+        self.execution_context = execution_context
+        self.incoming_edges_by_target = incoming_edges_by_target
+        self.closures: dict[str, dict[str, str]] = {}
+        self.published: dict[str, tuple[str, str]] = {}
+
+    @property
+    def _decision(self) -> SeedPlanDecision:
+        assert self.plan is not None
+        return self.plan.decision
+
+    def _effective_edges(self, node_id: str) -> Sequence[GraphEdge]:
+        edge = self._decision.pass_through_edges.get(node_id)
+        if edge is not None:
+            return (edge,)
+        return self.incoming_edges_by_target.get(node_id, ())
+
+    def record_closure(self, node_id: str) -> dict[str, str]:
+        """The generations *node_id*'s frame is computed from, recorded on the plan.
+
+        Each seed and published capture read upstream contributes itself and
+        the generations it was built from; a capture that kept its own
+        artifact contributes only what it was built from.
+        """
+        decision = self._decision
+        closure: dict[str, str] = {}
+        for edge in self._effective_edges(node_id):
+            parent = edge.source
+            seed = decision.seeds.get(parent)
+            if seed is not None:
+                closure[seed.identity.digest] = seed.generation_id
+                closure.update(seed.dependencies)
+                continue
+            published = self.published.get(parent)
+            if published is not None:
+                digest, generation_id = published
+                closure[digest] = generation_id
+            closure.update(self.closures.get(parent, {}))
+        self.closures[node_id] = closure
+        assert self.plan is not None
+        self.plan.record_closure(node_id, closure)
+        return closure
+
+    def _inputs_changed(self) -> bool:
+        from haute._seed_plans import seed_plan_input_fingerprint
+
+        decision = self._decision
+        return (
+            seed_plan_input_fingerprint(
+                self.graph, decision.executed_node_ids, source=decision.source
+            )
+            != decision.runtime_input_fingerprint
+        )
+
+    def verify_inputs(self) -> None:
+        """Fail before anything is collected if the run's inputs moved since planning."""
+        from haute.errors import SnapshotPlanInputsChangedError
+
+        if self._inputs_changed():
+            raise SnapshotPlanInputsChangedError(target_node_id=self._decision.target_node_id)
+
+    def capture(
+        self,
+        node_id: str,
+        frame: _Frame,
+        closure: Mapping[str, str],
+    ) -> pl.LazyFrame:
+        """Write one capture point through the bounded sink and continue from it."""
+        from haute._node_snapshots import (
+            NodeSnapshotColumns,
+            NodeSnapshotMultiFrameUnsupportedError,
+            NodeSnapshotQuotaRejectedError,
+        )
+
+        plan = self.plan
+        assert plan is not None
+        capture = plan.decision.captures[node_id]
+        if isinstance(frame, dict):
+            raise NodeSnapshotMultiFrameUnsupportedError(
+                "A node that emits several frames cannot be captured as one snapshot."
+            )
+        sink_lf = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
+        schema_cols = sink_lf.collect_schema().names()
+        if capture.columns.names is None:
+            columns = NodeSnapshotColumns.all()
+        else:
+            wanted = set(capture.columns.names)
+            missing = wanted - set(schema_cols)
+            strict = capture.strict_columns.names
+            strict_missing = missing & set(strict) if strict is not None else missing
+            if strict_missing:
+                raise ContractMismatchError(
+                    "A captured node's output lacks columns this run reads from it.",
+                    node_id=node_id,
+                    missing=sorted(strict_missing),
+                    output_columns=sorted(schema_cols),
+                )
+            if missing:
+                logger.warning(
+                    "snapshot_capture_column_unavailable",
+                    node_id=node_id,
+                    missing=sorted(missing),
+                )
+            ordered = projected_or_carrier_columns(schema_cols, wanted - missing)
+            sink_lf = sink_lf.select(ordered)
+            columns = NodeSnapshotColumns.of(ordered)
+        store = plan.store
+        artifact = store.stage_node_output(capture.identity, staging_token=plan.staging_token)
+        context = self.execution_context
+        try:
+            with (
+                context.stage("lazy_snapshot_capture", node_id=node_id)
+                if context is not None
+                else contextlib.nullcontext()
+            ):
+                bounded_sink(sink_lf, artifact.data_path, fast_checkpoint=True)
+            _snapshot_fault_point("snapshot_capture_before_publish", node_id)
+            if self._inputs_changed():
+                # Computed from inputs the plan's signatures do not describe:
+                # the run keeps its own data but publishes none of it.
+                plan.register_artifact(artifact)
+                self._record(capture, "superseded", None, columns)
+                return artifact.lazy_frame()
+            publication = store.publish_node_output(
+                capture.identity,
+                artifact,
+                columns=columns,
+                dependencies=closure,
+                explicit=False,
+                profile=plan.decision.profile,
+            )
+        except NodeSnapshotQuotaRejectedError as exc:
+            plan.register_artifact(exc.artifact)
+            self._record(capture, "quota", None, columns)
+            return exc.artifact.lazy_frame()
+        except BaseException:
+            artifact.close()
+            raise
+        plan.register_publication(publication)
+        if publication.outcome == "published":
+            assert publication.generation is not None
+            self.published[node_id] = (
+                capture.identity.digest,
+                publication.generation.generation_id,
+            )
+            self._record(capture, "published", publication.generation.generation_id, columns)
+        else:
+            self._record(capture, "superseded", None, columns)
+        return publication.lazy_frame
+
+    def _record(
+        self,
+        capture: CaptureDecision,
+        outcome: Literal["published", "superseded", "quota"],
+        generation_id: str | None,
+        columns: NodeSnapshotColumns,
+    ) -> None:
+        from haute._seed_plans import SharedSnapshotCaptureRecord
+
+        logger.info(
+            "shared_snapshot_capture",
+            node_id=capture.node_id,
+            outcome=outcome,
+            generation_id=generation_id,
+        )
+        context = self.execution_context
+        if context is None:
+            return
+        context.record_shared_snapshot_capture(
+            SharedSnapshotCaptureRecord(
+                node_id=capture.node_id,
+                identity_digest=capture.identity.digest,
+                kind=capture.kind,
+                outcome=outcome,
+                generation_id=generation_id,
+                columns=columns,
+            )
+        )
+        if outcome == "quota":
+            context.record_execution_warning(
+                "snapshot_capture_skipped", node_id=capture.node_id, reason="quota"
+            )
+        elif outcome == "superseded":
+            context.record_execution_warning("snapshot_capture_superseded", node_id=capture.node_id)
 
 
 # ---------------------------------------------------------------------------

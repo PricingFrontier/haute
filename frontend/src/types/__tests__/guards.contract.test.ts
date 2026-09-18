@@ -609,6 +609,71 @@ describe("API response guards", () => {
     ).toThrow(/action/i)
   })
 
+  it("preserves shared snapshot seeds, captures, and warnings", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        shared_snapshot_seeds: [
+          { node_id: "join", identity_digest: "d1", generation_id: "g1", columns: "all" },
+        ],
+        shared_snapshot_captures: [
+          {
+            node_id: "banding",
+            identity_digest: "d2",
+            kind: "consumed",
+            outcome: "quota",
+            generation_id: null,
+            columns: ["premium", "region"],
+          },
+        ],
+        warnings: [{ code: "snapshot_capture_skipped", node_id: "banding", reason: "quota" }],
+      },
+    })
+
+    expect(parsed.execution_metrics?.shared_snapshot_seeds).toEqual([
+      { node_id: "join", identity_digest: "d1", generation_id: "g1", columns: "all" },
+    ])
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.outcome).toBe("quota")
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.columns).toEqual(["premium", "region"])
+    expect(parsed.execution_metrics?.warnings).toEqual([
+      { code: "snapshot_capture_skipped", node_id: "banding", reason: "quota" },
+    ])
+  })
+
+  it("defaults shared snapshot evidence to empty lists when omitted", () => {
+    // The fixture predates shared snapshots, so it carries none of these fields.
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: executionMetricsFixture(),
+    })
+
+    expect(parsed.execution_metrics?.shared_snapshot_seeds).toEqual([])
+    expect(parsed.execution_metrics?.shared_snapshot_captures).toEqual([])
+    expect(parsed.execution_metrics?.warnings).toEqual([])
+  })
+
+  it("rejects a shared snapshot capture with an unknown outcome", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_captures: [
+            {
+              node_id: "banding",
+              identity_digest: "d2",
+              kind: "consumed",
+              outcome: "evicted",
+              generation_id: null,
+              columns: "all",
+            },
+          ],
+        },
+      }),
+    ).toThrow(/outcome/i)
+  })
+
   it("makes malformed execution-strategy diagnostics unavailable without rejecting metrics", () => {
     const parsed = parsePreviewNodeResponse({
       ...loadUiContractFixture<Record<string, unknown>>("preview_node"),

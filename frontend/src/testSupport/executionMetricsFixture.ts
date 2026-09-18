@@ -56,6 +56,9 @@ export function makeExecutionMetricsFixture(overrides: Partial<ExecutionMetrics>
     checkpoint_count: 0,
     chunk_count: 0,
     execution_strategy: null,
+    shared_snapshot_seeds: [],
+    shared_snapshot_captures: [],
+    warnings: [],
     admission: {
       admitted: true,
       operation: "pipeline_preview",

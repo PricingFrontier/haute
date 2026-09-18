@@ -184,6 +184,35 @@ export interface InputPreparationRecord {
   warning_code: string | null
 }
 
+/** A node output an execution read from a shared snapshot generation. */
+export interface SharedSnapshotSeed {
+  node_id: string
+  identity_digest: string
+  generation_id: string
+  columns: "all" | string[]
+}
+
+/**
+ * A full-data materialisation an execution wrote to shared snapshots. Only a
+ * `published` capture names the generation it continued from; otherwise the
+ * execution continued from its own staged data.
+ */
+export interface SharedSnapshotCapture {
+  node_id: string
+  identity_digest: string
+  kind: "structural" | "materialising" | "model_score" | "consumed"
+  outcome: "published" | "superseded" | "quota"
+  generation_id: string | null
+  columns: "all" | string[]
+}
+
+/** A non-fatal condition an execution continued past. */
+export interface ExecutionWarning {
+  code: string
+  node_id: string | null
+  reason: string | null
+}
+
 export interface ExecutionMetrics {
   schema_version: number
   operation: string
@@ -233,6 +262,9 @@ export interface ExecutionMetrics {
   stages: ExecutionStageMetrics[]
   memory_pressure_events: ExecutionMemoryPressureEvent[]
   input_preparation: InputPreparationRecord[]
+  shared_snapshot_seeds: SharedSnapshotSeed[]
+  shared_snapshot_captures: SharedSnapshotCapture[]
+  warnings: ExecutionWarning[]
 }
 
 export interface NodeResult {

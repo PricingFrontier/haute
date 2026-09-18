@@ -33,7 +33,9 @@ import hashlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
+
+import polars as pl
 
 import haute.projection as projection_planner
 from haute._builders import PASS_THROUGH_NODE_TYPES, pass_through_selected_edge
@@ -51,6 +53,7 @@ from haute._node_snapshots import (
     snapshot_write_class,
 )
 from haute._source_cache import (
+    SourceCacheGeneration,
     SourceCacheGenerationMissingError,
     SourceCacheIdentity,
     new_staging_token,
@@ -154,6 +157,49 @@ class SeedPlanDecision:
         return tuple(
             (seed.identity, seed.generation_id) for _node, seed in sorted(self.seeds.items())
         )
+
+
+@dataclass(frozen=True, slots=True)
+class SharedSnapshotSeedRecord:
+    """Execution evidence: one node output read from a shared snapshot."""
+
+    node_id: str
+    identity_digest: str
+    generation_id: str
+    columns: NodeSnapshotColumns
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "node_id": self.node_id,
+            "identity_digest": self.identity_digest,
+            "generation_id": self.generation_id,
+            "columns": self.columns.to_json(),
+        }
+
+
+CaptureOutcome = Literal["published", "superseded", "quota"]
+
+
+@dataclass(frozen=True, slots=True)
+class SharedSnapshotCaptureRecord:
+    """Execution evidence: one full-data materialisation written to shared snapshots."""
+
+    node_id: str
+    identity_digest: str
+    kind: CaptureKind
+    outcome: CaptureOutcome
+    generation_id: str | None
+    columns: NodeSnapshotColumns
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "node_id": self.node_id,
+            "identity_digest": self.identity_digest,
+            "kind": self.kind.value,
+            "outcome": self.outcome,
+            "generation_id": self.generation_id,
+            "columns": self.columns.to_json(),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -661,6 +707,7 @@ class SeedPlan:
     owns_staging: bool
     _stack: contextlib.ExitStack = field(default_factory=contextlib.ExitStack)
     _closures: dict[str, dict[str, str]] = field(default_factory=dict)
+    _generations: dict[str, SourceCacheGeneration] = field(default_factory=dict)
     _closed: bool = False
 
     def __enter__(self) -> SeedPlan:
@@ -672,6 +719,53 @@ class SeedPlan:
     @property
     def fingerprint(self) -> str:
         return self.decision.fingerprint
+
+    def seed_frame(self, node_id: str) -> pl.LazyFrame:
+        """The leased generation a seeded node reads, projected to its demand.
+
+        An empty demand keeps one carrier column so the frame keeps its rows.
+        """
+        from haute._polars_utils import projected_or_carrier_columns
+
+        seed = self.decision.seeds[node_id]
+        frame = self._generations[seed.identity.digest].lazy_frame
+        if seed.demand.names is None:
+            return frame
+        schema = frame.collect_schema().names()
+        return frame.select(projected_or_carrier_columns(schema, seed.demand.names))
+
+    def estimation_graph(self, graph: PipelineGraph) -> PipelineGraph:
+        """*graph* with every seed read as the Parquet file of its leased generation.
+
+        Materialisation estimates then stop at a seed and read its row count
+        and widths from the generation's metadata, instead of walking back
+        through computation the run never performs. Projection is not planned
+        on this graph: only estimates are.
+        """
+        seeds = self.decision.seeds
+        nodes = [
+            GraphNode(
+                id=node.id,
+                data=node.data.model_copy(
+                    update={
+                        "nodeType": NodeType.DATA_INPUT,
+                        "config": {
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "path": str(
+                                self._generations[seeds[node.id].identity.digest].data_path
+                            ),
+                        },
+                    }
+                ),
+            )
+            if node.id in seeds
+            else node
+            for node in graph.nodes
+        ]
+        edges = [edge for edge in graph.edges if edge.target not in seeds]
+        return graph.model_copy(update={"nodes": nodes, "edges": edges})
 
     def register_publication(self, publication: NodeSnapshotPublication) -> None:
         """Own one capture's publication until the plan closes."""
@@ -725,7 +819,9 @@ class SeedPlan:
         try:
             for identity, generation_id in decision.generations:
                 try:
-                    plan._stack.enter_context(store.lease_generation(identity, generation_id))
+                    plan._generations[identity.digest] = plan._stack.enter_context(
+                        store.lease_generation(identity, generation_id)
+                    )
                 except SourceCacheGenerationMissingError:
                     if require_current:
                         raise _SeedMovedError(identity.digest) from None

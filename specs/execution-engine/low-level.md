@@ -379,13 +379,20 @@ identity, so a refreshed generation's pointer is the one keyed. The Explore and
 training-preparation surfaces build their dataframe-cache request before the engine
 prepares, so after a refresh that entry is keyed by the superseded pointer and misses once;
 the next execution keys the new pointer, and correctness never depends on it because the
-current source signature is part of every key. `schema_only` executions
-and executions without an admitted context skip it. The IO-layer specification owns the
+current source signature is part of every key. `schema_only` executions,
+executions without an admitted context, and planned executions skip it (a seed plan
+is opened only after preparing exactly the inputs it reads). The IO-layer specification owns the
 lifecycle, the cap gate, the single-flight, and the `InputPreparationError` reason codes;
 the engine owns the call order, the `input_snapshot_auto_build` warning, and the
 `input_preparation` list in `ExecutionContext.metrics_payload()`, typed by
 `InputPreparationRecordPayload` on `haute._execution_schemas.ExecutionMetricsPayload` and
-regenerated into the frontend contracts. `_runtime_input_paths` signs a snapshot-backed
+regenerated into the frontend contracts. A planned execution adds, the same way,
+`shared_snapshot_seeds` (node, identity digest, generation id, the columns read),
+`shared_snapshot_captures` (node, identity digest, capture kind, outcome `published`,
+`superseded`, or `quota`, the published generation id or null, the columns written), and
+`warnings` (`code`, `node_id`, `reason`), which carries `snapshot_capture_skipped` with
+reason `quota` and `snapshot_capture_superseded` for every capture that kept its own
+data. `_runtime_input_paths` signs a snapshot-backed
 input by its generation pointer and its current source signature.
 
 Both engines construct one `NodeBoundaryRunner` from that result and their common
@@ -557,6 +564,42 @@ population is skipped and the cache-only demand is removed from both edge and st
 checkpoint projections. A missing cache-only column must never fail otherwise-valid
 runtime execution; a missing runtime-required column still raises the typed contract
 mismatch at the first proven boundary.
+
+**Planned executions (`snapshot_plan`).** `_execute_lazy` given a leased
+[seed plan](../caching/low-level.md#seed-plans) runs exactly that plan. The plan must have
+been resolved for this target, source, profile, and lineage fingerprint, and is exclusive
+with `checkpoint_dir` and `dataframe_cache_request` (`ValueError` otherwise). Planning
+demand is the plan's negotiated demand, handled like a broader cache key above: a negotiated
+column the run itself does not need is best-effort. Each seed enters through the cached-seed
+path as its leased generation projected to its demand (carrier-preserving), and only the
+plan's executed nodes and seeds are built. A pass-through node is not built: its output is
+its selected edge's frame (`select_edge_source_output`, then the edge projection,
+`selected_columns`, and renames). Admission and materialisation estimation see only the
+plan's executed nodes (`materialising_node_ids` on both strategy planners), so a
+materialisation on an unselected branch or covered by a seed is neither estimated nor
+refused, and estimates run on the plan's estimation graph — each seed read as a direct
+Parquet input of its leased generation — so a materialisation below a seed is sized from
+that generation's metadata rather than from computation the run skips. Projection is still
+planned on the full graph, exactly as the seed planner planned it. Source nodes are built first — they have no parents, so the order stays
+topological — and only once every source is bound is the runtime-input fingerprint of the
+executed nodes recomputed; if it no longer equals the plan's, the run raises
+`SnapshotPlanInputsChangedError` before anything is collected. A source that is itself a
+capture point is captured only after that check.
+
+Every capture point is written through `bounded_sink` (`fast_checkpoint=True`) into a
+staging directory under the plan's token: all columns for an all-column demand, otherwise
+the negotiated columns present in the schema, carrier-preserving. A negotiated column the
+node does not produce is logged (`snapshot_capture_column_unavailable`) and dropped; a
+missing column the run itself reads raises `ContractMismatchError`. After the
+`snapshot_capture_before_publish` fault point and a second runtime-input check, the capture
+is published as an automatic generation whose `dependencies` are the closure the plan
+recorded for the node: every seed and published capture read upstream along effective
+edges, each with its own recorded dependencies, and for a capture that kept its own data,
+only what it was built from. Execution continues from the publication's frame. A superseded
+publication, a changed input, or a `NodeSnapshotQuotaRejectedError` continues from the
+run's own staged artifact, which the plan owns and removes when it closes; any other store
+error propagates after the staged artifact is removed. The consumed nodes are preserved
+outputs. A capture replaces the checkpoint at that node, and no checkpoint directory is used.
 
 Checkpoint paths never interpolate an arbitrary node id. `_checkpoint_filename`
 preserves readable `<node_id>.parquet` names for the lower-case safe grammar (at
@@ -1385,6 +1428,10 @@ present a structural or schema result as execution evidence.
   (`_memory_pressure_seen`, a `set[int]` of `threshold_percent` values guarded by
   `_memory_pressure_lock`) — each of the 50/75/90% thresholds fires at most once per
   `ExecutionContext`, not once per checkpoint that happens to be above it.
+- **A planned execution never switches to another writer's data.** Every capture
+  continues from what this run wrote — its publication or its own staged artifact —
+  never from a generation another run published meanwhile, and every capture is
+  written by the bounded sink, never from collected batches.
 - **Checkpoint actions are `SKIP` or `PARQUET` only.** No execution path performs
   an in-memory `.collect().lazy()` checkpoint, and no dormant action advertises it.
 - **Checkpoint filenames are one safe component.** Ordinary safe node ids preserve
@@ -1722,6 +1769,10 @@ present a structural or schema result as execution evidence.
 - `PreviewProjectionError` (`executor.py`, extends `HauteValidationError`, a
   `ValueError` subclass) — a requested
   preview-column projection references columns not present on the target frame.
+- `SnapshotPlanInputsChangedError` (`haute.errors`, extends `ExecutionError`) — a
+  planned execution's inputs moved between plan resolution and its sources being bound.
+  Public code `snapshot_plan_inputs_changed` with `target_node_id`, adapted to
+  422 / `contract_error` like every public contract error; the run is started again.
 - `CycleError` (`_topo.py`, extends `HauteError`) — raised from `topo_sort_ids` on a
   cyclic graph, listing every participating node.
 - `UnknownEdgeEndpointError` (`_topo.py`, extends `HauteError`) — strict topology
@@ -1835,6 +1886,17 @@ present a structural or schema result as execution evidence.
 
 ## Testing
 
+- **`tests/test_snapshot_seeding.py`** — planned lazy executions: a re-run seeding the
+  first run's capture builds nothing upstream and returns an equal frame; disjoint demand
+  publishes one widened generation; a narrow upstream snapshot is not seeded and is
+  widened in the same run; with the quota full of pinned generations a shuffled join is
+  computed once and read back from its staged artifact; both paused-run diamonds (a
+  seeded `A` refreshed, and an uncaptured random `A`) keep run 1 on its own data; recorded
+  dependency closures include a seed's own dependencies; an empty demand keeps its row
+  count seeded and cold; a two-input modelling node never builds its unselected branch; a
+  pass-through returns the selected API-input port; best-effort and strict missing
+  columns; a corrupt latest generation fails the run; inputs changed before collection
+  and before publication; the metrics payload; and plan exclusivity and matching.
 - `tests/test_polars_steps.py::test_generated_reshaping_code_stays_inside_the_lineage_model` — the step renderer's dtype selectors, pivot lowering, unpivot and nested windows are shapes the lineage and cardinality models prove (dtype selectors only with an upstream dtype schema).
 - `tests/test_polars_steps.py::test_executor_runs_every_step_kind` and `test_incomplete_steps_fail_at_run_time_naming_the_step` — every low-code step kind executes through `execute_graph` from its materialised code, and unrenderable or unknown-input steps raise the incomplete-transform error with the step number (`_builders._build_transform`).
 - `tests/performance/test_polars_scale_scenario.py` — bounded Polars join/training projection scale generation, modelling-menu demand propagation, and CI-small execution-profile smoke contracts.

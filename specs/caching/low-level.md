@@ -270,7 +270,9 @@ writes to them (**captures**). The lazy engine executes under the resulting plan
   pass-through input is never prepared.
 - **Ownership.** A `SeedPlan` owns the publications and request-owned artifacts the run registers
   and records the dependency closure behind each node's frame (`record_closure`,
-  `dependencies_for`). `close()` closes them, releases the seed leases, and, in the process that
+  `dependencies_for`); `seed_frame` is a seed's leased generation projected to its demand,
+  and `estimation_graph` replaces each seed with a direct Parquet input of that generation for
+  materialisation estimates. `close()` closes them, releases the seed leases, and, in the process that
   opened the plan, removes any staging directory left under its staging token; a supervising
   parent closes only after its worker has exited. `handoff()` returns a `SeedPlanHandoff`
   (decision, project root, staging token), and `SeedPlan.adopt` leases the same generations in

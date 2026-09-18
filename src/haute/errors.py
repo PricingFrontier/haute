@@ -452,6 +452,26 @@ class InputPreparationError(ExecutionError):
         )
 
 
+class SnapshotPlanInputsChangedError(ExecutionError):
+    """Raised when a run's inputs changed after its seed plan was resolved.
+
+    A seed plan names snapshot identities whose signatures sign the inputs as
+    they were when the plan was resolved. Reading seeds computed from those
+    inputs beside branches recomputed from newer ones would join two versions
+    of the data, so the run stops and asks to be run again.
+    """
+
+    error_code = "snapshot_plan_inputs_changed"
+    public_fields = ("target_node_id",)
+
+    def __init__(self, *, target_node_id: str) -> None:
+        self.target_node_id = target_node_id
+        super().__init__(
+            "This run's input data changed while it was starting; run it again.",
+            target_node_id=target_node_id,
+        )
+
+
 class ContractMismatchError(HauteError):
     """Raised when a declared column contract does not match observed columns.
 

@@ -289,6 +289,10 @@ delegates every non-`node_output` identity to `SourceCacheStore` unchanged.
 
   A capture must still be *sunk* rather than published from collected batches, whatever
   profile performed it, so that a generation's contents are the ones its writer computed.
+  Planned lazy executions are the automatic-capture client of the publication rule below:
+  the [execution engine](../execution-engine/low-level.md) sinks each capture into
+  `stage_node_output` under its plan's staging token and publishes it with
+  `explicit=False`, continuing from the returned artifact whenever it is not published.
 - **Layout.** Node-output identities live beside input identities under
   `.haute_cache/inputs/<identity digest>/` (`current.json`, `generations/<id>/`,
   `.staging-<token>/`, `.retired-<hex>/`). Each generation's `meta.json` carries a

@@ -17,7 +17,7 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import polars as pl
 
@@ -100,6 +100,9 @@ from haute.projection import (
     with_api_input_port_projection_boundaries,
     with_materialisation_boundaries,
 )
+
+if TYPE_CHECKING:
+    from haute._seed_plans import SeedPlan
 
 __all__ = [
     "AllExceptColumns",
@@ -246,8 +249,18 @@ def plan_execution_strategy(
         _AUTO_MATERIALISATION_ESTIMATE
     ),
     runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
+    materialising_node_ids: Iterable[str] | None = None,
+    estimation_graph: PipelineGraph | None = None,
 ) -> ExecutionStrategyResult:
-    """Return the sole route-facing V1 execution-planning result."""
+    """Return the sole route-facing V1 execution-planning result.
+
+    ``materialising_node_ids`` limits admission and estimation to the
+    materialisations the execution will actually perform; a planned execution
+    passes the nodes it builds, so a branch it never builds (or that a seed
+    covers) is neither estimated nor refused. ``estimation_graph`` replaces
+    the request graph for materialisation estimates only — a planned execution
+    passes one whose seeds are Parquet inputs of their leased generations.
+    """
     prepared = prepare_graph(
         request.graph,
         request.target_node_id,
@@ -272,18 +285,21 @@ def plan_execution_strategy(
         prepared.node_map,
         prepared.relevant_edges,
     )
-    materialising_sequences = materialising_operator_sequences_by_node(
-        prepared.order,
-        prepared.node_map,
-        relevant_edges=prepared.relevant_edges,
-        submodels=prepared.submodels,
+    materialising_sequences = _only_nodes(
+        materialising_operator_sequences_by_node(
+            prepared.order,
+            prepared.node_map,
+            relevant_edges=prepared.relevant_edges,
+            submodels=prepared.submodels,
+        ),
+        materialising_node_ids,
     )
     materialising_operators = first_materialising_operators(materialising_sequences)
     resolved_estimate: MaterialisationEstimate | None
     if materialising_operators:
         if materialisation_estimate is _AUTO_MATERIALISATION_ESTIMATE:
             resolved_estimate = _estimate_materialising_boundaries(
-                request.graph,
+                estimation_graph if estimation_graph is not None else request.graph,
                 materialising_sequences,
                 source=request.source,
                 projection_plan=projection_plan,
@@ -370,6 +386,7 @@ def plan_prepared_execution_strategy(
     relevant_edges: Iterable[GraphEdge] | None = None,
     submodels: Mapping[str, Any] | None = None,
     selector_aliases: frozenset[str] = frozenset(),
+    materialising_node_ids: Iterable[str] | None = None,
 ) -> ExecutionStrategyResult:
     """Plan projection/streaming strategy for an already prepared graph.
 
@@ -402,11 +419,14 @@ def plan_prepared_execution_strategy(
         )
     if prepared_relevant_edges is not None:
         materialising_operators = first_materialising_operators(
-            materialising_operator_sequences_by_node(
-                order,
-                node_map,
-                relevant_edges=prepared_relevant_edges,
-                submodels=submodels,
+            _only_nodes(
+                materialising_operator_sequences_by_node(
+                    order,
+                    node_map,
+                    relevant_edges=prepared_relevant_edges,
+                    submodels=submodels,
+                ),
+                materialising_node_ids,
             )
         )
     else:
@@ -423,7 +443,12 @@ def plan_prepared_execution_strategy(
             for child in children:
                 input_names_by_node.setdefault(child, set()).add(name)
         materialising_operators = first_materialising_operators(
-            materialising_operator_sequences_by_input_names(order, node_map, input_names_by_node)
+            _only_nodes(
+                materialising_operator_sequences_by_input_names(
+                    order, node_map, input_names_by_node
+                ),
+                materialising_node_ids,
+            )
         )
     result = _finalise_execution_strategy(
         projection_plan,
@@ -441,6 +466,20 @@ def plan_prepared_execution_strategy(
     if execution_context is not None:
         execution_context.projection_plan = result
     return result
+
+
+_NodeValue = TypeVar("_NodeValue")
+
+
+def _only_nodes(
+    by_node: Mapping[str, _NodeValue],
+    node_ids: Iterable[str] | None,
+) -> Mapping[str, _NodeValue]:
+    """Keep only the named nodes' entries; ``None`` keeps every entry."""
+    if node_ids is None:
+        return by_node
+    keep = frozenset(node_ids)
+    return {node_id: value for node_id, value in by_node.items() if node_id in keep}
 
 
 def _children_of(
@@ -1399,6 +1438,7 @@ def execute_lazy_graph(
     schema_only: bool = False,
     runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
     prepare_inputs: bool = True,
+    snapshot_plan: SeedPlan | None = None,
 ) -> LazyExecutionResult:
     """Execute a graph lazily through the shared production engine.
 
@@ -1407,6 +1447,8 @@ def execute_lazy_graph(
     ``plan_prepared_execution_strategy`` for what that declaration relaxes.
     Supply ``runtime_source_frames_by_node`` when source nodes are injected
     DataFrames and group-by admission must estimate those request-local inputs.
+    A ``snapshot_plan`` (``haute._seed_plans``) makes the run seed from and
+    capture into shared snapshots instead of using checkpoints.
     """
     from haute._execute_lazy import _execute_lazy
 
@@ -1426,6 +1468,7 @@ def execute_lazy_graph(
         schema_only=schema_only,
         runtime_source_frames_by_node=runtime_source_frames_by_node,
         prepare_inputs=prepare_inputs,
+        snapshot_plan=snapshot_plan,
     )
 
 

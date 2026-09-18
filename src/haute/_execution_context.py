@@ -899,6 +899,9 @@ class ExecutionContext:
     _cache_proof_misses: int = field(default=0, init=False)
     _cache_direct_fallbacks: int = field(default=0, init=False)
     _input_preparation: list[Any] = field(default_factory=list, init=False)
+    _shared_snapshot_seeds: list[Any] = field(default_factory=list, init=False)
+    _shared_snapshot_captures: list[Any] = field(default_factory=list, init=False)
+    _execution_warnings: list[dict[str, str | None]] = field(default_factory=list, init=False)
     _cache_proof_miss_reason_counts: dict[ExecutionCacheProofMissReason, int] = field(
         default_factory=lambda: {reason: 0 for reason in ExecutionCacheProofMissReason},
         init=False,
@@ -1211,6 +1214,23 @@ class ExecutionContext:
         with self._evidence_lock:
             self._input_preparation.append(record)
 
+    def record_shared_snapshot_seed(self, record: Any) -> None:
+        """Record one node output this execution read from a shared snapshot."""
+        with self._evidence_lock:
+            self._shared_snapshot_seeds.append(record)
+
+    def record_shared_snapshot_capture(self, record: Any) -> None:
+        """Record one full-data materialisation this execution wrote to shared snapshots."""
+        with self._evidence_lock:
+            self._shared_snapshot_captures.append(record)
+
+    def record_execution_warning(
+        self, code: str, *, node_id: str | None = None, reason: str | None = None
+    ) -> None:
+        """Record one non-fatal condition the execution continued past."""
+        with self._evidence_lock:
+            self._execution_warnings.append({"code": code, "node_id": node_id, "reason": reason})
+
     def metrics_summary(
         self,
         *,
@@ -1245,6 +1265,13 @@ class ExecutionContext:
         payload["admission"] = self.admission.to_dict() if self.admission is not None else None
         with self._evidence_lock:
             payload["input_preparation"] = [record.to_dict() for record in self._input_preparation]
+            payload["shared_snapshot_seeds"] = [
+                record.to_dict() for record in self._shared_snapshot_seeds
+            ]
+            payload["shared_snapshot_captures"] = [
+                record.to_dict() for record in self._shared_snapshot_captures
+            ]
+            payload["warnings"] = [dict(warning) for warning in self._execution_warnings]
         projection_plan = self.projection_plan
         diagnostic = getattr(projection_plan, "diagnostic", None)
         payload["execution_strategy"] = (

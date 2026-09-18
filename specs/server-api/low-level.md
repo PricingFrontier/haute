@@ -804,6 +804,7 @@ use the same stable codes and named fields under terminal `contract_error` (or `
 | `RatingFactorDtypeContractError` | `rating_factor_dtype_contract` | `table`, `factor`, `saved_dtype`, `input_dtype` |
 | `LiveSwitchScenarioError` | `live_switch_scenario_missing` | `switch`, `scenario`, `available_mappings` |
 | `OutputNestingKeyError` | `output_nesting_key_null` | `frame`, `output_path`, `key` |
+| `SnapshotPlanInputsChangedError` | `snapshot_plan_inputs_changed` | `target_node_id` |
 
 Except for handlers that return a `JSONResponse` directly, `HTTPException` responses use
 FastAPI's `{"detail": <string-or-object>}` envelope; this includes structured 507 memory

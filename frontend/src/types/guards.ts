@@ -23,6 +23,9 @@ import type {
   ExecutionCacheProof,
   ExecutionMemoryPressureEvent,
   InputPreparationRecord,
+  ExecutionWarning,
+  SharedSnapshotCapture,
+  SharedSnapshotSeed,
   ExecutionMetrics,
   ExecutionColumnWidth,
   ExecutionColumnWidths,
@@ -698,6 +701,58 @@ function parseInputPreparationRecord(
   }
 }
 
+function parseSnapshotColumns(parser: string, value: unknown, field: string): "all" | string[] {
+  return value === "all" ? "all" : parseStringArray(parser, value, field)
+}
+
+function parseSharedSnapshotSeed(
+  parser: string,
+  value: unknown,
+  field: string,
+): SharedSnapshotSeed {
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    node_id: expectString(parser, obj.node_id, `${field}.node_id`),
+    identity_digest: expectString(parser, obj.identity_digest, `${field}.identity_digest`),
+    generation_id: expectString(parser, obj.generation_id, `${field}.generation_id`),
+    columns: parseSnapshotColumns(parser, obj.columns, `${field}.columns`),
+  }
+}
+
+function parseSharedSnapshotCapture(
+  parser: string,
+  value: unknown,
+  field: string,
+): SharedSnapshotCapture {
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    node_id: expectString(parser, obj.node_id, `${field}.node_id`),
+    identity_digest: expectString(parser, obj.identity_digest, `${field}.identity_digest`),
+    kind: expectStringLiteral(parser, obj.kind, `${field}.kind`, [
+      "structural",
+      "materialising",
+      "model_score",
+      "consumed",
+    ]),
+    outcome: expectStringLiteral(parser, obj.outcome, `${field}.outcome`, [
+      "published",
+      "superseded",
+      "quota",
+    ]),
+    generation_id: optionalNullableString(parser, obj, "generation_id"),
+    columns: parseSnapshotColumns(parser, obj.columns, `${field}.columns`),
+  }
+}
+
+function parseExecutionWarning(parser: string, value: unknown, field: string): ExecutionWarning {
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    code: expectString(parser, obj.code, `${field}.code`),
+    node_id: optionalNullableString(parser, obj, "node_id"),
+    reason: optionalNullableString(parser, obj, "reason"),
+  }
+}
+
 function parseExecutionMetrics(
   parser: string,
   value: unknown,
@@ -774,6 +829,15 @@ function parseExecutionMetrics(
     ),
     input_preparation: optionalArray(parser, obj, "input_preparation", (item, itemField) =>
       parseInputPreparationRecord(parser, item, itemField),
+    ),
+    shared_snapshot_seeds: optionalArray(parser, obj, "shared_snapshot_seeds", (item, itemField) =>
+      parseSharedSnapshotSeed(parser, item, itemField),
+    ),
+    shared_snapshot_captures: optionalArray(parser, obj, "shared_snapshot_captures", (item, itemField) =>
+      parseSharedSnapshotCapture(parser, item, itemField),
+    ),
+    warnings: optionalArray(parser, obj, "warnings", (item, itemField) =>
+      parseExecutionWarning(parser, item, itemField),
     ),
   }
 }
