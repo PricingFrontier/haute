@@ -552,22 +552,25 @@ def test_a_preview_of_these_is_the_bounded_data_in_order(fixture_name: str, proj
     assert preview.equals(bounded), f"{fixture_name} preview is not the bounded data"
 
 
-def test_the_preview_shares_no_snapshot_with_a_bounded_execution() -> None:
-    """The preview neither writes nor reads `bounded`, and here is why.
+def test_the_preview_shares_no_snapshot_with_a_bounded_execution_yet() -> None:
+    """Today's mapping, and what has to happen before it changes.
 
     Every bounded profile above agrees with every other, exactly, including row
-    order, and repeats itself. The interactive preview agrees on schema and on
-    the rows — but not reliably on their order. Materialising the five-row join
-    fixture five times gave preview orders `q1 q2 q3 q4 q5`, `q3 q1 q5 q4 q2`,
-    `q1 q3 q2 q4 q5`, `q3 q1 q2 q4 q5` and `q1 q2 q4 q3 q5` against a bounded
-    order of `q1 q2 q3 q4 q5` every time: the eager path does not promise the
-    order a join comes back in, and at larger sizes it happened to agree.
+    order, and repeats itself at the sink. The interactive preview agrees on
+    schema and on the rows — but not reliably on their order. Materialising the
+    five-row join fixture five times gave preview orders `q1 q2 q3 q4 q5`,
+    `q3 q1 q5 q4 q2`, `q1 q3 q2 q4 q5`, `q3 q1 q2 q4 q5` and `q1 q2 q4 q3 q5`
+    against a bounded order of `q1 q2 q3 q4 q5` every time.
 
-    A stored generation is rows in an order. Anything that reads one — a head,
-    a row limit, a row-local score, a cumulative expression — would be reading
-    an order the preview never promised, so the preview is not admitted to the
-    bounded class. Flipping `PREVIEW_SHARES_BOUNDED_SEMANTICS` needs a proof
-    that the preview's order is the bounded order, which this is not.
+    That is the measurement, and it does not settle the policy. Rows carry the
+    meaning in this domain and their order does not, so the decision is that
+    row order is not part of the snapshot contract and a preview's captures
+    will be admitted to the `bounded` class, guarded only where an
+    `ORDER_DEPENDENT` operation sits below the seed and would read the order a
+    capture happened to freeze. `PREVIEW_SHARES_BOUNDED_SEMANTICS` is therefore
+    false only until CACHE-S09 implements preview seeding and capture — this
+    test pins the mapping as it stands, so flipping it is a deliberate act with
+    that package rather than an accident.
     """
     from haute._node_snapshots import (
         PREVIEW_SHARES_BOUNDED_SEMANTICS,

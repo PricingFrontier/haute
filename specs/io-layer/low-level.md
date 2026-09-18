@@ -280,10 +280,15 @@ delegates every non-`node_output` identity to `SourceCacheStore` unchanged.
   deploy-container and optimiser-apply paths consume — and the interactive preview reordered
   a five-row join from run to run. Both carry the same rows and the same schema.
 
-  So the preview is not admitted to the `bounded` class: a stored generation is rows in an
-  order, and a head, a row limit or a row-local score reads that order. For the same reason
-  a capture must be *sunk* rather than published from collected batches, whatever profile
-  performed it.
+  That is the measurement. The policy over it is that row order is not part of the snapshot
+  contract: rows carry the meaning here and their order does not, so a preview's captures
+  are admitted to the `bounded` class and a run may seed from them (CACHE-S09), guarded only
+  where an `ORDER_DEPENDENT` operation sits below the seed. `PREVIEW_SHARES_BOUNDED_SEMANTICS`
+  stays false until that package implements preview seeding and capture; it is a switch
+  waiting on its implementation, not a verdict against it.
+
+  A capture must still be *sunk* rather than published from collected batches, whatever
+  profile performed it, so that a generation's contents are the ones its writer computed.
 - **Layout.** Node-output identities live beside input identities under
   `.haute_cache/inputs/<identity digest>/` (`current.json`, `generations/<id>/`,
   `.staging-<token>/`, `.retired-<hex>/`). Each generation's `meta.json` carries a

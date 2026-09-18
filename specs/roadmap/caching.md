@@ -16,12 +16,12 @@ these packages are owned by the [Explore / EDA roadmap](explore-eda.md).
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | CACHE-S07 | Planned | P1 | Make every bounded execution seed from and capture into shared snapshots, replacing private caches and temporary checkpoints. |
-| CACHE-S09 | Decision | P2 | Previews cannot join the `bounded` class; choose how they share materialisations, if at all. |
+| CACHE-S09 | Planned | P2 | Make previews and traces seed from and capture into shared snapshots, readable by runs. |
 | CACHE-S08 | Deferred | P3 | Fold the API-input table cache into the shared snapshot store with per-table validity. |
 
 ## Planned improvements
 
-Delivery order is `CACHE-S07`; `CACHE-S09` needs a decision first. A later package must
+Delivery order is `CACHE-S07` → `CACHE-S09`. A later package must
 not bypass the resolver, lease, signature, or capture contracts of an earlier
 one. Every package builds on the node-output snapshot store (signature, slot
 index, column widening, retention, cross-process leases, and the publication
@@ -215,25 +215,31 @@ editors.
 
 **Plan:**
 
-- **Admission — decided against, and this package now turns on the choice that
-  replaces it.** This plan was written to admit a preview lineage when the
-  snapshot class mappings let `PREVIEW_EAGER` read and write `bounded`. The
-  execution-profile semantics proof decided they never will: the interactive
-  preview reorders a join's rows between runs, so a generation it published
-  would not be the data a bounded execution produces, and a generation it read
-  would carry an order it never promised. What remains is a product choice, and
-  nothing below should be built until it is made:
-  - **A preview class of its own.** Preview lineages seed from and capture into
-    `preview` generations that only previews read. Previews stop repeating each
-    other's work, which is most of the value here, but a run never reuses a
-    preview's work and the acceptance below loses its training case.
-  - **Make the preview reproducible.** Give the interactive path the ordering
-    the sink has, then admit it to `bounded`. This buys the whole package, at
-    the cost of constraining the preview engine's execution.
-  - **Drop the package.** Previews keep paying for their own upstream work.
-  Every bullet below assumes a lineage that has been admitted somehow, and the
-  seed, capture, freshness and expiry rules hold under either of the first two
-  choices; only which class the generations carry differs.
+- **Admission.** A preview lineage is admitted to shared snapshots when a
+  schema-only bounded preparation of its sources succeeds (every CSV it reads
+  has declared dtypes and it reads no plain JSON). A lineage that is not
+  admitted neither seeds nor captures and behaves as today. A preview's
+  captures are written into the `bounded` class and a run may seed from them:
+  a preview's materialisations are over the full data, because the preview row
+  limit applies when each node is collected rather than to its sources, so what
+  it captures is the same data a run would have computed.
+- **Row order is not part of the snapshot contract.** The execution-profile
+  semantics proof found the interactive preview does not reproduce a join's row
+  order between runs, while the bounded sink does. Rows carry the meaning in
+  this domain and their order does not, so a preview capture is admitted
+  regardless — but "cached and recomputed agree" is the property this whole
+  layer exists to keep, and there are ordinary operations that read position:
+  the registry classes `forward_fill`, `backward_fill`, `interpolate`,
+  `unique`, `first`, `last`, `head`, `tail`, `shift`, `diff`, `pct_change`,
+  the `cum_*` and `rolling_*` families, `rank` and `with_row_index` as
+  `ORDER_DEPENDENT`. A `group_by(...).agg(pl.col(x).first())` over a seeded
+  join would answer from whichever order the capture froze.
+  So each generation records whether its order is reproducible — true when a
+  bounded execution sank it, false when a preview captured it — and the seed
+  planner consults that flag only when the lineage below the candidate seed
+  contains an `ORDER_DEPENDENT` operation, in which case a preview-written
+  generation is not seeded and the node is recomputed. Everywhere else, which
+  is nearly everywhere, a preview capture is seeded like any other.
 - **Seeding.** An admitted preview resolves a CACHE-S07 seed plan (upstream of
   or equal to the target, freshness, column coverage, ancestry agreement
   including recomputed branches). Seeded nodes produce their snapshot frame for
@@ -318,9 +324,10 @@ editors.
   captures `join` (the response lists the capture) and returns exactly the rows
   of an unadmitted preview; a second preview of a different node below `join`
   seeds from that capture, and neither source is scanned.
-- A training run after that preview seeds from the preview's `join` capture
-  **only under the second choice above**; under a preview-only class it does
-  not, and the run recomputes `join` itself.
+- A training run after that preview seeds from the preview's `join` capture.
+- The same pipeline with `group_by(...).agg(pl.col("premium").first())` below
+  the join does not seed the preview's capture, recomputes the join, and
+  produces the rows it would have produced with no cache at all.
 - A preview through only a filter and a rename captures nothing.
 - A preview of a lineage reading an undeclared-dtype CSV seeds and captures
   nothing and returns today's rows.
