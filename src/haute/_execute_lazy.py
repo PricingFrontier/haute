@@ -7,7 +7,7 @@ import gc
 import re
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
 import polars as pl
@@ -47,6 +47,7 @@ from haute._polars_utils import (
     projected_or_carrier_columns,
     streaming_collect,
 )
+from haute._source_cache import SourceCacheError
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -2414,6 +2415,7 @@ def _execute_eager_core(
     materialize_column_limits_by_node: Mapping[str, int] | None = None,
     execution_context: ExecutionContext | None = None,
     row_limits_by_node: Mapping[str, int] | None = None,
+    snapshot_plan: SeedPlan | None = None,
 ) -> EagerResult:
     """Execute the graph eagerly in topo order and collect DataFrames.
 
@@ -2453,6 +2455,14 @@ def _execute_eager_core(
             schema is still reported from ``collect_schema()`` before this
             cap is applied.  Used by first-click preview when the frontend
             has not yet sent explicit requested preview columns.
+        snapshot_plan: A leased seed plan (``haute._seed_plans``) for this
+            exact execution. Only its seeds and executed nodes run: a seeded
+            node's frame is its generation, nothing above a seed is built, a
+            pass-through node reads only its selected edge, and each capture
+            point is sunk into the shared store before anything below it is
+            collected, which then reads what was written. The row limit still
+            applies only when a node is collected. A store failure while
+            capturing propagates; it is never recorded as a node error.
 
     Returns:
         An ``EagerResult`` with named fields for outputs, order,
@@ -2468,6 +2478,7 @@ def _execute_eager_core(
             profile=execution_context.profile if execution_context is not None else None,
         )
     )
+    requested_graph = graph
     graph = prepared_execution.graph
     graph_plan = prepared_execution.graph_plan
     node_map = graph_plan.node_map
@@ -2476,6 +2487,27 @@ def _execute_eager_core(
     id_to_name = graph_plan.id_to_name
     relevant_edges = graph_plan.relevant_edges
     normalised_required_columns = prepared_execution.normalised_required_columns
+    decision = snapshot_plan.decision if snapshot_plan is not None else None
+    # The plan decided what runs: its seeds and the nodes still executed below
+    # them. Projection is still planned over the whole lineage, as the plan was.
+    run_order = order
+    seeded_ids: frozenset[str] = frozenset()
+    if decision is not None:
+        _check_snapshot_plan(
+            decision,
+            requested_graph,
+            target_node_id=target_node_id,
+            source=source,
+            profile=(
+                execution_context.profile
+                if execution_context is not None
+                else ExecutionProfile.PREVIEW_EAGER
+            ),
+            dataframe_cache_request=None,
+        )
+        seeded_ids = frozenset(decision.seeds)
+        planned_ids = set(decision.executed_node_ids) | seeded_ids
+        run_order = [node_id for node_id in order if node_id in planned_ids]
     materialized_ids = None if materialize_node_ids is None else frozenset(materialize_node_ids)
     node_row_limits = dict(row_limits_by_node or {})
     for limit_node_id, node_limit in node_row_limits.items():
@@ -2520,12 +2552,25 @@ def _execute_eager_core(
             frame_fanout_count[frame_key] = frame_fanout_count.get(frame_key, 0) + 1
 
     context_strategy = execution_context.projection_plan if execution_context is not None else None
-    if normalised_required_columns:
+    # Under a plan, captures widen demand before planning exactly as the plan
+    # negotiated, so a capture writes every column its generation must keep;
+    # what the caller collects is still its own demand.
+    planning_required_columns: dict[str, set[str] | projection_planner.AllExceptColumns] = dict(
+        normalised_required_columns
+    )
+    if decision is not None:
+        planning_required_columns = {
+            node_id: (
+                demand if isinstance(demand, projection_planner.AllExceptColumns) else set(demand)
+            )
+            for node_id, demand in decision.planning_required_columns.items()
+        }
+    if planning_required_columns:
         projection_plan = projection_planner.compute_prepared_plan(
             order,
             children_of,
             node_map,
-            required_columns_by_node=normalised_required_columns,
+            required_columns_by_node=planning_required_columns,
             relevant_edges=relevant_edges,
             submodels=graph.submodels,
             selector_aliases=preamble_selector_aliases(graph.preamble or ""),
@@ -2535,6 +2580,23 @@ def _execute_eager_core(
     needed_cols: Mapping[str, frozenset[str] | None] = (
         projection_plan.needed_by_node if projection_plan is not None else {}
     )
+    # A collected node collects the caller's own demand: under a plan the
+    # negotiated demand above is only what is read, built, and captured.
+    collect_needed_cols: Mapping[str, frozenset[str] | None] = needed_cols
+    if planning_required_columns != normalised_required_columns:
+        collect_needed_cols = (
+            projection_planner.compute_prepared_plan(
+                order,
+                children_of,
+                node_map,
+                required_columns_by_node=normalised_required_columns,
+                relevant_edges=relevant_edges,
+                submodels=graph.submodels,
+                selector_aliases=preamble_selector_aliases(graph.preamble or ""),
+            ).needed_by_node
+            if normalised_required_columns
+            else {}
+        )
     builder_needed_cols = projection_planner.builder_required_output_columns_by_node(
         node_map,
         needed_cols,
@@ -2543,10 +2605,12 @@ def _execute_eager_core(
     # Public strategy planning also runs for an unseeded first-click preview.
     # Reuse that proof only at the API port-loading seam: applying its complete
     # node demands as eager output projections would change established output
-    # and schema-reporting semantics for unrelated nodes.
+    # and schema-reporting semantics for unrelated nodes. Under a plan the
+    # ports load the negotiated demand, which the caller's strategy never saw.
     port_projection_plan = (
         context_strategy.projection_plan
-        if isinstance(context_strategy, projection_planner.ExecutionStrategyResult)
+        if decision is None
+        and isinstance(context_strategy, projection_planner.ExecutionStrategyResult)
         else projection_plan
     )
     api_port_columns_by_node = (
@@ -2560,7 +2624,7 @@ def _execute_eager_core(
     )
 
     funcs = _build_funcs(
-        order,
+        [node_id for node_id in run_order if node_id not in seeded_ids],
         node_map,
         id_to_name,
         all_parents,
@@ -2665,8 +2729,78 @@ def _execute_eager_core(
 
     recorded_runtime_edge_demands: dict[projection_planner.ProjectionEdgeKey, frozenset[str]] = {}
     recorded_runtime_resolved_parents: set[str] = set()
-    for nid in order:
-        boundary = boundary_runner.open(nid)
+
+    planned = _PlannedCaptures(
+        snapshot_plan,
+        requested_graph,
+        execution_context=execution_context,
+        incoming_edges_by_target=incoming_edges_by_target,
+    )
+    # A capture's store failure, which must reach the caller as the store's
+    # error rather than become the node's.
+    capture_store_failures: list[BaseException] = []
+    prebound_sources: dict[str, tuple[NodeBoundary, Any, BaseException | None]] = {}
+    if decision is not None and snapshot_plan is not None:
+        from haute._seed_plans import SharedSnapshotSeedRecord
+
+        for seed_node_id, seed in decision.seeds.items():
+            if execution_context is not None:
+                execution_context.record_shared_snapshot_seed(
+                    SharedSnapshotSeedRecord(
+                        node_id=seed_node_id,
+                        identity_digest=seed.identity.digest,
+                        generation_id=seed.generation_id,
+                        columns=seed.demand,
+                    )
+                )
+        # Every source is bound before anything is collected, and the inputs
+        # are proven to be the ones the plan was resolved against.
+        for nid in run_order:
+            if nid in seeded_ids or parents_of.get(nid):
+                continue
+            source_boundary = boundary_runner.open(nid)
+            if not source_boundary.is_source:
+                continue
+            try:
+                bound = boundary_runner.invoke(source_boundary)
+            except Exception as exc:  # recorded at the node, as an unplanned run would
+                prebound_sources[nid] = (source_boundary, None, exc)
+            else:
+                prebound_sources[nid] = (source_boundary, bound, None)
+        planned.verify_inputs()
+
+    for nid in run_order:
+        seeded = nid in seeded_ids
+        prebound = prebound_sources.pop(nid, None)
+        if seeded:
+            # A seed's frame is its generation: nothing is built or checked
+            # for it, and it is never selected, renamed, or captured again.
+            boundary = NodeBoundary(
+                node_id=nid,
+                node=node_map[nid],
+                fn=_passthrough_fn,
+                is_source=True,
+                parent_ids=(),
+                incoming_edges=(),
+                contract=None,
+                check_contract=False,
+                is_passthrough_runtime=False,
+            )
+        elif prebound is not None:
+            boundary = prebound[0]
+        else:
+            boundary = boundary_runner.open(nid)
+        if decision is not None and nid in decision.pass_through_edges:
+            # A pass-through node is its selected input; its other inputs
+            # were never built for it.
+            selected_edge = decision.pass_through_edges[nid]
+            boundary = replace(
+                boundary,
+                parent_ids=(selected_edge.source,),
+                incoming_edges=(selected_edge,),
+                check_contract=False,
+                is_passthrough_runtime=True,
+            )
         is_source = boundary.is_source
         node = boundary.node
         contract = boundary.contract
@@ -2682,10 +2816,17 @@ def _execute_eager_core(
         is_passthrough_runtime = boundary.is_passthrough_runtime
         t0 = time.perf_counter()
         try:
-            if is_source:
+            if seeded:
+                assert snapshot_plan is not None
+                result = snapshot_plan.seed_frame(nid)
+            elif prebound is not None:
+                _, result, prebind_error = prebound
+                if prebind_error is not None:
+                    raise prebind_error
+            elif is_source:
                 result = boundary_runner.invoke(boundary)
             else:
-                input_ids = parents_of.get(nid, [])
+                input_ids = list(boundary.parent_ids)
                 missing_parents = [pid for pid in input_ids if pid not in runtime_outputs]
                 if missing_parents:
                     raise ValueError(
@@ -2870,7 +3011,12 @@ def _execute_eager_core(
                         )
                     boundary_runner.assert_inputs(boundary, upstream_cols)
 
-                result = boundary_runner.invoke(boundary, input_lfs)
+                if decision is not None and nid in decision.pass_through_edges:
+                    # Its builder expects every input it was wired with; the
+                    # plan built only the selected one, which is its output.
+                    result = input_lfs[0]
+                else:
+                    result = boundary_runner.invoke(boundary, input_lfs)
 
             # Multi-frame emit: a source may return ``dict[port_name, frame]``.
             # Materialise each frame's LazyFrame to DataFrame so the preview
@@ -3006,11 +3152,14 @@ def _execute_eager_core(
             # Capture full column set before selected_columns filtering
             available_columns[nid] = _schema_items_of(result_lf)
 
-            # Apply selected_columns filter first (uses pre-rename names),
-            # then column renames on the surviving columns.
-            filtered = _apply_selected_columns(result_lf, node_map[nid].data.config)
-            renamed = _apply_column_renames(filtered, node_map[nid].data.config)
-            output_lf = renamed if isinstance(renamed, pl.LazyFrame) else renamed.lazy()
+            if seeded:
+                output_lf = result_lf
+            else:
+                # Apply selected_columns filter first (uses pre-rename names),
+                # then column renames on the surviving columns.
+                filtered = _apply_selected_columns(result_lf, node_map[nid].data.config)
+                renamed = _apply_column_renames(filtered, node_map[nid].data.config)
+                output_lf = renamed if isinstance(renamed, pl.LazyFrame) else renamed.lazy()
             full_output_columns = _schema_items_of(output_lf)
             full_output_columns = _full_model_score_schema(nid, node, full_output_columns)
             if _is_plain_model_score(node):
@@ -3038,7 +3187,18 @@ def _execute_eager_core(
             ):
                 boundary_runner.assert_outputs(boundary, final_cols)
 
-            projection = needed_cols.get(nid)
+            if decision is not None and not seeded:
+                closure = planned.record_closure(nid)
+                if nid in decision.captures:
+                    # Sunk in full, before anything below it is collected;
+                    # everything below reads what was written.
+                    try:
+                        output_lf = planned.capture(nid, output_lf, closure)
+                    except (SourceCacheError, OSError) as exc:
+                        capture_store_failures.append(exc)
+                        raise
+
+            projection = collect_needed_cols.get(nid)
             projected_columns: list[str] | None = None
             if projection is not None:
                 missing = projection - output_column_set
@@ -3088,7 +3248,17 @@ def _execute_eager_core(
                 else:
                     df = streaming_collect(collect_lf)
                 eager_outputs[nid] = df
-                runtime_outputs[nid] = output_lf if node_row_limit else df
+                # Consumers read the collection only when it holds every row
+                # and every column they need: a limited or column-narrowed
+                # collection (the caller's demand below a negotiated one)
+                # never feeds them.
+                consumer_columns = needed_cols.get(nid)
+                collected_covers = (
+                    consumer_columns <= set(df.columns)
+                    if consumer_columns is not None
+                    else df.width == len(output_column_names)
+                )
+                runtime_outputs[nid] = df if not node_row_limit and collected_covers else output_lf
                 memory_bytes[nid] = int(df.estimated_size("b"))
             else:
                 runtime_outputs[nid] = output_lf
@@ -3106,6 +3276,8 @@ def _execute_eager_core(
             if is_public_contract_error(exc):
                 # Versioned public errors are run-level contract failures.
                 # Preview's per-node swallow mode must never hide them.
+                raise
+            if any(exc is failure for failure in capture_store_failures):
                 raise
             if not swallow_errors:
                 raise
@@ -3166,7 +3338,7 @@ def _execute_eager_core(
 
     return EagerResult(
         eager_outputs,
-        order,
+        run_order,
         parents_of,
         node_map,
         id_to_name,

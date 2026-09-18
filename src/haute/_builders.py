@@ -1344,8 +1344,9 @@ def _build_node_fn(
 
     Returns (func_name, fn, is_source).
     source_names: sanitized names of upstream nodes (used as variable names).
-    row_limit: if set, Databricks sources push this into SQL LIMIT so the
-        full table is never fetched during preview/trace.
+    row_limit: the interactive row limit. Only Model Score consumes it, to
+        score row-locally; no source applies it, so every other node's frame is
+        the full data a consumer pulls.
     node_map: full graph node_map — used to resolve ``instanceOf`` references.
     source: the active execution source (``"live"`` for eager scoring,
         anything else for batched parquet scoring).

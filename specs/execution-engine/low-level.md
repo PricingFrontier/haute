@@ -416,7 +416,31 @@ and reports schema via `collect_schema()` without collecting. Sources and API-in
 are never capped. A materialised node collects its own plan limited to
 `row_limits_by_node[node]`, or `row_limit` when unset, after projection and column-limit
 selection (each frame of a multi-frame node), and a limited collection never feeds a
-consumer: consumers read the node's uncapped plan, which `EagerResult.plans` also exposes.
+consumer, nor one narrower than the columns its consumers need: consumers then read the
+node's uncapped plan, which `EagerResult.plans` also exposes.
+
+Under a leased `snapshot_plan` (`haute._seed_plans`, resolved for this exact execution
+by `_check_snapshot_plan`) the eager core runs only the plan's seeds and executed nodes,
+in `order`, and returns that order: nothing above a seed is built. A seeded node's frame
+is `SeedPlan.seed_frame` — its generation projected to its demand — and is reported and
+collected like any output but never selected, renamed, contract-checked, or captured
+again; each seed is recorded as `shared_snapshot_seeds` evidence. A pass-through node's
+output is its selected edge's frame (`decision.pass_through_edges`); its builder, wired
+for every input, is not called. Projection is planned from the plan's negotiated
+`planning_required_columns` — API-input ports load that demand too, never the caller's
+pre-planned strategy — so a capture writes every column its generation must keep, while
+each collected node collects only the caller's own demand. Every source is bound first
+and the plan's inputs verified (`_PlannedCaptures.verify_inputs`) before anything is
+collected. Each executed node records its dependency closure, and a capture point is sunk
+through `bounded_sink` by the same `_PlannedCaptures.capture` the lazy engine uses, right
+after its output is formed and before anything below it is collected: consumers and the
+node's own collection read the publication, or, on quota rejection or supersession, the
+request-owned artifact (`snapshot_capture_skipped`). The row limit still applies only at
+collection, so every capture holds the node's full output — the only builder that
+consumes the limit is Model Score, whose row-local scan scores every row a consumer pulls.
+A capture's `SourceCacheError` or `OSError` is the store's failure and propagates even
+with `swallow_errors`; any other failure while capturing is the node's own computation
+failing and is recorded at the node like any other.
 
 `selected_columns` has exactly one interpreter: this shared post-call filter, applied to
 every node's output in every execution profile. Source builders never push it into the
@@ -1906,6 +1930,19 @@ present a structural or schema result as execution evidence.
 
 ## Testing
 
+- **`tests/test_preview_snapshot_seeding.py`** — the eager engine under a preview plan: a
+  seeded node builds nothing at or above it; a capture under a row limit holds the full
+  output and the limited rows are read from it; the limit-boundary filter and sum over a
+  seed; a quota-rejected capture continues from its own artifact and is reported — both
+  with the sources removed once the capture returns, so nothing below can recompute it; a
+  filter and a rename capture nothing; a join below a row-limited Model Score captures
+  every scored row; a store failure while capturing propagates while a node's own failure
+  while captured stays that node's error; a pass-through reads only its selected edge,
+  including an Optimiser selecting its second input; a capture widens a narrower
+  generation to the negotiated columns while the target — below it, or the captured node
+  itself — collects only its own demand, also when every node is collected without a limit;
+  and an API-input port loads the negotiated demand even when the caller's strategy was
+  planned narrower.
 - **`tests/test_snapshot_seeding.py`** — planned lazy executions: a re-run seeding the
   first run's capture builds nothing upstream and returns an equal frame; disjoint demand
   publishes one widened generation; a narrow upstream snapshot is not seeded and is
