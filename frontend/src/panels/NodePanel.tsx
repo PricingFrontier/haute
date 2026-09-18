@@ -19,6 +19,7 @@ import {
 } from "../types/node"
 import type { PipelineDiagnostic } from "../types/pipelineDocument"
 import useUIStore, { type ExplorePane } from "../stores/useUIStore"
+import useNodeDataStore, { profileForConsumer } from "../stores/useNodeDataStore"
 import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
@@ -1370,7 +1371,6 @@ function NodePanelContent({
   const rememberedModellingPane = useUIStore((s) => s.modellingPanes[node.id])
   const setModellingPane = useUIStore((s) => s.setModellingPane)
   const hasActiveTrainJob = useNodeResultsStore((s) => Boolean(s.trainJobs[node.id]))
-  const cachedExploreResult = useNodeResultsStore((s) => s.exploreResults[node.id])
   const activeSource = useSettingsStore((s) => s.activeSource)
   const streamingChunkSize = useSettingsStore((s) => s.streamingChunkSize)
   const documentDiagnostics = useDocumentStatusStore((s) => s.diagnostics)
@@ -1392,6 +1392,14 @@ function NodePanelContent({
     const identity = buildNodeDataCacheIdentity({ node, allNodes, edges, submodels, preamble })
     return hashConfig({ graph: identity, source: activeSource })
   }, [node, allNodes, edges, submodels, preamble, activeSource])
+
+  // The columns of the data this node reads, when another consumer of the
+  // point has already established them; never a request of its own. Gated on
+  // the identity above, so the previous point's columns are never offered
+  // after a source switch or a rewiring.
+  const exploreProfile = useNodeDataStore((s) =>
+    profileForConsumer(s, node.id, exploreConfigHash),
+  )
 
   const loadPivotFilterMembers = useCallback(
     (field: string, search: string, signal: AbortSignal) => {
@@ -1488,14 +1496,13 @@ function NodePanelContent({
     // upstream schema, so they should preserve this array identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedNodeId, upstreamSchemaSignature])
-  const pivotColumns = useMemo(() => {
-    const report = cachedExploreResult?.configHash === exploreConfigHash
-      ? cachedExploreResult.result
-      : null
-    return report
-      ? report.columns.map(({ name, dtype }) => ({ name, dtype }))
-      : upstreamColumns
-  }, [cachedExploreResult, exploreConfigHash, upstreamColumns])
+  const pivotColumns = useMemo(
+    () =>
+      exploreProfile
+        ? exploreProfile.profile.columns.map(({ name, dtype }) => ({ name, dtype }))
+        : upstreamColumns,
+    [exploreProfile, upstreamColumns],
+  )
   const recoveryAvailability = (node.data as HauteNodeData)._loadAvailability ?? "ready"
   const scopedEditable = (node.data as HauteNodeData)._scopedEditable === true
   if (

@@ -14,16 +14,17 @@
 
 import { useMemo, useState } from "react"
 import { ChevronLeft, ChevronRight, Columns, Search } from "lucide-react"
-import type { ExploreCacheReport, ExploreColumnStat } from "../../api/types"
+import type { ExploreColumnStat } from "../../api/types"
 import { NODE_GROUP_COLORS } from "../../theme/colors"
 import { getDtypeColor } from "../../utils/dtypeColors"
 import { formatNullPct } from "../../utils/formatValue"
 import DistinctInfoButton from "./DistinctInfoButton"
 import { StatValueCell } from "./StatValueCell"
 import ExploreTableActions from "./ExploreTableActions"
+import type { ExploreDataView } from "./exploreDataView"
 
 interface SchemaTableCardProps {
-  report: ExploreCacheReport
+  report: ExploreDataView
 }
 
 const HEADER_CLASS =

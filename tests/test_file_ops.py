@@ -821,3 +821,26 @@ class TestRemoveTree:
         from haute._file_ops import remove_tree
 
         assert remove_tree(tmp_path / "never-existed") is True
+
+    def test_a_tree_whose_descendant_cannot_be_found_is_reported_not_assumed_gone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows reports a path it cannot open as a missing path.
+
+        A file past the 260-character limit raises ``FileNotFoundError`` from
+        inside the walk while the tree it belongs to is still there, so taking
+        that error as "already gone" would hide a survivor from the caller.
+        """
+        from haute import _file_ops
+
+        target = tmp_path / "staging"
+        target.mkdir()
+        (target / "data.parquet").write_bytes(b"payload")
+
+        def rmtree_descendant_missing(_path, *_args, **_kwargs):
+            raise FileNotFoundError(2, "The system cannot find the path specified")
+
+        monkeypatch.setattr(_file_ops.shutil, "rmtree", rmtree_descendant_missing)
+
+        assert _file_ops.remove_tree(target) is False
+        assert target.exists()

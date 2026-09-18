@@ -501,14 +501,17 @@ worker and removes a known file staging artifact before returning 504. The sole 
 and directory-fsync section runs under the same short gate that records route cancellation, so a
 result/cancel race has one linearized winner and cannot pass through a check/rename gap.
 
-**Explore materialisation** (`routes/_explore_service.py`, `_explore_cache.py`): the background
-supervisor remains a parent thread only to bridge the synchronous one-shot worker into the job
-lifecycle. The child performs graph execution, bounded materialisation/statistics, and prepares a
-parent-named durable generation without selecting it. The parent validates the immutable report
-and artifact, rechecks latest-wins ownership, atomically commits `current.json`, restores the
-committed generation into process-local caches, and transitions the job. Cancellation,
-supersession, timeout, and worker failure terminate/join the process and discard that exact staged
-generation; child code cannot write the `JobStore` or parent LRU caches.
+**Node-data build and profile** (`routes/_node_data_service.py`): the background supervisor
+remains a parent thread only to bridge the synchronous one-shot worker into the job lifecycle.
+The child performs graph execution and writes only into the parent-named staging directory it is
+given, or — for a profile — leases the parent's exact resolution and computes statistics without
+writing anything. The parent validates the returned manifest or analysis outcome, rechecks
+latest-wins ownership, publishes the generation or the analysis document, and transitions the
+job. Cancellation, supersession, timeout, and worker failure terminate/join the process and
+discard that exact staging directory *before* the job's terminal status is published, so a client
+that reads the outcome never finds staging the build left behind; a last-resort sweep after the
+status covers a path that failed while publishing it. Child code cannot write the `JobStore`, the
+snapshot store's current pointer, or the analysis-result store.
 
 ### Node-data builds
 
@@ -586,8 +589,10 @@ memory, cancellation, or changed-data outcome leaves the analysis store unchange
 Request-time analyses (`routes/_synchronous_analysis.py`) answer inside the request instead:
 `run_synchronous_analysis` serves the `SynchronousAnalysisCache` entry for the point's current
 data version, or admits an `explore_analysis` context, leases the point, computes under it,
-and memoises the result; a point that is not `current` raises `cache_required`, and an
-admission or memory-limit failure is HTTP 507 with the execution error payload.
+and memoises the result under the version the lease actually served; a point that is not
+`current` raises `cache_required`, a direct file rewritten while the analysis read it raises
+`node_data_changed` and is neither returned nor memoised, and an admission or memory-limit
+failure is HTTP 507 with the execution error payload.
 `run_until_disconnected` runs one of these off the event loop and cancels its context when the
 client disconnects or the request task itself is cancelled; either way it waits for the
 abandoned analysis to stop, so its admission and lease are always released, discarding whatever

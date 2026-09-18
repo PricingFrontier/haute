@@ -4,9 +4,11 @@ import { render, screen, fireEvent, cleanup, within, act } from "@testing-librar
 import NodePanel from "../NodePanel"
 import { GraphProvider } from "../GraphContext"
 import type { OnUpdateConfigResult, SimpleNode, SimpleEdge } from "../editors"
-import type { ExploreCacheReport } from "../../api/types"
 import useUIStore from "../../stores/useUIStore"
-import useNodeResultsStore from "../../stores/useNodeResultsStore"
+import type { ExploreColumnStat } from "../../api/types"
+import useNodeDataStore from "../../stores/useNodeDataStore"
+import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore"
+import { buildNodeDataCacheIdentity } from "../dataPointIdentity"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
@@ -75,13 +77,12 @@ vi.mock("../LazyNodeEditors", async () => {
     const loadFilterMembers = props.loadFilterMembers as
       | ((field: string, search: string, signal: AbortSignal) => Promise<unknown>)
       | undefined
-    const currentConfigHash = props.currentConfigHash as string | null
     useEffect(() => {
       if (!simulatePickerRefetch.enabled || !loadFilterMembers) return
       const controller = new AbortController()
       void loadFilterMembers("premium", "", controller.signal).catch(() => {})
       return () => controller.abort()
-    }, [currentConfigHash, loadFilterMembers])
+    }, [loadFilterMembers])
     return <div data-testid="explore-pivots-config" />
   },
   ExploreChartsConfig: (props: Record<string, unknown>) => {
@@ -255,6 +256,99 @@ function eligibleApiInputTable(label: string) {
   }
 }
 
+/**
+ * Put a shared data profile in place for one consumer node, as the node-data
+ * store holds it once any consumer of the point has asked for it.
+ */
+/**
+ * The data identity the panel computes for one node, which every read of the
+ * shared store is gated on.
+ */
+function dataIdentity(
+  node: SimpleNode,
+  allNodes: SimpleNode[],
+  edges: SimpleEdge[],
+  source = "live",
+) {
+  return hashConfig({
+    graph: buildNodeDataCacheIdentity({ node, allNodes, edges }),
+    source,
+  })
+}
+
+function seedSharedProfile(
+  consumerNodeId: string,
+  {
+    producerNodeId = "source_1",
+    source = "live",
+    dataVersion = "explore_dataset:current",
+    columns = [] as ExploreColumnStat[],
+    rowCount = 1,
+    columnCount = 1,
+    staleProfile = false,
+    identity = "identity-the-panel-never-computes",
+  } = {},
+) {
+  const slotKey = `${producerNodeId}||${source}`
+  // A stale profile describes a version the point has already moved past.
+  const slotVersion = staleProfile ? `${dataVersion}-next` : dataVersion
+  useNodeDataStore.setState({
+    consumerSlots: { [consumerNodeId]: { slotKey, identity } },
+    slots: {
+      [slotKey]: {
+        slotKey,
+        producerNodeId,
+        portLabel: null,
+        source,
+        kind: "node_output",
+        reportedState: "current",
+        reportedDemand: "all",
+        dataVersion: slotVersion,
+        rowCount,
+        sizeBytes: 128,
+        retention: "pinned",
+        generation: {
+          generation_id: slotVersion,
+          columns: "all",
+          row_count: rowCount,
+          column_count: columnCount,
+          size_bytes: 128,
+          retention: "pinned",
+          fresh: true,
+          created_at: 1,
+        },
+        readsDirectly: false,
+        buildEndpoint: null,
+        clearEndpoint: null,
+        job: null,
+        delegatedBuild: null,
+      },
+    },
+    profiles: {
+      [slotKey]: {
+        dataVersion,
+        executionMetrics: null,
+        profile: {
+          row_count: rowCount,
+          column_count: columnCount,
+          columns,
+          overview_summary: {
+            data_quality: {
+              issue_count: 0,
+              issues: [],
+              duplicate_row_count: 0,
+              duplicate_ratio: 0,
+            },
+            categorical_summary: [],
+          },
+          data_version: dataVersion,
+          generated_at: 1,
+        },
+      },
+    },
+  })
+}
+
 describe("NodePanel", () => {
   beforeEach(() => {
     Object.defineProperty(window, "innerWidth", { value: 1920, writable: true, configurable: true })
@@ -265,7 +359,7 @@ describe("NodePanel", () => {
       explorePreviewPanes: {},
       modellingPanes: {},
     })
-    useNodeResultsStore.setState({ trainJobs: {}, exploreResults: {} })
+    useNodeDataStore.getState().reset()
     useDocumentStatusStore.getState().reset()
     transformEditorProps.length = 0
     edgeJoinEditorProps.length = 0
@@ -1315,66 +1409,37 @@ describe("NodePanel", () => {
     })
     const sourceEdge = { id: "e_source_explore", source: "source_1", target: "explore_1" }
 
+    const identity = dataIdentity(exploreNode, [sourceNode, exploreNode], [sourceEdge])
+
     renderPanel({ node: exploreNode, allNodes: [sourceNode, exploreNode], edges: [sourceEdge] })
     fireEvent.click(screen.getByRole("tab", { name: "Pivots" }))
 
     expect(explorePivotsConfigProps.at(-1)?.upstreamColumns).toEqual([
       { name: "upstream_premium", dtype: "Int64" },
     ])
-    const currentConfigHash = explorePivotsConfigProps.at(-1)?.currentConfigHash as string
-    const report: ExploreCacheReport = {
-      status: "ok",
-      node_id: "explore_1",
-      upstream_node_id: "source_1",
-      source: "live",
-      dataframe_cache_key: "explore_dataset:current",
-      row_count: 1,
-      column_count: 1,
-      generated_at: 1,
-      columns: [],
-      overview_summary: {
-        data_quality: {
-          issue_count: 0,
-          issues: [],
-          duplicate_row_count: 0,
-          duplicate_ratio: 0,
-        },
-        categorical_summary: [],
-      },
-    }
-
     act(() => {
-      useNodeResultsStore.setState({
-        exploreResults: {
-          explore_1: {
-            result: report,
-            jobId: "cache-status:explore_1",
-            configHash: currentConfigHash,
-            source: "live",
-            structuralVersion: 0,
-            nodeLabel: "Explore Claims",
-          },
-        },
-      })
+      seedSharedProfile("explore_1", { identity })
     })
 
-    // A current report's empty schema is authoritative over the connected
+    // A current profile's empty schema is authoritative over the connected
     // upstream fallback: Explore code can deliberately project no fields.
     expect(explorePivotsConfigProps.at(-1)?.upstreamColumns).toEqual([])
 
     act(() => {
-      useNodeResultsStore.setState({
-        exploreResults: {
-          explore_1: {
-            result: report,
-            jobId: "cache-status:explore_1",
-            configHash: "stale-graph-source-identity",
-            source: "live",
-            structuralVersion: 0,
-            nodeLabel: "Explore Claims",
-          },
-        },
-      })
+      // The point has moved to a newer generation than the profile describes,
+      // so the profile no longer says anything about the data this node reads.
+      seedSharedProfile("explore_1", { identity, staleProfile: true })
+    })
+
+    expect(explorePivotsConfigProps.at(-1)?.upstreamColumns).toEqual([
+      { name: "upstream_premium", dtype: "Int64" },
+    ])
+
+    act(() => {
+      // The profile of the point this node read under a different identity —
+      // another source, or before it was rewired — says nothing about the data
+      // it reads now, so the connected upstream fallback stands.
+      seedSharedProfile("explore_1", { identity: "another-identity" })
     })
 
     expect(explorePivotsConfigProps.at(-1)?.upstreamColumns).toEqual([

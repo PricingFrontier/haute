@@ -18,16 +18,15 @@ import { renderHook, act, cleanup } from "@testing-library/react"
 vi.mock("../../api/client.ts", () => ({
   getOptimiserStatus: vi.fn(),
   getTrainStatus: vi.fn(),
-  getExploreStatus: vi.fn(),
   getExplorePivotStatus: vi.fn(),
 }))
 
-import { getExplorePivotStatus, getExploreStatus, getOptimiserStatus, getTrainStatus } from "../../api/client.ts"
+import { getExplorePivotStatus, getOptimiserStatus, getTrainStatus } from "../../api/client.ts"
 import useNodeResultsStore from "../../stores/useNodeResultsStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useBackgroundJobs from "../../hooks/useBackgroundJobs.ts"
-import { explorePivotResultKey, type ExplorePivotProgress, type ExploreProgress, type SolveProgress, type TrainProgress } from "../../stores/useNodeResultsStore.ts"
-import type { ExploreCacheReport, ExplorePivotResult } from "../../api/types.ts"
+import { explorePivotResultKey, type ExplorePivotProgress, type SolveProgress, type TrainProgress } from "../../stores/useNodeResultsStore.ts"
+import type { ExplorePivotResult } from "../../api/types.ts"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture.ts"
 import { makeTrainResult } from "../../test-utils/factories.ts"
 import { ApiResponseValidationError } from "../../api/responseValidation"
@@ -42,8 +41,6 @@ function resetStores() {
     solveJobs: {},
     trainResults: {},
     trainJobs: {},
-    exploreResults: {},
-    exploreJobs: {},
     pivotResults: {},
     pivotJobs: {},
   })
@@ -72,37 +69,8 @@ function makeTrainProgress(overrides: Partial<TrainProgress> = {}): TrainProgres
   }
 }
 
-function makeExploreReport(overrides: Partial<ExploreCacheReport> = {}): ExploreCacheReport {
-  return {
-    status: "ok",
-    node_id: "explore_1",
-    upstream_node_id: "source_1",
-    source: "pricing",
-    dataframe_cache_key: "explore_dataset:abc",
-    row_count: 123,
-    column_count: 4,
-    generated_at: 1710000000,
-    columns: [],
-    overview_summary: {
-      data_quality: { issue_count: 0, issues: [], duplicate_row_count: 0, duplicate_ratio: 0 },
-      categorical_summary: [],
-    },
-    ...overrides,
-  }
-}
-
-function makeExploreProgress(overrides: Partial<ExploreProgress> = {}): ExploreProgress {
-  return {
-    status: "running",
-    progress: 0.5,
-    message: "Exploring...",
-    result: null,
-    ...overrides,
-  }
-}
-
 function makePivotResult(overrides: Partial<ExplorePivotResult> = {}): ExplorePivotResult {
-  return { version: 1, node_id: "e1", pivot_id: "p1", source: "pricing", dataframe_cache_key: "cache", calculation_key: "calc", row_fields: [], column_fields: [], values: [], row_paths: [], column_paths: [], cells: [], warnings: [], generated_at: 1, execution_metrics: null, ...overrides }
+  return { version: 1, node_id: "e1", pivot_id: "p1", source: "pricing", data_version: "cache", calculation_key: "calc", row_fields: [], column_fields: [], values: [], row_paths: [], column_paths: [], cells: [], warnings: [], generated_at: 1, execution_metrics: null, ...overrides }
 }
 
 function makePivotProgress(overrides: Partial<ExplorePivotProgress> = {}): ExplorePivotProgress {
@@ -316,21 +284,6 @@ describe("useBackgroundJobs", () => {
             progressMessage: () => useNodeResultsStore.getState().solveJobs.n1?.progress?.message,
             jobRemoved: () => useNodeResultsStore.getState().solveJobs.n1 === undefined,
             resultError: () => useNodeResultsStore.getState().solveResults.n1?.error,
-          }
-        },
-      },
-      {
-        kind: "Explore",
-        arrange: (failure: Error) => {
-          const mockGetStatus = vi.mocked(getExploreStatus)
-          mockGetStatus.mockResolvedValueOnce(makeExploreProgress())
-          mockGetStatus.mockRejectedValue(failure)
-          useNodeResultsStore.getState().startExploreJob("n1", "job-1", "Explore", "config", "live", 0)
-          return {
-            pollCount: () => mockGetStatus.mock.calls.length,
-            progressMessage: () => useNodeResultsStore.getState().exploreJobs.n1?.progress?.message,
-            jobRemoved: () => useNodeResultsStore.getState().exploreJobs.n1 === undefined,
-            resultError: () => useNodeResultsStore.getState().exploreResults.n1?.error,
           }
         },
       },
@@ -560,68 +513,6 @@ describe("useBackgroundJobs", () => {
   // ────────────────────────────────────────────────────────────────
   // Exponential backoff
   // ────────────────────────────────────────────────────────────────
-
-  describe("explore job polling", () => {
-    it("polls and completes an Explore job when API returns a cached report", async () => {
-      const mockGetStatus = vi.mocked(getExploreStatus)
-      const report = makeExploreReport({ row_count: 2000, column_count: 8 })
-      mockGetStatus.mockResolvedValueOnce(
-        makeExploreProgress({
-          status: "completed",
-          progress: 1,
-          message: "Explore analysis complete",
-          result: report,
-        }),
-      )
-
-      act(() => {
-        useNodeResultsStore.getState().startExploreJob("e1", "ej-1", "Explore Node", "eh", "pricing", 3)
-      })
-
-      renderHook(() => useBackgroundJobs())
-
-      await advance(500)
-
-      const state = useNodeResultsStore.getState()
-      expect(mockGetStatus).toHaveBeenCalledWith(
-        "ej-1",
-        { signal: expect.any(AbortSignal) },
-      )
-      expect(state.exploreJobs.e1).toBeUndefined()
-      expect(state.exploreResults.e1).toMatchObject({
-        jobId: "ej-1",
-        configHash: "eh",
-        source: "pricing",
-        structuralVersion: 3,
-        result: expect.objectContaining({ row_count: 2000, column_count: 8 }),
-      })
-    })
-
-    it("treats a missing Explore job as terminal and stops polling", async () => {
-      const mockGetStatus = vi.mocked(getExploreStatus)
-      mockGetStatus.mockRejectedValue({
-        name: "ApiError",
-        status: 404,
-        detail: "Job 'ej-missing' not found",
-        message: "HTTP 404",
-      })
-
-      act(() => {
-        useNodeResultsStore.getState().startExploreJob("e1", "ej-missing", "Explore Node", "eh", "pricing", 0)
-      })
-
-      renderHook(() => useBackgroundJobs())
-
-      await advance(500)
-
-      expect(mockGetStatus).toHaveBeenCalledTimes(1)
-      expect(useNodeResultsStore.getState().exploreJobs.e1).toBeUndefined()
-      expect(useNodeResultsStore.getState().exploreResults.e1?.error).toBe("Job 'ej-missing' not found")
-
-      await advance(20_000)
-      expect(mockGetStatus).toHaveBeenCalledTimes(1)
-    })
-  })
 
   describe("explore pivot job polling", () => {
     const startPivot = (nodeId: string, pivotId: string, jobId: string) => {

@@ -1949,7 +1949,7 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
 - **`test_execution_context.py`** — `ExecutionContext` stage/checkpoint
   behaviour, `ExecutionMetricsRecorder`, memory-pressure thresholding, and (via
   imports) `_execution_admission` budget resolution.
-- **`test_container.py`**, **`test_deploy_internals.py`**, **`test_explore_routes.py`**,
+- **`test_container.py`**, **`test_deploy_internals.py`**, **`test_node_data_routes.py`**,
   **`test_optimiser_routes.py`**, **`test_pipeline_route_supersession.py`**,
   **`test_schema_snapshots.py`**, **`test_train_service_coverage.py`**,
   **`test_training_memory_safety.py`** — exercise `_execution_admission` indirectly

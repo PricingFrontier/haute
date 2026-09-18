@@ -257,14 +257,23 @@ compatible within a version; renaming or removing any listed item requires a new
    backends is two directories) and excludes run
    directories currently marked active by *any* in-flight caller. For each
    oldest inactive directory beyond `_DISK_CACHE_MAX_DIRS` = 50, it re-checks
-   activity and atomically renames the directory to a unique `.evicting-*`
+   activity and atomically renames the directory to a unique `.evicting-<8 hex>`
    tombstone under `_disk_cache_active_runs_guard`, then recursively deletes
-   the tombstone outside the guard. New users either protect the original
+   the tombstone outside the guard. The tombstone name is deliberately short —
+   shorter than any real run id — because a name that grew on the run id it
+   replaced pushed the cached artifact beneath it past Windows' 260-character
+   path limit, where it could no longer be opened, so the deletion failed and
+   the tombstone held disk for good. New users either protect the original
    directory before the rename or cleanly miss it afterwards; unrelated loads
    never wait for recursive deletion. Active directories can therefore make
    the physical total temporarily exceed 50; the next successful download
    triggers another eviction pass. Stale tombstones from an interrupted process
-   are cleaned on a later eviction pass.
+   are cleaned on a later eviction pass. Deletion goes through the shared
+   retrying `remove_tree`, because a delete Windows refuses while an indexer
+   holds a handle would otherwise leave a tombstone holding disk for good; a
+   tree that still survives is logged
+   (`mlflow_disk_cache_tombstone_delete_failed`) rather than ignored, and never
+   raised into a caller that only asked for an artifact.
 
 ### Bounded retry — `_load_with_bounded_retry` (`_mlflow_io.py`)
 

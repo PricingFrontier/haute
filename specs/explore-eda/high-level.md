@@ -14,16 +14,11 @@ materialisation job, and computing the summary statistics returned to the UI.
 
 In scope:
 
-- Starting, polling, and cancelling a background job that materialises an Explore node's
-  upstream dataframe (`POST /api/explore/run`, `GET /api/explore/status/{job_id}`,
-  `POST /api/explore/cancel/{job_id}`).
-- Computing the `ExploreCacheReport`: row count, column count, per-column schema stats
-  (`ExploreColumnStat`), a data-quality summary, per-column bounded categorical value counts,
-  text/temporal cues, cardinality flags, and an exact duplicate-row count when every column is
-  hashable.
-- Caching both the materialised dataframe (via the dataframe execution cache) and the typed
-  report object (via a small in-process LRU) so repeated requests for the same analysis avoid
-  recomputation.
+- Computing the statistics an Explore node renders — row count, column count, per-column schema
+  stats (`ExploreColumnStat`), a data-quality summary, per-column bounded categorical value
+  counts, text/temporal cues, cardinality flags, and an exact duplicate-row count when every
+  column is hashable — as the `profile` analysis of a shared data point, so every consumer of
+  that data sees the same statistics.
 - Validating the `overview` config dict attached to an Explore node — the set of toggle cards
   (`dataset_snapshot`, `data_quality`, `numeric_summary`, `categorical_summary`, `schema`) a user
   has enabled, plus round-trip-safe storage of any unrecognised keys.
@@ -38,10 +33,10 @@ In scope:
   rejected. Every card has a unique id,
   case-insensitively unique name, visibility state, typed Filter/Columns/Rows/Values placements,
   and row/column grand-total options; unknown simple-literal fields remain round-trippable.
-- Starting, polling, and cancelling pivot calculations over an existing Explore dataframe cache
+- Starting, polling, and cancelling pivot calculations over the Explore node's leased data point
   (`POST /api/explore/pivots/run`, `GET /api/explore/pivots/status/{job_id}`,
-  `POST /api/explore/pivots/cancel/{job_id}`), and listing exact filter members from that cache
-  (`POST /api/explore/pivots/members`).
+  `POST /api/explore/pivots/cancel/{job_id}`), and listing exact filter members from that same
+  point (`POST /api/explore/pivots/members`).
 - Producing a versioned, typed pivot matrix whose stable row paths, column paths, value identities,
   cells, grand-total markers, warnings, and execution metrics can feed both pivot tables and
   PivotCharts without another aggregation path.
@@ -54,8 +49,11 @@ Out of scope (owned elsewhere):
 
 - Executing the pipeline graph up to the Explore node, contract enforcement, and lazy-frame
   caching mechanics — see [execution-engine](../execution-engine/high-level.md).
-- The on-disk/parquet dataframe cache and its key/fingerprint logic — see
-  [caching](../caching/high-level.md).
+- Resolving a consumer node to a data point, building or joining that point's snapshot,
+  reporting and clearing it, and storing an analysis of it by data version — see
+  [caching](../caching/high-level.md) and the node-data routes in
+  [server-api](../server-api/high-level.md). Explore starts, polls, and cancels its data through
+  those shared routes and owns no materialisation of its own.
 - Generic job-store, job-lifecycle, and cancellation-registry mechanics shared with other
   long-running routes (modelling, optimiser) — see
   [background-jobs](../background-jobs/high-level.md).
@@ -70,57 +68,26 @@ Out of scope (owned elsewhere):
 
 ## Behaviour
 
-- A client starts a run by posting a graph, an Explore `node_id`, and a `source` ("live" or a
-  named preview source). The Explore node in that graph must have exactly one upstream parent;
-  otherwise the request fails immediately with an HTTP 400 before any execution starts.
-- If a report for the same analysis (same graph shape reachable from the Explore node, same
-  Explore code/config, same source, same report schema version) is already cached, the run
-  request returns `status: "completed"` with the cached report synchronously — no job is
-  created.
-- Completed Explore datasets are durable project-local cache generations. The Parquet dataset and
-  its typed report live under the project's ignored `.haute_cache/explore` directory, so closing
-  the browser or restarting the local Haute backend does not discard a valid cache. Reopening an
-  Explore node can inspect and restore that exact generation into the process execution cache
-  without executing the graph again.
-- `POST /api/explore/cache-status` compares the current graph/source identity with the latest
-  durable generation for that Explore node/source and returns exactly `missing`, `current`, or
-  `stale`. `current` includes the report and makes the dataframe immediately available to pivots;
-  `stale` means a retained generation exists for the same cache family but its exact analysis
-  identity differs. A corrupt or internally inconsistent durable generation fails explicitly; it
-  is never presented as a usable hit or silently replaced.
-- A run request with `refresh: true` is an explicit re-cache. It bypasses both report and durable
-  cache hits and invalidates the matching process-local dataframe entry before execution, while
-  retaining the last durable generation until the replacement has been completely and atomically
-  published. A failed or cancelled refresh therefore leaves the previous generation available
-  and stale/current according to its identity.
-- Otherwise a job is created and a lightweight parent supervisor thread starts one killable
-  worker process. The worker reconstructs the canonical Explore cache request, executes and
-  profiles the graph under the admitted native memory limit, and may write only into the exact
-  private generation directory named by the parent. It cannot update the job store, process-local
-  caches, or the selected durable-generation pointer. The client polls
-  `GET /api/explore/status/{job_id}` until the job reaches a terminal status (`completed`,
-  `error`, `cancelled`, `superseded`, `memory_limited`, `contract_error`, or `timed_out`).
-- A group-by in the lineage feeding the Explore node is admitted as part of this explicit
-  full-frame cache materialisation only when its source-derived peak-memory estimate fits the
-  admitted `EXPLORE_ANALYSIS` headroom. Missing estimates or insufficient headroom fail with the
-  existing typed execution-strategy error; Explore never substitutes a partial aggregation or a
-  generic chunked execution.
-- Starting a new run for the same Explore node/source while a previous run is still in flight
-  supersedes the older job; the older job's status transitions to `superseded`.
-- `POST /api/explore/cancel/{job_id}` interrupts an in-flight materialisation (not just a status
-  flip): the parent terminates and joins the exact worker before making the job terminal or
-  releasing its admitted reservation. Supersession and the `HAUTE_EXPLORE_TIMEOUT` deadline use
-  the same terminal protocol, so no timed-out or obsolete process can continue consuming CPU,
-  memory, or publishing artifacts after the visible result. The job then transitions to
-  `cancelled`, `superseded`, or `timed_out` as appropriate.
-- A successful worker returns an immutable report and signed artifact manifest only after its
-  private generation is complete. While holding the latest-wins publication guard, the parent
-  revalidates the generation's containment, identity, regular-file status, metadata, Parquet
-  footer, size, and digest; restores the still-unselected artifact into the parent dataframe
-  cache; atomically selects the durable generation; publishes the report; and only then marks the
-  job completed. A pre-selection restore or pointer failure evicts the replacement's process
-  entry. Crash, timeout, cancellation, tampering, or lost ownership discards that exact unselected
-  generation and leaves the previous selected generation untouched.
+- An Explore node reads a shared data point: its single upstream input when its own analysis
+  code is blank, its own node output otherwise. The node in that graph must have exactly one
+  upstream parent; otherwise the request fails immediately with an HTTP 400 before any execution
+  starts. An Explore node wired straight to a Data Input or an API-input table analyses that
+  source directly, with no node output built at all.
+- The point's state, its build, its refresh and its clearing are the shared
+  [node-data routes](../server-api/high-level.md), not Explore's own. Every other consumer of the
+  same data — a Banding or Rating editor on the same parent — shares that one build, sees the same
+  state, and joins the same running job instead of starting a second one.
+- Explore's statistics are the `profile` analysis of the point's current data version, computed
+  once in a killable worker process under the admitted `EXPLORE_ANALYSIS` memory limit and then
+  stored by data version. Reopening the node, or opening it in another pane, serves the stored
+  profile without recomputing it; a rebuilt point is never answered with the previous data
+  version's profile. A profile that is cancelled, not admitted, over its memory budget, or
+  computed from data that changed underneath it stores nothing.
+- A group-by in the lineage feeding the point is admitted as part of that explicit full-frame
+  build only when its source-derived peak-memory estimate fits the admitted `EXPLORE_ANALYSIS`
+  headroom. Missing estimates or insufficient headroom fail with the existing typed
+  execution-strategy error; Explore never substitutes a partial aggregation or a generic chunked
+  execution.
 - The completed report contains, per column: dtype, a coarse `kind` classification (Numeric,
   Text, Temporal, Boolean, Nested, Other), null count, NaN count (float dtypes only; `None` for
   every other dtype — not applicable, mirroring `zero_count`/`negative_count`), distinct count
@@ -156,15 +123,17 @@ Out of scope (owned elsewhere):
 - Materialisation always completes even when a column contains data that cannot be strictly cast
   to text (non-UTF-8 `Binary` bytes, `Duration` values): those columns are formatted leniently
   rather than aborting the whole report.
-- Downstream graph edits (nodes/edges added after the Explore node) never invalidate the cached
-  dataframe or report for that Explore node. Changes to the Explore node's own analysis code,
-  its upstream lineage, the pipeline preamble, the source file, or the input source do invalidate
-  it. Changes to only the Explore node's `overview`, `pivots`, or `charts` config blocks do **not**
-  invalidate the dataframe cache (they are not part of the dataframe cache key), and the equal
-  report is served from cache.
+- Downstream graph edits (nodes/edges added after the Explore node) never change the point an
+  Explore node reads, so they never invalidate its data or its profile. Changes to the Explore
+  node's own analysis code, its upstream lineage, the pipeline preamble, the source file, or the
+  input source do change it. Changes to only the Explore node's `overview`, `pivots`, or `charts`
+  config blocks do **not** (the display payload is not part of the snapshot signature), and the
+  stored profile is served unchanged.
 - A pivot calculation never executes the graph and never falls back to preview rows. The run and
-  member endpoints derive the same Explore dataframe-cache identity as materialisation and return
-  the typed `cache_required` outcome when that exact full-data entry is absent.
+  member endpoints resolve the same point and return the typed `cache_required` outcome with its
+  state when that point has no current data. A pivot leases the point for its whole calculation,
+  so a concurrent clear or rebuild cannot change the data underneath a running aggregation, and a
+  result computed for one data version is never returned for another.
 - Pivot filters are conjunctions of exact member sets. A member is persisted as a typed
   `{kind, value}` scalar so null, NaN, booleans, integers, finite floats, strings, dates,
   datetimes, times, and decimals do not collapse into display text. Empty member sets mean that
@@ -226,7 +195,7 @@ Out of scope (owned elsewhere):
   cells (including enabled grand-total row/column cells), and 500 filter-member rows. A request
   that exceeds a limit returns the measured dimensions, the limit, and remediation; it is never
   truncated, sampled, downsampled, or partially published.
-- A completed result is cached by the exact Explore dataframe-cache key, pivot result schema
+- A completed result is cached by the exact point digest and data version, pivot result schema
   version, ordered calculation placements, exact filters, aggregations, row/value sort settings,
   ordered selected formula ids/references/expressions, the combined `value_order`, and total
   options. Card `name`/`enabled`,
@@ -336,17 +305,18 @@ Out of scope (owned elsewhere):
   integer) — NaN is representationally only possible for float dtypes. `distinct_count` was
   changed to count only valid values (excluding both the null and NaN buckets) so it answers "how
   many distinct real values does this column have" rather than conflating missingness with
-  cardinality; this required bumping the report cache-schema version (`EXPLORE_CACHE_VERSION`),
-  since an older cached report computed the field differently and would otherwise be served stale.
-- **Report/dataframe cache separation.** The dataframe cache (parquet on disk, keyed by
-  execution lineage) and the lightweight `ExploreCacheReport` cache (in-process LRU, keyed by
-  dataframe cache key + node id + source + report schema version) are deliberately independent.
-  This lets an `overview`, `pivots`, or `charts` config change reuse the same materialised dataframe while still
-  invalidating only the report if the report schema itself changes (`EXPLORE_CACHE_VERSION`).
+  cardinality; this required bumping the profile's analysis version
+  (`PROFILE_ANALYSIS_VERSION`), since a stored profile computed the field differently would
+  otherwise be served stale.
+- **Data and analysis kept apart.** The point's snapshot (parquet on disk, keyed by the node
+  snapshot signature) and the profile stored against it (keyed by point digest, data version,
+  analysis kind, and analysis version) are deliberately independent. This lets an `overview`,
+  `pivots`, or `charts` config change reuse the same data and the same profile, while an
+  incompatible statistics payload is recomputed without rebuilding the data.
 - **Sequential cancellable profiling batches.** Exact column stats (min/max, quartiles,
   null/zero/negative counts, bounded categorical value counts, display-label group counts,
   text lengths, and temporal spans) are computed in batches of at most eight columns
-  against the cached Parquet frame. This avoids retaining all columns' aggregation state
+  against the point's leased frame. This avoids retaining all columns' aggregation state
   simultaneously. Each batch remains a cancellable native streaming query. Whole-row
   distinct counting runs separately when needed; an exactly unique column proves zero
   duplicate rows, and a one-column frame reuses its column distinct count.
@@ -373,20 +343,20 @@ Out of scope (owned elsewhere):
 - [io-layer](../io-layer/high-level.md): owns the profiled
   `cancellable_streaming_collect` primitive that lets Explore cancel an in-flight native Polars
   aggregation instead of only changing the background-job status.
-- [caching](../caching/high-level.md): supplies `DataFrameExecutionCache`,
-  `build_dataframe_execution_cache_request`, `dataframe_graph_input_fingerprint`, and the
-  `LRUCache` used for the in-process report cache; `src/haute/_cache.py` supplies the dataframe
-  cache invariant.
+- [caching](../caching/high-level.md): resolves an Explore node to its data point, leases the
+  point's frame for profiling and for every pivot calculation, and stores the profile by data
+  version in the analysis-result store.
 - [background-jobs](../background-jobs/high-level.md): supplies `JobStore`, `JobLifecycle`, and
   `CancellableJobRegistry`, including the latest-wins cancellation semantics this component uses.
-- [server-api](../server-api/high-level.md): supplies shared route helpers (`find_typed_node`,
-  `_ensure_source_file`, `_validate_runtime_input_paths`, `flatten_graph`) and mounts the Explore
-  router in the application shell.
+- [server-api](../server-api/high-level.md): owns the node-data routes Explore's data is built,
+  reported, cleared, and profiled through; supplies shared route helpers (`find_typed_node`,
+  `_ensure_source_file`, `_validate_runtime_input_paths`, `flatten_graph`); and mounts the Explore
+  pivot router in the application shell.
 - [codegen](../codegen/high-level.md) / [expression-parsing](../expression-parsing/high-level.md):
   call the Explore display-config validators when emitting or parsing the `overview=`, `pivots=`,
   and `charts=` kwargs on `@pipeline.explore()`.
 - [frontend-preview-explore](../frontend-preview-explore/high-level.md): the consumer of
-  `ExploreCacheReport` — renders the current Explore result panes from the fields this component
+  `NodeDataProfile` — renders the current Explore result panes from the fields this component
   computes.
 
 ## Failure model
@@ -396,45 +366,21 @@ Out of scope (owned elsewhere):
 - Posting a missing `node_id` returns HTTP 404; a node that resolves but is not Explore-typed
   returns HTTP 400. Both failures are synchronous (via `find_typed_node`) before a job is created.
 - Polling a job id the store has never seen returns HTTP 404.
-- Inside the background job, cancellation, execution-admission failures, execution memory-limit
-  breaches, `PUBLIC_CONTRACT_ERROR_TYPES` (mapped to `contract_error` with
-  `contract_error_job_fields`), and contract/schema mismatches are each caught and mapped to a distinct terminal job
-  status (`cancelled`/other cancellation reason, `memory_limited`, `contract_error`) with a
-  message payload describing the failure; none of these are retried or silently downgraded.
-- Any other exception raised while materialising or summarising is logged
-  (`explore_cache_failed`, with traceback) and the job transitions to `error` with the fixed
-  internal-error detail as its public message; the exception type, text, and traceback are
-  server-side diagnostics only, per the low-level public-error policy — no fallback report is
-  synthesised.
+- Failures of the data and of the profile are terminal states of the shared node-data jobs —
+  cancellation, admission failures, memory-limit breaches, contract and schema mismatches, and
+  internal errors each map to their own status with a message payload, and none is retried or
+  silently downgraded. Explore renders the state the point reports; it synthesises no fallback
+  statistics and never treats a failed profile as an empty one.
+- A pivot or member request against a point with no current data answers `cache_required` with
+  that state, never a partial aggregation.
 - The Explore display validators raise `ConfigError` (not a generic exception) for invalid
   top-level containers, non-string keys, wrong-typed known fields, or unknown values that are not
   round-trippable. Chart validation also rejects malformed entries and blank or duplicate ids;
   callers do not catch and paper over these failures.
 
-**Statistics-shape caveat.** `ExploreFrameStats`/`_build_frame_stats`
+**Statistics-shape caveat.** `NodeDataProfile`/`_build_frame_stats`
 unconditionally include zero/negative counts and quartile fields only for numeric columns,
 setting them to `None` otherwise. A column reclassified between numeric and non-numeric across
 two runs therefore has a different populated-field set. `nan_count` is narrower still: it is
 populated only for float dtypes (`Float32`/`Float64`), so an integer column reclassified to or
 from float also flips `nan_count` between `0` and `None`.
-
-## Approved change contract — Explore on shared data points
-
-- **Current limitation.** Explore materialises and profiles its own copy of its input under the
-  Explore node's identity in `src/haute/_explore_cache.py`, restores it by copying the Parquet
-  file, and pivots scan that private entry, so other nodes cannot share the data.
-- **Unresolved target.** Explore analyses its shared data point: its input when its code is
-  blank, its own output otherwise. It builds or joins the point's snapshot through the shared
-  node-data service, reads its overview from the shared profile analysis for the point's current
-  data version, and leases the point frame for every pivot, pivot-member, and chart calculation.
-  An Explore node wired directly to a Data Input or an API-input table analyses that source
-  without building a copy.
-- **Non-goals.** Pivot, chart, and overview semantics, limits, and presentation config are
-  unchanged.
-- **Failure and compatibility semantics.** A point that is not current returns cache-required
-  with its state. A pivot result computed for one data version is never returned for another.
-  The Explore run, cache-status, status, and cancel routes are removed without compatibility
-  routes.
-- **Acceptance evidence.** Explore route, pivot, and chart tests pass on shared points, including
-  one shared build between Explore and Banding on the same parent.
-- **Roadmap package.** [EDA-C01](../roadmap/explore-eda.md#eda-c01--explore-on-shared-data-points).

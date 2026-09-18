@@ -199,7 +199,7 @@ describe("useNodeDataCache", () => {
 
     mockGetPoint.mockResolvedValue(point())
     act(() => {
-      useNodeDataStore.getState().observePoint(point(), "live")
+      useNodeDataStore.getState().observePoint(point(), "live", "identity-1")
     })
 
     await waitFor(() => expect(result.current.availability).toBe("current"))

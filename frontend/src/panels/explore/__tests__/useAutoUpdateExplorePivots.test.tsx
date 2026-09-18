@@ -1,7 +1,7 @@
 import { cleanup, render } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { ExploreCacheReport } from "../../../api/types"
+import type { ExploreDataView } from "../exploreDataView"
 import useDocumentStatusStore from "../../../stores/useDocumentStatusStore"
 import useNodeResultsStore, {
   explorePivotResultKey,
@@ -50,7 +50,7 @@ function formulaOnlyPivot(): ExplorePivotConfig {
   }
 }
 
-const report = { dataframe_cache_key: "df-1" } as ExploreCacheReport
+const report = { data_version: "df-1" } as ExploreDataView
 
 function Consumer({
   updatePivot,
@@ -60,10 +60,10 @@ function Consumer({
 }: {
   updatePivot: (
     target: ExplorePivotConfig,
-    requestedDataframeCacheKey?: string | null,
+    requestedDataVersion?: string | null,
     autoClaimToken?: number,
   ) => Promise<void>
-  activeReport?: ExploreCacheReport
+  activeReport?: ExploreDataView
   submitting?: Readonly<Record<string, boolean>>
   pivots?: readonly ExplorePivotConfig[]
 }) {
@@ -128,7 +128,7 @@ describe("useAutoUpdateExplorePivots claim serialisation", () => {
     const key = explorePivotResultKey(NODE_ID, "claims")
     const claim = useNodeResultsStore.getState().pivotStartClaims[key]
     expect(claim).toMatchObject({
-      dataframeCacheKey: "df-1",
+      dataVersion: "df-1",
       calculationIdentity: pivotCalculationIdentity(pivot()),
     })
     expect(updatePivot.mock.calls[0][2]).toBe(claim.token)
@@ -144,7 +144,7 @@ describe("useAutoUpdateExplorePivots claim serialisation", () => {
     // The first submission is still in flight (submitting true, claim held)
     // when a newer dataframe arrives: the newer target must replace the
     // claim and submit immediately rather than waiting behind the old one.
-    const newerReport = { dataframe_cache_key: "df-2" } as ExploreCacheReport
+    const newerReport = { data_version: "df-2" } as ExploreDataView
     view.rerender(
       <Consumer
         updatePivot={updatePivot}
@@ -156,7 +156,7 @@ describe("useAutoUpdateExplorePivots claim serialisation", () => {
     expect(updatePivot).toHaveBeenCalledTimes(2)
     expect(updatePivot.mock.calls[1][1]).toBe("df-2")
     const claim = useNodeResultsStore.getState().pivotStartClaims[key]
-    expect(claim.dataframeCacheKey).toBe("df-2")
+    expect(claim.dataVersion).toBe("df-2")
     expect(claim.token).not.toBe(firstToken)
     expect(updatePivot.mock.calls[1][2]).toBe(claim.token)
   })

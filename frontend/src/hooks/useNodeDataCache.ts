@@ -184,7 +184,7 @@ export default function useNodeDataCache({
       // Never write another document's or another identity's answer.
       if (!isDocumentExecutionFenceCurrent(fence)) return
       if (currentIdentity.current !== identity) return
-      observePoint(fresh, activeSource)
+      observePoint(fresh, activeSource, identity)
       setAnswered({ configHash: identity, fence, point: fresh })
     },
     [activeSource, observePoint],

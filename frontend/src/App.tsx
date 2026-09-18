@@ -698,7 +698,6 @@ function FlowEditor() {
   const getModellingPreview = useNodeResultsStore((s) => s.getModellingPreview)
   const touchOptimiserPreview = useNodeResultsStore((s) => s.touchOptimiserPreview)
   const touchModellingPreview = useNodeResultsStore((s) => s.touchModellingPreview)
-  const touchExplorePreview = useNodeResultsStore((s) => s.touchExplorePreview)
   const setPinnedPreviewNodeId = useNodeResultsStore((s) => s.setPinnedPreviewNodeId)
 
   // Refs
@@ -745,8 +744,7 @@ function FlowEditor() {
     if (!activePanelNodeId) return
     touchModellingPreview(activePanelNodeId)
     touchOptimiserPreview(activePanelNodeId)
-    touchExplorePreview(activePanelNodeId)
-  }, [activePanelNodeId, setPinnedPreviewNodeId, touchExplorePreview, touchModellingPreview, touchOptimiserPreview])
+  }, [activePanelNodeId, setPinnedPreviewNodeId, touchModellingPreview, touchOptimiserPreview])
 
   // Store-maintained dirty flag.
   // Subscribe to the primitive so frequent React Flow node updates do not

@@ -40,6 +40,11 @@ _TERMINAL = {
 }
 
 
+def _rewrite(document: Path, text: str) -> None:
+    """Overwrite one stored analysis document the caller found in its sandbox."""
+    document.write_text(text, encoding="utf-8")
+
+
 def _profile(data_version: str, *, row_count: int = 3) -> NodeDataProfile:
     return NodeDataProfile(
         row_count=row_count,
@@ -116,7 +121,7 @@ def test_a_corrupt_analysis_document_is_discarded_and_never_returned(
     key = AnalysisKey(_DIGEST, "v1", "profile", 1)
     store.write(key, _profile("v1"))
     document = next((tmp_path / ".haute_cache" / "analyses").rglob("*.json"))
-    document.write_text(corruption, encoding="utf-8")
+    _rewrite(document, corruption)
 
     assert store.read(key, NodeDataProfile) is None
 
@@ -151,7 +156,7 @@ def test_a_document_keyed_to_other_data_is_discarded_and_never_returned(
     document[field] = value
     store.write(key, _profile("v1"))
     path = next((tmp_path / ".haute_cache" / "analyses").rglob("*.json"))
-    path.write_text(json.dumps(document), encoding="utf-8")
+    _rewrite(path, json.dumps(document))
 
     assert store.read(key, NodeDataProfile) is None
 
@@ -250,6 +255,24 @@ def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         }
     ).write_parquet(haute_scratch / "quotes.parquet")
     return haute_scratch
+
+
+@pytest.fixture(autouse=True)
+def _pinned_admission_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin modest budgets so these tests do not depend on the host's free RAM.
+
+    Unpinned, a build reserves 70% of *available* RAM (22.5 GiB on this
+    development host) from a process-wide in-flight budget that is itself
+    derived from available RAM, so a second heavy operation live in the same
+    process — or simply less free RAM later in a long parallel run — makes
+    admission exceed that budget. The parent then never reaches its worker and
+    every terminal status becomes ``memory_limited``: correct behaviour for a
+    build memory cannot back, but not what these tests are about. Tests that
+    exercise admission and memory limits raise or set their own, which still
+    takes precedence over this.
+    """
+    monkeypatch.setenv("HAUTE_NODE_SNAPSHOT_MEMORY_LIMIT_MB", "1024")
+    monkeypatch.setenv("HAUTE_EXPLORE_MEMORY_LIMIT_MB", "1024")
 
 
 @pytest.fixture(autouse=True)
@@ -972,3 +995,89 @@ def test_a_real_isolated_worker_profiles_the_point(client: TestClient, project: 
     assert status["execution_metrics"] is not None
     served = client.post("/api/node-data/profile", json=_body(graph, "explore")).json()
     assert served["result"]["column_count"] == 4
+
+
+# ------------------------------------- per-column statistics through the route
+
+
+def _profiled_columns(
+    client: TestClient, project: Path, frame: pl.DataFrame, name: str
+) -> list[dict[str, Any]]:
+    """Profile a Data Input read directly, and return its per-column statistics.
+
+    A consumer wired straight to a Data Input has no node output to build, so
+    this profiles the source frame itself: the statistics describe exactly the
+    columns written here.
+    """
+    path = project / f"{name}.parquet"
+    frame.write_parquet(path)
+    graph = _graph(
+        project,
+        source_config={
+            "inputType": "file",
+            "format": "parquet",
+            "mode": "scan",
+            "path": str(path),
+            "arguments": {},
+        },
+    )
+    response = _profile_now(client, graph, "band_source")
+    assert response["status"] == "completed", response
+    return response["result"]["columns"]
+
+
+def test_a_profile_describes_every_column_of_the_source(
+    client: TestClient, project: Path, in_process_worker: None
+) -> None:
+    columns = _profiled_columns(
+        client,
+        project,
+        pl.DataFrame({"id": [1, 2, 3], "name": ["a", "b", "c"], "score": [1.5, 2.5, 3.5]}),
+        "tri",
+    )
+
+    assert [column["name"] for column in columns] == ["id", "name", "score"]
+    assert [column["dtype"] for column in columns] == ["Int64", "String", "Float64"]
+
+
+def test_a_profile_counts_nulls_distincts_and_nans_over_the_whole_column(
+    client: TestClient, project: Path, in_process_worker: None
+) -> None:
+    nulls = _profiled_columns(client, project, pl.DataFrame({"value": [1, None, 2, None, 3]}), "n")
+    distincts = _profiled_columns(client, project, pl.DataFrame({"value": [1, 1, 2, 2, 3]}), "d")
+    nans = _profiled_columns(
+        client,
+        project,
+        pl.DataFrame({"value": [1.0, float("nan"), float("nan"), None, 2.0]}),
+        "f",
+    )
+
+    assert nulls[0]["null_count"] == 2
+    assert distincts[0]["distinct_count"] == 3
+    assert (nans[0]["nan_count"], nans[0]["null_count"]) == (2, 1)
+
+
+def test_a_profile_truncates_a_long_value_and_reports_an_all_null_column(
+    client: TestClient, project: Path, in_process_worker: None
+) -> None:
+    long_value = _profiled_columns(client, project, pl.DataFrame({"value": ["x" * 200]}), "long")[
+        0
+    ]["min_value"]
+    all_null = _profiled_columns(
+        client,
+        project,
+        pl.DataFrame({"value": [None, None, None]}, schema={"value": pl.Utf8}),
+        "empty",
+    )[0]
+
+    assert long_value.endswith("…")
+    assert len(long_value) == 81
+    assert (all_null["min_value"], all_null["max_value"]) == (None, None)
+
+
+def test_a_profile_keeps_the_schema_column_order(
+    client: TestClient, project: Path, in_process_worker: None
+) -> None:
+    columns = _profiled_columns(client, project, pl.DataFrame({"c": [1], "a": [2], "b": [3]}), "o")
+
+    assert [column["name"] for column in columns] == ["c", "a", "b"]

@@ -45,6 +45,13 @@ function runGit(args: string[]): string {
 const cleanRetryTimeoutMs = 30_000
 const cleanRetryIntervalMs = 250
 
+// The snapshot store proves its process is alive by holding one marker file open
+// for the whole life of the backend, so no amount of retrying can delete it
+// while the server runs. It carries no data — the generations, slot indexes and
+// analyses beside it are still scrubbed, so each test starts with nothing
+// cached — and the store's own sweep removes a dead owner's marker.
+const cleanExcludes = ["/.haute_cache/inputs/.processes/"]
+
 function sleepSync(milliseconds: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds)
 }
@@ -53,7 +60,7 @@ function removeUntrackedFiles(): void {
   const deadline = Date.now() + cleanRetryTimeoutMs
   for (;;) {
     try {
-      runGit(["clean", "-fdx"])
+      runGit(["clean", "-fdx", ...cleanExcludes.flatMap((pattern) => ["-e", pattern])])
       return
     } catch (error) {
       if (Date.now() >= deadline) {

@@ -18,9 +18,6 @@ import type {
   DissolveSubmodelResponse,
   EditorIdentityBatchRequest,
   EditorIdentityBatchResponse,
-  ExploreRunResponse,
-  ExploreCacheSnapshotResponse,
-  ExploreStatusResponse,
   ExplorePivotMembersResponse,
   ExplorePivotRunResponse,
   ExplorePivotStatusResponse,
@@ -79,6 +76,7 @@ import type {
   MlflowRun,
   NodeDataClearResponse,
   NodeDataPointResponse,
+  NodeDataProfileResponse,
   NodeDataRunResponse,
   NodeDataStatusResponse,
   LogOptimiserToMlflowRequest,
@@ -114,14 +112,12 @@ import {
   parseDatabricksWarehousesResponse,
   parseDissolveSubmodelResponse,
   parseEditorNodeIdentityBatchResponse,
-  parseExploreRunResponse,
-  parseExploreCacheSnapshotResponse,
-  parseExploreStatusResponse,
   parseExplorePivotMembersResponse,
   parseExplorePivotRunResponse,
   parseExplorePivotStatusResponse,
   parseNodeDataClearResponse,
   parseNodeDataPointResponse,
+  parseNodeDataProfileResponse,
   parseNodeDataRunResponse,
   parseNodeDataStatusResponse,
   parseFrontierAutoRangeStartResponse,
@@ -1238,6 +1234,18 @@ export function cancelNodeData(
   ).then(parseNodeDataStatusResponse)
 }
 
+export function getNodeDataProfile(args: NodeDataArgs): Promise<NodeDataProfileResponse> {
+  const { signal, ...payload } = args
+  return post<unknown>(
+    "/api/node-data/profile",
+    {
+      ...payload,
+      source: payload.source ?? "live",
+    },
+    { signal },
+  ).then(parseNodeDataProfileResponse)
+}
+
 export function clearNodeData(args: NodeDataArgs): Promise<NodeDataClearResponse> {
   const { signal, ...payload } = args
   return post<unknown>(
@@ -1262,58 +1270,6 @@ export interface RunExploreArgs {
   streamingChunkSize?: number
   signal?: AbortSignal
   timeout?: number
-}
-
-export interface GetExploreCacheSnapshotArgs {
-  graph: GraphPayload
-  node_id: string
-  source?: string
-  streamingChunkSize?: number
-  signal?: AbortSignal
-}
-
-export function getExploreCacheSnapshot(
-  args: GetExploreCacheSnapshotArgs,
-): Promise<ExploreCacheSnapshotResponse> {
-  const { streamingChunkSize, signal, ...payload } = args
-  return post<unknown>(
-    "/api/explore/cache-status",
-    {
-      ...payload,
-      source: payload.source ?? "live",
-      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
-    },
-    { signal },
-  ).then(parseExploreCacheSnapshotResponse)
-}
-
-export function runExplore(args: RunExploreArgs): Promise<ExploreRunResponse> {
-  const { streamingChunkSize, signal, timeout = 300_000, ...payload } = args
-  return post<unknown>(
-    "/api/explore/run",
-    {
-      ...payload,
-      source: payload.source ?? "live",
-      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
-    },
-    { signal, timeout },
-  ).then(parseExploreRunResponse)
-}
-
-export function getExploreStatus<T extends ExploreStatusResponse = ExploreStatusResponse>(
-  jobId: string,
-  options?: { signal?: AbortSignal },
-): Promise<T> {
-  return request<unknown>(`/api/explore/status/${encodeURIComponent(jobId)}`, options)
-    .then((data) => validateApiResponse("Could not read Explore status", () => parseExploreStatusResponse(data) as T))
-}
-
-export function cancelExplore<T extends ExploreStatusResponse = ExploreStatusResponse>(
-  jobId: string,
-  options?: { signal?: AbortSignal },
-): Promise<T> {
-  return post<unknown>(`/api/explore/cancel/${encodeURIComponent(jobId)}`, {}, options)
-    .then((data) => parseExploreStatusResponse(data) as T)
 }
 
 export interface RunExplorePivotArgs {

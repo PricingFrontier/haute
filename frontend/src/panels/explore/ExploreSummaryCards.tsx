@@ -1,15 +1,16 @@
 import { AlertTriangle, ChevronDown, ChevronRight, Database, Hash, ListTree } from "lucide-react"
 import { Fragment, useMemo, useState, type ReactNode } from "react"
-import type { ExploreCacheReport, ExploreColumnStat } from "../../api/types"
+import type { ExploreColumnStat } from "../../api/types"
 import { NODE_GROUP_COLORS } from "../../theme/colors"
 import { formatNullPct } from "../../utils/formatValue"
 import { formatRelativeTime } from "../../utils/formatTime"
 import DistinctInfoButton from "./DistinctInfoButton"
 import { StatValueCell } from "./StatValueCell"
 import ExploreTableActions from "./ExploreTableActions"
+import type { ExploreDataView } from "./exploreDataView"
 
 interface SummaryCardProps {
-  report: ExploreCacheReport
+  report: ExploreDataView
 }
 
 const CARD_CLASS = "rounded-lg p-3 space-y-3"
@@ -86,8 +87,8 @@ export function DatasetSnapshotCard({ report }: SummaryCardProps) {
         />
         <Metric
           label="Upstream"
-          value={<span className="font-mono">{report.upstream_node_id}</span>}
-          title={report.upstream_node_id}
+          value={<span className="font-mono">{report.producer_node_id}</span>}
+          title={report.producer_node_id}
         />
         <Metric
           label="Cached"

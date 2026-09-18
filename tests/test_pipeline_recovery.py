@@ -622,7 +622,6 @@ def test_recovery_nodes_are_not_canonical_graph_nodes(tmp_path: Path) -> None:
         "TraceRequest",
         "OutputDestinationRequest",
         "WriteOutputRequest",
-        "ExploreRunRequest",
         "ExplorePivotRunRequest",
         "ExplorePivotMembersRequest",
         "CreateSubmodelRequest",

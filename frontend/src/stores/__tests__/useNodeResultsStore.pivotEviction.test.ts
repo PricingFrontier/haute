@@ -13,7 +13,7 @@ function makePivotResult(nodeId: string, pivotId: string): ExplorePivotResult {
     node_id: nodeId,
     pivot_id: pivotId,
     source: "test-source",
-    dataframe_cache_key: `df:${nodeId}`,
+    data_version: `df:${nodeId}`,
     calculation_key: `calc:${nodeId}:${pivotId}`,
     row_fields: ["category"],
     column_fields: [],

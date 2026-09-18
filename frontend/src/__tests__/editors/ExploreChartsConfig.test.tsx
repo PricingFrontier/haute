@@ -33,6 +33,8 @@ import {
   pivotCalculationIdentity,
   type ExplorePivotConfig,
 } from "../../panels/explore/pivotConfig"
+import type { ExploreColumnStat } from "../../api/types"
+import useNodeDataStore from "../../stores/useNodeDataStore"
 import useNodeResultsStore, {
   explorePivotResultKey,
   resetNodeResultsDerivedCaches,
@@ -113,7 +115,7 @@ function result(sourcePivot: ExplorePivotConfig): ExplorePivotResult {
     node_id: "explore_1",
     pivot_id: sourcePivot.id,
     source: "pricing",
-    dataframe_cache_key: "dataframe-current",
+    data_version: "dataframe-current",
     calculation_key: "backend-calculation",
     row_fields: ["region"],
     column_fields: [],
@@ -155,49 +157,19 @@ function seedFreshPivot(sourcePivot: ExplorePivotConfig) {
     0,
   )
   useNodeResultsStore.getState().completeExplorePivotJob(key, result(sourcePivot))
-  useNodeResultsStore.setState({
-    exploreResults: {
-      explore_1: {
-        result: {
-          status: "ok",
-          node_id: "explore_1",
-          upstream_node_id: "source_1",
-          source: "pricing",
-          dataframe_cache_key: "dataframe-current",
-          row_count: 1,
-          column_count: 2,
-          generated_at: 1,
-          columns: [],
-          overview_summary: {
-            data_quality: {
-              issue_count: 0,
-              issues: [],
-              duplicate_row_count: 0,
-              duplicate_ratio: 0,
-            },
-            categorical_summary: [],
-          },
-        },
-        jobId: "explore-job",
-        configHash: "hash",
-        source: "pricing",
-        structuralVersion: 0,
-        nodeLabel: "Explore Claims",
-      },
-    },
-  })
+  seedSharedProfile("explore_1")
 }
 
 function ChartConfigHarness({
   initialConfig = {},
-  currentConfigHash = "hash",
   onCommittedUpdate,
   onShowPivots,
+  currentConfigHash = DATA_IDENTITY,
 }: {
   initialConfig?: Record<string, unknown>
-  currentConfigHash?: string | null
   onCommittedUpdate?: () => void
   onShowPivots?: () => void
+  currentConfigHash?: string | null
 }) {
   const [config, setConfig] = useState(initialConfig)
   const onUpdate: OnUpdateConfig = (keyOrUpdates, value) => {
@@ -234,14 +206,99 @@ function ChartConfigHarness({
   )
 }
 
+/**
+ * The data identity this harness renders under. Every read of the shared store
+ * is gated on it, so a profile recorded under another identity — the point
+ * before a source switch or a rewiring — is not this node's data.
+ */
+const DATA_IDENTITY = "explore-1-live"
+
+/**
+ * Put a shared data profile in place for one consumer node, as the node-data
+ * store holds it once any consumer of the point has asked for it.
+ */
+function seedSharedProfile(
+  consumerNodeId: string,
+  {
+    producerNodeId = "source_1",
+    source = "live",
+    dataVersion = "dataframe-current",
+    columns = [] as ExploreColumnStat[],
+    rowCount = 1,
+    columnCount = 1,
+    staleProfile = false,
+    identity = DATA_IDENTITY,
+  } = {},
+) {
+  const slotKey = `${producerNodeId}||${source}`
+  // A stale profile describes a version the point has already moved past.
+  const slotVersion = staleProfile ? `${dataVersion}-next` : dataVersion
+  useNodeDataStore.setState({
+    consumerSlots: { [consumerNodeId]: { slotKey, identity } },
+    slots: {
+      [slotKey]: {
+        slotKey,
+        producerNodeId,
+        portLabel: null,
+        source,
+        kind: "node_output",
+        reportedState: "current",
+        reportedDemand: "all",
+        dataVersion: slotVersion,
+        rowCount,
+        sizeBytes: 128,
+        retention: "pinned",
+        generation: {
+          generation_id: slotVersion,
+          columns: "all",
+          row_count: rowCount,
+          column_count: columnCount,
+          size_bytes: 128,
+          retention: "pinned",
+          fresh: true,
+          created_at: 1,
+        },
+        readsDirectly: false,
+        buildEndpoint: null,
+        clearEndpoint: null,
+        job: null,
+        delegatedBuild: null,
+      },
+    },
+    profiles: {
+      [slotKey]: {
+        dataVersion,
+        executionMetrics: null,
+        profile: {
+          row_count: rowCount,
+          column_count: columnCount,
+          columns,
+          overview_summary: {
+            data_quality: {
+              issue_count: 0,
+              issues: [],
+              duplicate_row_count: 0,
+              duplicate_ratio: 0,
+            },
+            categorical_summary: [],
+          },
+          data_version: dataVersion,
+          generated_at: 1,
+        },
+      },
+    },
+  })
+}
+
 describe("ExploreChartsConfig", () => {
   beforeEach(() => {
     resetNodeResultsDerivedCaches()
     useNodeResultsStore.setState({
       pivotResults: {},
       pivotJobs: {},
-      exploreResults: {},
     })
+    useNodeDataStore.getState().reset()
+    seedSharedProfile("explore_1")
     useUIStore.setState({
       exploreConfiguredChartIds: {},
       exploreConfiguredPivotIds: {},
@@ -1462,18 +1519,16 @@ describe("ExploreChartsConfig", () => {
     ).toBeVisible()
   })
 
-  it("reports a retained result from a superseded identity as stale, never ready", () => {
+  it("reports a retained result from a superseded data version as stale, never ready", () => {
     const sourcePivot = pivot("source")
     const configured = chart(sourcePivot)
     seedFreshPivot(sourcePivot)
-
-    // The retained Explore result was produced under configHash "hash"; the
-    // node's current identity has moved on (an upstream edit or source
-    // switch), so the pivot result must not be treated as current.
+    // The point has moved on to a new generation since that pivot ran, so its
+    // result describes data this chart no longer reads.
+    seedSharedProfile("explore_1", { dataVersion: "dataframe-next" })
     render(
       <ChartConfigHarness
         initialConfig={{ charts: [configured], pivots: [sourcePivot] }}
-        currentConfigHash="hash-after-upstream-edit"
       />,
     )
     fireEvent.click(
@@ -1493,6 +1548,33 @@ describe("ExploreChartsConfig", () => {
     expect(screen.queryByText(/concrete series/i)).not.toBeInTheDocument()
   })
 
+  it("ignores a profile recorded for another identity, never labelling it as this data", () => {
+    const sourcePivot = pivot("source")
+    const configured = chart(sourcePivot)
+    seedFreshPivot(sourcePivot)
+    // The profile of the point this node read before its source switched (or
+    // before it was rewired): the mapping is still in the shared store, but it
+    // was recorded under an identity this render is not asking about.
+    seedSharedProfile("explore_1", { identity: "the-previous-identity" })
+    render(
+      <ChartConfigHarness
+        initialConfig={{ charts: [configured], pivots: [sourcePivot] }}
+      />,
+    )
+    fireEvent.click(
+      screen.getByRole("button", { name: `Configure ${configured.name}` }),
+    )
+
+    // With no profile for this identity, the source cannot be reported ready
+    // from the other point's data.
+    expect(
+      screen.getByText(
+        "The source Pivot result is out of date. Update it to refresh its series.",
+      ),
+    ).toBeVisible()
+    expect(screen.queryByText(/concrete series/i)).not.toBeInTheDocument()
+  })
+
   it("surfaces malformed persisted charts without destructive controls", () => {
     render(
       <ExploreChartsConfig
@@ -1504,7 +1586,7 @@ describe("ExploreChartsConfig", () => {
         }}
         onUpdate={vi.fn()}
         nodeId="explore_1"
-        currentConfigHash={null}
+        currentConfigHash={DATA_IDENTITY}
       />,
     )
 

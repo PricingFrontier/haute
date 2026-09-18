@@ -1,11 +1,13 @@
 import { create } from "zustand"
 
 import type {
+  ExecutionMetrics,
   NodeDataColumns,
   NodeDataGeneration,
   NodeDataPointKind,
   NodeDataPointResponse,
   NodeDataPointState,
+  NodeDataProfile,
   NodeDataRetention,
   NodeDataStatusResponse,
 } from "../api/types"
@@ -68,8 +70,44 @@ export interface NodeDataSlotJob {
   startedByLabel: string
 }
 
+/**
+ * A running profile job, which belongs to the data version it was started for.
+ * A rebuild can publish a newer version while it runs, so its own version —
+ * not the slot's current one — is what its outcome describes.
+ */
+export interface NodeDataProfileJob extends NodeDataSlotJob {
+  dataVersion: string
+}
+
+/**
+ * The profile of one data version of a point, with the metrics of the job that
+ * computed it. Keyed by slot, so every consumer of the point reads the profile
+ * once it exists, whichever of them asked for it.
+ */
+export interface NodeDataProfileEntry {
+  dataVersion: string
+  profile: NodeDataProfile
+  executionMetrics: ExecutionMetrics | null
+}
+
 export interface NodeDataStore {
   slots: Record<string, NodeDataSlot>
+  profiles: Record<string, NodeDataProfileEntry>
+  /**
+   * The slot each consumer node was last told it reads, with the identity that
+   * answer was given for, so a panel that only wants the columns of its data
+   * can read the shared profile without asking the backend again — and never
+   * reads the previous point's after the consumer's graph or source changed.
+   */
+  consumerSlots: Record<string, { slotKey: string; identity: string }>
+  /** The running profile job of each slot, for the one background poller. */
+  profileJobs: Record<string, NodeDataProfileJob>
+  /**
+   * Why the last profile of a slot failed, and the data version it was asked
+   * for. Every consumer of the point sees the same failure, so one of them can
+   * retry it for all of them instead of each asking again in a loop.
+   */
+  profileFailures: Record<string, { dataVersion: string | null; message: string }>
   /**
    * The running build of each slot, keyed by slot, for the application's one
    * background poller. A job any consumer started — or that a `point` response
@@ -84,8 +122,28 @@ export interface NodeDataStore {
    * reset is always observed.
    */
   epoch: number
-  /** Record an authoritative `point` payload, whichever consumer asked for it. */
-  observePoint: (point: NodeDataPointResponse, source: string) => void
+  /**
+   * Record an authoritative `point` payload, whichever consumer asked for it.
+   * *identity* is the asking consumer's data identity, which its own reads of
+   * `consumerSlots` are then gated on.
+   */
+  observePoint: (point: NodeDataPointResponse, source: string, identity: string) => void
+  /** Record a profile a request or a completed job produced. */
+  observeProfile: (
+    slotKey: string,
+    profile: NodeDataProfile,
+    executionMetrics?: ExecutionMetrics | null,
+  ) => void
+  startProfileJob: (
+    slotKey: string,
+    job: { jobId: string; message: string; startedByLabel: string; dataVersion: string },
+  ) => void
+  /** Record that asking for a profile failed, so a consumer can offer a retry. */
+  reportProfileFailure: (slotKey: string, dataVersion: string | null, message: string) => void
+  /** Forget a recorded failure, so the profile is asked for again. */
+  clearProfileFailure: (slotKey: string) => void
+  updateProfileProgress: (slotKey: string, status: NodeDataStatusResponse) => void
+  finishProfileJob: (slotKey: string, status?: NodeDataStatusResponse | null) => void
   startJob: (slotKey: string, job: { jobId: string; message: string; startedByLabel: string }) => void
   /** Record a delegated build (an input snapshot or JSON cache) with its canceller. */
   startDelegatedBuild: (slotKey: string, build: NodeDataDelegatedBuild) => void
@@ -105,6 +163,13 @@ export interface NodeDataStore {
   finishJob: (slotKey: string, status?: NodeDataStatusResponse | null) => void
   forgetSlot: (slotKey: string) => void
   reset: () => void
+}
+
+function withoutKey<V>(record: Record<string, V>, key: string): Record<string, V> {
+  if (!(key in record)) return record
+  const { [key]: _removed, ...remaining } = record
+  void _removed
+  return remaining
 }
 
 function pointRefLabel(point: NodeDataPointResponse): { producerNodeId: string; portLabel: string | null } {
@@ -144,9 +209,13 @@ function withJob(
 const useNodeDataStore = create<NodeDataStore>((set) => ({
   slots: {},
   jobs: {},
+  profiles: {},
+  profileJobs: {},
+  profileFailures: {},
+  consumerSlots: {},
   epoch: 0,
 
-  observePoint: (point, source) =>
+  observePoint: (point, source, identity) =>
     set((state) => {
       const slotKey = point.slot_key
       const previous = state.slots[slotKey]
@@ -186,8 +255,98 @@ const useNodeDataStore = create<NodeDataStore>((set) => ({
       return {
         slots: { ...state.slots, [slotKey]: slot },
         jobs: withJob(state.jobs, slotKey, job),
+        consumerSlots: {
+          ...state.consumerSlots,
+          [point.consumer_node_id]: { slotKey, identity },
+        },
         epoch:
           generationChanged(previous, generation) || versionChanged ? state.epoch + 1 : state.epoch,
+      }
+    }),
+
+  observeProfile: (slotKey, profile, executionMetrics = null) =>
+    set((state) => ({
+      profiles: {
+        ...state.profiles,
+        [slotKey]: { dataVersion: profile.data_version, profile, executionMetrics },
+      },
+      profileFailures: withoutKey(state.profileFailures, slotKey),
+    })),
+
+  startProfileJob: (slotKey, job) =>
+    set((state) => ({
+      profileJobs: {
+        ...state.profileJobs,
+        [slotKey]: {
+          jobId: job.jobId,
+          progress: 0.03,
+          message: job.message,
+          startedByLabel: job.startedByLabel,
+          dataVersion: job.dataVersion,
+        },
+      },
+      profileFailures: withoutKey(state.profileFailures, slotKey),
+    })),
+
+  reportProfileFailure: (slotKey, dataVersion, message) =>
+    set((state) => ({
+      profileFailures: { ...state.profileFailures, [slotKey]: { dataVersion, message } },
+    })),
+
+  clearProfileFailure: (slotKey) =>
+    set((state) => ({ profileFailures: withoutKey(state.profileFailures, slotKey) })),
+
+  updateProfileProgress: (slotKey, status) =>
+    set((state) => {
+      const running = state.profileJobs[slotKey]
+      if (!running) return {}
+      return {
+        profileJobs: {
+          ...state.profileJobs,
+          [slotKey]: {
+            ...running,
+            progress: status.progress,
+            message: status.message || running.message,
+          },
+        },
+      }
+    }),
+
+  finishProfileJob: (slotKey, status) =>
+    set((state) => {
+      const finished = state.profileJobs[slotKey]
+      if (!finished) return {}
+      const { [slotKey]: _finished, ...remaining } = state.profileJobs
+      void _finished
+      const profile = status?.profile ?? null
+      return {
+        profileJobs: remaining,
+        // A completed job carries the profile it computed, so no consumer has
+        // to ask for it again; any other outcome leaves the profile absent and
+        // states why, so a consumer can offer to run it again.
+        profiles: profile
+          ? {
+              ...state.profiles,
+              [slotKey]: {
+                dataVersion: profile.data_version,
+                profile,
+                executionMetrics: status?.execution_metrics ?? null,
+              },
+            }
+          : state.profiles,
+        // The failure belongs to the version this job profiled, not to
+        // whatever the point holds now: a rebuild that published while it ran
+        // must still be profiled.
+        profileFailures: profile
+          ? withoutKey(state.profileFailures, slotKey)
+          : {
+              ...state.profileFailures,
+              [slotKey]: {
+                dataVersion: finished.dataVersion,
+                message:
+                  status?.error || status?.message || "Profiling this data did not finish.",
+              },
+            },
       }
     }),
 
@@ -298,16 +457,83 @@ const useNodeDataStore = create<NodeDataStore>((set) => ({
       if (!state.slots[slotKey]) return {}
       const { [slotKey]: _removed, ...remaining } = state.slots
       void _removed
-      return { slots: remaining, jobs: withJob(state.jobs, slotKey, null), epoch: state.epoch + 1 }
+      const { [slotKey]: _profile, ...remainingProfiles } = state.profiles
+      void _profile
+      const { [slotKey]: _profileJob, ...remainingProfileJobs } = state.profileJobs
+      void _profileJob
+      return {
+        slots: remaining,
+        jobs: withJob(state.jobs, slotKey, null),
+        profiles: remainingProfiles,
+        profileJobs: remainingProfileJobs,
+        profileFailures: withoutKey(state.profileFailures, slotKey),
+        epoch: state.epoch + 1,
+      }
     }),
 
   // The epoch keeps counting through a reset, so a consumer whose graph did
   // not change still observes that its answer no longer belongs to this
   // document and asks again.
-  reset: () => set((state) => ({ slots: {}, jobs: {}, epoch: state.epoch + 1 })),
+  reset: () =>
+    set((state) => ({
+      slots: {},
+      jobs: {},
+      profiles: {},
+      profileJobs: {},
+      profileFailures: {},
+      consumerSlots: {},
+      epoch: state.epoch + 1,
+    })),
 }))
 
 export default useNodeDataStore
+
+/**
+ * The slot entry one consumer node reads, exactly as the store holds it, so a
+ * selector returns a stable reference.
+ */
+export function slotForConsumer(
+  state: NodeDataStore,
+  consumerNodeId: string,
+  identity: string | null,
+): NodeDataSlot | null {
+  const slotKey = consumerSlotKey(state, consumerNodeId, identity)
+  return (slotKey ? state.slots[slotKey] : undefined) ?? null
+}
+
+/**
+ * The slot a consumer reads *for this identity*. A mapping recorded under
+ * another identity — the point before the consumer's source switched or its
+ * graph was rewired — is not this consumer's data and is never returned.
+ */
+function consumerSlotKey(
+  state: NodeDataStore,
+  consumerNodeId: string,
+  identity: string | null,
+): string | null {
+  const mapping = state.consumerSlots[consumerNodeId]
+  if (!mapping || identity === null || mapping.identity !== identity) return null
+  return mapping.slotKey
+}
+
+/**
+ * The profile of the data one consumer node reads, if the shared store holds
+ * one. This is a read of what other consumers have already established; it
+ * never asks the backend, so a panel that only labels columns can use it.
+ */
+export function profileForConsumer(
+  state: NodeDataStore,
+  consumerNodeId: string,
+  identity: string | null,
+): NodeDataProfileEntry | null {
+  const slotKey = consumerSlotKey(state, consumerNodeId, identity)
+  if (!slotKey) return null
+  const entry = state.profiles[slotKey]
+  const slot = state.slots[slotKey]
+  // Only the profile of the data the point currently holds is shown.
+  if (!entry || !slot || slot.dataVersion !== entry.dataVersion) return null
+  return entry
+}
 
 /** True when *columns* covers every column in *demand*. */
 export function columnsCoverDemand(columns: NodeDataColumns, demand: NodeDataColumns): boolean {

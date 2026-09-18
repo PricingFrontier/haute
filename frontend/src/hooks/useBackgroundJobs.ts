@@ -13,7 +13,6 @@
 import { useCallback, useEffect, useRef } from "react"
 import {
   getExplorePivotStatus,
-  getExploreStatus,
   getNodeDataStatus,
   getOptimiserStatus,
   getTrainStatus,
@@ -22,7 +21,7 @@ import { FAILED_JOB_STATUSES } from "../api/types"
 import type { NodeDataStatusResponse } from "../api/types"
 import { ApiResponseValidationError } from "../api/responseValidation"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
-import type { ExplorePivotProgress, ExploreProgress, SolveProgress, TrainProgress } from "../stores/useNodeResultsStore"
+import type { ExplorePivotProgress, SolveProgress, TrainProgress } from "../stores/useNodeResultsStore"
 import useNodeDataStore from "../stores/useNodeDataStore"
 import type { NodeDataSlotJob } from "../stores/useNodeDataStore"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
@@ -174,47 +173,6 @@ export default function useBackgroundJobs() {
     failLabel: "Training failed",
   })
 
-  // ── Explore job polling ──
-
-  const exploreJobs = useNodeResultsStore((s) => s.exploreJobs)
-  const updateExploreProgress = useNodeResultsStore((s) => s.updateExploreProgress)
-  const completeExploreJob = useNodeResultsStore((s) => s.completeExploreJob)
-  const failExploreJob = useNodeResultsStore((s) => s.failExploreJob)
-
-  const explorePollFn = useCallback(
-    (jobId: string, signal: AbortSignal) => getExploreStatus<ExploreProgress>(jobId, { signal }),
-    [],
-  )
-  const exploreOnComplete = useCallback(
-    (nodeId: string, status: ExploreProgress) => {
-      if (!status.result) return
-      completeExploreJob(nodeId, status.result, status)
-    },
-    [completeExploreJob],
-  )
-
-  useJobPolling<(typeof exploreJobs)[string], ExploreProgress>({
-    jobs: exploreJobs,
-    pollFn: explorePollFn,
-    onProgress: updateExploreProgress,
-    progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
-    onComplete: exploreOnComplete,
-    onFail: failExploreJob,
-    labelFn: (job) => job.nodeLabel,
-    jobIdFn: (job) => job.jobId,
-    isComplete: (s) => s.status === "completed",
-    isError: (s) => FAILED_JOB_STATUSES.has(s.status),
-    getResult: (s) => (s.result ? s : undefined),
-    getErrorMessage: (s) => buildExecutionFailureMessage(s.message || "Unknown error", s.execution_metrics, {
-      status: s.status,
-      terminalReason: s.terminal_reason,
-    }),
-    getTerminalPollErrorMessage: getJobPollErrorMessage,
-    addToast,
-    successLabel: "Explore complete",
-    failLabel: "Explore failed",
-  })
-
   // ── Explore pivot job polling ──
 
   const pivotJobs = useNodeResultsStore((s) => s.pivotJobs)
@@ -304,5 +262,45 @@ export default function useBackgroundJobs() {
     addToast,
     successLabel: "Data cached",
     failLabel: "Data caching failed",
+  })
+
+  // ── Shared data-profile polling, keyed by slot ──
+
+  const profileJobs = useNodeDataStore((s) => s.profileJobs)
+  const updateProfileProgress = useNodeDataStore((s) => s.updateProfileProgress)
+  const finishProfileJob = useNodeDataStore((s) => s.finishProfileJob)
+  const profileOnComplete = useCallback(
+    (slotKey: string, status: NodeDataStatusResponse) => finishProfileJob(slotKey, status),
+    [finishProfileJob],
+  )
+  const profileOnFail = useCallback(
+    (slotKey: string, _message: string, status?: NodeDataStatusResponse) => {
+      void _message
+      finishProfileJob(slotKey, status ?? null)
+    },
+    [finishProfileJob],
+  )
+
+  useJobPolling<NodeDataSlotJob, NodeDataStatusResponse>({
+    jobs: profileJobs,
+    pollFn: nodeDataPollFn,
+    onProgress: updateProfileProgress,
+    progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
+    onComplete: profileOnComplete,
+    onFail: profileOnFail,
+    labelFn: (job) => job.startedByLabel,
+    jobIdFn: (job) => job.jobId,
+    isComplete: (s) => s.status === "completed",
+    isError: (s) => FAILED_JOB_STATUSES.has(s.status),
+    getResult: (s) => s,
+    getErrorMessage: (s) => buildExecutionFailureMessage(
+      s.error || s.message || "Unknown error",
+      s.execution_metrics,
+      { status: s.status, terminalReason: s.terminal_reason },
+    ),
+    getTerminalPollErrorMessage: getJobPollErrorMessage,
+    addToast,
+    successLabel: "Data profile ready",
+    failLabel: "Data profile failed",
   })
 }

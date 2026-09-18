@@ -492,10 +492,7 @@ class NodeDataService:
         try:
             consumer = consumer_point(body.graph, body.node_id)
         except NodeDataPointInvalidError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail={"error_code": exc.error_code, "message": str(exc)},
-            ) from exc
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         resolver = DataPointResolver(
             body.graph,
             source=body.source,
@@ -588,10 +585,7 @@ class NodeDataService:
         try:
             return resolver.resolve(consumer.point, consumer.demand)
         except NodeDataPointInvalidError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail={"error_code": exc.error_code, "message": str(exc)},
-            ) from exc
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     def run(self, body: NodeDataRunRequest) -> NodeDataRunResponse:
         consumer, resolver = self._resolver(body)
@@ -714,10 +708,7 @@ class NodeDataService:
             try:
                 resolution = resolver.resolve(consumer.point, NodeSnapshotColumns.all())
             except NodeDataPointInvalidError as exc:
-                raise HTTPException(
-                    status_code=400,
-                    detail={"error_code": exc.error_code, "message": str(exc)},
-                ) from exc
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
             if resolution.state != "current" or resolution.data_version is None:
                 return NodeDataProfileResponse(
                     status="cache_required",
@@ -1049,7 +1040,7 @@ class NodeDataService:
         from dataclasses import replace
 
         from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
-        from haute.projection import prepare_graph
+        from haute.execution import prepare_graph
 
         store = NodeSnapshotStore(request.project_root)
         graph = DataPointResolver(request.graph, source=request.source, store=store).graph
@@ -1070,6 +1061,10 @@ class NodeDataService:
                 self._job_by_identity[identity.digest] = job_id
         self._store.update_job(job_id, identity_digest=identity.digest)
         return replace(request, identity_digest=identity.digest)
+
+    def _discard_staging(self, request: _NodeSnapshotWorkerRequest) -> None:
+        """Remove anything left under this build's staging token."""
+        NodeSnapshotStore(request.project_root).discard_node_output_staging(request.staging_token)
 
     def _run_job(
         self,
@@ -1109,6 +1104,11 @@ class NodeDataService:
                     ),
                 )
             )
+            # The worker has terminated and published whatever it published, so
+            # anything left under its staging token is waste. It goes before the
+            # terminal status below, so a client that sees the outcome never
+            # sees a staging directory the build left behind.
+            self._discard_staging(request)
             with self._jobs.latest_publication(job_id) as owns:
                 if not owns:
                     reason = token.terminal_reason or "cancelled"
@@ -1136,15 +1136,16 @@ class NodeDataService:
                     elapsed_seconds=time.monotonic() - start_time,
                 )
         except Exception as exc:  # noqa: BLE001 - a background job records every failure.
+            # Before the failure is published, for the same reason.
+            self._discard_staging(request)
             self._fail_job(job_id, exc, token, start_time, label="Cache build")
         finally:
             if execution_context is not None:
                 execution_context.release_admission()
-            # The worker has terminated; a killed worker could not remove its
-            # own staging directory, which would otherwise hold quota for days.
-            NodeSnapshotStore(request.project_root).discard_node_output_staging(
-                request.staging_token
-            )
+            # Last resort, for a path that failed while publishing its status: a
+            # killed worker could not remove its own staging directory, which
+            # would otherwise hold quota for days.
+            self._discard_staging(request)
             self._jobs.release(job_id)
             with self._lock:
                 self._threads.pop(job_id, None)

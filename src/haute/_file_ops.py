@@ -86,7 +86,11 @@ def remove_tree(path: Path) -> bool:
             shutil.rmtree(path)
             return True
         except FileNotFoundError:
-            return True
+            # A missing *root* is the tree already being gone. A missing
+            # descendant is not: Windows reports a path it cannot open — one
+            # past its 260-character limit, say — the same way, and the tree
+            # survives. Answering on the root keeps that visible to the caller.
+            return not path.exists()
         except OSError as exc:
             if not _IS_WINDOWS or getattr(exc, "winerror", None) not in {5, 32} or delay is None:
                 return not path.exists()

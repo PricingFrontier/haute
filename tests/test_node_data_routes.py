@@ -29,6 +29,24 @@ _TERMINAL = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _pinned_admission_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin modest budgets so these tests do not depend on the host's free RAM.
+
+    Unpinned, a build reserves 70% of *available* RAM (22.5 GiB on this
+    development host) from a process-wide in-flight budget that is itself
+    derived from available RAM, so a second heavy operation live in the same
+    process — or simply less free RAM later in a long parallel run — makes
+    admission exceed that budget. The parent then never reaches its worker and
+    every terminal status becomes ``memory_limited``: correct behaviour for a
+    build memory cannot back, but not what these tests are about. Tests that
+    exercise admission and memory limits raise or set their own, which still
+    takes precedence over this.
+    """
+    monkeypatch.setenv("HAUTE_NODE_SNAPSHOT_MEMORY_LIMIT_MB", "1024")
+    monkeypatch.setenv("HAUTE_EXPLORE_MEMORY_LIMIT_MB", "1024")
+
+
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(haute_scratch)
@@ -66,6 +84,11 @@ def in_process_worker(monkeypatch: pytest.MonkeyPatch) -> None:
         return function(*args)
 
     monkeypatch.setattr(service_mod, "run_isolated_worker", run_child_in_process)
+
+
+def _write(path: Path, payload: bytes) -> None:
+    """Write bytes to a path the caller derived from its sandbox."""
+    path.write_bytes(payload)
 
 
 def _graph(
@@ -373,6 +396,65 @@ def test_worker_contract_and_memory_failures_use_the_job_failure_envelope(
     assert _poll(client, run["job_id"])["status"] == "memory_limited"
 
 
+def test_a_remote_worker_failure_reports_only_the_fixed_internal_detail(
+    client: TestClient,
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._worker_isolation import IsolatedWorkerRemoteError
+    from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+    from haute.routes.node_data import _store
+
+    secret = "database password appeared in the child exception"
+
+    def fail_worker(*_args: Any, **_kwargs: Any) -> Any:
+        raise IsolatedWorkerRemoteError(
+            remote_type="RuntimeError",
+            remote_message=secret,
+            remote_traceback=f"traceback containing {secret}",
+        )
+
+    monkeypatch.setattr(service_mod, "run_isolated_worker", fail_worker)
+    graph = _graph(project)
+
+    run = client.post("/api/node-data/run", json=_body(graph, "banding")).json()
+    final = _poll(client, run["job_id"])
+    stored = _store.require_job(run["job_id"])
+
+    assert (final["status"], final["terminal_reason"]) == ("error", "error")
+    assert final["message"] == _INTERNAL_ERROR_DETAIL
+    assert stored["error"] == _INTERNAL_ERROR_DETAIL
+    assert secret not in str(final)
+    assert secret not in str(stored)
+
+
+def test_an_unexpected_parent_failure_reports_only_the_fixed_internal_detail(
+    client: TestClient,
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+    from haute.routes.node_data import _store
+
+    secret = "C:/secret/path/to/pipeline.py line 42"
+
+    def fail(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(service_mod, "run_isolated_worker", fail)
+    graph = _graph(project)
+
+    run = client.post("/api/node-data/run", json=_body(graph, "banding")).json()
+    final = _poll(client, run["job_id"])
+    stored = _store.require_job(run["job_id"])
+
+    assert (final["status"], final["terminal_reason"]) == ("error", "error")
+    assert final["message"] == _INTERNAL_ERROR_DETAIL
+    assert stored["error"] == _INTERNAL_ERROR_DETAIL
+    assert secret not in str(final)
+    assert secret not in str(stored)
+
+
 def _sleeping_graph(project: Path) -> dict[str, Any]:
     graph = _graph(project, join_code="time.sleep(120)\ndf = source")
     graph["preamble"] = "import time\nimport polars as pl"
@@ -544,13 +626,28 @@ def test_a_killed_workers_staging_is_discarded_by_the_parent(
             resolver.node_output_signature(request.node_id)
         )
         artifact = store.stage_node_output(identity, staging_token=request.staging_token)
-        artifact.data_path.write_bytes(b"partial parquet")
+        _write(artifact.data_path, b"partial parquet")
         raise IsolatedWorkerStoppedError(terminal_reason="timed_out")
 
     monkeypatch.setattr(service_mod, "run_isolated_worker", killed_after_staging)
+
+    from haute.routes.node_data import _node_data_service
+
+    staging_at_terminal: list[list[Path]] = []
+    original_fail = _node_data_service._fail_job
+
+    def record_then_fail(*args: Any, **kwargs: Any) -> Any:
+        # The staging must already be gone when the terminal status is
+        # recorded, so a client that reads the outcome never sees it: this
+        # pins the ordering instead of racing the job thread's cleanup.
+        staging_at_terminal.append(list(project.glob(".haute_cache/inputs/*/.staging-*")))
+        return original_fail(*args, **kwargs)
+
+    monkeypatch.setattr(_node_data_service, "_fail_job", record_then_fail)
     run = client.post("/api/node-data/run", json=_body(_graph(project), "banding")).json()
 
     assert _poll(client, run["job_id"])["status"] == "timed_out"
+    assert staging_at_terminal == [[]]
     assert list(project.glob(".haute_cache/inputs/*/.staging-*")) == []
 
 
@@ -778,7 +875,7 @@ def test_run_rejects_an_invalid_api_input_port_with_400(client: TestClient, proj
     for route in ("/api/node-data/point", "/api/node-data/run"):
         response = client.post(route, json=_body(graph, "band"))
         assert response.status_code == 400, route
-        assert response.json()["detail"]["error_code"] == "node_data_point_invalid"
+        assert response.json()["detail"] == ("API Input 'api' has no table 'removed_table'.")
 
 
 def test_invalid_consumer_wiring_is_a_400(client: TestClient, project: Path) -> None:
@@ -787,7 +884,11 @@ def test_invalid_consumer_wiring_is_a_400(client: TestClient, project: Path) -> 
     response = client.post("/api/node-data/point", json=_body(graph, "banding"))
 
     assert response.status_code == 400
-    assert response.json()["detail"]["error_code"] == "node_data_point_invalid"
+    # The message names the node and what is wrong with its wiring, and is a
+    # plain string like every other route's detail.
+    assert response.json()["detail"] == (
+        "Node 'banding' must have exactly one incoming connection to read its data (found 2)."
+    )
 
 
 def test_a_real_isolated_worker_builds_and_publishes(client: TestClient, project: Path) -> None:

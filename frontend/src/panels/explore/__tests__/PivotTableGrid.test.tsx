@@ -48,7 +48,7 @@ function result(rowCount = 2): ExplorePivotResult {
     node_id: "explore",
     pivot_id: "p1",
     source: "pricing",
-    dataframe_cache_key: "cache",
+    data_version: "cache",
     calculation_key: "calculation",
     row_fields: ["region"],
     column_fields: ["year"],

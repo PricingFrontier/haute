@@ -1178,58 +1178,6 @@ class ExploreOverviewSummary(BaseModel):
     categorical_summary: list[ExploreCategoricalColumnProfile] = Field(default_factory=list)
 
 
-class ExploreCacheReport(BaseModel):
-    """Result of materialising an Explore node's upstream dataset.
-
-    Lightweight by design: the full frame lives in DataFrameExecutionCache
-    (parquet on disk). This payload tells the UI what was cached and how to
-    identify the cache entry.
-    """
-
-    status: Literal["ok"] = "ok"
-    node_id: str
-    upstream_node_id: str
-    source: str = "live"
-    dataframe_cache_key: str
-    row_count: int = 0
-    column_count: int = 0
-    columns: list[ExploreColumnStat] = Field(default_factory=list)
-    overview_summary: ExploreOverviewSummary = Field(default_factory=ExploreOverviewSummary)
-    generated_at: float = 0.0
-    execution_metrics: ExecutionMetricsPayload | None = None
-
-
-class ExploreRunRequest(BaseModel):
-    graph: Graph
-    node_id: str
-    source: str = "live"
-    streaming_chunk_size: StreamingChunkSize = None
-    refresh: bool = False
-
-
-class ExploreRunResponse(BaseModel):
-    status: Literal["started", "running", "completed"]
-    job_id: str | None = None
-    cached: bool = False
-    message: str = ""
-    result: ExploreCacheReport | None = None
-
-
-class ExploreStatusResponse(BaseModel):
-    status: JobStatus
-    progress: float = 0.0
-    message: str = ""
-    result: ExploreCacheReport | None = None
-    terminal_reason: str | None = None
-    execution_metrics: ExecutionMetricsPayload | None = None
-
-
-class ExploreCacheSnapshotResponse(BaseModel):
-    state: Literal["missing", "current", "stale"]
-    message: str
-    result: ExploreCacheReport | None = None
-
-
 NodeDataPointKind = Literal["data_input", "api_input_table", "node_output"]
 NodeDataPointState = Literal["current", "stale", "partial", "missing", "building", "corrupt"]
 NodeDataColumns = list[str] | Literal["all"]
@@ -1394,7 +1342,7 @@ class ExplorePivotResult(BaseModel):
     node_id: str
     pivot_id: str
     source: str = "live"
-    dataframe_cache_key: str
+    data_version: str
     calculation_key: str
     row_fields: list[str] = Field(default_factory=list)
     column_fields: list[str] = Field(default_factory=list)

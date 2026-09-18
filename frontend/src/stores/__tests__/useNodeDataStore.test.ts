@@ -33,6 +33,9 @@ function point(overrides: Partial<NodeDataPointResponse> = {}): NodeDataPointRes
   }
 }
 
+/** The asking consumer's data identity; these tests never vary it. */
+const IDENTITY = "identity-1"
+
 describe("useNodeDataStore", () => {
   beforeEach(() => {
     useNodeDataStore.getState().reset()
@@ -40,10 +43,11 @@ describe("useNodeDataStore", () => {
 
   it("keys one entry by slot so every consumer of the point shares it", () => {
     const store = useNodeDataStore.getState()
-    store.observePoint(point(), "live")
+    store.observePoint(point(), "live", IDENTITY)
     store.observePoint(
       point({ consumer_node_id: "banding", demand: ["premium"], state: "current" }),
       "live",
+      IDENTITY,
     )
 
     const slots = useNodeDataStore.getState().slots
@@ -54,10 +58,10 @@ describe("useNodeDataStore", () => {
 
   it("raises the epoch only when the data the point holds changes", () => {
     const store = useNodeDataStore.getState()
-    store.observePoint(point(), "live")
+    store.observePoint(point(), "live", IDENTITY)
     const afterFirst = useNodeDataStore.getState().epoch
 
-    store.observePoint(point({ consumer_node_id: "banding", demand: ["premium"] }), "live")
+    store.observePoint(point({ consumer_node_id: "banding", demand: ["premium"] }), "live", IDENTITY)
     expect(useNodeDataStore.getState().epoch).toBe(afterFirst)
 
     store.observePoint(
@@ -66,6 +70,7 @@ describe("useNodeDataStore", () => {
         generation: { ...point().generation!, generation_id: "gen-2" },
       }),
       "live",
+      IDENTITY,
     )
     expect(useNodeDataStore.getState().epoch).toBe(afterFirst + 1)
   })
@@ -75,12 +80,14 @@ describe("useNodeDataStore", () => {
     store.observePoint(
       point({ generation: { ...point().generation!, columns: ["premium"] } }),
       "live",
+      IDENTITY,
     )
     const narrow = useNodeDataStore.getState().epoch
 
     store.observePoint(
       point({ generation: { ...point().generation!, columns: ["premium", "region"] } }),
       "live",
+      IDENTITY,
     )
 
     expect(useNodeDataStore.getState().epoch).toBe(narrow + 1)
@@ -88,7 +95,7 @@ describe("useNodeDataStore", () => {
 
   it("tracks a running build once, for the one poller, until it finishes", () => {
     const store = useNodeDataStore.getState()
-    store.observePoint(point({ state: "missing", generation: null, data_version: null }), "live")
+    store.observePoint(point({ state: "missing", generation: null, data_version: null }), "live", IDENTITY)
 
     store.startJob("join||live", { jobId: "job-1", message: "Caching data", startedByLabel: "Explore" })
     expect(useNodeDataStore.getState().jobs).toEqual({
@@ -118,6 +125,7 @@ describe("useNodeDataStore", () => {
         job: { job_id: "job-elsewhere", progress: 0.2, message: "Caching data" },
       }),
       "live",
+      IDENTITY,
     )
 
     expect(useNodeDataStore.getState().jobs["join||live"]).toEqual({
@@ -130,7 +138,7 @@ describe("useNodeDataStore", () => {
 
   it("ends a failed build so its consumers ask what is there now", () => {
     const store = useNodeDataStore.getState()
-    store.observePoint(point({ state: "missing", generation: null, data_version: null }), "live")
+    store.observePoint(point({ state: "missing", generation: null, data_version: null }), "live", IDENTITY)
     store.startJob("join||live", { jobId: "job-1", message: "Caching", startedByLabel: "Explore" })
     const before = useNodeDataStore.getState().epoch
 
@@ -148,6 +156,7 @@ describe("useNodeDataStore", () => {
     store.observePoint(
       point({ kind: "data_input", state: "missing", generation: null, data_version: null }),
       "live",
+      IDENTITY,
     )
     const cancel = vi.fn()
 
@@ -179,6 +188,7 @@ describe("useNodeDataStore", () => {
     store.observePoint(
       point({ kind: "data_input", state: "missing", generation: null, data_version: null }),
       "live",
+      IDENTITY,
     )
     store.startDelegatedBuild("join||live", {
       token: "op-old",
@@ -208,6 +218,7 @@ describe("useNodeDataStore", () => {
     store.observePoint(
       point({ kind: "data_input", state: "missing", generation: null, data_version: null }),
       "live",
+      IDENTITY,
     )
     const replacement = vi.fn()
     store.startDelegatedBuild("join||live", {
@@ -229,8 +240,8 @@ describe("useNodeDataStore", () => {
 
   it("keeps counting the epoch through a reset, so an unchanged consumer still asks again", () => {
     const store = useNodeDataStore.getState()
-    store.observePoint(point(), "live")
-    store.observePoint(point({ data_version: "gen-2" }), "live")
+    store.observePoint(point(), "live", IDENTITY)
+    store.observePoint(point({ data_version: "gen-2" }), "live", IDENTITY)
     const before = useNodeDataStore.getState().epoch
 
     useNodeDataStore.getState().reset()
@@ -241,7 +252,7 @@ describe("useNodeDataStore", () => {
 
   it("forgets a slot and its job together", () => {
     const store = useNodeDataStore.getState()
-    store.observePoint(point(), "live")
+    store.observePoint(point(), "live", IDENTITY)
     store.startJob("join||live", { jobId: "job-1", message: "Caching", startedByLabel: "Explore" })
     const before = useNodeDataStore.getState().epoch
 

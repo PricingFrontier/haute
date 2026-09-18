@@ -4,7 +4,6 @@ import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import { ApiResponseValidationError } from "../responseValidation"
 import {
   applyOptimiser,
-  cancelExplore,
   cancelExplorePivot,
   cancelOptimiserFrontierAutoRange,
   getMlflowDestinations,
@@ -27,9 +26,8 @@ import {
   fetchExplorePivotMembers,
   buildInputCache,
   fetchSchema,
-  getExploreStatus,
-  getExploreCacheSnapshot,
   getNodeDataPoint,
+  getNodeDataProfile,
   getNodeDataStatus,
   runNodeData,
   cancelNodeData,
@@ -64,7 +62,6 @@ import {
   outputAssembleDryRun,
   previewNode,
   readUtilityFile,
-  runExplore,
   runExplorePivot,
   savePipeline,
   saveOptimiser,
@@ -504,46 +501,19 @@ describe("client runtime contracts", () => {
     expect(result.job_id).toBe("job-1")
   })
 
-  it("runExplore sends cache materialisation requests and parses cache descriptors", async () => {
-    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("explore_run_response")))
+  it("getNodeDataProfile posts the consumer node and parses the profile", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("node_data_profile_response")))
 
-    const result = await runExplore({
-      graph: dummyGraph,
-      node_id: "explore",
-      source: "live",
-      refresh: true,
-      streamingChunkSize: 2048,
-    })
+    const result = await getNodeDataProfile({ graph: dummyGraph, node_id: "explore" })
 
-    const [, init] = mockFetch.mock.calls[0]
-    expect(JSON.parse(String(init?.body))).toMatchObject({
-      graph: dummyGraph,
-      node_id: "explore",
-      source: "live",
-      refresh: true,
-      streaming_chunk_size: 2048,
-    })
-    expect(result.cached).toBe(true)
-    expect(result.result?.row_count).toBe(150)
-    expect(result.result?.dataframe_cache_key).toContain("explore_dataset")
-  })
-
-  it("getExploreCacheSnapshot posts the cache identity and parses its state", async () => {
-    const report = loadUiContractFixture<Record<string, unknown>>("explore_run_response").result
-    mockFetch.mockReturnValue(jsonResponse({ state: "current", message: "Cached", result: report }))
-
-    const result = await getExploreCacheSnapshot({
-      graph: dummyGraph, node_id: "explore", streamingChunkSize: 2048,
-    })
-
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/explore/cache-status")
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/node-data/profile")
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
-      graph: dummyGraph, node_id: "explore", source: "live", streaming_chunk_size: 2048,
+      graph: dummyGraph, node_id: "explore", source: "live",
     })
-    expect(result.state).toBe("current")
+    expect(result.status).toBe("completed")
     expect(result.result?.row_count).toBe(150)
+    expect(result.result?.data_version).toBe(result.point.data_version)
   })
-
   it("getNodeDataPoint posts the consumer node and parses its point", async () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("node_data_point_response")))
 
@@ -589,16 +559,6 @@ describe("client runtime contracts", () => {
     expect(cleared.point.state).toBe("missing")
   })
 
-  it("getExploreStatus and cancelExplore parse terminal reports", async () => {
-    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("explore_status_response")))
-
-    const status = await getExploreStatus("explore-job-1")
-    const cancelled = await cancelExplore("explore-job-1")
-
-    expect(status.result?.row_count).toBe(150)
-    expect(cancelled.terminal_reason).toBe("completed")
-  })
-
   it("getTrainStatus rejects malformed nested train results", async () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>("train_status_response")
     const result = fixture.result as Record<string, unknown>
@@ -641,18 +601,6 @@ describe("client runtime contracts", () => {
       cause: expect.any(Error),
     })
     await expect(getOptimiserStatus("job-1")).rejects.toBeInstanceOf(ApiResponseValidationError)
-  })
-
-  it("getExploreStatus rejects malformed status payloads as response validation errors", async () => {
-    mockFetch.mockReturnValue(
-      jsonResponse({ ...loadUiContractFixture<Record<string, unknown>>("explore_status_response"), progress: "bad" }),
-    )
-
-    await expect(getExploreStatus("explore-job-1")).rejects.toMatchObject({
-      name: "ApiResponseValidationError",
-      message: expect.stringMatching(/could not read explore status.*parseExploreStatusResponse/i),
-      cause: expect.any(Error),
-    })
   })
 
   it("getNodeDataStatus rejects malformed status payloads as response validation errors", async () => {
@@ -835,12 +783,6 @@ describe("next-wave client runtime contracts", () => {
     error: RegExp
   }> = [
     {
-      name: "runExplore",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("explore_run_response"), cached: "yes" },
-      call: () => runExplore({ graph: dummyGraph, node_id: "explore" }),
-      error: /parseExploreRunResponse/i,
-    },
-    {
       name: "getNodeDataPoint",
       response: { ...loadUiContractFixture<Record<string, unknown>>("node_data_point_response"), state: "warm" },
       call: () => getNodeDataPoint({ graph: dummyGraph, node_id: "explore" }),
@@ -863,24 +805,6 @@ describe("next-wave client runtime contracts", () => {
       response: { ...loadUiContractFixture<Record<string, unknown>>("node_data_clear_response"), status: "gone" },
       call: () => clearNodeData({ graph: dummyGraph, node_id: "explore" }),
       error: /parseNodeDataClearResponse/i,
-    },
-    {
-      name: "getExploreCacheSnapshot",
-      response: { state: "ready", message: "wrong state", result: null },
-      call: () => getExploreCacheSnapshot({ graph: dummyGraph, node_id: "explore" }),
-      error: /parseExploreCacheSnapshotResponse/i,
-    },
-    {
-      name: "getExploreStatus",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("explore_status_response"), progress: "bad" },
-      call: () => getExploreStatus("explore-job-1"),
-      error: /parseExploreStatusResponse/i,
-    },
-    {
-      name: "cancelExplore",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("explore_status_response"), status: "weird" },
-      call: () => cancelExplore("explore-job-1"),
-      error: /parseExploreStatusResponse/i,
     },
     {
       name: "createSubmodel",

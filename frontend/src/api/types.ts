@@ -1009,20 +1009,6 @@ export interface ExploreOverviewSummary {
 }
 
 /** Lightweight descriptor of a materialised Explore cache entry. */
-export interface ExploreCacheReport {
-  status: "ok"
-  node_id: string
-  upstream_node_id: string
-  source: string
-  dataframe_cache_key: string
-  row_count: number
-  column_count: number
-  generated_at: number
-  columns: ExploreColumnStat[]
-  overview_summary: ExploreOverviewSummary
-  execution_metrics?: ExecutionMetrics | null
-}
-
 export const NODE_DATA_POINT_KINDS = ["data_input", "api_input_table", "node_output"] as const
 
 export type NodeDataPointKind = (typeof NODE_DATA_POINT_KINDS)[number]
@@ -1091,6 +1077,23 @@ export interface NodeDataRunResponse {
   point: NodeDataPointResponse
 }
 
+export interface NodeDataProfile {
+  row_count: number
+  column_count: number
+  columns: ExploreColumnStat[]
+  overview_summary: ExploreOverviewSummary
+  data_version: string
+  generated_at: number
+}
+
+export interface NodeDataProfileResponse {
+  status: "completed" | "started" | "joined" | "cache_required"
+  job_id?: string | null
+  message: string
+  result?: NodeDataProfile | null
+  point: NodeDataPointResponse
+}
+
 export interface NodeDataStatusResponse {
   status: JobStatus
   progress: number
@@ -1101,34 +1104,12 @@ export interface NodeDataStatusResponse {
   execution_metrics?: ExecutionMetrics | null
   generation_id?: string | null
   outcome?: "published" | "superseded" | null
+  profile?: NodeDataProfile | null
 }
 
 export interface NodeDataClearResponse {
   status: "cleared" | "delegated"
   point: NodeDataPointResponse
-}
-
-export interface ExploreRunResponse {
-  status: "started" | "running" | "completed"
-  job_id?: string | null
-  cached: boolean
-  message: string
-  result?: ExploreCacheReport | null
-}
-
-export interface ExploreCacheSnapshotResponse {
-  state: "missing" | "current" | "stale"
-  message: string
-  result?: ExploreCacheReport | null
-}
-
-export interface ExploreStatusResponse {
-  status: JobStatus
-  progress: number
-  message: string
-  result?: ExploreCacheReport | null
-  terminal_reason?: string | null
-  execution_metrics?: ExecutionMetrics | null
 }
 
 export type ExplorePivotMemberKind =
@@ -1185,7 +1166,7 @@ export interface ExplorePivotResult {
   node_id: string
   pivot_id: string
   source: string
-  dataframe_cache_key: string
+  data_version: string
   calculation_key: string
   row_fields: string[]
   column_fields: string[]

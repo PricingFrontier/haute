@@ -50,6 +50,11 @@ def _banding(column: str = "premium") -> dict[str, Any]:
     }
 
 
+def _corrupt(data_path: Path) -> None:
+    """Replace a generation's data with bytes no reader can parse."""
+    data_path.write_bytes(b"corrupt")
+
+
 def _graph(project: Path, *, source_code: str = "", join_code: str | None = None) -> PipelineGraph:
     return PipelineGraph(
         nodes=[
@@ -298,7 +303,7 @@ def test_node_output_states_missing_stale_building_and_corrupt(project: Path) ->
     assert resolve_point(edited, point, source="live", columns=ALL, store=store).state == "stale"
 
     assert generation is not None
-    generation.generation.data_path.write_bytes(b"corrupt")
+    _corrupt(generation.generation.data_path)
     store._verified_generations.clear()
     corrupt = resolve_point(graph, point, source="live", columns=ALL, store=store)
     assert corrupt.state == "corrupt"

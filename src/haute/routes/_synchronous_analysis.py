@@ -18,7 +18,13 @@ from typing import TypeVar, cast
 from fastapi import HTTPException, Request
 
 from haute._analysis_results import SynchronousAnalysisCache
-from haute._data_points import CacheRequiredError, DataPoint, DataPointResolver, LeasedPointFrame
+from haute._data_points import (
+    CacheRequiredError,
+    DataPoint,
+    DataPointResolver,
+    LeasedPointFrame,
+    PointDataChangedError,
+)
 from haute._execution_admission import ExecutionAdmissionError, create_admitted_execution_context
 from haute._execution_context import (
     ExecutionCancellationToken,
@@ -49,7 +55,9 @@ def run_synchronous_analysis(
 
     ``request`` is the JSON-safe analysis request; ``compute`` must finish its
     collections before returning, because the lease ends with this call.
-    Raises :class:`CacheRequiredError` when the point is not current.
+    Raises :class:`CacheRequiredError` when the point is not current, and
+    :class:`PointDataChangedError` when a direct file was rewritten while the
+    analysis read it — that result is neither returned nor memoised.
     """
     resolution = resolver.resolve(point, demand)
     if resolution.state != "current" or resolution.data_version is None:
@@ -70,6 +78,13 @@ def run_synchronous_analysis(
         with resolver.lease_resolved(resolution, execution_context=context) as leased:
             result = compute(leased, context)
             data_version = leased.data_version
+            if resolution.kind == "data_input" and resolution.input_identity is None:
+                # A direct file is not pinned by the lease. An analysis that
+                # read it while it was being rewritten describes data no
+                # version names, so it is neither memoised nor returned: the
+                # client asks again for whatever the file holds now.
+                if resolver.resolve(point, demand).data_version != data_version:
+                    raise PointDataChangedError(resolution)
     except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
         raise HTTPException(status_code=507, detail=exc.to_payload()) from None
     finally:

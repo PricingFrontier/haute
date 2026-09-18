@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
-import type { ExploreCacheReport, ExploreColumnStat } from "../../../api/types"
+import type { ExploreColumnStat } from "../../../api/types"
+import type { ExploreDataView } from "../exploreDataView"
 import {
   CategoricalSummaryCard,
   DataQualityCard,
@@ -29,13 +30,11 @@ function makeColumn(overrides: Partial<ExploreColumnStat> = {}): ExploreColumnSt
   }
 }
 
-function makeReport(overrides: Partial<ExploreCacheReport> = {}): ExploreCacheReport {
+function makeReport(overrides: Partial<ExploreDataView> = {}): ExploreDataView {
   return {
-    status: "ok",
-    node_id: "explore_1",
-    upstream_node_id: "prep_1",
+    producer_node_id: "prep_1",
     source: "pricing",
-    dataframe_cache_key: "explore_dataset:abc123",
+    data_version: "data-v1",
     row_count: 1234,
     column_count: 5,
     generated_at: 1710000000,

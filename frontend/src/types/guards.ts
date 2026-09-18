@@ -33,16 +33,12 @@ import type {
   ExecutionStrategyProvenance,
   ExecutionStrategyReason,
   ExecutionStageMetrics,
-  ExploreCacheReport,
-  ExploreCacheSnapshotResponse,
   ExploreCategoricalColumnProfile,
   ExploreColumnStat,
   ExploreDataQualityIssue,
   ExploreDataQualitySummary,
   ExploreDistinctValueCount,
   ExploreOverviewSummary,
-  ExploreRunResponse,
-  ExploreStatusResponse,
   ExplorePivotCell,
   ExplorePivotFailure,
   ExplorePivotMemberKey,
@@ -126,6 +122,8 @@ import type {
   NodeDataClearResponse,
   NodeDataColumns,
   NodeDataPointResponse,
+  NodeDataProfile,
+  NodeDataProfileResponse,
   NodeDataRunResponse,
   NodeDataStatusResponse,
   OptimiserHistoryEntry,
@@ -1779,7 +1777,6 @@ export function parseInputCacheCancelResponse(value: unknown): InputCacheCancelR
 // Explore contracts
 // ---------------------------------------------------------------------------
 
-const EXPLORE_RUN_STATUSES = ["started", "running", "completed"] as const
 const EXPLORE_COLUMN_KINDS = ["Numeric", "Text", "Temporal", "Boolean", "Nested", "Other"] as const
 
 function parseExploreColumnStat(value: unknown, field: string): ExploreColumnStat {
@@ -1879,64 +1876,6 @@ function parseExploreOverviewSummary(value: unknown, field: string): ExploreOver
   }
 }
 
-export function parseExploreCacheReport(value: unknown): ExploreCacheReport {
-  const obj = expectPlainObject("parseExploreCacheReport", value)
-  return {
-    status: expectStringLiteral("parseExploreCacheReport", obj.status, "field `status`", ["ok"] as const),
-    node_id: expectString("parseExploreCacheReport", obj.node_id, "field `node_id`"),
-    upstream_node_id: expectString("parseExploreCacheReport", obj.upstream_node_id, "field `upstream_node_id`"),
-    source: expectString("parseExploreCacheReport", obj.source, "field `source`"),
-    dataframe_cache_key: expectString(
-      "parseExploreCacheReport",
-      obj.dataframe_cache_key,
-      "field `dataframe_cache_key`",
-    ),
-    row_count: expectNumber("parseExploreCacheReport", obj.row_count, "field `row_count`"),
-    column_count: expectNumber("parseExploreCacheReport", obj.column_count, "field `column_count`"),
-    generated_at: expectNumber("parseExploreCacheReport", obj.generated_at, "field `generated_at`"),
-    columns: parseArray("parseExploreCacheReport", obj.columns, "field `columns`", parseExploreColumnStat),
-    overview_summary: parseExploreOverviewSummary(obj.overview_summary, "field `overview_summary`"),
-    execution_metrics: optionalExecutionMetrics("parseExploreCacheReport", obj, "execution_metrics"),
-  }
-}
-
-export function parseExploreCacheSnapshotResponse(value: unknown): ExploreCacheSnapshotResponse {
-  const obj = expectPlainObject("parseExploreCacheSnapshotResponse", value)
-  return {
-    state: expectStringLiteral(
-      "parseExploreCacheSnapshotResponse",
-      obj.state,
-      "field `state`",
-      ["missing", "current", "stale"] as const,
-    ),
-    message: expectString("parseExploreCacheSnapshotResponse", obj.message, "field `message`"),
-    result: obj.result === undefined || obj.result === null ? null : parseExploreCacheReport(obj.result),
-  }
-}
-
-export function parseExploreRunResponse(value: unknown): ExploreRunResponse {
-  const obj = expectPlainObject("parseExploreRunResponse", value)
-  return {
-    status: expectStringLiteral("parseExploreRunResponse", obj.status, "field `status`", EXPLORE_RUN_STATUSES),
-    job_id: optionalNullableString("parseExploreRunResponse", obj, "job_id"),
-    cached: optionalBoolean("parseExploreRunResponse", obj, "cached"),
-    message: optionalString("parseExploreRunResponse", obj, "message"),
-    result: obj.result === undefined || obj.result === null ? null : parseExploreCacheReport(obj.result),
-  }
-}
-
-export function parseExploreStatusResponse(value: unknown): ExploreStatusResponse {
-  const obj = expectPlainObject("parseExploreStatusResponse", value)
-  return {
-    status: expectStringLiteral("parseExploreStatusResponse", obj.status, "field `status`", JOB_STATUS_VALUES),
-    progress: optionalNumber("parseExploreStatusResponse", obj, "progress"),
-    message: optionalString("parseExploreStatusResponse", obj, "message"),
-    result: obj.result === undefined || obj.result === null ? null : parseExploreCacheReport(obj.result),
-    terminal_reason: optionalNullableString("parseExploreStatusResponse", obj, "terminal_reason"),
-    execution_metrics: optionalExecutionMetrics("parseExploreStatusResponse", obj, "execution_metrics"),
-  }
-}
-
 const NODE_DATA_RETENTIONS = ["pinned", "automatic"] as const
 const NODE_DATA_RUN_STATUSES = ["started", "joined", "completed", "delegated"] as const
 const NODE_DATA_OUTCOMES = ["published", "superseded"] as const
@@ -2033,6 +1972,42 @@ export function parseNodeDataPointResponse(value: unknown): NodeDataPointRespons
   }
 }
 
+export function parseNodeDataProfile(value: unknown): NodeDataProfile {
+  const parser = "parseNodeDataProfile"
+  const obj = expectPlainObject(parser, value)
+  return {
+    row_count: expectNumber(parser, obj.row_count, "field `row_count`"),
+    column_count: expectNumber(parser, obj.column_count, "field `column_count`"),
+    columns: expectArray(parser, obj.columns ?? [], "field `columns`").map((column, index) =>
+      parseExploreColumnStat(column, `field \`columns[${index}]\``),
+    ),
+    overview_summary: parseExploreOverviewSummary(
+      obj.overview_summary ?? {},
+      "field `overview_summary`",
+    ),
+    data_version: expectString(parser, obj.data_version, "field `data_version`"),
+    generated_at: expectNumber(parser, obj.generated_at, "field `generated_at`"),
+  }
+}
+
+export function parseNodeDataProfileResponse(value: unknown): NodeDataProfileResponse {
+  const parser = "parseNodeDataProfileResponse"
+  const obj = expectPlainObject(parser, value)
+  return {
+    status: expectStringLiteral(parser, obj.status, "field `status`", [
+      "completed",
+      "started",
+      "joined",
+      "cache_required",
+    ] as const),
+    job_id: optionalNullableString(parser, obj, "job_id"),
+    message: optionalString(parser, obj, "message"),
+    result:
+      obj.result === undefined || obj.result === null ? null : parseNodeDataProfile(obj.result),
+    point: parseNodeDataPointResponse(obj.point),
+  }
+}
+
 export function parseNodeDataRunResponse(value: unknown): NodeDataRunResponse {
   const parser = "parseNodeDataRunResponse"
   const obj = expectPlainObject(parser, value)
@@ -2061,6 +2036,8 @@ export function parseNodeDataStatusResponse(value: unknown): NodeDataStatusRespo
       obj.outcome === undefined || obj.outcome === null
         ? null
         : expectStringLiteral(parser, obj.outcome, "field `outcome`", NODE_DATA_OUTCOMES),
+    profile:
+      obj.profile === undefined || obj.profile === null ? null : parseNodeDataProfile(obj.profile),
   }
 }
 
@@ -2365,11 +2342,7 @@ function parseExplorePivotResult(value: unknown, field: string): ExplorePivotRes
     node_id: expectString(parser, obj.node_id, `${field}.node_id`),
     pivot_id: expectString(parser, obj.pivot_id, `${field}.pivot_id`),
     source: expectString(parser, obj.source, `${field}.source`),
-    dataframe_cache_key: expectString(
-      parser,
-      obj.dataframe_cache_key,
-      `${field}.dataframe_cache_key`,
-    ),
+    data_version: expectString(parser, obj.data_version, `${field}.data_version`),
     calculation_key: expectString(parser, obj.calculation_key, `${field}.calculation_key`),
     row_fields: parseArray(parser, obj.row_fields, `${field}.row_fields`, (item, itemField) =>
       expectString(parser, item, itemField),

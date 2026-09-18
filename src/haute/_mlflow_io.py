@@ -829,6 +829,18 @@ def _find_model_artifact(client: MlflowClient, run_id: str) -> tuple[str, str]:
     )
 
 
+def _delete_tombstone(remove_tree: Callable[[Path], bool], tombstone: Path) -> None:
+    """Delete one tombstone, reporting a tree that survives.
+
+    Eviction is housekeeping and must never raise into a caller that only asked
+    for an artifact, but a tombstone that silently stays behind holds disk for
+    good: Windows fails a delete while an indexer or scanner briefly holds a
+    handle, so the shared retrying removal is used and a survivor is logged.
+    """
+    if not remove_tree(tombstone):
+        logger.warning("mlflow_disk_cache_tombstone_delete_failed", tombstone=str(tombstone))
+
+
 def _evict_disk_cache(cache_root: Path) -> None:
     """Remove oldest run directories when disk cache exceeds the limit.
 
@@ -837,7 +849,7 @@ def _evict_disk_cache(cache_root: Path) -> None:
     backends is two directories), deleting the ones with the oldest
     modification time.
     """
-    import shutil
+    from haute._file_ops import remove_tree
 
     if not cache_root.is_dir():
         return
@@ -851,7 +863,7 @@ def _evict_disk_cache(cache_root: Path) -> None:
     ]
     tombstones = [d for d in cache_dirs if d.name.startswith(_DISK_CACHE_EVICTION_PREFIX)]
     for tombstone in tombstones:
-        shutil.rmtree(tombstone, ignore_errors=True)
+        _delete_tombstone(remove_tree, tombstone)
 
     active_runs = _active_disk_cache_runs()
     run_dirs = [
@@ -869,9 +881,18 @@ def _evict_disk_cache(cache_root: Path) -> None:
         with _disk_cache_active_runs_guard:
             if d.name in _disk_cache_active_runs:
                 continue
-            tombstone = d.with_name(f"{_DISK_CACHE_EVICTION_PREFIX}{d.name}-{uuid.uuid4().hex}")
+            # Short on purpose: a tombstone name that grew on the run id it
+            # replaced pushed the cached artifact underneath it past Windows'
+            # 260-character path limit, and a path that long cannot be opened —
+            # so the delete below failed and the tombstone held disk for good.
+            # 8 hex digits are shorter than any real run id and unique enough;
+            # the log line below records which run the tombstone was.
+            tombstone = d.with_name(f"{_DISK_CACHE_EVICTION_PREFIX}{uuid.uuid4().hex[:8]}")
             try:
                 d.replace(tombstone)
+            except FileExistsError:
+                # Another pass owns that name; this run is evicted on the next.
+                continue
             except FileNotFoundError:
                 continue
         # The active check and same-filesystem rename are atomic with respect
@@ -882,7 +903,7 @@ def _evict_disk_cache(cache_root: Path) -> None:
             path=str(d),
             tombstone=str(tombstone),
         )
-        shutil.rmtree(tombstone, ignore_errors=True)
+        _delete_tombstone(remove_tree, tombstone)
 
 
 def _resolve_artifact_local(

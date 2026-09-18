@@ -4,9 +4,6 @@ import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import {
   parseApplyOptimiserResponse,
   parseDissolveSubmodelResponse,
-  parseExploreRunResponse,
-  parseExploreCacheSnapshotResponse,
-  parseExploreStatusResponse,
   parseExplorePivotMembersResponse,
   parseExplorePivotRunResponse,
   parseExplorePivotStatusResponse,
@@ -61,6 +58,7 @@ import {
   parseUtilityListResponse,
   parseUtilityReadResponse,
   parseUtilityWriteResponse,
+  parseNodeDataProfileResponse,
 } from "../guards"
 import {
   parseTrainEstimateResponse,
@@ -1307,30 +1305,21 @@ describe("API response guards", () => {
     expect(parsed.error_detail).toEqual(detail)
   })
 
-  it("parses explore run and status responses as cache descriptors", () => {
-    const run = parseExploreRunResponse(loadUiContractFixture("explore_run_response"))
-    const status = parseExploreStatusResponse(loadUiContractFixture("explore_status_response"))
+  it("parses a data-profile response as the statistics of one data version", () => {
+    const parsed = parseNodeDataProfileResponse(
+      loadUiContractFixture("node_data_profile_response"),
+    )
 
-    expect(run.cached).toBe(true)
-    expect(run.result?.row_count).toBe(150)
-    expect(run.result?.column_count).toBe(3)
-    expect(run.result?.dataframe_cache_key).toContain("explore_dataset")
-    expect(run.result?.overview_summary.data_quality.issue_count).toBe(0)
-    expect(status.result?.dataframe_cache_key).toBe(run.result?.dataframe_cache_key)
-  })
-
-  it("parses an Explore cache snapshot response", () => {
-    const parsed = parseExploreCacheSnapshotResponse({
-      state: "missing",
-      message: "No cached Explore result.",
-      result: null,
-    })
-
-    expect(parsed).toEqual({
-      state: "missing",
-      message: "No cached Explore result.",
-      result: null,
-    })
+    expect(parsed.status).toBe("completed")
+    expect(parsed.result?.row_count).toBe(150)
+    expect(parsed.result?.column_count).toBe(3)
+    expect(parsed.result?.data_version).toBe(parsed.point.data_version)
+    expect(parsed.result?.overview_summary.data_quality.issue_count).toBe(1)
+    expect(parsed.result?.columns.map((column: { name: string }) => column.name)).toEqual([
+      "policy_id",
+      "premium",
+      "region",
+    ])
   })
 
   it("parses typed pivot matrices, job status, and exact members", () => {
@@ -1422,30 +1411,31 @@ describe("API response guards", () => {
     ).toThrow(/parseExplorePivot/i)
   })
 
-  it("rejects malformed explore result payloads", () => {
-    const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+  it("rejects malformed profile payloads", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("node_data_profile_response")
     const result = fixture.result as Record<string, unknown>
 
     expect(() =>
-      parseExploreStatusResponse({
+      parseNodeDataProfileResponse({
         ...fixture,
-        result: {
-          ...result,
-          row_count: "bad",
-        },
+        result: { ...result, row_count: "bad" },
       }),
-    ).toThrow(/parseExploreCacheReport/i)
+    ).toThrow(/parseNodeDataProfile/i)
   })
 
-  describe("parseExploreColumnStat (via parseExploreCacheReport.columns)", () => {
+  describe("parseExploreColumnStat (via parseNodeDataProfile.columns)", () => {
     function withColumns(columns: unknown): Record<string, unknown> {
-      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const fixture = loadUiContractFixture<Record<string, unknown>>(
+        "node_data_profile_response",
+      )
       const result = fixture.result as Record<string, unknown>
       return { ...fixture, result: { ...result, columns } }
     }
 
     function withoutResultField(key: string): Record<string, unknown> {
-      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const fixture = loadUiContractFixture<Record<string, unknown>>(
+        "node_data_profile_response",
+      )
       const result = fixture.result as Record<string, unknown>
       const { [key]: _removed, ...nextResult } = result
       void _removed
@@ -1453,7 +1443,7 @@ describe("API response guards", () => {
     }
 
     it("parses a fully populated column stat", () => {
-      const parsed = parseExploreStatusResponse(
+      const parsed = parseNodeDataProfileResponse(
         withColumns([
           {
             name: "premium",
@@ -1499,7 +1489,7 @@ describe("API response guards", () => {
     })
 
     it("accepts null distinct_count", () => {
-      const parsed = parseExploreStatusResponse(
+      const parsed = parseNodeDataProfileResponse(
         withColumns([
           {
             name: "sparse",
@@ -1521,30 +1511,30 @@ describe("API response guards", () => {
       expect(col.distinct_count).toBeNull()
     })
 
-    it("throws when columns is missing from a cache report", () => {
-      expect(() => parseExploreStatusResponse(withoutResultField("columns"))).toThrow(
-        /parseExploreCacheReport/i,
-      )
+    it("accepts a profile without columns as an empty column list", () => {
+      const parsed = parseNodeDataProfileResponse(withoutResultField("columns"))
+
+      expect(parsed.result?.columns).toEqual([])
     })
 
-    it.each(["source", "row_count", "column_count", "generated_at"])(
-      "throws when %s is missing from a cache report",
+    it.each(["row_count", "column_count", "generated_at", "data_version"])(
+      "throws when %s is missing from a profile",
       (field) => {
-        expect(() => parseExploreStatusResponse(withoutResultField(field))).toThrow(
-          /parseExploreCacheReport/i,
+        expect(() => parseNodeDataProfileResponse(withoutResultField(field))).toThrow(
+          /parseNodeDataProfile/i,
         )
       },
     )
 
     it("throws when overview_summary is missing from a cache report", () => {
-      expect(() => parseExploreStatusResponse(withoutResultField("overview_summary"))).toThrow(
+      expect(() => parseNodeDataProfileResponse(withoutResultField("overview_summary"))).toThrow(
         /parseExploreOverviewSummary/i,
       )
     })
 
     it("throws when distinct_count is missing", () => {
       expect(() =>
-        parseExploreStatusResponse(
+        parseNodeDataProfileResponse(
           withColumns([
             { name: "minimal", dtype: "Int64", kind: "Numeric", null_count: 0 },
           ]),
@@ -1553,12 +1543,14 @@ describe("API response guards", () => {
     })
 
     it("throws when overview summary issue severity is invalid", () => {
-      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const fixture = loadUiContractFixture<Record<string, unknown>>(
+        "node_data_profile_response",
+      )
       const result = fixture.result as Record<string, unknown>
       const overview = result.overview_summary as Record<string, unknown>
 
       expect(() =>
-        parseExploreStatusResponse({
+        parseNodeDataProfileResponse({
           ...fixture,
           result: {
             ...result,
@@ -1575,11 +1567,13 @@ describe("API response guards", () => {
     })
 
     it("parses categorical summary profiles", () => {
-      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const fixture = loadUiContractFixture<Record<string, unknown>>(
+        "node_data_profile_response",
+      )
       const result = fixture.result as Record<string, unknown>
       const overview = result.overview_summary as Record<string, unknown>
 
-      const parsed = parseExploreStatusResponse({
+      const parsed = parseNodeDataProfileResponse({
         ...fixture,
         result: {
           ...result,
@@ -1614,12 +1608,14 @@ describe("API response guards", () => {
     })
 
     it("throws when categorical summary value counts are malformed", () => {
-      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const fixture = loadUiContractFixture<Record<string, unknown>>(
+        "node_data_profile_response",
+      )
       const result = fixture.result as Record<string, unknown>
       const overview = result.overview_summary as Record<string, unknown>
 
       expect(() =>
-        parseExploreStatusResponse({
+        parseNodeDataProfileResponse({
           ...fixture,
           result: {
             ...result,
@@ -1642,7 +1638,7 @@ describe("API response guards", () => {
 
     it("throws when name is missing", () => {
       expect(() =>
-        parseExploreStatusResponse(
+        parseNodeDataProfileResponse(
           withColumns([
             {
               dtype: "Float64",
@@ -1657,7 +1653,7 @@ describe("API response guards", () => {
 
     it("throws when dtype is missing", () => {
       expect(() =>
-        parseExploreStatusResponse(
+        parseNodeDataProfileResponse(
           withColumns([
             {
               name: "x",
@@ -1672,7 +1668,7 @@ describe("API response guards", () => {
 
     it("throws when kind is missing", () => {
       expect(() =>
-        parseExploreStatusResponse(
+        parseNodeDataProfileResponse(
           withColumns([
             {
               name: "x",
@@ -1687,7 +1683,7 @@ describe("API response guards", () => {
 
     it("throws when kind is invalid", () => {
       expect(() =>
-        parseExploreStatusResponse(
+        parseNodeDataProfileResponse(
           withColumns([
             {
               name: "x",
@@ -1703,7 +1699,7 @@ describe("API response guards", () => {
 
     it("throws when null_count is missing", () => {
       expect(() =>
-        parseExploreStatusResponse(
+        parseNodeDataProfileResponse(
           withColumns([
             {
               name: "x",
@@ -1718,7 +1714,7 @@ describe("API response guards", () => {
 
     it("throws when null_count is a string", () => {
       expect(() =>
-        parseExploreStatusResponse(
+        parseNodeDataProfileResponse(
           withColumns([
             {
               name: "x",
@@ -1734,7 +1730,7 @@ describe("API response guards", () => {
 
     it("throws when numeric profile counts are malformed", () => {
       expect(() =>
-        parseExploreStatusResponse(
+        parseNodeDataProfileResponse(
           withColumns([
             {
               name: "premium",

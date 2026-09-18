@@ -30,6 +30,11 @@ def _meta(proof: dict[str, Any]) -> dict[str, Any]:
     return {"schema_mode": "v2", "data_file": proof}
 
 
+def _write_meta(layer_dir: Path, payload: object) -> None:
+    """Write one layer's metadata inside the directory the caller owns."""
+    (layer_dir / "meta.json").write_bytes(orjson.dumps(payload))
+
+
 def _layers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[dict[str, Path], list[str]]:
     dirs = {layer: tmp_path / layer for layer in ("working", "committed")}
     for directory in dirs.values():
@@ -735,7 +740,7 @@ def test_legacy_upgrade_skips_a_layer_whose_lock_another_thread_holds(
     dirs, _seen = _layers(tmp_path, monkeypatch)
     legacy = {"schema_mode": "v2", "data_file": {"size": 3, "sha256": "a" * 64}}
     for layer in ("working", "committed"):
-        (dirs[layer] / "meta.json").write_bytes(orjson.dumps(legacy))
+        _write_meta(dirs[layer], legacy)
     signature = _source_proof._DataFileSignatureRecord(3, 4, "a" * 64, revision)
     monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: revision)
     held = threading.Event()

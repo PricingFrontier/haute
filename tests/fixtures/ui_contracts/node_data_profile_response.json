@@ -1,0 +1,142 @@
+{
+  "status": "completed",
+  "job_id": null,
+  "message": "Profile is ready",
+  "result": {
+    "row_count": 150,
+    "column_count": 3,
+    "columns": [
+      {
+        "name": "policy_id",
+        "dtype": "Int64",
+        "kind": "Numeric",
+        "null_count": 0,
+        "nan_count": 0,
+        "distinct_count": 150,
+        "min_value": "1",
+        "p25_value": null,
+        "median_value": null,
+        "mean_value": null,
+        "p75_value": null,
+        "max_value": "150",
+        "std_value": null,
+        "zero_count": null,
+        "negative_count": null,
+        "unique_ratio": 1.0,
+        "is_high_cardinality": true,
+        "is_identifier_candidate": true,
+        "text_min_length": null,
+        "text_mean_length": null,
+        "text_max_length": null,
+        "temporal_span": null
+      },
+      {
+        "name": "premium",
+        "dtype": "Float64",
+        "kind": "Numeric",
+        "null_count": 2,
+        "nan_count": 1,
+        "distinct_count": 140,
+        "min_value": "10.5",
+        "p25_value": null,
+        "median_value": null,
+        "mean_value": null,
+        "p75_value": null,
+        "max_value": "990.0",
+        "std_value": null,
+        "zero_count": null,
+        "negative_count": null,
+        "unique_ratio": 0.93,
+        "is_high_cardinality": false,
+        "is_identifier_candidate": false,
+        "text_min_length": null,
+        "text_mean_length": null,
+        "text_max_length": null,
+        "temporal_span": null
+      },
+      {
+        "name": "region",
+        "dtype": "String",
+        "kind": "Text",
+        "null_count": 0,
+        "nan_count": null,
+        "distinct_count": 4,
+        "min_value": null,
+        "p25_value": null,
+        "median_value": null,
+        "mean_value": null,
+        "p75_value": null,
+        "max_value": null,
+        "std_value": null,
+        "zero_count": null,
+        "negative_count": null,
+        "unique_ratio": 0.03,
+        "is_high_cardinality": false,
+        "is_identifier_candidate": false,
+        "text_min_length": 5,
+        "text_mean_length": 5.5,
+        "text_max_length": 9,
+        "temporal_span": null
+      }
+    ],
+    "overview_summary": {
+      "data_quality": {
+        "issue_count": 1,
+        "issues": [
+          {
+            "severity": "warning",
+            "label": "Nulls in 1 column",
+            "detail": "premium has 2 nulls."
+          }
+        ],
+        "duplicate_row_count": null,
+        "duplicate_ratio": null
+      },
+      "categorical_summary": [
+        {
+          "field": "region",
+          "distinct_count": 4,
+          "expandable": false,
+          "values_truncated": false,
+          "values": [
+            {
+              "value": "North",
+              "count": 40
+            }
+          ]
+        }
+      ]
+    },
+    "data_version": "b41f0a2c9d5e4f7a",
+    "generated_at": 1758134400.0
+  },
+  "point": {
+    "consumer_node_id": "explore",
+    "point": {
+      "producer_node_id": "join",
+      "port_label": null
+    },
+    "slot_key": "join||live",
+    "kind": "node_output",
+    "state": "current",
+    "demand": "all",
+    "data_version": "b41f0a2c9d5e4f7a",
+    "row_count": 150,
+    "size_bytes": 40960,
+    "retention": "pinned",
+    "generation": {
+      "generation_id": "b41f0a2c9d5e4f7a",
+      "columns": "all",
+      "row_count": 150,
+      "column_count": 3,
+      "size_bytes": 40960,
+      "retention": "pinned",
+      "fresh": true,
+      "created_at": 1758134400.0
+    },
+    "job": null,
+    "reads_directly": false,
+    "build_endpoint": null,
+    "clear_endpoint": null
+  }
+}

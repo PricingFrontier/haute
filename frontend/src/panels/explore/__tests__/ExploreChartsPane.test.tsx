@@ -2,10 +2,10 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type {
-  ExploreCacheReport,
   ExplorePivotResult,
   ExplorePivotStatusResponse,
 } from "../../../api/types"
+import type { ExploreDataView } from "../exploreDataView"
 import useGraphStore from "../../../stores/useGraphStore"
 import useNodeResultsStore, {
   explorePivotResultKey,
@@ -108,13 +108,11 @@ function node(
   }
 }
 
-function report(dataframeCacheKey = "dataframe-current"): ExploreCacheReport {
+function report(dataVersion = "dataframe-current"): ExploreDataView {
   return {
-    status: "ok",
-    node_id: "explore_1",
-    upstream_node_id: "source_1",
+    producer_node_id: "source_1",
     source: "pricing",
-    dataframe_cache_key: dataframeCacheKey,
+    data_version: dataVersion,
     row_count: 1,
     column_count: 1,
     generated_at: 1,
@@ -133,14 +131,14 @@ function report(dataframeCacheKey = "dataframe-current"): ExploreCacheReport {
 
 function result(
   sourcePivot: ExplorePivotConfig,
-  dataframeCacheKey = "dataframe-current",
+  dataVersion = "dataframe-current",
 ): ExplorePivotResult {
   return {
     version: 1,
     node_id: "explore_1",
     pivot_id: sourcePivot.id,
     source: "pricing",
-    dataframe_cache_key: dataframeCacheKey,
+    data_version: dataVersion,
     calculation_key: "calculation-current",
     row_fields: sourcePivot.rows.map(({ field }) => field),
     column_fields: sourcePivot.columns.map(({ field }) => field),
@@ -183,7 +181,7 @@ function seedResult(
     pivotCalculationIdentity(sourcePivot),
     "pricing",
     0,
-    sourceResult.dataframe_cache_key,
+    sourceResult.data_version,
   )
   act(() => {
     useNodeResultsStore.getState().completeExplorePivotJob(key, sourceResult)
@@ -194,7 +192,7 @@ function seedResult(
 function renderPane(
   pivots: ExplorePivotConfig[],
   charts: ExploreChartConfig[],
-  cacheReport: ExploreCacheReport | null = report(),
+  cacheReport: ExploreDataView | null = report(),
 ) {
   const exploreNode = node(pivots, charts)
   return render(

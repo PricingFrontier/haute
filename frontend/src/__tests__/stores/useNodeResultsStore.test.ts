@@ -7,7 +7,6 @@ import useNodeResultsStore, {
   MAX_CACHED_PREVIEWS,
   MAX_CACHED_SOLVE_RESULTS,
   MAX_CACHED_TRAIN_RESULTS,
-  MAX_CACHED_EXPLORE_RESULTS,
   MAX_CACHED_EXPLORE_PIVOT_RESULTS,
   explorePivotResultKey,
   hashConfig,
@@ -17,7 +16,7 @@ import useGraphStore from "../../stores/useGraphStore.ts"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore.ts"
 import type { PreviewData } from "../../panels/DataPreview.tsx"
 import type { OptimiserSolveResult } from "../../api/types.ts"
-import type { ExploreCacheReport, ExplorePivotResult, ExplorePivotStatusResponse } from "../../api/types.ts"
+import type { ExplorePivotResult, ExplorePivotStatusResponse } from "../../api/types.ts"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture.ts"
 import { makeTrainResult } from "../../test-utils/factories.ts"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture.ts"
@@ -38,8 +37,6 @@ function resetStore() {
     solveJobs: {},
     trainResults: {},
     trainJobs: {},
-    exploreResults: {},
-    exploreJobs: {},
     pivotResults: {},
     pivotJobs: {},
   })
@@ -76,27 +73,8 @@ function makeSolveResult(
   }
 }
 
-function makeExploreReport(overrides: Partial<ExploreCacheReport> = {}): ExploreCacheReport {
-  return {
-    status: "ok",
-    node_id: "explore_1",
-    upstream_node_id: "source_1",
-    source: "pricing",
-    dataframe_cache_key: "explore_dataset:abc",
-    row_count: 1000,
-    column_count: 8,
-    generated_at: 1710000000,
-    columns: [],
-    overview_summary: {
-      data_quality: { issue_count: 0, issues: [], duplicate_row_count: 0, duplicate_ratio: 0 },
-      categorical_summary: [],
-    },
-    ...overrides,
-  }
-}
-
 function makePivotResult(overrides: Partial<ExplorePivotResult> = {}): ExplorePivotResult {
-  return { version: 1, node_id: "e1", pivot_id: "p1", source: "pricing", dataframe_cache_key: "cache", calculation_key: "calc", row_fields: [], column_fields: [], values: [], row_paths: [], column_paths: [], cells: [], warnings: [], generated_at: 1, execution_metrics: null, ...overrides }
+  return { version: 1, node_id: "e1", pivot_id: "p1", source: "pricing", data_version: "cache", calculation_key: "calc", row_fields: [], column_fields: [], values: [], row_paths: [], column_paths: [], cells: [], warnings: [], generated_at: 1, execution_metrics: null, ...overrides }
 }
 
 function makePivotStatus(overrides: Partial<ExplorePivotStatusResponse> = {}): ExplorePivotStatusResponse {
@@ -116,16 +94,14 @@ describe("useNodeResultsStore", () => {
     const store = useNodeResultsStore.getState()
     store.startTrainJob("n1", "train", "Train", "config", "live", 7)
     store.startSolveJob("n1", "solve", "Solve", {}, "config", "live", 7)
-    store.startExploreJob("n1", "explore", "Explore", "config", "live", 7)
     store.startExplorePivotJob("n1", "pivot", "n1", "p1", "Explore", "Pivot", "calculation", "live", 7)
     const progress = { status: "running" as const, progress: 0.5, message: "Still working", elapsed_seconds: 5, iteration: 3, total_iterations: 6, train_loss: {}, failure: null, terminal_reason: null, execution_metrics: null }
     const update = () => {
       store.updateTrainProgress("n1", progress)
       store.updateSolveProgress("n1", progress)
-      store.updateExploreProgress("n1", { ...progress, result: null })
       store.updateExplorePivotProgress("n1", { ...progress, result: null })
     }
-    const collections = ["trainJobs", "solveJobs", "exploreJobs", "pivotJobs"] as const
+    const collections = ["trainJobs", "solveJobs", "pivotJobs"] as const
     document.acknowledgeSave("r2")
     document.acknowledgeSave("r3")
     update()
@@ -454,107 +430,6 @@ describe("useNodeResultsStore", () => {
     it("is a no-op for unknown node", () => {
       useNodeResultsStore.getState().failTrainJob("ghost", "oops")
       expect(useNodeResultsStore.getState().trainJobs["ghost"]).toBeUndefined()
-    })
-  })
-
-  // ────────────────────────────────────────────────────────────────
-  // hashConfig
-  // ────────────────────────────────────────────────────────────────
-
-  describe("explore job lifecycle", () => {
-    it("startExploreJob creates an active job entry", () => {
-      const s = useNodeResultsStore.getState()
-      s.startExploreJob("e1", "ej-1", "Explore Node", "eh", "pricing", 3)
-
-      const job = useNodeResultsStore.getState().exploreJobs.e1
-      expect(job).toBeDefined()
-      expect(job.jobId).toBe("ej-1")
-      expect(job.nodeLabel).toBe("Explore Node")
-      expect(job.configHash).toBe("eh")
-      expect(job.source).toBe("pricing")
-      expect(job.structuralVersion).toBe(3)
-      expect(job.progress).toBeNull()
-      expect(job.error).toBeNull()
-    })
-
-    it("updateExploreProgress attaches progress to active job", () => {
-      const s = useNodeResultsStore.getState()
-      s.startExploreJob("e1", "ej-1", "Explore Node", "eh", "pricing", 3)
-      s.updateExploreProgress("e1", {
-        status: "running",
-        progress: 0.5,
-        message: "Analysing",
-        result: null,
-      })
-
-      const job = useNodeResultsStore.getState().exploreJobs.e1
-      expect(job.progress?.progress).toBe(0.5)
-      expect(job.progress?.message).toBe("Analysing")
-    })
-
-    it("completeExploreJob moves result to exploreResults and removes the job", () => {
-      const s = useNodeResultsStore.getState()
-      const report = makeExploreReport({ row_count: 2500 })
-      s.startExploreJob("e1", "ej-1", "Explore Node", "eh", "pricing", 3)
-      s.completeExploreJob("e1", report, {
-        status: "completed",
-        progress: 1,
-        message: "done",
-        result: report,
-      })
-
-      const state = useNodeResultsStore.getState()
-      expect(state.exploreJobs.e1).toBeUndefined()
-      expect(state.exploreResults.e1).toMatchObject({
-        result: report,
-        jobId: "ej-1",
-        configHash: "eh",
-        source: "pricing",
-        structuralVersion: 3,
-        nodeLabel: "Explore Node",
-      })
-      expect(state.exploreResults.e1.result).toBe(report)
-    })
-
-    it("failExploreJob stores the terminal error without discarding the previous report", () => {
-      const s = useNodeResultsStore.getState()
-      const report = makeExploreReport({ row_count: 500 })
-      s.startExploreJob("e1", "ej-1", "Explore Node", "h1", "pricing", 1)
-      s.completeExploreJob("e1", report)
-      s.startExploreJob("e1", "ej-2", "Renamed Explore Node", "h2", "batch", 2)
-      s.failExploreJob("e1", "Out of memory", {
-        status: "memory_limited",
-        progress: 1,
-        message: "Out of memory",
-        result: null,
-        terminal_reason: "memory_limited",
-      })
-
-      const cached = useNodeResultsStore.getState().exploreResults.e1
-      expect(useNodeResultsStore.getState().exploreJobs.e1).toBeUndefined()
-      expect(cached.error).toBe("Out of memory")
-      expect(cached.result).toBe(report)
-      expect(cached.terminalStatus?.status).toBe("memory_limited")
-      expect(cached).toMatchObject({
-        configHash: "h1",
-        source: "pricing",
-        structuralVersion: 1,
-        nodeLabel: "Explore Node",
-      })
-    })
-
-    it("trims Explore results by LRU while preserving the pinned node", () => {
-      const s = useNodeResultsStore.getState()
-      s.setPinnedPreviewNodeId("e0")
-      for (let i = 0; i < MAX_CACHED_EXPLORE_RESULTS + 2; i++) {
-        const nodeId = `e${i}`
-        s.startExploreJob(nodeId, `job-${i}`, `Explore ${i}`, `h${i}`, "pricing", i)
-        s.completeExploreJob(nodeId, makeExploreReport({ node_id: nodeId, row_count: i }))
-      }
-
-      const state = useNodeResultsStore.getState()
-      expect(Object.keys(state.exploreResults)).toHaveLength(MAX_CACHED_EXPLORE_RESULTS)
-      expect(state.exploreResults.e0).toBeDefined()
     })
   })
 

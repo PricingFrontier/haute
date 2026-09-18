@@ -296,7 +296,7 @@ test.describe("Explore cached field pivot journey", () => {
     await expect(chartElement.first()).toBeVisible()
   })
 
-  test("a failed re-cache keeps the previous report visible as stale and reports the failure", async ({
+  test("a failed re-cache keeps the previous data visible as stale and reports the failure", async ({
     page,
   }) => {
     test.slow()
@@ -357,6 +357,13 @@ test.describe("Explore cached field pivot journey", () => {
     await page.keyboard.type('raise ValueError("boom")')
     await expect(editor).toContainText("raise ValueError")
 
+    // The editor commits after an idle debounce, so the text being on screen
+    // does not mean the node's code has reached the graph yet. Waiting for the
+    // shared cache to report the edited data as stale proves it has — and a
+    // Re-cache clicked before that would rebuild the *previous* code and
+    // succeed, which is how this journey used to pass while proving nothing.
+    await expect(page.getByTestId("explore-preview-frame")).toContainText(/cache stale/i)
+
     // Trigger Re-cache
     const reCacheButton = page.getByTestId("explore-preview-frame").getByRole("button", {
       name: /Re-cache|Needs caching/,
@@ -364,15 +371,16 @@ test.describe("Explore cached field pivot journey", () => {
     await expect(reCacheButton).toBeEnabled()
     await reCacheButton.click()
 
-    // Assert: job ends in error state visible in the panel, no traceback or file path in message
-    const failureAlert = page.getByRole("alert").filter({ hasText: /Explore failed/i })
+    // Assert: the shared build ends in a failure the user can read, with no
+    // traceback or file path in its message.
+    const failureAlert = page.getByRole("alert").filter({ hasText: /Data caching failed/i })
     await expect(failureAlert).toBeVisible({ timeout: 60_000 })
     const failureMessage = (await failureAlert.textContent()) ?? ""
     expect(failureMessage).not.toMatch(/traceback/i)
     expect(failureMessage).not.toMatch(/\.py/i)
     expect(failureMessage).not.toMatch(/File\s+"/i)
 
-    // Previous report marked stale (yellow/stale indicator)
+    // The previous generation is still there, now stale for this code
     await expect
       .poll(() => reCacheButton.evaluate((el) => el.style.background))
       .toContain("var(--warning-strong)")

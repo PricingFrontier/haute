@@ -35,6 +35,7 @@ from unittest.mock import MagicMock, patch
 
 import polars as pl  # noqa: F401 — keeps fixture parity with sibling modules
 import pytest
+import structlog
 
 from haute._mlflow_io import (
     ScoringModel,
@@ -396,6 +397,12 @@ class TestLoadModelSingleFlight:
         assert first is second
         assert transport.calls == 1
         assert len(load_calls) == 1
+
+
+def _seed_artifact(path: Path, payload: bytes) -> None:
+    """Write one cached artifact at a path the caller derived from its sandbox."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
 
 
 class TestArtifactDiskIdentity:
@@ -780,6 +787,7 @@ class TestArtifactDiskIdentity:
         os.utime(cache_root / _local_backend().digest / "run-keep", (fresh, fresh))
         entered = threading.Event()
         observed_paths: list[Path] = []
+        removal_errors: list[OSError] = []
         real_rmtree = shutil.rmtree
 
         def user_enters_run() -> None:
@@ -790,14 +798,24 @@ class TestArtifactDiskIdentity:
         def observing_rmtree(path: Path, ignore_errors: bool = False) -> None:
             tombstone = Path(path)
             observed_paths.append(tombstone)
-            assert tombstone.name.startswith(".evicting-run-race-")
+            # Short name: a tombstone must never lengthen the path of the
+            # artifact underneath it (Windows cannot open past 260 characters).
+            assert tombstone.name.startswith(".evicting-")
+            assert len(tombstone.name) <= len(".evicting-") + 8
             thread = threading.Thread(target=user_enters_run, daemon=True)
             thread.start()
             assert entered.wait(WAIT_MUST_HAPPEN_S), (
                 "slow tombstone deletion still held the global active-runs guard"
             )
-            real_rmtree(tombstone, ignore_errors=ignore_errors)
-            thread.join(WAIT_MUST_HAPPEN_S)
+            try:
+                real_rmtree(tombstone, ignore_errors=ignore_errors)
+            except OSError as exc:
+                # Recorded so a tombstone that survives says why, instead of
+                # failing with a bare "it still exists".
+                removal_errors.append(exc)
+                raise
+            finally:
+                thread.join(WAIT_MUST_HAPPEN_S)
 
         with (
             patch("haute._mlflow_io._DISK_CACHE_MAX_DIRS", 1),
@@ -806,8 +824,50 @@ class TestArtifactDiskIdentity:
             _evict_disk_cache(cache_root)
 
         assert entered.is_set()
-        assert len(observed_paths) == 1
-        assert not observed_paths[0].exists()
+        # One tombstone, removed — possibly after a retry, which the shared
+        # removal makes when Windows refuses a delete while a handle is held.
+        assert len(set(observed_paths)) == 1
+        assert not observed_paths[0].exists(), (
+            f"tombstone survived its deletion: {[repr(exc) for exc in removal_errors]}"
+        )
+
+    def test_a_tombstone_that_cannot_be_deleted_is_reported_not_forgotten(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Eviction is housekeeping, but a survivor holds disk until it is seen.
+
+        Windows reports a path it cannot open — one past its 260-character
+        limit, which is how long-named tombstones used to fail — as a missing
+        path from inside the walk, so the removal must not read that as success.
+        """
+        monkeypatch.chdir(tmp_path)
+        cache_root = tmp_path / ".cache" / "models"
+        for run in ("run-old", "run-new"):
+            _seed_artifact(
+                _artifact_cache_path(cache_root, _local_backend().digest, run, "model.cbm"),
+                run.encode(),
+            )
+        os.utime(cache_root / _local_backend().digest / "run-old", (1_700_000_000, 1_700_000_000))
+
+        def rmtree_descendant_missing(_path, *_args, **_kwargs):
+            raise FileNotFoundError(2, "The system cannot find the path specified")
+
+        with (
+            patch("haute._mlflow_io._DISK_CACHE_MAX_DIRS", 1),
+            patch("shutil.rmtree", side_effect=rmtree_descendant_missing),
+            structlog.testing.capture_logs() as logs,
+        ):
+            _evict_disk_cache(cache_root)
+
+        tombstones = list((cache_root / _local_backend().digest).glob(".evicting-*"))
+        assert len(tombstones) == 1
+        assert any(
+            record.get("event") == "mlflow_disk_cache_tombstone_delete_failed"
+            and record.get("tombstone") == str(tombstones[0])
+            for record in logs
+        ), logs
 
     def test_fast_disk_cache_path_marks_run_active_before_probe(
         self,

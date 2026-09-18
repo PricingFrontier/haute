@@ -297,7 +297,7 @@ describe("usePipelineAPI", () => {
       undoStack: [],
       redoStack: [],
     })
-    useNodeResultsStore.setState({ previews: {}, columnCache: {}, trainJobs: {}, trainResults: {}, solveJobs: {}, exploreJobs: {}, pivotJobs: {}, pivotStartClaims: {} })
+    useNodeResultsStore.setState({ previews: {}, columnCache: {}, trainJobs: {}, trainResults: {}, solveJobs: {}, pivotJobs: {}, pivotStartClaims: {} })
     mockLoad.mockReset()
     mockPreview.mockReset()
     mockRecoveryPreview.mockReset()

@@ -119,6 +119,19 @@ def _patient_preparation_join(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_mlflow_telemetry(monkeypatch: pytest.MonkeyPatch):
+    """Keep the suite hermetic: MLflow must not phone home from a test.
+
+    MLflow 3 posts usage telemetry to its own endpoint the first time a client
+    is created in a process. That is an outbound request the suite never asked
+    for, and it lands in whichever test happens to be recording requests at the
+    time — which is how `test_tracking_requests_reach_only_the_mlflow_host_with
+    _the_mlflow_token` saw a telemetry POST ahead of its own.
+    """
+    monkeypatch.setenv("MLFLOW_DISABLE_TELEMETRY", "true")
+
+
+@pytest.fixture(autouse=True)
 def _interactive_execution_test_mode(monkeypatch: pytest.MonkeyPatch):
     """Keep legacy in-process seams explicit; isolation tests opt into processes."""
     monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "thread")
@@ -326,16 +339,16 @@ def _widen_sandbox_root(
     def init_with_writable_cache(
         self: SourceCacheStore,
         root: str | Path,
-        *,
-        max_bytes: int | None = None,
-        max_generations: int | None = None,
+        **kwargs: object,
     ) -> None:
+        # Every keyword the store takes is forwarded, so a subclass that passes
+        # its own options (a node-output store's retirement grace, for example)
+        # still constructs under the widened root.
         resolved_root = Path(root).resolve()
         original_store_init(
             self,
             cache_root if resolved_root == widened_root else resolved_root,
-            max_bytes=max_bytes,
-            max_generations=max_generations,
+            **kwargs,
         )
 
     monkeypatch.setattr(SourceCacheStore, "__init__", init_with_writable_cache)

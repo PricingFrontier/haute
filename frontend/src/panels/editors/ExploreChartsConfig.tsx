@@ -6,7 +6,10 @@ import {
   ChartLine,
 } from "lucide-react"
 
+import useNodeDataStore, { profileForConsumer, slotForConsumer } from "../../stores/useNodeDataStore"
 import useNodeResultsStore, { explorePivotResultKey } from "../../stores/useNodeResultsStore"
+import useSettingsStore from "../../stores/useSettingsStore"
+import { exploreDataView } from "../explore/exploreDataView"
 import useUIStore from "../../stores/useUIStore"
 import { NODE_GROUP_COLORS, PIVOT_CHART_COLORS } from "../../theme/colors"
 import {
@@ -69,9 +72,10 @@ type Props = {
   onUpdate: OnUpdateConfig
   nodeId: string
   /**
-   * Hash of the node's current Explore cache identity (graph + source), or
-   * null when unknown. A retained Explore result only counts as current when
-   * its configHash matches — the same gate the Explore preview applies.
+   * Hash of the node's current data identity (graph + source), or null when
+   * unknown. The shared point and its profile are read only for that identity,
+   * so a source switch or a rewiring cannot label the previous point's data as
+   * this one's.
    */
   currentConfigHash: string | null
   onShowPivots?: () => void
@@ -93,15 +97,17 @@ function ConfigureSourceScheduler({
   currentConfigHash: string | null
 }) {
   const graph = useGraph()
-  const retained = useNodeResultsStore(
-    (s) => s.exploreResults[node.id] ?? null,
+  // The shared profile of the data this Explore node reads, if one exists for
+  // the version it currently reads under its current identity.
+  const activeSource = useSettingsStore((s) => s.activeSource)
+  const profileEntry = useNodeDataStore((s) => profileForConsumer(s, node.id, currentConfigHash))
+  const slot = useNodeDataStore((s) => slotForConsumer(s, node.id, currentConfigHash))
+  const report = exploreDataView(
+    profileEntry?.profile,
+    slot?.dataVersion,
+    slot?.producerNodeId,
+    activeSource,
   )
-  const report =
-    retained !== null &&
-    currentConfigHash !== null &&
-    retained.configHash === currentConfigHash
-      ? (retained.result ?? null)
-      : null
   const { submitting, updatePivot } = useExplorePivotActions({
     node,
     allNodes: graph.allNodes,
@@ -178,13 +184,13 @@ function pivotSourceStatus(
   pivot: ExplorePivotConfig,
   entry: (PivotResultFreshnessEntry & { error?: string }) | undefined,
   hasActiveJob: boolean,
-  currentDataframeKey: string | null,
+  currentDataVersion: string | null,
 ): PivotSourceStatus {
   if (!isPivotConfigured(pivot)) return "unconfigured"
   if (hasActiveJob) return "loading"
   if (entry?.error && !entry.result) return "error"
   if (!entry?.result) return "not_calculated"
-  return isPivotResultFresh(entry, currentDataframeKey, pivotCalculationIdentity(pivot))
+  return isPivotResultFresh(entry, currentDataVersion, pivotCalculationIdentity(pivot))
     ? "ready"
     : "stale"
 }
@@ -709,7 +715,7 @@ export default function ExploreChartsConfig({
   const [message, setMessage] = useState<string | null>(null)
   const pivotResults = useNodeResultsStore((s) => s.pivotResults)
   const pivotJobs = useNodeResultsStore((s) => s.pivotJobs)
-  const retainedExplore = useNodeResultsStore((s) => s.exploreResults[nodeId] ?? null)
+  const retainedProfile = useNodeDataStore((s) => profileForConsumer(s, nodeId, currentConfigHash))
   // Parsing deep-clones every card and this editor re-renders on pivot
   // polling ticks, so parse once per config identity, as the Charts pane does.
   const parsedCharts = useMemo(() => parseExploreCharts(config), [config])
@@ -723,12 +729,9 @@ export default function ExploreChartsConfig({
     // itself so a later card reusing the id cannot reopen unexpectedly.
     if (!configuredChartExists) setExploreConfiguredChart(nodeId, null)
   }, [configuredChartExists, nodeId, setExploreConfiguredChart])
-  const currentDataframeKey =
-    retainedExplore !== null &&
-    currentConfigHash !== null &&
-    retainedExplore.configHash === currentConfigHash
-      ? (retainedExplore.result?.dataframe_cache_key ?? null)
-      : null
+  // Charts are stale against the data version their pivot was calculated from,
+  // so the current version is what a card compares itself with.
+  const currentDataVersion = retainedProfile?.dataVersion ?? null
   if (!parsedCharts.ok) return <ConfigError error={parsedCharts.error} />
   if (!parsedPivots.ok) return <ConfigError error={parsedPivots.error} />
   const charts = parsedCharts.charts,
@@ -855,7 +858,7 @@ export default function ExploreChartsConfig({
       pivot,
       entry,
       Boolean(pivotJobs[key]),
-      currentDataframeKey,
+      currentDataVersion,
     )
     if (sourceStatus === "ready" && entry?.result) {
       try {

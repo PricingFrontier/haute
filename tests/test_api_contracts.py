@@ -105,18 +105,6 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/WarehouseListResponse"},
         },
     },
-    "/api/explore/cache-status": {
-        "POST": {
-            "request_ref": "#/components/schemas/ExploreRunRequest",
-            "success_schema": {"$ref": "#/components/schemas/ExploreCacheSnapshotResponse"},
-        },
-    },
-    "/api/explore/cancel/{job_id}": {
-        "POST": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/ExploreStatusResponse"},
-        },
-    },
     "/api/explore/pivots/cancel/{job_id}": {
         "POST": {
             "request_ref": None,
@@ -139,18 +127,6 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         "GET": {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/ExplorePivotStatusResponse"},
-        },
-    },
-    "/api/explore/run": {
-        "POST": {
-            "request_ref": "#/components/schemas/ExploreRunRequest",
-            "success_schema": {"$ref": "#/components/schemas/ExploreRunResponse"},
-        },
-    },
-    "/api/explore/status/{job_id}": {
-        "GET": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/ExploreStatusResponse"},
         },
     },
     "/api/files": {

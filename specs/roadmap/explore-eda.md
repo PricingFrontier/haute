@@ -12,7 +12,6 @@ specified in [Explore / EDA](../explore-eda/high-level.md),
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| EDA-C01 | Planned | P2 | Run Explore on shared data points instead of a private Explore cache. |
 | EDA-E09 | Planned | P2 | Add bounded server-binned distributions. |
 | EDA-E10 | Planned | P2 | Add one cached on-demand relationship/key-analysis service. |
 | EDA-E18 | Deferred | P3 | Evaluate advanced Excel-parity pivot operations after representative use. |
@@ -21,53 +20,21 @@ specified in [Explore / EDA](../explore-eda/high-level.md),
 
 ## Planned improvements
 
-### EDA-C01 — Explore on shared data points
-
-**Why:** Explore materialises and profiles its own copy of its input under an
-Explore-node identity, so a Banding or Rating node on the same input cannot use
-it, and Explore cannot use data another consumer cached.
-
-**Plan:** Explore resolves its data point through the caching data-point resolver, builds or joins
-it through the node-data build service, and shows state through the `CACHE-S05` hook and
-button. The overview reads the shared `profile` analysis for the point's
-current data version, starting the profile job when absent. Pivot runs, pivot
-members, and charts lease the point frame for their whole calculation instead
-of scanning the Explore dataframe-cache entry. The pivot result cache key
-replaces the Explore dataframe-cache key with `(point identity digest,
-data_version)`. `ExploreCacheReport` is replaced by the node-data point response
-plus the profile result; `_explore_cache.py`, the Explore run/cache-status/
-status/cancel routes, and `ExploreCacheSpec` are removed.
-
-**Acceptance:** Explore route, pivot, chart, and preview tests pass on shared
-points; an Explore node wired directly to a Data Input or an `apiInput` port
-analyses that source without a node-output build; Explore with non-blank code
-analyses its own output; an Explore node and a Banding node on one parent share
-one build and one cache state; a pivot calculated before a refresh is never
-returned for the new generation.
-
-**Dependencies:** The node-data build service, the data profile job, the analysis-result store, and the shared frontend data cache.
-
-**Evidence:** `src/haute/routes/_explore_service.py`;
-`src/haute/routes/_pivot_service.py`; `src/haute/routes/explore.py`;
-`frontend/src/panels/ExplorePreview.tsx`; `tests/test_explore_routes.py`;
-`tests/test_explore_pivot_routes.py`.
-
 ### EDA-E09 — Distribution charts
 
 **Why:** Analysts need distributions without client-side raw-data processing.
 
-**Plan:** Emit capped server-binned numeric histograms from the bounded report
-path and render them with explicit empty/skipped states.
+**Plan:** Emit capped server-binned numeric histograms from the shared profile
+analysis and render them with explicit empty/skipped states.
 
 **Acceptance:** Tests cover null, constant, negative, and wide-schema guardrail
 cases plus chart rendering.
 
-**Dependencies:** The current bounded Explore collection, cache, and tab/panel
-contracts.
+**Dependencies:** The current bounded profile analysis, the shared data point,
+and the tab/panel contracts.
 
-**Evidence:** `src/haute/routes/_explore_service.py`;
-`src/haute/schemas.py`; `frontend/src/panels/explore`;
-`tests/test_explore_routes.py`.
+**Evidence:** `src/haute/_frame_profile.py`; `src/haute/schemas.py`;
+`frontend/src/panels/explore`; `tests/test_frame_profile.py`.
 
 ### EDA-E10 — Target relationships
 
@@ -85,12 +52,13 @@ weight validation, numeric and categorical results, bounded levels, ranked UI
 rendering, exact single-/multi-column key counts, unhashable key rejection, and
 cache identity for the selected analysis and columns.
 
-**Dependencies:** EDA-E09 plus the current bounded collection, dataframe-cache,
-job-lifecycle, and tab/panel contracts.
+**Dependencies:** EDA-E09 plus the current bounded collection, the shared data
+point and its analysis-result store, and the job-lifecycle and tab/panel
+contracts.
 
 **Evidence:** `src/haute/routes/explore.py`;
-`src/haute/routes/_explore_service.py`; `frontend/src/panels/explore`;
-`tests/test_explore_routes.py`.
+`src/haute/routes/_pivot_service.py`; `frontend/src/panels/explore`;
+`tests/test_analysis_results.py`.
 
 ### EDA-E18 — Advanced Excel pivot parity
 

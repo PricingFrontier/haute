@@ -34,7 +34,7 @@
 | `frontend/src/panels/editors/ColumnsTab.tsx` | Generic column selection and rename configuration. |
 | `frontend/src/panels/editors/ExploreCodeEditor.tsx`, `frontend/src/panels/editors/ExploreOverviewConfig.tsx`, `frontend/src/panels/editors/ExplorePivotsConfig.tsx`, `frontend/src/panels/editors/ExploreChartsConfig.tsx` | Explore-code, overview-card, pivot-card, and chart-card configuration. The Pivots and Charts editors own their list/configure navigation; chart parsing and identity allocation are also shared with the visualisation pane. |
 | `frontend/src/panels/editors/explorePivots/placements.ts` | Pure pivot placement domain helpers shared by the pivot editor and its subviews: zone types and labels, placement add/remove/append transforms, sort-ordering normalisation, duplicate-field checks, and typed member identity. |
-| `frontend/src/panels/editors/explorePivots/FilterMemberPicker.tsx` | Filter-member picker subview: immediate initial load, debounced non-empty search, request aborting, and Explore-cache-identity gating of displayed members. |
+| `frontend/src/panels/editors/explorePivots/FilterMemberPicker.tsx` | Filter-member picker subview: immediate initial load, debounced non-empty search, request aborting, and data-identity gating of displayed members. |
 | `frontend/src/panels/editors/explorePivots/ZoneSection.tsx` | One drag-and-drop area-grid zone: placement chips, keyboard repositioning, aggregation selection, remove actions, and the nested filter-member picker. |
 | `frontend/src/panels/editors/explorePivots/PivotFieldWell.tsx`, `frontend/src/panels/editors/explorePivots/PivotFormulaSection.tsx`, `frontend/src/panels/editors/explorePivots/PivotFormattingSection.tsx` | Pivot field-authoring surface composed by the Pivots editor: field search, dtype-labelled available-fields list with per-zone Add actions, the four-zone `ZoneSection` grid, pointer/keyboard placement state, formula authoring, and the presentation-only decimal-place controls for displayed placements. Props include the pivot, `persistPivot`, upstream columns, filter-member loading, and the current config hash. |
 | `frontend/src/panels/editors/ExploreToggleCard.tsx` | Shared full-body Explore checkbox card used by Overview, Pivot, and Chart configuration, including enabled/disabled presentation and accessible label/description wiring. |
@@ -485,10 +485,11 @@ full names, short aliases, and Decimal. Numeric Values expose all seven operatio
 non-numeric Values (including Binary and Duration) expose count, distinct count, min, and max;
 nested List/Array/Struct and Object Values expose count only. The filter-member picker loads its
 initial list immediately, debounces non-empty searches by 250 ms, and aborts obsolete requests.
-A displayed member list is keyed to the node's current Explore cache identity hash (the same
-graph/source gate the Explore preview applies) as well as the field/search pair, so when the
-graph or source changes the previous dataset's members stop being rendered (and selectable)
-immediately rather than lingering until the replacement response lands. Display-only pivot and
+A displayed member list is keyed to the node's current data-identity hash
+(`buildNodeDataCacheIdentity` over the node's upstream lineage and data-affecting config, plus
+the active source) as well as the field/search pair, so when the graph or source changes the
+previous dataset's members stop being rendered (and selectable) immediately rather than lingering
+until the replacement response lands. Display-only pivot and
 chart edits do not change that identity, so selecting a member neither hides the remaining
 choices nor triggers a redundant member reload.
 Column and Row placements persist `number_format: "general" | "number" | "percent" |

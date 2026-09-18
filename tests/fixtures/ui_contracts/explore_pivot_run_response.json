@@ -8,7 +8,7 @@
     "node_id": "explore_1",
     "pivot_id": "pivot_1",
     "source": "pricing",
-    "dataframe_cache_key": "explore_dataset:abc123",
+    "data_version": "explore_dataset:abc123",
     "calculation_key": "pivot-calc:def456",
     "row_fields": ["region"],
     "column_fields": ["year"],

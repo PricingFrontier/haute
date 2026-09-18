@@ -1,7 +1,7 @@
 import { Loader2, Table2 } from "lucide-react"
 import { useMemo } from "react"
 
-import type { ExploreCacheReport } from "../../api/types"
+
 import useNodeResultsStore, {
   explorePivotResultKey,
 } from "../../stores/useNodeResultsStore"
@@ -20,6 +20,7 @@ import {
 } from "./pivotConfig"
 import useAutoUpdateExplorePivots from "./useAutoUpdateExplorePivots"
 import useExplorePivotActions from "./useExplorePivotActions"
+import type { ExploreDataView } from "./exploreDataView"
 
 type ExplorePivotsPaneProps = {
   node: SimpleNode
@@ -27,7 +28,7 @@ type ExplorePivotsPaneProps = {
   edges: SimpleEdge[]
   submodels?: Record<string, unknown>
   preamble?: string
-  report: ExploreCacheReport | null
+  report: ExploreDataView | null
 }
 
 function EmptyPivots({ children }: { children: string }) {
@@ -112,7 +113,7 @@ export default function ExplorePivotsPane({
           const currentIdentity = pivotCalculationIdentity(pivot)
           const fresh = isPivotResultFresh(
             cached,
-            report?.dataframe_cache_key,
+            report?.data_version,
             currentIdentity,
           )
           const status = job?.progress
@@ -155,7 +156,7 @@ export default function ExplorePivotsPane({
                   canRetry={Boolean(alertMessage)}
                   onCancel={(jobId) => void cancel(pivot, jobId)}
                   onRetry={() =>
-                    void update(pivot, report?.dataframe_cache_key ?? null)
+                    void update(pivot, report?.data_version ?? null)
                   }
                 />
               </div>

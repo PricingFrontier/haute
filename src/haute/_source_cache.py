@@ -368,6 +368,14 @@ class SourceCacheStore:
         retire_grace_seconds: float | None = None,
     ) -> None:
         self.root = Path(root).resolve()
+        if self.root.parent == self.root:
+            # A cache at a filesystem root would be written outside any project
+            # and, in tests, outside the sandbox: the caller's project root is
+            # wrong, and failing here says so instead of polluting the drive.
+            raise ValueError(
+                f"source-cache root must be a project directory, not the filesystem root: "
+                f"{self.root}"
+            )
         self.inputs_root = self.root / ".haute_cache" / "inputs"
         self.inputs_root.mkdir(parents=True, exist_ok=True)
         if max_bytes is None:
