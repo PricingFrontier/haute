@@ -543,7 +543,7 @@ class TestSnapshotGenerationLease:
         assert pl.read_parquet(leased_path)["driver"].to_list() == ["old"]
         assert provenance["drivers"]["generation_id"] == first.generation_id
         assert provenance["drivers"]["identity_digest"] == first.metadata.identity_digest
-        assert provenance["drivers"]["parts"][0]["sha256"] == first.metadata.parts[0].sha256
+        assert provenance["drivers"]["parts"][0]["digest"] == first.metadata.parts[0].digest
 
         resources.close()
 

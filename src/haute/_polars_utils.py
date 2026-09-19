@@ -13,7 +13,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Collection, Generator, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import IO, Any, Literal, TypeVar, cast
 
 import polars as pl
 from polars.io.plugins import register_io_source
@@ -23,6 +23,7 @@ from haute._execution_context import (
     ExecutionProfile,
     current_execution_context,
 )
+from haute._hashing import HashingWriter
 from haute._logging import get_logger
 
 logger = get_logger(component="polars_utils")
@@ -526,7 +527,7 @@ def _checkpoint_compression(fast_checkpoint: bool) -> Literal["lz4", "zstd"]:
 
 def _streaming_sink_to_path(
     lf: pl.LazyFrame,
-    target: Path,
+    target: Path | IO[bytes],
     *,
     fmt: str,
     compression: Literal["lz4", "zstd"],
@@ -561,12 +562,14 @@ def _eager_write_to_path(
         df.write_parquet(target, compression=compression)
 
 
-def _write_atomically_if_possible(path: Path, writer: Any) -> None:
+_T = TypeVar("_T")
+
+
+def _write_atomically_if_possible(path: Path, writer: Callable[[Path], _T]) -> _T:
     if path.parent.exists():
         with atomic_write(path) as tmp:
-            writer(tmp)
-    else:
-        writer(path)
+            return writer(tmp)
+    return writer(path)
 
 
 def current_streaming_chunk_size() -> int:
@@ -621,6 +624,22 @@ def streaming_sink(
     _write_atomically_if_possible(path, _do_sink)
 
 
+def _bounded_sink_execute(
+    path: Path,
+    streaming_chunk_size: int | None,
+    writer: Callable[[], _T],
+) -> _T:
+    metrics_context = current_execution_context()
+    if metrics_context is not None:
+        metrics_context.fault_point("sink_before_native")
+    with temporary_streaming_chunk_size(streaming_chunk_size):
+        result = writer()
+    if metrics_context is not None:
+        metrics_context.fault_point("sink_after_native")
+        metrics_context.record_bytes_written(path.stat().st_size)
+    return result
+
+
 def bounded_sink(
     lf: pl.LazyFrame,
     path: str | Path,
@@ -631,15 +650,55 @@ def bounded_sink(
 ) -> None:
     """Sink a LazyFrame through the native streaming API."""
     path = Path(path)
-    metrics_context = current_execution_context()
-    if metrics_context is not None:
-        metrics_context.fault_point("sink_before_native")
-    with temporary_streaming_chunk_size(streaming_chunk_size):
-        streaming_sink(lf, path, fmt=fmt, fast_checkpoint=fast_checkpoint)
-    if metrics_context is not None:
-        metrics_context.fault_point("sink_after_native")
-    if metrics_context is not None:
-        metrics_context.record_bytes_written(path.stat().st_size)
+    _bounded_sink_execute(
+        path,
+        streaming_chunk_size,
+        lambda: streaming_sink(lf, path, fmt=fmt, fast_checkpoint=fast_checkpoint),
+    )
+
+
+def _sink_parquet_hashing(
+    lf: pl.LazyFrame,
+    target: Path,
+    *,
+    compression: Literal["lz4", "zstd"],
+) -> str:
+    with HashingWriter(open(target, "wb")) as writer:
+        _streaming_sink_to_path(
+            lf, cast("IO[bytes]", writer), fmt="parquet", compression=compression
+        )
+    return writer.hexdigest()
+
+
+def hashed_streaming_sink(
+    lf: pl.LazyFrame,
+    path: str | Path,
+    *,
+    fast_checkpoint: bool = False,
+) -> str:
+    """Sink a LazyFrame with write-time hashing and Polars streaming."""
+    path = Path(path)
+    compression = _checkpoint_compression(fast_checkpoint)
+    return _write_atomically_if_possible(
+        path,
+        lambda target: _sink_parquet_hashing(lf, target, compression=compression),
+    )
+
+
+def bounded_hashed_sink(
+    lf: pl.LazyFrame,
+    path: str | Path,
+    *,
+    fast_checkpoint: bool = False,
+    streaming_chunk_size: int | None = None,
+) -> str:
+    """Sink a LazyFrame through the native streaming API, hashing during write."""
+    path = Path(path)
+    return _bounded_sink_execute(
+        path,
+        streaming_chunk_size,
+        lambda: hashed_streaming_sink(lf, path, fast_checkpoint=fast_checkpoint),
+    )
 
 
 # ---------------------------------------------------------------------------

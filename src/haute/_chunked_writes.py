@@ -23,17 +23,19 @@ from __future__ import annotations
 import math
 import shutil
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from types import MappingProxyType
+from typing import IO, TYPE_CHECKING, Any, Literal, cast
 
 import polars as pl
 
 from haute._edge_join import build_edge_join_kwargs
+from haute._hashing import HashingWriter
 from haute._logging import get_logger
 from haute._polars_utils import (
     atomic_write,
-    bounded_sink,
+    bounded_hashed_sink,
     current_streaming_chunk_size,
     execution_collect,
 )
@@ -235,6 +237,9 @@ def _join_shape(recipe: JoinRecipe) -> tuple[_JoinShape | None, str | None]:
 # ---------------------------------------------------------------------------
 
 
+_EMPTY_DIGESTS: Mapping[str, str] = MappingProxyType({})
+
+
 @dataclass(frozen=True, slots=True)
 class ChunkedWrite:
     """What one chunked write did."""
@@ -244,6 +249,7 @@ class ChunkedWrite:
     chunks: int
     staged_inputs: int
     native_reason: str | None = None
+    digests: Mapping[str, str] = field(default_factory=lambda: _EMPTY_DIGESTS)
 
 
 class _Parts:
@@ -264,6 +270,7 @@ class _Parts:
         self.execution_context = execution_context
         self.node_id = node_id
         self.names: list[str] = []
+        self.digests: dict[str, str] = {}
 
     def sink(self, lf: pl.LazyFrame, *, conform: bool = True) -> None:
         if self.execution_context is not None:
@@ -275,8 +282,11 @@ class _Parts:
                 [pl.col(name).cast(dtype, strict=True) for name, dtype in self.schema.items()]
             )
         name = part_name(len(self.names))
-        bounded_sink(lf, self.directory / name, fast_checkpoint=self.fast_checkpoint)
+        digest = bounded_hashed_sink(
+            lf, self.directory / name, fast_checkpoint=self.fast_checkpoint
+        )
         self.names.append(name)
+        self.digests[name] = digest
         if self.execution_context is not None:
             self.execution_context.record_chunk()
 
@@ -299,8 +309,14 @@ class _Parts:
         name = part_name(len(self.names))
         path = self.directory / name
         with atomic_write(path) as tmp:
-            frame.write_parquet(tmp, compression="lz4" if self.fast_checkpoint else "zstd")
+            with HashingWriter(open(tmp, "wb")) as writer:
+                frame.write_parquet(
+                    cast("IO[bytes]", writer),
+                    compression="lz4" if self.fast_checkpoint else "zstd",
+                )
+            digest = writer.hexdigest()
         self.names.append(name)
+        self.digests[name] = digest
         if self.execution_context is not None:
             self.execution_context.record_bytes_written(path.stat().st_size)
             self.execution_context.record_chunk()
@@ -398,6 +414,7 @@ def _report(
         chunks=len(parts.names),
         staged_inputs=staged_inputs,
         native_reason=native_reason,
+        digests=MappingProxyType(dict(parts.digests)),
     )
     logger.info(
         "chunked_write",

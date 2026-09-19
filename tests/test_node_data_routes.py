@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -11,7 +12,9 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
+import haute._node_snapshots as node_snapshots_module
 from haute._data_points import DataPoint, DataPointResolver
+from haute._hashing import content_hash
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute.routes import _node_data_service as service_mod
 from tests.conftest import make_edge, make_graph
@@ -813,16 +816,22 @@ def test_a_build_after_input_preparation_is_found_by_point_and_joined(
 
     entered = threading.Event()
     release = threading.Event()
-    real_sink = polars_utils.bounded_sink
 
-    def paused_after_preparation(*args, **kwargs):
-        # The sink runs only after input preparation has published the snapshot.
-        entered.set()
-        assert release.wait(60)
-        return real_sink(*args, **kwargs)
+    def _paused(real: Any) -> Any:
+        def _wrapper(*args: Any, **kwargs: Any) -> Any:
+            entered.set()
+            assert release.wait(60)
+            return real(*args, **kwargs)
 
-    monkeypatch.setattr(polars_utils, "bounded_sink", paused_after_preparation)
-    monkeypatch.setattr(chunked_writes, "bounded_sink", paused_after_preparation)
+        return _wrapper
+
+    real_polars_bounded_sink = polars_utils.bounded_sink
+    real_chunked_bounded_hashed_sink = chunked_writes.bounded_hashed_sink
+
+    monkeypatch.setattr(polars_utils, "bounded_sink", _paused(real_polars_bounded_sink))
+    monkeypatch.setattr(
+        chunked_writes, "bounded_hashed_sink", _paused(real_chunked_bounded_hashed_sink)
+    )
 
     started = client.post("/api/node-data/run", json=_body(graph, "banding")).json()
     assert entered.wait(120)
@@ -1272,3 +1281,43 @@ def test_explicit_build_of_a_join_is_chunked_and_equals_native(
         .sort("policy_id")
     )
     assert_frame_equal(gen_df.select(expected.columns), expected)
+
+
+def test_explicit_build_publishes_with_write_time_digests(
+    client: TestClient,
+    project: Path,
+    in_process_worker: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[Path, dict[str, str], tuple[Any, ...]]] = []
+    real_describe_parts = node_snapshots_module.describe_parts
+
+    def _recording_describe_parts(
+        directory: Path,
+        digests: Mapping[str, str] | None = None,
+    ) -> tuple[Any, ...]:
+        recorded_digests = dict(digests or {})
+        result = real_describe_parts(directory, digests=digests)
+        calls.append((directory, recorded_digests, result))
+        return result
+
+    monkeypatch.setattr(node_snapshots_module, "describe_parts", _recording_describe_parts)
+
+    graph_dict = _graph(project)
+    job = _cache(client, graph_dict, "explore")
+    assert job["status"] == "completed"
+
+    assert len(calls) >= 1
+    for _directory, recorded_digests, parts in calls:
+        part_names = {part.name for part in parts}
+        assert set(recorded_digests.keys()) == part_names
+
+    resolver = _resolver(project, graph_dict)
+    identity = resolver.node_output_slot("join").identity(resolver.node_output_signature("join"))
+    gen = resolver.store.latest_generation(identity)
+    assert gen is not None
+    assert len(gen.generation.metadata.parts) >= 1
+    for part in gen.generation.metadata.parts:
+        part_path = gen.generation.directory / part.name
+        assert len(part.digest) == 16
+        assert part.digest == content_hash(part_path)

@@ -15,7 +15,7 @@ import polars as pl
 import haute.execution as execution_facade
 import haute.projection as projection_planner
 from haute._builders import _passthrough_fn
-from haute._chunked_writes import ChunkedWrite, JoinRecipe, write_parts
+from haute._chunked_writes import ChunkedWrite, JoinRecipe, part_name, write_parts
 from haute._column_lineage import analyze_polars_lineage
 from haute._contracts import Contract, get_column_contract
 from haute._edge_join import (
@@ -1909,6 +1909,7 @@ def _execute_lazy(
             else contextlib.nullcontext()
         ):
             scored_prewritten = False
+            scored_digest: str | None = None
             if scored_capture is None:
                 lf, is_source, node = _build_lazy_node(boundary)
             else:
@@ -1920,6 +1921,7 @@ def _execute_lazy(
                     ) as score_destination:
                         lf, is_source, node = _build_lazy_node(boundary)
                     scored_prewritten = score_destination.used
+                    scored_digest = score_destination.digest
                 except BaseException:
                     scored_capture.close()
                     raise
@@ -1999,6 +2001,7 @@ def _execute_lazy(
                     closure,
                     artifact=scored_capture,
                     prewritten=scored_prewritten,
+                    prewritten_digest=scored_digest,
                     join=built_join_recipes.get(nid),
                     unshaped_columns=(
                         _schema_pairs(built_unshaped_frames[nid])
@@ -2153,6 +2156,7 @@ class _PlannedCaptures:
         *,
         artifact: NodeSnapshotArtifact | None = None,
         prewritten: bool = False,
+        prewritten_digest: str | None = None,
         join: JoinRecipe | None = None,
         unshaped_columns: Sequence[tuple[str, str]] | None = None,
     ) -> pl.LazyFrame:
@@ -2233,6 +2237,9 @@ class _PlannedCaptures:
                         execution_context=context,
                         node_id=node_id,
                     )
+                artifact.record_digests(written.digests)
+            elif prewritten_digest is not None:
+                artifact.record_digests({part_name(0): prewritten_digest})
             _snapshot_fault_point("snapshot_capture_before_publish", node_id)
             if self._inputs_changed():
                 # Computed from inputs the plan's signatures do not describe:

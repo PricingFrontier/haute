@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import polars as pl
@@ -16,15 +17,18 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._hashing import content_hash
 from haute._polars_utils import (
     BOUNDED_MEMORY_EXEMPT_PROFILES,
     _malloc_trim,
     _streaming_sink_to_path,
     atomic_write,
     bounded_collect_batches,
+    bounded_hashed_sink,
     bounded_sink,
     cancellable_streaming_collect,
     execution_collect,
+    hashed_streaming_sink,
     is_bounded_execution_profile,
     key_prefix_python_scan,
     limited_python_scan,
@@ -1646,3 +1650,135 @@ class TestRowLocalPythonScan:
         _polars_utils._reraise_python_scan_failure(pl.exceptions.ComputeError(oldest))
         with pytest.raises(ValueError, match="failure 63"):
             _polars_utils._reraise_python_scan_failure(pl.exceptions.ComputeError(newest))
+
+
+def test_hashed_streaming_sink_writes_and_hashes_atomically(tmp_path: Path) -> None:
+    out = tmp_path / "part-00000.parquet"
+    lf = pl.LazyFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+    digest = hashed_streaming_sink(lf, out)
+
+    assert out.is_file()
+    assert digest == content_hash(out)
+    read_back = pl.read_parquet(out)
+    assert_frame_equal(read_back, lf.collect())
+    assert list(tmp_path.iterdir()) == [out]
+
+
+def test_hashed_streaming_sink_runs_the_native_streaming_sink(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+    sink_target: Any = None
+
+    class Query:
+        def fetch(self) -> pl.DataFrame:
+            assert sink_target is not None
+            sink_target.write(b"completed")
+            return pl.DataFrame()
+
+        def cancel(self) -> None:
+            raise AssertionError("completed sink must not be cancelled")
+
+    class SinkPlan:
+        def collect(self, **kwargs: object) -> Query:
+            captured["collect"] = kwargs
+            return Query()
+
+    def fake_sink(_lf: pl.LazyFrame, target: Any, **kwargs: object) -> SinkPlan:
+        nonlocal sink_target
+        sink_target = target
+        captured["sink"] = kwargs
+        return SinkPlan()
+
+    context = ExecutionContext(
+        operation="sink",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_sampler=lambda: 1,
+    )
+    out = tmp_path / "out.parquet"
+
+    with (
+        patch.object(pl.LazyFrame, "sink_parquet", autospec=True, side_effect=fake_sink),
+        context.stage("sink"),
+    ):
+        digest = hashed_streaming_sink(pl.LazyFrame({"x": [1]}), out)
+
+    assert captured["sink"] == {
+        "compression": "zstd",
+        "lazy": True,
+        "engine": "streaming",
+    }
+    assert hasattr(sink_target, "hexdigest")
+    assert captured["collect"] == {"engine": "streaming", "background": True}
+    assert out.read_bytes() == b"completed"
+    assert digest == content_hash(out)
+
+
+def test_bounded_hashed_sink_cancels_native_query_and_publishes_nothing(
+    tmp_path: Path,
+) -> None:
+    context = ExecutionContext(
+        operation="sink",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_sampler=lambda: 1,
+    )
+    cancelled = False
+
+    class Query:
+        def fetch(self) -> None:
+            context.cancellation_token.cancel()
+            return None
+
+        def cancel(self) -> None:
+            nonlocal cancelled
+            cancelled = True
+
+    class SinkPlan:
+        def collect(self, **_kwargs: object) -> Query:
+            return Query()
+
+    out = tmp_path / "cancelled.parquet"
+    with (
+        patch.object(pl.LazyFrame, "sink_parquet", return_value=SinkPlan()),
+        context.stage("sink"),
+        pytest.raises(ExecutionCancelledError),
+    ):
+        bounded_hashed_sink(pl.LazyFrame({"x": [1]}), out)
+
+    assert cancelled is True
+    assert not out.exists()
+    assert not out.with_suffix(".parquet.tmp").exists()
+
+
+def test_hashed_streaming_sink_cleans_up_after_a_partial_write(tmp_path: Path) -> None:
+    sink_target: Any = None
+
+    class Query:
+        def fetch(self) -> None:
+            assert sink_target is not None
+            assert hasattr(sink_target, "write")
+            sink_target.write(b"partial-data")
+            raise RuntimeError("disk full during write")
+
+    class SinkPlan:
+        def collect(self, **_kwargs: object) -> Query:
+            return Query()
+
+    def fake_sink(_lf: pl.LazyFrame, target: Any, **_kwargs: object) -> SinkPlan:
+        nonlocal sink_target
+        sink_target = target
+        return SinkPlan()
+
+    context = ExecutionContext(
+        operation="sink",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_sampler=lambda: 1,
+    )
+    out = tmp_path / "failed.parquet"
+    with (
+        patch.object(pl.LazyFrame, "sink_parquet", autospec=True, side_effect=fake_sink),
+        context.stage("sink"),
+        pytest.raises(RuntimeError, match="disk full during write"),
+    ):
+        hashed_streaming_sink(pl.LazyFrame({"x": [1]}), out)
+
+    assert not out.exists()
+    assert list(tmp_path.iterdir()) == []

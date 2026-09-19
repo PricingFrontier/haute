@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat as stat_module
 import threading
@@ -23,6 +24,7 @@ from haute._chunked_writes import is_part_name, part_name, part_paths, scan_part
 from haute._credential_security import is_credential_name, validate_credential_free_uri
 from haute._env import float_env, int_env
 from haute._file_ops import atomic_write_text
+from haute._hashing import content_hash
 from haute._logging import get_logger
 
 if TYPE_CHECKING:
@@ -34,11 +36,13 @@ CacheFreshness = Literal["fresh", "stale", "unknown"]
 ReconcileOutcome = Literal[
     "published", "discarded_generation", "discarded_staging", "unremovable", "absent"
 ]
-# (identity digest, generation id, ((part name, mtime_ns, size, sha256), ...))
+# (identity digest, generation id, ((part name, mtime_ns, size, digest), ...))
 _VerifiedGeneration = tuple[str, str, tuple[tuple[str, int, int, str], ...]]
-# A generation is meta.json plus ordered part files. Metadata without this
-# layout version was written by the single-file layout and is read as absent.
-GENERATION_LAYOUT_VERSION = 2
+# A generation is meta.json plus ordered part files. Metadata from the
+# single-file layout or from layout 2 (SHA-256 part digests) reads as absent
+# and is rebuilt.
+GENERATION_LAYOUT_VERSION = 3
+_DIGEST_REGEX = re.compile(r"[0-9a-f]{16}")
 _DEFAULT_STAGING_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 _DEFAULT_RETIRE_GRACE_SECONDS = 30 * 60
 # Provider of node-output snapshots; their publication, leases, and retirement
@@ -225,14 +229,14 @@ class SourceCachePart:
 
     name: str
     size_bytes: int
-    sha256: str
+    digest: str
     row_count: int
 
     def to_dict(self) -> dict[str, object]:
         return {
             "name": self.name,
             "size_bytes": self.size_bytes,
-            "sha256": self.sha256,
+            "digest": self.digest,
             "row_count": self.row_count,
         }
 
@@ -242,30 +246,39 @@ class SourceCachePart:
             raise ValueError("generation part must be an object")
         name = raw["name"]
         size_bytes = raw["size_bytes"]
-        sha256 = raw["sha256"]
+        digest = raw["digest"]
         row_count = raw["row_count"]
         if not isinstance(name, str) or not is_part_name(name):
             raise ValueError("generation part has an invalid name")
         for value in (size_bytes, row_count):
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError("generation part sizes must be non-negative integers")
-        if not isinstance(sha256, str) or len(sha256) != 64:
+        if not isinstance(digest, str) or not _DIGEST_REGEX.fullmatch(digest):
             raise ValueError("generation part digest is invalid")
-        return cls(name, size_bytes, sha256, row_count)
+        return cls(name, size_bytes, digest, row_count)
 
 
-def describe_parts(directory: Path) -> tuple[SourceCachePart, ...]:
+def describe_parts(
+    directory: Path,
+    digests: Mapping[str, str] | None = None,
+) -> tuple[SourceCachePart, ...]:
     """Name, size, digest, and row count of every part a write left in *directory*."""
     import pyarrow.parquet as pq
+
+    recorded: Mapping[str, str] = {} if digests is None else digests
+    paths = part_paths(directory)
+    unknown = sorted(set(recorded) - {path.name for path in paths})
+    if unknown:
+        raise ValueError(f"recorded digests for unknown parts: {unknown}")
 
     parts = tuple(
         SourceCachePart(
             name=path.name,
             size_bytes=path.stat().st_size,
-            sha256=_sha256_file(path),
+            digest=recorded[path.name] if path.name in recorded else content_hash(path),
             row_count=pq.read_metadata(path).num_rows,
         )
-        for path in part_paths(directory)
+        for path in paths
     )
     if not parts:
         raise ValueError("a generation holds at least one part file")
@@ -357,14 +370,6 @@ class _SourceCacheCoordination:
     verified_generations: set[_VerifiedGeneration] = field(default_factory=set)
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def _verification_key(
     identity_digest: str,
     generation_id: str,
@@ -376,7 +381,7 @@ def _verification_key(
         identity_digest,
         generation_id,
         tuple(
-            (part.name, part_stat.st_mtime_ns, part_stat.st_size, part.sha256)
+            (part.name, part_stat.st_mtime_ns, part_stat.st_size, part.digest)
             for part, part_stat in zip(parts, part_stats, strict=True)
         ),
     )
@@ -588,6 +593,10 @@ class SourceCacheStore:
                     raise SourceCacheLegacyLayoutError(
                         "source-cache generation uses the retired single-file layout"
                     )
+                if raw.get("layout_version") == 2:
+                    raise SourceCacheLegacyLayoutError(
+                        "source-cache generation uses retired layout version 2"
+                    )
                 raise ValueError("unknown source-cache generation layout")
             parts = tuple(SourceCachePart.from_dict(part) for part in raw["parts"])
             if not parts or len({part.name for part in parts}) != len(parts):
@@ -639,7 +648,7 @@ class SourceCacheStore:
                 verified = verification_key in self._verified_generations
             if not verified:
                 for part, path in zip(parts, data_paths, strict=True):
-                    if _sha256_file(path) != part.sha256:
+                    if content_hash(path) != part.digest:
                         raise ValueError("snapshot digest does not match metadata")
                 with self._lock:
                     self._verified_generations.add(verification_key)
@@ -688,11 +697,11 @@ class SourceCacheStore:
         output: pl.LazyFrame | Iterable[object],
         directory: Path,
         context: SourceCacheBuildContext,
-    ) -> None:
+    ) -> Mapping[str, str]:
         if isinstance(output, pl.LazyFrame):
             # Sliced a chunk at a time where the source can be sliced.
-            write_parts(directory, output, fast_checkpoint=True)
-            return
+            written = write_parts(directory, output, fast_checkpoint=True)
+            return written.digests
         path = directory / part_name(0)
         if isinstance(output, pl.DataFrame) or not isinstance(output, Iterable):
             raise SourceCacheBuildError("builder must return a LazyFrame or Arrow batches/tables")
@@ -720,6 +729,7 @@ class SourceCacheStore:
         finally:
             if writer is not None:
                 writer.close()
+        return {}
 
     def _generation_bytes(self) -> int:
         total = 0
@@ -834,10 +844,10 @@ class SourceCacheStore:
                     output = builder.build(context)
                 context.checkpoint()
                 with context.stage("input_snapshot_write"):
-                    self._write_output(output, staging, context)
+                    written_digests = self._write_output(output, staging, context)
                 context.checkpoint()
                 # Validate before publication, including every footer and the scan schema.
-                parts = describe_parts(staging)
+                parts = describe_parts(staging, digests=written_digests)
                 schema = scan_parts(part_paths(staging)).collect_schema()
                 columns = {name: str(dtype) for name, dtype in schema.items()}
                 metadata = SourceCacheMetadata(

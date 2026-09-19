@@ -288,7 +288,7 @@ def _build_node_snapshot(
         artifact = store.stage_node_output(identity, staging_token=request.staging_token)
         try:
             with execution_context.stage("node_snapshot_write"):
-                write_parts(
+                written = write_parts(
                     artifact.directory,
                     output.lazy() if isinstance(output, pl.DataFrame) else output,
                     join=join_recipes.get(request.node_id),
@@ -297,6 +297,7 @@ def _build_node_snapshot(
                     execution_context=execution_context,
                     node_id=request.node_id,
                 )
+            artifact.record_digests(written.digests)
             if _node_identity(request.graph, request.node_id, request.source, store).digest != (
                 identity.digest
             ):

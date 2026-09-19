@@ -8,11 +8,14 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import polars as pl
+import pyarrow.parquet as pq
 import pytest
 from polars.testing import assert_frame_equal
 
 import haute._source_cache as source_cache_module
+from haute._chunked_writes import write_parts
 from haute._execution_context import ExecutionProfile
+from haute._hashing import content_hash
 from haute._node_snapshots import (
     BOUNDED_SEMANTICS_CLASS,
     NodeSnapshotColumns,
@@ -322,13 +325,13 @@ def test_a_second_lease_of_a_verified_generation_does_not_rehash(
     identity = _slot(tmp_path).identity("s1")
     _published_id(store, identity, pl.DataFrame({"a": [1, 2]}))
     hashes: list[Path] = []
-    real_sha = source_cache_module._sha256_file
+    real_hash = source_cache_module.content_hash
 
-    def counting_sha(path: Path) -> str:
+    def counting_hash(path: Path) -> str:
         hashes.append(path)
-        return real_sha(path)
+        return real_hash(path)
 
-    monkeypatch.setattr(source_cache_module, "_sha256_file", counting_sha)
+    monkeypatch.setattr(source_cache_module, "content_hash", counting_hash)
     before = set(tmp_path.rglob("*"))
 
     for _ in range(2):
@@ -640,3 +643,52 @@ def test_eviction_sizes_a_generation_by_all_of_its_parts(tmp_path: Path) -> None
 
     assert store.slot_status(old_slot, "s1").state == "missing"
     assert store.slot_status(new_slot, "s1").state == "current"
+
+
+@pytest.mark.parametrize("writer_mode", ["chunked_write", "write_table"])
+def test_publication_reads_no_part_in_full_after_writing_it(
+    tmp_path: Path,
+    writer_mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = NodeSnapshotStore(tmp_path)
+    slot = _slot(tmp_path)
+    identity = slot.identity(f"s1_{writer_mode}")
+
+    artifact = store.stage_node_output(identity)
+    frame = pl.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+
+    if writer_mode == "chunked_write":
+        written = write_parts(artifact.directory, frame.lazy())
+        expected_digests = written.digests
+        artifact.record_digests(expected_digests)
+    else:
+        part_file = artifact.part_path(0)
+        pq.write_table(frame.to_arrow(), part_file)
+        digest = content_hash(part_file)
+        expected_digests = {part_file.name: digest}
+        artifact.record_digests(expected_digests)
+
+    recorded_paths: list[Path] = []
+    real_content_hash = source_cache_module.content_hash
+
+    def recording_content_hash(path: Path) -> str:
+        recorded_paths.append(path)
+        return real_content_hash(path)
+
+    monkeypatch.setattr("haute._source_cache.content_hash", recording_content_hash)
+
+    with store.publish_node_output(
+        identity,
+        artifact,
+        columns=NodeSnapshotColumns.all(),
+        dependencies={},
+        explicit=False,
+        profile=ExecutionProfile.NODE_SNAPSHOT,
+    ) as pub:
+        assert pub.outcome == "published"
+        assert pub.generation is not None
+        assert recorded_paths == []
+        assert len(pub.generation.generation.metadata.parts) == len(expected_digests)
+        for part in pub.generation.generation.metadata.parts:
+            assert part.digest == expected_digests[part.name]

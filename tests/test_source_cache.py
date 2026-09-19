@@ -16,10 +16,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import polars as pl
+import pyarrow as pa
 import pytest
 from polars.testing import assert_frame_equal
 
+import haute._source_cache as source_cache_module
 from haute._execution_context import ExecutionProfile
+from haute._hashing import content_hash
 from haute._polars_utils import temporary_streaming_chunk_size
 from haute._source_cache import (
     SourceCacheBuildContext,
@@ -52,6 +55,33 @@ def _context() -> SourceCacheBuildContext:
         profile=ExecutionProfile.LAZY_SINK,
         build_class="bounded",
     )
+
+
+@dataclass
+class _BatchBuilder:
+    tables: list[pa.Table]
+    calls: int = 0
+
+    def build(self, context: SourceCacheBuildContext) -> list[pa.Table]:
+        context.checkpoint()
+        self.calls += 1
+        return self.tables
+
+
+@contextlib.contextmanager
+def _hash_spy(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[Path]]:
+    recorded: list[Path] = []
+    real_content_hash = source_cache_module.content_hash
+
+    def recording_content_hash(path: Path) -> str:
+        recorded.append(path)
+        return real_content_hash(path)
+
+    monkeypatch.setattr(source_cache_module, "content_hash", recording_content_hash)
+    try:
+        yield recorded
+    finally:
+        monkeypatch.setattr(source_cache_module, "content_hash", real_content_hash)
 
 
 def test_identity_is_versioned_canonical_and_order_independent() -> None:
@@ -112,12 +142,63 @@ def test_build_publishes_immutable_generation_and_lease_reads_it(tmp_path: Path)
     assert metadata["identity_digest"] == identity.digest
     assert metadata["identity"] == identity.payload
     assert metadata["source_signature"] == "sha256:source-v1"
-    assert metadata["parts"][0]["sha256"]
+    assert metadata["parts"][0]["digest"]
     assert metadata["size_bytes"] == sum(p.stat().st_size for p in generation.data_paths)
 
     with store.lease(identity) as leased:
         assert leased.generation_id == generation.generation_id
         assert_frame_equal(leased.lazy_frame.collect(), expected)
+
+
+def test_a_lazyframe_input_snapshot_build_publishes_without_rehashing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A LazyFrame input snapshot build carries write-time digests and avoids rehashing parts."""
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="data/lazy.parquet", format="parquet")
+    frame = pl.DataFrame({"id": [1, 2, 3], "value": ["a", "b", "c"]})
+    builder = _LazyBuilder(frame.lazy())
+
+    with _hash_spy(monkeypatch) as recorded:
+        generation = store.build(
+            identity,
+            builder,
+            context=_context(),
+        )
+
+    assert recorded == []
+    assert generation.metadata.parts
+    for part in generation.metadata.parts:
+        part_path = generation.directory / part.name
+        assert part.digest == content_hash(part_path)
+
+
+def test_an_arrow_batch_build_still_hashes_its_part(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Arrow-batch builders write via PyArrow without incremental hashing, so publication
+    computes digests via a read pass.
+    """
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="data/batches.parquet", format="parquet")
+    table = pa.table({"id": [1, 2, 3], "value": ["x", "y", "z"]})
+    builder = _BatchBuilder([table])
+
+    with _hash_spy(monkeypatch) as recorded:
+        generation = store.build(
+            identity,
+            builder,
+            context=_context(),
+        )
+
+    assert len(recorded) == len(generation.metadata.parts)
+    assert [p.name for p in recorded] == [part.name for part in generation.metadata.parts]
+    assert all(store.inputs_root in p.parents for p in recorded)
+    for part in generation.metadata.parts:
+        part_path = generation.directory / part.name
+        assert part.digest == content_hash(part_path)
 
 
 def test_generation_validation_is_independent_of_canonical_metadata_key_order(
@@ -222,7 +303,7 @@ def test_open_generation_does_not_rehash_published_artifact(
     )
 
     monkeypatch.setattr(
-        "haute._source_cache._sha256_file",
+        "haute._source_cache.content_hash",
         lambda _path: pytest.fail("ordinary generation open rehashed the full artifact"),
     )
 
@@ -244,14 +325,14 @@ def test_generation_digest_is_verified_once_per_stable_process_gate(
         context=_context(),
     )
     store._verified_generations.clear()
-    real_sha256_file = _source_cache._sha256_file
+    real_content_hash = _source_cache.content_hash
     hashed: list[Path] = []
 
     def record_hash(path: Path) -> str:
         hashed.append(path)
-        return real_sha256_file(path)
+        return real_content_hash(path)
 
-    monkeypatch.setattr(_source_cache, "_sha256_file", record_hash)
+    monkeypatch.setattr(_source_cache, "content_hash", record_hash)
 
     with store.lease(identity):
         pass

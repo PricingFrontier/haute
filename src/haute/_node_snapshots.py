@@ -37,6 +37,7 @@ import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Literal
 
 import polars as pl
@@ -385,6 +386,14 @@ class NodeSnapshotArtifact:
         self.identity = identity
         self.directory = directory
         self._released = False
+        self._digests: dict[str, str] = {}
+
+    def record_digests(self, digests: Mapping[str, str]) -> None:
+        self._digests = dict(digests)
+
+    @property
+    def digests(self) -> Mapping[str, str]:
+        return MappingProxyType(self._digests)
 
     def part_path(self, index: int) -> Path:
         """Where the artifact's ``index``-th part file is written."""
@@ -1136,7 +1145,7 @@ class NodeSnapshotStore(SourceCacheStore):
         unshaped_columns: Sequence[tuple[str, str]] | None = None,
     ) -> SourceCacheMetadata:
         slot, signature = NodeSnapshotSlot.from_identity(identity)
-        parts = describe_parts(artifact.directory)
+        parts = describe_parts(artifact.directory, digests=artifact.digests)
         schema = scan_parts(artifact.parts()).collect_schema()
         schema_columns = {name: str(dtype) for name, dtype in schema.items()}
         if columns.names is not None and not columns.names <= set(schema_columns):

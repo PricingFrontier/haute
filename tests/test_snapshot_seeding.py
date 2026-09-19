@@ -15,9 +15,11 @@ import pytest
 from polars.testing import assert_frame_equal
 
 import haute._execute_lazy as execute_lazy_module
+import haute._source_cache as source_cache_module
 from haute._data_points import DataPointResolver
 from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
 from haute._execution_schemas import ExecutionMetricsPayload
+from haute._hashing import content_hash
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._seed_plans import SeedPlan, SeedPlanRequest, open_seed_plan
 from haute._source_cache import SourceCacheCorruptError, SourceCacheIdentity
@@ -306,6 +308,22 @@ def _pause_at(
     return paused
 
 
+@contextmanager
+def _hash_spy(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[Path]]:
+    recorded: list[Path] = []
+    real_content_hash = source_cache_module.content_hash
+
+    def recording_content_hash(path: Path) -> str:
+        recorded.append(path)
+        return real_content_hash(path)
+
+    monkeypatch.setattr(source_cache_module, "content_hash", recording_content_hash)
+    try:
+        yield recorded
+    finally:
+        monkeypatch.setattr(source_cache_module, "content_hash", real_content_hash)
+
+
 # ---------------------------------------------------------------------------
 # Seeding and capture
 # ---------------------------------------------------------------------------
@@ -327,6 +345,27 @@ def test_seeded_rerun_builds_nothing_upstream(project: Path, store: NodeSnapshot
     assert second.calls["src"] == 0 and second.calls["other"] == 0
     assert second.calls["B"] == 1
     assert_frame_equal(second.frame, first.frame)
+
+
+def test_a_bounded_run_publishes_its_capture_without_rehashing_it(
+    project: Path,
+    store: NodeSnapshotStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bounded run's captured parts publish with write-time digests without rehashing."""
+    graph = _join_graph(project)
+    with _hash_spy(monkeypatch) as recorded:
+        run = _run(graph, store, required={"T": ["a", "d"]})
+
+    assert run.captures["J"]["outcome"] == "published"
+    assert recorded == []
+
+    gen = store.latest_generation(_identity(store, graph, "J"))
+    assert gen is not None
+    assert gen.generation.metadata.parts
+    for part in gen.generation.metadata.parts:
+        part_path = gen.generation.directory / part.name
+        assert part.digest == content_hash(part_path)
 
 
 def test_disjoint_demand_publishes_one_widened_generation(
@@ -952,6 +991,29 @@ def test_model_score_capture_is_the_scored_file(
     latest = store.latest_generation(_identity(store, graph, "M", "batch"))
     assert latest is not None
     assert_frame_equal(latest.lazy_frame.collect(), run.frame)
+
+
+def test_a_scored_capture_publishes_the_scorer_s_own_digest(
+    project: Path,
+    store: NodeSnapshotStore,
+    scoring_model: type[_TenTimes],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scored node capture publishes using the scorer's write-time digest without rehashing."""
+    graph = _scored_graph(project)
+    with _hash_spy(monkeypatch) as recorded:
+        run = _run(graph, store, source="batch")
+
+    assert run.captures["M"]["outcome"] == "published"
+    assert recorded == []
+
+    latest = store.latest_generation(_identity(store, graph, "M", "batch"))
+    assert latest is not None
+    parts = latest.generation.metadata.parts
+    assert len(parts) == 1
+    part = parts[0]
+    part_path = latest.generation.directory / part.name
+    assert part.digest == content_hash(part_path)
 
 
 def test_seeded_model_score_makes_zero_scoring_calls(

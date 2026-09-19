@@ -20,6 +20,7 @@ from haute._chunked_writes import (
     sliceable,
     write_parts,
 )
+from haute._hashing import content_hash
 
 
 def _sample_df() -> pl.DataFrame:
@@ -836,3 +837,50 @@ def test_validation_is_exact_when_a_join_key_is_named_len(tmp_path: Path) -> Non
         pl.exceptions.ComputeError, match="join keys did not fulfill 1:1 validation"
     ):
         write_parts(other, duplicated.native(), join=duplicated, chunk_rows=1)
+
+
+def test_parts_carry_write_time_digests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # (a) sliced write producing > 1 part
+    target_sliced = tmp_path / "sliced"
+    target_sliced.mkdir()
+    lf_sliced = pl.LazyFrame({"a": [1, 2, 3, 4], "b": ["w", "x", "y", "z"]})
+    written_sliced = write_parts(target_sliced, lf_sliced, chunk_rows=1)
+    assert len(written_sliced.parts) > 1
+    assert list(written_sliced.digests) == list(written_sliced.parts)
+    for name in written_sliced.parts:
+        assert written_sliced.digests[name] == content_hash(target_sliced / name)
+
+    # (b) ordered chunked join whose parts go through _Parts.collect_and_write
+    target_join = tmp_path / "join"
+    target_join.mkdir()
+    base = pl.DataFrame({"k": [1, 2], "v": ["a", "b"]}).lazy()
+    join = pl.DataFrame({"k": [1, 2], "w": [10, 20]}).lazy()
+    recipe = JoinRecipe(base, join, {"how": "left", "on": ["k"], "maintainOrder": "left"})
+    calls: list[Any] = []
+    real_collect_and_write = haute._chunked_writes._Parts.collect_and_write
+
+    def _recording_collect_and_write(self: Any, lf: pl.LazyFrame) -> None:
+        calls.append(lf)
+        real_collect_and_write(self, lf)
+
+    monkeypatch.setattr(
+        haute._chunked_writes._Parts, "collect_and_write", _recording_collect_and_write
+    )
+    written_join = write_parts(target_join, recipe.native(), join=recipe, chunk_rows=1)
+    assert len(calls) >= 1
+    assert list(written_join.digests) == list(written_join.parts)
+    for name in written_join.parts:
+        assert written_join.digests[name] == content_hash(target_join / name)
+
+    # (c) empty result whose single part comes from ensure_one
+    target_empty = tmp_path / "empty"
+    target_empty.mkdir()
+    lf_empty = pl.LazyFrame({"a": [1, 2, 3, 4]}).filter(pl.col("a") > 100)
+    written_empty = write_parts(target_empty, lf_empty)
+    assert len(written_empty.parts) == 1
+    assert list(written_empty.digests) == list(written_empty.parts)
+    for name in written_empty.parts:
+        assert written_empty.digests[name] == content_hash(target_empty / name)

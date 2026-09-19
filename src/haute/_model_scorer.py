@@ -449,6 +449,7 @@ class ScoreOutputDestination:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.used = False
+        self.digest: str | None = None
 
 
 _score_output_destination: contextvars.ContextVar[ScoreOutputDestination | None] = (
@@ -467,12 +468,12 @@ def model_score_output_destination(path: Path) -> Iterator[ScoreOutputDestinatio
         _score_output_destination.reset(token)
 
 
-def _claim_score_output_destination() -> Path | None:
+def _claim_score_output_destination() -> ScoreOutputDestination | None:
     destination = _score_output_destination.get()
     if destination is None or destination.used:
         return None
     destination.used = True
-    return destination.path
+    return destination
 
 
 @contextmanager
@@ -1124,7 +1125,7 @@ def _score_batched_unified(
             task,
             write_projection=write_projection,
             categorical_levels=categorical_levels,
-            out_path=None if destination is None else str(destination),
+            destination=destination,
         )
     finally:
         with suppress(FileNotFoundError):
@@ -1862,23 +1863,27 @@ def _batch_score_to_parquet(
     *,
     write_projection: ScoreWriteProjection | None = None,
     categorical_levels: _CategoricalLevels = None,
-    out_path: str | None = None,
+    destination: ScoreOutputDestination | None = None,
 ) -> str:
     """Score a parquet file in batches, return path to scored output.
 
-    The output goes to *out_path* when given, else to a new temporary file.
+    The output goes to *destination.path* when a destination is given, else to a
+    new temporary file.
     """
     import os
     import tempfile
 
     import pyarrow.parquet as pq
 
+    from haute._hashing import HashingWriter
     from haute._mlflow_io import (
         _append_classification_proba,
         _prepare_predict_frame,
     )
 
-    if out_path is None:
+    if destination is not None:
+        out_path = str(destination.path)
+    else:
         fd, out_path = tempfile.mkstemp(
             suffix=".parquet",
             prefix="haute_score_out_",
@@ -1887,6 +1892,7 @@ def _batch_score_to_parquet(
 
     writer = None
     reader = None
+    sink: HashingWriter | None = None
     wrote_any = False
     success = False
     want_proba = task == "classification"
@@ -1906,6 +1912,8 @@ def _batch_score_to_parquet(
     )
 
     try:
+        if destination is not None:
+            sink = HashingWriter(open(out_path, "wb"))
         # Closed in ``finally``: an open reader keeps the input file locked on
         # Windows, and the caller's cleanup would then mask a scoring refusal.
         pf = reader = pq.ParquetFile(input_path)
@@ -1958,7 +1966,7 @@ def _batch_score_to_parquet(
             table = chunk.to_arrow()
             if writer is None:
                 writer = pq.ParquetWriter(
-                    out_path,
+                    sink if sink is not None else out_path,
                     table.schema,
                 )
             writer.write_table(table)
@@ -2005,13 +2013,19 @@ def _batch_score_to_parquet(
                 output_col=output_col,
                 can_predict_proba=can_predict_proba,
             )
-            pq.write_table(empty.to_arrow(), out_path)
+            target = sink if sink is not None else out_path
+            pq.write_table(empty.to_arrow(), target)
+        if destination is not None and sink is not None:
+            sink.close()
+            destination.digest = sink.hexdigest()
         success = True
     finally:
         if reader is not None:
             reader.close()
         if writer is not None:
             writer.close()
+        if sink is not None:
+            sink.close()
         if not success:
             with suppress(FileNotFoundError):
                 os.unlink(out_path)

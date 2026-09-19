@@ -2194,6 +2194,14 @@ present a structural or schema result as execution evidence.
   and before publication; the metrics payload; and plan exclusivity and matching. A bounded
   run over a cheap consumed segment reads it directly, captures nothing with skip
   `cheap_segment`, and a second identical run recomputes it with an equal result.
+- `tests/test_node_snapshot_retention.py` (`test_publication_reads_no_part_in_full_after_writing_it`),
+  `tests/test_model_scorer.py` (`test_prewritten_scored_generation_carries_its_digest`), and
+  `tests/test_node_data_routes.py` (`test_explicit_build_publishes_with_write_time_digests`) verify
+  that captured node outputs, prewritten model scoring outputs, and explicit node-data builds publish
+  with write-time xxh64 digests without re-reading parts in full.
+  `tests/test_snapshot_seeding.py` (`test_a_bounded_run_publishes_its_capture_without_rehashing_it`,
+  `test_a_scored_capture_publishes_the_scorer_s_own_digest`) verifies that bounded run captures
+  and prewritten scored captures publish without rehashing parts.
 - `tests/test_polars_steps.py::test_generated_reshaping_code_stays_inside_the_lineage_model` — the step renderer's dtype selectors, pivot lowering, unpivot and nested windows are shapes the lineage and cardinality models prove (dtype selectors only with an upstream dtype schema).
 - `tests/test_polars_steps.py::test_executor_runs_every_step_kind` and `test_incomplete_steps_fail_at_run_time_naming_the_step` — every low-code step kind executes through `execute_graph` from its materialised code, and unrenderable or unknown-input steps raise the incomplete-transform error with the step number (`_builders._build_transform`).
 - `tests/performance/test_polars_scale_scenario.py` — bounded Polars join/training projection scale generation, modelling-menu demand propagation, and CI-small execution-profile smoke contracts.

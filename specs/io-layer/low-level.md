@@ -631,6 +631,17 @@ failure sections above are the maintained answers.
   Parquet metadata, allocator dispatch, atomic publication primitives, and a best-effort tree
   removal retrying a transient Windows handle, reporting a tree it cannot remove, and treating
   an absent tree as removed.
+- `tests/test_hashing.py` (`test_hashing_writer_digest_equals_file_digest`),
+  `tests/test_polars_utils.py` (`test_hashed_streaming_sink_writes_and_hashes_atomically`),
+  `tests/test_chunked_writes.py` (`test_parts_carry_write_time_digests`), and
+  `tests/test_snapshot_legacy_layout.py` (`test_layout_2_generation_reads_as_absent`,
+  `test_xxh64_digest_mismatch_is_corruption`) cover write-time incremental hashing via
+  `HashingWriter`, a layout-2 generation reading as absent and being rebuilt, and
+  corrupted part detection. `tests/test_polars_utils.py`
+  (`test_hashed_streaming_sink_runs_the_native_streaming_sink`,
+  `test_bounded_hashed_sink_cancels_native_query_and_publishes_nothing`,
+  `test_hashed_streaming_sink_cleans_up_after_a_partial_write`) verifies native streaming
+  execution, cancellation without publication, and cleanup after partial writes.
 - `tests/test_discovery.py` and `tests/test_path_case_audit.py` cover pipeline discovery,
   deduplication, unreadable files, retained resolver seams, and cross-platform path spelling.
 - `tests/test_input_cache_route.py` covers HTTP build/status/cancel/clear lifecycle and

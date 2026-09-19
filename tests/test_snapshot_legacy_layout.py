@@ -18,6 +18,7 @@ from haute._node_snapshots import (
 )
 from haute._source_cache import (
     SourceCacheBuildContext,
+    SourceCacheCorruptError,
     SourceCacheGeneration,
     SourceCacheIdentity,
     SourceCacheStore,
@@ -49,6 +50,18 @@ def _retire_to_single_file_layout(generation: SourceCacheGeneration) -> None:
     meta.pop("layout_version")
     meta.pop("parts")
     meta["data_sha256"] = hashlib.sha256(data.read_bytes()).hexdigest()
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+
+def _retire_to_layout_2(generation: SourceCacheGeneration) -> None:
+    """Rewrite a generation as layout_version 2 with sha256."""
+    directory = generation.directory
+    meta_path = directory / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["layout_version"] = 2
+    for part in meta["parts"]:
+        part["sha256"] = hashlib.sha256((directory / part["name"]).read_bytes()).hexdigest()
+        part.pop("digest", None)
     meta_path.write_text(json.dumps(meta), encoding="utf-8")
 
 
@@ -114,3 +127,43 @@ def test_a_single_file_node_snapshot_is_absent_and_replaced(tmp_path: Path) -> N
     current = store.latest_generation(identity)
     assert current is not None and current.generation_id == replacement != first
     assert current.lazy_frame.collect()["id"].to_list() == [2]
+
+
+def test_layout_2_generation_reads_as_absent(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = SourceCacheIdentity(provider="file", descriptor={"path": "rows.parquet"})
+    builder = _Builder(pl.DataFrame({"id": [1, 2]}))
+    retired = store.build(identity, builder, context=_context())
+    _retire_to_layout_2(retired)
+    fresh_store = SourceCacheStore(tmp_path)
+
+    assert fresh_store.status(identity).state == "missing"
+    with pytest.raises(FileNotFoundError), fresh_store.lease(identity):
+        pass
+
+    rebuilt = fresh_store.build(identity, builder, context=_context())
+
+    assert builder.calls == 2
+    assert rebuilt.generation_id != retired.generation_id
+    assert rebuilt.lazy_frame.collect()["id"].to_list() == [1, 2]
+    assert fresh_store.status(identity).state == "ready"
+
+
+def test_xxh64_digest_mismatch_is_corruption(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = SourceCacheIdentity(provider="file", descriptor={"path": "rows.parquet"})
+    builder = _Builder(pl.DataFrame({"id": [1, 2]}))
+    gen = store.build(identity, builder, context=_context())
+
+    meta = json.loads(gen.metadata_path.read_text(encoding="utf-8"))
+    real_digest = meta["parts"][0]["digest"]
+    new_first = "b" if real_digest[0] == "a" else "a"
+    meta["parts"][0]["digest"] = new_first + real_digest[1:]
+    gen.metadata_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    fresh_store = SourceCacheStore(tmp_path)
+    with pytest.raises(SourceCacheCorruptError) as exc_info:
+        fresh_store.open_generation(identity)
+    cause = exc_info.value.__cause__
+    assert cause is not None and "snapshot digest does not match metadata" in str(cause)
+    assert fresh_store.status(identity).state == "corrupt"
