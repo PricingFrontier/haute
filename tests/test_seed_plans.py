@@ -1544,7 +1544,7 @@ def test_preview_planner_reads_instance_nodes_through_their_originals(
 
 
 # ---------------------------------------------------------------------------
-# Cost-gated captures (CACHE-S11)
+# Cost-gated captures
 # ---------------------------------------------------------------------------
 
 

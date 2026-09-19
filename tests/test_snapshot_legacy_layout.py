@@ -65,6 +65,17 @@ def _retire_to_layout_2(generation: SourceCacheGeneration) -> None:
     meta_path.write_text(json.dumps(meta), encoding="utf-8")
 
 
+def _corrupt_part_digest(generation: SourceCacheGeneration) -> None:
+    """Rewrite a generation's metadata with a mismatching part digest."""
+    directory = generation.directory
+    meta_path = directory / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    real_digest = meta["parts"][0]["digest"]
+    new_first = "b" if real_digest[0] == "a" else "a"
+    meta["parts"][0]["digest"] = new_first + real_digest[1:]
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+
 def test_a_single_file_input_snapshot_is_missing_and_rebuilt(tmp_path: Path) -> None:
     store = SourceCacheStore(tmp_path)
     identity = SourceCacheIdentity(provider="file", descriptor={"path": "rows.parquet"})
@@ -155,11 +166,7 @@ def test_xxh64_digest_mismatch_is_corruption(tmp_path: Path) -> None:
     builder = _Builder(pl.DataFrame({"id": [1, 2]}))
     gen = store.build(identity, builder, context=_context())
 
-    meta = json.loads(gen.metadata_path.read_text(encoding="utf-8"))
-    real_digest = meta["parts"][0]["digest"]
-    new_first = "b" if real_digest[0] == "a" else "a"
-    meta["parts"][0]["digest"] = new_first + real_digest[1:]
-    gen.metadata_path.write_text(json.dumps(meta), encoding="utf-8")
+    _corrupt_part_digest(gen)
 
     fresh_store = SourceCacheStore(tmp_path)
     with pytest.raises(SourceCacheCorruptError) as exc_info:

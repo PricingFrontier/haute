@@ -20,17 +20,21 @@ these packages are owned by the [Explore / EDA roadmap](explore-eda.md).
 The shared store, the data-point resolver, the node-data build service, the
 analysis-result store, seed plans, chunked writes, and the preview and trace
 seeding that a `banding-rating-ui` review examined on 19 September 2026 are
-delivered and specified; their packages are retired from this roadmap. The
-review found no data-corruption defect and confirmed the chunked join against
-the native join on a lookup side whose hot key matched ten times the chunk
-size. What remains is where the delivered behaviour is narrower than the aim
-or where it will not hold at scale.
+delivered and specified; their packages are retired from this roadmap.
+Choosing captures by recompute cost, recording why a candidate was skipped,
+and computing part digests during the write were delivered on the same
+branch and are specified in [caching](../caching/low-level.md#seed-plans) and
+the [IO layer](../io-layer/low-level.md#node-output-snapshots). The review
+found no data-corruption defect and confirmed the chunked join against the
+native join on a lookup side whose hot key matched ten times the chunk size.
+What remains is where the delivered behaviour is narrower than the aim or
+where it will not hold at scale.
 
 | Aim | Delivered | Gap |
 |---|---|---|
 | One store, every consumer | Node outputs, input snapshots, and analyses share `.haute_cache`; previews, bounded runs, explicit builds, and traces run under one seed plan. | API-input tables still live in the JSON cache (`CACHE-S08`). |
-| No duplicated runs | A bounded run seeds from any fresh covering generation and captures its joins, fan-outs, join feeders, batch Model Scores, and consumed producers; a preview seeds the same way and captures the joins and materialising operations it must compute in full. A chain of plain transforms is recomputed by every preview and bounded run by design, because recomputing it costs less than the cache round trip. Each capture publishes as soon as it is written, so a run that fails or is cancelled later keeps what it had already published. | Two consumers that resolve the same cold capture point at the same time, or an explicit build and an automatic capture of one node, both compute it; the publication lock decides only who publishes (`CACHE-S19`). A repeat preview served from the response cache announces captures it did not make (`CACHE-S14`). |
-| Performant | Seeds stop the walk; captures are written once and read by everything below. | Captures are chosen by memory behaviour rather than by recompute cost: cheap explodes and lag operations, sliceable join feeders, fan-outs over Parquet, and cheap consumed segments are written for no saving, and every publication re-reads what it wrote to hash it (`CACHE-S11`). Sixty-four generations and 20 GiB are shared with input snapshots, so captures evict each other or fall to `quota` (`CACHE-S12`). A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). Every preview prepares the graph several times and signs every lineage node per resolution (`CACHE-S17`). |
+| No duplicated runs | A bounded run seeds from any fresh covering generation and captures a join, fan-out, join feeder, batch Model Score, or consumed producer only where recomputing it costs more than the cache round trip, and records why it skipped the others; a preview seeds the same way and captures only the joins and costly full-input work it must compute in full. A chain of plain transforms is recomputed by every preview and bounded run by design, because recomputing it costs less than the cache round trip. Each capture publishes as soon as it is written, so a run that fails or is cancelled later keeps what it had already published. | Two consumers that resolve the same cold capture point at the same time, or an explicit build and an automatic capture of one node, both compute it; the publication lock decides only who publishes (`CACHE-S19`). A repeat preview served from the response cache announces captures it did not make (`CACHE-S14`). |
+| Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. | Sixty-four generations and 20 GiB are shared with input snapshots, so captures evict each other or fall to `quota` (`CACHE-S12`). A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). Every preview prepares the graph several times and signs every lineage node per resolution (`CACHE-S17`). |
 | Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. | Any other plan, including an ordinary filter over a large input, is written by one native streaming sink whose peak memory is Polars' to bound (`CACHE-S20`). A heavy-row window relies on unspecified order stability (`CACHE-S15`). Full joins rescan the base per lookup chunk and cross joins collect the lookup side (`CACHE-S18`). |
 | Failures are recoverable | A corrupt generation is reported, never silently repaired; a plan whose inputs moved before collection stops. | The corrupt error reaches the user as store text with no pointer to Re-cache; a mid-run input change continues instead of stopping (`CACHE-S16`). |
 
@@ -38,7 +42,6 @@ or where it will not hold at scale.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CACHE-S11 | Planned | P2 | A node is captured only when recomputing it costs more than the cache round trip. |
 | CACHE-S15 | Planned | P2 | Chunked writes read heavy-row windows in a proven order and chunk one build at one size. |
 | CACHE-S14 | Planned | P2 | A preview announces only the snapshots it wrote. |
 | CACHE-S12 | Planned | P2 | Node-output snapshots have their own quota, large enough for capture-everything use, and a visible quota outcome. |
@@ -52,7 +55,7 @@ or where it will not hold at scale.
 
 ## Planned improvements
 
-Delivery order is `CACHE-S11` → `CACHE-S15` → `CACHE-S14` →
+Delivery order is `CACHE-S15` → `CACHE-S14` →
 `CACHE-S12` → `CACHE-S13` → `CACHE-S19` → `CACHE-S16` → `CACHE-S20` →
 `CACHE-S17` → `CACHE-S18`; `CACHE-S08` is deferred. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
@@ -75,107 +78,6 @@ the specification sections its **Owning specifications** line names before
 its behaviour changes; the roadmap records the direction and the acceptance
 evidence, not the contract text. Each package's **Evidence** line is also its
 affected-file list.
-
-### CACHE-S11 — Capture on recompute cost, not on memory
-
-**Why:** The rule, decided on 19 September 2026, is that a node is cached
-only when recomputing it costs more than writing and reading the cache.
-Joins, group-bys, sorts, and batch model scoring meet it and are captured;
-plain transforms do not and are not; the preview rule captures only what a
-preview must compute in full anyway, and a chain of plain transforms is
-recomputed by every preview and bounded run by design. Four places
-approximate cost by something else. The capture set for code nodes is the
-registry's materialisation-boundary list in `src/haute/_polars_operations.py`,
-which classifies by streaming memory: `explode`, `shift`, `diff`, and
-`pct_change` are cheap to redo and, for an explode, multiply rows, yet they
-are captured; only `over` in that group is costly. A join feeder is captured
-even when the chunked join could slice it in place, so a sliceable feeder is
-written twice. A fan-out node is captured even when its whole upstream is a
-Parquet scan or a generation plus row-local steps, where each branch would
-just re-read Parquet. A consumed producer is captured whatever its segment
-costs, although training and Data Output write the frame to their own file
-anyway. And publication hashes every part with SHA-256, a full read of what
-was just written, which alone outweighs a cheap transform.
-
-**Plan:** Keep the preview rule. The cost decision stays in
-`capture_points`, which runs on graph and store facts before any builder
-runs, so every fact it uses is a planning-time fact and the capture set is
-settled before `CACHE-S13` dispatches and `CACHE-S19` claims; nothing about a
-built frame is consulted. Two classifications feed it, both separate from
-`CACHE-S20`'s chunk-local safety proof, which answers a different question
-(whether slicing the input preserves the result) and rejects operations that
-are cheap to recompute. **Recompute cost** is a per-operation policy in the
-registry, `costly_to_recompute`, set for `join`, `join_asof`, `group_by`,
-`sort`, `unique`, `top_k`, `bottom_k`, and `over`, and clear for `explode`,
-`reverse`, `shift`, `diff`, and `pct_change`; a code node is cheap when the
-receiver-aware walk that already finds materialising calls resolves every
-frame and expression call to a registered operation whose policy is
-row-local or streaming, or a boundary without the flag, and costly when any
-call is flagged, opaque, or unresolvable. Every builder node type declares
-its own cost: Banding, the column step, renames, a blank-code Explore, and
-the scenario expander are cheap; Rating Step, Model Score, and edge joins are
-costly. **Slice transparency** is the planning-time counterpart of the
-chunked writer's sliceability proof: a segment is slice-transparent when its
-source is a Parquet scan, a snapshot generation, or a JSON table cache and
-every step is a select, a rename, an unnest, or a row-local projection with
-no filter, so the chunked join is known to read it in place. A **segment** is
-the nodes from the nearest seed, capture point, or source below a node up to
-and including it; a flat-file API Input source makes it costly. Precedence:
-a segment with a costly step is captured under the existing kinds; a cheap,
-slice-transparent segment is never captured as a feeder, fan-out, or
-consumed producer; a cheap segment that is not slice-transparent (a filter
-over Parquet) is captured only as a join feeder, because the chunked join
-would stage it anyway and the capture is that write made shareable, and is
-skipped as a fan-out or consumed producer. Batch Model Score and join
-captures are unchanged. Compute each part's digest while it is written, in
-`_Parts.sink`, `collect_and_write`, and `ensure_one` through a hashing
-wrapper around the sink, and in the batch scorer's own Parquet writer for a
-prewritten scored file, so publication reads footers and schemas but never
-re-reads a part to hash it. Record each skipped capture point and its reason
-(`cheap_segment`, `slice_transparent_feeder`) in the execution metrics.
-
-**Acceptance:** `tests/test_seed_plans.py` proves, without executing any
-builder (a builder registry that raises on call), that an explode-only code
-node, a shift-only code node, a slice-transparent join feeder, a fan-out over
-a generation plus a select, and a consumed producer over a cheap segment are
-not captured; that a filter over Parquet feeding a join is captured as a
-feeder and the same filter feeding a fan-out or consumed by training is not;
-that a group-by, a window `over`, a fan-out over a flat-file API Input, and a
-consumed producer whose segment holds a Rating Step or unresolvable code are
-captured; and that the capture set is identical before and after the run's
-claims are taken. The registry test proves the two policies are independent
-and every boundary operation declares both, and, example by example, that
-explode, reverse, shift, diff, and pct_change are cheap to recompute yet
-rejected by the chunk-local allowlist, that group_by, sort, unique, top_k,
-bottom_k, join, and over are costly, and that head, slice, and
-with_row_index stay rejected by the allowlist whatever their cost; the
-allowlist's own rejection tests in `CACHE-S20` are preserved. A builder test
-proves every registered node type declares its recompute cost. `tests/test_node_snapshot_retention.py` proves a published
-generation's digests match a fresh hash for a sunk, an ordered, an empty,
-and a prewritten scored generation, and, through a counting file source,
-that publication reads no part in full after writing it while footer and
-schema reads are permitted. `tests/test_snapshot_seeding.py` proves a bounded
-run over a cheap consumed segment reads the segment directly, writes its own
-output bounded (`CACHE-S20`), and the next run recomputes the segment rather
-than seeding.
-
-**Owning specifications:** [caching](../caching/low-level.md#seed-plans)
-(capture points, cheap segments); [execution engine](../execution-engine/low-level.md)
-(operation policies, builder cost declarations);
-[IO layer](../io-layer/low-level.md#node-output-snapshots) (publication
-digests).
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_seed_plans.py` (`capture_points`);
-`src/haute/_polars_operations.py`; `src/haute/_builders.py` (registrations);
-`src/haute/chunking.py` (`classify_chunk_local_polars_code`);
-`src/haute/_chunked_writes.py` (`sliceable`, `_Parts.sink`);
-`src/haute/_source_cache.py` (`describe_parts`);
-`src/haute/_node_snapshots.py` (`_staged_metadata`);
-`src/haute/_model_scorer.py` (`_batch_score_to_parquet`, the scorer's
-Parquet writer).
-
 ### CACHE-S15 — Chunked writes: proven order, one chunk size
 
 **Why:** `_ChunkJoin._write_heavy_row` in `src/haute/_chunked_writes.py`
@@ -466,7 +368,7 @@ streaming sink (`write_parts`, `native` strategy), whose peak memory is
 Polars' to bound and which the module's own rationale does not trust for one
 long query. The same native sink is how training preparation writes its
 parquet and how a Data Output writes Parquet, so an uncaptured cheap segment,
-which `CACHE-S11` leaves to the consumer, takes that path in every bounded
+which the cost rule leaves to the consumer, takes that path in every bounded
 run. The memory-safety aim therefore holds for sliceable frames and edge
 joins and is unproven for the most common node shape.
 
