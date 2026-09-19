@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 
 from haute._data_points import DataPointResolver
 from haute._execute_lazy import EagerResult, _execute_eager_core
@@ -234,7 +235,7 @@ def _publish(
 ) -> str:
     identity = _identity(store, graph, node_id)
     artifact = store.stage_node_output(identity)
-    frame.write_parquet(artifact.data_path)
+    frame.write_parquet(artifact.part_path(0))
     with store.publish_node_output(
         identity,
         artifact,
@@ -249,7 +250,7 @@ def _publish(
 
 def _latest(store: NodeSnapshotStore, graph: PipelineGraph, node_id: str) -> pl.DataFrame | None:
     latest = store.latest_generation(_identity(store, graph, node_id))
-    return None if latest is None else pl.read_parquet(latest.generation.data_path)
+    return None if latest is None else latest.lazy_frame.collect()
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +307,7 @@ def test_eager_capture_is_full_data_under_a_row_limit(
     assert preview.captures["join"]["outcome"] == "published"
     latest = store.latest_generation(identity)
     assert latest is not None
-    captured = pl.read_parquet(latest.generation.data_path)
+    captured = latest.lazy_frame.collect()
     assert captured.height == _ROWS
     assert sorted(captured["id"].to_list()) == list(range(_ROWS))
     # The limited rows are read from what was captured.
@@ -352,7 +353,7 @@ def test_eager_quota_rejected_capture_continues_from_own_artifact(
         "filler-signature"
     )
     artifact = full.stage_node_output(filler)
-    pl.DataFrame({"a": [1]}).write_parquet(artifact.data_path)
+    pl.DataFrame({"a": [1]}).write_parquet(artifact.part_path(0))
     full.publish_node_output(
         filler,
         artifact,
@@ -568,7 +569,7 @@ def test_a_capture_writes_the_columns_its_generation_keeps(
     graph = _join_graph(project)
     identity = _identity(store, graph, "join")
     artifact = store.stage_node_output(identity)
-    pl.DataFrame({"id": [0], "d": [0.0]}).write_parquet(artifact.data_path)
+    pl.DataFrame({"id": [0], "d": [0.0]}).write_parquet(artifact.part_path(0))
     store.publish_node_output(
         identity,
         artifact,
@@ -621,7 +622,7 @@ def _publish_narrow(
 ) -> SourceCacheIdentity:
     identity = _identity(store, graph, node_id)
     artifact = store.stage_node_output(identity)
-    frame.write_parquet(artifact.data_path)
+    frame.write_parquet(artifact.part_path(0))
     store.publish_node_output(
         identity,
         artifact,
@@ -905,7 +906,8 @@ def test_refreshed_join_misses_preview_cache(
     _post_preview(api, graph, "banding")
     identity = _identity(store, graph, "join")
     artifact = store.stage_node_output(identity)
-    pl.DataFrame({"id": [1, 2], "a": [70, 80], "d": [0.1, 0.2]}).write_parquet(artifact.data_path)
+    frame = pl.DataFrame({"id": [1, 2], "a": [70, 80], "d": [0.1, 0.2]})
+    frame.write_parquet(artifact.part_path(0))
     with store.publish_node_output(
         identity,
         artifact,
@@ -957,7 +959,7 @@ def test_capture_then_clear_or_evict_never_serves_the_cached_response(
             "filler-signature"
         )
         artifact = full.stage_node_output(filler)
-        pl.DataFrame({"a": [1]}).write_parquet(artifact.data_path)
+        pl.DataFrame({"a": [1]}).write_parquet(artifact.part_path(0))
         full.publish_node_output(
             filler,
             artifact,
@@ -1061,8 +1063,11 @@ def test_cache_hit_permission_error_propagates_without_executing(
 
 
 def _corrupt_generation(store: NodeSnapshotStore, identity: Any, generation_id: str) -> None:
-    data = store.inputs_root / identity.digest / "generations" / generation_id / "data.parquet"
-    data.write_bytes(b"corrupt")
+    from haute._chunked_writes import part_paths
+
+    gen_dir = store.inputs_root / identity.digest / "generations" / generation_id
+    for part in part_paths(gen_dir):
+        (gen_dir / part.name).write_bytes(b"corrupt")
 
 
 def _with_extra(project: Path) -> PipelineGraph:
@@ -1161,7 +1166,7 @@ def test_post_capture_plan_naming_an_unread_generation_stores_nothing(
         # and its re-resolution: a new request would seed what it never read.
         identity = _identity(store, graph, "join")
         artifact = store.stage_node_output(identity)
-        pl.DataFrame({"id": [1], "a": [9], "d": [0.9]}).write_parquet(artifact.data_path)
+        pl.DataFrame({"id": [1], "a": [9], "d": [0.9]}).write_parquet(artifact.part_path(0))
         store.publish_node_output(
             identity,
             artifact,
@@ -1193,7 +1198,7 @@ def test_partial_hit_under_captures_executes_as_a_miss(
         "filler-signature"
     )
     artifact = full.stage_node_output(filler)
-    pl.DataFrame({"a": [1]}).write_parquet(artifact.data_path)
+    pl.DataFrame({"a": [1]}).write_parquet(artifact.part_path(0))
     full.publish_node_output(
         filler,
         artifact,
@@ -1292,8 +1297,8 @@ def test_killed_preview_worker_leaves_no_staging(
         *_rest, token = args
         identity = _identity(store, graph, "join")
         artifact = store.stage_node_output(identity, staging_token=token)
-        artifact.data_path.write_bytes(b"partial")
-        staged.append(artifact.data_path)
+        artifact.part_path(0).write_bytes(b"partial")
+        staged.append(artifact.part_path(0))
         raise InteractiveWorkerCrashedError(9)
 
     monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "process")
@@ -1523,22 +1528,45 @@ def _renamed_edge_join(project: Path, selected: list[str] | None) -> PipelineGra
     )
 
 
-def test_a_node_that_shapes_its_columns_is_computed_and_reports_them_before_shaping(
+def test_a_node_that_shapes_its_columns_is_seeded_and_reports_them_before_shaping(
     api: Any, project: Path
 ) -> None:
     graph = _renamed_edge_join(project, ["_id", "premium", "segment"])
     first = _post_preview(api, graph, "subject")
     assert _plan_of(first) == [("subject", "captured")]
 
-    # Another request that misses the response cache: the capture is fresh,
-    # yet the node is computed again, because its Columns editor offers the
-    # columns it had before its own selection and renames.
+    # Another request that misses the response cache: the capture recorded the
+    # columns the node had before its own selection and renames — what its
+    # Columns editor offers — so the node is read instead of computed again.
     second = _post_preview(api, graph, "subject", requested_preview_columns=["identifier"])
 
-    # Neither read nor written again: its fresh generation already covers it.
-    assert _plan_of(second) == []
-    assert [column["name"] for column in second["columns"]] == ["identifier", "premium", "region"]
+    assert _plan_of(second) == [("subject", "seeded")]
+    # A seeded target reads the columns asked for, as any seeded preview target does.
+    assert [column["name"] for column in second["columns"]] == ["identifier"]
     assert [column["name"] for column in second["available_columns"]] == [
+        "_id",
+        "premium",
+        "segment",
+        "discard",
+    ]
+    assert second["available_columns"] == first["available_columns"]
+
+
+def test_a_preview_below_a_node_that_shapes_its_columns_seeds_it(api: Any, project: Path) -> None:
+    graph = _renamed_edge_join(project, ["_id", "premium", "segment"])
+    graph.nodes.append(
+        _node("below", NodeType.POLARS, _code("df = subject.with_columns(pl.lit(1).alias('one'))"))
+    )
+    graph.edges.append(GraphEdge(id="e2", source="subject", target="below"))
+    shaped = _post_preview(api, graph, "subject")
+
+    body = _post_preview(api, graph, "below")
+
+    # ``subject``'s fresh generation recorded its pre-shaping columns: it is read,
+    # and still reports exactly the schema it had before its own shaping.
+    assert ("subject", "seeded") in _plan_of(body)
+    assert body["node_available_columns"]["subject"] == shaped["available_columns"]
+    assert [column["name"] for column in body["node_available_columns"]["subject"]] == [
         "_id",
         "premium",
         "segment",
@@ -1546,20 +1574,25 @@ def test_a_node_that_shapes_its_columns_is_computed_and_reports_them_before_shap
     ]
 
 
-def test_a_preview_below_a_node_that_shapes_its_columns_computes_it(
-    api: Any, project: Path
+def test_a_shaping_node_generation_without_its_unshaped_columns_is_computed(
+    api: Any, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import haute._execute_lazy as execute_lazy
+
     graph = _renamed_edge_join(project, ["_id", "premium", "segment"])
     graph.nodes.append(
         _node("below", NodeType.POLARS, _code("df = subject.with_columns(pl.lit(1).alias('one'))"))
     )
     graph.edges.append(GraphEdge(id="e2", source="subject", target="below"))
-    _post_preview(api, graph, "subject")
+    # A writer that does not record the pre-shaping columns (as before they were).
+    with monkeypatch.context() as scoped:
+        scoped.setattr(execute_lazy, "_shapes_output", lambda node: False)
+        assert _plan_of(_post_preview(api, graph, "subject")) == [("subject", "captured")]
 
     body = _post_preview(api, graph, "below")
 
-    # ``subject``'s generation is fresh, but its pre-shaping columns would be
-    # unknown if it were read: it is computed, and its schema is exact.
+    # Its generation cannot say what the node offered before shaping: the node
+    # is computed, and its schema is exact.
     assert ("subject", "seeded") not in _plan_of(body)
     assert [column["name"] for column in body["node_available_columns"]["subject"]] == [
         "_id",
@@ -1594,3 +1627,80 @@ def test_a_requested_column_the_node_no_longer_produces_is_refused_as_without_a_
 
     assert response.status_code == 400, response.text
     assert response.json()["detail"] == "Requested preview column(s) not found on target: discard"
+
+
+def test_preview_join_capture_is_chunked_into_parts_and_downstream_reads_them(
+    project: Path, api: Any, store: NodeSnapshotStore
+) -> None:
+    n_rows = 10
+    pl.DataFrame(
+        {
+            "_id": list(range(n_rows)),
+            "premium": [float(i * 10) for i in range(n_rows)],
+            "segment": ["North", "South"] * (n_rows // 2),
+            "discard": [99] * n_rows,
+        }
+    ).write_parquet(project / "policies_task6.parquet")
+    pl.DataFrame({"_id": list(range(n_rows))}).write_parquet(project / "keys_task6.parquet")
+
+    join_config: dict[str, Any] = {
+        "how": "left",
+        "on": ["_id"],
+        "selected_columns": ["_id", "premium", "segment"],
+        "column_renames": {"_id": "identifier", "segment": "region"},
+    }
+
+    graph = PipelineGraph(
+        nodes=[
+            _node("raw_rows", NodeType.DATA_INPUT, _parquet(project / "policies_task6.parquet")),
+            _node("lookup_rows", NodeType.DATA_INPUT, _parquet(project / "keys_task6.parquet")),
+            _node("join_node", NodeType.EDGE_JOIN, join_config),
+            _node(
+                "banding",
+                NodeType.POLARS,
+                _code("df = join_node.with_columns((pl.col('premium') * 2).alias('band'))"),
+            ),
+        ],
+        edges=[
+            # Edge to JOIN handle listed FIRST
+            GraphEdge(id="e0", source="lookup_rows", target="join_node", targetHandle="join"),
+            # Edge to BASE handle listed SECOND
+            GraphEdge(id="e1", source="raw_rows", target="join_node", targetHandle="base"),
+            GraphEdge(id="e2", source="join_node", target="banding"),
+        ],
+        preamble="import polars as pl",
+        source_file=str(project / "main.py"),
+    )
+
+    first_body = _post_preview(api, graph, "banding", streaming_chunk_size=2)
+
+    assert _plan_of(first_body) == [("join_node", "captured")]
+    captures = first_body["execution_metrics"]["shared_snapshot_captures"]
+    join_capture = next(c for c in captures if c["node_id"] == "join_node")
+    assert join_capture["write_strategy"] == "chunked_join"
+    assert join_capture["write_parts"] is not None and join_capture["write_parts"] > 1
+
+    identity = _identity(store, graph, "join_node")
+    gen = store.latest_generation(identity)
+    assert gen is not None
+    assert len(gen.generation.metadata.parts) > 1
+    assert len(gen.generation.data_paths) > 1
+
+    expected = (
+        pl.read_parquet(project / "policies_task6.parquet")
+        .join(pl.read_parquet(project / "keys_task6.parquet"), on="_id", how="left")
+        .select(["_id", "premium", "segment"])
+        .rename({"_id": "identifier", "segment": "region"})
+        .with_columns((pl.col("premium") * 2).alias("band"))
+    )
+    first_rows = pl.DataFrame(first_body["preview"]).sort("identifier")
+    expected_sorted = expected.sort("identifier")
+    assert_frame_equal(first_rows.select(expected_sorted.columns), expected_sorted)
+
+    from haute.executor import _preview_cache
+
+    _preview_cache.clear()
+    second_body = _post_preview(api, graph, "banding", streaming_chunk_size=2)
+    assert _plan_of(second_body) == [("join_node", "seeded")]
+    second_rows = pl.DataFrame(second_body["preview"]).sort("identifier")
+    assert_frame_equal(second_rows.select(expected_sorted.columns), expected_sorted)

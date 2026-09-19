@@ -200,6 +200,12 @@ class SharedSnapshotCaptureRecord:
     outcome: CaptureOutcome
     generation_id: str | None
     columns: NodeSnapshotColumns
+    # How the output was written (``haute._chunked_writes``), or
+    # ``prewritten`` for a batch Model Score's own scored file, with the part
+    # files it wrote and the inputs it had to stage first.
+    write_strategy: str | None = None
+    write_parts: int | None = None
+    write_staged_inputs: int | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -209,6 +215,9 @@ class SharedSnapshotCaptureRecord:
             "outcome": self.outcome,
             "generation_id": self.generation_id,
             "columns": self.columns.to_json(),
+            "write_strategy": self.write_strategy,
+            "write_parts": self.write_parts,
+            "write_staged_inputs": self.write_staged_inputs,
         }
 
 
@@ -476,15 +485,15 @@ class _Resolver:
             return None
         if not self.is_node_output(node_id):
             return None
-        if self.preview and self.shapes_output(node_id):
-            # A preview reports a node's columns before its own selection and
-            # renames — what its Columns editor offers. A generation holds the
-            # shaped output and cannot say that, so the preview computes the
-            # node (and may still capture it for everything below).
-            return None
         identity = self.identity(node_id)
         latest = self.store.latest_generation(identity)
         if latest is None or not latest.fresh:
+            return None
+        if self.preview and self.shapes_output(node_id) and latest.unshaped_columns is None:
+            # A preview reports a node's columns before its own selection and
+            # renames — what its Columns editor offers. A generation that did
+            # not record them cannot say that, so the preview computes the
+            # node (and may still capture it for everything below).
             return None
         wanted = demand_columns(demand)
         if not latest.columns.covers(wanted):
@@ -826,6 +835,14 @@ class SeedPlan:
     def fingerprint(self) -> str:
         return self.decision.fingerprint
 
+    def seed_unshaped_columns(self, node_id: str) -> tuple[tuple[str, str], ...] | None:
+        """The seeded node's columns before its own selection and renames, if recorded."""
+        from haute._node_snapshots import parse_unshaped_columns
+
+        seed = self.decision.seeds[node_id]
+        facts = self._generations[seed.identity.digest].metadata.node_output or {}
+        return parse_unshaped_columns(facts.get("unshaped_columns"))
+
     def seed_frame(self, node_id: str) -> pl.LazyFrame:
         """The leased generation a seeded node reads, projected to its demand.
 
@@ -841,7 +858,7 @@ class SeedPlan:
         return frame.select(projected_or_carrier_columns(schema, seed.demand.names))
 
     def estimation_graph(self, graph: PipelineGraph) -> PipelineGraph:
-        """*graph* with every seed read as the Parquet file of its leased generation.
+        """*graph* with every seed read as the Parquet parts of its leased generation.
 
         Materialisation estimates then stop at a seed and read its row count
         and widths from the generation's metadata, instead of walking back
@@ -859,8 +876,11 @@ class SeedPlan:
                             "inputType": "file",
                             "format": "parquet",
                             "mode": "scan",
+                            # Every part, so a seed's estimate counts all of
+                            # its rows; this graph is only ever estimated.
                             "path": str(
-                                self._generations[seeds[node.id].identity.digest].data_path
+                                self._generations[seeds[node.id].identity.digest].directory
+                                / "part-*.parquet"
                             ),
                         },
                     }

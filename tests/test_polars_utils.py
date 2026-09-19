@@ -68,7 +68,7 @@ def test_streaming_collect_uses_polars_streaming_engine() -> None:
 
 
 def test_execution_collect_rejects_unknown_engine() -> None:
-    with pytest.raises(ValueError, match="engine must be 'auto' or 'streaming'"):
+    with pytest.raises(ValueError, match="engine must be 'auto', 'streaming' or 'in-memory'"):
         execution_collect(pl.LazyFrame({"x": [1]}), engine="gpu")  # type: ignore[arg-type]
 
 
@@ -410,9 +410,8 @@ def test_bounded_collect_batches_records_only_real_batch_stages() -> None:
     stages = context.metrics.snapshot()
     assert [stage.name for stage in stages] == ["batch_collect", "batch_collect"]
     assert [stage.n_collects for stage in stages] == [1, 1]
-    summary = context.metrics_summary()
-    assert summary.n_collects == 2
-    assert summary.n_checkpoints == 3
+    # One query counts the rows; each batch is one more.
+    assert context.metrics_summary().n_collects == 3
 
 
 def test_bounded_collect_batches_raises_the_engine_error() -> None:
@@ -437,7 +436,118 @@ def test_bounded_collect_batches_raises_an_engine_panic_instead_of_ending_early(
         list(bounded_collect_batches(query, chunk_size=1))
 
 
-def test_bounded_collect_batches_yields_delivered_batches_before_a_later_panic() -> None:
+def _counting_collects(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Record the height of every frame ``bounded_collect_batches`` collects."""
+    import haute._polars_utils as polars_utils
+
+    heights: list[int] = []
+    real = polars_utils.execution_collect
+
+    def counting(lf: pl.LazyFrame, **kwargs: object) -> pl.DataFrame:
+        frame = real(lf, **kwargs)  # type: ignore[arg-type]
+        heights.append(frame.height)
+        return frame
+
+    monkeypatch.setattr(polars_utils, "execution_collect", counting)
+    return heights
+
+
+def _staging_dirs(monkeypatch: pytest.MonkeyPatch, root: Path) -> list[Path]:
+    """Route the staged strategy's temporary directories under *root*."""
+    import tempfile
+
+    made: list[Path] = []
+    real = tempfile.mkdtemp
+
+    def mkdtemp(*args: object, **kwargs: object) -> str:
+        kwargs["dir"] = str(root)
+        path = real(*args, **kwargs)  # type: ignore[call-overload]
+        made.append(Path(path))
+        return path
+
+    monkeypatch.setattr(tempfile, "mkdtemp", mkdtemp)
+    return made
+
+
+def _parquet(tmp_path: Path, frame: pl.DataFrame) -> pl.LazyFrame:
+    path = tmp_path / "input.parquet"
+    frame.write_parquet(path)
+    return pl.scan_parquet(path)
+
+
+# -- sliced: the frame can be sliced at its input, so each batch is one slice --
+
+
+def test_sliced_batches_issue_one_query_per_consumed_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    heights = _counting_collects(monkeypatch)
+    frame = _parquet(tmp_path, pl.DataFrame({"x": list(range(10))})).with_columns(y=pl.col("x") * 2)
+
+    batches = bounded_collect_batches(frame, chunk_size=3)
+    consumed = [next(batches), next(batches)]
+
+    # The row count, then exactly the two batches the consumer asked for.
+    assert heights == [1, 3, 3]
+    assert [batch["x"].to_list() for batch in consumed] == [[0, 1, 2], [3, 4, 5]]
+    assert [batch["x"].to_list() for batch in batches] == [[6, 7, 8], [9]]
+    assert heights == [1, 3, 3, 3, 1]
+
+
+def test_sliced_batches_deliver_before_a_later_failure(tmp_path: Path) -> None:
+    frame = _parquet(tmp_path, pl.DataFrame({"x": ["1", "2", "3", "4", "bad"]})).select(
+        pl.col("x").str.to_integer()
+    )
+    delivered: list[list[int]] = []
+
+    with pytest.raises(pl.exceptions.ComputeError, match="bad"):
+        for batch in bounded_collect_batches(frame, chunk_size=2):
+            delivered.append(batch["x"].to_list())
+
+    assert delivered == [[1, 2], [3, 4]]
+
+
+def test_sliced_batches_stop_reading_when_closed_early(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    heights = _counting_collects(monkeypatch)
+    batches = bounded_collect_batches(
+        _parquet(tmp_path, pl.DataFrame({"x": list(range(1_000))})), chunk_size=1
+    )
+
+    assert next(batches)["x"].to_list() == [0]
+    batches.close()
+
+    # The row count and the one batch; closing reads nothing more.
+    assert heights == [1, 1]
+
+
+# -- in-memory: every input is already held, so it is collected once --
+
+
+def test_in_memory_batches_collect_once_without_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    heights = _counting_collects(monkeypatch)
+    staged = _staging_dirs(monkeypatch, tmp_path)
+    frame = (
+        pl.LazyFrame({"k": [3, 1, 2, 1], "v": [1, 2, 3, 4]})
+        .group_by("k")
+        .agg(pl.col("v").sum())
+        .sort("k")
+    )
+
+    batches = list(bounded_collect_batches(frame, chunk_size=2))
+
+    assert heights == [3]
+    assert staged == []
+    assert pl.concat(batches).to_dict(as_series=False) == {"k": [1, 2, 3], "v": [6, 3, 1]}
+
+
+# -- staged: anything else is written once, then sliced --
+
+
+def _io_source(values: list[int], *, fail_after: int | None = None) -> pl.LazyFrame:
     from polars.io.plugins import register_io_source
 
     def source(
@@ -447,17 +557,46 @@ def test_bounded_collect_batches_yields_delivered_batches_before_a_later_panic()
         batch_size: int | None,
     ):
         del with_columns, predicate, n_rows, batch_size
-        yield pl.DataFrame({"x": [1, 2]})
-        raise pl.exceptions.PanicException("panic after the first batch")
+        for index, value in enumerate(values):
+            if fail_after is not None and index == fail_after:
+                raise pl.exceptions.PanicException("panic in the source")
+            yield pl.DataFrame({"x": [value]})
 
-    query = register_io_source(source, schema=pl.Schema({"x": pl.Int64}))
+    return register_io_source(source, schema=pl.Schema({"x": pl.Int64}))
+
+
+def test_staged_batches_raise_before_any_batch_and_remove_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staged = _staging_dirs(monkeypatch, tmp_path)
     delivered: list[list[int]] = []
 
     with pytest.raises(pl.exceptions.PanicException):
-        for batch in bounded_collect_batches(query, chunk_size=1, maintain_order=True):
+        for batch in bounded_collect_batches(_io_source([1, 2, 3], fail_after=2), chunk_size=1):
             delivered.append(batch["x"].to_list())
 
-    assert delivered == [[1], [2]]
+    # A frame that cannot be sliced is written out before its first batch, so
+    # its failure comes before any batch, and nothing is left behind.
+    assert delivered == []
+    assert len(staged) == 1
+    assert not staged[0].exists()
+
+
+def test_staged_batches_remove_staging_on_close_and_exhaustion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staged = _staging_dirs(monkeypatch, tmp_path)
+
+    closed_early = bounded_collect_batches(_io_source(list(range(20))), chunk_size=3)
+    assert next(closed_early)["x"].to_list() == [0, 1, 2]
+    assert len(staged) == 1 and staged[0].exists()
+    closed_early.close()
+    assert not staged[0].exists()
+
+    exhausted = list(bounded_collect_batches(_io_source(list(range(7))), chunk_size=3))
+    assert [batch["x"].to_list() for batch in exhausted] == [[0, 1, 2], [3, 4, 5], [6]]
+    assert len(staged) == 2
+    assert not staged[1].exists()
 
 
 def test_bounded_collect_batches_restores_a_parked_python_scan_failure() -> None:
@@ -481,41 +620,6 @@ def test_bounded_collect_batches_restores_a_parked_python_scan_failure() -> None
         list(bounded_collect_batches(scan, chunk_size=1))
 
 
-def test_bounded_collect_batches_stops_the_query_when_closed_early() -> None:
-    import threading
-    import time
-
-    from polars.io.plugins import register_io_source
-
-    produced: list[int] = []
-
-    def source(
-        with_columns: list[str] | None,
-        predicate: pl.Expr | None,
-        n_rows: int | None,
-        batch_size: int | None,
-    ):
-        del with_columns, predicate, n_rows, batch_size
-        for index in range(1_000):
-            produced.append(index)
-            yield pl.DataFrame({"x": [index]})
-
-    query = register_io_source(source, schema=pl.Schema({"x": pl.Int64}))
-    batches = bounded_collect_batches(query, chunk_size=1, maintain_order=True)
-
-    assert next(batches)["x"].to_list() == [0]
-    batches.close()
-
-    deadline = time.monotonic() + 10
-    while (
-        any(thread.name == "haute-collect-batches" for thread in threading.enumerate())
-        and time.monotonic() < deadline
-    ):
-        time.sleep(0.01)
-    assert not any(thread.name == "haute-collect-batches" for thread in threading.enumerate())
-    assert len(produced) < 1_000
-
-
 def test_bounded_collect_batches_runs_the_query_in_the_caller_context() -> None:
     context = ExecutionContext(
         operation="chunked",
@@ -523,22 +627,22 @@ def test_bounded_collect_batches_runs_the_query_in_the_caller_context() -> None:
         memory_sampler=lambda: 1_000,
     )
     seen: list[ExecutionContext | None] = []
-    real_sink_batches = pl.LazyFrame.sink_batches
+    real_collect = pl.LazyFrame.collect
 
-    def spying_sink_batches(self: pl.LazyFrame, *args: object, **kwargs: object) -> object:
+    def spying_collect(self: pl.LazyFrame, *args: object, **kwargs: object) -> object:
         from haute._execution_context import current_execution_context
 
         seen.append(current_execution_context())
-        return real_sink_batches(self, *args, **kwargs)  # type: ignore[arg-type]
+        return real_collect(self, *args, **kwargs)  # type: ignore[arg-type]
 
     with (
         context.stage("caller"),
-        patch.object(pl.LazyFrame, "sink_batches", spying_sink_batches),
+        patch.object(pl.LazyFrame, "collect", spying_collect),
     ):
         batches = list(bounded_collect_batches(pl.LazyFrame({"x": [1]}), chunk_size=1))
 
     assert [batch["x"].to_list() for batch in batches] == [[1]]
-    assert seen == [context]
+    assert seen and all(entry is context for entry in seen)
 
 
 def test_streaming_collect_with_active_context_preserves_unverified_error() -> None:

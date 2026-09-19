@@ -18,6 +18,7 @@
 | `src/haute/_polars_selectors.py` | Literal Polars column selectors: `preamble_selector_aliases` (the preamble's `polars.selectors` import aliases), `literal_selector` (the closed grammar that rebuilds a selector written with literal arguments as the Polars object, accepted only when Polars reports a pure column selection), `selector_root` (the selector a computation starts from), and `expand_literal_selector` (expansion against a column set by Polars, refusing positional selectors and dtype-dependent selectors without every dtype). |
 | `src/haute/_execution_context.py` | `ExecutionContext`, `ExecutionProfile`, `ExecutionCancellationToken`, `ExecutionMetricsRecorder`, deterministic request-local fault points, bounded opt-in terminal telemetry, cancellation-latency evidence, cleanup precedence, and RSS-sampling/memory-pressure-event machinery. Contexts created directly may be unbudgeted; admitted contexts carry the resolved limits. |
 | `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (fixed default / explicit env override / adaptive fraction of available RAM), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
+| `src/haute/_chunked_writes.py` | Bounded chunked writes: `sliceable` (positive proof on Polars' optimised IR that slicing a frame equals slicing its single Parquet/IPC scan or in-memory input), `write_parts` (a node output as ordered `part-NNNNN.parquet` files: a chunked edge join, one native sink per slice, or one native sink), `JoinRecipe`, `reads_only_memory`, `part_paths`/`scan_parts`. |
 | `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` selects `auto` or streaming execution and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve fault, collect-count, and typed-error telemetry. `bounded_collect_batches` streams batches from a query run on a dedicated thread, so an engine panic raises instead of ending the stream early. It also owns the Python scans that expose opaque Python steps to Polars pushdown (`row_local_python_scan`, `limited_python_scan`, `key_prefix_python_scan`) and the parked scan-failure registry every collect seam re-raises from. |
 | `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion, `optimiserApply` artifact dispatch, and output response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
 | `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`; owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component, and `pass_through_selected_edge` / `PASS_THROUGH_NODE_TYPES`, which state the incoming edge a pass-through node's built function returns. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
@@ -456,9 +457,10 @@ for every input, is not called. Projection is planned from the plan's negotiated
 pre-planned strategy — so a capture writes every column its generation must keep, while
 each collected node collects only the caller's own demand. Every source is bound first
 and the plan's inputs verified (`_PlannedCaptures.verify_inputs`) before anything is
-collected. Each executed node records its dependency closure, and a capture point is sunk
-through `bounded_sink` by the same `_PlannedCaptures.capture` the lazy engine uses, right
-after its output is formed and before anything below it is collected: consumers and the
+collected. Each executed node records its dependency closure, and a capture point is
+written by the chunked writer through the same `_PlannedCaptures.capture` the lazy engine
+uses — an edge join with the recipe of the frames its builder received — right after its
+output is formed and before anything below it is collected: consumers and the
 node's own collection read the publication, or, on quota rejection or supersession, the
 request-owned artifact (`snapshot_capture_skipped`). The row limit still applies only at
 collection, so every capture holds the node's full output — the only builder that
@@ -530,23 +532,76 @@ predicate, then the projection.
   evicted or foreign token leaves the `ComputeError` unchanged, and a direct Polars
   `.collect()` receives a `ComputeError` naming the original type and message.
 
+**Chunked writes (`_chunked_writes.py`).** Polars' streaming engine does not bound the
+memory of one long query over a large input: a single native sink's peak grows with the
+rows it reads (1.3 / 3.0 / 5.4 GiB for 1M / 3M / 10M rows of a 60-column frame), and an
+equi-join holds its whole lookup side's hash table whatever the other side holds (4.8 GiB
+for 10M String keys joined to one row). No Polars setting — streaming chunk size,
+`maintain_order`, row-group size or prefetch, buffer sizes, the out-of-core budget — changes
+that. What stays bounded is a driver loop of one small query per chunk, each sunk natively
+into its own part file (a single file appended chunk by chunk is seven times slower).
+`write_parts(directory, frame, *, join=None, chunk_rows=None, fast_checkpoint=True,
+execution_context=None, node_id=None)` writes a node output that way as ordered
+`part-NNNNN.parquet` files and returns its `ChunkedWrite` (`strategy`, `parts`,
+`staged_inputs`, `native_reason`), checkpointing between parts:
+
+- **`sliceable(lf)`** walks Polars' optimised IR of `lf.slice(1, 1)` (`LazyFrame._ldf.visit()`,
+  IR major version 14; another version answers False). It is True only for one chain of
+  `HStack`, `Select`, `SimpleProjection`, or `rename`/`unnest` map nodes down to one leaf that
+  received the slice — a Parquet/IPC `Scan` whose `n_rows` is set, or a `DataFrameScan`. Polars
+  pushes a slice through a projection only when its expressions are row-local and otherwise
+  keeps a `Slice` node; `Distinct`, `GroupBy`, and `Sort` absorb a slice and recompute a
+  global result per slice, so any node outside the chain answers False.
+- **Chunked join** (`join=JoinRecipe(base, join, config, finish)`): the base drives every join
+  but `right`, which the join side drives. A side that cannot be sliced is first staged by the
+  writer itself and removed before returning. The writer resolves the native join's schema
+  first, so a `validate` Polars rejects at schema resolution (`right`/`semi`/`anti`) raises
+  Polars' own error and writes nothing; `cross` ignores `validate` as Polars does; on
+  `inner`/`left`/`full` the whole checked side is proven unique before any part — non-null
+  keys only, a hash-partitioned group-by of about `chunk_rows` keys at a time — and a
+  violation raises Polars' `ComputeError("join keys did not fulfill <v> validation")`. Each
+  driving chunk probes its lookup matches (`semi` on the chunk's keys, `head(chunk_rows + 1)`);
+  when they fit and their keys are unique the chunk joins them directly, otherwise per-key
+  match counts split the chunk into consecutive groups of at most `chunk_rows` expected output
+  rows, and one driving row with more matches is joined against them `chunk_rows` at a time.
+  A `semi`/`anti` join reads only the lookup's distinct keys. A `full` join adds the lookup
+  rows no driving row matched, once each, as the full join of an empty base with them.
+  `maintain_order` naming the driving side keeps Polars' order (ordered parts are collected
+  with the in-memory engine, the reference for join order); a `full` join with an order, or
+  an order led by the lookup side, is written natively (`native_reason`).
+- **Sliced**: a sliceable frame is written one `slice(offset, chunk_rows)` per part.
+- **Native**: anything else is one native sink into `part-00000.parquet`.
+
+Every part is conformed to the output's schema; an empty output is one empty part. The lazy
+engine and the eager core build a recipe for every edge join they build, from exactly the
+frames they hand its builder (roles from the edges' target handles) plus the node's own
+`selected_columns`/`column_renames` step; `execute_lazy_graph(join_recipes=...)` hands them
+to a caller that writes a node in full, and `unshaped_frames=...` hands it, for every node
+that shapes its columns, its frame before that step.
+
 **Batch collection (`_polars_utils.py`).** `bounded_collect_batches(lf, *, chunk_size,
 maintain_order=False, execution_context=None, stage_name="collect_batches", node_id=None)`
 is the one seam that streams a query's result as batches of at most `chunk_size` rows
 (chunked map-reduce, the deploy container's scoring spool, auto-range frontier streaming,
-online optimiser apply explanation, and row-local Python scans). An engine failure is never
-a short result. Polars' own `collect_batches` ends its stream as though exhausted when the
-engine panics (Polars 1.39–1.44), so a crashed query would read as fewer or no rows.
-The seam therefore runs the query as a blocking streaming `sink_batches` on a dedicated
-daemon thread, in the caller's copied context variables, and hands each batch to the
-caller through a one-slot queue in engine order. When the query ends, the batches delivered
-before the end are yielded first; then a failure — a Polars error, or a panic, which
-`sink_batches` raises as `PanicException` — is re-raised to the caller (with a parked
-Python-scan original restored as above), and a clean finish ends the iterator. Each wait for
-a batch runs inside the execution stage `stage_name` and counts one collect; checkpoints run
-before the first batch and after each one. Closing the iterator early, including when a
-checkpoint raises, tells the query to stop at its next batch and releases a delivery
-blocked on the queue; the iterator does not wait for the engine to wind down.
+online optimiser apply explanation, and row-local Python scans). Polars applies no
+backpressure to `sink_batches`, `collect_batches`, or a Python source, so a consumer slower
+than the engine let it materialise the whole frame (8.3 GiB for a 10M-row, 60-column
+frame). Every batch is therefore its own query, issued only when the consumer asks, in the
+caller's thread and context, under one strategy fixed before the first batch:
+
+- **sliced** — `sliceable(lf)`: each batch is `lf.slice(offset, chunk_size)` collected,
+  after one query that counts the rows. A failure in batch k raises after batches 0..k-1
+  were delivered; closing early issues no further query.
+- **in-memory** — every input is a `DataFrameScan` (the caller already holds the data, as
+  the deploy container's live quotes are): the frame is collected once and sliced.
+- **staged** — anything else is written once by `write_parts` into a private temporary
+  directory and its parts are sliced: a failure raises before any batch, and the directory
+  is removed on exhaustion, close, or failure.
+
+Batches follow the frame's order under every strategy (`maintain_order` is always
+honoured). An engine failure is never a short result: it raises, with a parked Python-scan
+original restored as above. Each batch query of a sliced or staged frame runs inside the
+execution stage `stage_name`; checkpoints run before the first batch and after each one.
 
 Before `_build_funcs()` constructs a JSON `apiInput`, eager and lazy execution
 derive a per-source `{port_label: columns | None}` demand from the prepared
@@ -631,8 +686,11 @@ executed nodes recomputed; if it no longer equals the plan's, the run raises
 `SnapshotPlanInputsChangedError` before anything is collected. A source that is itself a
 capture point is captured only after that check.
 
-Every capture point is written through `bounded_sink` (`fast_checkpoint=True`) into a
-staging directory under the plan's token: all columns for an all-column demand, otherwise
+Every capture point is written by `write_parts` (`fast_checkpoint=True`, in chunks of the
+request's streaming chunk size, `current_streaming_chunk_size()`) into a staging directory
+under the plan's token, and its capture record (`shared_snapshot_captures` evidence) carries
+the write's `write_strategy`, `write_parts`, and `write_staged_inputs` (a batch Model Score's
+own scored file is `prewritten`): all columns for an all-column demand, otherwise
 the negotiated columns present in the schema, carrier-preserving. A batch Model Score
 (any scenario but `live`) whose output is exactly its scored file — no post-processing
 `code`, `selected_columns`, or `column_renames` — is not sunk at all: its capture is staged
@@ -877,7 +935,7 @@ define `to_payload()` is still an internal 500 and cannot smuggle child data int
 response. Three additional memory outcomes are classified from parent-side evidence
 and answered with a parent-authored, data-free 507 detail (never the child payload):
 an `InteractiveWorkerCrashedError` whose exit code looks memory-limited under a
-configured growth cap (the same `SIGKILL`/`SIGABRT`/Windows fail-fast heuristic as one-shot workers,
+configured growth cap (the same `SIGKILL`/`SIGABRT`/Windows fail-fast/stack-overflow heuristic as one-shot workers,
 recorded as `terminal_reason="memory_limited"` on the exception), a remote error
 whose exact identity is `builtins.MemoryError`, and a remote
 `haute._native_memory_limit.NativeMemoryLimitUnsupportedError`. A remote exception
@@ -1928,6 +1986,11 @@ present a structural or schema result as execution evidence.
   that the Job Object cap (or an exhausted commit limit) refuses aborts through
   the fail-fast path — Polars prints `memory allocation of N bytes failed` and
   exits with it — while Python-level allocations raise `MemoryError` instead.
+  `0xC00000FD` (`STATUS_STACK_OVERFLOW`, exit code `3221225725`) is in the set too: a
+  thread whose next stack page the Job Object cap refuses to commit dies with it rather
+  than with an allocation failure (a 10M-row preview join capture ended this way), and a
+  genuine deep-recursion overflow under a cap reads the same, which the hedged wording
+  accepts.
   The residual misdiagnosis vector (a native assertion, panic, or heap-corruption
   abort under a cap, which exit with the same status) is accepted because the
   wording hedges and the exit code is preserved. The message is parent-authored user-facing

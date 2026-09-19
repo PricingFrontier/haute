@@ -1296,6 +1296,10 @@ def _build_edge_join(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             )
         return cast(_Frame, execute_edge_join(dfs[base_index], dfs[join_index], ctx.config))
 
+    # What a caller writing this join in chunks needs to rebuild it exactly:
+    # the roles and the instance-resolved config this builder joins with.
+    edge_join_fn.edge_join_roles = (base_index, join_index)  # type: ignore[attr-defined]
+    edge_join_fn.edge_join_config = dict(ctx.config)  # type: ignore[attr-defined]
     return ctx.func_name, edge_join_fn, False
 
 

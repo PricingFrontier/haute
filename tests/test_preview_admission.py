@@ -125,7 +125,7 @@ def _publish_join(project: Path, graph: PipelineGraph) -> str:
     identity = resolver.node_output_slot("J").identity(resolver.node_output_signature("J"))
     artifact = store.stage_node_output(identity)
     pl.DataFrame({"id": [1, 2, 3], "a": [1, 2, 3], "d": [0.1, 0.2, 0.3]}).write_parquet(
-        artifact.data_path
+        artifact.part_path(0)
     )
     with store.publish_node_output(
         identity,

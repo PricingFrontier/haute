@@ -1084,6 +1084,10 @@ def test_memory_limited_exitcode_classification_is_platform_independent() -> Non
     # Windows fail-fast (STATUS_STACK_BUFFER_OVERRUN): a refused native allocation.
     assert isolation_mod._exitcode_looks_memory_limited(0xC0000409, 10) is True
     assert isolation_mod._exitcode_looks_memory_limited(0xC0000409, None) is False
+    # Windows STATUS_STACK_OVERFLOW: the Job Object cap refused to commit a
+    # thread's next stack page (seen on a 10M-row preview join).
+    assert isolation_mod._exitcode_looks_memory_limited(0xC00000FD, 10) is True
+    assert isolation_mod._exitcode_looks_memory_limited(0xC00000FD, None) is False
     assert isolation_mod._exitcode_looks_memory_limited(3, 10) is False
 
 

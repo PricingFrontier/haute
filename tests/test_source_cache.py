@@ -20,6 +20,7 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from haute._execution_context import ExecutionProfile
+from haute._polars_utils import temporary_streaming_chunk_size
 from haute._source_cache import (
     SourceCacheBuildContext,
     SourceCacheCorruptError,
@@ -103,16 +104,16 @@ def test_build_publishes_immutable_generation_and_lease_reads_it(tmp_path: Path)
         source_signature="sha256:source-v1",
     )
 
-    assert generation.data_path.exists()
+    assert generation.data_paths[0].exists()
     assert generation.metadata_path.exists()
-    assert generation.data_path.parent.name == generation.generation_id
-    assert generation.data_path.parent.parent.name == "generations"
+    assert generation.directory.name == generation.generation_id
+    assert generation.directory.parent.name == "generations"
     metadata = json.loads(generation.metadata_path.read_text(encoding="utf-8"))
     assert metadata["identity_digest"] == identity.digest
     assert metadata["identity"] == identity.payload
     assert metadata["source_signature"] == "sha256:source-v1"
-    assert metadata["data_sha256"]
-    assert metadata["size_bytes"] == generation.data_path.stat().st_size
+    assert metadata["parts"][0]["sha256"]
+    assert metadata["size_bytes"] == sum(p.stat().st_size for p in generation.data_paths)
 
     with store.lease(identity) as leased:
         assert leased.generation_id == generation.generation_id
@@ -200,7 +201,7 @@ def test_corrupt_current_generation_fails_without_fallback(tmp_path: Path) -> No
         _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
         context=_context(),
     )
-    corrupt_path = tmp_path / generation.data_path.relative_to(tmp_path)
+    corrupt_path = tmp_path / generation.data_paths[0].relative_to(tmp_path)
     corrupt_path.write_bytes(b"not parquet")
 
     with pytest.raises(SourceCacheCorruptError):
@@ -257,7 +258,7 @@ def test_generation_digest_is_verified_once_per_stable_process_gate(
     with store.lease(identity):
         pass
 
-    assert hashed == [generation.data_path]
+    assert hashed == list(generation.data_paths)
 
 
 def test_transient_generation_access_error_is_not_reported_as_corruption(
@@ -442,10 +443,10 @@ def test_clear_retires_leased_generation_until_release(tmp_path: Path) -> None:
     with store.lease(identity) as leased:
         store.clear(identity)
         assert store.status(identity).state == "missing"
-        assert generation.data_path.exists()
+        assert generation.data_paths[0].exists()
         assert leased.lazy_frame.collect()["id"].to_list() == [1, 2]
 
-    assert not generation.data_path.parent.exists()
+    assert not generation.directory.exists()
 
 
 def test_leases_are_shared_across_store_instances_for_the_same_root(tmp_path: Path) -> None:
@@ -461,10 +462,10 @@ def test_leases_are_shared_across_store_instances_for_the_same_root(tmp_path: Pa
     with reader_store.lease(identity) as leased:
         publisher_store.clear(identity)
         assert publisher_store.status(identity).state == "missing"
-        assert generation.data_path.exists()
+        assert generation.data_paths[0].exists()
         assert leased.lazy_frame.collect()["id"].to_list() == [1, 2]
 
-    assert not generation.data_path.parent.exists()
+    assert not generation.directory.exists()
 
 
 def test_build_rejects_publication_that_exceeds_store_quota(tmp_path: Path) -> None:
@@ -533,7 +534,7 @@ def test_generation_quota_reclaims_an_unleased_superseded_generation(tmp_path: P
     )
 
     assert second.generation_id != first.generation_id
-    assert not first.data_path.parent.exists()
+    assert not first.directory.exists()
     assert store.open_generation(identity).lazy_frame.collect()["id"].to_list() == [2]
 
 
@@ -701,7 +702,7 @@ def test_a_parent_chosen_pair_names_the_staging_directory_and_the_generation(
     # Windows' traditional limit beneath long temporary roots.
     assert observed == [".staging-0123abcd"]
     assert generation.generation_id == generation_id
-    assert generation.data_path.parent.name == generation_id
+    assert generation.directory.name == generation_id
     assert not list(store.identity_path(identity).glob(".staging-*"))
 
 
@@ -855,8 +856,8 @@ def test_a_superseded_generation_survives_its_retirement_grace(tmp_path: Path) -
     assert second.generation_id != first.generation_id
     # A reader in another process may still be scanning it: leases are
     # process-local, so only the grace protects that scan.
-    assert first.data_path.parent.is_dir()
-    assert pl.scan_parquet(first.data_path).collect()["id"].to_list() == [1]
+    assert first.directory.is_dir()
+    assert pl.scan_parquet(first.data_paths).collect()["id"].to_list() == [1]
 
 
 def test_a_zero_grace_retires_a_superseded_generation_immediately(tmp_path: Path) -> None:
@@ -875,7 +876,7 @@ def test_a_zero_grace_retires_a_superseded_generation_immediately(tmp_path: Path
         refresh=True,
     )
 
-    assert not first.data_path.parent.exists()
+    assert not first.directory.exists()
 
 
 def test_clear_reclaims_a_graced_generation(tmp_path: Path) -> None:
@@ -892,7 +893,7 @@ def test_clear_reclaims_a_graced_generation(tmp_path: Path) -> None:
         context=_context(),
         refresh=True,
     )
-    assert first.data_path.parent.is_dir()
+    assert first.directory.is_dir()
 
     store.clear(identity)
 
@@ -916,7 +917,7 @@ def test_quota_pressure_reclaims_a_graced_generation_and_publishes(tmp_path: Pat
         refresh=True,
     )
     # The graced first generation puts this identity over its generation quota.
-    assert first.data_path.parent.is_dir()
+    assert first.directory.is_dir()
 
     third = store.build(
         identity,
@@ -927,7 +928,7 @@ def test_quota_pressure_reclaims_a_graced_generation_and_publishes(tmp_path: Pat
 
     assert third.generation_id not in (first.generation_id, second.generation_id)
     # Quota pressure reclaimed the graced generation and the build published.
-    assert not first.data_path.parent.exists()
+    assert not first.directory.exists()
     assert store.open_generation(identity).lazy_frame.collect()["id"].to_list() == [3]
 
 
@@ -945,7 +946,7 @@ def test_reconcile_keeps_a_generation_this_process_leases(tmp_path: Path) -> Non
         store._pointer_path(identity).unlink()
         outcome = store.reconcile_unpublished(identity, leased.generation_id, "0123abcd")
         assert outcome == "absent"
-        assert generation.data_path.exists()
+        assert generation.data_paths[0].exists()
 
 
 def test_reconcile_reports_a_removal_that_left_its_directory_behind(
@@ -980,7 +981,7 @@ def _published(tmp_path: Path) -> tuple[SourceCacheStore, SourceCacheIdentity, P
         _LazyBuilder(pl.DataFrame({"id": [1, 2]}).lazy()),
         context=_context(),
     )
-    return store, identity, generation.data_path.parent
+    return store, identity, generation.directory
 
 
 @pytest.mark.parametrize("link_kind", ["hard_link", "symbolic_link"])
@@ -992,7 +993,7 @@ def test_linked_generation_artifact_is_corrupt(
     import stat
 
     store, identity, generation_dir = _published(tmp_path)
-    data_path = generation_dir / "data.parquet"
+    data_path = generation_dir / "part-00000.parquet"
     original_lstat = Path.lstat
 
     def linked_lstat(path: Path):
@@ -1016,7 +1017,7 @@ def test_linked_generation_artifact_is_corrupt(
 
 def test_partial_generation_without_data_is_corrupt(tmp_path: Path) -> None:
     store, identity, generation_dir = _published(tmp_path)
-    (generation_dir / "data.parquet").unlink()
+    (generation_dir / "part-00000.parquet").unlink()
 
     with pytest.raises(SourceCacheCorruptError):
         store.open_generation(identity)
@@ -1113,7 +1114,7 @@ def test_lease_generation_reads_a_named_non_current_generation(tmp_path: Path) -
         assert store.open_generation(identity).generation_id != first.generation_id
         assert leased.lazy_frame.collect()["id"].to_list() == [1]
 
-    assert not first.data_path.exists()
+    assert not first.directory.exists()
     with pytest.raises(SourceCacheGenerationMissingError):
         with store.lease_generation(identity, first.generation_id):
             pass
@@ -1125,3 +1126,92 @@ def test_lease_generation_rejects_an_unknown_generation(tmp_path: Path) -> None:
     with pytest.raises(SourceCacheGenerationMissingError):
         with store.lease_generation(identity, str(uuid.uuid4())):
             pass
+
+
+def test_multi_part_generation_publishes_verifies_and_scans_parts_in_order(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path)
+    source_parquet = tmp_path / "source.parquet"
+    expected = pl.DataFrame({"id": list(range(10)), "val": [f"v{i}" for i in range(10)]})
+    expected.write_parquet(source_parquet)
+
+    identity = _identity(path="source.parquet", format="parquet")
+    builder = _LazyBuilder(pl.scan_parquet(source_parquet))
+
+    with temporary_streaming_chunk_size(3):
+        generation = store.build(
+            identity,
+            builder,
+            context=_context(),
+        )
+
+    assert len(generation.data_paths) == 4
+    expected_part_names = [f"part-{i:05d}.parquet" for i in range(4)]
+    assert [p.name for p in generation.data_paths] == expected_part_names
+    assert generation.metadata.row_count == 10
+    assert generation.metadata.size_bytes == sum(p.stat().st_size for p in generation.data_paths)
+    meta = json.loads(generation.metadata_path.read_text(encoding="utf-8"))
+    assert meta["parts"] == [part.to_dict() for part in generation.metadata.parts]
+    assert_frame_equal(generation.lazy_frame.collect(), expected)
+
+
+@pytest.mark.parametrize("corrupt_mode", ["truncate", "flip_byte"])
+def test_corrupting_a_later_part_is_corruption(tmp_path: Path, corrupt_mode: str) -> None:
+    store = SourceCacheStore(tmp_path)
+    source_parquet = tmp_path / "source.parquet"
+    expected = pl.DataFrame({"id": list(range(10)), "val": [f"v{i}" for i in range(10)]})
+    expected.write_parquet(source_parquet)
+
+    identity = _identity(path="source.parquet", format="parquet")
+    builder = _LazyBuilder(pl.scan_parquet(source_parquet))
+
+    with temporary_streaming_chunk_size(3):
+        generation = store.build(
+            identity,
+            builder,
+            context=_context(),
+        )
+
+    assert len(generation.data_paths) == 4
+    rel_dir = generation.directory.relative_to(tmp_path)
+    part_two = tmp_path / rel_dir / "part-00002.parquet"
+    content = part_two.read_bytes()
+    if corrupt_mode == "truncate":
+        part_two.write_bytes(content[: len(content) // 2])
+    else:
+        corrupted = bytearray(content)
+        corrupted[0] ^= 0xFF
+        part_two.write_bytes(bytes(corrupted))
+
+    fresh_store = SourceCacheStore(tmp_path)
+    with pytest.raises(SourceCacheCorruptError):
+        fresh_store.open_generation(identity)
+
+
+def test_quota_sums_parts(tmp_path: Path) -> None:
+    # Short names and roots: a staging temp file sits ~160 characters below the
+    # root, and an xdist temp root plus a long test name overflows MAX_PATH.
+    source_parquet = tmp_path / "source.parquet"
+    expected = pl.DataFrame({"id": list(range(10)), "val": [f"v{i}" for i in range(10)]})
+    expected.write_parquet(source_parquet)
+
+    identity = _identity(path="source.parquet", format="parquet")
+    builder = _LazyBuilder(pl.scan_parquet(source_parquet))
+
+    # Probe 4-part sizes under an unconstrained store
+    probe_store = SourceCacheStore(tmp_path)
+    with temporary_streaming_chunk_size(3):
+        probe_gen = probe_store.build(identity, builder, context=_context())
+    assert len(probe_gen.data_paths) == 4
+    first_part_size = probe_gen.data_paths[0].stat().st_size
+    total_size = sum(p.stat().st_size for p in probe_gen.data_paths)
+    assert total_size > first_part_size
+
+    # Set quota so that the first part alone is within quota, but total exceeds it
+    quota_store = SourceCacheStore(tmp_path / "q", max_bytes=first_part_size + 1)
+    with temporary_streaming_chunk_size(3):
+        with pytest.raises(SourceCacheQuotaExceededError):
+            quota_store.build(
+                identity,
+                builder,
+                context=_context(),
+            )

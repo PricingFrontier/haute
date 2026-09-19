@@ -204,6 +204,9 @@ export interface SharedSnapshotCapture {
   outcome: "published" | "superseded" | "quota"
   generation_id: string | null
   columns: "all" | string[]
+  write_strategy?: "chunked_join" | "sliced" | "native" | "prewritten" | null
+  write_parts?: number | null
+  write_staged_inputs?: number | null
 }
 
 /** A non-fatal condition an execution continued past. */

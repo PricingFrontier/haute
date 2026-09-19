@@ -288,7 +288,7 @@ def _publish(
     """Publish *frame* as an explicit, full-width generation of *node_id*."""
     identity = _identity(store, graph, node_id)
     artifact = store.stage_node_output(identity)
-    frame.write_parquet(artifact.data_path)
+    frame.write_parquet(artifact.part_path(0))
     with store.publish_node_output(
         identity,
         artifact,
@@ -670,7 +670,7 @@ def test_terminated_training_worker_leaves_no_capture_staging(
         artifact = store.stage_node_output(
             _identity(store, graph, "B"), staging_token=request.seed_plan.staging_token
         )
-        pl.DataFrame({"a": [1]}).write_parquet(artifact.data_path)
+        pl.DataFrame({"a": [1]}).write_parquet(artifact.part_path(0))
         staged.append(artifact.directory)
         if stopped == "timed_out":
             raise IsolatedWorkerTimeoutError(timeout_seconds=1.0)

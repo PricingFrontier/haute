@@ -664,6 +664,9 @@ describe("API response guards", () => {
             outcome: "quota",
             generation_id: null,
             columns: ["premium", "region"],
+            write_strategy: "chunked_join",
+            write_parts: 20,
+            write_staged_inputs: 0,
           },
         ],
         warnings: [{ code: "snapshot_capture_skipped", node_id: "banding", reason: "quota" }],
@@ -675,9 +678,57 @@ describe("API response guards", () => {
     ])
     expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.outcome).toBe("quota")
     expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.columns).toEqual(["premium", "region"])
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_strategy).toBe("chunked_join")
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_parts).toBe(20)
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_staged_inputs).toBe(0)
     expect(parsed.execution_metrics?.warnings).toEqual([
       { code: "snapshot_capture_skipped", node_id: "banding", reason: "quota" },
     ])
+  })
+
+  it("rejects a negative write_parts in shared snapshot captures", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_captures: [
+            {
+              node_id: "banding",
+              identity_digest: "d2",
+              kind: "consumed",
+              outcome: "quota",
+              generation_id: null,
+              columns: ["premium", "region"],
+              write_strategy: "sliced",
+              write_parts: -1,
+            },
+          ],
+        },
+      }),
+    ).toThrow(/write_parts/i)
+  })
+
+  it("rejects an unknown write_strategy in shared snapshot captures", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_captures: [
+            {
+              node_id: "banding",
+              identity_digest: "d2",
+              kind: "consumed",
+              outcome: "quota",
+              generation_id: null,
+              columns: ["premium", "region"],
+              write_strategy: "unknown_strategy",
+            },
+          ],
+        },
+      }),
+    ).toThrow(/write_strategy/i)
   })
 
   it("defaults shared snapshot evidence to empty lists when omitted", () => {

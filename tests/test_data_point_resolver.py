@@ -148,7 +148,7 @@ def _capture(
     if columns.names is not None:
         frame = frame.select(sorted(columns.names))
     artifact = store.stage_node_output(identity)
-    frame.collect().write_parquet(artifact.data_path)
+    frame.collect().write_parquet(artifact.part_path(0))
     return store.publish_node_output(
         identity,
         artifact,
@@ -303,7 +303,7 @@ def test_node_output_states_missing_stale_building_and_corrupt(project: Path) ->
     assert resolve_point(edited, point, source="live", columns=ALL, store=store).state == "stale"
 
     assert generation is not None
-    _corrupt(generation.generation.data_path)
+    _corrupt(generation.generation.data_paths[0])
     store._verified_generations.clear()
     corrupt = resolve_point(graph, point, source="live", columns=ALL, store=store)
     assert corrupt.state == "corrupt"
@@ -595,7 +595,7 @@ def test_a_child_keeps_reading_a_parent_leased_generation_through_refresh_and_cl
         identity = resolution.node_output_identity
         generation = resolution.node_output_generation
         assert identity is not None and generation is not None
-        generation_dir = generation.generation.data_path.parent
+        generation_dir = generation.generation.directory
         child = ctx.Process(
             target=_paused_child_reader,
             args=(
@@ -613,7 +613,7 @@ def test_a_child_keeps_reading_a_parent_leased_generation_through_refresh_and_cl
             with _capture(store, graph, "join", ALL) as refreshed:
                 assert refreshed.outcome == "superseded"
             refresh_artifact = store.stage_node_output(identity)
-            pl.DataFrame({"premium": [99.0]}).write_parquet(refresh_artifact.data_path)
+            pl.DataFrame({"premium": [99.0]}).write_parquet(refresh_artifact.part_path(0))
             with store.publish_node_output(
                 identity,
                 refresh_artifact,

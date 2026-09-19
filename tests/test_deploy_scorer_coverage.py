@@ -404,7 +404,7 @@ class TestScoreGraphStaticDataSourceRemap:
         )
 
         input_df = pl.DataFrame({"x": [1.0]})
-        remap = {"static_ds__snapshot.parquet": str(ds_path)}
+        remap = {"static_ds__snapshot.part-00000.parquet": str(ds_path)}
 
         result = score_graph(
             graph=graph,

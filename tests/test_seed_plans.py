@@ -131,7 +131,7 @@ def _publish(
     identity = _identity(store, graph, node_id)
     names = _WIDE if columns is None else columns
     artifact = store.stage_node_output(identity)
-    pl.DataFrame({name: [1, 2, 3] for name in names}).write_parquet(artifact.data_path)
+    pl.DataFrame({name: [1, 2, 3] for name in names}).write_parquet(artifact.part_path(0))
     with store.publish_node_output(
         identity,
         artifact,
@@ -172,7 +172,13 @@ def _generation_dir(
 
 def _corrupt(data_path: Path) -> None:
     """Replace a generation's data, under the project sandbox, with unreadable bytes."""
-    data_path.write_bytes(b"corrupt")
+    if data_path.is_dir():
+        from haute._chunked_writes import part_paths
+
+        for part in part_paths(data_path):
+            (data_path / part.name).write_bytes(b"corrupt")
+    else:
+        data_path.write_bytes(b"corrupt")
 
 
 # ---------------------------------------------------------------------------
@@ -782,7 +788,7 @@ def test_corrupt_generation_fails_resolution(project: Path, store: NodeSnapshotS
     graph = _chain(project)
     generation = _publish(store, graph, "C")
     identity = _identity(store, graph, "C")
-    _corrupt(_generation_dir(store, identity, generation) / "data.parquet")
+    _corrupt(_generation_dir(store, identity, generation))
 
     with pytest.raises(SourceCacheCorruptError):
         resolve_seed_plan(_request(graph, required={"T": ["a"]}), store=NodeSnapshotStore(project))
@@ -984,10 +990,10 @@ def test_plan_owns_what_the_run_registers(project: Path, store: NodeSnapshotStor
     assert plan.fingerprint == plan.decision.fingerprint
 
     artifact = store.stage_node_output(identity)
-    pl.DataFrame({"a": [1]}).write_parquet(artifact.data_path)
+    pl.DataFrame({"a": [1]}).write_parquet(artifact.part_path(0))
     plan.register_artifact(artifact)
     published = store.stage_node_output(identity)
-    pl.DataFrame({"a": [1]}).write_parquet(published.data_path)
+    pl.DataFrame({"a": [1]}).write_parquet(published.part_path(0))
     publication = store.publish_node_output(
         identity,
         published,
@@ -1430,7 +1436,7 @@ def test_listed_plan_propagates_corruption(project: Path, store: NodeSnapshotSto
 
     graph = _joined(project)
     j1 = _publish(store, graph, "J")
-    _corrupt(_generation_dir(store, _identity(store, graph, "J"), j1) / "data.parquet")
+    _corrupt(_generation_dir(store, _identity(store, graph, "J"), j1))
 
     with pytest.raises(SourceCacheCorruptError):
         open_listed_seed_plan(

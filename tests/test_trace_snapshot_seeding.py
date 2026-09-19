@@ -239,7 +239,7 @@ def _refresh(
 
     identity = _identity(store, graph, node_id)
     artifact = store.stage_node_output(identity)
-    frame.write_parquet(artifact.data_path)
+    frame.write_parquet(artifact.part_path(0))
     with store.publish_node_output(
         identity,
         artifact,

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 
 from haute._data_points import DataPoint, DataPointResolver
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
@@ -320,7 +321,7 @@ def test_a_partial_point_becomes_current_and_pinned_after_a_run(
     resolver = DataPointResolver(graph, source="live", store=store)
     identity = resolver.node_output_slot("join").identity(resolver.node_output_signature("join"))
     artifact = store.stage_node_output(identity)
-    pl.DataFrame({"premium": [1.0]}).write_parquet(artifact.data_path)
+    pl.DataFrame({"premium": [1.0]}).write_parquet(artifact.part_path(0))
     with store.publish_node_output(
         identity,
         artifact,
@@ -626,7 +627,7 @@ def test_a_killed_workers_staging_is_discarded_by_the_parent(
             resolver.node_output_signature(request.node_id)
         )
         artifact = store.stage_node_output(identity, staging_token=request.staging_token)
-        _write(artifact.data_path, b"partial parquet")
+        _write(artifact.part_path(0), b"partial parquet")
         raise IsolatedWorkerStoppedError(terminal_reason="timed_out")
 
     monkeypatch.setattr(service_mod, "run_isolated_worker", killed_after_staging)
@@ -807,6 +808,7 @@ def test_a_build_after_input_preparation_is_found_by_point_and_joined(
             "arguments": {},
         },
     )
+    import haute._chunked_writes as chunked_writes
     import haute._polars_utils as polars_utils
 
     entered = threading.Event()
@@ -820,6 +822,7 @@ def test_a_build_after_input_preparation_is_found_by_point_and_joined(
         return real_sink(*args, **kwargs)
 
     monkeypatch.setattr(polars_utils, "bounded_sink", paused_after_preparation)
+    monkeypatch.setattr(chunked_writes, "bounded_sink", paused_after_preparation)
 
     started = client.post("/api/node-data/run", json=_body(graph, "banding")).json()
     assert entered.wait(120)
@@ -1110,7 +1113,7 @@ def test_terminated_build_worker_leaves_no_capture_staging(
         resolver = DataPointResolver(request.graph, source=request.source, store=store)
         identity = resolver.node_output_slot("A").identity(resolver.node_output_signature("A"))
         artifact = store.stage_node_output(identity, staging_token=request.seed_plan.staging_token)
-        _write(artifact.data_path, b"partial parquet")
+        _write(artifact.part_path(0), b"partial parquet")
         staged.append(artifact.directory)
         if stopped == "timed_out":
             raise IsolatedWorkerTimeoutError(timeout_seconds=1.0)
@@ -1146,7 +1149,7 @@ def test_a_build_whose_seed_is_replaced_before_it_publishes_is_not_reported_cach
         refreshed.append(True)
         store = NodeSnapshotStore(project)
         artifact = store.stage_node_output(a_identity)
-        pl.DataFrame({"policy_id": [1]}).write_parquet(artifact.data_path)
+        pl.DataFrame({"policy_id": [1]}).write_parquet(artifact.part_path(0))
         store.publish_node_output(
             a_identity,
             artifact,
@@ -1165,3 +1168,104 @@ def test_a_build_whose_seed_is_replaced_before_it_publishes_is_not_reported_cach
     assert job["status"] == "contract_error"
     assert "changed while its data was being cached" in job["message"]
     assert _state(project, graph, "B") == "missing"
+
+
+@pytest.mark.usefixtures("in_process_worker")
+def test_explicit_build_of_a_join_is_chunked_and_equals_native(
+    client: TestClient, project: Path
+) -> None:
+    claims_path = project / "claims.parquet"
+    pl.DataFrame(
+        {
+            "policy_id": list(range(100)),
+            "claim_amount": [float(value * 2) for value in range(100)],
+        }
+    ).write_parquet(claims_path)
+
+    graph = make_graph(
+        {
+            "source_file": str(project / "main.py"),
+            "preamble": "import polars as pl",
+            "nodes": [
+                {
+                    "id": "quotes",
+                    "data": {
+                        "label": "quotes",
+                        "nodeType": "dataInput",
+                        "config": {
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "path": str(project / "quotes.parquet"),
+                            "arguments": {},
+                        },
+                    },
+                },
+                {
+                    "id": "claims",
+                    "data": {
+                        "label": "claims",
+                        "nodeType": "dataInput",
+                        "config": {
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "path": str(claims_path),
+                            "arguments": {},
+                        },
+                    },
+                },
+                {
+                    "id": "join_node",
+                    "data": {
+                        "label": "join_node",
+                        "nodeType": "edgeJoin",
+                        "config": {
+                            "how": "left",
+                            "on": "policy_id",
+                            "selected_columns": ["policy_id", "premium", "claim_amount"],
+                            "column_renames": {"claim_amount": "loss"},
+                        },
+                    },
+                },
+                {
+                    "id": "explore",
+                    "data": {
+                        "label": "explore",
+                        "nodeType": "explore",
+                        "config": {},
+                    },
+                },
+            ],
+            "edges": [
+                # Edge to join handle listed FIRST
+                make_edge("claims", "join_node", target_handle="join").model_dump(),
+                # Edge to base handle listed SECOND
+                make_edge("quotes", "join_node", target_handle="base").model_dump(),
+                make_edge("join_node", "explore").model_dump(),
+            ],
+        }
+    ).model_dump()
+
+    # 100 rows in chunks of 40: three parts, without a query per two rows.
+    job = _cache(client, graph, "explore", streaming_chunk_size=40)
+    assert job["status"] == "completed"
+
+    resolver = _resolver(project, graph)
+    identity = resolver.node_output_slot("join_node").identity(
+        resolver.node_output_signature("join_node")
+    )
+    gen = resolver.store.latest_generation(identity)
+    assert gen is not None
+    assert len(gen.generation.metadata.parts) > 1
+    assert len(gen.generation.data_paths) > 1
+
+    gen_df = gen.generation.lazy_frame.collect().sort("policy_id")
+    expected = (
+        pl.read_parquet(project / "quotes.parquet")
+        .join(pl.read_parquet(claims_path), on="policy_id", how="left")
+        .select(["policy_id", "premium", "claim_amount"])
+        .rename({"claim_amount": "loss"})
+        .sort("policy_id")
+    )
+    assert_frame_equal(gen_df.select(expected.columns), expected)

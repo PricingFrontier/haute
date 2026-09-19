@@ -46,11 +46,17 @@ relationship is recorded in `specs/ownership.toml`.
   generation id, optional warning code). `InputPreparationRequest` and
   `InputPreparationOutcome` are the picklable request/outcome pair of the worker entry
   point.
-- `SourceCacheMetadata` records identity, generation, optional freshness signature, artifact
-  SHA-256/size, rows, columns, schema, creation time, profile, and build class.
-- `SourceCacheGeneration` names immutable `data.parquet` and `meta.json` paths. Before a
-  generation is trusted, its directory must be a plain directory inside its identity and
-  both artifacts plain, single-link files inside the generation;
+- `SourceCacheMetadata` records identity, generation, optional freshness signature, the
+  ordered part list (`parts`: each part's name, size, SHA-256, and rows; `layout_version` 2),
+  total size and rows, columns, schema, creation time, profile, and build class.
+- `SourceCacheGeneration` names its immutable `meta.json` and its ordered part files
+  (`data_paths`, `part-00000.parquet`, `part-00001.parquet`, …; `lazy_frame` scans exactly
+  that list). Metadata without layout version 2 is the retired single-file layout: it is
+  read as absent (`SourceCacheLegacyLayoutError`, a `SourceCacheGenerationMissingError`),
+  never as corruption, so a build replaces it. Before a generation is trusted, its directory
+  must be a plain directory inside its identity and every artifact a plain, single-link file
+  inside the generation; each part's size, SHA-256, footer row count, and schema must match
+  its record;
   `SourceCacheGenerationMissingError` (a `SourceCacheCorruptError`) reports a named
   generation that does not exist.
 - `SourceCacheStore` coordinates same-root handles in-process, publishes generations, tracks
@@ -206,10 +212,11 @@ an in-place or non-atomic fallback.
 
 1. The per-identity process lock serialises same-process builders.
 2. A non-refresh build returns the current validated generation when present.
-3. The builder writes to `.staging-<nonce>/data.parquet` (`.staging-<staging_token>`, and
+3. The builder writes part files into `.staging-<nonce>/` (`.staging-<staging_token>`, and
    the parent-chosen `generation_id` as the published generation, when the build context
-   carries the parent-chosen pair); Arrow iterables are checked at every batch and written
-   against one schema.
+   carries the parent-chosen pair): a LazyFrame through `write_parts`, sliced a chunk at a
+   time where the source can be sliced; Arrow iterables are checked at every batch and
+   written against one schema into `part-00000.parquet`.
 4. Publication computes artifact integrity evidence, reads footer/schema/row counts, writes
    canonical `meta.json`, and validates the staged generation.
 5. Quota admission rejects the incoming publication when projected byte/count limits would
@@ -275,9 +282,10 @@ delegates every non-`node_output` identity to `SourceCacheStore` unchanged.
   error under each. A projected read is the full read restricted to those columns, dtypes
   included.
 
-  Row order, however, belongs to the *seam*, not to the profile. A generation is what
-  `bounded_sink` wrote, and that is reproducible: the same join sank in the same order on
-  every run. Neither of the other two materialisation seams promises it. Concatenating
+  Row order, however, belongs to the *seam*, not to the profile. When this was measured a
+  generation was what `bounded_sink` wrote, and the same join sank in the same order on
+  every run; a generation is now what `write_parts` wrote, whose chunked join keeps only its
+  driving chunks' order. Neither of the other two materialisation seams promised it either. Concatenating
   `bounded_collect_batches(..., maintain_order=True)` for a 20,000-row `1:1` join produced
   a frame beginning at `q1820` on one run and `q0` on the next — the seam the chunked,
   deploy-container and optimiser-apply paths consume — and the interactive preview reordered

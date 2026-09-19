@@ -1878,7 +1878,7 @@ class TestScoreGraphStaticDataSourceRemap:
             input_df=pl.DataFrame(),
             input_node_ids=[],
             output_node_id="out",
-            artifact_paths={"lookup__snapshot.parquet": str(source_path)},
+            artifact_paths={"lookup__snapshot.part-00000.parquet": str(source_path)},
         )
 
         assert result["quote_id"].to_list() == ["001"]
@@ -1925,7 +1925,7 @@ class TestScoreGraphStaticDataSourceRemap:
             input_df=pl.DataFrame(),
             input_node_ids=[],
             output_node_id="out",
-            artifact_paths={"lookup__snapshot.parquet": str(snapshot_path)},
+            artifact_paths={"lookup__snapshot.part-00000.parquet": str(snapshot_path)},
             output_fields=["keep"],
         )
 
@@ -1976,7 +1976,7 @@ class TestScoreGraphStaticDataSourceRemap:
             input_df=pl.DataFrame(),
             input_node_ids=[],
             output_node_id="out",
-            artifact_paths={"lookup__snapshot.parquet": str(snapshot_path)},
+            artifact_paths={"lookup__snapshot.part-00000.parquet": str(snapshot_path)},
         )
 
         assert result.columns == ["quote_id", "SaleFlag"]

@@ -11,7 +11,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 BOUNDED_WRITE_CALLERS = {
     Path("src/haute/executor.py"): "write_polars_output(",
-    Path("src/haute/_execute_lazy.py"): "bounded_sink(",
+    Path("src/haute/_execute_lazy.py"): "write_parts(",
+    Path("src/haute/_chunked_writes.py"): "bounded_sink(",
+    Path("src/haute/_source_cache.py"): "write_parts(",
+    Path("src/haute/routes/_node_data_service.py"): "write_parts(",
     Path("src/haute/modelling/_training_job.py"): "bounded_sink(",
     Path("src/haute/routes/_optimiser_service.py"): "bounded_sink(",
     Path("src/haute/routes/_training_preparation.py"): "bounded_sink(",

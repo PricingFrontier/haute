@@ -743,7 +743,33 @@ function parseSharedSnapshotCapture(
     ]),
     generation_id: optionalNullableString(parser, obj, "generation_id"),
     columns: parseSnapshotColumns(parser, obj.columns, `${field}.columns`),
+    ...(obj.write_strategy === undefined
+      ? {}
+      : {
+          write_strategy: expectNullableStringLiteral(
+            parser,
+            obj.write_strategy,
+            `${field}.write_strategy`,
+            ["chunked_join", "sliced", "native", "prewritten"] as const,
+          ),
+        }),
+    ...optionalNullableCount(parser, obj, "write_parts", field),
+    ...optionalNullableCount(parser, obj, "write_staged_inputs", field),
   }
+}
+
+function optionalNullableCount<K extends string>(
+  parser: string,
+  obj: Record<string, unknown>,
+  key: K,
+  field: string,
+): Partial<Record<K, number | null>> {
+  const value = obj[key]
+  if (value === undefined) return {}
+  if (value === null) return { [key]: null } as Partial<Record<K, number | null>>
+  return {
+    [key]: expectNonNegativeInteger(parser, value, `${field}.${key}`),
+  } as Partial<Record<K, number | null>>
 }
 
 function parseExecutionWarning(parser: string, value: unknown, field: string): ExecutionWarning {

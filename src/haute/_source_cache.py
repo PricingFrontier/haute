@@ -19,11 +19,11 @@ from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 import polars as pl
 
 from haute._cache import CacheConsumer, canonical_json, checked_cache_inputs
+from haute._chunked_writes import is_part_name, part_name, part_paths, scan_parts, write_parts
 from haute._credential_security import is_credential_name, validate_credential_free_uri
 from haute._env import float_env, int_env
 from haute._file_ops import atomic_write_text
 from haute._logging import get_logger
-from haute._polars_utils import bounded_sink
 
 if TYPE_CHECKING:
     from haute._execution_context import ExecutionContext
@@ -34,7 +34,11 @@ CacheFreshness = Literal["fresh", "stale", "unknown"]
 ReconcileOutcome = Literal[
     "published", "discarded_generation", "discarded_staging", "unremovable", "absent"
 ]
-_VerifiedGeneration = tuple[str, str, int, int, str]
+# (identity digest, generation id, ((part name, mtime_ns, size, sha256), ...))
+_VerifiedGeneration = tuple[str, str, tuple[tuple[str, int, int, str], ...]]
+# A generation is meta.json plus ordered part files. Metadata without this
+# layout version was written by the single-file layout and is read as absent.
+GENERATION_LAYOUT_VERSION = 2
 _DEFAULT_STAGING_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 _DEFAULT_RETIRE_GRACE_SECONDS = 30 * 60
 # Provider of node-output snapshots; their publication, leases, and retirement
@@ -54,6 +58,10 @@ class SourceCacheCorruptError(SourceCacheError):
 
 class SourceCacheGenerationMissingError(SourceCacheCorruptError):
     """A named generation does not exist: it was never published or was retired."""
+
+
+class SourceCacheLegacyLayoutError(SourceCacheGenerationMissingError):
+    """A generation in the retired single-file layout: absent, never corruption."""
 
 
 class SourceCacheBuildError(SourceCacheError):
@@ -212,13 +220,77 @@ class SourceCacheBuilder(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class SourceCachePart:
+    """One part file of a generation, in the generation's row order."""
+
+    name: str
+    size_bytes: int
+    sha256: str
+    row_count: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "size_bytes": self.size_bytes,
+            "sha256": self.sha256,
+            "row_count": self.row_count,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: object) -> SourceCachePart:
+        if not isinstance(raw, dict):
+            raise ValueError("generation part must be an object")
+        name = raw["name"]
+        size_bytes = raw["size_bytes"]
+        sha256 = raw["sha256"]
+        row_count = raw["row_count"]
+        if not isinstance(name, str) or not is_part_name(name):
+            raise ValueError("generation part has an invalid name")
+        for value in (size_bytes, row_count):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError("generation part sizes must be non-negative integers")
+        if not isinstance(sha256, str) or len(sha256) != 64:
+            raise ValueError("generation part digest is invalid")
+        return cls(name, size_bytes, sha256, row_count)
+
+
+def describe_parts(directory: Path) -> tuple[SourceCachePart, ...]:
+    """Name, size, digest, and row count of every part a write left in *directory*."""
+    import pyarrow.parquet as pq
+
+    parts = tuple(
+        SourceCachePart(
+            name=path.name,
+            size_bytes=path.stat().st_size,
+            sha256=_sha256_file(path),
+            row_count=pq.read_metadata(path).num_rows,
+        )
+        for path in part_paths(directory)
+    )
+    if not parts:
+        raise ValueError("a generation holds at least one part file")
+    return parts
+
+
+def generation_bytes(generation_dir: Path) -> int:
+    """Bytes held by a generation's part files."""
+    total = 0
+    for path in generation_dir.glob("part-*.parquet"):
+        try:
+            total += path.stat().st_size
+        except FileNotFoundError:
+            continue
+    return total
+
+
+@dataclass(frozen=True, slots=True)
 class SourceCacheMetadata:
     identity_digest: str
     identity: dict[str, object]
     schema_version: int
     generation_id: str
     source_signature: str | None
-    data_sha256: str
+    parts: tuple[SourceCachePart, ...]
     size_bytes: int
     row_count: int
     column_count: int
@@ -237,7 +309,8 @@ class SourceCacheMetadata:
             "schema_version": self.schema_version,
             "generation_id": self.generation_id,
             "source_signature": self.source_signature,
-            "data_sha256": self.data_sha256,
+            "layout_version": GENERATION_LAYOUT_VERSION,
+            "parts": [part.to_dict() for part in self.parts],
             "size_bytes": self.size_bytes,
             "row_count": self.row_count,
             "column_count": self.column_count,
@@ -254,13 +327,17 @@ class SourceCacheMetadata:
 @dataclass(frozen=True, slots=True)
 class SourceCacheGeneration:
     generation_id: str
-    data_path: Path
+    data_paths: tuple[Path, ...]
     metadata_path: Path
     metadata: SourceCacheMetadata
 
     @property
+    def directory(self) -> Path:
+        return self.metadata_path.parent
+
+    @property
     def lazy_frame(self) -> pl.LazyFrame:
-        return pl.scan_parquet(self.data_path)
+        return scan_parts(self.data_paths)
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,6 +363,23 @@ def _sha256_file(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _verification_key(
+    identity_digest: str,
+    generation_id: str,
+    parts: tuple[SourceCachePart, ...],
+    part_stats: tuple[os.stat_result, ...],
+) -> _VerifiedGeneration:
+    """What a generation's verified digests are remembered against."""
+    return (
+        identity_digest,
+        generation_id,
+        tuple(
+            (part.name, part_stat.st_mtime_ns, part_stat.st_size, part.sha256)
+            for part, part_stat in zip(parts, part_stats, strict=True)
+        ),
+    )
 
 
 def _is_reparse_point(path_stat: os.stat_result) -> bool:
@@ -480,7 +574,6 @@ class SourceCacheStore:
         try:
             generation_id = _validate_generation_id(generation_id)
             generation_dir = self.identity_path(identity) / "generations" / generation_id
-            data_path = generation_dir / "data.parquet"
             metadata_path = generation_dir / "meta.json"
             try:
                 generation_dir.lstat()
@@ -488,15 +581,26 @@ class SourceCacheStore:
                 raise SourceCacheGenerationMissingError(
                     "source-cache generation does not exist"
                 ) from exc
-            _validate_generation_files(generation_dir, metadata_path, data_path)
+            _validate_generation_files(generation_dir, metadata_path)
             raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if raw.get("layout_version") != GENERATION_LAYOUT_VERSION:
+                if "parts" not in raw and "data_sha256" in raw:
+                    raise SourceCacheLegacyLayoutError(
+                        "source-cache generation uses the retired single-file layout"
+                    )
+                raise ValueError("unknown source-cache generation layout")
+            parts = tuple(SourceCachePart.from_dict(part) for part in raw["parts"])
+            if not parts or len({part.name for part in parts}) != len(parts):
+                raise ValueError("generation parts must be present and distinct")
+            data_paths = tuple(generation_dir / part.name for part in parts)
+            _validate_generation_files(generation_dir, *data_paths)
             metadata = SourceCacheMetadata(
                 identity_digest=raw["identity_digest"],
                 identity=raw["identity"],
                 schema_version=raw["schema_version"],
                 generation_id=raw["generation_id"],
                 source_signature=raw.get("source_signature"),
-                data_sha256=raw["data_sha256"],
+                parts=parts,
                 size_bytes=raw["size_bytes"],
                 row_count=raw["row_count"],
                 column_count=raw["column_count"],
@@ -506,15 +610,18 @@ class SourceCacheStore:
                 build_class=raw["build_class"],
                 node_output=raw.get("node_output"),
             )
-            data_stat = data_path.stat()
+            part_stats = tuple(path.stat() for path in data_paths)
             if (
                 metadata.identity_digest != identity.digest
                 or metadata.identity != identity.payload
                 or metadata.schema_version != identity.schema_version
                 or metadata.generation_id != generation_id
-                or metadata.size_bytes != data_stat.st_size
-                or not isinstance(metadata.data_sha256, str)
-                or len(metadata.data_sha256) != 64
+                or any(
+                    part.size_bytes != part_stat.st_size
+                    for part, part_stat in zip(parts, part_stats, strict=True)
+                )
+                or metadata.size_bytes != sum(part.size_bytes for part in parts)
+                or metadata.row_count != sum(part.row_count for part in parts)
                 or isinstance(metadata.row_count, bool)
                 or not isinstance(metadata.row_count, int)
                 or metadata.row_count < 0
@@ -527,32 +634,30 @@ class SourceCacheStore:
                 or (metadata.node_output is not None and not isinstance(metadata.node_output, dict))
             ):
                 raise ValueError("metadata does not match snapshot")
-            verification_key = (
-                identity.digest,
-                generation_id,
-                data_stat.st_mtime_ns,
-                data_stat.st_size,
-                metadata.data_sha256,
-            )
+            verification_key = _verification_key(identity.digest, generation_id, parts, part_stats)
             with self._lock:
                 verified = verification_key in self._verified_generations
             if not verified:
-                if _sha256_file(data_path) != metadata.data_sha256:
-                    raise ValueError("snapshot digest does not match metadata")
+                for part, path in zip(parts, data_paths, strict=True):
+                    if _sha256_file(path) != part.sha256:
+                        raise ValueError("snapshot digest does not match metadata")
                 with self._lock:
                     self._verified_generations.add(verification_key)
-            # Read the footer/schema before exposing scan_parquet; corrupt data never falls back.
+            # Read every footer/schema before exposing the scan; corrupt data never falls back.
             import pyarrow.parquet as pq
 
-            parquet_metadata = pq.read_metadata(data_path)
-            arrow_schema = pq.read_schema(data_path)
-            polars_schema = pl.scan_parquet(data_path).collect_schema()
-            if (
-                parquet_metadata.num_rows != metadata.row_count
-                or arrow_schema.names != polars_schema.names()
-                or {name: str(dtype) for name, dtype in polars_schema.items()} != metadata.columns
-            ):
-                raise ValueError("metadata schema or row count does not match snapshot")
+            expected_columns = metadata.columns
+            for part, path in zip(parts, data_paths, strict=True):
+                parquet_metadata = pq.read_metadata(path)
+                arrow_schema = pq.read_schema(path)
+                polars_schema = pl.scan_parquet(path).collect_schema()
+                if (
+                    parquet_metadata.num_rows != part.row_count
+                    or arrow_schema.names != polars_schema.names()
+                    or {name: str(dtype) for name, dtype in polars_schema.items()}
+                    != expected_columns
+                ):
+                    raise ValueError("metadata schema or row count does not match snapshot")
         except FileNotFoundError as exc:
             raise SourceCacheCorruptError("source-cache generation is corrupt") from exc
         except OSError:
@@ -562,7 +667,7 @@ class SourceCacheStore:
             if isinstance(exc, SourceCacheCorruptError):
                 raise
             raise SourceCacheCorruptError("source-cache generation is corrupt") from exc
-        return SourceCacheGeneration(generation_id, data_path, metadata_path, metadata)
+        return SourceCacheGeneration(generation_id, data_paths, metadata_path, metadata)
 
     def open_generation(self, identity: SourceCacheIdentity) -> SourceCacheGeneration:
         with self._identity_lock(identity):
@@ -570,14 +675,25 @@ class SourceCacheStore:
                 generation_id = self._read_pointer(identity)
             except FileNotFoundError:
                 raise
-            return self._metadata_from_path(identity, generation_id)
+            try:
+                return self._metadata_from_path(identity, generation_id)
+            except SourceCacheLegacyLayoutError as exc:
+                # Read as absent, so status reports it missing and a build replaces it.
+                raise FileNotFoundError(
+                    f"source-cache generation {generation_id} uses the retired layout"
+                ) from exc
 
     def _write_output(
-        self, output: pl.LazyFrame | Iterable[object], path: Path, context: SourceCacheBuildContext
+        self,
+        output: pl.LazyFrame | Iterable[object],
+        directory: Path,
+        context: SourceCacheBuildContext,
     ) -> None:
         if isinstance(output, pl.LazyFrame):
-            bounded_sink(output, path, fast_checkpoint=True)
+            # Sliced a chunk at a time where the source can be sliced.
+            write_parts(directory, output, fast_checkpoint=True)
             return
+        path = directory / part_name(0)
         if isinstance(output, pl.DataFrame) or not isinstance(output, Iterable):
             raise SourceCacheBuildError("builder must return a LazyFrame or Arrow batches/tables")
         import pyarrow as pa
@@ -607,7 +723,7 @@ class SourceCacheStore:
 
     def _generation_bytes(self) -> int:
         total = 0
-        for path in self.inputs_root.glob("*/generations/*/data.parquet"):
+        for path in self.inputs_root.glob("*/generations/*/part-*.parquet"):
             try:
                 total += path.stat().st_size
             except FileNotFoundError:
@@ -639,7 +755,7 @@ class SourceCacheStore:
         return total
 
     def _generation_count(self) -> int:
-        return sum(1 for _ in self.inputs_root.glob("*/generations/*/data.parquet"))
+        return sum(1 for _ in self.inputs_root.glob("*/generations/*/meta.json"))
 
     def _admit_publication_within_quota(
         self,
@@ -655,14 +771,13 @@ class SourceCacheStore:
         reclaimable_count = 0
         try:
             current_id = self._read_pointer(identity)
-            current_path = (
-                self.identity_path(identity) / "generations" / current_id / "data.parquet"
-            )
+            current_dir = self.identity_path(identity) / "generations" / current_id
             if (
                 self._leases.get((identity.digest, current_id), 0) == 0
                 and current_id not in retained_generation_ids
+                and current_dir.is_dir()
             ):
-                reclaimable = current_path.stat().st_size
+                reclaimable = generation_bytes(current_dir)
                 reclaimable_count = 1
         except (FileNotFoundError, SourceCacheCorruptError):
             pass
@@ -699,7 +814,7 @@ class SourceCacheStore:
             if not refresh:
                 try:
                     return self.open_generation(identity)
-                except FileNotFoundError:
+                except (FileNotFoundError, SourceCacheLegacyLayoutError):
                     pass
             identity_dir = self.identity_path(identity)
             generations_dir = identity_dir / "generations"
@@ -714,20 +829,16 @@ class SourceCacheStore:
             published = False
             try:
                 staging.mkdir()
-                data_path = staging / "data.parquet"
                 context.checkpoint()
                 with context.stage("input_snapshot_read"):
                     output = builder.build(context)
                 context.checkpoint()
                 with context.stage("input_snapshot_write"):
-                    self._write_output(output, data_path, context)
+                    self._write_output(output, staging, context)
                 context.checkpoint()
-                # Validate before publication, including its footer and scan schema.
-                data_sha256 = _sha256_file(data_path)
-                import pyarrow.parquet as pq
-
-                parquet_metadata = pq.read_metadata(data_path)
-                schema = pl.scan_parquet(data_path).collect_schema()
+                # Validate before publication, including every footer and the scan schema.
+                parts = describe_parts(staging)
+                schema = scan_parts(part_paths(staging)).collect_schema()
                 columns = {name: str(dtype) for name, dtype in schema.items()}
                 metadata = SourceCacheMetadata(
                     identity.digest,
@@ -735,9 +846,9 @@ class SourceCacheStore:
                     identity.schema_version,
                     generation_id,
                     source_signature,
-                    data_sha256,
-                    data_path.stat().st_size,
-                    parquet_metadata.num_rows,
+                    parts,
+                    sum(part.size_bytes for part in parts),
+                    sum(part.row_count for part in parts),
                     len(columns),
                     columns,
                     time.time(),
@@ -774,14 +885,12 @@ class SourceCacheStore:
                         )
                     final_dir = generations_dir / generation_id
                     staging.replace(final_dir)
-                    published_stat = (final_dir / "data.parquet").stat()
                     self._verified_generations.add(
-                        (
+                        _verification_key(
                             identity.digest,
                             generation_id,
-                            published_stat.st_mtime_ns,
-                            published_stat.st_size,
-                            data_sha256,
+                            parts,
+                            tuple((final_dir / part.name).stat() for part in parts),
                         )
                     )
                     generation = self._metadata_from_path(identity, generation_id)

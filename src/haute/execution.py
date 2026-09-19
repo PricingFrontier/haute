@@ -102,6 +102,7 @@ from haute.projection import (
 )
 
 if TYPE_CHECKING:
+    from haute._chunked_writes import JoinRecipe
     from haute._seed_plans import SeedPlan
 
 __all__ = [
@@ -1521,6 +1522,8 @@ def execute_lazy_graph(
     runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
     prepare_inputs: bool = True,
     snapshot_plan: SeedPlan | None = None,
+    join_recipes: dict[str, JoinRecipe] | None = None,
+    unshaped_frames: dict[str, pl.LazyFrame] | None = None,
 ) -> LazyExecutionResult:
     """Execute a graph lazily through the shared production engine.
 
@@ -1532,6 +1535,10 @@ def execute_lazy_graph(
     A ``snapshot_plan`` (``haute._seed_plans``) makes the run seed from and
     capture into shared snapshots; without one nothing is captured, and only a
     ``dataframe_cache_request`` (deploy scoring) materialises node outputs.
+    ``join_recipes``, when given, receives the recipe of every edge join the
+    run builds, so a caller writing one in full can write it in chunks;
+    ``unshaped_frames`` receives, for every node that selects or renames its
+    columns, its frame before that step.
     """
     from haute._execute_lazy import _execute_lazy
 
@@ -1551,6 +1558,8 @@ def execute_lazy_graph(
         runtime_source_frames_by_node=runtime_source_frames_by_node,
         prepare_inputs=prepare_inputs,
         snapshot_plan=snapshot_plan,
+        join_recipes=join_recipes,
+        unshaped_frames=unshaped_frames,
     )
 
 

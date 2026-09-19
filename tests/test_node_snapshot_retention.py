@@ -53,7 +53,7 @@ def _publish(
     refresh: bool = False,
 ) -> NodeSnapshotPublication:
     artifact = store.stage_node_output(identity)
-    frame.write_parquet(artifact.data_path)
+    frame.write_parquet(artifact.part_path(0))
     return store.publish_node_output(
         identity,
         artifact,
@@ -355,10 +355,10 @@ def test_lease_generation_names_a_non_current_generation_until_it_retires(
             assert named.generation_id == first_id
             assert named.lazy_frame.collect()["a"].to_list() == [1]
         store.clear_slot(slot)
-        assert held.data_path.exists()
+        assert held.directory.exists()
         assert held.lazy_frame.collect()["a"].to_list() == [1]
 
-    assert not held.data_path.exists()
+    assert not held.directory.exists()
     with pytest.raises(SourceCacheGenerationMissingError):
         with store.lease_generation(identity, first_id):
             pass
@@ -373,10 +373,10 @@ def test_a_lease_marker_names_this_process_and_is_removed_on_release(tmp_path: P
     _published_id(store, identity, pl.DataFrame({"a": [1]}))
 
     with store.lease(identity) as leased:
-        markers = list(leased.data_path.parent.glob(".lease-*"))
+        markers = list(leased.directory.glob(".lease-*"))
         assert [marker.name for marker in markers] == [f".lease-{store._own_token()}"]
 
-    assert list(leased.data_path.parent.glob(".lease-*")) == []
+    assert list(leased.directory.glob(".lease-*")) == []
 
 
 def test_published_metadata_records_columns_and_dependencies(tmp_path: Path) -> None:
@@ -452,7 +452,7 @@ def test_a_stale_generation_is_never_narrowed(tmp_path: Path) -> None:
 def _corrupt_latest(store: NodeSnapshotStore, identity: SourceCacheIdentity) -> str:
     latest = store.latest_generation(identity)
     assert latest is not None
-    latest.generation.data_path.write_bytes(b"not parquet")
+    latest.generation.data_paths[0].write_bytes(b"not parquet")
     store._verified_generations.clear()
     return latest.generation_id
 
@@ -464,7 +464,7 @@ def test_an_automatic_capture_surfaces_a_corrupt_generation(tmp_path: Path) -> N
     _published_id(store, identity, pl.DataFrame({"a": [1]}))
     corrupt_id = _corrupt_latest(store, identity)
     artifact = store.stage_node_output(identity)
-    pl.DataFrame({"a": [2]}).write_parquet(artifact.data_path)
+    pl.DataFrame({"a": [2]}).write_parquet(artifact.part_path(0))
 
     with pytest.raises(source_cache_module.SourceCacheCorruptError):
         store.publish_node_output(
@@ -577,3 +577,66 @@ def test_lease_generation_rejects_a_malformed_generation_id(tmp_path: Path) -> N
     with pytest.raises(ValueError, match="generation id"):
         with store.lease_generation(identity, "../../escape"):
             pass
+
+
+def test_eviction_sizes_a_generation_by_all_of_its_parts(tmp_path: Path) -> None:
+    store = NodeSnapshotStore(tmp_path)
+    old_slot = _slot(tmp_path, "old")
+    new_slot = _slot(tmp_path, "new")
+    old_identity = old_slot.identity("s1")
+    new_identity = new_slot.identity("s1")
+
+    df_part0 = pl.DataFrame({"a": list(range(100)), "b": [1.0] * 100})
+    df_part1 = pl.DataFrame({"a": list(range(100, 200)), "b": [2.0] * 100})
+    df_part2 = pl.DataFrame({"a": list(range(200, 300)), "b": [3.0] * 100})
+
+    # Stage and write 3 parts for old_identity
+    artifact_old = store.stage_node_output(old_identity)
+    df_part0.write_parquet(artifact_old.part_path(0))
+    df_part1.write_parquet(artifact_old.part_path(1))
+    df_part2.write_parquet(artifact_old.part_path(2))
+
+    part0_old_size = artifact_old.part_path(0).stat().st_size
+    total_old_size = sum(artifact_old.part_path(i).stat().st_size for i in range(3))
+
+    # Publish old_identity as automatic generation
+    with store.publish_node_output(
+        old_identity,
+        artifact_old,
+        columns=NodeSnapshotColumns.all(),
+        dependencies={},
+        explicit=False,
+        profile=ExecutionProfile.NODE_SNAPSHOT,
+    ) as old_pub:
+        assert old_pub.outcome == "published"
+        assert len(old_pub.generation.generation.data_paths) == 3
+
+    _set_last_used(store, old_identity, 100.0)
+
+    # Stage and write 3 parts for new_identity
+    artifact_new = store.stage_node_output(new_identity)
+    df_part0.write_parquet(artifact_new.part_path(0))
+    df_part1.write_parquet(artifact_new.part_path(1))
+    df_part2.write_parquet(artifact_new.part_path(2))
+    total_new_size = sum(artifact_new.part_path(i).stat().st_size for i in range(3))
+
+    # Set quota so that sizing by first part only would admit without eviction:
+    # part0_old_size + total_new_size <= max_bytes < total_old_size + total_new_size
+    quota = part0_old_size + total_new_size
+    assert quota < total_old_size + total_new_size
+    assert quota >= total_new_size
+    store.max_bytes = quota
+
+    with store.publish_node_output(
+        new_identity,
+        artifact_new,
+        columns=NodeSnapshotColumns.all(),
+        dependencies={},
+        explicit=False,
+        profile=ExecutionProfile.NODE_SNAPSHOT,
+    ) as new_pub:
+        assert new_pub.outcome == "published"
+        assert len(new_pub.generation.generation.data_paths) == 3
+
+    assert store.slot_status(old_slot, "s1").state == "missing"
+    assert store.slot_status(new_slot, "s1").state == "current"

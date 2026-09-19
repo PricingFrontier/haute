@@ -37,7 +37,7 @@ def _slot(root: str, node_id: str) -> NodeSnapshotSlot:
 
 def _stage(store: NodeSnapshotStore, identity: SourceCacheIdentity, values: list[int]):
     artifact = store.stage_node_output(identity)
-    pl.DataFrame({"a": values}).write_parquet(artifact.data_path)
+    pl.DataFrame({"a": values}).write_parquet(artifact.part_path(0))
     return artifact
 
 
@@ -74,7 +74,7 @@ def _columns_worker(root: str, columns: list[str], ready: Any, go: Any, results:
     store = NodeSnapshotStore(root)
     identity = _slot(root, "join").identity("s1")
     artifact = store.stage_node_output(identity)
-    pl.DataFrame({name: [1] for name in columns}).write_parquet(artifact.data_path)
+    pl.DataFrame({name: [1] for name in columns}).write_parquet(artifact.part_path(0))
     ready.put(tuple(columns))
     if not go.wait(_TIMEOUT):
         raise TimeoutError("test did not start publication")
@@ -354,7 +354,7 @@ def test_a_writer_missing_a_concurrently_widened_generations_columns_keeps_its_a
     store = NodeSnapshotStore(tmp_path)
     identity = _slot(root, "join").identity("s1")
     initial = store.stage_node_output(identity)
-    pl.DataFrame({"a": [1]}).write_parquet(initial.data_path)
+    pl.DataFrame({"a": [1]}).write_parquet(initial.part_path(0))
     with store.publish_node_output(
         identity,
         initial,

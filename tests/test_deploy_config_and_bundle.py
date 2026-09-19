@@ -470,7 +470,7 @@ class TestSnapshotGenerationLease:
         resources = ExitStack()
         try:
             artifacts = collect_artifacts(graph, [], tmp_path, resources=resources)
-            assert artifacts["drivers__snapshot.parquet"] == generation.data_path
+            assert artifacts["drivers__snapshot.part-00000.parquet"] == generation.data_paths[0]
             assert artifacts["drivers__snapshot.meta.json"] == generation.metadata_path
         finally:
             resources.close()
@@ -528,7 +528,7 @@ class TestSnapshotGenerationLease:
             resources=resources,
             snapshot_provenance=provenance,
         )
-        leased_path = artifacts["drivers__snapshot.parquet"]
+        leased_path = artifacts["drivers__snapshot.part-00000.parquet"]
 
         pl.DataFrame({"driver": ["new"]}).write_csv(source_path)
         second = build_input_snapshot(
@@ -543,8 +543,88 @@ class TestSnapshotGenerationLease:
         assert pl.read_parquet(leased_path)["driver"].to_list() == ["old"]
         assert provenance["drivers"]["generation_id"] == first.generation_id
         assert provenance["drivers"]["identity_digest"] == first.metadata.identity_digest
-        assert provenance["drivers"]["data_sha256"] == first.metadata.data_sha256
+        assert provenance["drivers"]["parts"][0]["sha256"] == first.metadata.parts[0].sha256
 
         resources.close()
 
         assert not leased_path.exists()
+
+    def test_two_part_generation_bundles_both_parts_and_deploy_scorer_reads_both(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute._input_providers import build_input_snapshot
+        from haute._source_cache import SourceCacheStore
+        from haute.deploy._scorer import score_graph
+
+        input_config = {
+            "inputType": "inline",
+            "format": "records",
+            "mode": "read",
+            "records": [{"driver": "Ada"}, {"driver": "Bob"}],
+            "arguments": {},
+        }
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "drivers",
+                        "data": {
+                            "label": "drivers",
+                            "nodeType": "dataInput",
+                            "config": input_config,
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {
+                                "outputMapping": [
+                                    {
+                                        "source_port": "drivers",
+                                        "source_column": "driver",
+                                        "output_path": "$[:].driver",
+                                        "enabled": True,
+                                    }
+                                ],
+                                "outputFormat": "json",
+                            },
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "drivers", "target": "out"}],
+            }
+        )
+        from haute._polars_utils import temporary_streaming_chunk_size
+
+        store = SourceCacheStore(tmp_path)
+        # One row per part: the snapshot is built in the request's chunk size.
+        with temporary_streaming_chunk_size(1):
+            generation = build_input_snapshot(input_config, store=store, base_dir=tmp_path)
+        assert len(generation.data_paths) == 2
+        assert generation.data_paths[0].name == "part-00000.parquet"
+        assert generation.data_paths[1].name == "part-00001.parquet"
+
+        monkeypatch.setattr("haute._sandbox._get_project_root", lambda: tmp_path)
+        resources = ExitStack()
+        try:
+            artifacts = collect_artifacts(graph, [], tmp_path, resources=resources)
+            assert artifacts["drivers__snapshot.part-00000.parquet"] == generation.data_paths[0]
+            assert artifacts["drivers__snapshot.part-00001.parquet"] == generation.data_paths[1]
+            assert artifacts["drivers__snapshot.meta.json"] == generation.metadata_path
+
+            remap = {k: str(v) for k, v in artifacts.items()}
+            result = score_graph(
+                graph=graph,
+                input_df=pl.DataFrame(),
+                input_node_ids=[],
+                output_node_id="out",
+                artifact_paths=remap,
+            )
+            assert isinstance(result, pl.DataFrame)
+            assert result["driver"].to_list() == ["Ada", "Bob"]
+        finally:
+            resources.close()

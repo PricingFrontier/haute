@@ -562,7 +562,7 @@ def test_a_spawned_build_never_retires_a_generation_the_parent_still_leases(
         # The child deferred retirement, so the generation this process leases
         # survives its refresh and still reads.
         assert old_dir.is_dir()
-        assert pl.scan_parquet(leased.data_path).collect().height == 2
+        assert leased.lazy_frame.collect().height == 2
 
     # The final lease release retires it with the parent's own lease counts.
     store.retire_unleased(identity)
@@ -632,7 +632,7 @@ def test_a_spawned_refresh_cannot_exceed_the_quota_while_the_parent_leases(
         # Nothing was published: the leased generation is still current and readable.
         assert [child.name for child in generations.iterdir()] == [first.generation_id]
         assert store.open_generation(identity).generation_id == first.generation_id
-        assert pl.scan_parquet(leased.data_path).collect().height == 2
+        assert leased.lazy_frame.collect().height == 2
 
 
 def test_a_spawned_refresh_publishes_at_the_quota_without_a_parent_lease(
@@ -756,10 +756,12 @@ def test_a_worker_that_dies_after_publication_is_reconciled_as_published(
     assert record.generation_id == spawn.request.generation_id
     assert record.generation_id != first.generation_id
     assert record.row_count == 3
-    assert store.open_generation(identity).generation_id == record.generation_id
+    published_gen = store.open_generation(identity)
+    assert published_gen.generation_id == record.generation_id
     generation_dir = store.identity_path(identity) / "generations" / record.generation_id
     assert (generation_dir / "meta.json").is_file()
-    assert (generation_dir / "data.parquet").is_file()
+    assert all((generation_dir / part.name).is_file() for part in published_gen.metadata.parts)
+    assert len(published_gen.data_paths) >= 1
 
 
 def test_a_successor_published_by_another_process_is_reused_not_reported_failed(

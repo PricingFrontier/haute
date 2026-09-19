@@ -15,6 +15,7 @@ import polars as pl
 import haute.execution as execution_facade
 import haute.projection as projection_planner
 from haute._builders import _passthrough_fn
+from haute._chunked_writes import ChunkedWrite, JoinRecipe, write_parts
 from haute._column_lineage import analyze_polars_lineage
 from haute._contracts import Contract, get_column_contract
 from haute._edge_join import (
@@ -43,7 +44,7 @@ from haute._path_resolution import runtime_project_root_scoped
 from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_utils import (
     _malloc_trim,
-    bounded_sink,
+    current_streaming_chunk_size,
     projected_or_carrier_columns,
     streaming_collect,
 )
@@ -64,6 +65,51 @@ from haute.errors import (
 )
 
 logger = get_logger(component="execute")
+
+
+def _edge_join_recipe(
+    fn: Callable[..., Any],
+    node: GraphNode,
+    input_frames: Sequence[Any],
+) -> JoinRecipe | None:
+    """An edge join's chunkable recipe, from the exact frames its builder receives.
+
+    The roles and the (instance-resolved) join config are the builder's own
+    (``edge_join_roles`` / ``edge_join_config``), so the recipe joins exactly
+    as the builder does; a function without them — not an edge join, or one a
+    hook wrapped — has no recipe and is written natively. The recipe ends with
+    the node's own column step (selected columns, then renames), which every
+    engine applies after the builder.
+    """
+    roles = getattr(fn, "edge_join_roles", None)
+    join_config = getattr(fn, "edge_join_config", None)
+    if roles is None or join_config is None or len(input_frames) != 2:
+        return None
+    frames = [frame.lazy() if isinstance(frame, pl.DataFrame) else frame for frame in input_frames]
+    if not all(isinstance(frame, pl.LazyFrame) for frame in frames):
+        return None
+    base_index, join_index = roles
+    shaping = dict(node.data.config)
+
+    def finish(lf: pl.LazyFrame) -> pl.LazyFrame:
+        selected = _apply_selected_columns(lf, shaping)
+        renamed = _apply_column_renames(selected, shaping)
+        return renamed if isinstance(renamed, pl.LazyFrame) else renamed.lazy()
+
+    return JoinRecipe(frames[base_index], frames[join_index], join_config, finish=finish)
+
+
+def _shapes_output(node: GraphNode) -> bool:
+    """Whether a node's own config selects or renames its output columns."""
+    config = node.data.config
+    return isinstance(config, dict) and (
+        bool(config.get("selected_columns")) or bool(config.get("column_renames"))
+    )
+
+
+def _schema_pairs(frame: pl.LazyFrame) -> list[tuple[str, str]]:
+    schema = frame.collect_schema()
+    return [(name, str(dtype)) for name, dtype in schema.items()]
 
 
 def _lazy_frame_for_cache(lf: Any, node_id: str) -> pl.LazyFrame:
@@ -1016,6 +1062,8 @@ def _execute_lazy(
     runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
     prepare_inputs: bool = True,
     snapshot_plan: SeedPlan | None = None,
+    join_recipes: dict[str, JoinRecipe] | None = None,
+    unshaped_frames: dict[str, pl.LazyFrame] | None = None,
 ) -> tuple[dict[str, _Frame], list[str], dict[str, list[str]], dict[str, str]]:
     """Execute a graph lazily and return per-node LazyFrames.
 
@@ -1713,6 +1761,9 @@ def _execute_lazy(
                 upstream_cols = frozenset().union(*upstream_col_sets)
                 boundary_runner.assert_inputs(boundary, upstream_cols)
 
+            recipe = _edge_join_recipe(boundary.fn, node, input_lfs)
+            if recipe is not None:
+                built_join_recipes[nid] = recipe
             lf = boundary_runner.invoke(boundary, input_lfs)
 
         if isinstance(lf, pl.DataFrame):
@@ -1742,6 +1793,10 @@ def _execute_lazy(
             # ``_Frame`` slot is the runtime contract; see function docstring.
             return lf, is_source, node  # type: ignore[return-value]
 
+        if _shapes_output(node_map[nid]):
+            # Its columns before its own selection and renames, which a
+            # snapshot records so a seeded preview can still report them.
+            built_unshaped_frames[nid] = lf if isinstance(lf, pl.LazyFrame) else lf.lazy()
         # Apply selected_columns filter first (uses pre-rename names),
         # then column renames on the surviving columns.
         lf = _apply_selected_columns(lf, node_map[nid].data.config)
@@ -1769,6 +1824,11 @@ def _execute_lazy(
         return lf, is_source, node
 
     execution_order = list(order)
+    # Edge joins built in this run, so a full write of one can be chunked.
+    built_join_recipes: dict[str, JoinRecipe] = join_recipes if join_recipes is not None else {}
+    built_unshaped_frames: dict[str, pl.LazyFrame] = (
+        unshaped_frames if unshaped_frames is not None else {}
+    )
     captures = _PlannedCaptures(
         snapshot_plan,
         requested_graph,
@@ -1848,7 +1908,7 @@ def _execute_lazy(
 
                 try:
                     with model_score_output_destination(
-                        scored_capture.data_path
+                        scored_capture.part_path(0)
                     ) as score_destination:
                         lf, is_source, node = _build_lazy_node(boundary)
                     scored_prewritten = score_destination.used
@@ -1931,6 +1991,12 @@ def _execute_lazy(
                     closure,
                     artifact=scored_capture,
                     prewritten=scored_prewritten,
+                    join=built_join_recipes.get(nid),
+                    unshaped_columns=(
+                        _schema_pairs(built_unshaped_frames[nid])
+                        if nid in built_unshaped_frames
+                        else None
+                    ),
                 )
                 cache_backed_node_ids.add(nid)
                 column_cache[(nid, None)] = _columns_of(lf)
@@ -2079,12 +2145,15 @@ class _PlannedCaptures:
         *,
         artifact: NodeSnapshotArtifact | None = None,
         prewritten: bool = False,
+        join: JoinRecipe | None = None,
+        unshaped_columns: Sequence[tuple[str, str]] | None = None,
     ) -> pl.LazyFrame:
-        """Write one capture point through the bounded sink and continue from it.
+        """Write one capture point through the chunked writer and continue from it.
 
         With ``prewritten``, *artifact* already holds the node's output — a
         batch Model Score's scored file — and is published without a second
-        write.
+        write. With ``join``, the recipe *frame* was built from, an edge join
+        is written a driving chunk at a time.
         """
         from haute._node_snapshots import (
             NodeSnapshotColumns,
@@ -2102,7 +2171,7 @@ class _PlannedCaptures:
         store = plan.store
         if artifact is None:
             artifact = store.stage_node_output(capture.identity, staging_token=plan.staging_token)
-        sink_lf = pl.scan_parquet(artifact.data_path) if prewritten else frame
+        sink_lf = artifact.lazy_frame() if prewritten else frame
         if isinstance(sink_lf, pl.DataFrame):
             sink_lf = sink_lf.lazy()
         try:
@@ -2133,10 +2202,13 @@ class _PlannedCaptures:
                 )
             ordered = projected_or_carrier_columns(schema_cols, wanted - missing)
             sink_lf = sink_lf.select(ordered)
+            if join is not None:
+                join = join.then(lambda lf: lf.select(ordered))
             # A scored file holds what the scorer was asked to write; it is
             # published as that whole file.
             columns = NodeSnapshotColumns.of(schema_cols if prewritten else ordered)
         context = self.execution_context
+        written: ChunkedWrite | None = None
         try:
             if not prewritten:
                 with (
@@ -2144,13 +2216,21 @@ class _PlannedCaptures:
                     if context is not None
                     else contextlib.nullcontext()
                 ):
-                    bounded_sink(sink_lf, artifact.data_path, fast_checkpoint=True)
+                    written = write_parts(
+                        artifact.directory,
+                        sink_lf,
+                        join=join,
+                        chunk_rows=current_streaming_chunk_size(),
+                        fast_checkpoint=True,
+                        execution_context=context,
+                        node_id=node_id,
+                    )
             _snapshot_fault_point("snapshot_capture_before_publish", node_id)
             if self._inputs_changed():
                 # Computed from inputs the plan's signatures do not describe:
                 # the run keeps its own data but publishes none of it.
                 plan.register_artifact(artifact)
-                self._record(capture, "superseded", None, columns)
+                self._record(capture, "superseded", None, columns, written)
                 return artifact.lazy_frame()
             publication = store.publish_node_output(
                 capture.identity,
@@ -2159,10 +2239,11 @@ class _PlannedCaptures:
                 dependencies=closure,
                 explicit=False,
                 profile=plan.decision.profile,
+                unshaped_columns=unshaped_columns,
             )
         except NodeSnapshotQuotaRejectedError as exc:
             plan.register_artifact(exc.artifact)
-            self._record(capture, "quota", None, columns)
+            self._record(capture, "quota", None, columns, written)
             return exc.artifact.lazy_frame()
         except BaseException:
             artifact.close()
@@ -2175,9 +2256,15 @@ class _PlannedCaptures:
                 publication.generation.generation_id,
             )
             plan.record_published(node_id, publication.generation)
-            self._record(capture, "published", publication.generation.generation_id, columns)
+            self._record(
+                capture,
+                "published",
+                publication.generation.generation_id,
+                columns,
+                written,
+            )
         else:
-            self._record(capture, "superseded", None, columns)
+            self._record(capture, "superseded", None, columns, written)
         return publication.lazy_frame
 
     def _record(
@@ -2186,7 +2273,9 @@ class _PlannedCaptures:
         outcome: Literal["published", "superseded", "quota"],
         generation_id: str | None,
         columns: NodeSnapshotColumns,
+        written: ChunkedWrite | None,
     ) -> None:
+        """``written`` is the chunked write, or None for a prewritten scored file."""
         from haute._seed_plans import SharedSnapshotCaptureRecord
 
         logger.info(
@@ -2194,6 +2283,8 @@ class _PlannedCaptures:
             node_id=capture.node_id,
             outcome=outcome,
             generation_id=generation_id,
+            write_strategy=written.strategy if written is not None else "prewritten",
+            write_parts=written.chunks if written is not None else None,
         )
         context = self.execution_context
         if context is None:
@@ -2206,6 +2297,9 @@ class _PlannedCaptures:
                 outcome=outcome,
                 generation_id=generation_id,
                 columns=columns,
+                write_strategy=written.strategy if written is not None else "prewritten",
+                write_parts=written.chunks if written is not None else None,
+                write_staged_inputs=written.staged_inputs if written is not None else None,
             )
         )
         if outcome == "quota":
@@ -2740,6 +2834,8 @@ def _execute_eager_core(
     # A capture's store failure, which must reach the caller as the store's
     # error rather than become the node's.
     capture_store_failures: list[BaseException] = []
+    # Edge joins built here, so a capture of one can be written in chunks.
+    eager_join_recipes: dict[str, JoinRecipe] = {}
     prebound_sources: dict[str, tuple[NodeBoundary, Any, BaseException | None]] = {}
     if decision is not None and snapshot_plan is not None:
         from haute._seed_plans import SharedSnapshotSeedRecord
@@ -3017,6 +3113,9 @@ def _execute_eager_core(
                     # plan built only the selected one, which is its output.
                     result = input_lfs[0]
                 else:
+                    recipe = _edge_join_recipe(boundary.fn, node, input_lfs)
+                    if recipe is not None:
+                        eager_join_recipes[nid] = recipe
                     result = boundary_runner.invoke(boundary, input_lfs)
 
             # Multi-frame emit: a source may return ``dict[port_name, frame]``.
@@ -3152,6 +3251,12 @@ def _execute_eager_core(
 
             # Capture full column set before selected_columns filtering
             available_columns[nid] = _schema_items_of(result_lf)
+            if seeded and snapshot_plan is not None:
+                # A seed is its shaped output; the columns before its own
+                # selection and renames come from what its generation recorded.
+                recorded = snapshot_plan.seed_unshaped_columns(nid)
+                if recorded is not None:
+                    available_columns[nid] = list(recorded)
 
             if seeded:
                 output_lf = result_lf
@@ -3194,7 +3299,15 @@ def _execute_eager_core(
                     # Sunk in full, before anything below it is collected;
                     # everything below reads what was written.
                     try:
-                        output_lf = planned.capture(nid, output_lf, closure)
+                        output_lf = planned.capture(
+                            nid,
+                            output_lf,
+                            closure,
+                            join=eager_join_recipes.get(nid),
+                            unshaped_columns=(
+                                available_columns[nid] if _shapes_output(node_map[nid]) else None
+                            ),
+                        )
                     except (SourceCacheError, OSError) as exc:
                         capture_store_failures.append(exc)
                         raise

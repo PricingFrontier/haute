@@ -260,12 +260,15 @@ resulting plan.
   `(source, sourceHandle)` — (`structural`). Being consumed, fanning out, feeding a join, or
   being a Model Score (which scores row-locally under a limit) does not by itself make a node a
   capture point; a target, fan-out, or join feeder that is itself a join or materialisation is
-  captured. A preview may seed its own target, but it never seeds a node whose own or
-  instance-resolved config selects or renames its output columns (`selected_columns`,
-  `column_renames`): a preview reports every node's columns before that shaping — the columns
-  its Columns editor offers and its stale-selection warnings check — which a generation holding
-  the shaped output cannot supply. Such a node is executed; a preview may still capture it, for
-  the bounded executions that seed from it. A preview's caller demand is only which columns to
+  captured. A preview may seed its own target. A node whose own or instance-resolved config
+  selects or renames its output columns (`selected_columns`, `column_renames`) is seeded only
+  from a generation that recorded its unshaped columns: a preview reports every node's columns
+  before that shaping — the columns its Columns editor offers and its stale-selection warnings
+  check — and a generation holds the shaped output. Every capture and explicit build of such a
+  node records those columns as `node_output.unshaped_columns` (`[name, dtype]` pairs), and a
+  seeded preview reports them from there (`SeedPlan.seed_unshaped_columns`). A generation
+  without the record is not seeded: the node is executed, and a preview may still capture it,
+  for the bounded executions that seed from it. A preview's caller demand is only which columns to
   show first, so its request is `best_effort_demand`: no capture's columns are strict, and a
   requested column the target does not produce is refused as it is without a plan (400)
   rather than as a capture that lacks it.

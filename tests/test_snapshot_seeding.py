@@ -167,6 +167,11 @@ def _counting_build(calls: Counter[str]) -> Callable[..., Any]:
             calls[node.id] += 1
             return fn(*args, **fn_kwargs)
 
+        if hasattr(fn, "edge_join_roles"):
+            counted.edge_join_roles = fn.edge_join_roles  # type: ignore[attr-defined]
+        if hasattr(fn, "edge_join_config"):
+            counted.edge_join_config = fn.edge_join_config  # type: ignore[attr-defined]
+
         return name, counted, is_source
 
     return build
@@ -362,7 +367,9 @@ def test_narrow_upstream_snapshot_widened_in_same_run(
     x_identity = _identity(store, graph, "X")
     store.clear(x_identity)
     artifact = store.stage_node_output(x_identity)
-    pl.read_parquet(project / "quotes.parquet").select("id", "c").write_parquet(artifact.data_path)
+    pl.read_parquet(project / "quotes.parquet").select("id", "c").write_parquet(
+        artifact.part_path(0)
+    )
     store.publish_node_output(
         x_identity,
         artifact,
@@ -403,7 +410,7 @@ def test_quota_full_sampled_join_computed_once(project: Path) -> None:
     for pinned in ("P1", "P2"):
         identity = _identity(filler, graph, pinned)
         artifact = filler.stage_node_output(identity)
-        pl.DataFrame({"a": [1]}).write_parquet(artifact.data_path)
+        pl.DataFrame({"a": [1]}).write_parquet(artifact.part_path(0))
         filler.publish_node_output(
             identity,
             artifact,
@@ -463,7 +470,7 @@ def test_paused_run_diamond_with_a_snapshot(
         artifact = store.stage_node_output(a_identity)
         pl.read_parquet(project / "quotes.parquet").with_columns(
             pl.lit(-1.0).alias("r")
-        ).write_parquet(artifact.data_path)
+        ).write_parquet(artifact.part_path(0))
         store.publish_node_output(
             a_identity,
             artifact,
@@ -674,7 +681,7 @@ def test_a_materialisation_below_a_seed_is_estimated_from_the_seed(
     identity = _identity(store, graph, "A")
     artifact = store.stage_node_output(identity)
     pl.read_parquet(project / "quotes.parquet").with_columns(pl.lit(1).alias("h")).write_parquet(
-        artifact.data_path
+        artifact.part_path(0)
     )
     store.publish_node_output(
         identity,
@@ -890,13 +897,13 @@ def _scored_graph(project: Path, **model_config: Any) -> PipelineGraph:
 def engine_sinks(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Every file the engine itself sinks (not the scorer's own writes)."""
     written: list[str] = []
-    sink = execute_lazy_module.bounded_sink
+    sink = execute_lazy_module.write_parts
 
-    def counting(frame: Any, path: Any, **kwargs: Any) -> Any:
-        written.append(str(path))
-        return sink(frame, path, **kwargs)
+    def counting(directory: Any, *args: Any, **kwargs: Any) -> Any:
+        written.append(str(directory))
+        return sink(directory, *args, **kwargs)
 
-    monkeypatch.setattr(execute_lazy_module, "bounded_sink", counting)
+    monkeypatch.setattr(execute_lazy_module, "write_parts", counting)
     return written
 
 
@@ -986,7 +993,7 @@ def test_model_score_quota_rejection_keeps_scored_file(
         "filler-signature"
     )
     artifact = full.stage_node_output(filler)
-    pl.DataFrame({"a": [1]}).write_parquet(artifact.data_path)
+    pl.DataFrame({"a": [1]}).write_parquet(artifact.part_path(0))
     full.publish_node_output(
         filler,
         artifact,
@@ -1043,7 +1050,7 @@ def test_corrupt_latest_generation_fails_the_run(
     def corrupt_b() -> None:
         latest = store.latest_generation(b_identity)
         assert latest is not None
-        latest.generation.data_path.write_bytes(b"corrupt")
+        latest.generation.data_paths[0].write_bytes(b"corrupt")
 
     _pause_at(monkeypatch, "B", corrupt_b)
     with pytest.raises(SourceCacheCorruptError):
@@ -1102,6 +1109,9 @@ def test_metrics_report_seeds_captures_and_warnings(
         "outcome": "published",
         "generation_id": capture["generation_id"],
         "columns": ["a"],
+        "write_strategy": "native",
+        "write_parts": 1,
+        "write_staged_inputs": 0,
     }
     assert first.metrics["warnings"] == []
     assert second.metrics["shared_snapshot_seeds"] == [
@@ -1140,3 +1150,124 @@ def test_plan_is_exclusive_with_a_cache_request(project: Path, store: NodeSnapsh
                     "execution_context": _context(ExecutionProfile.OPTIMISER_SETUP),
                 },
             )
+
+
+def test_multipart_seed_estimate_counts_every_part(project: Path, store: NodeSnapshotStore) -> None:
+    from haute._ram_estimate import (
+        _data_input_parquet_artifact,
+        _detailed_source_metadata_for_node,
+    )
+
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("A", NodeType.POLARS, _code("df = widen(src)")),
+            ("S", NodeType.POLARS, _code("df = A.sort('a', descending=True)")),
+            ("T", NodeType.MODELLING, {}),
+        ],
+        [("src", "A"), ("A", "S"), ("S", "T")],
+    )
+
+    identity = _identity(store, graph, "A")
+    artifact = store.stage_node_output(identity)
+    n_parts = 3
+    rows_per_part = 50
+    total_rows = n_parts * rows_per_part
+    for i in range(n_parts):
+        pl.DataFrame(
+            {
+                "id": list(range(i * rows_per_part, (i + 1) * rows_per_part)),
+                "a": list(range(i * rows_per_part, (i + 1) * rows_per_part)),
+                "b": [v * 2 for v in range(i * rows_per_part, (i + 1) * rows_per_part)],
+                "c": [v * 3 for v in range(i * rows_per_part, (i + 1) * rows_per_part)],
+                "h": [1] * rows_per_part,
+            }
+        ).write_parquet(artifact.part_path(i))
+
+    store.publish_node_output(
+        identity,
+        artifact,
+        columns=ALL,
+        dependencies={},
+        explicit=True,
+        profile=ExecutionProfile.NODE_SNAPSHOT,
+    ).close()
+
+    with _planned(graph, store, required={"T": ["a"]}) as (plan, _context, execute):
+        assert set(plan.decision.seeds) == {"A"}
+        est_graph = plan.estimation_graph(graph)
+        node_a = next(node for node in est_graph.nodes if node.id == "A")
+        assert node_a.data.nodeType == NodeType.DATA_INPUT
+        assert node_a.data.config["path"].endswith("part-*.parquet")
+
+        count, paths = _data_input_parquet_artifact(node_a.data.config)
+        assert len(paths) == n_parts
+
+        source_meta = _detailed_source_metadata_for_node(node_a)
+        assert source_meta is not None
+        assert source_meta.row_count == total_rows
+
+        output, _calls = execute()
+        frame = output.collect()
+        assert frame.height == total_rows
+        assert frame["a"].to_list() == list(reversed(range(total_rows)))
+
+
+def test_lazy_run_join_capture_is_chunked_into_parts(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    from haute._polars_utils import temporary_streaming_chunk_size
+
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("other", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            (
+                "J",
+                NodeType.EDGE_JOIN,
+                {
+                    "how": "left",
+                    "on": "id",
+                    "selected_columns": ["id", "a", "d"],
+                    "column_renames": {"a": "alpha"},
+                },
+            ),
+            ("B", NodeType.POLARS, _code("df = J.filter(pl.col('alpha') >= 0)")),
+            ("T", NodeType.MODELLING, {}),
+        ],
+        [
+            GraphEdge(id="e0", source="other", target="J", targetHandle="join"),
+            GraphEdge(id="e1", source="src", target="J", targetHandle="base"),
+            GraphEdge(id="e2", source="J", target="B"),
+            GraphEdge(id="e3", source="B", target="T"),
+        ],
+    )
+
+    # _ROWS rows in chunks of 80: three parts.
+    with temporary_streaming_chunk_size(80):
+        run = _run(graph, store, required={"T": ["id", "alpha", "d"]})
+
+    capture = run.captures["J"]
+    assert capture["write_strategy"] == "chunked_join"
+    assert capture["write_parts"] is not None and capture["write_parts"] > 1
+    assert capture["outcome"] == "published"
+
+    identity = _identity(store, graph, "J")
+    gen = store.latest_generation(identity)
+    assert gen is not None
+    assert len(gen.generation.metadata.parts) > 1
+    assert len(gen.generation.data_paths) > 1
+
+    expected = (
+        pl.read_parquet(project / "quotes.parquet")
+        .join(pl.read_parquet(project / "claims.parquet"), on="id", how="left")
+        .select(["id", "a", "d"])
+        .rename({"a": "alpha"})
+        .filter(pl.col("alpha") >= 0)
+    )
+    assert_frame_equal(
+        run.frame.select(["id", "alpha", "d"]).sort("id"),
+        expected.sort("id"),
+    )

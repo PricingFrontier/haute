@@ -233,7 +233,7 @@ def test_persistent_data_input_uses_verified_generation_row_count(
     generation_path = tmp_path / "generation.parquet"
     generation = SimpleNamespace(
         metadata=SimpleNamespace(row_count=17),
-        data_path=generation_path,
+        data_paths=(generation_path,),
     )
     opened: list[object] = []
 
@@ -258,7 +258,7 @@ def test_persistent_data_input_uses_verified_generation_row_count(
         ),
     )
 
-    assert _data_input_parquet_artifact({"source": "persistent"}) == (17, generation_path)
+    assert _data_input_parquet_artifact({"source": "persistent"}) == (17, (generation_path,))
     assert opened == [(tmp_path, ("identity", tmp_path))]
 
 

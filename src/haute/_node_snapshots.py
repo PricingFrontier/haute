@@ -34,7 +34,7 @@ import shutil
 import threading
 import time
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -48,6 +48,7 @@ from haute._cache import (
     checked_cache_inputs,
     graph_fingerprint,
 )
+from haute._chunked_writes import part_name, part_paths, scan_parts
 from haute._execution_context import ExecutionProfile
 from haute._file_lock import _acquire_file_lock, _release_file_lock
 from haute._file_ops import atomic_write_text, remove_tree
@@ -63,12 +64,15 @@ from haute._source_cache import (
     SourceCacheGeneration,
     SourceCacheGenerationMissingError,
     SourceCacheIdentity,
+    SourceCacheLegacyLayoutError,
     SourceCacheMetadata,
     SourceCacheQuotaExceededError,
     SourceCacheStore,
-    _sha256_file,
     _validate_generation_id,
     _validate_staging_token,
+    _verification_key,
+    describe_parts,
+    generation_bytes,
     new_staging_token,
 )
 from haute._types import PipelineGraph
@@ -324,6 +328,24 @@ def pipeline_source_file_key(graph: PipelineGraph) -> str:
     return str(source_file.resolve())
 
 
+def parse_unshaped_columns(raw: object) -> tuple[tuple[str, str], ...] | None:
+    """A generation's recorded pre-shaping columns, or None when it recorded none."""
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise ValueError("unshaped columns must be a list")
+    pairs: list[tuple[str, str]] = []
+    for item in raw:
+        if (
+            not isinstance(item, list)
+            or len(item) != 2
+            or not all(isinstance(part, str) for part in item)
+        ):
+            raise ValueError("unshaped columns must be [name, dtype] pairs")
+        pairs.append((item[0], item[1]))
+    return tuple(pairs)
+
+
 @dataclass(frozen=True, slots=True)
 class NodeSnapshotGeneration:
     """One validated node-output generation and its freshness facts."""
@@ -335,6 +357,10 @@ class NodeSnapshotGeneration:
     fresh: bool
     retention: Retention
     last_used: float
+    # The node's columns before its own selection and renames, as
+    # ``(name, dtype)`` — recorded for a node that shapes its output, so a
+    # preview seeded from this generation can still report them.
+    unshaped_columns: tuple[tuple[str, str], ...] | None = None
 
     @property
     def generation_id(self) -> str:
@@ -358,13 +384,20 @@ class NodeSnapshotArtifact:
     def __init__(self, identity: SourceCacheIdentity, directory: Path) -> None:
         self.identity = identity
         self.directory = directory
-        self.data_path = directory / "data.parquet"
         self._released = False
+
+    def part_path(self, index: int) -> Path:
+        """Where the artifact's ``index``-th part file is written."""
+        return self.directory / part_name(index)
+
+    def parts(self) -> list[Path]:
+        """The part files written into the artifact, in row order."""
+        return part_paths(self.directory)
 
     def lazy_frame(self) -> pl.LazyFrame:
         if self._released:
             raise RuntimeError("node-output artifact is no longer owned by this request")
-        return pl.scan_parquet(self.data_path)
+        return scan_parts(self.parts())
 
     def _mark_published(self) -> None:
         self._released = True
@@ -729,7 +762,7 @@ class NodeSnapshotStore(SourceCacheStore):
 
     def _node_output_facts(
         self, identity: SourceCacheIdentity, generation: SourceCacheGeneration
-    ) -> tuple[NodeSnapshotColumns, dict[str, str]]:
+    ) -> tuple[NodeSnapshotColumns, dict[str, str], tuple[tuple[str, str], ...] | None]:
         facts = generation.metadata.node_output
         slot, signature = NodeSnapshotSlot.from_identity(identity)
         try:
@@ -754,9 +787,10 @@ class NodeSnapshotStore(SourceCacheStore):
                 dependencies[digest] = _validate_generation_id(generation_id)
             if identity.digest in dependencies:
                 raise ValueError("node-output generation depends on its own identity")
+            unshaped = parse_unshaped_columns(facts.get("unshaped_columns"))
         except (TypeError, ValueError) as exc:
             raise SourceCacheCorruptError("node-output generation metadata is corrupt") from exc
-        return columns, dependencies
+        return columns, dependencies, unshaped
 
     def _dependencies_current_or_cleared(self, dependencies: Mapping[str, str]) -> bool:
         for identity_digest, generation_id in dependencies.items():
@@ -775,7 +809,7 @@ class NodeSnapshotStore(SourceCacheStore):
 
     def _touch_last_used(self, generation: SourceCacheGeneration) -> None:
         now = time.time()
-        previous = self._last_used(generation.data_path.parent, 0.0)
+        previous = self._last_used(generation.directory, 0.0)
         if now - previous < _LAST_USED_UPDATE_INTERVAL_SECONDS:
             return
         try:
@@ -795,7 +829,7 @@ class NodeSnapshotStore(SourceCacheStore):
         *,
         pinned_identity: str | None,
     ) -> NodeSnapshotGeneration:
-        columns, dependencies = self._node_output_facts(identity, generation)
+        columns, dependencies, unshaped = self._node_output_facts(identity, generation)
         current = self._current_generation_id(identity.digest)
         retention: Retention = (
             "pinned"
@@ -809,7 +843,8 @@ class NodeSnapshotStore(SourceCacheStore):
             dependencies=dependencies,
             fresh=self._dependencies_current_or_cleared(dependencies),
             retention=retention,
-            last_used=self._last_used(generation.data_path.parent, generation.metadata.created_at),
+            last_used=self._last_used(generation.directory, generation.metadata.created_at),
+            unshaped_columns=unshaped,
         )
 
     # ------------------------------------------------------------ reading
@@ -820,7 +855,11 @@ class NodeSnapshotStore(SourceCacheStore):
         generation_id = self._current_generation_id(identity.digest)
         if generation_id is None:
             return None
-        generation = self._metadata_from_path(identity, generation_id)
+        try:
+            generation = self._metadata_from_path(identity, generation_id)
+        except SourceCacheLegacyLayoutError:
+            # The retired single-file layout reads as absent, so it is rebuilt.
+            return None
         slot, _signature = NodeSnapshotSlot.from_identity(identity)
         pinned = self._read_slot_index(slot)["pinned_identity"]
         return self._describe(identity, generation, pinned_identity=pinned)
@@ -933,7 +972,10 @@ class NodeSnapshotStore(SourceCacheStore):
                 if self._current_generation_id(identity.digest) == generation_id:
                     raise
         try:
-            generation = self._metadata_from_path(identity, generation_id)
+            try:
+                generation = self._metadata_from_path(identity, generation_id)
+            except SourceCacheLegacyLayoutError as exc:
+                raise FileNotFoundError(self._pointer_path(identity)) from exc
             self._touch_last_used(generation)
             yield generation
         finally:
@@ -1091,14 +1133,11 @@ class NodeSnapshotStore(SourceCacheStore):
         columns: NodeSnapshotColumns,
         dependencies: Mapping[str, str],
         profile: ExecutionProfile | str,
+        unshaped_columns: Sequence[tuple[str, str]] | None = None,
     ) -> SourceCacheMetadata:
-        import pyarrow.parquet as pq
-
         slot, signature = NodeSnapshotSlot.from_identity(identity)
-        data_path = artifact.data_path
-        data_sha256 = _sha256_file(data_path)
-        parquet_metadata = pq.read_metadata(data_path)
-        schema = pl.scan_parquet(data_path).collect_schema()
+        parts = describe_parts(artifact.directory)
+        schema = scan_parts(artifact.parts()).collect_schema()
         schema_columns = {name: str(dtype) for name, dtype in schema.items()}
         if columns.names is not None and not columns.names <= set(schema_columns):
             missing = sorted(columns.names - set(schema_columns))
@@ -1117,9 +1156,9 @@ class NodeSnapshotStore(SourceCacheStore):
             schema_version=identity.schema_version,
             generation_id=str(uuid.uuid4()),
             source_signature=None,
-            data_sha256=data_sha256,
-            size_bytes=data_path.stat().st_size,
-            row_count=parquet_metadata.num_rows,
+            parts=parts,
+            size_bytes=sum(part.size_bytes for part in parts),
+            row_count=sum(part.row_count for part in parts),
             column_count=len(schema_columns),
             columns=schema_columns,
             created_at=time.time(),
@@ -1132,6 +1171,11 @@ class NodeSnapshotStore(SourceCacheStore):
                 "signature": signature,
                 "column_set": columns.to_json(),
                 "dependencies": dict(sorted(checked_dependencies.items())),
+                **(
+                    {"unshaped_columns": [[name, dtype] for name, dtype in unshaped_columns]}
+                    if unshaped_columns is not None
+                    else {}
+                ),
             },
         )
 
@@ -1171,6 +1215,7 @@ class NodeSnapshotStore(SourceCacheStore):
         explicit: bool,
         profile: ExecutionProfile | str,
         refresh: bool = False,
+        unshaped_columns: Sequence[tuple[str, str]] | None = None,
     ) -> NodeSnapshotPublication:
         """Publish *artifact* under the publication rule and lease what was published.
 
@@ -1188,7 +1233,12 @@ class NodeSnapshotStore(SourceCacheStore):
         ):
             raise ValueError("node-output artifact was not staged for this identity")
         metadata = self._staged_metadata(
-            identity, artifact, columns=columns, dependencies=dependencies, profile=profile
+            identity,
+            artifact,
+            columns=columns,
+            dependencies=dependencies,
+            profile=profile,
+            unshaped_columns=unshaped_columns,
         )
         atomic_write_text(artifact.directory / "meta.json", canonical_json(metadata.to_dict()))
         generation_id = metadata.generation_id
@@ -1228,15 +1278,16 @@ class NodeSnapshotStore(SourceCacheStore):
                     artifact._mark_published()
                     key = (identity.digest, generation_id)
                     try:
-                        published_stat = (final_dir / "data.parquet").stat()
+                        published_stats = tuple(
+                            (final_dir / part.name).stat() for part in metadata.parts
+                        )
                         with self._lock:
                             self._verified_generations.add(
-                                (
+                                _verification_key(
                                     identity.digest,
                                     generation_id,
-                                    published_stat.st_mtime_ns,
-                                    published_stat.st_size,
-                                    metadata.data_sha256,
+                                    metadata.parts,
+                                    published_stats,
                                 )
                             )
                         # The publisher's lease exists before the pointer names
@@ -1314,11 +1365,8 @@ class NodeSnapshotStore(SourceCacheStore):
         if superseded_id is not None:
             superseded_dir = self._generation_dir(identity.digest, superseded_id)
             if superseded_dir.is_dir() and not self._has_live_holders_locked(superseded_dir):
-                try:
-                    size -= (superseded_dir / "data.parquet").stat().st_size
-                    count -= 1
-                except FileNotFoundError:
-                    pass
+                size -= generation_bytes(superseded_dir)
+                count -= 1
         projected_size = size + new_size_bytes
         projected_count = count + 1
         if projected_size <= self.max_bytes and projected_count <= self.max_generations:
@@ -1409,7 +1457,7 @@ class NodeSnapshotStore(SourceCacheStore):
                     raw = json.loads((generation_dir / "meta.json").read_text(encoding="utf-8"))
                     if raw["identity"]["provider"] != NODE_OUTPUT_PROVIDER:
                         break
-                    size = (generation_dir / "data.parquet").stat().st_size
+                    size = generation_bytes(generation_dir)
                     created_at = float(raw["created_at"])
                     slot_digest = raw["node_output"]["slot_digest"]
                 except (OSError, ValueError, KeyError, TypeError):

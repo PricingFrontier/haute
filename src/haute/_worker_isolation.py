@@ -964,6 +964,10 @@ def _run_cleanup_callbacks(
 
 # ``STATUS_STACK_BUFFER_OVERRUN``: the exit status of a Windows fail-fast abort.
 _WINDOWS_FAIL_FAST_EXITCODE = 0xC0000409
+# ``STATUS_STACK_OVERFLOW``: under a Job Object commit cap, a thread whose next
+# stack page the cap refuses to commit dies with this status, not an allocation
+# failure — a 10M-row preview join capture ended exactly this way.
+_WINDOWS_STACK_OVERFLOW_EXITCODE = 0xC00000FD
 
 
 def _exitcode_looks_memory_limited(
@@ -984,7 +988,9 @@ def _exitcode_looks_memory_limited(
     # ``_WINDOWS_FAIL_FAST_EXITCODE`` is SIGABRT's Windows counterpart: a
     # native allocation the Job Object cap refuses aborts through the
     # fail-fast path (Polars prints ``memory allocation of N bytes failed``),
-    # and a panic or assertion abort exits the same way.
+    # and a panic or assertion abort exits the same way. A refused stack commit
+    # exits as ``_WINDOWS_STACK_OVERFLOW_EXITCODE``; a genuine deep-recursion
+    # overflow under a cap reads the same, which the hedged wording accepts.
     if memory_limit_bytes is None or exitcode is None:
         return False
     try:
@@ -996,4 +1002,9 @@ def _exitcode_looks_memory_limited(
     # their classification is platform-independent; live Windows RSS breaches
     # are reported directly by the parent watchdog rather than this heuristic.
     sigkill_number = int(getattr(signal, "SIGKILL", 9))
-    return exitcode in {-sigkill_number, -int(signal.SIGABRT), _WINDOWS_FAIL_FAST_EXITCODE}
+    return exitcode in {
+        -sigkill_number,
+        -int(signal.SIGABRT),
+        _WINDOWS_FAIL_FAST_EXITCODE,
+        _WINDOWS_STACK_OVERFLOW_EXITCODE,
+    }

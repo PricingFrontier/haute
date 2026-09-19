@@ -267,7 +267,7 @@ def test_terminated_data_output_worker_leaves_no_capture_staging(
         )
         identity = resolver.node_output_slot("B").identity(resolver.node_output_signature("B"))
         artifact = store.stage_node_output(identity, staging_token=handoff.staging_token)
-        pl.DataFrame({"a": [1]}).write_parquet(artifact.data_path)
+        pl.DataFrame({"a": [1]}).write_parquet(artifact.part_path(0))
         staged.append(artifact.directory)
         if stopped == "timed_out":
             raise IsolatedWorkerTimeoutError(timeout_seconds=1.0)
@@ -597,7 +597,7 @@ def test_quota_rejected_captures_serve_the_write(
         "filler-signature"
     )
     artifact = full.stage_node_output(filler)
-    pl.DataFrame({"a": [1]}).write_parquet(artifact.data_path)
+    pl.DataFrame({"a": [1]}).write_parquet(artifact.part_path(0))
     full.publish_node_output(
         filler,
         artifact,

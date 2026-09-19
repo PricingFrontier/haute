@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import contextvars
 import math
-import queue
+import shutil
+import tempfile
 import threading
 import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable, Collection, Generator, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -85,7 +85,7 @@ def _cancellable_collect(
     lf: pl.LazyFrame,
     *,
     execution_context: ExecutionContext,
-    engine: Literal["auto", "streaming"],
+    engine: Literal["auto", "streaming", "in-memory"],
     poll_seconds: float = 0.01,
 ) -> pl.DataFrame:
     """Collect in the background while propagating request cancellation."""
@@ -148,12 +148,12 @@ def execution_collect(
     lf: pl.LazyFrame,
     *,
     execution_context: ExecutionContext | None = None,
-    engine: Literal["auto", "streaming"] = "auto",
+    engine: Literal["auto", "streaming", "in-memory"] = "auto",
     poll_seconds: float = 0.01,
 ) -> pl.DataFrame:
     """Collect with native cancellation whenever an execution context is active."""
-    if engine not in {"auto", "streaming"}:
-        raise ValueError("engine must be 'auto' or 'streaming'")
+    if engine not in {"auto", "streaming", "in-memory"}:
+        raise ValueError("engine must be 'auto', 'streaming' or 'in-memory'")
     context = execution_context or current_execution_context()
     if context is None:
         try:
@@ -178,98 +178,83 @@ def bounded_collect_batches(
     stage_name: str = "collect_batches",
     node_id: str | None = None,
 ) -> Iterator[pl.DataFrame]:
-    """Yield native streaming batches with execution checkpoints.
+    """Yield batches of at most ``chunk_size`` rows, never more than one ahead.
 
-    Polars' own ``collect_batches`` ends its stream as though the query were
-    exhausted when the engine panics, so a crash would read as a short result.
-    The query runs instead as a blocking streaming ``sink_batches`` on a
-    dedicated thread, which raises every engine failure (a panic as
-    ``PanicException``). Batches reach the caller through a one-slot queue;
-    after the batches delivered before a failure, the failure is re-raised.
-    Closing the iterator early stops the query at its next batch.
+    Polars applies no backpressure to ``sink_batches``, ``collect_batches``,
+    or a Python source: a consumer slower than the engine let it materialise
+    the whole frame (8 GiB for a 10M-row, 60-column frame). Each batch is
+    therefore its own query, issued only when the consumer asks for it:
+
+    - sliced — ``lf`` can be sliced at its input (``haute._chunked_writes.
+      sliceable``): each batch is ``lf.slice(offset, chunk_size)``. A failure
+      in batch k raises after batches 0..k-1; closing early reads no more.
+    - in-memory — every input is a frame the caller already holds: ``lf`` is
+      collected once and sliced.
+    - staged — otherwise ``lf`` is written once, by the chunked writer, into
+      a private temporary directory, and its parts are sliced. A failure
+      raises before any batch; the directory is removed on exhaustion, close,
+      or failure.
+
+    Batches follow the frame's order in every strategy (``maintain_order`` is
+    always honoured). An engine failure always raises; it is never read as
+    the end of the stream.
     """
+    from haute._chunked_writes import (
+        part_paths,
+        reads_only_memory,
+        scan_parts,
+        sliceable,
+        write_parts,
+    )
 
+    del maintain_order  # every strategy keeps the frame's order
     if not isinstance(chunk_size, int) or isinstance(chunk_size, bool) or chunk_size <= 0:
         raise ValueError("chunk_size must be a positive integer")
     metrics_context = execution_context or current_execution_context()
     if metrics_context is not None:
         metrics_context.fault_point("collect_before_native", node_id=node_id)
-    handoff: queue.Queue[pl.DataFrame | _BatchStreamEnd] = queue.Queue(maxsize=1)
-    closed = threading.Event()
-
-    def hand_off(item: pl.DataFrame | _BatchStreamEnd) -> bool:
-        while not closed.is_set():
-            try:
-                handoff.put(item, timeout=_BATCH_HANDOFF_POLL_SECONDS)
-            except queue.Full:
-                continue
-            return True
-        return False
-
-    def run_query() -> None:
-        failure: BaseException | None = None
-        try:
-            lf.sink_batches(
-                lambda batch: not hand_off(batch),
-                chunk_size=chunk_size,
-                maintain_order=maintain_order,
-                lazy=False,
-                engine="streaming",
-            )
-        except BaseException as exc:
-            failure = exc
-        hand_off(_BatchStreamEnd(failure))
-
-    query_context = contextvars.copy_context()
-    threading.Thread(
-        target=query_context.run,
-        args=(run_query,),
-        name="haute-collect-batches",
-        daemon=True,
-    ).start()
-
-    def next_batch() -> pl.DataFrame:
-        item = handoff.get()
-        if isinstance(item, _BatchStreamEnd):
-            if item.failure is None:
-                raise StopIteration
-            if isinstance(item.failure, pl.exceptions.ComputeError):
-                _reraise_python_scan_failure(item.failure)
-            raise item.failure
-        return item
-
+    staging: Path | None = None
     try:
         if metrics_context is not None:
             metrics_context.checkpoint(label="before_collect_batches", node_id=node_id)
-        while True:
-            try:
-                if metrics_context is not None:
-                    with metrics_context.stage(
-                        stage_name,
-                        node_id=node_id,
-                        skip_metric_on_exception=(StopIteration,),
-                    ):
-                        batch = next_batch()
-                        metrics_context.record_collect()
-                else:
-                    batch = next_batch()
-            except StopIteration:
-                return
+        source: pl.LazyFrame | pl.DataFrame
+        if sliceable(lf):
+            source = lf
+        elif reads_only_memory(lf):
+            source = execution_collect(lf, execution_context=metrics_context)
+        else:
+            staging = Path(tempfile.mkdtemp(prefix="haute-batches-"))
+            write_parts(
+                staging,
+                lf,
+                chunk_rows=chunk_size,
+                fast_checkpoint=True,
+                execution_context=metrics_context,
+                node_id=node_id,
+            )
+            source = scan_parts(part_paths(staging))
+        if isinstance(source, pl.DataFrame):
+            total = source.height
+        else:
+            total = int(
+                execution_collect(source.select(pl.len()), execution_context=metrics_context).item()
+            )
+        for offset in range(0, total, chunk_size):
+            if isinstance(source, pl.DataFrame):
+                batch = source.slice(offset, chunk_size)
+            elif metrics_context is not None:
+                with metrics_context.stage(stage_name, node_id=node_id):
+                    batch = execution_collect(
+                        source.slice(offset, chunk_size), execution_context=metrics_context
+                    )
+            else:
+                batch = execution_collect(source.slice(offset, chunk_size))
             if metrics_context is not None:
                 metrics_context.checkpoint(label="after_collect_batch", node_id=node_id)
             yield batch
     finally:
-        closed.set()
-
-
-_BATCH_HANDOFF_POLL_SECONDS = 0.05
-
-
-@dataclass(frozen=True, slots=True)
-class _BatchStreamEnd:
-    """The end of a batch stream: a clean finish, or the query's failure."""
-
-    failure: BaseException | None
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 # Polars reports an exception raised inside a Python scan source as a
@@ -582,6 +567,20 @@ def _write_atomically_if_possible(path: Path, writer: Any) -> None:
             writer(tmp)
     else:
         writer(path)
+
+
+def current_streaming_chunk_size() -> int:
+    """The chunk size the current request runs under, else the default.
+
+    A request's ``streaming_chunk_size`` is applied through
+    :func:`temporary_streaming_chunk_size`; chunked writes follow it.
+    """
+    raw = pl.Config.state(if_set=True).get("POLARS_STREAMING_CHUNK_SIZE")
+    try:
+        value = int(raw) if raw else 0
+    except (TypeError, ValueError):
+        value = 0
+    return value if value > 0 else DEFAULT_STREAMING_CHUNK_SIZE
 
 
 @contextmanager

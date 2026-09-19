@@ -690,8 +690,9 @@ keep reporting the failing line so the editor can name the failing step.
   raw `multiprocessing` exit codes: a remote Python exception becomes
   `IsolatedWorkerRemoteError`, a process that exits without a result payload becomes
   `IsolatedWorkerCrashedError` (with a `terminal_reason="memory_limited"` guess when
-  the exit code looks like `SIGKILL`/`SIGABRT`, or the Windows fail-fast status
-  `0xC0000409` a native allocation failure exits with, under a configured memory cap), a
+  the exit code looks like `SIGKILL`/`SIGABRT`, the Windows fail-fast status
+  `0xC0000409` a native allocation failure exits with, or the Windows stack-overflow status
+  `0xC00000FD` a refused stack commit exits with, under a configured memory cap), a
   timeout becomes `IsolatedWorkerTimeoutError`, and parent-owned cleanup callback
   failures are collected into `IsolatedWorkerCleanupError`. A cleanup-only failure is
   raised; when there is already a primary worker failure, cleanup detail is attached

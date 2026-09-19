@@ -203,7 +203,9 @@ def _captured_boundary(store: NodeSnapshotStore, plan) -> tuple[CaptureKind, int
     if capture is None:
         return None
     latest = store.latest_generation(capture.identity)
-    return capture.kind, (0 if latest is None else latest.generation.data_path.stat().st_size)
+    return capture.kind, (
+        0 if latest is None else sum(p.stat().st_size for p in latest.generation.data_paths)
+    )
 
 
 def _assert_boundary_was_captured(captured: tuple[CaptureKind, int] | None) -> None:

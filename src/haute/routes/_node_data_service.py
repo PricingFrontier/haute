@@ -247,7 +247,7 @@ def _build_node_snapshot(
     """
     import polars as pl
 
-    from haute._polars_utils import bounded_sink
+    from haute._chunked_writes import JoinRecipe, write_parts
     from haute.execution import execute_lazy_graph
     from haute.executor import _build_node_fn, _compile_preamble, _pipeline_dir
 
@@ -265,6 +265,8 @@ def _build_node_snapshot(
         if request.seed_plan is not None
         else contextlib.nullcontext()
     ) as plan:
+        join_recipes: dict[str, JoinRecipe] = {}
+        unshaped_frames: dict[str, pl.LazyFrame] = {}
         outputs, *_ = execute_lazy_graph(
             graph,
             _build_node_fn,
@@ -275,6 +277,8 @@ def _build_node_snapshot(
             execution_context=execution_context,
             prepare_inputs=False,
             snapshot_plan=plan,
+            join_recipes=join_recipes,
+            unshaped_frames=unshaped_frames,
         )
         output = outputs[request.node_id]
         if isinstance(output, dict):
@@ -284,11 +288,14 @@ def _build_node_snapshot(
         artifact = store.stage_node_output(identity, staging_token=request.staging_token)
         try:
             with execution_context.stage("node_snapshot_write"):
-                bounded_sink(
+                write_parts(
+                    artifact.directory,
                     output.lazy() if isinstance(output, pl.DataFrame) else output,
-                    artifact.data_path,
+                    join=join_recipes.get(request.node_id),
+                    chunk_rows=request.streaming_chunk_size,
                     fast_checkpoint=True,
-                    streaming_chunk_size=request.streaming_chunk_size,
+                    execution_context=execution_context,
+                    node_id=request.node_id,
                 )
             if _node_identity(request.graph, request.node_id, request.source, store).digest != (
                 identity.digest
@@ -303,6 +310,14 @@ def _build_node_snapshot(
                 dependencies=plan.dependencies_for(request.node_id) if plan is not None else {},
                 explicit=True,
                 profile=ExecutionProfile.NODE_SNAPSHOT,
+                unshaped_columns=(
+                    [
+                        (name, str(dtype))
+                        for name, dtype in unshaped_frames[request.node_id].collect_schema().items()
+                    ]
+                    if request.node_id in unshaped_frames
+                    else None
+                ),
                 refresh=request.refresh,
             )
         except NodeSnapshotQuotaRejectedError as exc:

@@ -1034,9 +1034,9 @@ def _run_planned(
             for node_id, capture in plan.decision.captures.items():
                 latest = store.latest_generation(capture.identity)
                 if latest is not None:
-                    written[node_id] = pl.read_parquet(latest.generation.data_path).columns
+                    written[node_id] = pl.read_parquet(latest.generation.data_paths[0]).columns
                     if generations is not None:
-                        generations[node_id] = latest.generation.data_path
+                        generations[node_id] = latest.generation.data_paths[0]
             kinds = {node_id: capture.kind for node_id, capture in plan.decision.captures.items()}
     finally:
         context.release_admission()
