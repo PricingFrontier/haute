@@ -13,6 +13,7 @@ import haute._seed_plans as seed_plans
 from haute._data_points import DataPointResolver
 from haute._execution_context import ExecutionProfile
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+from haute._registry import NODE_REGISTRY
 from haute._seed_plans import (
     CaptureKind,
     ListedSeed,
@@ -32,6 +33,14 @@ ALL = NodeSnapshotColumns.all()
 _WIDE = ["id", "a", "b", "c", "d", "a2", "c2"]
 
 Edge = tuple[str, str] | GraphEdge
+
+
+def _forbid_builder_execution(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fail(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("No builder should execute during seed plan resolution")
+
+    for entry in NODE_REGISTRY.values():
+        monkeypatch.setattr(entry, "exec", _fail)
 
 
 def _node(node_id: str, node_type: NodeType, config: dict[str, Any]) -> GraphNode:
@@ -82,15 +91,20 @@ def store(project: Path) -> NodeSnapshotStore:
     return NodeSnapshotStore(project)
 
 
-def _chain(project: Path) -> PipelineGraph:
+def _chain(project: Path, *, costly: bool = False) -> PipelineGraph:
     """``src → A → B → C → T`` with column demands the planner knows exactly."""
+    c_code = (
+        "df = B.with_columns((pl.col('c') + 1).alias('c2')).sort('id')"
+        if costly
+        else "df = B.with_columns((pl.col('c') + 1).alias('c2'))"
+    )
     return _graph(
         project,
         [
             ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
             ("A", NodeType.POLARS, _code("df = src.with_columns((pl.col('a') * 2).alias('a2'))")),
             ("B", NodeType.POLARS, _code("df = A.filter(pl.col('a') > 0)")),
-            ("C", NodeType.POLARS, _code("df = B.with_columns((pl.col('c') + 1).alias('c2'))")),
+            ("C", NodeType.POLARS, _code(c_code)),
             ("T", NodeType.MODELLING, {}),
         ],
         [("src", "A"), ("A", "B"), ("B", "C"), ("C", "T")],
@@ -200,11 +214,13 @@ def test_capture_points_structural(project: Path, store: NodeSnapshotStore) -> N
         ],
         [("src", "A"), ("A", "J"), ("other", "J"), ("J", "X"), ("X", "Y"), ("Y", "T")],
     )
-    captures = resolve_seed_plan(_request(join, required={"T": ["a", "d"]}), store=store).captures
-    assert {node: capture.kind for node, capture in captures.items()} == {
-        "A": CaptureKind.STRUCTURAL,
+    decision = resolve_seed_plan(_request(join, required={"T": ["a", "d"]}), store=store)
+    assert {node: capture.kind for node, capture in decision.captures.items()} == {
         "J": CaptureKind.MATERIALISING,
-        "Y": CaptureKind.CONSUMED,
+    }
+    assert decision.skipped_captures == {
+        "A": "slice_transparent_feeder",
+        "Y": "cheap_segment",
     }
 
     fan_out = _graph(
@@ -219,12 +235,14 @@ def test_capture_points_structural(project: Path, store: NodeSnapshotStore) -> N
         ],
         [("src", "P"), ("P", "Q1"), ("P", "Q2"), ("Q1", "K"), ("Q2", "K"), ("K", "T")],
     )
-    captures = resolve_seed_plan(_request(fan_out), store=store).captures
-    assert {node: capture.kind for node, capture in captures.items()} == {
-        "P": CaptureKind.STRUCTURAL,
-        "Q1": CaptureKind.STRUCTURAL,
-        "Q2": CaptureKind.STRUCTURAL,
-        "K": CaptureKind.CONSUMED,
+    decision = resolve_seed_plan(_request(fan_out), store=store)
+    assert {node: capture.kind for node, capture in decision.captures.items()} == {
+        "K": CaptureKind.MATERIALISING,
+    }
+    assert decision.skipped_captures == {
+        "P": "cheap_segment",
+        "Q1": "slice_transparent_feeder",
+        "Q2": "slice_transparent_feeder",
     }
 
 
@@ -246,11 +264,11 @@ def test_capture_points_materialising_only(
         ],
         [("src", "A"), ("A", "G"), ("G", "X"), ("X", "Y"), ("Y", "T")],
     )
-    captures = resolve_seed_plan(_request(graph), store=store).captures
-    assert {node: capture.kind for node, capture in captures.items()} == {
+    decision = resolve_seed_plan(_request(graph), store=store)
+    assert {node: capture.kind for node, capture in decision.captures.items()} == {
         "G": CaptureKind.MATERIALISING,
-        "Y": CaptureKind.CONSUMED,
     }
+    assert decision.skipped_captures == {"Y": "cheap_segment"}
 
 
 @pytest.mark.parametrize(("source", "captured"), [("batch", True), ("live", False)])
@@ -278,9 +296,8 @@ def test_capture_points_consumed_through_pass_through(
     project: Path, store: NodeSnapshotStore
 ) -> None:
     decision = resolve_seed_plan(_request(_chain(project)), store=store)
-    assert {node: capture.kind for node, capture in decision.captures.items()} == {
-        "C": CaptureKind.CONSUMED
-    }
+    assert decision.captures == {}
+    assert decision.skipped_captures == {"C": "cheap_segment"}
     assert decision.pass_through_edges["T"].source == "C"
 
     output = _graph(
@@ -294,11 +311,11 @@ def test_capture_points_consumed_through_pass_through(
         ],
         [("src", "A"), ("A", "J"), ("other", "J"), ("J", "O")],
     )
-    captures = resolve_seed_plan(_request(output, target="O"), store=store).captures
-    assert {node: capture.kind for node, capture in captures.items()} == {
-        "A": CaptureKind.STRUCTURAL,
-        "J": CaptureKind.CONSUMED,
+    decision = resolve_seed_plan(_request(output, target="O"), store=store)
+    assert {node: capture.kind for node, capture in decision.captures.items()} == {
+        "J": CaptureKind.MATERIALISING,
     }
+    assert decision.skipped_captures == {"A": "slice_transparent_feeder"}
 
     direct = _graph(
         project,
@@ -415,18 +432,16 @@ def test_pass_through_selection_matches_builders(
 
 def test_two_input_pass_through_is_not_a_join(project: Path, store: NodeSnapshotStore) -> None:
     decision = resolve_seed_plan(_request(_two_input_modelling(project)), store=store)
-    assert {node: capture.kind for node, capture in decision.captures.items()} == {
-        "A": CaptureKind.CONSUMED
-    }
+    assert decision.captures == {}
+    assert decision.skipped_captures == {"A": "cheap_segment"}
     assert decision.executed_node_ids == {"src", "A", "T"}
 
 
 def test_optimiser_second_input_selected_producer(project: Path, store: NodeSnapshotStore) -> None:
     graph = _two_input_optimiser(project, "B")
     cold = resolve_seed_plan(_request(graph, target="OPT"), store=store)
-    assert {node: capture.kind for node, capture in cold.captures.items()} == {
-        "B": CaptureKind.CONSUMED
-    }
+    assert cold.captures == {}
+    assert cold.skipped_captures == {"B": "cheap_segment"}
     assert cold.executed_node_ids == {"other", "B", "OPT"}
 
     generation = _publish(store, graph, "B")
@@ -533,7 +548,7 @@ def test_stale_candidate_is_never_seeded(project: Path, store: NodeSnapshotStore
 def test_partial_candidate_becomes_widening_capture(
     project: Path, store: NodeSnapshotStore
 ) -> None:
-    graph = _chain(project)
+    graph = _chain(project, costly=True)
     _publish(store, graph, "C", ["b"])
 
     decision = resolve_seed_plan(_request(graph, required={"T": ["a"]}), store=store)
@@ -574,7 +589,12 @@ def test_refresh_disables_seeding_keeps_captures(project: Path, store: NodeSnaps
     decision = resolve_seed_plan(_request(graph, refresh=True), store=store)
 
     assert decision.seeds == {}
-    assert set(decision.captures) == {"A", "B", "C", "D"}
+    assert set(decision.captures) == {"D"}
+    assert decision.skipped_captures == {
+        "A": "cheap_segment",
+        "B": "slice_transparent_feeder",
+        "C": "slice_transparent_feeder",
+    }
 
 
 def test_disjoint_demand_negotiates_join_columns(project: Path, store: NodeSnapshotStore) -> None:
@@ -607,7 +627,7 @@ def test_narrow_upstream_seed_is_dropped_and_widened(
         [
             ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
             ("A", NodeType.POLARS, _code("df = src.sort('id')")),
-            ("G", NodeType.POLARS, _code("df = A.filter(pl.col('a') > 0)")),
+            ("G", NodeType.POLARS, _code("df = A.filter(pl.col('a') > 0).sort('a')")),
             ("T", NodeType.MODELLING, {}),
         ],
         [("src", "A"), ("A", "G"), ("G", "T")],
@@ -767,7 +787,7 @@ def test_retained_seed_carries_the_negotiated_demand(
         [
             ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
             ("A", NodeType.POLARS, _code("df = src.with_columns((pl.col('a') * 2).alias('a2'))")),
-            ("G", NodeType.POLARS, _code("df = A.filter(pl.col('a') > 0)")),
+            ("G", NodeType.POLARS, _code("df = A.filter(pl.col('a') > 0).sort('a')")),
             ("T", NodeType.MODELLING, {}),
         ],
         [("src", "A"), ("A", "G"), ("G", "T")],
@@ -839,7 +859,11 @@ def test_capture_columns_widen_a_capture_best_effort(
     project: Path, store: NodeSnapshotStore
 ) -> None:
     decision = resolve_seed_plan(
-        _request(_chain(project), required={"T": ["a"]}, capture_columns_by_node={"C": ["b"]}),
+        _request(
+            _chain(project, costly=True),
+            required={"T": ["a"]},
+            capture_columns_by_node={"C": ["b"]},
+        ),
         store=store,
     )
     assert decision.captures["C"].columns == NodeSnapshotColumns.of({"a", "b"})
@@ -851,7 +875,7 @@ def test_unresolved_all_except_demand_captures_all_columns(
 ) -> None:
     from haute.projection import AllExcept
 
-    graph = _chain(project)
+    graph = _chain(project, costly=True)
     _publish(store, graph, "C", ["a", "b"])
     decision = resolve_seed_plan(
         _request(
@@ -875,7 +899,8 @@ def test_consumed_side_input_is_built_but_not_through_the_pass_through(
         _request(graph, target="OPT", consumed_node_ids=("A", "B")), store=store
     )
     assert decision.executed_node_ids == {"src", "other", "A", "B", "OPT"}
-    assert set(decision.captures) == {"A", "B"}
+    assert decision.captures == {}
+    assert decision.skipped_captures == {"A": "cheap_segment", "B": "cheap_segment"}
 
 
 # ---------------------------------------------------------------------------
@@ -1516,3 +1541,507 @@ def test_preview_planner_reads_instance_nodes_through_their_originals(
     assert sorted(listed) == ["c", "p", "pi"]
     open_seed_plan(_preview(graph, "K"), store=store).close()
     assert [sorted(order) for order in prepared] == [["c", "p", "pi"]]
+
+
+# ---------------------------------------------------------------------------
+# Cost-gated captures (CACHE-S11)
+# ---------------------------------------------------------------------------
+
+
+def test_cheap_segment_skips_fan_out_and_consumed_captures(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _forbid_builder_execution(monkeypatch)
+    # generation → select → fan-out to two Polars children: no capture, cheap_segment
+    fan_out = _graph(
+        project,
+        [
+            (
+                "gen",
+                NodeType.POLARS,
+                _code("df = pl.DataFrame({'id': [1, 2, 3], 'a': [1, 2, 3], 'b': [4, 5, 6]})"),
+            ),
+            ("S", NodeType.POLARS, _code("df = gen.select('id', 'a')")),
+            ("C1", NodeType.POLARS, _code("df = S.select('id')")),
+            ("C2", NodeType.POLARS, _code("df = S.select('a')")),
+            ("T", NodeType.POLARS, _code("df = C1.join(C2, on='id')")),
+        ],
+        [("gen", "S"), ("S", "C1"), ("S", "C2"), ("C1", "T"), ("C2", "T")],
+    )
+    _publish(store, fan_out, "gen")
+    decision = resolve_seed_plan(_request(fan_out, target="T"), store=store)
+    assert "gen" in decision.seeds
+    assert "S" not in decision.captures
+    assert decision.skipped_captures["S"] == "cheap_segment"
+
+    # the same node consumed by a modelling target: no capture
+    consumed = _graph(
+        project,
+        [
+            (
+                "gen",
+                NodeType.POLARS,
+                _code("df = pl.DataFrame({'id': [1, 2, 3], 'a': [1, 2, 3], 'b': [4, 5, 6]})"),
+            ),
+            ("S", NodeType.POLARS, _code("df = gen.select('id', 'a')")),
+            ("T", NodeType.MODELLING, {}),
+        ],
+        [("gen", "S"), ("S", "T")],
+    )
+    d_consumed = resolve_seed_plan(_request(consumed, target="T"), store=store)
+    assert "gen" in d_consumed.seeds
+    assert "S" not in d_consumed.captures
+    assert d_consumed.skipped_captures == {"S": "cheap_segment"}
+
+
+def test_slice_transparent_feeder_is_not_captured(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _forbid_builder_execution(monkeypatch)
+    # generation → select → edge join: the select is skipped with slice_transparent_feeder;
+    # the join is captured
+    graph = _graph(
+        project,
+        [
+            ("src1", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("src2", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("G", NodeType.POLARS, _code("df = src1.sort('id')")),
+            ("S", NodeType.POLARS, _code("df = G.select('id', 'a')")),
+            ("J", NodeType.EDGE_JOIN, {"how": "left", "on": ["id"]}),
+        ],
+        [
+            ("src1", "G"),
+            ("G", "S"),
+            GraphEdge(id="e1", source="S", target="J", targetHandle="base"),
+            GraphEdge(id="e2", source="src2", target="J", targetHandle="join"),
+        ],
+    )
+    _publish(store, graph, "G")
+    decision = resolve_seed_plan(_request(graph, target="J"), store=store)
+    assert "G" in decision.seeds
+    assert "src2" in decision.executed_node_ids
+    assert {node: c.kind for node, c in decision.captures.items()} == {"J": CaptureKind.STRUCTURAL}
+    assert decision.skipped_captures == {"S": "slice_transparent_feeder"}
+
+    # the same with a select(pl.first("x")) feeder: captured STRUCTURAL
+    # (a reduction is not transparent)
+    reduction_graph = _graph(
+        project,
+        [
+            ("src1", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("src2", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("S", NodeType.POLARS, _code("df = src1.select('id', pl.first('a'))")),
+            ("J", NodeType.EDGE_JOIN, {"how": "left", "on": ["id"]}),
+        ],
+        [
+            ("src1", "S"),
+            GraphEdge(id="e1", source="S", target="J", targetHandle="base"),
+            GraphEdge(id="e2", source="src2", target="J", targetHandle="join"),
+        ],
+    )
+    d_red = resolve_seed_plan(_request(reduction_graph, target="J"), store=store)
+    assert "src1" in d_red.executed_node_ids
+    assert "src2" in d_red.executed_node_ids
+    assert {node: c.kind for node, c in d_red.captures.items()} == {
+        "S": CaptureKind.STRUCTURAL,
+        "J": CaptureKind.STRUCTURAL,
+    }
+    assert d_red.skipped_captures == {}
+
+
+def test_filter_feeder_is_captured_but_filter_fan_out_is_not(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _forbid_builder_execution(monkeypatch)
+    # Parquet → filter feeding a join: STRUCTURAL
+    filter_join = _graph(
+        project,
+        [
+            ("src1", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("src2", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("F", NodeType.POLARS, _code("df = src1.filter(pl.col('a') > 0)")),
+            ("J", NodeType.EDGE_JOIN, {"how": "left", "on": ["id"]}),
+        ],
+        [
+            ("src1", "F"),
+            GraphEdge(id="e1", source="F", target="J", targetHandle="base"),
+            GraphEdge(id="e2", source="src2", target="J", targetHandle="join"),
+        ],
+    )
+    d1 = resolve_seed_plan(_request(filter_join, target="J"), store=store)
+    assert "src1" in d1.executed_node_ids
+    assert "src2" in d1.executed_node_ids
+    assert d1.captures["F"].kind is CaptureKind.STRUCTURAL
+    assert d1.captures["J"].kind is CaptureKind.STRUCTURAL
+
+    # Parquet → drop_nulls feeding a join: STRUCTURAL
+    drop_nulls_join = _graph(
+        project,
+        [
+            ("src1", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("src2", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("D", NodeType.POLARS, _code("df = src1.drop_nulls('a')")),
+            ("J", NodeType.EDGE_JOIN, {"how": "left", "on": ["id"]}),
+        ],
+        [
+            ("src1", "D"),
+            GraphEdge(id="e1", source="D", target="J", targetHandle="base"),
+            GraphEdge(id="e2", source="src2", target="J", targetHandle="join"),
+        ],
+    )
+    d2 = resolve_seed_plan(_request(drop_nulls_join, target="J"), store=store)
+    assert "src1" in d2.executed_node_ids
+    assert "src2" in d2.executed_node_ids
+    assert d2.captures["D"].kind is CaptureKind.STRUCTURAL
+    assert d2.captures["J"].kind is CaptureKind.STRUCTURAL
+
+    # the same filter fanning out: skipped cheap_segment
+    filter_fan = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("F", NodeType.POLARS, _code("df = src.filter(pl.col('a') > 0)")),
+            ("C1", NodeType.POLARS, _code("df = F.select('id')")),
+            ("C2", NodeType.POLARS, _code("df = F.select('a')")),
+            ("T", NodeType.POLARS, _code("df = C1.join(C2, on='id')")),
+        ],
+        [("src", "F"), ("F", "C1"), ("F", "C2"), ("C1", "T"), ("C2", "T")],
+    )
+    d3 = resolve_seed_plan(_request(filter_fan, target="T"), store=store)
+    assert "src" in d3.executed_node_ids
+    assert "F" not in d3.captures
+    assert d3.skipped_captures["F"] == "cheap_segment"
+
+    # the same filter consumed: skipped cheap_segment
+    filter_consumed = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("F", NodeType.POLARS, _code("df = src.filter(pl.col('a') > 0)")),
+            ("T", NodeType.MODELLING, {}),
+        ],
+        [("src", "F"), ("F", "T")],
+    )
+    d4 = resolve_seed_plan(_request(filter_consumed, target="T"), store=store)
+    assert "src" in d4.executed_node_ids
+    assert "F" not in d4.captures
+    assert d4.skipped_captures["F"] == "cheap_segment"
+
+
+def test_costly_segment_keeps_structural_and_consumed_captures(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _forbid_builder_execution(monkeypatch)
+    # Rating Step (not captured itself), then a select consumed by training:
+    # the select is captured CONSUMED
+    rating_graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("R", NodeType.RATING_STEP, {}),
+            ("S", NodeType.POLARS, _code("df = R.select('id', 'a')")),
+            ("T", NodeType.MODELLING, {}),
+        ],
+        [("src", "R"), ("R", "S"), ("S", "T")],
+    )
+    d1 = resolve_seed_plan(_request(rating_graph, target="T"), store=store)
+    assert "R" not in d1.captures
+    assert {node: c.kind for node, c in d1.captures.items()} == {"S": CaptureKind.CONSUMED}
+    assert d1.skipped_captures == {}
+
+    # flat-file API Input → select → fan-out: STRUCTURAL
+    # (a source is never captured, its segment is costly)
+    api_graph = _graph(
+        project,
+        [
+            ("api", NodeType.API_INPUT, {"path": str(project / "quotes.csv")}),
+            ("S", NodeType.POLARS, _code("df = api.select('id', 'a')")),
+            ("C1", NodeType.POLARS, _code("df = S.select('id')")),
+            ("C2", NodeType.POLARS, _code("df = S.select('a')")),
+            ("T", NodeType.POLARS, _code("df = C1.join(C2, on='id')")),
+        ],
+        [("api", "S"), ("S", "C1"), ("S", "C2"), ("C1", "T"), ("C2", "T")],
+    )
+    d2 = resolve_seed_plan(_request(api_graph, target="T"), store=store)
+    assert "api" not in d2.captures
+    assert d2.captures["S"].kind is CaptureKind.STRUCTURAL
+
+    # External File with helper(df) → select → fan-out: the External File is MATERIALISING and
+    # the select is skipped cheap_segment (its segment stops at that capture)
+    ext_graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("ext", NodeType.EXTERNAL_FILE, _code("df = helper(src)")),
+            ("S", NodeType.POLARS, _code("df = ext.select('id', 'a')")),
+            ("C1", NodeType.POLARS, _code("df = S.select('id')")),
+            ("C2", NodeType.POLARS, _code("df = S.select('a')")),
+            ("T", NodeType.POLARS, _code("df = C1.join(C2, on='id')")),
+        ],
+        [("src", "ext"), ("ext", "S"), ("S", "C1"), ("S", "C2"), ("C1", "T"), ("C2", "T")],
+    )
+    d3 = resolve_seed_plan(_request(ext_graph, target="T"), store=store)
+    assert d3.captures["ext"].kind is CaptureKind.MATERIALISING
+    assert "S" not in d3.captures
+    assert d3.skipped_captures["S"] == "cheap_segment"
+
+
+def test_segment_stops_at_a_fresh_capture_and_at_a_seed(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _forbid_builder_execution(monkeypatch)
+    # a Data Input with group_by post-load code → select → fan-out:
+    # the Data Input is MATERIALISING and the select is skipped cheap_segment
+    # (its segment stops at the fresh capture)
+    data_input_graph = _graph(
+        project,
+        [
+            (
+                "src",
+                NodeType.DATA_INPUT,
+                {
+                    **_parquet(project / "quotes.parquet"),
+                    "code": "df = df.group_by('id').agg(pl.col('a').sum())",
+                },
+            ),
+            ("S", NodeType.POLARS, _code("df = src.select('id', 'a')")),
+            ("C1", NodeType.POLARS, _code("df = S.select('id')")),
+            ("C2", NodeType.POLARS, _code("df = S.select('a')")),
+            ("T", NodeType.POLARS, _code("df = C1.join(C2, on='id')")),
+        ],
+        [("src", "S"), ("S", "C1"), ("S", "C2"), ("C1", "T"), ("C2", "T")],
+    )
+    d1 = resolve_seed_plan(_request(data_input_graph, target="T"), store=store)
+    assert d1.captures["src"].kind is CaptureKind.MATERIALISING
+    assert "S" not in d1.captures
+    assert d1.skipped_captures["S"] == "cheap_segment"
+
+    # the same graph with the Data Input's generation present: the Data Input is seeded and
+    # the select is skipped the same way
+    _publish(store, data_input_graph, "src")
+    d2 = resolve_seed_plan(_request(data_input_graph, target="T"), store=store)
+    assert "src" in d2.seeds
+    assert "src" not in d2.captures
+    assert "S" not in d2.captures
+    assert d2.skipped_captures["S"] == "cheap_segment"
+
+    # a Rating Step below a seed followed by a select fan-out: the select is STRUCTURAL
+    seeded_rating_graph = _graph(
+        project,
+        [
+            (
+                "src",
+                NodeType.POLARS,
+                _code("df = pl.DataFrame({'id': [1, 2, 3], 'a': [1, 2, 3], 'b': [4, 5, 6]})"),
+            ),
+            ("R", NodeType.RATING_STEP, {}),
+            ("S", NodeType.POLARS, _code("df = R.select('id', 'a')")),
+            ("C1", NodeType.POLARS, _code("df = S.select('id')")),
+            ("C2", NodeType.POLARS, _code("df = S.select('a')")),
+            ("T", NodeType.POLARS, _code("df = C1.join(C2, on='id')")),
+        ],
+        [("src", "R"), ("R", "S"), ("S", "C1"), ("S", "C2"), ("C1", "T"), ("C2", "T")],
+    )
+    _publish(store, seeded_rating_graph, "src")
+    d3 = resolve_seed_plan(_request(seeded_rating_graph, target="T"), store=store)
+    assert "src" in d3.seeds
+    assert "R" not in d3.captures
+    assert d3.captures["S"].kind is CaptureKind.STRUCTURAL
+
+
+def test_two_ports_of_one_api_input_joined_are_a_structural_capture(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _forbid_builder_execution(monkeypatch)
+    graph = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="request",
+                data=NodeData(label="request", nodeType=NodeType.API_INPUT, config={}),
+            ),
+            GraphNode(
+                id="join",
+                data=NodeData(
+                    label="join",
+                    nodeType=NodeType.EDGE_JOIN,
+                    config={"how": "left", "on": ["id"]},
+                ),
+            ),
+        ],
+        edges=[
+            GraphEdge(
+                id="e_quotes_join",
+                source="request",
+                sourceHandle="quotes",
+                target="join",
+                targetHandle="base",
+            ),
+            GraphEdge(
+                id="e_lookup_join",
+                source="request",
+                sourceHandle="lookup",
+                target="join",
+                targetHandle="join",
+            ),
+        ],
+        preamble="import polars as pl",
+        source_file=str(project / "main.py"),
+    )
+    decision = resolve_seed_plan(_request(graph, target="join"), store=store)
+    assert {node: capture.kind for node, capture in decision.captures.items()} == {
+        "join": CaptureKind.STRUCTURAL
+    }
+    assert decision.skipped_captures == {}
+
+
+def test_costly_code_nodes_are_captured_and_cheap_boundaries_are_not(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _forbid_builder_execution(monkeypatch)
+    costly_cases = [
+        ("group_by", "df = src.group_by('id').agg(pl.col('a').sum())"),
+        ("over", "df = src.with_columns(pl.col('a').sum().over('id'))"),
+        ("pivot", "df = src.pivot(on='a', index='id', values='b')"),
+        ("unique", "df = src.unique('id')"),
+        ("join", "df = src.join(other, on='id')"),
+        (
+            "map_elements",
+            "df = src.select(pl.col('a').map_elements(lambda x: x + 1, return_dtype=pl.Int64))",
+        ),
+    ]
+    for _label, code in costly_cases:
+        graph = _graph(
+            project,
+            [
+                ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+                ("other", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+                ("C", NodeType.POLARS, _code(code)),
+            ],
+            [("src", "C"), ("other", "C")],
+        )
+        decision = resolve_seed_plan(_request(graph, target="C"), store=store)
+        assert decision.captures["C"].kind is CaptureKind.MATERIALISING
+
+    cheap_cases = [
+        ("explode", "df = src.explode('a')"),
+        ("shift", "df = src.with_columns(pl.col('a').shift(1))"),
+    ]
+    for _label, code in cheap_cases:
+        graph = _graph(
+            project,
+            [
+                ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+                ("C", NodeType.POLARS, _code(code)),
+            ],
+            [("src", "C")],
+        )
+        bounded = resolve_seed_plan(_request(graph, target="C"), store=store)
+        assert "C" not in bounded.captures
+        preview = resolve_seed_plan(_preview(graph, "C"), store=store)
+        assert "C" not in preview.captures
+
+    edge_join_graph = _graph(
+        project,
+        [
+            ("src1", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("src2", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("J", NodeType.EDGE_JOIN, {"how": "left", "on": ["id"]}),
+        ],
+        [
+            GraphEdge(id="e1", source="src1", target="J", targetHandle="base"),
+            GraphEdge(id="e2", source="src2", target="J", targetHandle="join"),
+        ],
+    )
+    bounded_j = resolve_seed_plan(_request(edge_join_graph, target="J"), store=store)
+    assert bounded_j.captures["J"].kind is CaptureKind.STRUCTURAL
+    preview_j = resolve_seed_plan(_preview(edge_join_graph, "J"), store=store)
+    assert preview_j.captures["J"].kind is CaptureKind.STRUCTURAL
+
+
+def test_preview_captures_only_full_input_work(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _forbid_builder_execution(monkeypatch)
+    full_input_cases = [
+        ("sort", "df = src.sort('a')"),
+        ("expr_sort", "df = src.with_columns(pl.col('a').sort())"),
+        ("expr_unique", "df = src.with_columns(pl.col('a').unique())"),
+        ("expr_rank", "df = src.with_columns(pl.col('a').rank())"),
+        ("group_by", "df = src.group_by('id').agg(pl.col('a').sum())"),
+        ("pivot", "df = src.pivot(on='a', index='id', values='b')"),
+        ("over", "df = src.with_columns(pl.col('a').sum().over('id'))"),
+    ]
+    for _label, code in full_input_cases:
+        graph = _graph(
+            project,
+            [
+                ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+                ("C", NodeType.POLARS, _code(code)),
+            ],
+            [("src", "C")],
+        )
+        prev = resolve_seed_plan(_preview(graph, "C"), store=store)
+        assert prev.captures["C"].kind is CaptureKind.MATERIALISING
+        assert prev.skipped_captures == {}
+
+        bounded = resolve_seed_plan(_request(graph, target="C"), store=store)
+        assert bounded.captures["C"].kind is CaptureKind.MATERIALISING
+
+    bounded_only_cases = [
+        (
+            "map_elements",
+            "df = src.select(pl.col('a').map_elements(lambda x: x + 1, return_dtype=pl.Int64))",
+        ),
+        ("pipe", "df = src.pipe(lambda d: d)"),
+        ("unresolved", "df = helper(src)"),
+    ]
+    for _label, code in bounded_only_cases:
+        graph = _graph(
+            project,
+            [
+                ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+                ("C", NodeType.POLARS, _code(code)),
+            ],
+            [("src", "C")],
+        )
+        prev = resolve_seed_plan(_preview(graph, "C"), store=store)
+        assert "C" not in prev.captures
+        assert prev.skipped_captures == {}
+
+        bounded = resolve_seed_plan(_request(graph, target="C"), store=store)
+        assert bounded.captures["C"].kind is CaptureKind.MATERIALISING
+
+
+def test_capture_set_is_settled_before_execution_and_claims(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _forbid_builder_execution(monkeypatch)
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("A", NodeType.POLARS, _code("df = src.select('id', 'a')")),
+            ("C1", NodeType.POLARS, _code("df = A.sort('id')")),
+            ("C2", NodeType.POLARS, _code("df = A.sort('a')")),
+            ("T", NodeType.POLARS, _code("df = C1.join(C2, on='id')")),
+        ],
+        [("src", "A"), ("A", "C1"), ("A", "C2"), ("C1", "T"), ("C2", "T")],
+    )
+    request = _request(graph)
+    decision = resolve_seed_plan(request, store=store)
+    assert decision.skipped_captures == {"A": "cheap_segment"}
+    with open_resolved_seed_plan(request, store=store) as plan:
+        assert plan.decision.captures == decision.captures
+        assert plan.decision.skipped_captures == {"A": "cheap_segment"}
+        handoff = plan.handoff()
+        assert handoff.decision.captures == decision.captures
+        assert handoff.decision.skipped_captures == {"A": "cheap_segment"}
+        round_tripped = pickle.loads(pickle.dumps(handoff))
+        assert round_tripped.decision.captures == decision.captures
+        assert round_tripped.decision.skipped_captures == {"A": "cheap_segment"}
+        child = SeedPlan.adopt(round_tripped, store=store)
+        try:
+            assert child.decision.captures == decision.captures
+            assert child.decision.skipped_captures == {"A": "cheap_segment"}
+        finally:
+            child.close()

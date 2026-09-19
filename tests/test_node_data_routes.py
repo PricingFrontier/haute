@@ -1056,6 +1056,9 @@ def test_build_chain_refresh_stales_descendants(client: TestClient, project: Pat
 def test_refresh_build_seeds_nothing_and_captures(client: TestClient, project: Path) -> None:
     # ``A`` fans out and ``B`` feeds a join, so a build of ``J`` captures both.
     graph = _chain_graph(project)
+    for node in graph["nodes"]:
+        if node["id"] == "A":
+            node["data"]["config"]["code"] += ".sort('policy_id')"
     graph["nodes"].append(
         {
             "id": "J",

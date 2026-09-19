@@ -2753,7 +2753,7 @@ def test_lazy_graph_execution_records_build_and_capture_stages(tmp_path) -> None
                     "data": {
                         "label": "mid",
                         "nodeType": NodeType.POLARS.value,
-                        "config": {},
+                        "config": {"code": "df = df.with_columns(pl.col('a').rank().alias('r'))"},
                     },
                 },
                 {

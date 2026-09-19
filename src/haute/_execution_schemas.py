@@ -459,6 +459,13 @@ class SharedSnapshotCapturePayload(BaseModel):
     write_staged_inputs: int | None = Field(default=None, ge=0)
 
 
+class SharedSnapshotCaptureSkipPayload(BaseModel):
+    """One candidate capture point skipped under cost gating."""
+
+    node_id: str
+    reason: Literal["cheap_segment", "slice_transparent_feeder"]
+
+
 class ExecutionWarningPayload(BaseModel):
     """A non-fatal condition an execution continued past."""
 
@@ -530,6 +537,9 @@ class ExecutionMetricsPayload(BaseModel):
     input_preparation: list[InputPreparationRecordPayload] = Field(default_factory=list)
     shared_snapshot_seeds: list[SharedSnapshotSeedPayload] = Field(default_factory=list)
     shared_snapshot_captures: list[SharedSnapshotCapturePayload] = Field(default_factory=list)
+    shared_snapshot_capture_skips: list[SharedSnapshotCaptureSkipPayload] = Field(
+        default_factory=list
+    )
     warnings: list[ExecutionWarningPayload] = Field(default_factory=list)
 
     @model_validator(mode="after")

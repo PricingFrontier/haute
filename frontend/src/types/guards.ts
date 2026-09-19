@@ -25,6 +25,7 @@ import type {
   InputPreparationRecord,
   ExecutionWarning,
   SharedSnapshotCapture,
+  SharedSnapshotCaptureSkip,
   SharedSnapshotSeed,
   ExecutionMetrics,
   ExecutionColumnWidth,
@@ -758,6 +759,21 @@ function parseSharedSnapshotCapture(
   }
 }
 
+function parseSharedSnapshotCaptureSkip(
+  parser: string,
+  value: unknown,
+  field: string,
+): SharedSnapshotCaptureSkip {
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    node_id: expectString(parser, obj.node_id, `${field}.node_id`),
+    reason: expectStringLiteral(parser, obj.reason, `${field}.reason`, [
+      "cheap_segment",
+      "slice_transparent_feeder",
+    ]),
+  }
+}
+
 function optionalNullableCount<K extends string>(
   parser: string,
   obj: Record<string, unknown>,
@@ -863,6 +879,12 @@ function parseExecutionMetrics(
     ),
     shared_snapshot_captures: optionalArray(parser, obj, "shared_snapshot_captures", (item, itemField) =>
       parseSharedSnapshotCapture(parser, item, itemField),
+    ),
+    shared_snapshot_capture_skips: optionalArray(
+      parser,
+      obj,
+      "shared_snapshot_capture_skips",
+      (item, itemField) => parseSharedSnapshotCaptureSkip(parser, item, itemField),
     ),
     warnings: optionalArray(parser, obj, "warnings", (item, itemField) =>
       parseExecutionWarning(parser, item, itemField),

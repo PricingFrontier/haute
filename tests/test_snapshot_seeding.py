@@ -100,16 +100,21 @@ def store(project: Path) -> NodeSnapshotStore:
     return NodeSnapshotStore(project)
 
 
-def _join_graph(project: Path) -> PipelineGraph:
+def _join_graph(
+    project: Path,
+    *,
+    a_code: str = "df = src.with_columns((pl.col('a') * 2).alias('a2'))",
+    b_code: str = "df = J.filter(pl.col('a') >= 0)",
+) -> PipelineGraph:
     """``src → A → J ← other``, ``J → B → T``."""
     return _graph(
         project,
         [
             ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
             ("other", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
-            ("A", NodeType.POLARS, _code("df = src.with_columns((pl.col('a') * 2).alias('a2'))")),
+            ("A", NodeType.POLARS, _code(a_code)),
             ("J", NodeType.POLARS, _code("df = A.join(other, on='id', how='left')")),
-            ("B", NodeType.POLARS, _code("df = J.filter(pl.col('a') >= 0)")),
+            ("B", NodeType.POLARS, _code(b_code)),
             ("T", NodeType.MODELLING, {}),
         ],
         [("src", "A"), ("A", "J"), ("other", "J"), ("J", "B"), ("B", "T")],
@@ -310,16 +315,17 @@ def test_seeded_rerun_builds_nothing_upstream(project: Path, store: NodeSnapshot
     graph = _join_graph(project)
     first = _run(graph, store, required={"T": ["a", "d"]})
 
-    assert set(first.captures) == {"A", "J", "B"}
+    assert set(first.captures) == {"J"}
     assert {capture["outcome"] for capture in first.captures.values()} == {"published"}
     assert first.seeds == {}
     assert first.calls["src"] == 1
 
     second = _run(graph, store, required={"T": ["a", "d"]})
 
-    assert set(second.seeds) == {"B"}
+    assert set(second.seeds) == {"J"}
     assert second.captures == {}
-    assert not +second.calls
+    assert second.calls["src"] == 0 and second.calls["other"] == 0
+    assert second.calls["B"] == 1
     assert_frame_equal(second.frame, first.frame)
 
 
@@ -355,7 +361,11 @@ def test_narrow_upstream_snapshot_widened_in_same_run(
         [
             ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
             ("other", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
-            ("X", NodeType.POLARS, _code("df = src.with_columns((pl.col('c') + 1).alias('c1'))")),
+            (
+                "X",
+                NodeType.POLARS,
+                _code("df = src.with_columns((pl.col('c') + 1).alias('c1')).sort('id')"),
+            ),
             ("J", NodeType.POLARS, _code("df = X.join(other, on='id', how='left')")),
             ("T", NodeType.MODELLING, {}),
         ],
@@ -452,9 +462,13 @@ def test_paused_run_diamond_with_a_snapshot(
             (
                 "A",
                 NodeType.POLARS,
-                _code("df = src.with_columns(pl.lit(R).alias('r'))"),
+                _code("df = src.with_columns(pl.lit(R).alias('r')).sort('id')"),
             ),
-            ("B", NodeType.POLARS, _code("df = A.select('id', pl.col('r').alias('rb'))")),
+            (
+                "B",
+                NodeType.POLARS,
+                _code("df = A.select('id', pl.col('r').alias('rb')).sort('id')"),
+            ),
             ("C", NodeType.POLARS, _code("df = A.select('id', pl.col('r').alias('rc'))")),
             ("D", NodeType.POLARS, _code("df = B.join(C, on='id', how='left')")),
             ("T", NodeType.MODELLING, {}),
@@ -512,7 +526,11 @@ def test_paused_run_diamond_with_uncaptured_random_a(
                     "df = df.with_columns(pl.lit(R).alias('r'))",
                 ),
             ),
-            ("B", NodeType.POLARS, _code("df = A.select('id', pl.col('r').alias('rb'))")),
+            (
+                "B",
+                NodeType.POLARS,
+                _code("df = A.select('id', pl.col('r').alias('rb')).sort('id')"),
+            ),
             ("C", NodeType.POLARS, _code("df = A.select('id', pl.col('r').alias('rc'))")),
             ("D", NodeType.POLARS, _code("df = B.join(C, on='id', how='left')")),
             ("T", NodeType.MODELLING, {}),
@@ -550,9 +568,13 @@ def test_capture_records_dependency_closure(project: Path, store: NodeSnapshotSt
         project,
         [
             ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
-            ("A", NodeType.POLARS, _code("df = src.with_columns((pl.col('a') * 2).alias('a2'))")),
+            (
+                "A",
+                NodeType.POLARS,
+                _code("df = src.with_columns((pl.col('a') * 2).alias('a2')).sort('a')"),
+            ),
             ("G", NodeType.POLARS, _code("df = A.sort('a')")),
-            ("X", NodeType.POLARS, _code("df = G.filter(pl.col('a') >= 0)")),
+            ("X", NodeType.POLARS, _code("df = G.filter(pl.col('a') >= 0).sort('a')")),
             ("T", NodeType.MODELLING, {}),
         ],
         [("src", "A"), ("A", "G"), ("G", "X"), ("X", "T")],
@@ -588,7 +610,7 @@ def test_empty_demand_seed_and_capture_keep_row_count(
     cold = _run(graph, store, required={"T": []})
     warm = _run(graph, store, required={"T": []})
 
-    assert set(warm.seeds) == {"B"}
+    assert set(warm.seeds) == {"J"}
     assert cold.frame.select(pl.len()).item() == _ROWS
     assert warm.frame.select(pl.len()).item() == _ROWS
 
@@ -601,8 +623,16 @@ def test_multi_input_modelling_builds_only_selected_branch(
         [
             ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
             ("other", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
-            ("A", NodeType.POLARS, _code("df = src.with_columns((pl.col('a') * 2).alias('a2'))")),
-            ("B", NodeType.POLARS, _code("df = other.with_columns(pl.lit(1).alias('one'))")),
+            (
+                "A",
+                NodeType.POLARS,
+                _code("df = src.with_columns((pl.col('a') * 2).alias('a2')).sort('a2')"),
+            ),
+            (
+                "B",
+                NodeType.POLARS,
+                _code("df = other.with_columns(pl.lit(1).alias('one')).sort('one')"),
+            ),
             ("T", NodeType.MODELLING, {}),
         ],
         [("src", "A"), ("other", "B"), ("A", "T"), ("B", "T")],
@@ -644,7 +674,7 @@ def test_materialisations_a_plan_does_not_build_are_not_admitted(
         [
             ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
             ("S", NodeType.POLARS, _code("df = src.sort('a')")),
-            ("X", NodeType.POLARS, _code("df = S.filter(pl.col('a') >= 0)")),
+            ("X", NodeType.POLARS, _code("df = S.filter(pl.col('a') >= 0).sort('a')")),
             ("T", NodeType.MODELLING, {}),
         ],
         [("src", "S"), ("S", "X"), ("X", "T")],
@@ -710,7 +740,7 @@ def _captured_source_graph(project: Path) -> PipelineGraph:
                 NodeType.DATA_INPUT,
                 _parquet(
                     project / "quotes.parquet",
-                    "df = df.with_columns((pl.col('a') + 1).alias('a1'))",
+                    "df = df.with_columns((pl.col('a') + 1).alias('a1')).sort('a1')",
                 ),
             ),
             ("T", NodeType.MODELLING, {}),
@@ -1026,7 +1056,7 @@ def test_model_score_quota_rejection_keeps_scored_file(
 def test_best_effort_capture_column_unavailable_is_dropped(
     project: Path, store: NodeSnapshotStore
 ) -> None:
-    graph = _join_graph(project)
+    graph = _join_graph(project, b_code="df = J.filter(pl.col('a') >= 0).sort('a')")
     run = _run(graph, store, required={"T": ["a"]}, capture_columns_by_node={"B": ["absent"]})
 
     assert run.captures["B"]["columns"] == ["a"]
@@ -1043,7 +1073,7 @@ def test_strict_column_missing_fails(project: Path, store: NodeSnapshotStore) ->
 def test_corrupt_latest_generation_fails_the_run(
     project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    graph = _join_graph(project)
+    graph = _join_graph(project, b_code="df = J.filter(pl.col('a') >= 0).sort('a')")
     _run(graph, store, required={"T": ["a"]})
     b_identity = _identity(store, graph, "B")
 
@@ -1071,7 +1101,9 @@ def test_inputs_changed_before_collection_fails(project: Path, store: NodeSnapsh
 def test_inputs_changed_before_publish_keeps_artifact(
     project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    graph = _join_graph(project)
+    graph = _join_graph(
+        project, a_code="df = src.with_columns((pl.col('a') * 2).alias('a2')).sort('a')"
+    )
 
     def rewrite_source() -> None:
         pl.DataFrame({"id": [0], "a": [1], "b": [2], "c": [3]}).write_parquet(
@@ -1100,12 +1132,12 @@ def test_metrics_report_seeds_captures_and_warnings(
         validated = ExecutionMetricsPayload.model_validate(run.metrics).model_dump(mode="json")
         for key in ("shared_snapshot_seeds", "shared_snapshot_captures", "warnings"):
             assert validated[key] == run.metrics[key]
-    b_digest = _identity(store, graph, "B").digest
-    capture = first.captures["B"]
+    j_digest = _identity(store, graph, "J").digest
+    capture = first.captures["J"]
     assert capture == {
-        "node_id": "B",
-        "identity_digest": b_digest,
-        "kind": "consumed",
+        "node_id": "J",
+        "identity_digest": j_digest,
+        "kind": "materialising",
         "outcome": "published",
         "generation_id": capture["generation_id"],
         "columns": ["a"],
@@ -1114,10 +1146,14 @@ def test_metrics_report_seeds_captures_and_warnings(
         "write_staged_inputs": 0,
     }
     assert first.metrics["warnings"] == []
+    assert first.metrics["shared_snapshot_capture_skips"] == [
+        {"node_id": "A", "reason": "slice_transparent_feeder"},
+        {"node_id": "B", "reason": "cheap_segment"},
+    ]
     assert second.metrics["shared_snapshot_seeds"] == [
         {
-            "node_id": "B",
-            "identity_digest": b_digest,
+            "node_id": "J",
+            "identity_digest": j_digest,
             "generation_id": capture["generation_id"],
             "columns": ["a"],
         }
@@ -1271,3 +1307,69 @@ def test_lazy_run_join_capture_is_chunked_into_parts(
         run.frame.select(["id", "alpha", "d"]).sort("id"),
         expected.sort("id"),
     )
+
+
+def test_metrics_list_skipped_capture_points(project: Path, store: NodeSnapshotStore) -> None:
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("A", NodeType.POLARS, _code("df = src.select('id', 'a', 'b')")),
+            ("C1", NodeType.POLARS, _code("df = A.select('id', 'a')")),
+            ("C2", NodeType.POLARS, _code("df = A.select('id', 'b')")),
+            ("D1", NodeType.POLARS, _code("df = C1.sort('a')")),
+            ("D2", NodeType.POLARS, _code("df = C2.sort('b')")),
+            ("T", NodeType.POLARS, _code("df = D1.join(D2, on='id')")),
+        ],
+        [
+            ("src", "A"),
+            ("A", "C1"),
+            ("A", "C2"),
+            ("C1", "D1"),
+            ("C2", "D2"),
+            ("D1", "T"),
+            ("D2", "T"),
+        ],
+    )
+    context = _context(ExecutionProfile.TRAINING_PREP)
+    run = _run(graph, store, context=context)
+
+    assert run.metrics["shared_snapshot_capture_skips"] == [
+        {"node_id": "A", "reason": "cheap_segment"},
+    ]
+    assert "A" not in run.captures
+
+    evidence = context.worker_evidence()
+    fresh = _context(ExecutionProfile.TRAINING_PREP)
+    fresh.adopt_worker_evidence(evidence)
+    assert (
+        fresh.metrics_payload(status="completed")["shared_snapshot_capture_skips"]
+        == run.metrics["shared_snapshot_capture_skips"]
+    )
+
+
+def test_bounded_run_over_cheap_consumed_segment_reads_it_directly_and_next_run_recomputes(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("F", NodeType.POLARS, _code("df = src.filter(pl.col('a') >= 0)")),
+            ("T", NodeType.MODELLING, {}),
+        ],
+        [("src", "F"), ("F", "T")],
+    )
+    first = _run(graph, store, required={"T": ["a"]})
+    assert first.captures == {}
+    assert first.seeds == {}
+    assert first.metrics["shared_snapshot_capture_skips"] == [
+        {"node_id": "F", "reason": "cheap_segment"},
+    ]
+    assert first.calls["src"] == 1
+
+    second = _run(graph, store, required={"T": ["a"]})
+    assert second.seeds == {}
+    assert second.captures == {}
+    assert second.calls["src"] == 1
+    assert_frame_equal(second.frame, first.frame)

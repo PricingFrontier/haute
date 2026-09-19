@@ -62,7 +62,7 @@ def _graph(project: Path, *, with_training: bool = False) -> dict[str, Any]:
             (
                 "B",
                 "polars",
-                {"code": "df = J.with_columns((pl.col('a') + pl.col('d')).alias('e'))"},
+                {"code": "df = J.with_columns((pl.col('a') + pl.col('d')).alias('e')).sort('id')"},
             ),
             (
                 "out",

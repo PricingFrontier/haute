@@ -209,6 +209,12 @@ export interface SharedSnapshotCapture {
   write_staged_inputs?: number | null
 }
 
+/** A candidate capture point skipped under cost gating. */
+export interface SharedSnapshotCaptureSkip {
+  node_id: string
+  reason: "cheap_segment" | "slice_transparent_feeder"
+}
+
 /** A non-fatal condition an execution continued past. */
 export interface ExecutionWarning {
   code: string
@@ -267,6 +273,7 @@ export interface ExecutionMetrics {
   input_preparation: InputPreparationRecord[]
   shared_snapshot_seeds: SharedSnapshotSeed[]
   shared_snapshot_captures: SharedSnapshotCapture[]
+  shared_snapshot_capture_skips: SharedSnapshotCaptureSkip[]
   warnings: ExecutionWarning[]
 }
 

@@ -11,10 +11,12 @@ Polars lazy evaluation of the same operations. Each graph places the operator
 mid-graph, with a row-local node downstream, so the boundary is genuinely
 materialised inside a longer plan rather than at the sink. Each test also
 asserts through the executed graph's own diagnostic that the boundary was
-planned at that node, and that the run -- executed under a seed plan, as every
-bounded caller runs -- really captured that node's frame into the shared
-snapshot store as a materialising capture, so none of them can pass on a
-non-boundary path, or on a boundary that silently stayed lazy.
+planned at that node: a boundary whose operator is costly to recompute is
+captured as a materialising capture, and a cheap one is planned as a boundary
+but captured only where the graph makes it a structural capture point, so each
+test proves the boundary was planned and the frame equals plain Polars, and none
+of them can pass on a non-boundary path, or on a boundary that silently stayed
+lazy.
 
 The four properties, per the roadmap acceptance:
 
@@ -37,6 +39,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 import pytest
@@ -45,6 +48,7 @@ from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._native_memory_limit import native_memory_backend_scope
 from haute._node_snapshots import NodeSnapshotStore
+from haute._polars_operations import OperationReceiver, recompute_cost
 from haute._seed_plans import CaptureKind, SeedPlanRequest, open_seed_plan
 from haute.execution import execute_lazy_graph
 from haute.executor import _build_node_fn
@@ -174,8 +178,8 @@ def _boundary_graph(sources: dict[str, Path], operator_code: str):
 
 def _execute(
     graph, context: ExecutionContext, root: Path
-) -> tuple[pl.DataFrame, tuple[CaptureKind, int] | None]:
-    """Run *graph* to ``tail`` under a seed plan; return it and the boundary's capture."""
+) -> tuple[pl.DataFrame, tuple[CaptureKind, int] | None, Any]:
+    """Run *graph* to ``tail`` under a seed plan; return it, the boundary's capture, and plan."""
     store = NodeSnapshotStore(root)
     request = SeedPlanRequest(
         graph=graph,
@@ -195,7 +199,7 @@ def _execute(
         frame = frames["tail"]
         collected = frame.collect() if isinstance(frame, pl.LazyFrame) else frame
         captured = _captured_boundary(store, plan)
-    return collected, captured
+    return collected, captured, plan
 
 
 def _captured_boundary(store: NodeSnapshotStore, plan) -> tuple[CaptureKind, int] | None:
@@ -208,18 +212,38 @@ def _captured_boundary(store: NodeSnapshotStore, plan) -> tuple[CaptureKind, int
     )
 
 
-def _assert_boundary_was_captured(captured: tuple[CaptureKind, int] | None) -> None:
-    """The boundary node's frame really was written, as a materialising capture.
+def _assert_boundary_was_captured(
+    captured: tuple[CaptureKind, int] | None,
+    receiver: OperationReceiver,
+    name: str,
+    *,
+    plan: Any = None,
+) -> None:
+    """The boundary was captured according to its recompute cost.
 
-    A materialising operation is a capture point in its own right, whatever its
-    parents, so the capture kind proves the node was materialised *because* of
-    its operator; that the operator was planned as a boundary is
-    ``_assert_boundary_was_planned``'s claim.
+    A boundary whose operator is costly to recompute is captured as a
+    materialising capture with a non-empty generation. A cheap boundary is
+    planned as a boundary and captured only where the graph makes it a
+    structural capture point (such as having multiple distinct parents).
     """
-    assert captured is not None, "the boundary node was not captured"
-    kind, size_bytes = captured
-    assert kind is CaptureKind.MATERIALISING
-    assert size_bytes > 0
+    rec = OperationReceiver(receiver) if isinstance(receiver, str) else receiver
+    costly = recompute_cost(rec, name)
+    if costly:
+        assert captured is not None, (
+            f"the boundary node was not captured for costly operator {receiver}.{name}"
+        )
+        kind, size_bytes = captured
+        assert kind is CaptureKind.MATERIALISING
+        assert size_bytes > 0
+    else:
+        assert captured is not None, (
+            f"the boundary node was not captured for cheap operator {receiver}.{name}"
+        )
+        kind, size_bytes = captured
+        assert kind is CaptureKind.STRUCTURAL
+        assert size_bytes > 0
+        if plan is not None:
+            assert "op" not in plan.decision.skipped_captures
 
 
 def _assert_boundary_was_planned(context: ExecutionContext, operator: str) -> None:
@@ -249,6 +273,7 @@ def _run_single_input(
     operator_code: str,
     operator: str,
     *,
+    receiver: OperationReceiver = "frame",
     native_cap: bool = False,
 ) -> tuple[pl.DataFrame, pl.LazyFrame]:
     """Execute a one-input boundary graph and return (planned, plain source)."""
@@ -270,12 +295,12 @@ def _run_single_input(
         # ``explode`` expands rows by a data-dependent factor, so it has no
         # estimate; a hard worker cap is the documented way to run it anyway.
         with native_memory_backend_scope("rlimit"):
-            planned, captured = _execute(graph, context, tmp_path)
+            planned, captured, plan = _execute(graph, context, tmp_path)
     else:
-        planned, captured = _execute(graph, context, tmp_path)
+        planned, captured, plan = _execute(graph, context, tmp_path)
 
     _assert_boundary_was_planned(context, operator)
-    _assert_boundary_was_captured(captured)
+    _assert_boundary_was_captured(captured, receiver, operator, plan=plan)
     return planned, pl.scan_parquet(left_path)
 
 
@@ -336,7 +361,7 @@ def test_neighbouring_row_expression_boundaries_preserve_ordering_and_schema(
     tmp_path: Path, operator: str, code: str, expression: pl.Expr
 ) -> None:
     """Proves: ordering, schema, and the neighbouring-row values."""
-    planned, source = _run_single_input(tmp_path, code, operator)
+    planned, source = _run_single_input(tmp_path, code, operator, receiver="expr")
 
     expected = _tail(source.with_columns(expression)).collect()
     _assert_same_schema(planned, expected)
@@ -410,7 +435,7 @@ def test_interpolate_streams_and_is_not_planned_as_a_boundary(tmp_path: Path) ->
         profile=ExecutionProfile.LAZY_SINK,
     )
 
-    planned, _captured = _execute(graph, context, tmp_path)
+    planned, _captured, _plan = _execute(graph, context, tmp_path)
 
     result = context.projection_plan
     assert result is not None
@@ -434,7 +459,7 @@ def test_interpolate_streams_and_is_not_planned_as_a_boundary(tmp_path: Path) ->
 def test_over_boundary_preserves_values_row_count_and_schema(tmp_path: Path) -> None:
     """Proves: row multiplicity, schema (and the window values themselves)."""
     code = "df = src.with_columns(pl.col('premium').sum().over('segment').alias('segment_total'))"
-    planned, source = _run_single_input(tmp_path, code, "over")
+    planned, source = _run_single_input(tmp_path, code, "over", receiver="expr")
 
     expected = _tail(
         source.with_columns(pl.col("premium").sum().over("segment").alias("segment_total"))
@@ -456,6 +481,7 @@ def _run_two_input(
     *,
     right_writer=_write_right,
     right_name: str = "right.parquet",
+    receiver: OperationReceiver = "frame",
 ) -> tuple[pl.DataFrame, pl.LazyFrame, pl.LazyFrame]:
     left_path = tmp_path / "left.parquet"
     right_path = tmp_path / right_name
@@ -467,10 +493,10 @@ def _run_two_input(
         profile=ExecutionProfile.LAZY_SINK,
     )
 
-    planned, captured = _execute(graph, context, tmp_path)
+    planned, captured, plan = _execute(graph, context, tmp_path)
 
     _assert_boundary_was_planned(context, operator)
-    _assert_boundary_was_captured(captured)
+    _assert_boundary_was_captured(captured, receiver, operator, plan=plan)
     return planned, pl.scan_parquet(left_path), pl.scan_parquet(right_path)
 
 

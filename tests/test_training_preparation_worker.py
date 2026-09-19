@@ -412,6 +412,7 @@ class TestInChildFailureOutcomes:
             "input_preparation": [],
             "shared_snapshot_seeds": [],
             "shared_snapshot_captures": [],
+            "shared_snapshot_capture_skips": [],
             "warnings": [],
         }
         assert run.prepared_admission_releases() == 1

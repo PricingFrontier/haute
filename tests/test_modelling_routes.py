@@ -3415,7 +3415,7 @@ class TestDispersionEstimateEndpoint:
                 "data": {
                     "label": "prepared",
                     "nodeType": "polars",
-                    "config": {"code": "df = source"},
+                    "config": {"code": 'df = source.sort("x1")'},
                 },
             }
         )

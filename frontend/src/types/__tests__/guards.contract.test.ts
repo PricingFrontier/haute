@@ -669,6 +669,9 @@ describe("API response guards", () => {
             write_staged_inputs: 0,
           },
         ],
+        shared_snapshot_capture_skips: [
+          { node_id: "select_1", reason: "cheap_segment" },
+        ],
         warnings: [{ code: "snapshot_capture_skipped", node_id: "banding", reason: "quota" }],
       },
     })
@@ -681,6 +684,9 @@ describe("API response guards", () => {
     expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_strategy).toBe("chunked_join")
     expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_parts).toBe(20)
     expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_staged_inputs).toBe(0)
+    expect(parsed.execution_metrics?.shared_snapshot_capture_skips).toEqual([
+      { node_id: "select_1", reason: "cheap_segment" },
+    ])
     expect(parsed.execution_metrics?.warnings).toEqual([
       { code: "snapshot_capture_skipped", node_id: "banding", reason: "quota" },
     ])
@@ -740,6 +746,7 @@ describe("API response guards", () => {
 
     expect(parsed.execution_metrics?.shared_snapshot_seeds).toEqual([])
     expect(parsed.execution_metrics?.shared_snapshot_captures).toEqual([])
+    expect(parsed.execution_metrics?.shared_snapshot_capture_skips).toEqual([])
     expect(parsed.execution_metrics?.warnings).toEqual([])
   })
 
@@ -762,6 +769,23 @@ describe("API response guards", () => {
         },
       }),
     ).toThrow(/outcome/i)
+  })
+
+  it("rejects a shared snapshot capture skip with an unknown reason", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_capture_skips: [
+            {
+              node_id: "banding",
+              reason: "unknown_reason",
+            },
+          ],
+        },
+      }),
+    ).toThrow(/reason/i)
   })
 
   it("makes malformed execution-strategy diagnostics unavailable without rejecting metrics", () => {

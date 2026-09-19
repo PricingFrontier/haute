@@ -58,6 +58,7 @@ export function makeExecutionMetricsFixture(overrides: Partial<ExecutionMetrics>
     execution_strategy: null,
     shared_snapshot_seeds: [],
     shared_snapshot_captures: [],
+    shared_snapshot_capture_skips: [],
     warnings: [],
     admission: {
       admitted: true,

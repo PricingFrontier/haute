@@ -1704,3 +1704,79 @@ def test_preview_join_capture_is_chunked_into_parts_and_downstream_reads_them(
     assert _plan_of(second_body) == [("join_node", "seeded")]
     second_rows = pl.DataFrame(second_body["preview"]).sort("identifier")
     assert_frame_equal(second_rows.select(expected_sorted.columns), expected_sorted)
+
+
+_MAP_ELEMENTS_CALLBACK_CALLS: list[Any] = []
+
+
+def _record_map_elements_call(value: Any) -> Any:
+    _MAP_ELEMENTS_CALLBACK_CALLS.append(value)
+    return value
+
+
+def test_preview_no_longer_captures_explode_or_a_limited_udf_but_still_captures_joins(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    row_limit = 3
+
+    # Explode node: preview captures nothing and records no skips
+    explode_graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "policies.parquet")),
+            (
+                "E",
+                NodeType.POLARS,
+                _code("df = src.with_columns(pl.lit([1, 2]).alias('k')).explode('k')"),
+            ),
+        ],
+        [("src", "E")],
+    )
+    p_explode = _preview(explode_graph, store, "E", row_limit=row_limit)
+    assert p_explode.captures == {}
+    assert p_explode.metrics.get("shared_snapshot_capture_skips", []) == []
+    assert "E" not in p_explode.result.errors
+    expected_explode = (
+        pl.read_parquet(project / "policies.parquet")
+        .with_columns(pl.lit([1, 2]).alias("k"))
+        .explode("k")
+        .head(row_limit)
+    )
+    assert p_explode.rows("E").equals(expected_explode)
+
+    # Map elements node: preview captures nothing and records no skips,
+    # and callback runs exactly row_limit times.
+    _MAP_ELEMENTS_CALLBACK_CALLS.clear()
+    map_graph = PipelineGraph(
+        nodes=[
+            _node("src", NodeType.DATA_INPUT, _parquet(project / "policies.parquet")),
+            _node(
+                "M",
+                NodeType.POLARS,
+                _code("df = src.with_columns(pl.col('a').map_elements(cb, return_dtype=pl.Int64))"),
+            ),
+        ],
+        edges=[GraphEdge(id="e0", source="src", target="M")],
+        preamble=(
+            "import polars as pl\n"
+            "from tests.test_preview_snapshot_seeding import _record_map_elements_call as cb\n"
+        ),
+        source_file=str(project / "main.py"),
+    )
+    p_map = _preview(map_graph, store, "M", row_limit=row_limit)
+    assert p_map.captures == {}
+    assert p_map.metrics.get("shared_snapshot_capture_skips", []) == []
+    assert len(_MAP_ELEMENTS_CALLBACK_CALLS) == row_limit
+    assert "M" not in p_map.result.errors
+    expected_map = (
+        pl.read_parquet(project / "policies.parquet")
+        .with_columns(pl.col("a").map_elements(lambda x: x, return_dtype=pl.Int64))
+        .head(row_limit)
+    )
+    assert p_map.rows("M").equals(expected_map)
+
+    # Join node: preview still captures the join
+    join_graph = _join_graph(project)
+    p_join = _preview(join_graph, store, "banding", row_limit=row_limit)
+    assert "join" in p_join.captures
+    assert p_join.captures["join"]["outcome"] == "published"

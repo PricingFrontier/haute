@@ -121,7 +121,11 @@ def _online_chain(project: Path) -> dict[str, Any]:
         project,
         [
             ("src", "dataInput", _data_input(project, "quotes.parquet")),
-            ("D", "polars", {"code": "df = src.with_columns(pl.col('volume') * 1.0)"}),
+            (
+                "D",
+                "polars",
+                {"code": "df = src.with_columns(pl.col('volume') * 1.0).sort('quote_id')"},
+            ),
             ("opt", "optimiser", _online("D")),
         ],
         [("src", "D"), ("D", "opt")],
@@ -134,9 +138,17 @@ def _ratebook_graph(project: Path) -> dict[str, Any]:
         project,
         [
             ("src", "dataInput", _data_input(project, "quotes.parquet")),
-            ("D", "polars", {"code": "df = src.with_columns(pl.col('volume') * 1.0)"}),
+            (
+                "D",
+                "polars",
+                {"code": "df = src.with_columns(pl.col('volume') * 1.0).sort('quote_id')"},
+            ),
             ("bands", "dataInput", _data_input(project, "attrs.parquet")),
-            ("B", "polars", {"code": "df = bands.select('quote_id', 'territory')"}),
+            (
+                "B",
+                "polars",
+                {"code": "df = bands.select('quote_id', 'territory').sort('quote_id')"},
+            ),
             ("opt", "optimiser", _ratebook("D", "B")),
         ],
         [("src", "D"), ("D", "opt"), ("bands", "B"), ("B", "opt")],
@@ -319,7 +331,11 @@ def test_ratebook_factors_from_separate_api_input(
         project,
         [
             ("src", "dataInput", _data_input(project, "quotes.parquet")),
-            ("D", "polars", {"code": "df = src.with_columns(pl.col('volume') * 1.0)"}),
+            (
+                "D",
+                "polars",
+                {"code": "df = src.with_columns(pl.col('volume') * 1.0).sort('quote_id')"},
+            ),
             ("api", "apiInput", api_config),
             ("opt", "optimiser", _ratebook("D", "rating_factors")),
         ],
@@ -383,7 +399,11 @@ def test_streaming_auto_range_capture_serves_the_solve(
         project,
         [
             ("src", "dataInput", _data_input(project, "per_quote.parquet")),
-            ("base", "polars", {"code": "df = src.with_columns(pl.col('volume') * 1.0)"}),
+            (
+                "base",
+                "polars",
+                {"code": "df = src.with_columns(pl.col('volume') * 1.0).sort('quote_id')"},
+            ),
             (
                 "scenario",
                 "scenarioExpander",

@@ -911,6 +911,7 @@ class ExecutionContext:
     _input_preparation: list[Any] = field(default_factory=list, init=False)
     _shared_snapshot_seeds: list[Any] = field(default_factory=list, init=False)
     _shared_snapshot_captures: list[Any] = field(default_factory=list, init=False)
+    _shared_snapshot_capture_skips: list[Any] = field(default_factory=list, init=False)
     _preview_seed_plan: tuple[Any, ...] = field(default=(), init=False)
     _execution_warnings: list[dict[str, str | None]] = field(default_factory=list, init=False)
     _cache_proof_miss_reason_counts: dict[ExecutionCacheProofMissReason, int] = field(
@@ -1235,6 +1236,11 @@ class ExecutionContext:
         with self._evidence_lock:
             self._shared_snapshot_captures.append(record)
 
+    def record_shared_snapshot_capture_skip(self, record: Any) -> None:
+        """Record one candidate capture point skipped under cost gating."""
+        with self._evidence_lock:
+            self._shared_snapshot_capture_skips.append(record)
+
     def record_preview_seed_plan(self, generations: tuple[Any, ...]) -> None:
         """Record the snapshot generations a preview's rows were computed from."""
         with self._evidence_lock:
@@ -1262,6 +1268,9 @@ class ExecutionContext:
                 "shared_snapshot_captures": [
                     dict(record.to_dict()) for record in self._shared_snapshot_captures
                 ],
+                "shared_snapshot_capture_skips": [
+                    dict(record.to_dict()) for record in self._shared_snapshot_capture_skips
+                ],
                 "warnings": [dict(warning) for warning in self._execution_warnings],
             }
 
@@ -1278,6 +1287,8 @@ class ExecutionContext:
                 self._shared_snapshot_seeds.append(_EvidenceRecord(dict(payload)))
             for payload in evidence.get("shared_snapshot_captures", ()):
                 self._shared_snapshot_captures.append(_EvidenceRecord(dict(payload)))
+            for payload in evidence.get("shared_snapshot_capture_skips", ()):
+                self._shared_snapshot_capture_skips.append(_EvidenceRecord(dict(payload)))
             for warning in evidence.get("warnings", ()):
                 self._execution_warnings.append(
                     {
@@ -1344,6 +1355,9 @@ class ExecutionContext:
             ]
             payload["shared_snapshot_captures"] = [
                 record.to_dict() for record in self._shared_snapshot_captures
+            ]
+            payload["shared_snapshot_capture_skips"] = [
+                record.to_dict() for record in self._shared_snapshot_capture_skips
             ]
             payload["warnings"] = [dict(warning) for warning in self._execution_warnings]
         projection_plan = self.projection_plan

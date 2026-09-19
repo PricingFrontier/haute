@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Literal
 import polars as pl
 
 import haute.projection as projection_planner
+from haute._api_input_schema import is_json_api_input_path
 from haute._builders import (
     PASS_THROUGH_NODE_TYPES,
     pass_through_selected_edge,
@@ -57,6 +58,7 @@ from haute._node_snapshots import (
     snapshot_read_classes,
     snapshot_write_class,
 )
+from haute._registry import NODE_REGISTRY
 from haute._source_cache import (
     SourceCacheGeneration,
     SourceCacheGenerationMissingError,
@@ -86,6 +88,10 @@ class CaptureKind(StrEnum):
     MATERIALISING = "materialising"
     MODEL_SCORE = "model_score"
     CONSUMED = "consumed"
+
+
+SkipReason = Literal["cheap_segment", "slice_transparent_feeder"]
+"""Why an eligible capture point was not captured."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +160,7 @@ class SeedPlanDecision:
     profile: ExecutionProfile
     seeds: Mapping[str, SeedDecision]
     captures: Mapping[str, CaptureDecision]
+    skipped_captures: Mapping[str, SkipReason]
     executed_node_ids: frozenset[str]
     pass_through_edges: Mapping[str, GraphEdge]
     planning_required_columns: Mapping[str, frozenset[str] | AllExcept]
@@ -184,6 +191,20 @@ class SharedSnapshotSeedRecord:
             "identity_digest": self.identity_digest,
             "generation_id": self.generation_id,
             "columns": self.columns.to_json(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SharedSnapshotCaptureSkipRecord:
+    """Execution evidence: one candidate capture point skipped under cost gating."""
+
+    node_id: str
+    reason: SkipReason
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "node_id": self.node_id,
+            "reason": self.reason,
         }
 
 
@@ -315,6 +336,7 @@ class _Round:
     seeds: dict[str, SeedDecision]
     executed: set[str]
     captures: dict[str, CaptureKind]
+    skips: dict[str, SkipReason]
     required: dict[str, frozenset[str] | AllExcept]
     needed: Mapping[str, Demand]
 
@@ -372,11 +394,12 @@ class _Resolver:
         self.effective_node_map: Mapping[str, GraphNode] = resolve_instance_nodes(
             self.prepared.graph
         ).node_map
-        self.materialising = projection_planner.materialising_operators_by_node(
+        self.recompute = projection_planner.recompute_facts_by_node(
             self.order,
             self.effective_node_map,
             relevant_edges=plan.relevant_edges,
             submodels=plan.submodels,
+            preamble=self.prepared.graph.preamble or "",
         )
         self.caller_required = projection_planner.normalise_required_columns_by_node(
             request.required_columns_by_node, self.order
@@ -531,21 +554,94 @@ class _Resolver:
             stack.extend(edge.source for edge in self.effective_edges(node_id))
         return seeds, executed
 
-    def capture_points(self, executed: set[str]) -> dict[str, CaptureKind]:
+    def distinct_inputs(self, node_id: str) -> int:
+        """The number of distinct (edge.source, edge.sourceHandle) among effective edges."""
+        return len({(edge.source, edge.sourceHandle) for edge in self.effective_edges(node_id)})
+
+    def is_join_point(self, node_id: str) -> bool:
+        """Whether the node is an Edge Join or has more than one distinct input."""
+        return (
+            self.node_map[node_id].data.nodeType == NodeType.EDGE_JOIN
+            or self.distinct_inputs(node_id) > 1
+        )
+
+    def own_facts(self, node_id: str) -> tuple[bool, bool]:
+        """Return (cheap, slice_transparent) for node_id itself."""
+        node_type = self.node_map[node_id].data.nodeType
+        if node_type in PASS_THROUGH_NODE_TYPES:
+            return True, True
+        if node_id in self.recompute:
+            facts = self.recompute[node_id]
+            return facts.cost == "cheap", facts.slice_transparent
+        if node_type in (NodeType.DATA_INPUT, NodeType.CONSTANT):
+            return True, True
+        if node_type == NodeType.API_INPUT:
+            cfg = self.effective_node_map[node_id].data.config
+            path = cfg.get("path") if isinstance(cfg, dict) else None
+            if isinstance(path, str) and is_json_api_input_path(path):
+                return True, True
+            return False, False
+        return False, False
+
+    def segment_facts(
+        self,
+        node_id: str,
+        executed: set[str],
+        captures: dict[str, CaptureKind],
+        memo: dict[str, tuple[bool, bool]],
+    ) -> tuple[bool, bool]:
+        """Return (cheap, slice_transparent) for the upstream segment ending at node_id."""
+        cached = memo.get(node_id)
+        if cached is not None:
+            return cached
+        own_cheap, own_trans = self.own_facts(node_id)
+        cheap = own_cheap
+        trans = own_trans
+        for edge in self.effective_edges(node_id):
+            p = edge.source
+            if p not in executed or p in captures:
+                p_cheap, p_trans = True, True
+            else:
+                p_cheap, p_trans = self.segment_facts(p, executed, captures, memo)
+            cheap = cheap and p_cheap
+            trans = trans and p_trans
+        memo[node_id] = (cheap, trans)
+        return cheap, trans
+
+    def capture_points(
+        self, executed: set[str]
+    ) -> tuple[dict[str, CaptureKind], dict[str, SkipReason]]:
+        """Decide full-data materialisation capture points and skipped capture reasons.
+
+        Preview requests capture registered full-input operations and multi-input
+        join points without recording skips. Bounded requests cost-gate captures
+        using recompute facts and upstream segment analysis under the precedence:
+        1. batch Model Score (MODEL_SCORE);
+        2. costly code node whose recompute_cost is not declared "costly" in the
+           registry (MATERIALISING);
+        3. join point (EDGE_JOIN or distinct effective inputs > 1) (STRUCTURAL);
+        4. segment facts:
+           - not cheap: CONSUMED if consumed producer, else STRUCTURAL if
+             fans out or feeds a join, else nothing;
+           - cheap and slice-transparent: no capture; skip reason is
+             "slice_transparent_feeder" if feeds a join else "cheap_segment";
+           - cheap, not slice-transparent: STRUCTURAL if feeds a join; else
+             skip reason is "cheap_segment" if consumed or fans out.
+        """
         children: dict[str, set[str]] = {node_id: set() for node_id in executed}
-        parents: dict[str, set[str]] = {}
         for node_id in executed:
-            node_parents = {edge.source for edge in self.effective_edges(node_id)}
-            parents[node_id] = node_parents
-            for parent_id in node_parents:
-                if parent_id in children:
-                    children[parent_id].add(node_id)
+            for edge in self.effective_edges(node_id):
+                if edge.source in children:
+                    children[edge.source].add(node_id)
         consumed_producers = {
             producer
             for producer, port in (self.producer(node_id) for node_id in self.consumed)
             if port is None
         }
         captures: dict[str, CaptureKind] = {}
+        skips: dict[str, SkipReason] = {}
+        memo: dict[str, tuple[bool, bool]] = {}
+
         for node_id in self.order:
             if (
                 node_id not in executed
@@ -555,30 +651,52 @@ class _Resolver:
             ):
                 continue
             if self.preview:
-                # A preview's row limit already stops every other read early;
-                # only a join or a materialising operation reads its full input.
-                edges = self.effective_edges(node_id)
-                inputs = {(edge.source, edge.sourceHandle) for edge in edges}
-                if node_id in self.materialising:
+                recompute_fact = self.recompute.get(node_id)
+                if recompute_fact is not None and recompute_fact.full_input_work:
                     captures[node_id] = CaptureKind.MATERIALISING
-                elif len(inputs) > 1:
+                elif self.is_join_point(node_id):
                     captures[node_id] = CaptureKind.STRUCTURAL
                 continue
-            node_parents = parents[node_id]
-            is_source = not self.prepared.incoming_edges_by_target.get(node_id)
-            feeds_join = any(len(parents.get(child, ())) > 1 for child in children[node_id])
-            structural = not is_source and (
-                len(node_parents) > 1 or len(children[node_id]) > 1 or feeds_join
-            )
-            if node_id in consumed_producers:
-                captures[node_id] = CaptureKind.CONSUMED
-            elif self.batch_model_score(node_id):
+
+            node_type = self.node_map[node_id].data.nodeType
+            recompute_fact = self.recompute.get(node_id)
+            reg_entry = NODE_REGISTRY.get(node_type)
+            reg_cost = reg_entry.recompute_cost if reg_entry is not None else None
+
+            if self.batch_model_score(node_id):
                 captures[node_id] = CaptureKind.MODEL_SCORE
-            elif node_id in self.materialising:
+            elif (
+                recompute_fact is not None
+                and recompute_fact.cost == "costly"
+                and reg_cost != "costly"
+            ):
                 captures[node_id] = CaptureKind.MATERIALISING
-            elif structural:
+            elif self.is_join_point(node_id):
                 captures[node_id] = CaptureKind.STRUCTURAL
-        return captures
+            else:
+                consumed = node_id in consumed_producers
+                node_children = children.get(node_id, ())
+                fans_out = len(node_children) > 1
+                feeds_join = any(self.is_join_point(child) for child in node_children)
+                cheap, transparent = self.segment_facts(node_id, executed, captures, memo)
+
+                if not cheap:
+                    if consumed:
+                        captures[node_id] = CaptureKind.CONSUMED
+                    elif fans_out or feeds_join:
+                        captures[node_id] = CaptureKind.STRUCTURAL
+                elif transparent:
+                    if consumed or fans_out or feeds_join:
+                        skips[node_id] = (
+                            "slice_transparent_feeder" if feeds_join else "cheap_segment"
+                        )
+                else:
+                    if feeds_join:
+                        captures[node_id] = CaptureKind.STRUCTURAL
+                    elif consumed or fans_out:
+                        skips[node_id] = "cheap_segment"
+
+        return captures, skips
 
     # ------------------------------------------------------------- rounds
 
@@ -592,7 +710,7 @@ class _Resolver:
         needed = needed0
         while True:
             seeds, executed = self.walk(needed, dropped=dropped)
-            captures = self.capture_points(executed)
+            captures, skips = self.capture_points(executed)
             required: dict[str, frozenset[str] | AllExcept] = {
                 node_id: (demand if isinstance(demand, AllExcept) else frozenset(demand))
                 for node_id, demand in self.caller_required.items()
@@ -622,7 +740,7 @@ class _Resolver:
                     node_id: replace(seed, demand=demand_columns(negotiated.get(node_id)))
                     for node_id, seed in seeds.items()
                 }
-                return _Round(seeds, executed, captures, required, negotiated)
+                return _Round(seeds, executed, captures, skips, required, negotiated)
             dropped |= uncovered
             needed = negotiated
 
@@ -710,6 +828,7 @@ class _Resolver:
             profile=ExecutionProfile(request.profile),
             seeds=dict(state.seeds),
             captures=captures,
+            skipped_captures=dict(state.skips),
             executed_node_ids=frozenset(state.executed),
             pass_through_edges=pass_through_edges,
             planning_required_columns=dict(state.required),
@@ -758,8 +877,10 @@ class _ListedResolver(_Resolver):
             dependencies=dict(described.dependencies),
         )
 
-    def capture_points(self, executed: set[str]) -> dict[str, CaptureKind]:
-        return {}
+    def capture_points(
+        self, executed: set[str]
+    ) -> tuple[dict[str, CaptureKind], dict[str, SkipReason]]:
+        return {}, {}
 
 
 def resolve_seed_plan(request: SeedPlanRequest, *, store: NodeSnapshotStore) -> SeedPlanDecision:

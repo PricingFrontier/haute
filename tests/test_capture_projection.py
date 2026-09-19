@@ -1086,11 +1086,21 @@ def _reads_of(graph: PipelineGraph) -> dict[str, list[str]]:
 def _fan_out_to_both(
     mid: GraphNode, left: GraphNode, right: GraphNode, *, reads: dict[str, list[str]]
 ) -> PipelineGraph:
-    """``src → mid → left, right → both``: one target whose lineage fans out at ``mid``."""
+    """``src → pre → mid → left, right → both``: lineage fanning out at ``mid``
+    with a costly segment.
+    """
     return PipelineGraph(
-        nodes=[_source_node("src"), mid, left, right, _both(reads)],
+        nodes=[
+            _source_node("src"),
+            _rating_step_node("costly_pre"),
+            mid,
+            left,
+            right,
+            _both(reads),
+        ],
         edges=[
-            _e("src", mid.id),
+            _e("src", "costly_pre"),
+            _e("costly_pre", mid.id),
             _e(mid.id, left.id),
             _e(mid.id, right.id),
             _e(left.id, "both"),
@@ -1177,7 +1187,7 @@ class TestCaptureProjection:
                     lambda: pl.DataFrame({"a": [1, 2, 3], "wide": [4, 5, 6]}).lazy(),
                     True,
                 )
-            if node.id == "mid":
+            if node.id in {"mid", "costly_pre"}:
                 return node.id, lambda frame: frame, False
             if node.id == "both":
                 return node.id, lambda *dfs: pl.concat(dfs), False
@@ -1205,10 +1215,11 @@ class TestCaptureProjection:
         )
         build_fn = _output_select_build_fn({"a": [1], "b": [2], "c": [3], "d": [4], "extra": [5]})
 
-        frames, written, _kinds = _run_planned(
+        frames, written, kinds = _run_planned(
             tmp_path, graph, build_fn, target="both", required=_reads_of(graph)
         )
 
+        assert kinds["mid"] is CaptureKind.STRUCTURAL
         assert set(written["mid"]) == {"a", "b", "c"}
         assert set(frames["both"].columns) == {"a", "b", "c"}
 
@@ -1217,6 +1228,7 @@ class TestCaptureProjection:
         graph = PipelineGraph(
             nodes=[
                 _source_node("src"),
+                _rating_step_node("costly_pre"),
                 _node("mid", NodeType.LIVE_SWITCH),
                 _transform_node("t", code="df = df.with_columns(pl.col('a'))"),
                 _output_node("o1", fields=["a"]),
@@ -1224,7 +1236,8 @@ class TestCaptureProjection:
                 _both({"o1": ["a"], "o2": ["b"]}),
             ],
             edges=[
-                _e("src", "mid"),
+                _e("src", "costly_pre"),
+                _e("costly_pre", "mid"),
                 _e("mid", "t"),
                 _e("t", "o1"),
                 _e("mid", "o2"),
@@ -1234,10 +1247,11 @@ class TestCaptureProjection:
         )
         build_fn = _output_select_build_fn({"a": [1], "b": [2], "c": [3]})
 
-        _frames, written, _kinds = _run_planned(
+        _frames, written, kinds = _run_planned(
             tmp_path, graph, build_fn, target="both", required=_reads_of(graph)
         )
 
+        assert kinds["mid"] is CaptureKind.STRUCTURAL
         # The POLARS child proves it needs only ``a`` while the sibling output
         # needs ``b``; the unrelated ``c`` column is not written.
         assert set(written["mid"]) == {"a", "b"}
@@ -1251,10 +1265,11 @@ class TestCaptureProjection:
             reads={"o1": ["a_band"], "o2": ["a_band", "b"]},
         )
 
-        _frames, written, _kinds = _run_planned(
+        _frames, written, kinds = _run_planned(
             tmp_path, graph, _wide_build_fn, target="both", required=_reads_of(graph)
         )
 
+        assert kinds["band"] is CaptureKind.STRUCTURAL
         assert set(written["band"]) == {"a_band", "b"}
 
     def test_projection_preserves_all_without_a_concrete_demand(self, tmp_path):
@@ -1269,8 +1284,9 @@ class TestCaptureProjection:
 
         # No caller demand: ``both`` is a terminal opaque output, so it reads
         # every column of its branches, and they of ``mid``.
-        _frames, written, _kinds = _run_planned(tmp_path, graph, build_fn, target="both")
+        _frames, written, kinds = _run_planned(tmp_path, graph, build_fn, target="both")
 
+        assert kinds["mid"] is CaptureKind.STRUCTURAL
         assert set(written["mid"]) == {"a", "b", "c"}
 
     def test_projection_with_selected_columns(self, tmp_path):
@@ -1290,10 +1306,11 @@ class TestCaptureProjection:
         )
         build_fn = _output_select_build_fn({"a": [1], "b": [2], "c": [3], "d": [4]})
 
-        _frames, written, _kinds = _run_planned(
+        _frames, written, kinds = _run_planned(
             tmp_path, graph, build_fn, target="both", required=_reads_of(graph)
         )
 
+        assert kinds["mid"] is CaptureKind.STRUCTURAL
         assert set(written["mid"]) == {"a", "b"}
 
     def test_join_capture_projected(self, tmp_path):
@@ -1333,6 +1350,8 @@ class TestCaptureProjection:
         nodes = [
             _source_node("left_src"),
             _source_node("right_src"),
+            _rating_step_node("left_pre"),
+            _rating_step_node("right_pre"),
             _node("left_mid", NodeType.LIVE_SWITCH),
             _node("right_mid", NodeType.LIVE_SWITCH),
             _node(
@@ -1350,8 +1369,10 @@ class TestCaptureProjection:
             _output_node("out", fields=["key", "left_value", "right_value"]),
         ]
         edges = [
-            _e("left_src", "left_mid"),
-            _e("right_src", "right_mid"),
+            _e("left_src", "left_pre"),
+            _e("left_pre", "left_mid"),
+            _e("right_src", "right_pre"),
+            _e("right_pre", "right_mid"),
             _e("left_mid", "j"),
             _e("right_mid", "j"),
             _e("j", "out"),
@@ -1374,8 +1395,11 @@ class TestCaptureProjection:
                 return nid, lambda *dfs, _f=fields: dfs[0].select(_f), False
             return nid, lambda *dfs: dfs[0], False
 
-        frames, written, _kinds = _run_planned(tmp_path, g, build_fn, target="out")
+        frames, written, kinds = _run_planned(tmp_path, g, build_fn, target="out")
 
+        assert kinds["left_mid"] is CaptureKind.STRUCTURAL
+        assert kinds["right_mid"] is CaptureKind.STRUCTURAL
+        assert kinds["j"] is CaptureKind.STRUCTURAL
         assert written["left_mid"] == ["key", "left_value"]
         assert written["right_mid"] == ["key", "right_value"]
         assert written["j"] == ["key", "left_value", "right_value"]
@@ -1402,6 +1426,7 @@ class TestCaptureProjection:
         """A produced column is validated where the capture writes it."""
         nodes = [
             _source_node("src"),
+            _rating_step_node("costly_pre"),
             _banding_node(
                 "mid",
                 factors=[{"column": "a", "outputColumn": "band"}],
@@ -1411,7 +1436,8 @@ class TestCaptureProjection:
             _transform_node("sink", code="df = left.join(right, on='band')"),
         ]
         edges = [
-            _e("src", "mid"),
+            _e("src", "costly_pre"),
+            _e("costly_pre", "mid"),
             _e("mid", "left"),
             _e("mid", "right"),
             _e("left", "sink"),
@@ -1422,7 +1448,7 @@ class TestCaptureProjection:
         def build_fn(node, **_kwargs):
             if node.id == "src":
                 return node.id, lambda: pl.LazyFrame({"a": [1, 2]}), True
-            if node.id == "mid":
+            if node.id in {"mid", "costly_pre"}:
                 # Deliberately violate the registered banding contract so the
                 # capture's runtime-schema assertion is the observer.
                 return node.id, lambda frame: frame, False

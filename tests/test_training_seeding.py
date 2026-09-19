@@ -110,7 +110,7 @@ def _graph(
     }
 
 
-def _chain(project: Path, length: int = 2) -> dict[str, Any]:
+def _chain(project: Path, length: int = 2, *, b_code: str | None = None) -> dict[str, Any]:
     """``src → A → B (→ C) → train``."""
     names = ["A", "B", "C"][:length]
     nodes: list[tuple[str, str, dict[str, Any]]] = [
@@ -120,6 +120,8 @@ def _chain(project: Path, length: int = 2) -> dict[str, Any]:
     parent = "src"
     for index, name in enumerate(names):
         code = f"df = {parent}.with_columns(pl.lit({index}).alias('k{index}'))"
+        if name == "B" and b_code is not None:
+            code = b_code
         nodes.append((name, "polars", {"code": code}))
         edges.append((parent, name))
         parent = name
@@ -339,14 +341,16 @@ def test_second_training_run_seeds_first_runs_captures(
     )
     first = _train(monkeypatch, graph)
     assert first.job["status"] == "running", first.job.get("message")
-    assert set(first.captures) == {"A", "J", "B"}
+    assert set(first.captures) == {"J"}
     assert first.calls["src"] == 1
 
     second = _train(monkeypatch, graph)
 
-    assert set(second.seeds) == {"B"}
+    assert set(second.seeds) == {"J"}
     assert second.captures == {}
-    assert not +second.calls
+    assert second.calls["src"] == 0
+    assert second.calls["other"] == 0
+    assert second.calls["B"] == 1
     assert_frame_equal(second.frame, first.frame)
 
 
@@ -587,7 +591,7 @@ def test_evaluation_preview_seeds_training_capture(
 ) -> None:
     from haute.schemas import TrainEstimateRequest
 
-    graph = _chain(project)
+    graph = _chain(project, b_code="df = A.with_columns(pl.lit(1).alias('k1')).sort('y')")
     _train(monkeypatch, graph)
     b = store.latest_generation(_identity(store, graph, "B"))
     assert b is not None and b.columns == ALL
@@ -608,7 +612,7 @@ def test_training_widens_evaluation_preview_capture(
 ) -> None:
     from haute.schemas import TrainEstimateRequest
 
-    graph = _chain(project)
+    graph = _chain(project, b_code="df = A.with_columns(pl.lit(1).alias('k1')).sort('y')")
     TrainService(JobStore()).evaluation_preview(
         TrainEstimateRequest.model_validate({"graph": graph, "node_id": "train"}), row_limit=None
     )
@@ -850,7 +854,7 @@ def test_parent_plan_failure_is_classified_without_the_child(
 def _csv_chain(project: Path) -> dict[str, Any]:
     """``src (CSV, snapshot-backed) → A → B → train``."""
     pl.read_parquet(project / "quotes.parquet").write_csv(project / "quotes.csv")
-    graph = _chain(project)
+    graph = _chain(project, b_code="df = A.with_columns(pl.lit(1).alias('k1')).sort('id')")
     graph["nodes"][0]["data"]["config"] = {
         "inputType": "file",
         "format": "csv",
@@ -913,7 +917,7 @@ def test_completed_training_job_keeps_preparation_evidence(project: Path) -> Non
     from haute.server import app
 
     client = TestClient(app, raise_server_exceptions=False)
-    graph = _chain(project)
+    graph = _chain(project, b_code="df = A.with_columns(pl.lit(1).alias('k1')).sort('id')")
 
     first = _train_to_completion(client, graph)
     second = _train_to_completion(client, graph)
@@ -960,7 +964,7 @@ def test_concurrent_training_workers_publish_each_capture_once(
             (
                 "B",
                 "polars",
-                {"code": "df = J.with_columns((pl.col('a') + pl.col('d')).alias('e'))"},
+                {"code": "df = J.with_columns((pl.col('a') + pl.col('d')).alias('e')).sort('id')"},
             ),
         ],
         [("src", "J"), ("other", "J"), ("J", "B"), ("B", "train")],
@@ -1151,3 +1155,28 @@ def test_no_bounded_caller_creates_a_checkpoint_directory(
         and not name.startswith("haute_frontier_range_parts_")
     ] == []
     assert stored == []
+
+
+def test_consumed_select_below_a_rating_step_is_captured_and_seeded(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph = _graph(
+        project,
+        [
+            ("src", "dataInput", _data_input(project, "quotes.parquet")),
+            ("R", "ratingStep", {}),
+            ("S", "polars", {"code": "df = R.select('id', 'a', 'b', 'y')"}),
+        ],
+        [("src", "R"), ("R", "S"), ("S", "train")],
+    )
+    first = _train(monkeypatch, graph)
+    assert first.job["status"] == "running", first.job.get("message")
+    assert "R" not in first.captures
+    assert first.captures == {"S": "published"}
+    assert first.calls["src"] == 1
+
+    second = _train(monkeypatch, graph)
+    assert set(second.seeds) == {"S"}
+    assert second.captures == {}
+    assert second.calls["src"] == 0
+    assert_frame_equal(second.frame, first.frame)

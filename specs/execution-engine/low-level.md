@@ -2175,7 +2175,9 @@ present a structural or schema result as execution evidence.
   plan, a cached entry listing a cleared generation not being current, an Edge Join that
   selects and renames its columns computed again — as target or above one — with its
   columns before that shaping, and a requested column the target no longer produces
-  refused with the same 400 as without a plan.
+  refused with the same 400 as without a plan. Previews of an explode node and of a
+  row-limited map_elements node capture nothing and record no skips, with the callback
+  executed exactly row_limit times, while a join node is still captured.
 - **`tests/test_snapshot_seeding.py`** — planned lazy executions: a re-run seeding the
   first run's capture builds nothing upstream and returns an equal frame; disjoint demand
   publishes one widened generation; a narrow upstream snapshot is not seeded and is
@@ -2189,7 +2191,9 @@ present a structural or schema result as execution evidence.
   modelling node never builds its unselected branch; a
   pass-through returns the selected API-input port; best-effort and strict missing
   columns; a corrupt latest generation fails the run; inputs changed before collection
-  and before publication; the metrics payload; and plan exclusivity and matching.
+  and before publication; the metrics payload; and plan exclusivity and matching. A bounded
+  run over a cheap consumed segment reads it directly, captures nothing with skip
+  `cheap_segment`, and a second identical run recomputes it with an equal result.
 - `tests/test_polars_steps.py::test_generated_reshaping_code_stays_inside_the_lineage_model` — the step renderer's dtype selectors, pivot lowering, unpivot and nested windows are shapes the lineage and cardinality models prove (dtype selectors only with an upstream dtype schema).
 - `tests/test_polars_steps.py::test_executor_runs_every_step_kind` and `test_incomplete_steps_fail_at_run_time_naming_the_step` — every low-code step kind executes through `execute_graph` from its materialised code, and unrenderable or unknown-input steps raise the incomplete-transform error with the step number (`_builders._build_transform`).
 - `tests/performance/test_polars_scale_scenario.py` — bounded Polars join/training projection scale generation, modelling-menu demand propagation, and CI-small execution-profile smoke contracts.
@@ -2401,7 +2405,8 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   duplicate keys and `validate='m:1'`, join_asof, over, explode under a native cap): each graph
   materialises the boundary mid-graph through the real lazy executor under admission and a
   seed plan, asserts the boundary was planned (`materialisation_boundaries` and
-  `blocking_operator`) and captured as a `materialising` capture, and compares
+  `blocking_operator`), captured as a `materialising` capture when costly to recompute
+  and captured only where the graph makes it a structural capture point when cheap, and compares
   with plain Polars on ordering (exact in-order equality for the order-defining operators),
   schema (names and dtypes), row multiplicity (heights and multiset equality after a
   deterministic sort), and multi-input column retention (both join ports' columns, suffixes

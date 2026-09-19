@@ -526,7 +526,9 @@ cache lifecycle changes.
   exactly their generations through a refresh, an empty list, expiry on a retired generation, an
   edited lineage, or a point outside it, corruption propagating, a non-covering generation being
   recomputed yet still leased through a clear, and a listed seed built from a recomputed point
-  being dropped.
+  being dropped. Cost-gated capture points cover cheap segment skips for fan-out and consumed nodes, slice-transparent feeders to edge joins, filter feeders captured while filter fan-outs are skipped, costly segments retaining structural and consumed captures across rating steps and unresolvable sources, segments stopping at fresh captures and seeds, multi-port API inputs joined as structural captures, costly code nodes versus cheap boundaries, preview captures restricted to registered full-input work, and immutability of settled captures and skip reasons across handoffs.
+- `tests/test_training_seeding.py` covers a consumed select below a Rating Step being captured
+  and seeded on a second run, while the unconsumed Rating Step is not captured.
 - `tests/test_preview_admission.py` covers an API Input over an undeclared-dtype CSV not being
   admitted and over a declared one being admitted, a Data Input over the same CSV and a
   structured API Input being admitted, a failing probe leaving the lineage unadmitted without

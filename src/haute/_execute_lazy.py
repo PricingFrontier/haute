@@ -1345,7 +1345,7 @@ def _execute_lazy(
             if covered and node_id not in cached_seed_outputs
         }
     if decision is not None and snapshot_plan is not None:
-        from haute._seed_plans import SharedSnapshotSeedRecord
+        from haute._seed_plans import SharedSnapshotCaptureSkipRecord, SharedSnapshotSeedRecord
 
         for node_id, seed in decision.seeds.items():
             cached_seed_outputs[node_id] = snapshot_plan.seed_frame(node_id)
@@ -1357,6 +1357,14 @@ def _execute_lazy(
                         identity_digest=seed.identity.digest,
                         generation_id=seed.generation_id,
                         columns=seed.demand,
+                    )
+                )
+        if execution_context is not None:
+            for skip_node_id, reason in sorted(decision.skipped_captures.items()):
+                execution_context.record_shared_snapshot_capture_skip(
+                    SharedSnapshotCaptureSkipRecord(
+                        node_id=skip_node_id,
+                        reason=reason,
                     )
                 )
         # The plan decided what runs: seeds, and the nodes still built below
@@ -2838,7 +2846,7 @@ def _execute_eager_core(
     eager_join_recipes: dict[str, JoinRecipe] = {}
     prebound_sources: dict[str, tuple[NodeBoundary, Any, BaseException | None]] = {}
     if decision is not None and snapshot_plan is not None:
-        from haute._seed_plans import SharedSnapshotSeedRecord
+        from haute._seed_plans import SharedSnapshotCaptureSkipRecord, SharedSnapshotSeedRecord
 
         for seed_node_id, seed in decision.seeds.items():
             if execution_context is not None:
@@ -2848,6 +2856,14 @@ def _execute_eager_core(
                         identity_digest=seed.identity.digest,
                         generation_id=seed.generation_id,
                         columns=seed.demand,
+                    )
+                )
+        if execution_context is not None:
+            for skip_node_id, reason in sorted(decision.skipped_captures.items()):
+                execution_context.record_shared_snapshot_capture_skip(
+                    SharedSnapshotCaptureSkipRecord(
+                        node_id=skip_node_id,
+                        reason=reason,
                     )
                 )
         # Every source is bound before anything is collected, and the inputs
