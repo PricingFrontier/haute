@@ -96,6 +96,7 @@ vi.mock("../api/client", async () => {
         }
       }),
     })),
+    previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
     previewNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
     previewRecoveryNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
     dryRunRemoveUnavailableNode: vi.fn(() => Promise.resolve({})),

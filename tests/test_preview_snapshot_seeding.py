@@ -89,10 +89,9 @@ def _join_graph(project: Path) -> PipelineGraph:
     )
 
 
-def _context() -> ExecutionContext:
-    """An admitted preview context with a fixed budget, independent of real admission."""
+def _context(profile: ExecutionProfile = ExecutionProfile.PREVIEW_EAGER) -> ExecutionContext:
+    """An admitted context with a fixed budget, independent of real admission."""
     limit = 1024**3
-    profile = ExecutionProfile.PREVIEW_EAGER
     return ExecutionContext(
         operation="preview_seeding_test",
         profile=profile,
@@ -741,3 +740,727 @@ def test_an_unlimited_full_materialisation_keeps_the_negotiated_columns(
     assert {"id", "a", "d"} <= widened.columns.names
     assert widened.generation.metadata.row_count == _ROWS
     assert preview.rows("G").columns == ["a"]
+
+
+# ---------------------------------------------------------------------------
+# Preview seeding, capture, cache, and response
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def api(project: Path) -> Iterator[Any]:
+    from fastapi.testclient import TestClient
+
+    from haute.executor import _preview_cache
+    from haute.server import app
+
+    _preview_cache.clear()
+    yield TestClient(app)
+    _preview_cache.clear()
+
+
+@pytest.fixture()
+def builds(monkeypatch: pytest.MonkeyPatch) -> Counter[str]:
+    """Every node the preview executor builds, by id."""
+    import haute.executor as executor
+
+    built: Counter[str] = Counter()
+    real = executor._build_node_fn
+
+    def counting(node: GraphNode, **kwargs: Any) -> Any:
+        built[node.id] += 1
+        return real(node, **kwargs)
+
+    monkeypatch.setattr(executor, "_build_node_fn", counting)
+    return built
+
+
+def _post_preview(api: Any, graph: PipelineGraph, node_id: str, **fields: Any) -> dict[str, Any]:
+    response = api.post(
+        "/api/pipeline/preview",
+        json={
+            "graph": graph.model_dump(mode="json"),
+            "node_id": node_id,
+            "row_limit": 200,
+            **fields,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "ok", body.get("error")
+    return body
+
+
+def _rows(body: dict[str, Any]) -> pl.DataFrame:
+    return pl.DataFrame(body["preview"]).sort("id")
+
+
+def _plan_of(body: dict[str, Any]) -> list[tuple[str, str]]:
+    return [(entry["node_id"], entry["kind"]) for entry in body["seed_plan"]]
+
+
+def _two_consumers(project: Path) -> PipelineGraph:
+    """``policies + claims → join``, then ``join → banding`` and ``join → rated``."""
+    graph = _join_graph(project)
+    return graph.model_copy(
+        update={
+            "nodes": [
+                *graph.nodes,
+                _node(
+                    "rated",
+                    NodeType.POLARS,
+                    _code("df = join.with_columns((pl.col('d') * 2).alias('r'))"),
+                ),
+            ],
+            "edges": [*graph.edges, GraphEdge(id="r", source="join", target="rated")],
+        }
+    )
+
+
+def test_first_preview_captures_join_and_returns_unadmitted_rows(project: Path, api: Any) -> None:
+    from haute.executor import _preview_cache, execute_graph
+
+    graph = _join_graph(project)
+    unadmitted = execute_graph(
+        graph, target_node_id="banding", row_limit=200, target_preview_only=True
+    )
+    _preview_cache.clear()
+
+    body = _post_preview(api, graph, "banding")
+
+    assert _plan_of(body) == [("join", "captured")]
+    entry = body["seed_plan"][0]
+    assert entry["node_label"] == "join"
+    assert entry["columns"] is None
+    assert entry["created_at"].endswith("+00:00")
+    assert _rows(body).equals(pl.DataFrame(unadmitted["banding"].preview).sort("id"))
+
+
+def test_second_preview_below_join_seeds_and_scans_no_source(
+    project: Path, api: Any, builds: Counter[str]
+) -> None:
+    graph = _two_consumers(project)
+    first = _post_preview(api, graph, "banding")
+    builds.clear()
+
+    second = _post_preview(api, graph, "rated")
+
+    assert _plan_of(second) == [("join", "seeded")]
+    assert second["seed_plan"][0]["generation_id"] == first["seed_plan"][0]["generation_id"]
+    assert set(builds) == {"rated"}
+    assert _rows(second).height == _ROWS
+
+
+def test_join_target_preview_captures_and_collects_from_its_capture(
+    project: Path, api: Any
+) -> None:
+    body = _post_preview(api, _join_graph(project), "join")
+
+    assert _plan_of(body) == [("join", "captured")]
+    assert _rows(body).height == _ROWS
+
+
+def test_training_run_seeds_preview_capture(
+    project: Path, api: Any, store: NodeSnapshotStore
+) -> None:
+    from haute.execution import execute_lazy_graph
+    from haute.executor import _compile_preamble, _pipeline_dir
+
+    graph = _join_graph(project)
+    captured = _post_preview(api, graph, "banding")["seed_plan"][0]["generation_id"]
+
+    context = _context(ExecutionProfile.TRAINING_PREP)
+    request = SeedPlanRequest(
+        graph=graph,
+        target_node_id="banding",
+        source="live",
+        profile=ExecutionProfile.TRAINING_PREP,
+    )
+    built: Counter[str] = Counter()
+    with open_seed_plan(request, store=store, execution_context=context) as plan:
+        assert {node: seed.generation_id for node, seed in plan.decision.seeds.items()} == {
+            "join": captured
+        }
+        outputs, *_ = execute_lazy_graph(
+            graph,
+            _counting_build(built, Counter()),
+            target_node_id="banding",
+            preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+            or None,
+            source="live",
+            enforce_contracts=True,
+            execution_context=context,
+            prepare_inputs=False,
+            snapshot_plan=plan,
+        )
+        frame = outputs["banding"].collect()
+    assert frame.height == _ROWS
+    assert not {"policies", "claims", "join"} & set(built)
+
+
+def test_refreshed_join_misses_preview_cache(
+    project: Path, api: Any, store: NodeSnapshotStore
+) -> None:
+    graph = _join_graph(project)
+    _post_preview(api, graph, "banding")
+    identity = _identity(store, graph, "join")
+    artifact = store.stage_node_output(identity)
+    pl.DataFrame({"id": [1, 2], "a": [70, 80], "d": [0.1, 0.2]}).write_parquet(artifact.data_path)
+    with store.publish_node_output(
+        identity,
+        artifact,
+        columns=ALL,
+        dependencies={},
+        explicit=True,
+        profile=ExecutionProfile.NODE_SNAPSHOT,
+        refresh=True,
+    ) as publication:
+        assert publication.generation is not None
+        refreshed = publication.generation.generation_id
+
+    body = _post_preview(api, graph, "banding")
+
+    assert _plan_of(body) == [("join", "seeded")]
+    assert body["seed_plan"][0]["generation_id"] == refreshed
+    assert _rows(body)["band"].to_list() == [140, 160]
+
+
+def test_stale_join_is_not_seeded_and_is_recaptured(project: Path, api: Any) -> None:
+    graph = _join_graph(project)
+    first = _post_preview(api, graph, "banding")["seed_plan"][0]
+    pl.DataFrame({"id": [0, 1], "a": [5, 6]}).write_parquet(project / "policies.parquet")
+
+    body = _post_preview(api, graph, "banding")
+
+    assert _plan_of(body) == [("join", "captured")]
+    assert body["seed_plan"][0]["identity_digest"] != first["identity_digest"]
+    assert _rows(body)["band"].to_list() == [10, 12]
+
+
+@pytest.mark.parametrize("removal", ["clear", "evict"])
+def test_capture_then_clear_or_evict_never_serves_the_cached_response(
+    project: Path, api: Any, store: NodeSnapshotStore, builds: Counter[str], removal: str
+) -> None:
+    graph = _join_graph(project)
+    j1 = _post_preview(api, graph, "banding")["seed_plan"][0]["generation_id"]
+    builds.clear()
+    repeat = _post_preview(api, graph, "banding")
+    assert not builds, "the repeat preview is a backend cache hit"
+    assert [entry["generation_id"] for entry in repeat["seed_plan"]] == [j1]
+
+    identity = _identity(store, graph, "join")
+    if removal == "clear":
+        store.clear(identity)
+    else:
+        full = NodeSnapshotStore(project, max_generations=1)
+        filler = NodeSnapshotSlot(str(project / "other.py"), "filler", "live", "bounded").identity(
+            "filler-signature"
+        )
+        artifact = full.stage_node_output(filler)
+        pl.DataFrame({"a": [1]}).write_parquet(artifact.data_path)
+        full.publish_node_output(
+            filler,
+            artifact,
+            columns=ALL,
+            dependencies={},
+            explicit=True,
+            profile=ExecutionProfile.NODE_SNAPSHOT,
+        ).close()
+        assert store.latest_generation(identity) is None
+    builds.clear()
+
+    after = _post_preview(api, graph, "banding")
+
+    assert builds["join"] == 1
+    assert _plan_of(after) == [("join", "captured")]
+    assert after["seed_plan"][0]["generation_id"] != j1
+
+
+def _grouped(project: Path) -> PipelineGraph:
+    """``policies + claims → join → grouped (group-by) → shown``."""
+    graph = _join_graph(project)
+    return graph.model_copy(
+        update={
+            "nodes": [
+                *graph.nodes,
+                _node(
+                    "grouped",
+                    NodeType.POLARS,
+                    _code("df = join.group_by('id').agg(pl.col('a').sum())"),
+                ),
+                _node(
+                    "shown",
+                    NodeType.POLARS,
+                    _code("df = grouped.with_columns(pl.lit(1).alias('one'))"),
+                ),
+            ],
+            "edges": [
+                *graph.edges,
+                GraphEdge(id="g", source="join", target="grouped"),
+                GraphEdge(id="s", source="grouped", target="shown"),
+            ],
+        }
+    )
+
+
+def _preview_directly(graph: PipelineGraph, target: str) -> dict[str, Any]:
+    from haute.executor import execute_graph
+
+    return execute_graph(
+        graph,
+        target_node_id=target,
+        row_limit=200,
+        target_preview_only=True,
+        include_schema_metadata=True,
+        shared_snapshots=True,
+    )
+
+
+def test_cache_hit_corruption_propagates_without_executing(
+    project: Path, api: Any, store: NodeSnapshotStore, builds: Counter[str]
+) -> None:
+    from haute._source_cache import SourceCacheCorruptError
+
+    graph = _grouped(project)
+    first = _post_preview(api, graph, "shown")
+    assert _plan_of(first) == [("join", "captured"), ("grouped", "captured")]
+    join = first["seed_plan"][0]
+    # The entry is keyed by the plan a new request chooses — seeding ``grouped``
+    # — and still lists ``join``, which that request never leases itself.
+    identity = _identity(store, graph, "join")
+    _corrupt_generation(store, identity, join["generation_id"])
+    builds.clear()
+
+    with pytest.raises(SourceCacheCorruptError):
+        _preview_directly(graph, "shown")
+    assert not builds
+
+
+def test_cache_hit_permission_error_propagates_without_executing(
+    project: Path,
+    api: Any,
+    store: NodeSnapshotStore,
+    builds: Counter[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _grouped(project)
+    join = _post_preview(api, graph, "shown")["seed_plan"][0]
+    lease = NodeSnapshotStore.lease_generation
+
+    def denied(self: NodeSnapshotStore, identity: Any, generation_id: str) -> Any:
+        if generation_id == join["generation_id"]:
+            raise PermissionError("the generation's metadata is not readable")
+        return lease(self, identity, generation_id)
+
+    monkeypatch.setattr(NodeSnapshotStore, "lease_generation", denied)
+    builds.clear()
+
+    with pytest.raises(PermissionError, match="not readable"):
+        _preview_directly(graph, "shown")
+    assert not builds
+
+
+def _corrupt_generation(store: NodeSnapshotStore, identity: Any, generation_id: str) -> None:
+    data = store.inputs_root / identity.digest / "generations" / generation_id / "data.parquet"
+    data.write_bytes(b"corrupt")
+
+
+def _with_extra(project: Path) -> PipelineGraph:
+    """``policies + claims → join → banded``, where ``banded`` also reads ``extra``."""
+    pl.DataFrame({"id": list(range(_ROWS)), "x": [1] * _ROWS}).write_parquet(
+        project / "extra.parquet"
+    )
+    graph = _join_graph(project)
+    return graph.model_copy(
+        update={
+            "nodes": [
+                *graph.nodes,
+                _node("extra", NodeType.DATA_INPUT, _parquet(project / "extra.parquet")),
+                _node(
+                    "banded",
+                    NodeType.POLARS,
+                    _code("df = pl.concat([join, extra.select('x')], how='horizontal')"),
+                ),
+            ],
+            "edges": [
+                *graph.edges,
+                GraphEdge(id="b1", source="join", target="banded"),
+                GraphEdge(id="b2", source="extra", target="banded"),
+            ],
+        }
+    )
+
+
+def _rewrite_extra(project: Path, value: int) -> None:
+    pl.DataFrame({"id": list(range(_ROWS)), "x": [value] * _ROWS}).write_parquet(
+        project / "extra.parquet"
+    )
+
+
+def test_input_change_after_capture_stores_nothing(
+    project: Path, api: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute._execute_lazy import _PlannedCaptures
+    from haute.executor import _preview_cache
+
+    graph = _with_extra(project)
+    capture = _PlannedCaptures.capture
+
+    def capture_then_rewrite(self: Any, node_id: str, *args: Any, **kwargs: Any) -> Any:
+        frame = capture(self, node_id, *args, **kwargs)
+        if node_id == "join":
+            _rewrite_extra(project, 2)
+        return frame
+
+    monkeypatch.setattr(_PlannedCaptures, "capture", capture_then_rewrite)
+
+    _post_preview(api, graph, "banded")
+
+    # Its inputs moved while it ran: no key describes what it computed.
+    assert len(_preview_cache) == 0
+
+
+def test_input_change_after_the_recheck_keys_by_the_executed_identity(
+    project: Path, api: Any, builds: Counter[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute.executor as executor
+
+    graph = _with_extra(project)
+    resolve = executor.resolve_seed_plan
+    rewritten: list[int] = []
+
+    def rewrite_then_resolve(*args: Any, **kwargs: Any) -> Any:
+        if not rewritten:
+            _rewrite_extra(project, 2)
+            rewritten.append(2)
+        return resolve(*args, **kwargs)
+
+    monkeypatch.setattr(executor, "resolve_seed_plan", rewrite_then_resolve)
+    first = _post_preview(api, graph, "banded")
+    assert pl.DataFrame(first["preview"])["x"].unique().to_list() == [1]
+    assert len(executor._preview_cache) == 1
+    builds.clear()
+
+    second = _post_preview(api, graph, "banded")
+
+    # Stored under the inputs it read, so a request reading the new ones misses.
+    assert builds["banded"] == 1
+    assert pl.DataFrame(second["preview"])["x"].unique().to_list() == [2]
+
+
+def test_post_capture_plan_naming_an_unread_generation_stores_nothing(
+    project: Path, api: Any, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute.executor as executor
+
+    graph = _join_graph(project)
+    resolve = executor.resolve_seed_plan
+
+    def refresh_then_resolve(*args: Any, **kwargs: Any) -> Any:
+        # Another execution refreshes the join between this preview's capture
+        # and its re-resolution: a new request would seed what it never read.
+        identity = _identity(store, graph, "join")
+        artifact = store.stage_node_output(identity)
+        pl.DataFrame({"id": [1], "a": [9], "d": [0.9]}).write_parquet(artifact.data_path)
+        store.publish_node_output(
+            identity,
+            artifact,
+            columns=ALL,
+            dependencies={},
+            explicit=True,
+            profile=ExecutionProfile.NODE_SNAPSHOT,
+            refresh=True,
+        ).close()
+        return resolve(*args, **kwargs)
+
+    monkeypatch.setattr(executor, "resolve_seed_plan", refresh_then_resolve)
+
+    _post_preview(api, graph, "banding")
+
+    assert len(executor._preview_cache) == 0
+
+
+def test_partial_hit_under_captures_executes_as_a_miss(
+    project: Path, api: Any, builds: Counter[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute._seed_plans as seed_plans_module
+    from haute.executor import _preview_cache
+
+    # Every capture is refused for quota, so each preview plans the capture
+    # again and stores under the key it computed before executing.
+    full = NodeSnapshotStore(project, max_generations=1)
+    filler = NodeSnapshotSlot(str(project / "other.py"), "filler", "live", "bounded").identity(
+        "filler-signature"
+    )
+    artifact = full.stage_node_output(filler)
+    pl.DataFrame({"a": [1]}).write_parquet(artifact.data_path)
+    full.publish_node_output(
+        filler,
+        artifact,
+        columns=ALL,
+        dependencies={},
+        explicit=True,
+        profile=ExecutionProfile.NODE_SNAPSHOT,
+    ).close()
+    monkeypatch.setattr(seed_plans_module, "_project_store", lambda: full)
+    graph = _join_graph(project)
+    first = _post_preview(api, graph, "banding")
+    assert first["seed_plan"] == []
+    assert len(_preview_cache) == 1
+    ((key, entry),) = [(key, _preview_cache.get(key)) for key in list(_preview_cache._data)]
+    assert entry is not None
+    # A partial entry: it no longer holds the target, and it holds an output
+    # an extension would carry over into what it stores.
+    entry["eager_outputs"].pop("banding")
+    entry["eager_outputs"]["stale"] = pl.DataFrame({"x": [1]})
+    builds.clear()
+
+    second = _post_preview(api, graph, "banding")
+
+    assert builds["join"] == 1
+    assert _rows(second).height == _ROWS
+    stored = _preview_cache.get(key)
+    assert stored is not None and "banding" in stored["eager_outputs"]
+    # Executed as a miss: nothing of the partial entry survives.
+    assert "stale" not in stored["eager_outputs"]
+
+
+def test_undeclared_csv_api_input_preview_seeds_and_captures_nothing(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+    from haute._native_memory_limit import native_memory_backend_scope
+    from haute.executor import execute_graph
+
+    pl.DataFrame({"id": list(range(_ROWS)), "a": list(range(_ROWS))}).write_csv(
+        project / "policies.csv"
+    )
+    graph = _join_graph(project)
+    graph = graph.model_copy(
+        update={
+            "nodes": [
+                _node("policies", NodeType.API_INPUT, {"path": str(project / "policies.csv")})
+                if node.id == "policies"
+                else node
+                for node in graph.nodes
+            ],
+            # An API Input's edge names its frame.
+            "edges": [
+                edge.model_copy(update={"sourceHandle": "policies"})
+                if edge.source == "policies"
+                else edge
+                for edge in graph.edges
+            ],
+        }
+    )
+    context = create_admitted_execution_context(
+        operation="preview_seeding_test", profile=ExecutionProfile.PREVIEW_EAGER
+    )
+    try:
+        # The join over a CSV has no row-count estimate; the preview worker
+        # runs it under its hard memory cap.
+        with native_memory_backend_scope("rlimit"):
+            results = execute_graph(
+                graph,
+                target_node_id="banding",
+                row_limit=200,
+                target_preview_only=True,
+                execution_context=context,
+                shared_snapshots=True,
+            )
+    finally:
+        context.release_admission()
+
+    assert results["banding"].status == "ok", results["banding"].error
+    assert results["banding"].row_count == _ROWS
+    assert context.preview_seed_plan == ()
+    assert context.metrics_payload(status="completed")["shared_snapshot_captures"] == []
+    assert store.latest_generation(_identity(store, graph, "join")) is None
+
+
+def test_killed_preview_worker_leaves_no_staging(
+    project: Path, api: Any, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute.routes.pipeline as pipeline
+    from haute._interactive_workers import InteractiveWorkerCrashedError
+
+    graph = _join_graph(project)
+    staged: list[Path] = []
+
+    async def crashing_worker(function: Any, *args: Any, **kwargs: Any) -> Any:
+        # The worker stages a capture under the route's token, then dies.
+        *_rest, token = args
+        identity = _identity(store, graph, "join")
+        artifact = store.stage_node_output(identity, staging_token=token)
+        artifact.data_path.write_bytes(b"partial")
+        staged.append(artifact.data_path)
+        raise InteractiveWorkerCrashedError(9)
+
+    monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "process")
+    monkeypatch.setattr(pipeline, "run_in_interactive_worker", crashing_worker)
+
+    response = api.post(
+        "/api/pipeline/preview",
+        json={"graph": graph.model_dump(mode="json"), "node_id": "banding", "row_limit": 5},
+    )
+
+    assert response.status_code >= 500
+    assert staged and not staged[0].exists()
+
+
+def test_preview_inputs_lists_only_inputs_the_seeded_execution_reads(
+    project: Path, api: Any, store: NodeSnapshotStore
+) -> None:
+    pl.DataFrame({"id": list(range(_ROWS)), "a": list(range(_ROWS))}).write_csv(
+        project / "policies.csv"
+    )
+    graph = _join_graph(project)
+    graph = graph.model_copy(
+        update={
+            "nodes": [
+                _node(
+                    "policies",
+                    NodeType.DATA_INPUT,
+                    {"inputType": "file", "format": "csv", "path": str(project / "policies.csv")},
+                )
+                if node.id == "policies"
+                else node
+                for node in graph.nodes
+            ]
+        }
+    )
+
+    def inputs() -> list[str]:
+        response = api.post(
+            "/api/pipeline/preview/inputs",
+            json={"graph": graph.model_dump(mode="json"), "node_id": "banding"},
+        )
+        assert response.status_code == 200, response.text
+        return response.json()["input_node_ids"]
+
+    # ``claims`` is a direct Parquet scan: it has no snapshot to prepare.
+    assert inputs() == ["policies"]
+    _post_preview(api, graph, "banding")
+    # The join is captured now, so the next preview reads no input at all.
+    assert inputs() == []
+
+
+def test_an_authored_graph_error_prepares_nothing_and_the_preview_reports_it(
+    project: Path, api: Any
+) -> None:
+    graph = _join_graph(project)
+    graph = graph.model_copy(
+        update={"nodes": [*graph.nodes, _node("lonely", NodeType.EXPLORE, {})]}
+    )
+
+    inputs = api.post(
+        "/api/pipeline/preview/inputs",
+        json={"graph": graph.model_dump(mode="json"), "node_id": "lonely"},
+    )
+    assert inputs.status_code == 200, inputs.text
+    assert inputs.json() == {"input_node_ids": []}
+
+    preview = api.post(
+        "/api/pipeline/preview",
+        json={"graph": graph.model_dump(mode="json"), "node_id": "lonely", "row_limit": 5},
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["status"] == "error"
+    assert "incoming edge" in preview.json()["error"]
+
+
+def test_unused_unavailable_input_is_neither_listed_nor_fails_the_preview(
+    project: Path, api: Any
+) -> None:
+    (project / "ragged.csv").write_text("id,a\n1,2\n3\n4,5,6\n", encoding="utf-8")
+    graph = _join_graph(project)
+    graph = graph.model_copy(
+        update={
+            "nodes": [
+                *graph.nodes,
+                _node(
+                    "ragged",
+                    NodeType.DATA_INPUT,
+                    {"inputType": "file", "format": "csv", "path": str(project / "ragged.csv")},
+                ),
+                _node("elsewhere", NodeType.POLARS, _code("df = ragged.head(1)")),
+            ],
+            "edges": [*graph.edges, GraphEdge(id="x", source="ragged", target="elsewhere")],
+        }
+    )
+
+    response = api.post(
+        "/api/pipeline/preview/inputs",
+        json={"graph": graph.model_dump(mode="json"), "node_id": "banding"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["input_node_ids"] == []
+    assert _rows(_post_preview(api, graph, "banding")).height == _ROWS
+
+
+def test_a_preview_seeding_nothing_is_keyed_like_one_without_a_plan(project: Path) -> None:
+    import haute.execution as execution_facade
+
+    graph = _join_graph(project)
+    identity = execution_facade.lineage_runtime_input_identity(
+        graph, target_node_id="banding", source="live"
+    )
+
+    def key(seed_plan_fingerprint: str | None, **kwargs: Any) -> str:
+        return execution_facade.preview_lineage_cache_key(
+            graph,
+            target_node_id="banding",
+            source="live",
+            requested_columns=None,
+            initial_column_limit=None,
+            row_limit=3,
+            port_label=None,
+            enforce_contracts=True,
+            materialisation_scope="target_only",
+            seed_plan_fingerprint=seed_plan_fingerprint,
+            **kwargs,
+        )
+
+    unplanned = key(None)
+    assert key(None, runtime_input_identity=identity) == unplanned
+    assert key("seed-plan:v1:a") not in {unplanned, key("seed-plan:v1:b")}
+    assert identity.fingerprint({"k": 1}) == execution_facade.dataframe_graph_input_fingerprint(
+        execution_facade._lineage_runtime_graph(
+            graph, execution_facade.prepare_graph(graph, "banding", source="live")
+        ),
+        target_node_id=None,
+        source="live",
+        extra_fingerprints={"k": 1},
+    )
+
+
+def test_a_cached_entry_listing_a_cleared_generation_is_not_current(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    from haute._seed_plans import ReadGeneration
+    from haute.executor import _preview_entry_is_current
+
+    graph = _join_graph(project)
+    generation = _publish(store, graph, "join", pl.DataFrame({"id": [1], "a": [1], "d": [0.1]}))
+    identity = _identity(store, graph, "join")
+    listed = ReadGeneration(
+        node_id="join",
+        identity=identity,
+        generation_id=generation,
+        columns=ALL,
+        created_at=0.0,
+        kind="captured",
+    )
+    request = SeedPlanRequest(
+        graph=graph,
+        target_node_id="banding",
+        source="live",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+    )
+
+    with open_seed_plan(request, store=store, execution_context=_context()) as plan:
+        assert _preview_entry_is_current({"seed_plan": (listed,)}, plan, graph, source="live")
+    store.clear(identity)
+    with open_seed_plan(request, store=store, execution_context=_context()) as plan:
+        assert not _preview_entry_is_current({"seed_plan": (listed,)}, plan, graph, source="live")
+        assert _preview_entry_is_current({"seed_plan": ()}, plan, graph, source="live")

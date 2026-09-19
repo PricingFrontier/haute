@@ -335,6 +335,28 @@ When the caller omits an execution context, `execute_graph()` creates its admitt
 and miss stages therefore always use a concrete context and always record telemetry;
 there is no silent no-op stage path.
 
+**Previews under a seed plan.** With `shared_snapshots=True` (the preview route) and a
+target whose lineage `preview_lineage_admitted` accepts, `execute_graph()` opens a
+`PREVIEW_EAGER` seed plan — preparing only the inputs it executes, under the caller's
+`staging_token` — holds it for the rest of the request, and runs `_execute_graph_core()`
+under it; any other preview runs the same core without a plan, preparing its lineage as
+before. The core reads the lineage's runtime-input identity once
+(`lineage_runtime_input_identity`) and keys the entry by it together with the plan's
+seed fingerprint (`_seeded_fingerprint`: `None` when nothing is seeded, so a preview
+that seeds nothing is keyed like one without a plan). Every entry records the
+generations its rows were computed from (`SeedPlan.read_generations`: seeds, and
+captures published and read), in execution order, and a hit first re-validates them
+(`_preview_entry_is_current`): each is leased for the rest of the request and must still
+be its identity's latest generation, under the identity the graph produces at that point;
+a missing or retired generation, a replaced one, or a changed identity evicts the entry
+and executes, while corruption and every other storage error propagate. A plan with
+captures never stores under its pre-execution key: after executing, the core reads the
+runtime inputs again and stores nothing if they moved; otherwise it resolves the plan a
+new request would choose and stores under the key built from the first read and that
+plan's seeds only when every one is a generation it read. A partial hit under such a plan
+executes as a miss. The generations are recorded on the context
+(`record_preview_seed_plan`) for the response's `seed_plan`.
+
 An API input bundle containing exactly one labelled frame has one canonical flat
 frame, so that frame remains the node's ordinary preview without requiring
 `port_label`. A valid multi-frame target with no `port_label` has no canonical flat
@@ -1942,7 +1964,19 @@ present a structural or schema result as execution evidence.
   generation to the negotiated columns while the target — below it, or the captured node
   itself — collects only its own demand, also when every node is collected without a limit;
   and an API-input port loads the negotiated demand even when the caller's strategy was
-  planned narrower.
+  planned narrower. Through the preview route it covers the acceptance scenarios: a first
+  preview capturing the join and returning an unadmitted preview's rows, a second preview
+  below it seeding and building no source, a join target, a training run seeding the
+  preview's capture, a refreshed join missing the cache, a stale join recaptured, a clear
+  or an eviction never serving the cached response, corruption and a permission error on
+  a listed generation propagating from a cache hit without executing, an input changed
+  after a capture storing nothing, an input changed after the re-check keying the entry
+  by the inputs executed, a post-capture plan naming an unread generation storing
+  nothing, a partial hit under captures executing as a miss, an undeclared-dtype CSV API
+  Input seeding and capturing nothing, a killed worker's capture staging removed, the
+  preview-inputs endpoint listing only what the seeded execution reads and never an
+  unused unbuildable input, the key of a preview seeding nothing equalling one without a
+  plan, and a cached entry listing a cleared generation not being current.
 - **`tests/test_snapshot_seeding.py`** — planned lazy executions: a re-run seeding the
   first run's capture builds nothing upstream and returns an equal frame; disjoint demand
   publishes one widened generation; a narrow upstream snapshot is not seeded and is

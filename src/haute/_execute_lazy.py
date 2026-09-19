@@ -2174,6 +2174,7 @@ class _PlannedCaptures:
                 capture.identity.digest,
                 publication.generation.generation_id,
             )
+            plan.record_published(node_id, publication.generation)
             self._record(capture, "published", publication.generation.generation_id, columns)
         else:
             self._record(capture, "superseded", None, columns)

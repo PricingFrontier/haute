@@ -5,6 +5,7 @@ import { makePreviewData } from "../utils/makePreviewData"
 import {
   ApiError,
   loadPipeline,
+  previewInputs,
   previewNode,
   previewRecoveryNode,
   savePipeline,
@@ -200,6 +201,27 @@ function canPreviewNode(node: Node): boolean {
     nodeData(node)._loadAvailability !== "unavailable" &&
     nodeData(node)._loadAvailability !== "blocked" &&
     !NON_EXECUTABLE_PREVIEW_TYPES.has(effectiveNodeType(node))
+}
+
+/** The node whose config an input instance runs: its original, else itself. */
+function instanceOriginal<T extends { id: string; data?: unknown }>(
+  graphNode: T,
+  byId: Map<string, T>,
+): T {
+  const config = (graphNode.data as { config?: unknown } | undefined)?.config
+  const reference =
+    config && typeof config === "object" && !Array.isArray(config)
+      ? (config as { instanceOf?: unknown }).instanceOf
+      : undefined
+  return (typeof reference === "string" && byId.get(reference)) || graphNode
+}
+
+/** One preview whose inputs are prepared before it runs. */
+interface PreviewInputTarget {
+  nodeId: string
+  source: string
+  requestedPreviewColumns?: string[]
+  portLabel?: string
 }
 
 interface PreviewDocumentFence {
@@ -420,6 +442,40 @@ export default function usePipelineAPI({
       })
     },
     [addToast],
+  )
+  // Prepare only the inputs the previews of `targets` read: the backend
+  // answers from the seed plan each would run under, so an input above a
+  // shared snapshot, or outside every target's lineage, is never built.
+  const ensureSnapshotsForPreviews = useCallback(
+    async (
+      graph: ReturnType<typeof resolveGraphFromRefs>,
+      targets: PreviewInputTarget[],
+      signal: AbortSignal,
+    ) => {
+      const answers = await Promise.all(
+        targets.map((target) =>
+          previewInputs({
+            graph,
+            nodeId: target.nodeId,
+            source: target.source,
+            requestedPreviewColumns: target.requestedPreviewColumns,
+            portLabel: target.portLabel,
+            signal,
+          }),
+        ),
+      )
+      const wanted = new Set(answers.flatMap((answer) => answer.input_node_ids))
+      const byId = new Map(graph.nodes.map((graphNode) => [graphNode.id, graphNode]))
+      // An instance reads its original's input, so it prepares that config.
+      const effective = new Map<string, (typeof graph.nodes)[number]>()
+      for (const graphNode of graph.nodes) {
+        if (!wanted.has(graphNode.id)) continue
+        const original = instanceOriginal(graphNode, byId)
+        effective.set(original.id, original)
+      }
+      return ensureSnapshotsForNodes([...effective.values()], signal)
+    },
+    [ensureSnapshotsForNodes],
   )
 
   // Source switch invalidates column stashes captured under other sources.
@@ -783,9 +839,22 @@ export default function usePipelineAPI({
     const previewRequest =
       recoveryPreview || options?.snapshotsEnsured
         ? executePreview()
-        : ensureSnapshotsForNodes(graph.nodes, controller.signal).then(
-            executePreview,
-          )
+        : ensureSnapshotsForPreviews(
+            graph,
+            [
+              {
+                nodeId: runtimeNodeIdForVisibleNode(
+                  graphRef.current.nodes,
+                  node.id,
+                  activeSubmodelIdentity,
+                ),
+                source: snapshotSource,
+                requestedPreviewColumns: previewColumnNamesForNode(node, snapshotSource, structuralVersion),
+                portLabel,
+              },
+            ],
+            controller.signal,
+          ).then(executePreview)
     previewRequest
       .then((result) => {
         // Superseded by a newer preview request: that request owns the
@@ -863,7 +932,7 @@ export default function usePipelineAPI({
           }
         })
       })
-  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForNodes])
+  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews])
 
   const fetchPreview = useCallback((node: Node, options: FetchPreviewOptions = {}) => {
     const requestId = ++previewRequestSeq.current
@@ -1055,7 +1124,20 @@ export default function usePipelineAPI({
       drain()
     })
 
-    ensureSnapshotsForNodes(graph.nodes, controller.signal)
+    ensureSnapshotsForPreviews(
+      graph,
+      [node, ...staleUpstream].map((previewed) => ({
+        nodeId: runtimeNodeIdForVisibleNode(
+          graphRef.current.nodes,
+          previewed.id,
+          activeSubmodelIdentity,
+        ),
+        source: snapshotSource,
+        requestedPreviewColumns: previewColumnNamesForNode(previewed, snapshotSource, structuralVersion),
+        portLabel: previewPortLabel(previewed),
+      })),
+      controller.signal,
+    )
       .then(() => previewStaleUpstream())
       .then(() => {
         if (!requestStillCurrent()) {
@@ -1085,7 +1167,7 @@ export default function usePipelineAPI({
           previewAbort.current = null
         }
       })
-  }, [fetchPreviewImmediate, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForNodes])
+  }, [fetchPreviewImmediate, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews])
 
   const previewNodeFrame = useCallback((nodeId: string, portLabel: string) => {
     const node = graphRef.current.nodes.find((n) => n.id === nodeId)
@@ -1123,7 +1205,21 @@ export default function usePipelineAPI({
     }
     const snapshotsReady = recoveryPreview
       ? Promise.resolve()
-      : ensureSnapshotsForNodes(graph.nodes, controller.signal)
+      : ensureSnapshotsForPreviews(
+          graph,
+          [
+            {
+              nodeId: runtimeNodeIdForVisibleNode(
+                graphRef.current.nodes,
+                node.id,
+                activeSubmodelIdentity,
+              ),
+              source: activeSourceRef.current,
+              portLabel,
+            },
+          ],
+          controller.signal,
+        )
     snapshotsReady.then(() => {
         if (!requestStillCurrent() || controller.signal.aborted) {
           throw new DOMException("Preview request was superseded.", "AbortError")
@@ -1173,7 +1269,7 @@ export default function usePipelineAPI({
         if (previewRequestSeq.current === requestId) setPreviewBusy(false)
         if (previewAbort.current === controller) previewAbort.current = null
       })
-  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, addToast, ensureSnapshotsForNodes])
+  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, addToast, ensureSnapshotsForPreviews])
 
   // Returns true when the save succeeded, false on failure — callers that
   // chain follow-on work (for example Commit) await this so they only proceed

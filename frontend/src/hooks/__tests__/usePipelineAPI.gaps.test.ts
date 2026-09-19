@@ -18,6 +18,7 @@ import type { BackendNodeStatus } from "../../types/node"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
+  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),

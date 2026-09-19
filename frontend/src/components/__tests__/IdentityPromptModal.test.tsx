@@ -14,6 +14,7 @@ vi.mock("../../api/client", async () => {
   const { makeLoadedPipeline } = await import("../../testSupport/pipelineDocumentFixture")
   return {
   loadPipeline: vi.fn(() => Promise.resolve(makeLoadedPipeline({ nodes: [], edges: [] }))),
+  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
   previewNode: vi.fn(),
   savePipeline: vi.fn(),
   setGitIdentity: vi.fn(() => Promise.resolve({ scope: "local" })),

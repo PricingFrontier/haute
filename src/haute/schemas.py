@@ -837,6 +837,34 @@ class NodeMemoryInfo(BaseModel):
     memory_bytes: int
 
 
+class PreviewSeedPlanEntry(BaseModel):
+    """One snapshot generation a preview's collected rows were computed from.
+
+    ``seeded``: read instead of computing the node. ``captured``: computed by
+    this preview, published, and read by everything below it. ``columns`` is
+    the generation's column set, ``None`` for all columns; ``port_label`` is
+    always ``None``, since only node outputs are seeded or captured.
+    """
+
+    node_id: str
+    port_label: None = None
+    node_label: str
+    identity_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    generation_id: str = Field(min_length=1)
+    columns: list[str] | None
+    created_at: str
+    kind: Literal["seeded", "captured"]
+
+    @field_validator("created_at")
+    @classmethod
+    def _created_at_must_be_utc(cls, value: str) -> str:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        utc_offset = parsed.utcoffset()
+        if utc_offset is None or utc_offset.total_seconds() != 0:
+            raise ValueError("created_at must include a UTC offset")
+        return value
+
+
 class PreviewNodeResponse(NodeResult):
     """Full preview response — extends ``NodeResult`` with graph-wide metadata.
 
@@ -860,6 +888,25 @@ class PreviewNodeResponse(NodeResult):
     node_frame_columns: dict[str, dict[str, list[ColumnInfo]]] = Field(default_factory=dict)
     node_schema_warnings: dict[str, list[SchemaWarning]] = Field(default_factory=dict)
     execution_metrics: ExecutionMetricsPayload | None = None
+    # Every snapshot generation the collected rows were computed from, in
+    # topological order; empty when the preview read no snapshot.
+    seed_plan: list[PreviewSeedPlanEntry] = Field(default_factory=list)
+
+
+class PreviewInputsRequest(BaseModel):
+    """Which inputs a preview would read, so the browser prepares only those."""
+
+    graph: Graph
+    node_id: str
+    source: str = "live"
+    requested_preview_columns: list[str] | None = Field(default=None, min_length=1)
+    port_label: str | None = None
+
+
+class PreviewInputsResponse(BaseModel):
+    """Snapshot-backed Data Inputs and structured API Inputs, in execution order."""
+
+    input_node_ids: list[str]
 
 
 # ---------------------------------------------------------------------------

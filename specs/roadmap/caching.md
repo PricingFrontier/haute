@@ -202,7 +202,8 @@ present tense, and this contract is deleted with the package.
 - **Preview execution.** `executor.execute_graph(..., shared_snapshots=False)`; the preview route
   passes `True`. With it and an admitted lineage, execution computes the lineage runtime-input
   identity once, opens the plan, and keys the preview cache by that identity hashed with
-  `extra={"seed_plan": seed_plan_fingerprint(seeds)}`. A cache hit leases every generation its
+  `extra={"seed_plan": seed_plan_fingerprint(seeds)}` when it seeds anything (a preview
+  seeding nothing is keyed like one without a plan). A cache hit leases every generation its
   entry lists and confirms each identity is current for the graph's signature at that point; a
   missing or retired generation or a non-current identity evicts the entry and executes, and every
   other store error propagates. A plan without captures stores under its key. A plan with captures

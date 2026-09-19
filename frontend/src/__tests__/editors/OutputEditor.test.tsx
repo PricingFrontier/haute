@@ -29,6 +29,7 @@ vi.mock("../../api/client", async () => {
   return {
     ...actual,
     outputAssembleDryRun: vi.fn(),
+    previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
     previewNode: vi.fn(),
   }
 })

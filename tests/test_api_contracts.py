@@ -669,6 +669,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/PreviewNodeResponse"},
         },
     },
+    "/api/pipeline/preview/inputs": {
+        "POST": {
+            "request_ref": "#/components/schemas/PreviewInputsRequest",
+            "success_schema": {"$ref": "#/components/schemas/PreviewInputsResponse"},
+        },
+    },
     "/api/pipeline/recovery-preview": {
         "POST": {
             "request_ref": "#/components/schemas/RecoveryPreviewRequest",

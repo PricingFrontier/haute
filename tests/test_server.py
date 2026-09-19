@@ -303,13 +303,26 @@ class TestPreviewNode:
         client: TestClient,
         pipeline_dir: Path,
     ) -> None:
-        """Automatic preparation's failure is a public 422 contract error."""
+        """Automatic preparation's failure is a public 422 contract error.
+
+        The input is snapshot-backed, so the preview prepares it: through its
+        seed plan, which prepares only what it executes, or without one.
+        """
         from unittest.mock import patch
 
         from haute.errors import InputPreparationError
         from haute.parser import parse_pipeline_file
 
         graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
+        csv_path = pipeline_dir / "data" / "input.csv"
+        pl.DataFrame({"x": [1, 2, 3], "y": [10, 20, 30]}).write_csv(csv_path)
+        graph.nodes[0].data.config = {
+            "inputType": "file",
+            "format": "csv",
+            "mode": "scan",
+            "path": csv_path.as_posix(),
+            "arguments": {},
+        }
         failure = InputPreparationError(
             "Preparing this Data Input's snapshot failed.",
             node_id=graph.nodes[0].id,
@@ -319,7 +332,10 @@ class TestPreviewNode:
             remediation="Build this Data Input's snapshot and try again.",
         )
 
-        with patch("haute.executor.prepare_input_snapshots", side_effect=failure):
+        with (
+            patch("haute.executor.prepare_input_snapshots", side_effect=failure),
+            patch("haute._input_preparation.prepare_input_snapshots", side_effect=failure),
+        ):
             resp = client.post(
                 "/api/pipeline/preview",
                 json={

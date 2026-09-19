@@ -596,13 +596,16 @@ reconciliation rather than dropping them or committing a second mutation.
     for a hit matching source+rowLimit; if the cached entry also matches the
     current `structuralVersion` it short-circuits with no network call,
     otherwise it shows the cached data while re-fetching in the background.
-    Before any network preview is sent, the request awaits
-    the dynamically loaded `ensureInputSnapshots` on the resolved graph — its
-    cache-preparation code loads only when a preview requires it, rather than
-    during initial application startup. Missing snapshot-backed
+    Before any network preview is sent, the request asks the backend which
+    inputs the preview reads (`previewInputs`, `POST /api/pipeline/preview/inputs`
+    — none above a shared snapshot it seeds from, none outside its lineage) and
+    awaits the dynamically loaded `ensureInputSnapshots` on just those graph
+    nodes, an input instance contributing its original's config — its cache-preparation code loads only when a preview requires it,
+    rather than during initial application startup. Those missing snapshot-backed
     inputs are built or joined first (see the caching spec) — and an ensure
-    failure surfaces as that node's preview error; `refreshPreview` and
-    `previewNodeFrame` gate the same way.
+    failure surfaces as that node's preview error; `refreshPreview` (for the
+    union of its target and stale upstream previews) and `previewNodeFrame`
+    gate the same way.
     If the graph changes during this preparation, an otherwise current node
     preview must stop with a visible instruction to refresh; it must not
     execute the obsolete graph or leave the loading placeholder stranded.

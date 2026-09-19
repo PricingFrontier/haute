@@ -86,6 +86,13 @@ that is neither consumed nor explained, makes contract construction fail.
 3. `lineage_cache_key()` builds the shared preview/trace key from its request, including
    selected live-switch paths and upstream lineage.
 4. Executor and trace use the factory; graph fingerprint alone is not their cache key.
+5. `dataframe_graph_input_identity()` reads a scope's runtime inputs into a
+   `RuntimeInputIdentity`; its `fingerprint(extra)` hashes them with extra entries and
+   reads nothing, and `dataframe_graph_input_fingerprint()` is the two together.
+   `preview_lineage_cache_key()` accepts a caller's `runtime_input_identity` — the read an
+   entry must be keyed by — and a `seed_plan_fingerprint`, which joins the runtime-input
+   fingerprint as `extra["seed_plan"]`, so an entry computed from one seed generation is
+   never served for another; without one the key is unchanged.
 
 Utility-file hashes use a request memo in front of a process-wide `StatGatedCache`.
 Execution's runtime-path fingerprint cache is a separate `StatGatedCache` instance owned by

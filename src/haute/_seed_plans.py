@@ -742,6 +742,23 @@ def resolve_seed_plan(request: SeedPlanRequest, *, store: NodeSnapshotStore) -> 
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class ReadGeneration:
+    """A snapshot generation an execution's frames were computed from.
+
+    ``seeded``: the plan leased it and the execution read it instead of
+    computing the node. ``captured``: the execution computed the node,
+    published it, and everything below read the publication.
+    """
+
+    node_id: str
+    identity: SourceCacheIdentity
+    generation_id: str
+    columns: NodeSnapshotColumns
+    created_at: float
+    kind: Literal["seeded", "captured"]
+
+
 class _SeedMovedError(RuntimeError):
     """A seed stopped being current between resolution and its lease."""
 
@@ -771,6 +788,7 @@ class SeedPlan:
     _stack: contextlib.ExitStack = field(default_factory=contextlib.ExitStack)
     _closures: dict[str, dict[str, str]] = field(default_factory=dict)
     _generations: dict[str, SourceCacheGeneration] = field(default_factory=dict)
+    _published: dict[str, NodeSnapshotGeneration] = field(default_factory=dict)
     _closed: bool = False
 
     def __enter__(self) -> SeedPlan:
@@ -837,6 +855,47 @@ class SeedPlan:
     def register_artifact(self, artifact: NodeSnapshotArtifact) -> None:
         """Own one request-owned staged artifact until the plan closes."""
         self._stack.callback(artifact.close)
+
+    def record_published(self, node_id: str, generation: NodeSnapshotGeneration) -> None:
+        """Record the generation a capture published and its readers then read."""
+        self._published[node_id] = generation
+
+    def hold_generation(
+        self, identity: SourceCacheIdentity, generation_id: str
+    ) -> SourceCacheGeneration:
+        """Lease one more generation until the plan closes."""
+        return self._stack.enter_context(self.store.lease_generation(identity, generation_id))
+
+    def read_generations(self, order: Iterable[str]) -> tuple[ReadGeneration, ...]:
+        """Every generation this execution read, seeded or captured, in *order*.
+
+        A capture that kept its own artifact — quota, or superseded — is not
+        a generation anyone else can read, and is not listed.
+        """
+        reads: dict[str, ReadGeneration] = {}
+        for node_id, seed in self.decision.seeds.items():
+            described = self.store.describe_generation(
+                seed.identity, self._generations[seed.identity.digest]
+            )
+            reads[node_id] = ReadGeneration(
+                node_id=node_id,
+                identity=seed.identity,
+                generation_id=seed.generation_id,
+                columns=described.columns,
+                created_at=described.generation.metadata.created_at,
+                kind="seeded",
+            )
+        for node_id, published in self._published.items():
+            reads[node_id] = ReadGeneration(
+                node_id=node_id,
+                identity=published.identity,
+                generation_id=published.generation_id,
+                columns=published.columns,
+                created_at=published.generation.metadata.created_at,
+                kind="captured",
+            )
+        position = {node_id: index for index, node_id in enumerate(order)}
+        return tuple(sorted(reads.values(), key=lambda read: position.get(read.node_id, -1)))
 
     def record_closure(self, node_id: str, dependencies: Mapping[str, str]) -> None:
         """Record the generations *node_id*'s frame was computed from."""

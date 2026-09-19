@@ -911,6 +911,7 @@ class ExecutionContext:
     _input_preparation: list[Any] = field(default_factory=list, init=False)
     _shared_snapshot_seeds: list[Any] = field(default_factory=list, init=False)
     _shared_snapshot_captures: list[Any] = field(default_factory=list, init=False)
+    _preview_seed_plan: tuple[Any, ...] = field(default=(), init=False)
     _execution_warnings: list[dict[str, str | None]] = field(default_factory=list, init=False)
     _cache_proof_miss_reason_counts: dict[ExecutionCacheProofMissReason, int] = field(
         default_factory=lambda: {reason: 0 for reason in ExecutionCacheProofMissReason},
@@ -1233,6 +1234,17 @@ class ExecutionContext:
         """Record one full-data materialisation this execution wrote to shared snapshots."""
         with self._evidence_lock:
             self._shared_snapshot_captures.append(record)
+
+    def record_preview_seed_plan(self, generations: tuple[Any, ...]) -> None:
+        """Record the snapshot generations a preview's rows were computed from."""
+        with self._evidence_lock:
+            self._preview_seed_plan = tuple(generations)
+
+    @property
+    def preview_seed_plan(self) -> tuple[Any, ...]:
+        """The generations :meth:`record_preview_seed_plan` recorded, or none."""
+        with self._evidence_lock:
+            return self._preview_seed_plan
 
     def worker_evidence(self) -> dict[str, list[dict[str, Any]]]:
         """This execution's input preparation, seeds, captures, and warnings.

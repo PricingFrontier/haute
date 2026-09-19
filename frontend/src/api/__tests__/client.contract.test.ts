@@ -61,6 +61,7 @@ import {
   saveTrainedModel,
   listFiles,
   outputAssembleDryRun,
+  previewInputs,
   previewNode,
   readUtilityFile,
   runExplorePivot,
@@ -327,6 +328,29 @@ describe("client runtime contracts", () => {
   it("input-cache build rejects a malformed V1 response", async () => {
     mockFetch.mockReturnValue(jsonResponse({ schema_version: 2, job_id: "job", identity_digest: "digest", status: "running", joined: false }))
     await expect(buildInputCache({ schema_version: 1, config: {}, refresh: false, profile: "lazy_sink" })).rejects.toThrow(/parseInputCacheBuildResponse/i)
+  })
+
+  it("previewInputs asks which inputs a preview reads", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ input_node_ids: ["policies"] }))
+
+    const result = await previewInputs({
+      graph: dummyGraph,
+      nodeId: "n1",
+      source: "batch",
+      requestedPreviewColumns: ["premium"],
+      portLabel: "drivers",
+    })
+
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(String(url)).toContain("/api/pipeline/preview/inputs")
+    expect(JSON.parse(String(init?.body))).toEqual({
+      graph: dummyGraph,
+      node_id: "n1",
+      source: "batch",
+      requested_preview_columns: ["premium"],
+      port_label: "drivers",
+    })
+    expect(result).toEqual({ input_node_ids: ["policies"] })
   })
 
   it("previewNode sends requested preview columns when provided", async () => {

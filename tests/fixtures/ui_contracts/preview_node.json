@@ -164,5 +164,31 @@
       }
     ]
   },
-  "execution_metrics": null
+  "execution_metrics": null,
+  "seed_plan": [
+    {
+      "node_id": "join",
+      "port_label": null,
+      "node_label": "Join",
+      "identity_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "generation_id": "0b4f6f58-5b7e-4c55-9a0e-7f3a2d1c9e10",
+      "columns": [
+        "policy_id",
+        "premium",
+        "region"
+      ],
+      "created_at": "2026-09-18T21:30:00+00:00",
+      "kind": "seeded"
+    },
+    {
+      "node_id": "rates",
+      "port_label": null,
+      "node_label": "Rates",
+      "identity_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "generation_id": "5d1e2c3b-4a59-4f6e-8d7c-1b2a3c4d5e6f",
+      "columns": null,
+      "created_at": "2026-09-18T21:31:05+00:00",
+      "kind": "captured"
+    }
+  ]
 }

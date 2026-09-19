@@ -7,6 +7,7 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useToastStore from "../../stores/useToastStore"
 
 vi.mock("../../api/client", () => ({
+  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
   previewNode: vi.fn(),
 }))
 

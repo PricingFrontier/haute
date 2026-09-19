@@ -137,7 +137,9 @@ import type {
   OptimiserSolveResult,
   OptimiserStatusResponse,
   PolarsStepsRenderResponse,
+  PreviewInputsResponse,
   PreviewNodeResponse,
+  PreviewSeedPlanEntry,
   ApplyOptimiserResponse,
   SaveOptimiserResponse,
   SavePipelineResponse,
@@ -1467,6 +1469,39 @@ export function parsePreviewNodeResponse(value: unknown): PreviewNodeResponse {
       parseColumnInfo,
     ),
     execution_metrics: optionalExecutionMetrics("parsePreviewNodeResponse", obj, "execution_metrics"),
+    seed_plan: optionalArray("parsePreviewNodeResponse", obj, "seed_plan", parsePreviewSeedPlanEntry),
+  }
+}
+
+const PREVIEW_SEED_KINDS = ["seeded", "captured"] as const
+
+export function parsePreviewSeedPlanEntry(value: unknown, field: string): PreviewSeedPlanEntry {
+  const parser = "parsePreviewNodeResponse"
+  const obj = expectPlainObject(parser, value, field)
+  if (obj.port_label !== null && obj.port_label !== undefined) {
+    throw new Error(`${parser}: expected ${field}.port_label to be null`)
+  }
+  return {
+    node_id: expectNonBlankString(parser, obj.node_id, `${field}.node_id`),
+    port_label: null,
+    node_label: expectString(parser, obj.node_label, `${field}.node_label`),
+    identity_digest: expectNonBlankString(parser, obj.identity_digest, `${field}.identity_digest`),
+    generation_id: expectNonBlankString(parser, obj.generation_id, `${field}.generation_id`),
+    columns:
+      obj.columns === null ? null : parseStringArray(parser, obj.columns, `${field}.columns`),
+    created_at: expectNonBlankString(parser, obj.created_at, `${field}.created_at`),
+    kind: expectStringLiteral(parser, obj.kind, `${field}.kind`, PREVIEW_SEED_KINDS),
+  }
+}
+
+export function parsePreviewInputsResponse(value: unknown): PreviewInputsResponse {
+  const obj = expectPlainObject("parsePreviewInputsResponse", value)
+  return {
+    input_node_ids: parseStringArray(
+      "parsePreviewInputsResponse",
+      obj.input_node_ids,
+      "field `input_node_ids`",
+    ),
   }
 }
 

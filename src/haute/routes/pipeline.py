@@ -8,6 +8,7 @@ import time
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -46,7 +47,12 @@ from haute._io import read_user_text
 from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
 from haute._native_memory_limit import NativeMemoryLimitUnsupportedError
-from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
+from haute._node_snapshots import NodeSnapshotStore
+from haute._path_resolution import (
+    RuntimePathError,
+    resolve_runtime_file_path,
+    runtime_project_root_scope,
+)
 from haute._pipeline_recovery import (
     empty_pipeline_editor_document,
     pipeline_document_fingerprint,
@@ -68,7 +74,13 @@ from haute._polars_io_registry import (
 from haute._polars_steps import PolarsStepError, render_polars_steps
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, temporary_streaming_chunk_size
 from haute._sandbox import _get_project_root
-from haute._seed_plans import SeedPlanHandoff, open_seed_plan
+from haute._seed_plans import (
+    ReadGeneration,
+    SeedPlanHandoff,
+    open_seed_plan,
+    preview_input_node_ids,
+)
+from haute._source_cache import new_staging_token
 from haute._submodel_instances import qualified_runtime_node_id, resolve_submodel_instances
 from haute._topo import ancestors
 from haute._types import GraphEdge, GraphNode, NodeData, SubmodelDefinition
@@ -100,6 +112,7 @@ from haute.executor import (
     PreparedDataOutput,
     PreviewProjectionError,
     _preview_cache,
+    _preview_required_columns_by_node,
     commit_prepared_data_output,
     data_output_seed_plan_request,
     discard_data_output_staging_path,
@@ -163,8 +176,11 @@ from haute.schemas import (
     PipelineSummary,
     PolarsStepsRenderRequest,
     PolarsStepsRenderResponse,
+    PreviewInputsRequest,
+    PreviewInputsResponse,
     PreviewNodeRequest,
     PreviewNodeResponse,
+    PreviewSeedPlanEntry,
     ReadJsonRequest,
     ReadJsonResponse,
     RecoveryPreviewRequest,
@@ -1084,13 +1100,47 @@ def _preview_response_from_results(
         execution_metrics=ExecutionMetricsPayload.model_validate(
             execution_context.metrics_payload(status="completed")
         ),
+        seed_plan=_preview_seed_plan_entries(graph, execution_context.preview_seed_plan),
     )
+
+
+def _preview_seed_plan_entries(
+    graph: PipelineGraph, generations: tuple[ReadGeneration, ...]
+) -> list[PreviewSeedPlanEntry]:
+    node_map = graph.node_map
+    return [
+        PreviewSeedPlanEntry(
+            node_id=generation.node_id,
+            node_label=node_map[generation.node_id].data.label,
+            identity_digest=generation.identity.digest,
+            generation_id=generation.generation_id,
+            columns=(
+                None if generation.columns.names is None else sorted(generation.columns.names)
+            ),
+            created_at=datetime.fromtimestamp(generation.created_at, tz=UTC).isoformat(),
+            kind=generation.kind,
+        )
+        for generation in generations
+    ]
+
+
+def _discard_preview_staging(staging_token: str) -> None:
+    """Remove capture staging a preview worker left under its token.
+
+    Runs after the worker returned, failed, timed out, or was superseded; a
+    plan that closed normally already removed it, so this is then a no-op.
+    """
+    try:
+        NodeSnapshotStore(_get_project_root()).discard_node_output_staging(staging_token)
+    except OSError as exc:
+        logger.warning("preview_staging_discard_failed", error=str(exc))
 
 
 def _execute_preview_worker(
     graph: PipelineGraph,
     body: PreviewNodeRequest,
     budget: IsolatedExecutionBudget,
+    staging_token: str | None = None,
 ) -> PreviewNodeResponse:
     context = create_isolated_execution_context(budget)
     try:
@@ -1107,6 +1157,8 @@ def _execute_preview_worker(
                     include_schema_metadata=True,
                     port_label=body.port_label,
                     execution_context=context,
+                    shared_snapshots=True,
+                    staging_token=staging_token,
                 )
             return _preview_response_from_results(graph, body, results, context)
         except (ContractMismatchError, SchemaMismatchError, ParseError, ConfigError) as exc:
@@ -1360,22 +1412,29 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
             )
             if resolve_interactive_execution_mode() == "process":
                 budget = isolated_execution_budget(preview_context)
-                return await run_in_interactive_worker(
-                    _execute_preview_worker,
-                    graph,
-                    body,
-                    budget,
-                    affinity_key=_interactive_affinity_key(
+                # The worker's captures stage under this token; whatever a
+                # killed or superseded worker left there is removed here.
+                staging_token = new_staging_token()
+                try:
+                    return await run_in_interactive_worker(
+                        _execute_preview_worker,
                         graph,
-                        body.source,
-                        memo=fingerprint_memo,
-                    ),
-                    timeout_seconds=_preview_timeout(),
-                    stop_reason=(lambda: "superseded" if preview_token.cancelled else None),
-                    absolute_rss_limit_bytes=budget.process_rss_limit_bytes,
-                    memory_growth_limit_bytes=budget.memory_limit_bytes,
-                    require_memory_limit=resolve_worker_memory_enforcement() == "required",
-                )
+                        body,
+                        budget,
+                        staging_token,
+                        affinity_key=_interactive_affinity_key(
+                            graph,
+                            body.source,
+                            memo=fingerprint_memo,
+                        ),
+                        timeout_seconds=_preview_timeout(),
+                        stop_reason=(lambda: "superseded" if preview_token.cancelled else None),
+                        absolute_rss_limit_bytes=budget.process_rss_limit_bytes,
+                        memory_growth_limit_bytes=budget.memory_limit_bytes,
+                        require_memory_limit=resolve_worker_memory_enforcement() == "required",
+                    )
+                finally:
+                    _discard_preview_staging(staging_token)
             chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
 
             def _execute_graph_with_chunk_size() -> dict[str, Any]:
@@ -1390,6 +1449,7 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
                         include_schema_metadata=True,
                         port_label=body.port_label,
                         execution_context=preview_context,
+                        shared_snapshots=True,
                     )
 
             results = await run_blocking_with_response_timeout(
@@ -1502,6 +1562,69 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
 async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
     """Preview a client-supplied canonical graph."""
     return await _preview_canonical_graph(body)
+
+
+@router.post("/pipeline/preview/inputs", response_model=PreviewInputsResponse)
+async def preview_inputs(body: PreviewInputsRequest) -> PreviewInputsResponse:
+    """The inputs a preview of *node_id* would read, so the browser prepares only those.
+
+    Snapshot-backed Data Inputs and structured API Inputs, read without
+    preparing or leasing anything. The answer is advisory: a preview prepares
+    whatever its own plan then reads. A graph the preview cannot run as
+    authored — a shape, config, or contract error — has nothing to prepare,
+    and the preview itself reports that error at the node, as it always has.
+    """
+    try:
+        graph = flatten_graph(body.graph)
+    except (ParseError, ConfigError) as e:
+        logger.info("preview_inputs_graph_invalid", error=str(e))
+        return PreviewInputsResponse(input_node_ids=[])
+    _ensure_source_file(graph)
+    if not graph.nodes:
+        raise HTTPException(status_code=400, detail="Empty graph")
+    _ensure_printable_lookup_id(body.node_id, "node_id")
+    if body.node_id not in graph.node_map:
+        raise HTTPException(status_code=404, detail=f"Node '{body.node_id}' not found")
+    _validate_runtime_input_paths(graph)
+
+    def _resolve() -> tuple[str, ...]:
+        with runtime_project_root_scope(graph.source_file):
+            return preview_input_node_ids(
+                graph,
+                body.node_id,
+                source=body.source,
+                required_columns_by_node=_preview_required_columns_by_node(
+                    graph,
+                    body.node_id,
+                    body.requested_preview_columns,
+                )
+                or None,
+            )
+
+    try:
+        node_ids = await run_blocking_with_response_timeout(
+            _resolve,
+            timeout=_preview_timeout(),
+            operation="pipeline_preview_inputs",
+        )
+    except PreviewProjectionError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+    except (ParseError, ConfigError, ContractMismatchError, SchemaMismatchError) as e:
+        logger.info("preview_inputs_graph_invalid", error=str(e))
+        return PreviewInputsResponse(input_node_ids=[])
+    except (BlockingWorkTimeoutError, TimeoutError):
+        raise HTTPException(
+            status_code=504,
+            detail=f"Preview input resolution timed out ({_preview_timeout():.0f}s limit)",
+        ) from None
+    except HTTPException:
+        raise
+    except PUBLIC_CONTRACT_ERROR_TYPES as e:
+        raise contract_error_http_exception(e) from None
+    except Exception as e:
+        logger.error("preview_inputs_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
+    return PreviewInputsResponse(input_node_ids=list(node_ids))
 
 
 class _RecoveryPreviewRequestError(ValueError):

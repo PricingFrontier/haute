@@ -32,6 +32,7 @@ import useNodeResultsStore from "../../stores/useNodeResultsStore"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
+  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),

@@ -1184,6 +1184,31 @@ def _runtime_input_fingerprint_entry(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeInputIdentity:
+    """The runtime inputs of one scope, read once.
+
+    Hashing it, with or without extra entries, reads nothing: a fingerprint
+    built from it describes the inputs as they were when it was read, however
+    long ago that was.
+    """
+
+    payload: Mapping[str, object]
+
+    def fingerprint(self, extra: Mapping[str, object] | None = None) -> str:
+        inputs = checked_cache_inputs(
+            CacheConsumer.RUNTIME_GRAPH_INPUT,
+            {**self.payload, "extra": dict(sorted((extra or {}).items()))},
+        )
+        digest = content_hash_bytes(inputs.canonical_bytes)
+        return f"runtime-input:v{inputs.contract.version}:{digest}"
+
+    @property
+    def digest(self) -> str:
+        """The identity itself, for comparing two reads of the same scope."""
+        return self.fingerprint()
+
+
 def dataframe_graph_input_fingerprint(
     graph: PipelineGraph,
     *,
@@ -1200,6 +1225,24 @@ def dataframe_graph_input_fingerprint(
     component is not a standalone execution identity: callers pair it with
     their checked graph or lineage fingerprint.
     """
+    return dataframe_graph_input_identity(
+        graph,
+        target_node_id=target_node_id,
+        source=source,
+        ignore_node_ids=ignore_node_ids,
+        memo=memo,
+    ).fingerprint(extra_fingerprints)
+
+
+def dataframe_graph_input_identity(
+    graph: PipelineGraph,
+    *,
+    target_node_id: str | None,
+    source: str,
+    ignore_node_ids: Iterable[str] = (),
+    memo: GraphFingerprintMemo | None = None,
+) -> RuntimeInputIdentity:
+    """Read the runtime inputs :func:`dataframe_graph_input_fingerprint` signs."""
 
     graph = canonical_dataframe_execution_graph(graph)
     if target_node_id is not None and target_node_id not in graph.node_map:
@@ -1231,8 +1274,7 @@ def dataframe_graph_input_fingerprint(
         for node in sorted(scoped_graph.nodes, key=lambda item: item.id)
         if node.data.nodeType in runtime_input_node_types
     ]
-    inputs = checked_cache_inputs(
-        CacheConsumer.RUNTIME_GRAPH_INPUT,
+    return RuntimeInputIdentity(
         {
             "source": source,
             "sources": source_entries,
@@ -1242,10 +1284,8 @@ def dataframe_graph_input_fingerprint(
                 pipeline_dir=_cache_pipeline_dir(scoped_graph),
                 memo=memo,
             ),
-            "extra": dict(sorted((extra_fingerprints or {}).items())),
-        },
+        }
     )
-    return f"runtime-input:v{inputs.contract.version}:{content_hash_bytes(inputs.canonical_bytes)}"
 
 
 def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict[str, Path]:
@@ -1333,16 +1373,21 @@ def _preview_contract_fingerprint(
     return f"preview-contract-v{_PREVIEW_CONTRACT_FINGERPRINT_VERSION}:{digest}"
 
 
-def _lineage_runtime_input_fingerprint(
+def lineage_runtime_input_identity(
     graph: PipelineGraph,
-    prepared: PreparedGraph,
     *,
+    target_node_id: str | None,
     source: str,
-    memo: GraphFingerprintMemo | None,
-) -> str:
-    relevant_graph = _lineage_runtime_graph(graph, prepared)
-    return dataframe_graph_input_fingerprint(
-        relevant_graph,
+    memo: GraphFingerprintMemo | None = None,
+) -> RuntimeInputIdentity:
+    """Read the runtime inputs of *target_node_id*'s source-pruned lineage.
+
+    The identity the preview/trace cache key signs; a caller that must key an
+    entry by the inputs its execution read, not by a later read, keeps it.
+    """
+    prepared = prepare_graph(graph, target_node_id, source=source)
+    return dataframe_graph_input_identity(
+        _lineage_runtime_graph(graph, prepared),
         target_node_id=None,
         source=source,
         memo=memo,
@@ -1361,9 +1406,26 @@ def preview_lineage_cache_key(
     enforce_contracts: bool,
     materialisation_scope: str,
     memo: GraphFingerprintMemo | None = None,
+    runtime_input_identity: RuntimeInputIdentity | None = None,
+    seed_plan_fingerprint: str | None = None,
 ) -> str:
-    """Return the sole preview/trace cache identity for one target lineage."""
+    """Return the sole preview/trace cache identity for one target lineage.
+
+    *seed_plan_fingerprint* names the snapshot generations the execution
+    seeded from; it joins the runtime-input fingerprint, so an entry computed
+    from one seed generation is never served for another. An execution that
+    seeds nothing passes ``None`` and computes, and is keyed as, the same data
+    as one without a plan. *runtime_input_identity*, when given, is the read
+    of the lineage's inputs to sign instead of reading them again.
+    """
     prepared = prepare_graph(graph, target_node_id, source=source)
+    identity = (
+        runtime_input_identity
+        if runtime_input_identity is not None
+        else lineage_runtime_input_identity(
+            graph, target_node_id=target_node_id, source=source, memo=memo
+        )
+    )
     request = LineageCacheKeyRequest(
         graph=graph,
         prepared=prepared,
@@ -1378,11 +1440,8 @@ def preview_lineage_cache_key(
             materialisation_scope=materialisation_scope,
         ),
         selected_live_switch_path=selected_live_switch_path(prepared),
-        runtime_input_fingerprint=_lineage_runtime_input_fingerprint(
-            graph,
-            prepared,
-            source=source,
-            memo=memo,
+        runtime_input_fingerprint=identity.fingerprint(
+            {"seed_plan": seed_plan_fingerprint} if seed_plan_fingerprint is not None else None
         ),
         execution_semantics_version=PREVIEW_EXECUTION_SEMANTICS_VERSION,
     )

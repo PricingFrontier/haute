@@ -89,6 +89,7 @@ import type {
   OutputDestinationResponse,
   PipelineGraph,
   PolarsStepsRenderResponse,
+  PreviewInputsResponse,
   PreviewNodeResponse,
   SaveOptimiserRequest,
   SaveOptimiserResponse,
@@ -181,6 +182,7 @@ import {
   parseOutputAssembleDryRunResponse,
   parsePipelineResponse,
   parsePolarsStepsRenderResponse,
+  parsePreviewInputsResponse,
   parsePreviewNodeResponse,
   parseSavePipelineResponse,
   parseSchemaResponse,
@@ -859,6 +861,36 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
     },
     { signal, timeout },
   ).then((data) => parsePreviewNodeResponse(data) as PreviewNodeResponse)
+}
+
+export interface PreviewInputsArgs {
+  graph: GraphPayload
+  nodeId: string
+  source?: string
+  requestedPreviewColumns?: string[]
+  portLabel?: string
+  signal?: AbortSignal
+}
+
+/**
+ * The inputs a preview of `nodeId` would read — snapshot-backed Data Inputs
+ * and structured API Inputs — so only those are prepared before it. A preview
+ * seeded from shared snapshots reads nothing above its seeds.
+ */
+export function previewInputs(args: PreviewInputsArgs): Promise<PreviewInputsResponse> {
+  return post<unknown>(
+    "/api/pipeline/preview/inputs",
+    {
+      graph: args.graph,
+      node_id: args.nodeId,
+      source: args.source ?? "live",
+      ...(args.requestedPreviewColumns
+        ? { requested_preview_columns: args.requestedPreviewColumns }
+        : {}),
+      ...(args.portLabel !== undefined ? { port_label: args.portLabel } : {}),
+    },
+    { signal: args.signal },
+  ).then(parsePreviewInputsResponse)
 }
 
 export interface RenderPolarsStepsArgs {

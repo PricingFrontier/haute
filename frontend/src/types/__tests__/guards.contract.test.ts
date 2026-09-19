@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import {
   parseApplyOptimiserResponse,
+  parsePreviewInputsResponse,
   parseDissolveSubmodelResponse,
   parseExplorePivotMembersResponse,
   parseExplorePivotRunResponse,
@@ -556,6 +557,44 @@ describe("API response guards", () => {
         node_id: "n1",
       }),
     ).toThrow(/status/i)
+  })
+
+  it("parses the generations a preview was computed from", () => {
+    const parsed = parsePreviewNodeResponse(loadUiContractFixture("preview_node"))
+
+    expect(parsed.seed_plan).toEqual([
+      expect.objectContaining({
+        node_id: "join",
+        port_label: null,
+        node_label: "Join",
+        columns: ["policy_id", "premium", "region"],
+        kind: "seeded",
+      }),
+      expect.objectContaining({ node_id: "rates", columns: null, kind: "captured" }),
+    ])
+  })
+
+  it("defaults the seed plan to empty and rejects malformed entries", () => {
+    const { seed_plan: _omitted, ...withoutPlan } = loadUiContractFixture<Record<string, unknown>>(
+      "preview_node",
+    )
+    expect(parsePreviewNodeResponse(withoutPlan).seed_plan).toEqual([])
+
+    const fixture = loadUiContractFixture<{ seed_plan: Record<string, unknown>[] }>("preview_node")
+    const entry = fixture.seed_plan[0]
+    expect(() =>
+      parsePreviewNodeResponse({ ...fixture, seed_plan: [{ ...entry, kind: "borrowed" }] }),
+    ).toThrow(/kind/)
+    expect(() =>
+      parsePreviewNodeResponse({ ...fixture, seed_plan: [{ ...entry, port_label: "drivers" }] }),
+    ).toThrow(/port_label/)
+  })
+
+  it("parses the inputs a preview would read", () => {
+    expect(parsePreviewInputsResponse({ input_node_ids: ["policies", "quotes"] })).toEqual({
+      input_node_ids: ["policies", "quotes"],
+    })
+    expect(() => parsePreviewInputsResponse({ input_node_ids: [1] })).toThrow(/input_node_ids/)
   })
 
   it("parses preview truncation metadata", () => {

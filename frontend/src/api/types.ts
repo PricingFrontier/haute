@@ -324,12 +324,37 @@ export interface SavePipelineResponse {
   identity_required?: boolean
 }
 
+/** One shared-snapshot generation a preview's collected rows were computed from. */
+export interface PreviewSeedPlanEntry {
+  node_id: string
+  /** Always null: only node outputs are seeded or captured. */
+  port_label: null
+  node_label: string
+  identity_digest: string
+  generation_id: string
+  /** The generation's column set; null means all columns. */
+  columns: string[] | null
+  /** ISO-8601 UTC. */
+  created_at: string
+  /** `seeded`: read instead of computing the node. `captured`: computed by
+   * this preview, written, and read by everything below it. */
+  kind: "seeded" | "captured"
+}
+
 export interface PreviewNodeResponse extends NodeResult {
   node_id: string
   /** Per-frame column schemas for multi-frame producers, keyed
    * node_id → frame label → columns. Only nodes that emit 2+ frames appear;
    * single-frame nodes are absent. Additive to `node_columns`. */
   node_frame_columns?: Record<string, Record<string, ColumnInfo[]>>
+  /** Every snapshot generation the rows were computed from, in topological
+   * order; empty when the preview read no snapshot. */
+  seed_plan?: PreviewSeedPlanEntry[]
+}
+
+/** The inputs a preview would read, so only those are prepared before it. */
+export interface PreviewInputsResponse {
+  input_node_ids: string[]
 }
 
 export interface SubmodelCreateResponse {
