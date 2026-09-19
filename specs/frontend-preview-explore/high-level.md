@@ -21,7 +21,18 @@ Modelling and optimiser result presentation belongs to
 ## Behaviour
 
 - Data previews render loading, error and successful data, support column search, selected-frame
-  switching, trace-cell clicks, and virtualise large row/column grids.
+  switching, trace-cell clicks, and virtualise large row/column grids. Row limits, column
+  limits, and the table's rendering do not depend on where the rows came from.
+- When a preview's rows were computed from shared snapshots instead of recomputing those
+  nodes, the panel shows "Using cached data from" with their node labels. A preview is current
+  only while no snapshot has been published, widened, refreshed, or cleared since it was
+  requested: the displayed preview is then fetched again — a backend cache hit when its seeds
+  did not change — and other nodes' stored previews when next displayed. A preview's own
+  captures do not fetch it again unless something else changed while it was in flight.
+- A trace carries the seed plan of the preview it explains. When that preview or the
+  snapshots change, the displayed trace and highlight are hidden, an in-flight trace is
+  aborted, and a late response is discarded; a trace whose snapshots have expired refreshes
+  the preview.
 - Explore reads the shared data point its node resolves to, exposes Preview, Overview, Pivots,
   and Charts tabs in that order, and renders statistics only from the shared profile of the data
   version that point currently holds. An active job remains visible and cancellable if the graph
@@ -148,27 +159,5 @@ aborts an in-flight inspection, and a document-fence change prevents a late repl
 state. Invalid optional overview configuration is discarded while parsing. Invalid
 chart- or pivot-card configuration is surfaced in its pane rather than silently replaced, while
 malformed data that a renderer cannot safely interpret is allowed to surface rather than being
-fabricated.
-
-## Approved change contract — previews from cached data
-
-- **Current limitation.** A preview below a join or a group-by recomputes that upstream work over
-  the full data on every backend cache miss, keeps none of it for later previews, runs, or editors,
-  and the preview panel cannot tell the user whether any rows came from cached data.
-- **Unresolved target.** When the backend seeds a preview from snapshots, the preview panel shows
-  "Using cached data from" with the seeded node labels. Preview results record the node-data epoch
-  they were fetched under and are refetched when a snapshot is published, widened, evicted, or
-  cleared, except that a preview's own captures do not refetch that preview when nothing else
-  changed the epoch while it was in flight. A trace request carries
-  the seed plan of the preview it explains; trace validity includes that preview's identity and the
-  epoch, so when either changes the displayed trace and highlight are hidden, an in-flight trace is
-  aborted, and a late response is discarded.
-- **Non-goals.** Preview row limits, column limits, and the preview table's rendering are
-  unchanged.
-- **Failure and compatibility semantics.** A preview whose response lists no seeds shows no cached
-  data label; a refetch after an epoch change that fails surfaces the existing preview error.
-- **Acceptance evidence.** Tests show a preview fetched before a snapshot publishes is refetched
-  after the epoch increments, a preview's own capture does not refetch it, the panel lists the
-  seeded node labels, and completed and in-flight traces are invalidated when the snapshot they
-  depend on is refreshed or cleared.
-- **Roadmap package.** [CACHE-S09](../roadmap/caching.md#cache-s09--previews-and-traces-seed-from-and-capture-into-shared-snapshots).
+fabricated. A preview that read no snapshot shows no cached data label, and a refetch after a
+snapshot change that fails shows the ordinary preview error.

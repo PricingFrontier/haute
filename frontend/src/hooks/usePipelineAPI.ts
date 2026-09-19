@@ -123,6 +123,15 @@ const INITIAL_PIPELINE_RETRY_POLICY = {
 } satisfies RetryPolicy
 
 export const DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT = 4
+/** How many times a preview prepares again for a graph changed during its preparation. */
+export const MAX_PREVIEW_PREPARATION_RESTARTS = 2
+
+interface ImmediatePreviewOptions {
+  bypassCache?: boolean
+  snapshotsEnsured?: boolean
+  /** Preparations already abandoned because the graph changed under them. */
+  preparationRestarts?: number
+}
 export const PREVIEW_INITIAL_COLUMN_LIMIT = 200
 
 const NON_EXECUTABLE_PREVIEW_TYPES = new Set<string>([
@@ -426,6 +435,9 @@ export default function usePipelineAPI({
   // A frame preview is never stored, so the node-data epoch it is current at
   // — and the frame to fetch again — is kept beside the object the panel shows.
   const framePreviewEpochs = useRef(new WeakMap<PreviewData, { epoch: number; portLabel: string }>())
+  const fetchPreviewImmediateRef = useRef<
+    ((node: Node, existingRequestId?: number, options?: ImmediatePreviewOptions) => void) | null
+  >(null)
 
   // Stable refs for values that change across renders but shouldn't
   // trigger re-creation of callbacks. Read at call-time instead.
@@ -565,7 +577,7 @@ export default function usePipelineAPI({
     }
   }, [adoptPipelineDocument, addToast])
 
-  const fetchPreviewImmediate = useCallback((node: Node, existingRequestId?: number, options?: { bypassCache?: boolean; snapshotsEnsured?: boolean }) => {
+  const fetchPreviewImmediate = useCallback((node: Node, existingRequestId?: number, options?: ImmediatePreviewOptions) => {
     const requestId = existingRequestId ?? ++previewRequestSeq.current
     // Abort any in-flight preview request
     previewAbort.current?.abort()
@@ -844,6 +856,22 @@ export default function usePipelineAPI({
         throw new DOMException("Preview request was superseded.", "AbortError")
       }
       if (useGraphStore.getState().structuralVersion !== structuralVersion) {
+        // Preparation asks the backend which inputs the preview reads, so an
+        // editor settling its node's config — the Apply editor mirroring its
+        // artifact — often lands here. Prepare again for the graph as it now
+        // is, as a new request, rather than execute the obsolete graph; only a
+        // graph that keeps changing stops with the refresh instruction.
+        const restarts = options?.preparationRestarts ?? 0
+        const current = graphRef.current.nodes.find((candidate) => candidate.id === node.id)
+        const restart = fetchPreviewImmediateRef.current
+        if (current && restart && restarts < MAX_PREVIEW_PREPARATION_RESTARTS) {
+          restart(current, undefined, {
+            ...options,
+            snapshotsEnsured: false,
+            preparationRestarts: restarts + 1,
+          })
+          throw new DOMException("Preview request was superseded.", "AbortError")
+        }
         throw new Error("The pipeline changed while preparing this preview. Refresh to preview the updated pipeline.")
       }
       if (recoveryPreview) {
@@ -980,6 +1008,10 @@ export default function usePipelineAPI({
         })
       })
   }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews])
+
+  useEffect(() => {
+    fetchPreviewImmediateRef.current = fetchPreviewImmediate
+  }, [fetchPreviewImmediate])
 
   const fetchPreview = useCallback((node: Node, options: FetchPreviewOptions = {}) => {
     const requestId = ++previewRequestSeq.current

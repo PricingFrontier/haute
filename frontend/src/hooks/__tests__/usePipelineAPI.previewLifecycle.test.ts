@@ -25,7 +25,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
-import usePipelineAPI from "../usePipelineAPI"
+import usePipelineAPI, { MAX_PREVIEW_PREPARATION_RESTARTS } from "../usePipelineAPI"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
@@ -75,7 +75,8 @@ vi.mock("../../utils/makePreviewData", () => ({
   })),
 }))
 
-import { loadPipeline, previewNode } from "../../api/client"
+import { loadPipeline, previewInputs, previewNode } from "../../api/client"
+import { resolveGraphFromRefs } from "../../utils/buildGraph"
 import { ensureInputSnapshots } from "../ensureInputSnapshots"
 import { makeNode } from "../../test-utils/factories"
 import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
@@ -139,6 +140,10 @@ describe("usePipelineAPI — preview lifecycle terminal states (W0)", () => {
     mockLoad.mockReset()
     mockPreview.mockReset()
     vi.mocked(ensureInputSnapshots).mockReset().mockResolvedValue(undefined)
+    vi.mocked(resolveGraphFromRefs).mockReset().mockReturnValue(
+      { nodes: [], edges: [], preamble: "" } as unknown as ReturnType<typeof resolveGraphFromRefs>,
+    )
+    vi.mocked(previewInputs).mockClear()
   })
 
   afterEach(() => {
@@ -147,7 +152,7 @@ describe("usePipelineAPI — preview lifecycle terminal states (W0)", () => {
     vi.restoreAllMocks()
   })
 
-  it.each([false, true])("finishes interrupted input preparation without reviving a deleted node (deleted=%s)", async (deleted) => {
+  it("finishes interrupted input preparation without reviving a deleted node", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     let finishPreparation!: () => void
     vi.mocked(ensureInputSnapshots).mockImplementationOnce(() => new Promise<void>((resolve) => {
@@ -164,25 +169,95 @@ describe("usePipelineAPI — preview lifecycle terminal states (W0)", () => {
     expect(result.current.previewData?.status).toBe("loading")
     act(() => {
       useGraphStore.setState((state) => ({ structuralVersion: state.structuralVersion + 1 }))
-      if (deleted) {
-        params.graphRef.current = { nodes: [], edges: [] }
-        result.current.setPreviewData(null)
-      }
+      params.graphRef.current = { nodes: [], edges: [] }
+      result.current.setPreviewData(null)
     })
     await act(async () => finishPreparation())
     await waitFor(() => expect(result.current.previewBusy).toBe(false))
 
-    if (deleted) {
-      expect(result.current.previewData).toBeNull()
-    } else {
-      expect(result.current.previewData).toMatchObject({
-        nodeId: node.id,
-        status: "error",
-        error: "The pipeline changed while preparing this preview. Refresh to preview the updated pipeline.",
-      })
-    }
+    expect(result.current.previewData).toBeNull()
+    expect(ensureInputSnapshots).toHaveBeenCalledTimes(1)
     expect(mockPreview).not.toHaveBeenCalled()
     expect(useNodeResultsStore.getState().getPreview(node.id)).toBeNull()
+  })
+
+  it("prepares again for a graph that changed during preparation and previews that graph", async () => {
+    // The Apply editor mirrors its loaded artifact into node config while
+    // the preview's inputs are being prepared.
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
+    mockPreview.mockResolvedValue(okEnvelope)
+    let finishFirst!: () => void
+    let finishSecond!: () => void
+    vi.mocked(ensureInputSnapshots)
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { finishFirst = resolve }))
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { finishSecond = resolve }))
+    const node = makeNode("browser_apply", "optimiserApply")
+    const params = makeParams()
+    params.graphRef.current = { nodes: [node], edges: [] }
+    // The graph each request sends is the one the editor holds when it is resolved.
+    vi.mocked(resolveGraphFromRefs).mockImplementation((graphRef) => ({
+      nodes: graphRef.current.nodes,
+      edges: graphRef.current.edges,
+      preamble: "",
+    }) as unknown as ReturnType<typeof resolveGraphFromRefs>)
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => result.current.fetchPreview(node, { debounceMs: 0 }))
+    await waitFor(() => expect(ensureInputSnapshots).toHaveBeenCalledTimes(1))
+    const mirrored = makeNode("browser_apply", "optimiserApply", {
+      data: { config: { optimiser_mode: "online" } },
+    })
+    act(() => {
+      params.graphRef.current = { nodes: [mirrored], edges: [] }
+      useGraphStore.setState((state) => ({ structuralVersion: state.structuralVersion + 1 }))
+    })
+    const changedVersion = useGraphStore.getState().structuralVersion
+    await act(async () => finishFirst())
+    await waitFor(() => expect(ensureInputSnapshots).toHaveBeenCalledTimes(2))
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    // The abandoned preparation never ends the busy state of the new one.
+    expect(result.current.previewBusy).toBe(true)
+    expect(result.current.previewData?.status).not.toBe("error")
+    await act(async () => finishSecond())
+
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+    await waitFor(() => expect(result.current.previewBusy).toBe(false))
+    expect(ensureInputSnapshots).toHaveBeenCalledTimes(2)
+    expect(mockPreview).toHaveBeenCalledTimes(1)
+    expect(useNodeResultsStore.getState().getPreview(node.id)?.structuralVersion).toBe(changedVersion)
+    // Both the second preparation and the preview itself carry the mirrored config.
+    const configSent = (graph: unknown) =>
+      (graph as { nodes: Node[] }).nodes.find((candidate) => candidate.id === node.id)?.data.config
+    const inputRequests = vi.mocked(previewInputs).mock.calls
+    expect(configSent(inputRequests.at(-1)?.[0].graph)).toMatchObject({ optimiser_mode: "online" })
+    expect(configSent(mockPreview.mock.calls[0][0].graph)).toMatchObject({ optimiser_mode: "online" })
+  })
+
+  it("stops with the refresh instruction when the graph keeps changing during preparation", async () => {
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
+    vi.mocked(ensureInputSnapshots).mockImplementation(async () => {
+      useGraphStore.setState((state) => ({ structuralVersion: state.structuralVersion + 1 }))
+    })
+    const node = makeNode("browser_apply", "optimiserApply")
+    const params = makeParams()
+    params.graphRef.current = { nodes: [node], edges: [] }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => result.current.fetchPreview(node, { debounceMs: 0 }))
+
+    await waitFor(() => expect(result.current.previewData).toMatchObject({
+      nodeId: node.id,
+      status: "error",
+      error: "The pipeline changed while preparing this preview. Refresh to preview the updated pipeline.",
+    }))
+    await waitFor(() => expect(result.current.previewBusy).toBe(false))
+    expect(ensureInputSnapshots).toHaveBeenCalledTimes(MAX_PREVIEW_PREPARATION_RESTARTS + 1)
+    expect(mockPreview).not.toHaveBeenCalled()
   })
 
   it("renders a preview response that arrives after a mid-flight structuralVersion bump", async () => {

@@ -627,9 +627,14 @@ reconciliation rather than dropping them or committing a second mutation.
     failure surfaces as that node's preview error; `refreshPreview` (for the
     union of its target and stale upstream previews) and `previewNodeFrame`
     gate the same way.
-    If the graph changes during this preparation, an otherwise current node
-    preview must stop with a visible instruction to refresh; it must not
-    execute the obsolete graph or leave the loading placeholder stranded.
+    If the graph changes during this preparation — an editor settling its
+    node's config, such as the Apply editor mirroring its loaded artifact,
+    commonly lands in the `previewInputs` round trip — an otherwise current
+    node preview is prepared again for the graph as it now is, as a new request
+    (so the abandoned one can neither paint nor end the new one's busy state),
+    up to `MAX_PREVIEW_PREPARATION_RESTARTS` (2) times; a graph that keeps
+    changing stops with a visible instruction to refresh. It never executes the
+    obsolete graph or leaves the loading placeholder stranded.
     A newer request, changed document fence, or deleted node retains ownership
     of its current panel state, so late preparation cannot restore that node.
     Structured Quote Inputs participate in this automatic preparation only
@@ -1457,7 +1462,10 @@ again through the editor and save paths.
   - `frontend/src/hooks/__tests__/usePipelineAPI.previewLifecycle.test.ts` (W0) — a preview response or
     failure arriving after a mid-flight structuralVersion bump still
     reaches a terminal panel state; a node deleted mid-flight is never
-    resurrected into the panel or cache.
+    resurrected into the panel or cache; a graph changed during input
+    preparation is prepared again and previewed at its new version, with the
+    abandoned preparation never ending the new request's busy state, and a
+    graph that keeps changing stops with the refresh instruction.
   - `frontend/src/hooks/__tests__/usePipelineAPI.refPattern.test.ts` (#33/#34) — a single
     `activeSource` snapshot spans a fetch and its downstream cascade;
     `handleSave` reads `activeSource` at invocation time, not a stale
@@ -1662,7 +1670,9 @@ again through the editor and save paths.
   branch; exact preservation of a named API-input `sourceHandle`; immediate
   drill into an unsaved whole-graph submodel with that API Input and its
   authoritative frame handle rendered; and a
-  downstream trace retaining both Edge Join ancestors, leaving them undimmed,
+  downstream trace retaining both Edge Join ancestors — as steps, or the one
+  above a join read from its shared snapshot as a `snapshot_seed` omission —
+  leaving them undimmed,
   and highlighting their connecting path while reserving node-active styling
   for column-relevant steps. All
   drag points are derived from live locator geometry and every assertion is

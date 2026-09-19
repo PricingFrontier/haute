@@ -1493,3 +1493,104 @@ def test_a_preview_seeded_below_unadmittable_work_is_still_admitted(
         ("G", g1)
     ]
     assert body["row_count"] == 2
+
+
+def _renamed_edge_join(project: Path, selected: list[str] | None) -> PipelineGraph:
+    """``raw_rows`` left-joined to ``lookup_rows`` by an Edge Join that renames and selects."""
+    pl.DataFrame(
+        {"_id": [1, 2], "premium": [12.5, 25.0], "segment": ["North", "South"], "discard": [99, 88]}
+    ).write_parquet(project / "columns.parquet")
+    pl.DataFrame({"_id": [1, 2]}).write_parquet(project / "keys.parquet")
+    config: dict[str, Any] = {
+        "how": "left",
+        "on": ["_id"],
+        "column_renames": {"_id": "identifier", "segment": "region"},
+    }
+    if selected is not None:
+        config["selected_columns"] = selected
+    return PipelineGraph(
+        nodes=[
+            _node("raw_rows", NodeType.DATA_INPUT, _parquet(project / "columns.parquet")),
+            _node("lookup_rows", NodeType.DATA_INPUT, _parquet(project / "keys.parquet")),
+            _node("subject", NodeType.EDGE_JOIN, config),
+        ],
+        edges=[
+            GraphEdge(id="e0", source="raw_rows", target="subject", targetHandle="base"),
+            GraphEdge(id="e1", source="lookup_rows", target="subject", targetHandle="join"),
+        ],
+        preamble="import polars as pl",
+        source_file=str(project / "main.py"),
+    )
+
+
+def test_a_node_that_shapes_its_columns_is_computed_and_reports_them_before_shaping(
+    api: Any, project: Path
+) -> None:
+    graph = _renamed_edge_join(project, ["_id", "premium", "segment"])
+    first = _post_preview(api, graph, "subject")
+    assert _plan_of(first) == [("subject", "captured")]
+
+    # Another request that misses the response cache: the capture is fresh,
+    # yet the node is computed again, because its Columns editor offers the
+    # columns it had before its own selection and renames.
+    second = _post_preview(api, graph, "subject", requested_preview_columns=["identifier"])
+
+    # Neither read nor written again: its fresh generation already covers it.
+    assert _plan_of(second) == []
+    assert [column["name"] for column in second["columns"]] == ["identifier", "premium", "region"]
+    assert [column["name"] for column in second["available_columns"]] == [
+        "_id",
+        "premium",
+        "segment",
+        "discard",
+    ]
+
+
+def test_a_preview_below_a_node_that_shapes_its_columns_computes_it(
+    api: Any, project: Path
+) -> None:
+    graph = _renamed_edge_join(project, ["_id", "premium", "segment"])
+    graph.nodes.append(
+        _node("below", NodeType.POLARS, _code("df = subject.with_columns(pl.lit(1).alias('one'))"))
+    )
+    graph.edges.append(GraphEdge(id="e2", source="subject", target="below"))
+    _post_preview(api, graph, "subject")
+
+    body = _post_preview(api, graph, "below")
+
+    # ``subject``'s generation is fresh, but its pre-shaping columns would be
+    # unknown if it were read: it is computed, and its schema is exact.
+    assert ("subject", "seeded") not in _plan_of(body)
+    assert [column["name"] for column in body["node_available_columns"]["subject"]] == [
+        "_id",
+        "premium",
+        "segment",
+        "discard",
+    ]
+
+
+def test_a_requested_column_the_node_no_longer_produces_is_refused_as_without_a_plan(
+    api: Any, project: Path
+) -> None:
+    # The browser asks for the columns it showed last; after a column is
+    # deselected that list still names it. A capture does not turn that hint
+    # into demand the node must meet: the request is refused as it is when
+    # nothing is seeded or captured.
+    first = _post_preview(api, _renamed_edge_join(project, None), "subject")
+    shown = [column["name"] for column in first["columns"]]
+    assert shown == ["identifier", "premium", "region", "discard"]
+
+    response = api.post(
+        "/api/pipeline/preview",
+        json={
+            "graph": _renamed_edge_join(project, ["_id", "premium", "segment"]).model_dump(
+                mode="json"
+            ),
+            "node_id": "subject",
+            "row_limit": 200,
+            "requested_preview_columns": shown,
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "Requested preview column(s) not found on target: discard"

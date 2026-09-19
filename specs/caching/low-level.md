@@ -260,7 +260,15 @@ resulting plan.
   `(source, sourceHandle)` — (`structural`). Being consumed, fanning out, feeding a join, or
   being a Model Score (which scores row-locally under a limit) does not by itself make a node a
   capture point; a target, fan-out, or join feeder that is itself a join or materialisation is
-  captured. A preview may seed its own target.
+  captured. A preview may seed its own target, but it never seeds a node whose own or
+  instance-resolved config selects or renames its output columns (`selected_columns`,
+  `column_renames`): a preview reports every node's columns before that shaping — the columns
+  its Columns editor offers and its stale-selection warnings check — which a generation holding
+  the shaped output cannot supply. Such a node is executed; a preview may still capture it, for
+  the bounded executions that seed from it. A preview's caller demand is only which columns to
+  show first, so its request is `best_effort_demand`: no capture's columns are strict, and a
+  requested column the target does not produce is refused as it is without a plan (400)
+  rather than as a capture that lacks it.
 - **Negotiation.** Each capture's demand is the run's demand there, the best-effort capture
   columns, and the columns of its identity's latest generation, fresh or stale, so a rebuild
   never narrows a generation. All columns plan as `AllExcept()`, and a caller's unresolved
@@ -275,7 +283,7 @@ resulting plan.
   after an ancestor is cleared. Resolution restarts until nothing drops; a dropped seed is never
   re-added.
 - **Decision.** A capture records the negotiated columns it writes and the strict columns the run
-  itself needs. `runtime_input_fingerprint` is `dataframe_graph_input_fingerprint` over only the
+  itself needs — none for a `best_effort_demand` request. `runtime_input_fingerprint` is `dataframe_graph_input_fingerprint` over only the
   executed nodes (a seed's inputs cannot change what the run reads); `lineage_fingerprint` is the
   graph fingerprint of the target's upstream subgraph; `fingerprint` is `seed-plan:v1:` and the
   SHA-256 of the sorted `(identity digest, generation id)` pairs of the seeds only.

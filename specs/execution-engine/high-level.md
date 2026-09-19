@@ -36,7 +36,9 @@ running heavy work in a child process the parent can kill on timeout or memory l
   [seed plan](../caching/low-level.md#seed-plans), reading fresh shared snapshots
   and capturing fan-in/fan-out/join-feeder, materialising, batch Model Score, and
   consumed points into the shared snapshot store, which bounds Polars plan duplication
-  and lets the next execution start there.
+  and lets the next execution start there. An admitted preview runs under its own plan,
+  capturing its joins and materialising operations; a trace runs under the plan of the
+  preview it explains.
 - `ExecutionContext`/`ExecutionProfile`: the per-run cancellation token, optional
   memory budget, stage-timing/RSS-sampling instrumentation, and admission control used
   by route/service long-running operations (preview, sink, training prep, optimiser
@@ -756,24 +758,17 @@ dataframe-cache namespace. Deploy scoring neither seeds nor captures; a refresh 
 seeding but still captures; a profile whose outputs are not proven identical to the
 snapshot's semantics class neither seeds nor captures.
 
-## Approved change contract — previews and traces seed from and capture into shared snapshots
-
-- **Current limitation.** Admitted previews and traces neither read nor write shared
-  snapshots: a preview below a captured join recomputes it, and the preview response cache
-  is keyed without the generations a preview could have read.
-- **Unresolved target.** Admitted previews seed and capture the way bounded executions do, at
-  joins and materialising operations; traces seed only from the plan of the preview they
-  explain. A preview response is cached only under the key of the plan a new request would
-  choose after its captures, and every preview-cache hit re-validates the generations it lists:
-  retired, missing, or non-current generations are cache misses, while corruption and other
-  storage failures propagate. The seed plan's generation identities join the runtime input
-  fingerprint.
-- **Non-goals.** Preview row-limit semantics (limit at collection, never at sources), deploy
-  scoring, and the projection planner's column demand rules are unchanged.
-- **Failure and compatibility semantics.** A stale snapshot is never seeded, and a preview
-  whose lineage is not admitted — an API Input in it reads a flat file that a schema-only
-  bounded read refuses — neither seeds nor captures.
-- **Acceptance evidence.** A preview below a captured join seeds it and scans no source; a
-  preview-cache hit whose listed generation was retired is a miss; downstream cache misses
-  after a seeded snapshot is refreshed.
-- **Roadmap package.** [CACHE-S09](../roadmap/caching.md#cache-s09--previews-and-traces-seed-from-and-capture-into-shared-snapshots).
+An admitted preview seeds and captures the same way, except that it captures only its joins
+and materialising operations. A stale snapshot is never seeded, and a preview whose lineage is
+not admitted — an API Input in it reads a flat file that a schema-only bounded read refuses —
+neither seeds nor captures. Preview row-limit semantics are unchanged: the limit applies at
+collection, never at sources, and the projection planner's column demand rules still decide
+what each point supplies. The generations a preview's plan lists join the runtime input
+fingerprint of the preview response cache. A response is stored only under the key of the plan
+a new request would choose after its captures, and every hit re-leases the generations it
+lists: a retired, missing, or non-current generation is a miss that executes, while corruption
+and other storage failures propagate. The response lists those generations as its `seed_plan`,
+each `seeded` or `captured`. A trace carries that list and runs under a listed plan that reads
+exactly those generations and captures nothing ([tracing](../tracing/high-level.md)); a
+generation lacking columns the trace reads there is recomputed, with every listed seed built
+from it. Deploy scoring neither seeds nor captures.

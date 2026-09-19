@@ -1143,6 +1143,34 @@ describe("useTracing validity across shared snapshots", () => {
     expect(result.current.traceResult).toBeNull()
   })
 
+  it("keeps a node skipped for a snapshot on the canvas trace path, without a traced value", async () => {
+    mockTraceCell.mockResolvedValue({
+      status: "ok",
+      trace: {
+        ...makeTrace(["n2"]),
+        omissions: [
+          { node_id: "n1", node_name: "n1", node_type: "polars", topological_rank: 0, reason: "snapshot_seed", diagnostic_index: 0 },
+          { node_id: "n0", node_name: "n0", node_type: "polars", topological_rank: 0, reason: "ambiguous_match", diagnostic_index: 1 },
+        ],
+      },
+    })
+    const nodes = [makeNode("n0"), makeNode("n1"), makeNode("n2")] as Node[]
+    const edges = [makeEdge("n0", "n2"), makeEdge("n1", "n2")] as Edge[]
+    const { result } = renderHook(() => useTracing(makeParams({ nodes, edges })))
+    await act(async () => { result.current.handleCellClick(0, "price") })
+    await waitFor(() => expect(result.current.traceResult).not.toBeNull())
+
+    const node = (id: string) => result.current.nodesWithStatus.find((candidate) => candidate.id === id)!
+    // Its data reached the target through the snapshot: on the path, not dimmed.
+    expect(node("n1").data._traceDimmed).toBe(false)
+    expect(node("n1").data._traceActive).toBe(false)
+    // Other omissions keep their existing treatment.
+    expect(node("n0").data._traceDimmed).toBe(true)
+    const edge = (source: string) => result.current.edgesWithTrace.find((candidate) => candidate.source === source)!
+    expect(edge("n1").style?.strokeWidth).toBe(2.5)
+    expect(edge("n0").style?.strokeWidth).toBe(1)
+  })
+
   it("refreshes the preview when the generations it read have expired", async () => {
     const err = Object.assign(new Error("HTTP 409"), {
       status: 409,

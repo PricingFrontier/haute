@@ -148,6 +148,28 @@ Out of scope (owned elsewhere, linked where relevant):
   multi-entry expression chains: each chain entry evaluates in order against
   values fed forward from prior entries, seeded from pre-node input values rather
   than the node's final output values.
+- **A pass-through value borrows only a proven formula.** A target that passes the traced
+  column through shows the formula of the step that provably supplied its value: the value is
+  followed back through the single parent holding it with that same value to the step that
+  added or last modified it, and evaluated on the value from before that assignment. A join
+  whose sides both hold the value, a parent whose row is unknown, or a snapshot on the way
+  leaves no formula rather than another branch's.
+- **A trace reads what its preview read.** A trace request carries the `seed_plan` of the
+  preview it explains, possibly empty: every snapshot generation that preview read, whether it
+  seeded it or captured it itself. Each listed generation is checked against the signature the
+  trace's graph produces at its point and leased; a retired generation or a mismatched
+  signature answers HTTP 409 `preview_seed_plan_expired`, and the preview is refreshed. The
+  trace then reads exactly those generations and captures nothing, so it shows the preview's
+  rows even for a preview that computed and captured a join for the first time. A listed
+  generation lacking columns the trace reads there is recomputed instead, with every listed
+  seed built from it, and a plan that ends up seeding nothing runs the trace as without one.
+  Correlation stops at each seeded point: a step whose row comes from the snapshot, carrying
+  its `snapshot_generation_id`, never given a calculation reconstructed from its own output,
+  and where downstream provenance ends with the value it held. Every node the execution
+  skipped because of a seed is reported as a `snapshot_seed` omission naming the seeds below
+  it, whatever column is traced; a node that still executed for another branch stays
+  traceable through that branch. A preview whose lineage was not admitted carries an empty
+  plan, and its traces seed nothing.
 - **Column-scoped traces prune to relevance.** When a `column` is supplied, the
   trace tags every step by whether it touches that column, then keeps: (a) for a
   pass-through column, only the nodes whose output actually carries it; (b) for a
@@ -358,29 +380,3 @@ Out of scope (owned elsewhere, linked where relevant):
   precondition failure that means a waterfall simply does not apply (fewer than 3
   contributing steps, no numeric traced output value) returns `None` instead,
   which is distinct from an error.
-
-## Approved change contract — traces over cached upstream data
-
-- **Current limitation.** A trace re-executes every ancestor of its target, including joins over
-  the full data, even when a durable snapshot of an upstream point exists.
-- **Unresolved target.** A trace request carries the seed plan returned by the preview it explains,
-  including an empty plan. The plan lists every snapshot generation the preview read, whether the
-  preview seeded it or captured it itself, and the trace reads exactly those generations and
-  captures nothing, so it still shows the preview's rows even for a preview that computed and
-  captured a join for the first time. A listed generation lacking columns the trace reads there
-  is recomputed instead, with every listed seed built from it. Correlation stops at each seeded point, which is a
-  step whose row comes from the snapshot. Only nodes the execution skipped because of seeding are
-  reported as trace omissions with the reason `snapshot_seed` naming the seed; a node that still
-  executed for another branch stays traceable.
-- **Non-goals.** Row correlation, schema diffs, enrichment, and waterfall assembly are unchanged
-  for executed nodes.
-- **Failure and compatibility semantics.** When a generation in the carried seed plan has been
-  retired, or its signature no longer matches the trace's graph, the trace returns HTTP 409
-  `preview_seed_plan_expired` and the preview must be refreshed. A preview whose lineage was not
-  admitted carries an empty seed plan, and its traces seed nothing and behave as today.
-- **Acceptance evidence.** A trace from a preview seeded by a join snapshot returns the preview's
-  row and reports the join's sources as `snapshot_seed` omissions; a trace after a first preview
-  that captured a join over sampled input returns the identical row without scanning the sources; a diamond with one cached branch
-  keeps the shared ancestor traceable through the other branch; publish, refresh, widening, clear,
-  and graph edits between preview and trace behave as specified.
-- **Roadmap package.** [CACHE-S09](../roadmap/caching.md#cache-s09--previews-and-traces-seed-from-and-capture-into-shared-snapshots).

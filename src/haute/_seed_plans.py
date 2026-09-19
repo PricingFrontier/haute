@@ -98,6 +98,9 @@ class SeedPlanRequest:
     capture eligibility is applied to them separately. ``capture_columns_by_node``
     is a best-effort extra demand for a capture. ``build_node_id`` is an explicit
     build's node: never seeded and never an automatic capture.
+    ``best_effort_demand`` marks the caller's demand as a hint — a preview's
+    requested columns, which may name a column the node no longer produces —
+    so every capture writes what the node produces of it instead of failing.
     """
 
     graph: PipelineGraph
@@ -110,6 +113,7 @@ class SeedPlanRequest:
     source_by_node: Mapping[str, str] | None = None
     refresh: bool = False
     build_node_id: str | None = None
+    best_effort_demand: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -449,6 +453,17 @@ class _Resolver:
 
     # ------------------------------------------------------------- walk
 
+    def shapes_output(self, node_id: str) -> bool:
+        """Whether the node's own config selects or renames its output columns."""
+        return any(
+            bool(config.get("selected_columns")) or bool(config.get("column_renames"))
+            for config in (
+                self.node_map[node_id].data.config,
+                self.effective_node_map[node_id].data.config,
+            )
+            if isinstance(config, dict)
+        )
+
     def seed_candidate(
         self,
         node_id: str,
@@ -460,6 +475,12 @@ class _Resolver:
         if request.refresh or node_id == request.build_node_id or node_id in dropped:
             return None
         if not self.is_node_output(node_id):
+            return None
+        if self.preview and self.shapes_output(node_id):
+            # A preview reports a node's columns before its own selection and
+            # renames — what its Columns editor offers. A generation holds the
+            # shaped output and cannot say that, so the preview computes the
+            # node (and may still capture it for everything below).
             return None
         identity = self.identity(node_id)
         latest = self.store.latest_generation(identity)
@@ -659,7 +680,11 @@ class _Resolver:
                 identity=self.identity(node_id),
                 kind=kind,
                 columns=demand_columns(state.needed.get(node_id)),
-                strict_columns=demand_columns(needed0.get(node_id)),
+                strict_columns=(
+                    NodeSnapshotColumns.of(())
+                    if request.best_effort_demand
+                    else demand_columns(needed0.get(node_id))
+                ),
             )
             for node_id, kind in state.captures.items()
         }

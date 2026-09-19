@@ -1120,6 +1120,10 @@ def execute_graph(
                 requested_preview_columns,
             )
             or None,
+            # The requested columns only say which to show first; one the
+            # node no longer produces (a deselected column) is dropped, as
+            # without a plan.
+            best_effort_demand=True,
         )
         plan = open_seed_plan(
             request,

@@ -1979,7 +1979,10 @@ present a structural or schema result as execution evidence.
   Input seeding and capturing nothing, a killed worker's capture staging removed, the
   preview-inputs endpoint listing only what the seeded execution reads and never an
   unused unbuildable input, the key of a preview seeding nothing equalling one without a
-  plan, and a cached entry listing a cleared generation not being current.
+  plan, a cached entry listing a cleared generation not being current, an Edge Join that
+  selects and renames its columns computed again — as target or above one — with its
+  columns before that shaping, and a requested column the target no longer produces
+  refused with the same 400 as without a plan.
 - **`tests/test_snapshot_seeding.py`** — planned lazy executions: a re-run seeding the
   first run's capture builds nothing upstream and returns an equal frame; disjoint demand
   publishes one widened generation; a narrow upstream snapshot is not seeded and is

@@ -571,6 +571,12 @@ export default function useTracing({
     for (const s of traceResult.steps) {
       ids.add(resolveTraceId(s.node_id))
     }
+    // A node skipped because a shared snapshot below it was read is still on
+    // the value's path — its data reached the target through that snapshot —
+    // so it is not dimmed as unrelated, though it carries no traced value.
+    for (const omission of traceResult.omissions) {
+      if (omission.reason === "snapshot_seed") ids.add(resolveTraceId(omission.node_id))
+    }
     return ids
   }, [traceResult, resolveTraceId])
 

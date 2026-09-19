@@ -18,7 +18,7 @@ or maintenance issue; `P3` opportunistic work.
 | Component | Improvement surface | Start with |
 |---|---|---|
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | — |
-| [Caching](caching.md) | Preview and trace reuse of shared snapshots | `CACHE-S09` |
+| [Caching](caching.md) | One store for API-input tables | — |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | `EDA-E09` |
 | [Modelling](modelling.md) | RustyStats 0.9.0 upgrade, GLM terms pane, per-feature fits, interaction fits | `MOD-T00` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P11` |

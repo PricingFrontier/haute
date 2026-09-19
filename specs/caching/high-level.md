@@ -107,8 +107,9 @@ late execution. A valid cache is reused without rebuilding. Progress reporting
 is presentational only: a failed progress poll stops further progress updates
 without failing the preparation — the build outcome alone decides it.
 
-Before Studio sends a preview that uses snapshot-backed Data Inputs, it checks
-each required snapshot through the existing status endpoint. A missing,
+Before Studio sends a preview, it asks the backend which inputs the preview
+reads — none above a shared snapshot it seeds from, none outside its lineage — and
+checks each of those snapshot-backed Data Inputs through the existing status endpoint. A missing,
 corrupt, failed, or already-building snapshot starts or joins the existing
 visible job, waits for completion, and only then sends the preview. The
 orchestrator tries the lazy-sink build profile first and retries once with the
@@ -128,10 +129,18 @@ source signature, so a rewritten source misses every cache.
 
 Full data at a pipeline point is materialised once into one shared layer and reused: every
 bounded execution (training preparation and its evaluation preview, optimiser setup and
-auto-range, Data Output runs) and every explicit node-data build reads the node-output
-snapshots that already cover what it needs and writes the full-data materialisations it
-performs, instead of recomputing upstream work or writing temporary checkpoints and private
-dataframe-cache entries. The execution engine specifies the seed plan that governs this.
+auto-range, Data Output runs), every explicit node-data build, and every admitted preview reads
+the node-output snapshots that already cover what it needs and writes the full-data
+materialisations it performs — for a preview, its joins and materialising operations — instead
+of recomputing upstream work or writing temporary checkpoints and private dataframe-cache
+entries. A preview therefore starts from what a run or build materialised, and a run from what
+a preview did. A trace reads exactly the generations the preview it explains read and writes
+none. A preview whose lineage is not admitted — an API Input in it reads a flat file that a
+schema-only bounded read refuses — neither reads nor writes the layer. The preview/trace
+runtime input fingerprint carries the generations a preview or trace seeds from; the preview
+response cache's field set, stat-gated caches, and deploy scoring's process-local dataframe
+cache are otherwise independent of the layer. The execution engine specifies the seed plan
+that governs this.
 Analysis results are stored by point identity and data version, so a refreshed or widened
 generation never serves a previous generation's results.
 
@@ -170,21 +179,3 @@ previous same-key entry. JSON schema and parse failures return structured 4xx re
 source modification during build or stopped workers return 409; memory-limit exhaustion,
 unsupported caps, and admission rejections return 507; timeouts return 504; unexpected
 failures are logged and return a generic 500.
-
-## Approved change contract — previews in the shared materialisation layer
-
-- **Current limitation.** Bounded executions and explicit builds read and write the shared
-  layer, but an admitted preview computes every upstream point itself and writes none of the
-  full-data materialisations it performs.
-- **Unresolved target.** An admitted preview writes the full-data materialisations it performs
-  (its joins and materialising operations) into this layer and reads from it, so a preview
-  below a point a run or build already materialised starts there.
-- **Non-goals.** Stat-gated caches, the preview response cache's field set, and deploy scoring's
-  process-local dataframe cache are unchanged; only the preview/trace runtime input fingerprint
-  gains the generations of any snapshots a preview or trace seeds from.
-- **Failure and compatibility semantics.** A preview whose lineage is not admitted — an API
-  Input in it reads a flat file that a schema-only bounded read refuses — neither reads nor
-  writes the layer.
-- **Acceptance evidence.** A preview reads a materialisation a run wrote, and a run reads one a
-  preview wrote.
-- **Roadmap package.** [CACHE-S09](../roadmap/caching.md#cache-s09--previews-and-traces-seed-from-and-capture-into-shared-snapshots).
