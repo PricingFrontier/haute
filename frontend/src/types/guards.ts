@@ -1607,6 +1607,7 @@ function parseTraceStep(value: unknown, field: string): TraceStep {
     calculation,
     node_detail,
     row_lineage_type: optionalNullableString("parseTraceResponse", obj, "row_lineage_type"),
+    snapshot_generation_id: optionalNullableString("parseTraceResponse", obj, "snapshot_generation_id"),
   }
 }
 
@@ -1648,6 +1649,9 @@ function parseTraceCorrelationDiagnostic(value: unknown, field: string): TraceCo
       ? []
       : parseArray("parseTraceResponse", obj.matched_row_indices, `${field}.matched_row_indices`, (item, itemField) =>
         expectNumber("parseTraceResponse", item, itemField)),
+    seed_node_ids: obj.seed_node_ids === undefined
+      ? []
+      : parseStringArray("parseTraceResponse", obj.seed_node_ids, `${field}.seed_node_ids`),
   }
 }
 

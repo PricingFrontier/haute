@@ -1013,6 +1013,14 @@ def _build_input_sources(
                 "node_id": other_step.node_id,
                 "node_name": other_step.node_name,
             }
+            snapshot_generation_id = getattr(other_step, "snapshot_generation_id", None)
+            if snapshot_generation_id is not None:
+                # Read from a shared snapshot: the input's provenance ends here,
+                # with the value it held, never a formula rebuilt from it.
+                source_info["result_value"] = other_combined.get(ref_col)
+                source_info["snapshot_generation_id"] = snapshot_generation_id
+                result[ref_col] = source_info
+                break
 
             # Parse the expression for this specific column from the
             # upstream node's code — don't rely on other_step.expression
@@ -1379,6 +1387,77 @@ def _resolve_optimiser_apply_inputs(
     return input_frames, source_names
 
 
+def _same_value(left: Any, right: Any) -> bool:
+    if isinstance(left, float) and isinstance(right, float) and math.isnan(left):
+        return math.isnan(right)
+    return bool(left == right)
+
+
+def _assignment_values(step: TraceStep, column: str, parsed: Any) -> dict[str, Any] | None:
+    """The values *step*'s assignment of *column* is evaluated on.
+
+    A self-referential assignment (``premium = premium * ...``) reads the
+    value from before it: the post-assignment output must not clobber the
+    right-hand side, or the substitution shows the output there and a result
+    contradicting the displayed value.  Same guard as the input-sources path
+    (``self_referential_modification``).  ``None`` when that earlier value
+    is unknown.
+    """
+    values = {**step.input_values, **step.output_values}
+    self_referential = (
+        column in step.schema_diff.columns_modified
+        and parsed is not None
+        and column in parsed.referenced_columns
+    )
+    if self_referential:
+        if column not in step.input_values:
+            return None
+        values[column] = step.input_values[column]
+    return values
+
+
+def _pass_through_origin(
+    target: TraceStep,
+    steps: Sequence[TraceStep],
+    parents_of: Mapping[str, Sequence[str]],
+    eager_outputs: Mapping[str, Any],
+    column: str,
+) -> TraceStep | None:
+    """The step whose assignment gave *target* the *column* value it passes on.
+
+    The value is followed back one step at a time through the single parent
+    that holds the column with that same value, to the step that added or
+    last modified it.  When no parent or more than one does — a join whose
+    sides each hold the column — or a parent whose row is unknown might, or
+    the value was read from a snapshot, its origin is unproven and ``None``
+    is returned: another branch's formula would explain a value the target
+    never had.
+    """
+    by_id = {candidate.node_id: candidate for candidate in steps}
+    value = target.output_values.get(column)
+    current = target
+    while True:
+        carriers: list[TraceStep] = []
+        for parent_id in parents_of.get(current.node_id, ()):
+            parent = by_id.get(parent_id)
+            if parent is None:
+                frame = eager_outputs.get(parent_id)
+                if isinstance(frame, pl.DataFrame) and column not in frame.columns:
+                    continue
+                return None
+            if column in parent.output_values and _same_value(parent.output_values[column], value):
+                carriers.append(parent)
+        if len(carriers) != 1:
+            return None
+        current = carriers[0]
+        if getattr(current, "snapshot_generation_id", None) is not None:
+            # The value was read from a snapshot: there is no code to show.
+            return None
+        diff = current.schema_diff
+        if column in diff.columns_added or column in diff.columns_modified:
+            return current
+
+
 def enrich_steps(
     steps: list[TraceStep],
     node_map: dict[str, Any],
@@ -1418,6 +1497,10 @@ def enrich_steps(
     frame_identity = _enrichment_frame_identity(eager_outputs)
 
     for step in steps:
+        if getattr(step, "snapshot_generation_id", None) is not None:
+            # Its row was read from a shared snapshot, not computed: there is
+            # no input row to explain it with.
+            continue
         try:
             node_data = node_map[step.node_id].data
             cfg = node_data.config if isinstance(node_data.config, dict) else {}
@@ -1451,61 +1534,59 @@ def enrich_steps(
                 and step.node_id == steps[-1].node_id  # target step
                 and column in step.schema_diff.columns_passed
             ):
-                for upstream in steps:
-                    if upstream is step:
-                        continue
-                    if column in upstream.schema_diff.columns_added:
-                        # Found the upstream creator — parse its code
-                        u_cfg = (
-                            node_map[upstream.node_id].data.config
-                            if isinstance(node_map[upstream.node_id].data.config, dict)
-                            else {}
-                        )
-                        u_raw = _effective_node_code(u_cfg, node_map)
-                        u_code = _wrap_node_code(u_raw)
-                        if u_code:
-                            try:
-                                u_combined = {
-                                    **upstream.input_values,
-                                    **upstream.output_values,
-                                }
-                                parsed = parse_expression(u_code, column)
-                                if parsed and parsed.expression_text:
-                                    step.expression = dataclasses.asdict(parsed)
-                                ev = evaluate_expression(
+                upstream = _pass_through_origin(step, steps, parents_of, eager_outputs, column)
+                if upstream is not None:
+                    # Found the upstream creator — parse its code
+                    u_cfg = (
+                        node_map[upstream.node_id].data.config
+                        if isinstance(node_map[upstream.node_id].data.config, dict)
+                        else {}
+                    )
+                    u_raw = _effective_node_code(u_cfg, node_map)
+                    u_code = _wrap_node_code(u_raw)
+                    if u_code:
+                        try:
+                            parsed = parse_expression(u_code, column)
+                            if parsed and parsed.expression_text:
+                                step.expression = dataclasses.asdict(parsed)
+                            u_combined = _assignment_values(upstream, column, parsed)
+                            ev = (
+                                evaluate_expression(
                                     u_code,
                                     column,
                                     u_combined,
                                     preamble_ns=preamble_ns,
                                 )
-                                if ev is not None:
-                                    step.calculation = dataclasses.asdict(ev)
-                            except Exception as exc:
-                                logger.warning(
-                                    "upstream_expression_failed",
-                                    node_id=upstream.node_id,
-                                    column=column,
-                                    error=str(exc),
-                                    error_type=type(exc).__name__,
-                                    exc_info=True,
-                                )
-                                err_payload: dict[str, Any] = {
-                                    "error": f"upstream expression lookup failed: {exc}",
-                                    "error_type": type(exc).__name__,
-                                    "upstream_node_id": upstream.node_id,
-                                }
-                                # Surface the error on both enrichment
-                                # fields so downstream consumers see it
-                                # regardless of which one they inspect.
-                                if step.expression is None:
-                                    step.expression = dict(err_payload)
-                                else:
-                                    step.expression.setdefault("error", err_payload["error"])
-                                if step.calculation is None:
-                                    step.calculation = dict(err_payload)
-                                else:
-                                    step.calculation.setdefault("error", err_payload["error"])
-                        break
+                                if u_combined is not None
+                                else None
+                            )
+                            if ev is not None:
+                                step.calculation = dataclasses.asdict(ev)
+                        except Exception as exc:
+                            logger.warning(
+                                "upstream_expression_failed",
+                                node_id=upstream.node_id,
+                                column=column,
+                                error=str(exc),
+                                error_type=type(exc).__name__,
+                                exc_info=True,
+                            )
+                            err_payload: dict[str, Any] = {
+                                "error": f"upstream expression lookup failed: {exc}",
+                                "error_type": type(exc).__name__,
+                                "upstream_node_id": upstream.node_id,
+                            }
+                            # Surface the error on both enrichment
+                            # fields so downstream consumers see it
+                            # regardless of which one they inspect.
+                            if step.expression is None:
+                                step.expression = dict(err_payload)
+                            else:
+                                step.expression.setdefault("error", err_payload["error"])
+                            if step.calculation is None:
+                                step.calculation = dict(err_payload)
+                            else:
+                                step.calculation.setdefault("error", err_payload["error"])
             _col_in_code = False
             if column and raw_code and ".with_columns(" in raw_code:
                 # Check if the column is a keyword arg or appears as an alias target
@@ -1533,35 +1614,19 @@ def enrich_steps(
                         "error_type": type(exc).__name__,
                         "target_column": column,
                     }
-                # Self-referential assignment (premium = premium * ...):
-                # the post-assignment output value must not clobber the
-                # RHS input, or the substitution shows the OUTPUT on the
-                # right-hand side and a result contradicting the
-                # displayed value.  Same guard as the input-sources path
-                # (``self_referential_modification`` above).
-                eval_values = {**step.input_values, **step.output_values}
-                self_referential = (
-                    column in step.schema_diff.columns_modified
-                    and parsed is not None
-                    and column in parsed.referenced_columns
-                )
-                skip_evaluation = False
-                if self_referential:
-                    if column in step.input_values:
-                        eval_values[column] = step.input_values[column]
-                    else:
-                        # No pre-assignment value available: showing a
-                        # substitution would require the input we don't
-                        # have, so present the output value directly
-                        # rather than an arithmetically false eval.
-                        result = step.output_values.get(column)
-                        step.calculation = {
-                            "target_column": column,
-                            "substituted_text": f"{column} = {_quote_trace_value(result)}",
-                            "result_value": result,
-                        }
-                        skip_evaluation = True
-                if not skip_evaluation:
+                eval_values = _assignment_values(step, column, parsed)
+                if eval_values is None:
+                    # No pre-assignment value available: showing a
+                    # substitution would require the input we don't
+                    # have, so present the output value directly
+                    # rather than an arithmetically false eval.
+                    result = step.output_values.get(column)
+                    step.calculation = {
+                        "target_column": column,
+                        "substituted_text": f"{column} = {_quote_trace_value(result)}",
+                        "result_value": result,
+                    }
+                else:
                     try:
                         evaluated = evaluate_expression(
                             code,

@@ -288,7 +288,13 @@ def test_trace_route_multi_frame_not_opaque_500(project: Path) -> None:
 
     resp = client.post(
         "/api/pipeline/trace",
-        json={"graph": graph, "row_index": 0, "target_node_id": "t", "column": "pid2"},
+        json={
+            "seed_plan": [],
+            "graph": graph,
+            "row_index": 0,
+            "target_node_id": "t",
+            "column": "pid2",
+        },
     )
     assert resp.status_code == 200, resp.text
 
@@ -296,6 +302,7 @@ def test_trace_route_multi_frame_not_opaque_500(project: Path) -> None:
     resp = client.post(
         "/api/pipeline/trace",
         json={
+            "seed_plan": [],
             "graph": graph,
             "row_index": 0,
             "target_node_id": "api",

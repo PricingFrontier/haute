@@ -895,7 +895,7 @@ class TestTraceHandlerThreading:
         ):
             resp = client.post(
                 "/api/pipeline/trace",
-                json={"graph": graph, **body_kwargs},
+                json={"seed_plan": [], "graph": graph, **body_kwargs},
             )
         assert resp.status_code == 200, resp.text
         return captured
@@ -991,7 +991,7 @@ class TestTraceHandlerThreading:
         ):
             resp = client.post(
                 "/api/pipeline/trace",
-                json={"graph": graph, "streaming_chunk_size": 12345},
+                json={"seed_plan": [], "graph": graph, "streaming_chunk_size": 12345},
             )
             assert resp.status_code == 504, resp.text
             assert worker_started.wait(timeout=1.0)

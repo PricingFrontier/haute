@@ -53,6 +53,7 @@ def test_preview_and_trace_execute_through_spawn_worker(
             trace = client.post(
                 "/api/pipeline/trace",
                 json={
+                    "seed_plan": [],
                     "graph": _file_input_graph(),
                     "target_node_id": "source",
                     "row_index": 0,
@@ -298,6 +299,7 @@ def test_preview_and_trace_worker_targets_execute_directly() -> None:
             target_node_id="source",
             row_index=0,
             row_limit=2,
+            seed_plan=[],
         ),
         _isolated_budget(),
     )
@@ -430,6 +432,7 @@ def test_interactive_route_worker_failures_have_stable_http_status(
                 "target_node_id": "source",
                 "row_index": 0,
                 "row_limit": 2,
+                "seed_plan": [],
             }
         )
         monkeypatch.setattr(pipeline_mod, "_trace_supersession", _RaisingCoordinator(error))

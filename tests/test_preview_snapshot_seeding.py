@@ -1464,3 +1464,32 @@ def test_a_cached_entry_listing_a_cleared_generation_is_not_current(
     with open_seed_plan(request, store=store, execution_context=_context()) as plan:
         assert not _preview_entry_is_current({"seed_plan": (listed,)}, plan, graph, source="live")
         assert _preview_entry_is_current({"seed_plan": ()}, plan, graph, source="live")
+
+
+def test_a_preview_seeded_below_unadmittable_work_is_still_admitted(
+    project: Path, api: Any, store: NodeSnapshotStore
+) -> None:
+    # A sample has no row estimate: recomputing the group-by below it would be
+    # refused here, where no hard worker cap bounds it. Seeded, it never runs.
+    graph = _graph(
+        project,
+        [
+            ("policies", NodeType.DATA_INPUT, _parquet(project / "policies.parquet")),
+            (
+                "sampled",
+                NodeType.POLARS,
+                _code("df = policies.collect().sample(fraction=1.0).lazy()"),
+            ),
+            ("G", NodeType.POLARS, _code("df = sampled.group_by('a').agg(pl.len().alias('n'))")),
+            ("T", NodeType.POLARS, _code("df = G.with_columns(pl.lit(1).alias('x'))")),
+        ],
+        [("policies", "sampled"), ("sampled", "G"), ("G", "T")],
+    )
+    g1 = _publish(store, graph, "G", pl.DataFrame({"a": [0, 1], "n": [3, 4]}))
+
+    body = _post_preview(api, graph, "T")
+
+    assert [(entry["node_id"], entry["generation_id"]) for entry in body["seed_plan"]] == [
+        ("G", g1)
+    ]
+    assert body["row_count"] == 2

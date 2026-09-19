@@ -34,9 +34,10 @@ directly and does not depend on this facade being imported first.
 
 from __future__ import annotations
 
+import functools
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast, runtime_checkable
@@ -44,6 +45,7 @@ from typing import Any, Protocol, cast, runtime_checkable
 import polars as pl
 
 import haute.execution as execution_facade
+from haute._builders import resolve_instance_nodes
 from haute._cache import GraphFingerprintMemo
 from haute._env import int_env
 from haute._execute_lazy import _prune_live_switch_edges
@@ -61,6 +63,7 @@ from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute._path_resolution import runtime_project_root_scope
 from haute._polars_selectors import preamble_selector_aliases
+from haute._seed_plans import ListedSeed, SeedPlan, SeedPlanRequest, open_listed_seed_plan
 from haute._topo import ancestors
 from haute._trace_correlation import (
     CorrelationWork,
@@ -95,6 +98,7 @@ from haute.executor import (
     _compile_preamble,
     _estimate_preview_cache_entry_bytes,
     _pipeline_dir,
+    _seeded_fingerprint,
 )
 from haute.graph_utils import (
     GraphEdge,
@@ -182,6 +186,10 @@ class TraceStep:
     calculation: dict[str, Any] | None = None
     node_detail: dict[str, Any] | None = None
     row_lineage_type: str | None = None
+
+    # The shared-snapshot generation this step's row was read from, when the
+    # trace was seeded there instead of computing the node.
+    snapshot_generation_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -388,6 +396,7 @@ def execute_trace(
     preview: PreviewReader | dict[str, Any] | None = None,
     fingerprint_memo: GraphFingerprintMemo | None = None,
     execution_context: ExecutionContext | None = None,
+    seed_plan: Sequence[ListedSeed] | None = None,
 ) -> TraceResult:
     """Execute a pipeline graph and return a single-row trace.
 
@@ -420,6 +429,13 @@ def execute_trace(
                  supersession-key computation) so preamble utility files are
                  hashed at most once per request.  ``None`` creates a fresh
                  memo scoped to this call.
+        seed_plan: The generations the preview this trace explains was
+                 computed from (its response's ``seed_plan``). The trace reads
+                 exactly those that cover what it reads, leased for the whole
+                 trace, and captures nothing; a retired generation, or one the
+                 graph no longer produces at its point, raises
+                 :class:`~haute.errors.SeedPlanExpiredError`. Empty or ``None``
+                 seeds nothing, even if snapshots now exist.
 
     Returns:
         TraceResult with per-node steps showing how the row was produced.
@@ -459,16 +475,140 @@ def execute_trace(
                 preview=preview,
                 fingerprint_memo=fingerprint_memo,
                 execution_context=admitted_context,
+                seed_plan=seed_plan,
             )
         finally:
             admitted_context.release_admission(preserve_primary_error=True)
 
+    core = functools.partial(
+        _execute_trace_core,
+        graph,
+        row_index=row_index,
+        target_node_id=target_node_id,
+        column=column,
+        row_limit=row_limit,
+        source=source,
+        row_values=row_values,
+        preamble_ns=preamble_ns,
+        preview=preview,
+        fingerprint_memo=fingerprint_memo,
+        execution_context=execution_context,
+        t_start=t_start,
+    )
+    if not seed_plan:
+        return core(snapshot_plan=None)
+    with runtime_project_root_scope(graph.source_file):
+        snapshot_plan = _open_trace_seed_plan(
+            graph,
+            target_node_id,
+            source=source,
+            seed_plan=seed_plan,
+            execution_context=execution_context,
+        )
+    with snapshot_plan:
+        if not snapshot_plan.decision.seeds:
+            # Nothing listed covers what the trace reads: it runs as one
+            # without a plan, computing every ancestor itself.
+            return core(snapshot_plan=None)
+        return core(snapshot_plan=snapshot_plan)
+
+
+def _open_trace_seed_plan(
+    graph: PipelineGraph,
+    target_node_id: str,
+    *,
+    source: str,
+    seed_plan: Sequence[ListedSeed],
+    execution_context: ExecutionContext,
+) -> SeedPlan:
+    """Lease the listed generations, then prepare only the inputs the trace computes.
+
+    Preparation can move an input's pointer and with it the signatures the
+    listed generations were checked against, so a plan whose preparation did
+    anything is opened, and checked, again.
+    """
+    request = SeedPlanRequest(
+        graph=graph,
+        target_node_id=target_node_id,
+        source=source,
+        profile=ExecutionProfile.PREVIEW_EAGER,
+    )
+    plan = open_listed_seed_plan(request, seed_plan)
+    if execution_context.admission is None:
+        return plan
+    executed = [node.id for node in graph.nodes if node.id in plan.decision.executed_node_ids]
+    try:
+        records = prepare_input_snapshots(
+            executed,
+            resolve_instance_nodes(graph).node_map,
+            profile=execution_context.profile,
+            execution_context=execution_context,
+            base_dir=preparation_base_dir(graph),
+            schema_only=False,
+        )
+    except BaseException:
+        plan.close()
+        raise
+    if all(record.action == "reused" for record in records):
+        return plan
+    plan.close()
+    return open_listed_seed_plan(request, seed_plan)
+
+
+def _snapshot_seed_skips(prepared_lineage: Any, plan: SeedPlan) -> dict[str, list[str]]:
+    """Each lineage node the trace skipped because of a seed, with the seeds below it."""
+    decision = plan.decision
+    ran = set(decision.executed_node_ids) | set(decision.seeds)
+    children: dict[str, set[str]] = {}
+    for edge in prepared_lineage.relevant_edges:
+        children.setdefault(edge.source, set()).add(edge.target)
+    position = {node_id: index for index, node_id in enumerate(prepared_lineage.order)}
+    skips: dict[str, list[str]] = {}
+    for node_id in prepared_lineage.order:
+        if node_id in ran:
+            continue
+        seeds: set[str] = set()
+        seen: set[str] = set()
+        stack = [node_id]
+        while stack:
+            for child in children.get(stack.pop(), ()):
+                if child in seen:
+                    continue
+                seen.add(child)
+                if child in decision.seeds:
+                    seeds.add(child)
+                elif child not in ran:
+                    stack.append(child)
+        if seeds:
+            skips[node_id] = sorted(seeds, key=lambda seed: position.get(seed, 0))
+    return skips
+
+
+def _execute_trace_core(
+    graph: PipelineGraph,
+    *,
+    row_index: int,
+    target_node_id: str,
+    column: str | None,
+    row_limit: int,
+    source: str,
+    row_values: dict[str, Any] | None,
+    preamble_ns: dict[str, Any] | None,
+    preview: PreviewReader | dict[str, Any] | None,
+    fingerprint_memo: GraphFingerprintMemo | None,
+    execution_context: ExecutionContext,
+    snapshot_plan: SeedPlan | None,
+    t_start: float,
+) -> TraceResult:
+    """One trace, under the plan its preview listed when that plan seeds anything."""
+    nodes = graph.nodes
     requested_columns = _requested_preview_columns_from_row(row_values, column)
     # A cold trace executes the graph itself, so it prepares its own snapshot
     # inputs first — before the strategy is planned and before the lineage cache
     # key is computed, so a refreshed generation is the one this entry is keyed
-    # by. Only an admitted context can spawn the hard-capped build.
-    if execution_context.admission is not None:
+    # by. Only an admitted context can spawn the hard-capped build. A seed plan
+    # already prepared exactly the inputs this trace computes.
+    if snapshot_plan is None and execution_context.admission is not None:
         with runtime_project_root_scope(graph.source_file):
             prepare_input_snapshots(
                 _trace_preparation_order(graph, target_node_id, source),
@@ -493,6 +633,9 @@ def execute_trace(
             source=source,
         ),
         execution_context=execution_context,
+        # Work a seed covers is neither admitted nor estimated: the trace reads
+        # the seed's generation instead of recomputing it.
+        **_planned_strategy_scope(graph, snapshot_plan),
     )
 
     # ---------- Eager execution with a byte-bounded LRU cache ----------
@@ -520,6 +663,9 @@ def execute_trace(
         enforce_contracts=True,
         materialisation_scope="full",
         memo=fingerprint_memo,
+        seed_plan_fingerprint=(
+            _seeded_fingerprint(snapshot_plan.decision) if snapshot_plan is not None else None
+        ),
     )
     prepared_lineage = execution_facade.prepare_graph(graph, target_node_id, source=source)
     selector_aliases = preamble_selector_aliases(graph.preamble or "")
@@ -584,6 +730,7 @@ def execute_trace(
             fp=fp,
             preview=preview,
             execution_context=execution_context,
+            snapshot_plan=snapshot_plan,
         )
 
         # Populate cache — unmodified DataFrames from the single execution
@@ -597,6 +744,17 @@ def execute_trace(
                 "source_ids": source_ids,
             },
         )
+
+    seeded_ids = (
+        frozenset(snapshot_plan.decision.seeds) if snapshot_plan is not None else frozenset()
+    )
+    if seeded_ids:
+        # A seeded point's row is read, not derived: correlation, steps, and
+        # relevance never look above it, as at any other source.
+        parents_of = {
+            node_id: ([] if node_id in seeded_ids else list(parent_ids))
+            for node_id, parent_ids in parents_of.items()
+        }
 
     # Multi-frame sources (e.g. a ≥2-table apiInput) store a
     # dict[label, DataFrame] in eager_outputs; a trace must target a node
@@ -639,6 +797,7 @@ def execute_trace(
                 source=source,
                 preamble_ns=preamble_ns,
                 execution_context=execution_context,
+                snapshot_plan=snapshot_plan,
             )
         return cast(dict[str, Any], plan_state["plans"])
 
@@ -768,15 +927,25 @@ def execute_trace(
         )
 
     # ---------- Build trace steps from cached rows ----------
+    # Ranks are positions in the whole lineage, so a node a seed skipped keeps
+    # its place among the steps that did run.
+    rank_order = list(prepared_lineage.order) if snapshot_plan is not None else order
     steps = _assemble_steps(
-        order=order,
+        order=rank_order,
         source_ids=source_ids,
         node_map=node_map,
         parents_of=parents_of,
         cached_rows=cached_rows,
     )
+    if snapshot_plan is not None:
+        for step in steps:
+            seed = snapshot_plan.decision.seeds.get(step.node_id)
+            if seed is not None:
+                step.snapshot_generation_id = seed.generation_id
 
     # ---------- Enrich steps with expression/detail data ----------
+    # A seeded step stays in the list — it is where downstream provenance
+    # ends — but enrichment never reconstructs its own calculation.
     _enrich_steps(
         steps,
         node_map,
@@ -794,13 +963,34 @@ def execute_trace(
     if column:
         steps = _prune_to_column_relevance(steps, column, parents_of, node_map)
 
+    # A node the trace skipped because a seed below it was read instead is
+    # an omission naming that seed. It never ran, so no schema says whether it
+    # bears on a traced column: it is always reported.
+    seeded_skips = (
+        _snapshot_seed_skips(prepared_lineage, snapshot_plan) if snapshot_plan is not None else {}
+    )
+    for skipped_id, seed_ids in seeded_skips.items():
+        labels = ", ".join(node_map[seed_id].data.label for seed_id in seed_ids)
+        correlation_diagnostics.append(
+            {
+                "code": "snapshot_seed",
+                "severity": "info",
+                "reason": "snapshot_seed",
+                "message": f"Not computed: the trace read the snapshot of {labels}.",
+                "node_id": skipped_id,
+                "seed_node_ids": seed_ids,
+            }
+        )
+        unresolved_rows[skipped_id] = ("snapshot_seed", len(correlation_diagnostics) - 1)
+
     omissions = _build_trace_omissions(
         unresolved_rows=unresolved_rows,
-        order=order,
+        order=rank_order,
         node_map=node_map,
         eager_outputs=frames,
         steps=steps,
         column=column,
+        always_relevant=frozenset(seeded_skips),
     )
 
     # ---------- Output value (already in cache from batch collect) ----------
@@ -936,6 +1126,7 @@ def _materialize_eager_outputs(
     fp: str,
     preview: PreviewReader | dict[str, Any] | None,
     execution_context: ExecutionContext | None,
+    snapshot_plan: SeedPlan | None = None,
 ) -> tuple[
     dict[str, pl.DataFrame],
     list[str],
@@ -984,7 +1175,7 @@ def _materialize_eager_outputs(
                 source=source,
             )
             node_map = prepared.node_map
-            order = prepared.order
+            order = _planned_order(prepared.order, snapshot_plan)
             parents_of = prepared.parents_of
             # A full-materialisation preview collects every node to
             # ``row_limit``; those frames are head frames only where the
@@ -1003,7 +1194,7 @@ def _materialize_eager_outputs(
                 )
             else:
                 eager_outputs = {nid: prev_outputs[nid] for nid in order if nid in prefixes}
-                source_ids = {nid for nid in order if not parents_of.get(nid)}
+                source_ids = _trace_source_ids(order, parents_of, snapshot_plan)
                 logger.debug(
                     "trace_reused_preview_cache",
                     fingerprint=fp[:8],
@@ -1051,12 +1242,13 @@ def _materialize_eager_outputs(
         execution_context=execution_context,
         materialize_node_ids=frozenset(prefixes),
         row_limits_by_node=dict(prefixes),
+        snapshot_plan=snapshot_plan,
     )
     eager_outputs = {nid: df for nid, df in result.outputs.items() if df is not None}
     order = result.order
     parents_of = result.parents_of
     node_map = result.node_map
-    source_ids = {nid for nid in order if not parents_of.get(nid)}
+    source_ids = _trace_source_ids(order, parents_of, snapshot_plan)
     return (
         eager_outputs,
         order,
@@ -1076,6 +1268,7 @@ def _build_trace_plans(
     source: str,
     preamble_ns: dict[str, Any] | None,
     execution_context: ExecutionContext | None,
+    snapshot_plan: SeedPlan | None = None,
 ) -> dict[str, Any]:
     """Build the uncapped runtime plan of every lineage node without collecting."""
     compiled_preamble_ns = _compile_preamble(
@@ -1095,8 +1288,39 @@ def _build_trace_plans(
         source=source,
         execution_context=execution_context,
         materialize_node_ids=frozenset(),
+        snapshot_plan=snapshot_plan,
     )
     return dict(result.plans)
+
+
+def _planned_strategy_scope(graph: PipelineGraph, snapshot_plan: SeedPlan | None) -> dict[str, Any]:
+    """Strategy planning scoped to what a planned execution builds, estimated from its seeds."""
+    if snapshot_plan is None:
+        return {}
+    return {
+        "materialising_node_ids": snapshot_plan.decision.executed_node_ids,
+        "estimation_graph": snapshot_plan.estimation_graph(graph),
+    }
+
+
+def _planned_order(order: Sequence[str], snapshot_plan: SeedPlan | None) -> list[str]:
+    """The lineage nodes a trace runs: under a plan, its seeds and executed nodes."""
+    if snapshot_plan is None:
+        return list(order)
+    ran = set(snapshot_plan.decision.executed_node_ids) | set(snapshot_plan.decision.seeds)
+    return [node_id for node_id in order if node_id in ran]
+
+
+def _trace_source_ids(
+    order: Sequence[str],
+    parents_of: Mapping[str, Sequence[str]],
+    snapshot_plan: SeedPlan | None,
+) -> set[str]:
+    """Where the trace's correlation stops: sources, and every seeded point."""
+    sources = {node_id for node_id in order if not parents_of.get(node_id)}
+    if snapshot_plan is not None:
+        sources |= set(snapshot_plan.decision.seeds)
+    return sources
 
 
 def _trace_lineage_alignments(
@@ -1283,6 +1507,7 @@ def _build_trace_omissions(
     eager_outputs: dict[str, Any],
     steps: list[TraceStep],
     column: str | None,
+    always_relevant: frozenset[str] = frozenset(),
 ) -> list[TraceOmission]:
     """Build evidence entries only for unresolved nodes relevant to the trace.
 
@@ -1323,6 +1548,7 @@ def _build_trace_omissions(
                 for node_id in unresolved_rows
                 if _materialized_output_columns(eager_outputs.get(node_id)) & relevant_columns
             }
+    relevant_node_ids |= always_relevant & set(unresolved_rows)
 
     ranks = {node_id: rank for rank, node_id in enumerate(order)}
     omissions: list[TraceOmission] = []
@@ -1491,6 +1717,7 @@ def trace_result_to_dict(result: TraceResult) -> dict[str, Any]:
                 "calculation": s.calculation,
                 "node_detail": s.node_detail,
                 "row_lineage_type": s.row_lineage_type,
+                "snapshot_generation_id": s.snapshot_generation_id,
             }
             for s in result.steps
         ],

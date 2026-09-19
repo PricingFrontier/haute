@@ -842,6 +842,10 @@ function FlowEditor() {
     nodeStatuses,
     hoveredNodeId,
     refreshPreview,
+    previewSeedPlan:
+      previewData !== null && previewData.nodeId === selectedNode?.id
+        ? previewData.seed_plan
+        : undefined,
   })
   const previousDocumentRevisionRef = useRef<string | null>(null)
   useEffect(() => {

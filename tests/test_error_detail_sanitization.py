@@ -471,7 +471,7 @@ class TestSafeDetailOnError:
         ):
             resp = client.post(
                 "/api/pipeline/trace",
-                json={"graph": pipeline_graph.model_dump(), "row_index": 0},
+                json={"seed_plan": [], "graph": pipeline_graph.model_dump(), "row_index": 0},
             )
         assert resp.status_code == 500
         detail = resp.json()["detail"]
@@ -807,7 +807,7 @@ class TestLogOnError:
         ):
             resp = client.post(
                 "/api/pipeline/trace",
-                json={"graph": pipeline_graph.model_dump(), "row_index": 0},
+                json={"seed_plan": [], "graph": pipeline_graph.model_dump(), "row_index": 0},
             )
         assert resp.status_code == 500
         mock_logger.error.assert_called()
@@ -1233,7 +1233,7 @@ class TestSensitiveInfoLeakage:
         ):
             resp = client.post(
                 "/api/pipeline/trace",
-                json={"graph": pipeline_graph.model_dump(), "row_index": 0},
+                json={"seed_plan": [], "graph": pipeline_graph.model_dump(), "row_index": 0},
             )
         assert resp.status_code == 500
         detail = resp.json()["detail"]

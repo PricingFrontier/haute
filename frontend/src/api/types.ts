@@ -352,6 +352,14 @@ export interface PreviewNodeResponse extends NodeResult {
   seed_plan?: PreviewSeedPlanEntry[]
 }
 
+/** One generation a trace reads: an entry of the preview's `seed_plan`. */
+export interface TraceSeedPlanEntry {
+  node_id: string
+  port_label: null
+  identity_digest: string
+  generation_id: string
+}
+
 /** The inputs a preview would read, so only those are prepared before it. */
 export interface PreviewInputsResponse {
   input_node_ids: string[]

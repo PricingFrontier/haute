@@ -156,6 +156,7 @@ _ERROR_CASES = [
         "/api/pipeline/trace",
         {
             "graph": {"nodes": [], "edges": []},
+            "seed_plan": [],
             "row_index": 0,
             "target_node_id": "x",
             "column": "y",

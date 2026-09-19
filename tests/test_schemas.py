@@ -79,8 +79,13 @@ class TestValidation:
             PreviewNodeRequest(graph=Graph())
 
     def test_trace_request_accepts_minimal(self):
-        r = TraceRequest(graph=Graph())
+        r = TraceRequest(seed_plan=[], graph=Graph())
         assert r.row_index == 0
+
+    def test_trace_request_requires_its_previews_seed_plan(self):
+        # A trace names the generations its preview read, even when none.
+        with pytest.raises(ValidationError, match="seed_plan"):
+            TraceRequest(graph=Graph())
 
 
 class TestCompositeStructure:
@@ -145,22 +150,22 @@ class TestPreviewNodeRequestBoundaries:
 class TestTraceRequestBoundaries:
     def test_row_index_negative_fails(self):
         with pytest.raises(ValidationError):
-            TraceRequest(graph=Graph(), row_index=-1)
+            TraceRequest(seed_plan=[], graph=Graph(), row_index=-1)
 
     def test_row_index_zero_succeeds(self):
-        r = TraceRequest(graph=Graph(), row_index=0)
+        r = TraceRequest(seed_plan=[], graph=Graph(), row_index=0)
         assert r.row_index == 0
 
     def test_row_limit_zero_fails(self):
         with pytest.raises(ValidationError):
-            TraceRequest(graph=Graph(), row_limit=0)
+            TraceRequest(seed_plan=[], graph=Graph(), row_limit=0)
 
     def test_row_limit_above_max_fails(self):
         with pytest.raises(ValidationError):
-            TraceRequest(graph=Graph(), row_limit=10001)
+            TraceRequest(seed_plan=[], graph=Graph(), row_limit=10001)
 
     def test_row_limit_min_boundary(self):
-        r = TraceRequest(graph=Graph(), row_limit=1)
+        r = TraceRequest(seed_plan=[], graph=Graph(), row_limit=1)
         assert r.row_limit == 1
 
 
@@ -198,7 +203,7 @@ _SCHEMA_CASES_WITH_NODE_ID = [
 
 def _kwargs_for(schema_cls: type) -> dict:
     if schema_cls is TraceRequest:
-        return {"graph": Graph()}
+        return {"graph": Graph(), "seed_plan": []}
     if schema_cls is OptimiserFrontierRequest:
         return {"job_id": "j"}
     return {"graph": Graph(), "node_id": "n"}

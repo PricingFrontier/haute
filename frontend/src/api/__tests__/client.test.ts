@@ -786,13 +786,20 @@ describe("endpoint contracts", () => {
   })
 
   it("traceCell posts to /api/pipeline/trace with correct body", async () => {
-    await traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1" })
+    const seedPlan = [{
+      node_id: "join",
+      port_label: null,
+      identity_digest: "a".repeat(64),
+      generation_id: "generation-1",
+    }]
+    await traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1", seed_plan: seedPlan })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/pipeline/trace")
     expect(opts.method).toBe("POST")
     const body = JSON.parse(opts.body)
     expect(body.row_index).toBe(0)
     expect(body.target_node_id).toBe("n1")
+    expect(body.seed_plan).toEqual(seedPlan)
   })
 
   it("resolveOutputDestination posts to the backend path authority", async () => {
@@ -1660,6 +1667,7 @@ describe("streaming_chunk_size in request bodies", () => {
       graph: dummyGraph,
       row_index: 0,
       target_node_id: "n1",
+      seed_plan: [],
       streamingChunkSize: 42,
     })
     const [, opts] = mockFetch.mock.calls[0]
@@ -1667,7 +1675,7 @@ describe("streaming_chunk_size in request bodies", () => {
   })
 
   it("traceCell body omits streaming_chunk_size when not supplied", async () => {
-    await traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1" })
+    await traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1", seed_plan: [] })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })

@@ -607,6 +607,7 @@ class TestTraceRow:
         resp = client.post(
             "/api/pipeline/trace",
             json={
+                "seed_plan": [],
                 "graph": graph.model_dump(),
                 "row_index": 0,
             },
@@ -621,6 +622,7 @@ class TestTraceRow:
         resp = client.post(
             "/api/pipeline/trace",
             json={
+                "seed_plan": [],
                 "graph": {"nodes": [], "edges": []},
             },
         )
@@ -646,6 +648,7 @@ class TestTraceRow:
         resp = client.post(
             "/api/pipeline/trace",
             json={
+                "seed_plan": [],
                 "graph": graph.model_dump(),
                 "row_index": 0,
             },
@@ -2937,7 +2940,7 @@ class TestPipelineTimeouts:
 
             graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
             if endpoint == "trace":
-                body = {"graph": graph.model_dump(), "row_index": 0}
+                body = {"graph": graph.model_dump(), "row_index": 0, "seed_plan": []}
             else:
                 body = {"graph": graph.model_dump(), "node_id": graph.nodes[0].id}
         else:
@@ -3039,7 +3042,7 @@ class TestPipelineExceptions:
 
             graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
             if endpoint == "trace":
-                body = {"graph": graph.model_dump(), "row_index": 0}
+                body = {"graph": graph.model_dump(), "row_index": 0, "seed_plan": []}
             else:
                 body = {"graph": graph.model_dump(), "node_id": graph.nodes[0].id}
         else:

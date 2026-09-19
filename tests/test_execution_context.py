@@ -3158,7 +3158,7 @@ async def test_trace_route_maps_target_not_found_and_unknown_value_errors(
 
     with pytest.raises(HTTPException) as exc_info:
         await pipeline_route.trace_row(
-            TraceRequest(graph=graph, row_index=0, target_node_id="source")
+            TraceRequest(seed_plan=[], graph=graph, row_index=0, target_node_id="source")
         )
 
     assert exc_info.value.status_code == expected_status
@@ -3195,7 +3195,7 @@ async def test_trace_route_maps_contract_mismatch_to_http_422(monkeypatch) -> No
     monkeypatch.setattr(pipeline_route, "execute_trace", raise_contract_mismatch)
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.trace_row(TraceRequest(graph=graph, row_index=0))
+        await pipeline_route.trace_row(TraceRequest(seed_plan=[], graph=graph, row_index=0))
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail == "bad contract (node_id=source)"

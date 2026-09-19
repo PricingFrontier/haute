@@ -168,6 +168,7 @@ describe("TracePanel", () => {
               ignored_columns: ["premium"],
               matched_row_count: 2,
               matched_row_indices: [0, 1],
+              seed_node_ids: [],
             },
           ],
         })}
@@ -209,6 +210,7 @@ describe("TracePanel", () => {
             match_columns: ["policy_id"],
             ignored_columns: [],
             matched_row_indices: [0, 1],
+            seed_node_ids: [],
           }],
           nodes_in_trace: 3,
         })}

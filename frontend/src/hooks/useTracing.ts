@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import type { Node, Edge } from "@xyflow/react"
 import { MarkerType, useStore } from "@xyflow/react"
 import type { TraceResult } from "../types/trace"
+import type { PreviewSeedPlanEntry } from "../api/types"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import {
   isSubmodelDefinition,
@@ -43,6 +44,8 @@ interface TracingParams {
   nodeStatuses: Record<string, NodeStatus>
   hoveredNodeId: string | null
   refreshPreview?: (node: Node) => void
+  /** The `seed_plan` of the preview shown for the selected node. */
+  previewSeedPlan?: PreviewSeedPlanEntry[]
 }
 
 export type TraceRequestState =
@@ -222,6 +225,7 @@ export default function useTracing({
   nodeStatuses,
   hoveredNodeId,
   refreshPreview,
+  previewSeedPlan,
 }: TracingParams): TracingReturn {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
   const streamingChunkSize = useSettingsStore((s) => s.streamingChunkSize)
@@ -371,6 +375,12 @@ export default function useTracing({
       row_limit: rowLimit,
       source: activeSource,
       row_values: rowValues,
+      seed_plan: (previewSeedPlan ?? []).map((entry) => ({
+        node_id: entry.node_id,
+        port_label: null,
+        identity_digest: entry.identity_digest,
+        generation_id: entry.generation_id,
+      })),
       streamingChunkSize,
       signal: controller.signal,
     })
@@ -430,7 +440,7 @@ export default function useTracing({
           traceAbort.current = null
         }
       })
-  }, [selectedNode, nodes, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, rowLimit, streamingChunkSize, activeSource, semanticContext, semanticContextToken, refreshPreview])
+  }, [selectedNode, nodes, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, rowLimit, streamingChunkSize, activeSource, semanticContext, semanticContextToken, refreshPreview, previewSeedPlan])
 
   const handleCellClick = startTrace
   const cancelTrace = clearTrace

@@ -507,7 +507,7 @@ describe("client runtime contracts", () => {
     mockFetch.mockReturnValue(jsonResponse({ status: "ok", trace: { row_index: 0 } }))
 
     await expect(
-      traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1" }),
+      traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1", seed_plan: [] }),
     ).rejects.toThrow(/parseTraceResponse/i)
   })
 

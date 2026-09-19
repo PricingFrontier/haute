@@ -29,7 +29,8 @@
         "expression": null,
         "calculation": null,
         "node_detail": null,
-        "row_lineage_type": "direct"
+        "row_lineage_type": "direct",
+        "snapshot_generation_id": null
       }
     ],
     "omissions": [],

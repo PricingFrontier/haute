@@ -230,8 +230,10 @@ present tense, and this contract is deleted with the package.
   cache key carries the fingerprint of the points it seeds. Correlation stops at a seeded point,
   whose uncapped plan is its seed's scan. Each node the execution skipped because of seeding is an
   omission with reason `snapshot_seed`, linked to a correlation diagnostic with code and reason
-  `snapshot_seed`, severity `info`, and `seed_node_ids` naming the seeds it was skipped through;
-  column-relevance pruning applies as to every omission.
+  `snapshot_seed`, severity `info`, and `seed_node_ids` naming the seeds it was skipped through.
+  It never ran, so no schema can say whether it bears on a traced column: it is always
+  reported. An empty list, or a listed plan that ends up seeding nothing, runs the trace
+  exactly as without a plan.
 - **Frontend.** `useNodeResultsStore.setPreview` records the node-data epoch a request was sent
   under and a stored preview matches its request context only at that epoch. A response with
   `captured` entries increments the epoch after it is applied; the stored preview is re-stamped

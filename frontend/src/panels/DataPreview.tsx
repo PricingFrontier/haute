@@ -4,7 +4,13 @@ import { getDtypeColor } from "../utils/dtypeColors"
 import { formatValue } from "../utils/formatValue"
 import ExecutionDiagnosticsIndicator from "../components/ExecutionDiagnosticsIndicator"
 import type { ColumnInfo } from "../types/node"
-import type { SchemaWarning, NodeTiming, NodeMemory, ExecutionMetrics } from "../api/types"
+import type {
+  SchemaWarning,
+  NodeTiming,
+  NodeMemory,
+  ExecutionMetrics,
+  PreviewSeedPlanEntry,
+} from "../api/types"
 import PreviewPanelFrame from "./PreviewPanelFrame"
 import { PREVIEW_PANEL_DIMENSIONS } from "./previewPanelLayout"
 
@@ -36,6 +42,8 @@ export interface PreviewData {
   frame_columns?: Record<string, ColumnInfo[]>
   /** The frame label currently shown. Drives the dropdown's selected value. */
   selected_frame?: string
+  /** The shared-snapshot generations these rows were computed from. */
+  seed_plan?: PreviewSeedPlanEntry[]
 }
 
 interface DataPreviewProps {

@@ -914,6 +914,15 @@ class PreviewInputsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class TraceSeedPlanEntry(BaseModel):
+    """One generation the preview a trace explains was computed from."""
+
+    node_id: str
+    port_label: None = None
+    identity_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    generation_id: str = Field(min_length=1)
+
+
 class TraceRequest(BaseModel):
     graph: Graph
     row_index: int = Field(default=0, ge=0)
@@ -923,6 +932,9 @@ class TraceRequest(BaseModel):
     source: str = "live"
     row_values: dict[str, Any] | None = None
     streaming_chunk_size: StreamingChunkSize = None
+    # The ``seed_plan`` of the preview this trace explains: the trace reads
+    # exactly those generations and nothing else, even if snapshots now exist.
+    seed_plan: list[TraceSeedPlanEntry]
 
 
 class SchemaDiffResponse(BaseModel):
@@ -945,6 +957,9 @@ class TraceStepResponse(BaseModel):
     calculation: dict[str, Any] | None = None
     node_detail: dict[str, Any] | None = None
     row_lineage_type: str | None = None
+    # Set when this step's row comes from a shared snapshot generation the
+    # trace was seeded with, rather than from computing the node.
+    snapshot_generation_id: str | None = None
 
 
 class TraceOmissionResponse(BaseModel):
@@ -970,6 +985,8 @@ class TraceCorrelationDiagnosticResponse(BaseModel):
     ignored_columns: list[str] = Field(default_factory=list)
     matched_row_count: int | None = None
     matched_row_indices: list[int] = Field(default_factory=list)
+    # For a ``snapshot_seed`` omission: the seeded nodes it was skipped through.
+    seed_node_ids: list[str] = Field(default_factory=list)
 
 
 class TraceWaterfallEntryResponse(BaseModel):

@@ -340,7 +340,10 @@ target whose lineage `preview_lineage_admitted` accepts, `execute_graph()` opens
 `PREVIEW_EAGER` seed plan — preparing only the inputs it executes, under the caller's
 `staging_token` — holds it for the rest of the request, and runs `_execute_graph_core()`
 under it; any other preview runs the same core without a plan, preparing its lineage as
-before. The core reads the lineage's runtime-input identity once
+before. Under a plan the strategy is planned for what the plan builds only
+(`materialising_node_ids`), estimated from its seeds' generations (`estimation_graph`),
+so a seed covering work that could not be admitted if recomputed keeps the preview
+admitted. The core reads the lineage's runtime-input identity once
 (`lineage_runtime_input_identity`) and keys the entry by it together with the plan's
 seed fingerprint (`_seeded_fingerprint`: `None` when nothing is seeded, so a preview
 that seeds nothing is keyed like one without a plan). Every entry records the

@@ -158,6 +158,7 @@ function resultToPreview(
     memory: r.memory ?? [],
     schema_warnings: r.schema_warnings ?? [],
     execution_metrics: r.execution_metrics ?? null,
+    seed_plan: "seed_plan" in r ? r.seed_plan ?? [] : [],
     // Per-frame schema for a multi-frame producer (drives the frame-select
     // dropdown). Prefer the node's own `frame_columns`; fall back to
     // `node_frame_columns[nodeId]` (the route-level map) when the per-node

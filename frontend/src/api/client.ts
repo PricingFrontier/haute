@@ -92,6 +92,7 @@ import type {
   PreviewInputsResponse,
   PreviewNodeResponse,
   SaveOptimiserRequest,
+  TraceSeedPlanEntry,
   SaveOptimiserResponse,
   SavePipelineResponse,
   SchemaResult,
@@ -1029,6 +1030,9 @@ export interface TraceCellArgs {
   row_limit?: number
   source?: string
   row_values?: Record<string, unknown>
+  /** The `seed_plan` of the preview being traced: the trace reads exactly
+   * those generations, and none when it is empty. */
+  seed_plan: TraceSeedPlanEntry[]
   streamingChunkSize?: number
   signal?: AbortSignal
   timeout?: number

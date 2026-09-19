@@ -273,6 +273,39 @@ describe("useTracing", () => {
     expect(result.current.tracedCell).toEqual({ rowIndex: 0, column: "price" })
   })
 
+  it("sends the displayed preview's seed plan, and none without one", async () => {
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: makeTrace(["n1", "n2"]) })
+    const previewSeedPlan = [{
+      node_id: "join",
+      port_label: null,
+      node_label: "Join",
+      identity_digest: "b".repeat(64),
+      generation_id: "generation-7",
+      columns: null,
+      created_at: "2026-09-19T00:00:00+00:00",
+      kind: "captured" as const,
+    }]
+    const seeded = renderHook(() => useTracing(makeParams({ previewSeedPlan })))
+    await act(async () => {
+      seeded.result.current.handleCellClick(0, "price")
+    })
+    await waitFor(() => expect(mockTraceCell).toHaveBeenCalledOnce())
+    expect(mockTraceCell.mock.calls[0][0].seed_plan).toEqual([{
+      node_id: "join",
+      port_label: null,
+      identity_digest: "b".repeat(64),
+      generation_id: "generation-7",
+    }])
+    seeded.unmount()
+
+    const unseeded = renderHook(() => useTracing(makeParams()))
+    await act(async () => {
+      unseeded.result.current.handleCellClick(0, "price")
+    })
+    await waitFor(() => expect(mockTraceCell).toHaveBeenCalledTimes(2))
+    expect(mockTraceCell.mock.calls[1][0].seed_plan).toEqual([])
+  })
+
   it("ignores stale trace responses when a newer click resolves first", async () => {
     type TraceCellValue = Awaited<ReturnType<typeof traceCell>>
     let resolveFirst!: (value: TraceCellValue) => void

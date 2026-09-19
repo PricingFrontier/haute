@@ -848,6 +848,38 @@ describe("API response guards", () => {
     expect(parsed.trace?.execution_origin).toBe("fresh_execution")
   })
 
+  it("parses where a seeded trace read its rows and what it skipped", () => {
+    const fixture = loadUiContractFixture<{ trace: Record<string, unknown> }>("trace_response")
+    const [step] = fixture.trace.steps as Record<string, unknown>[]
+    const parsed = parseTraceResponse({
+      ...fixture,
+      trace: {
+        ...fixture.trace,
+        steps: [{ ...step, node_id: "join", snapshot_generation_id: "generation-1" }],
+        omissions: [{
+          node_id: "policies",
+          node_name: "policies",
+          node_type: "dataInput",
+          topological_rank: 0,
+          reason: "snapshot_seed",
+          diagnostic_index: 0,
+        }],
+        correlation_diagnostics: [{
+          code: "snapshot_seed",
+          severity: "info",
+          reason: "snapshot_seed",
+          message: "Not computed: the trace read the snapshot of join.",
+          node_id: "policies",
+          seed_node_ids: ["join"],
+        }],
+      },
+    })
+
+    expect(parsed.trace?.steps[0]?.snapshot_generation_id).toBe("generation-1")
+    expect(parsed.trace?.omissions[0]?.reason).toBe("snapshot_seed")
+    expect(parsed.trace?.correlation_diagnostics[0]?.seed_node_ids).toEqual(["join"])
+  })
+
   it("rejects a trace response with no trace (backend always returns one)", () => {
     expect(() => parseTraceResponse({ status: "ok" })).toThrow(/trace/i)
   })

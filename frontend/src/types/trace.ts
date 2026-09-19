@@ -45,6 +45,9 @@ export interface TraceStep {
   } | null
   node_detail?: TraceNodeDetail | null
   row_lineage_type?: string | null
+  /** Set when this step's row was read from the shared snapshot generation
+   * the trace was seeded with, instead of computing the node. */
+  snapshot_generation_id?: string | null
 }
 
 export interface RatingStepFactorDetail {
@@ -299,6 +302,8 @@ export interface TraceCorrelationDiagnostic {
   ignored_columns: string[]
   matched_row_count?: number | null
   matched_row_indices: number[]
+  /** For a `snapshot_seed` omission: the seeded nodes it was skipped through. */
+  seed_node_ids: string[]
   [metadata: string]: unknown
 }
 

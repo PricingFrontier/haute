@@ -134,6 +134,7 @@ class TestEmptyStrings:
         """Empty graph should be caught before attempting trace execution."""
         body = {
             "graph": {"nodes": [], "edges": []},
+            "seed_plan": [],
         }
         resp = client.post("/api/pipeline/trace", json=body)
         assert resp.status_code == 400
@@ -527,7 +528,7 @@ class TestIntegerOverflow:
         Real failure: row_index used as DataFrame index; if data has < 2^32
         rows, Polars should return an error, not segfault.
         """
-        req = TraceRequest(graph=Graph(), row_index=2**32)
+        req = TraceRequest(graph=Graph(), row_index=2**32, seed_plan=[])
         assert req.row_index == 2**32
 
     def test_frontier_points_large(self):

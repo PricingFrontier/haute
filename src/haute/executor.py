@@ -1159,6 +1159,16 @@ def _execute_graph_core(
     )
 
     def _plan_current_request() -> None:
+        # Under a plan only what it builds is admitted and estimated, and the
+        # estimates read its seeds' generations instead of their computation.
+        scope: dict[str, Any] = (
+            {
+                "materialising_node_ids": snapshot_plan.decision.executed_node_ids,
+                "estimation_graph": snapshot_plan.estimation_graph(graph),
+            }
+            if snapshot_plan is not None
+            else {}
+        )
         execution_facade.plan_execution_strategy(
             execution_facade.ProjectionRequest(
                 graph=graph,
@@ -1168,6 +1178,7 @@ def _execute_graph_core(
                 source=source,
             ),
             execution_context=execution_context,
+            **scope,
         )
 
     def _current_execution_strategy() -> execution_facade.ExecutionStrategyResult:

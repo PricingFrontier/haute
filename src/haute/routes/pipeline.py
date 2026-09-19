@@ -75,6 +75,7 @@ from haute._polars_steps import PolarsStepError, render_polars_steps
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, temporary_streaming_chunk_size
 from haute._sandbox import _get_project_root
 from haute._seed_plans import (
+    ListedSeed,
     ReadGeneration,
     SeedPlanHandoff,
     open_seed_plan,
@@ -103,6 +104,7 @@ from haute.errors import (
     ContractMismatchError,
     ParseError,
     SchemaMismatchError,
+    SeedPlanExpiredError,
 )
 from haute.execution import _runtime_input_path_fields, prune_source_switch_edges
 from haute.executor import (
@@ -131,6 +133,7 @@ from haute.graph_utils import (
 )
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
+    SEED_PLAN_EXPIRED_HTTP_STATUS,
     contract_error_http_exception,
     contract_error_payload,
 )
@@ -188,6 +191,7 @@ from haute.schemas import (
     SavePipelineResponse,
     TraceRequest,
     TraceResponse,
+    TraceSeedPlanEntry,
     WriteOutputRequest,
     WriteOutputResponse,
 )
@@ -454,11 +458,14 @@ def _trace_supersession_key(
     column: str | None,
     row_limit: int,
     row_values: dict[str, Any] | None,
+    seed_plan: list[TraceSeedPlanEntry] | None = None,
     *,
     memo: GraphFingerprintMemo | None = None,
 ) -> tuple[str, ...]:
     return (
         *_supersession_key("trace", graph, source, memo=memo),
+        "seed_plan",
+        *(f"{entry.node_id}={entry.generation_id}" for entry in seed_plan or ()),
         "target",
         target_node_id or "",
         "row_index",
@@ -553,7 +560,12 @@ def _raise_interactive_remote_http_error(
         and expected_public_code is not None
         and payload.get("error_code") == expected_public_code
     ):
-        raise HTTPException(status_code=422, detail=payload) from None
+        status_code = (
+            SEED_PLAN_EXPIRED_HTTP_STATUS
+            if expected_public_code == SeedPlanExpiredError.error_code
+            else 422
+        )
+        raise HTTPException(status_code=status_code, detail=payload) from None
     if operation == "pipeline_preview":
         if identity == _PREVIEW_PROJECTION_REMOTE_IDENTITY:
             raise HTTPException(status_code=400, detail=exc.remote_message) from None
@@ -1167,6 +1179,13 @@ def _execute_preview_worker(
         context.release_admission(preserve_primary_error=True)
 
 
+def _listed_seeds(body: TraceRequest) -> list[ListedSeed]:
+    return [
+        ListedSeed(entry.node_id, entry.identity_digest, entry.generation_id)
+        for entry in body.seed_plan
+    ]
+
+
 def _execute_trace_worker(
     graph: PipelineGraph,
     body: TraceRequest,
@@ -1187,6 +1206,7 @@ def _execute_trace_worker(
                 preview=_preview_cache,
                 fingerprint_memo=GraphFingerprintMemo(),
                 execution_context=context,
+                seed_plan=_listed_seeds(body),
             )
             trace_payload = trace_result_to_dict(result)
             TraceResponse.model_validate({"status": "ok", "trace": trace_payload})
@@ -1225,6 +1245,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
                 body.column,
                 body.row_limit,
                 body.row_values,
+                body.seed_plan,
                 memo=fingerprint_memo,
             )
         )
@@ -1272,6 +1293,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
                         preview=_preview_cache,
                         fingerprint_memo=fingerprint_memo,
                         execution_context=trace_context,
+                        seed_plan=_listed_seeds(body),
                     )
                     # Serialise to a JSON-safe dict here, still in the
                     # worker thread, so the event loop never walks the
