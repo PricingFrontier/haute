@@ -21,6 +21,7 @@ import useGraphStore, { captureGraphSnapshot } from "../stores/useGraphStore"
 import useGitStore from "../stores/useGitStore"
 import { isIdentityPromptDismissed } from "../stores/identityPrompt"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
+import useNodeDataStore from "../stores/useNodeDataStore"
 import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
 import useUIStore from "../stores/useUIStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
@@ -132,6 +133,11 @@ const NON_EXECUTABLE_PREVIEW_TYPES = new Set<string>([
 /** Compare two column arrays by name+dtype; returns true if identical. */
 function columnsEqual(a: ColumnDef[] | undefined, b: ColumnDef[] | undefined): boolean {
   return columnsEqualByFingerprint(a, b)
+}
+
+/** True when a preview wrote a shared snapshot that other reads may now use. */
+function capturedSnapshots(result: NodeResult | PreviewNodeResponse): boolean {
+  return "seed_plan" in result && (result.seed_plan ?? []).some((entry) => entry.kind === "captured")
 }
 
 function resultToPreview(
@@ -417,6 +423,9 @@ export default function usePipelineAPI({
   const invalidatePreviewRequests = useCallback(() => {
     ++previewRequestSeq.current
   }, [])
+  // A frame preview is never stored, so the node-data epoch it is current at
+  // — and the frame to fetch again — is kept beside the object the panel shows.
+  const framePreviewEpochs = useRef(new WeakMap<PreviewData, { epoch: number; portLabel: string }>())
 
   // Stable refs for values that change across renders but shouldn't
   // trigger re-creation of callbacks. Read at call-time instead.
@@ -589,16 +598,25 @@ export default function usePipelineAPI({
     const snapshotRowLimit = rowLimitRef.current
     const snapshotSource = activeSourceRef.current
     const snapshotChunkSize = streamingChunkSizeRef.current
+    // A snapshot published, refreshed, or cleared after the request is sent
+    // may change its rows: the stored preview matches only at this epoch.
+    const snapshotNodeDataEpoch = useNodeDataStore.getState().epoch
     const snapshotDocumentFence = capturePreviewDocumentFence(sourceRevisionRef)
     const snapshotDocumentRevision = snapshotDocumentFence.sourceRevision
     const snapshotDocumentStatus = snapshotDocumentFence.loadStatus
     const recoveryPreview = snapshotDocumentStatus === "degraded"
     const documentStillCurrent = () =>
       isPreviewDocumentFenceCurrent(snapshotDocumentFence, sourceRevisionRef)
-    const matchesRequestContext = (cached: { structuralVersion: number; source?: string; rowLimit?: number }) =>
+    const matchesRequestContext = (cached: {
+      structuralVersion: number
+      source?: string
+      rowLimit?: number
+      nodeDataEpoch?: number
+    }) =>
       cached.structuralVersion === structuralVersion &&
       cached.source === snapshotSource &&
-      cached.rowLimit === snapshotRowLimit
+      cached.rowLimit === snapshotRowLimit &&
+      cached.nodeDataEpoch === snapshotNodeDataEpoch
     const requestStillCurrent = () =>
       previewRequestSeq.current === requestId &&
       useGraphStore.getState().structuralVersion === structuralVersion &&
@@ -626,6 +644,24 @@ export default function usePipelineAPI({
     })
     const controller = new AbortController()
     previewAbort.current = controller
+
+    // Snapshots this request captured raise the node-data epoch once its
+    // response is applied, so every other reader asks again. Its own stored
+    // preview stays current across that increment — unless something else
+    // moved the epoch while it was in flight, which leaves it stale and so
+    // fetched again.
+    let storedPreview: PreviewData | null = null
+    let storedAtEpoch = snapshotNodeDataEpoch
+    let rootCaptured = false
+    let propagationCaptured = false
+    const announceOwnCaptures = () => {
+      const { epoch, bumpEpoch } = useNodeDataStore.getState()
+      if (storedPreview && epoch === storedAtEpoch) {
+        storedAtEpoch = epoch + 1
+        useNodeResultsStore.getState().advancePreviewEpoch(node.id, storedPreview, storedAtEpoch)
+      }
+      bumpEpoch()
+    }
 
     // Cascade downstream when a node's columns change. The snapshotted
     // rowLimit/source are closed over so every node in the cascade uses
@@ -761,6 +797,7 @@ export default function usePipelineAPI({
             signal: controller.signal,
           })
             .then((result) => {
+              if (capturedSnapshots(result)) propagationCaptured = true
               if (!requestStillCurrent()) return
               if (!result.columns) {
                 settleNode(nodeId, false)
@@ -858,6 +895,7 @@ export default function usePipelineAPI({
           ).then(executePreview)
     previewRequest
       .then((result) => {
+        rootCaptured = capturedSnapshots(result)
         // Superseded by a newer preview request: that request owns the
         // panel surface and will reach its own terminal state.
         if (previewRequestSeq.current !== requestId) return
@@ -881,13 +919,15 @@ export default function usePipelineAPI({
             // Tagged with the fetch-time structuralVersion, so the next
             // preview sees a context mismatch and refetches in the
             // background instead of trusting this entry.
-            storePreview(node.id, preview, structuralVersion, snapshotSource, snapshotRowLimit)
+            storePreview(node.id, preview, structuralVersion, snapshotSource, snapshotRowLimit, snapshotNodeDataEpoch)
+            storedPreview = preview
           }
           return
         }
         setPreviewData(preview)
         // Cache the result for next time
-        storePreview(node.id, preview, structuralVersion, snapshotSource, snapshotRowLimit)
+        storePreview(node.id, preview, structuralVersion, snapshotSource, snapshotRowLimit, snapshotNodeDataEpoch)
+        storedPreview = preview
         if (result.node_statuses) {
           setNodeStatuses(canvasNodeStatuses(result, node.id))
         }
@@ -924,10 +964,16 @@ export default function usePipelineAPI({
         }
       })
       .finally(() => {
+        // Announced before the preview stops being busy, so the refetch of a
+        // stale displayed preview never sees the entry before its re-stamp.
+        if (rootCaptured) announceOwnCaptures()
         if (previewRequestSeq.current === requestId) {
           setPreviewBusy(false)
         }
         void propagationDone.finally(() => {
+          // After the whole cascade: announcing earlier could refetch the
+          // displayed preview and so abort the cascade under it.
+          if (propagationCaptured) announceOwnCaptures()
           if (previewAbort.current === controller) {
             previewAbort.current = null
           }
@@ -1107,6 +1153,8 @@ export default function usePipelineAPI({
             signal: controller.signal,
           })
             .then((result) => {
+              // The refreshed preview is requested after this, at the raised epoch.
+              if (capturedSnapshots(result)) useNodeDataStore.getState().bumpEpoch()
               if (!requestStillCurrent()) return
               if (result.columns) {
                 setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, upstream.id, result, snapshotSource, structuralVersion))
@@ -1183,6 +1231,7 @@ export default function usePipelineAPI({
     const controller = new AbortController()
     previewAbort.current = controller
     const label = nodeLabel(node)
+    const requestNodeDataEpoch = useNodeDataStore.getState().epoch
     setPreviewBusy(true)
     // Keep the current table on screen (marked busy via setPreviewBusy) while
     // the requested frame loads, so switching frames doesn't flash empty.
@@ -1252,9 +1301,21 @@ export default function usePipelineAPI({
         })
       })
       .then((result) => {
-        if (previewRequestSeq.current !== requestId) return
+        const captured = capturedSnapshots(result)
+        const { epoch, bumpEpoch } = useNodeDataStore.getState()
+        if (previewRequestSeq.current !== requestId) {
+          if (captured) bumpEpoch()
+          return
+        }
         const preview = resultToPreview(node.id, label, result, portLabel)
+        // Its own captures leave it current unless something else moved the
+        // epoch while it was in flight.
+        framePreviewEpochs.current.set(preview, {
+          epoch: captured && epoch === requestNodeDataEpoch ? epoch + 1 : requestNodeDataEpoch,
+          portLabel,
+        })
         if (requestStillCurrent()) setPreviewData(preview)
+        if (captured) bumpEpoch()
       })
       .catch((err: unknown) => {
         if (previewRequestSeq.current !== requestId) return
@@ -1409,6 +1470,25 @@ export default function usePipelineAPI({
       return false
     }
   }, [graphRef, parentGraphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef, addToast])
+
+  // The displayed preview is fetched again once a snapshot is published,
+  // refreshed, or cleared after its request was sent: its rows may have been
+  // computed from data that has since changed. A refetch whose seeds did not
+  // change is a backend cache hit. Other nodes' stored previews are fetched
+  // again when next displayed.
+  const nodeDataEpoch = useNodeDataStore((s) => s.epoch)
+  useEffect(() => {
+    if (!previewData || previewBusy) return
+    const frame = framePreviewEpochs.current.get(previewData)
+    if (frame) {
+      if (frame.epoch !== nodeDataEpoch) previewNodeFrame(previewData.nodeId, frame.portLabel)
+      return
+    }
+    const stored = useNodeResultsStore.getState().previews[previewData.nodeId]
+    if (!stored || stored.data !== previewData || stored.nodeDataEpoch === nodeDataEpoch) return
+    const node = graphRef.current.nodes.find((candidate) => candidate.id === previewData.nodeId)
+    if (node) fetchPreviewImmediate(node)
+  }, [nodeDataEpoch, previewData, previewBusy, fetchPreviewImmediate, previewNodeFrame, graphRef])
 
   const selectedNodeId = selectedNode?.id ?? null
 

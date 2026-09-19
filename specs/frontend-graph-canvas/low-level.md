@@ -592,10 +592,31 @@ reconciliation rather than dropping them or committing a second mutation.
     request/debounce, paints cached data (or a `"loading"` placeholder)
     immediately, then debounces (`options.debounceMs ?? 200`) before calling
     `fetchPreviewImmediate`. That function snapshots `rowLimit`/
-    `activeSource`/`streamingChunkSize` once, checks the node-results cache
-    for a hit matching source+rowLimit; if the cached entry also matches the
-    current `structuralVersion` it short-circuits with no network call,
-    otherwise it shows the cached data while re-fetching in the background.
+    `activeSource`/`streamingChunkSize` and the node-data epoch
+    (`useNodeDataStore`) once, checks the node-results cache for a hit
+    matching source+rowLimit; if the cached entry also matches the current
+    `structuralVersion` and was requested at that epoch it short-circuits with
+    no network call, otherwise it shows the cached data while re-fetching in
+    the background. The stored entry records the epoch the request was sent
+    under. A response whose `seed_plan` lists a `captured` entry raises the
+    epoch once it has been applied, before the preview stops being busy: if the
+    epoch still equals the one the stored preview is current at, the entry is
+    first re-stamped to the raised epoch (`advancePreviewEpoch`), so the
+    preview's own capture never fetches it again; if something else moved the
+    epoch while it was in flight, it keeps its request epoch and is fetched
+    again at once. A superseded response's captures still raise the epoch.
+    `refreshPreview`'s upstream previews and `previewNodeFrame` raise it for
+    their captures too; neither is stored. A frame preview keeps the epoch it
+    is current at — its request epoch, or one past it for its own captures when
+    nothing else moved the epoch — and its frame beside the object the panel
+    shows. A separate effect fetches the displayed preview again — a frame
+    preview for its frame through `previewNodeFrame` — whenever it is the stored
+    entry or such a frame preview, no request for it is running, and its epoch
+    differs from the store's — a snapshot was
+    published, widened, refreshed, or cleared after its request; a refetch
+    whose seeds did not change is a backend cache hit, and one that fails
+    shows the preview error. Other nodes' stored previews are fetched again
+    when next displayed.
     Before any network preview is sent, the request asks the backend which
     inputs the preview reads (`previewInputs`, `POST /api/pipeline/preview/inputs`
     — none above a shared snapshot it seeds from, none outside its lineage) and
@@ -651,7 +672,11 @@ reconciliation rather than dropping them or committing a second mutation.
     A bounded ready-queue (`drainReadyQueue`) runs at most
     `DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT` (4) previews concurrently. The
     whole cascade resolves once every reachable node has settled, the
-    request is still current, or the shared `AbortController` fires.
+    request is still current, or the shared `AbortController` fires. A
+    cascade preview's captures raise the epoch only after the whole cascade
+    has resolved, with the root's stored entry re-stamped as above: raising it
+    earlier would fetch the displayed root again and so abort the cascade
+    under it.
 18. **Save (`usePipelineAPI.handleSave`).** Refuses to run while drilled
     into a submodel. Runs `validateConfigRefs` (warns, does not block) and
     `findFirstInvalidEdgeJoin` (blocks with an error toast if invalid).
@@ -1418,6 +1443,17 @@ again through the editor and save paths.
     warnings; diamond-shaped dedup (shared child previews once, waits for
     the slower branch); no-op when the previewed node has no downstream
     edges; one downstream rejection does not abort sibling previews.
+  - `frontend/src/hooks/__tests__/usePipelineAPI.nodeDataEpoch.test.ts` — the
+    displayed preview fetched again once a snapshot is published after its
+    request; a preview's own capture raising the epoch without fetching it
+    again; an own capture whose epoch moved in flight fetched again; a stored
+    preview from an older epoch shown and fetched again, and one from the
+    current epoch answered without a request; a displayed frame preview fetched
+    again for its frame, and not for its own capture; a downstream capture
+    announced after the cascade without fetching the displayed root again.
+    The cache-identity fixtures in
+    `frontend/src/hooks/__tests__/usePipelineAPI.gaps.test.ts` record the
+    current epoch, so each varies only the dimension it tests.
   - `frontend/src/hooks/__tests__/usePipelineAPI.previewLifecycle.test.ts` (W0) — a preview response or
     failure arriving after a mid-flight structuralVersion bump still
     reaches a terminal panel state; a node deleted mid-flight is never

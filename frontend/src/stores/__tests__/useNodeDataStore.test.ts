@@ -280,3 +280,11 @@ describe("columnsCoverDemand", () => {
     expect(columnsCoverDemand(["premium"], [])).toBe(true)
   })
 })
+
+describe("useNodeDataStore epoch for a preview's own capture", () => {
+  it("raises the epoch for a snapshot no slot reported", () => {
+    const before = useNodeDataStore.getState().epoch
+    useNodeDataStore.getState().bumpEpoch()
+    expect(useNodeDataStore.getState().epoch).toBe(before + 1)
+  })
+})

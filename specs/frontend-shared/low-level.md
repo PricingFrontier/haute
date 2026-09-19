@@ -510,7 +510,10 @@ it (specified in the [server API](../server-api/low-level.md#node-data-builds)).
    `clear` removes the point's analyses through `/api/node-data/clear` and then clears delegated
    data through the route the point names. A document fence change drops every slot, because slots belong to one
    document and source, and the epoch keeps counting through that reset so a consumer whose
-   graph did not change still asks again.
+   graph did not change still asks again. A preview that captured a snapshot no slot reported
+   raises the epoch through `bumpEpoch`, so every consumer asks again; a stored preview records
+   the epoch its request was sent under (`useNodeResultsStore.setPreview`), and
+   `advancePreviewEpoch` re-stamps only the entry still holding the same response.
 4. Availability is per consumer: a fresh generation covering the consumer's demand is `current`,
    a fresh one that does not is `partial`, a superseded one is `stale`, and a point with no
    answer yet is `checking` rather than `missing`. `DataCacheButton` renders exactly that state,
@@ -530,7 +533,8 @@ same Vitest config.
   `frontend/src/hooks/__tests__/useNodeDataCache.test.tsx`,
   `frontend/src/panels/__tests__/dataPointIdentity.test.ts`,
   `frontend/src/__tests__/hooks/useBackgroundJobs.nodeData.test.ts`): one slot entry shared by
-  two consumers, the epoch rising only when the data changes, a build adopted from another
+  two consumers, the epoch rising only when the data changes or a preview's own capture is
+  announced, a build adopted from another
   client, two consumers deriving `current` and `partial` from one narrow generation, progress
   from a build either of them started, delegation handing over exactly the producer node, a
   forced or stale delegated build replacing data the ensure pass would skip, a delegated build
@@ -586,7 +590,8 @@ same Vitest config.
   `frontend/src/__tests__/stores/useNodeResultsStore.renderPurity.test.tsx`
   pins render-safe derived getters;
   `frontend/src/__tests__/stores/previewCache.test.ts` covers preview cache
-  identity. The colocated `frontend/src/hooks/__tests__/useJobPolling.dedup.test.ts` and
+  identity, the node-data epoch a preview records, and a re-stamp that leaves a replaced
+  response's successor alone. The colocated `frontend/src/hooks/__tests__/useJobPolling.dedup.test.ts` and
   `frontend/src/hooks/__tests__/useJobPolling.progressThrottle.test.ts` cover the polling flow that writes
   those stores.
   `frontend/src/hooks/__tests__/useStaleConfigEstimate.sourceKey.test.ts` additionally

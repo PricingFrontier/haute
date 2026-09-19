@@ -6,7 +6,8 @@
  * when clicking away from a node and back.
  *
  * Cache invalidation:
- *   - Previews/columns: keyed on (nodeId, source, rowLimit, structuralVersion).
+ *   - Previews/columns: keyed on (nodeId, source, rowLimit, structuralVersion);
+ *     a preview also on the node-data epoch its request was sent under.
  *   - Solve/train results: keyed on (nodeId, configHash). A config change
  *     doesn't delete the old result — it's kept with a staleness flag so
  *     the panel can show "config changed since last run".
@@ -166,6 +167,12 @@ interface CachedPreview {
   structuralVersion: number
   source?: string
   rowLimit?: number
+  /**
+   * The node-data epoch the request was sent under. A snapshot published,
+   * refreshed, or cleared since may change the rows, so the entry matches a
+   * request only at this epoch.
+   */
+  nodeDataEpoch?: number
 }
 
 interface CachedSolveResult {
@@ -766,7 +773,13 @@ interface NodeResultsState {
   getColumns: (sourceNodeId: string, source?: string) => { columns: ColumnInfo[]; fresh: boolean } | null
 
   // ── Preview actions ──
-  setPreview: (nodeId: string, data: PreviewData, structuralVersion: number, source?: string, rowLimit?: number) => void
+  setPreview: (nodeId: string, data: PreviewData, structuralVersion: number, source?: string, rowLimit?: number, nodeDataEpoch?: number) => void
+  /**
+   * Mark the stored preview holding *data* current at *nodeDataEpoch*: the
+   * epoch its own captures raised the node-data epoch to. An entry holding
+   * other data is left alone.
+   */
+  advancePreviewEpoch: (nodeId: string, data: PreviewData, nodeDataEpoch: number) => void
   /** Returns cached preview, or null if no entry exists. */
   getPreview: (nodeId: string) => CachedPreview | null
   /** Protect the open preview node from entry-count LRU eviction. */
@@ -863,13 +876,13 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
 
   // ── Preview ──
 
-  setPreview: (nodeId, data, structuralVersion, source, rowLimit) =>
+  setPreview: (nodeId, data, structuralVersion, source, rowLimit, nodeDataEpoch) =>
     set((s) => {
       touchCachedResult(previewRecency, nodeId)
       const bounded = trimCacheByRecency(
         {
           ...s.previews,
-          [nodeId]: { data, structuralVersion, source, rowLimit },
+          [nodeId]: { data, structuralVersion, source, rowLimit, nodeDataEpoch },
         },
         previewRecency,
         MAX_CACHED_PREVIEWS,
@@ -878,6 +891,13 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       return {
         previews: bounded.records,
       }
+    }),
+
+  advancePreviewEpoch: (nodeId, data, nodeDataEpoch) =>
+    set((s) => {
+      const entry = s.previews[nodeId]
+      if (!entry || entry.data !== data) return {}
+      return { previews: { ...s.previews, [nodeId]: { ...entry, nodeDataEpoch } } }
     }),
 
   getPreview: (nodeId) => {

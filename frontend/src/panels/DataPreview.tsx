@@ -204,6 +204,14 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
   const showFrameSelect = !!onSelectFrame && frameLabels.length >= 2
   const selectedFrame = data?.selected_frame ?? frameLabels[0]
 
+  // The nodes whose cached data these rows were computed from instead of
+  // recomputing them. A node the preview only captured is not listed.
+  const seedPlan = data?.seed_plan
+  const seededLabels = useMemo(
+    () => (seedPlan ?? []).filter((entry) => entry.kind === "seeded").map((entry) => entry.node_label),
+    [seedPlan],
+  )
+
   // Clear search when selected node changes
   const nodeId = data?.nodeId
   // eslint-disable-next-line react-hooks/set-state-in-effect -- derived state reset: clear column search when user selects a different node
@@ -489,6 +497,16 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
               {data.row_count.toLocaleString()} rows{" \u00b7 "}{data.column_count || columns.length} cols
             </span>
             <ExecutionDiagnosticsIndicator metrics={data.execution_metrics} />
+            {seededLabels.length > 0 && (
+              <span
+                className="text-[11px] truncate"
+                style={{ color: 'var(--text-muted)' }}
+                data-testid="preview-seeded-from"
+                title={`These rows were computed from the cached data of ${seededLabels.join(", ")}.`}
+              >
+                Using cached data from {seededLabels.join(", ")}
+              </span>
+            )}
           </>
         )}
         {data.status === "error" && (

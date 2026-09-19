@@ -116,8 +116,9 @@ export interface NodeDataStore {
   jobs: Record<string, NodeDataSlotJob>
   /**
    * A monotonic counter that changes whenever what a consumer reads may have
-   * changed: a generation published, widened, evicted, or cleared, a build that
-   * reached any terminal outcome, a slot forgotten, or the whole store reset.
+   * changed: a generation published, widened, evicted, or cleared — including
+   * one a preview captured — a build that reached any terminal outcome, a slot
+   * forgotten, or the whole store reset.
    * Consumers re-ask the backend on every change; it never goes backwards, so a
    * reset is always observed.
    */
@@ -162,6 +163,11 @@ export interface NodeDataStore {
   updateJobProgress: (slotKey: string, status: NodeDataStatusResponse) => void
   finishJob: (slotKey: string, status?: NodeDataStatusResponse | null) => void
   forgetSlot: (slotKey: string) => void
+  /**
+   * Record that a snapshot was published that no slot reported — a preview's
+   * own capture — so every consumer asks the backend again.
+   */
+  bumpEpoch: () => void
   reset: () => void
 }
 
@@ -470,6 +476,8 @@ const useNodeDataStore = create<NodeDataStore>((set) => ({
         epoch: state.epoch + 1,
       }
     }),
+
+  bumpEpoch: () => set((state) => ({ epoch: state.epoch + 1 })),
 
   // The epoch keeps counting through a reset, so a consumer whose graph did
   // not change still observes that its answer no longer belongs to this

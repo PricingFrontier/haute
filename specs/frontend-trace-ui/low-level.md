@@ -35,8 +35,18 @@
 ## Control flow
 
 1. `frontend/src/hooks/useTracing.ts` captures graph `structuralVersion`, active
-   source, row limit, streaming chunk size, target, row, column, and clicked
-   values with each request. Requests require document execution capability
+   source, row limit, streaming chunk size, target, the explained preview's
+   `seed_plan` (node, identity digest, and generation of each entry), the
+   node-data epoch, row, column, and clicked values with each request, and
+   sends that `seed_plan` so the trace reads the generations the preview did.
+   A snapshot published, refreshed, or cleared therefore hides a displayed
+   trace and aborts an in-flight one like any other semantic change. A 409
+   refreshes the preview and asks for the row again; for
+   `preview_seed_plan_expired` it says the cached data the preview read has
+   changed. That notice belongs to the context without the seed plan and the
+   epoch, so it outlives the refresh it started — which replaces the seed plan
+   and may raise the epoch — and is hidden only by a change of node, graph,
+   source, row limit, or chunk size. Requests require document execution capability
    (`capabilities?.can_execute === true`) and graph synchronisation
    (`graphSynchronized`); if either is missing, the trace does not start. In-flight
    requests verify document currency (`sourceFile`, `sourceRevision`, `loadStatus`,
@@ -117,7 +127,10 @@ behaviour, alerts and detail variants. `frontend/src/panels/trace/__tests__/trac
 tests grouping and preservation rules. Focused helper/error suites are under
 `frontend/src/trace/__tests__/` for calculations, formatting, banding, model score and rating.
 `frontend/src/hooks/__tests__/useTracing.test.ts` covers semantic request binding,
-abort/clear races, progress, and recovery. `frontend/src/trace/__tests__/traceExport.test.ts`
+abort/clear races, progress, and recovery, including a completed trace hidden and an in-flight
+one aborted with its late response discarded when the node-data epoch changes, a trace hidden
+when the explained preview reads other generations, and `preview_seed_plan_expired` refreshing
+the preview with a notice that survives that refresh and its captures until the node changes. `frontend/src/trace/__tests__/traceExport.test.ts`
 covers the deterministic Markdown/CSV projection and filesystem-safe names used
 by clipboard, download, and print.
 Some presentational primitives (`ExpressionChain`, `InputSourceTree`, `WaterfallChart`, and the

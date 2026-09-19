@@ -45,7 +45,9 @@
 ## Key types and data structures
 
 - `PreviewData` in `frontend/src/panels/DataPreview.tsx` carries status, schema, preview rows,
-  optional frame schema/selection and execution diagnostics. The table combines preview columns
+  optional frame schema/selection, execution diagnostics, and the response's `seed_plan`: the
+  shared-snapshot generations the rows were computed from, each `seeded` (read instead of
+  computing the node) or `captured` (computed and written by this preview). The table combines preview columns
   with selected-frame/flat schema so a returned value is never omitted merely for missing dtype.
 - `OverviewConfig` is `Partial<Record<OverviewCardKey, boolean>>`; the fixed
   `OVERVIEW_CARD_DEFINITIONS` order is authoritative regardless of raw-object key order.
@@ -71,6 +73,9 @@
    render spacer cells for skipped columns.
 3. One delegated tbody click handler reads row/column dataset attributes and calls the supplied
    trace callback. Embedded mode omits outer frame chrome; normal mode uses the shared frame.
+4. When any `seed_plan` entry is `seeded`, the status bar of an `ok` preview shows "Using cached
+   data from" with those entries' node labels; a preview that read no snapshot — including one
+   that only captured — shows no label.
 
 ### Explore and overview
 
@@ -342,7 +347,8 @@ Tests live in `frontend/src/panels/__tests__/DataPreview.test.tsx`,
 `frontend/src/panels/__tests__/UtilityPanel.test.tsx`, plus the focused overview suites under
 `frontend/src/panels/explore/__tests__/` and
 `frontend/src/__tests__/editors/ExploreChartsConfig.test.tsx`. They cover virtualisation, frames, search, trace click
-delegation, boundary/rejected execution diagnostics, pivot identity/result/job lifecycle,
+delegation, boundary/rejected execution diagnostics, the cached data label listing only
+seeded nodes, pivot identity/result/job lifecycle,
 overview/chart card ordering and config, the data-cache action and profile lifecycle, chart
 list/configure/back/toggle behavior, chart
 visualisation empty/error states, roving-tab accessibility, utility save-flush/stale-response behaviour and

@@ -172,3 +172,32 @@ describe("preview cache", () => {
     })
   })
 })
+
+describe("preview cache node-data epoch", () => {
+  beforeEach(() => {
+    resetStore()
+  })
+
+  it("records the node-data epoch a preview was requested under", () => {
+    const data = makePreviewData()
+    useNodeResultsStore.getState().setPreview("node-1", data, 0, "live", 100, 4)
+    expect(useNodeResultsStore.getState().getPreview("node-1")?.nodeDataEpoch).toBe(4)
+  })
+
+  it("advances only the entry that still holds the same preview", () => {
+    const first = makePreviewData()
+    const second = makePreviewData({ row_count: 9 })
+    const store = useNodeResultsStore.getState()
+    store.setPreview("node-1", first, 0, "live", 100, 4)
+    store.advancePreviewEpoch("node-1", first, 5)
+    expect(useNodeResultsStore.getState().getPreview("node-1")?.nodeDataEpoch).toBe(5)
+
+    store.setPreview("node-1", second, 0, "live", 100, 5)
+    // A response that has since been replaced does not re-stamp its successor.
+    store.advancePreviewEpoch("node-1", first, 6)
+    expect(useNodeResultsStore.getState().getPreview("node-1")).toMatchObject({
+      data: second,
+      nodeDataEpoch: 5,
+    })
+  })
+})
