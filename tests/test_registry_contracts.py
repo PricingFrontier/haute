@@ -50,6 +50,7 @@ def _complete_registry() -> dict[NodeType, registry.NodeRegistryEntry]:
             exec=_exec_builder,
             codegen=_codegen_builder,
             column_contract=_column_contract,
+            recompute_cost="cheap",
         )
         for node_type in NodeType
     }
@@ -60,6 +61,8 @@ def test_register_exec_signature_keeps_metadata_keyword_only() -> None:
 
     assert signature.parameters["node_type"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
     assert signature.parameters["column_contract"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert signature.parameters["recompute_cost"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert signature.parameters["slice_transparent"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
 def test_register_exec_type_hints_are_valid_for_optional_column_contract() -> None:
@@ -281,6 +284,7 @@ def test_validate_registry_complete_accepts_fully_registered_registry(
                 exec=_exec_builder,
                 codegen=_codegen_builder,
                 column_contract=_column_contract,
+                recompute_cost="cheap",
             )
             for node_type in NodeType
         },
@@ -609,3 +613,53 @@ def test_codegen_body_is_bare_passthrough_allows_non_param_return() -> None:
     tree = ast.parse("def node(src):\n    return unrelated_local\n")
 
     assert registry._codegen_body_is_bare_passthrough(tree) is False
+
+
+def test_every_node_type_declares_recompute_cost() -> None:
+    registry.ensure_registry_ready()
+    expected_costs: dict[NodeType, registry.RecomputeCost] = {
+        NodeType.API_INPUT: "source",
+        NodeType.DATA_INPUT: "source",
+        NodeType.CONSTANT: "source",
+        NodeType.POLARS: "code",
+        NodeType.EXTERNAL_FILE: "code",
+        NodeType.EDGE_JOIN: "costly",
+        NodeType.RATING_STEP: "costly",
+        NodeType.MODEL_SCORE: "costly",
+        NodeType.OPTIMISER_APPLY: "costly",
+        NodeType.BANDING: "cheap",
+        NodeType.OUTPUT: "cheap",
+        NodeType.DATA_OUTPUT: "cheap",
+        NodeType.LIVE_SWITCH: "cheap",
+        NodeType.OPTIMISER: "cheap",
+        NodeType.MODELLING: "cheap",
+        NodeType.SUBMODEL: "cheap",
+        NodeType.SUBMODEL_PORT: "cheap",
+        NodeType.EXPLORE: "cheap",
+        NodeType.SCENARIO_EXPANDER: "cheap",
+    }
+    assert set(NodeType) == set(expected_costs.keys())
+    for node_type, expected_cost in expected_costs.items():
+        entry = registry.NODE_REGISTRY[node_type]
+        assert entry.recompute_cost == expected_cost
+        if node_type is NodeType.SCENARIO_EXPANDER:
+            assert entry.slice_transparent is False
+        else:
+            assert entry.slice_transparent is True
+
+
+def test_validation_rejects_a_type_without_recompute_cost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    node_registry = _complete_registry()
+    node_registry[NodeType.POLARS].recompute_cost = None
+    monkeypatch.setattr(registry, "NODE_REGISTRY", node_registry)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        registry.validate_registry_complete()
+
+    message = str(exc_info.value)
+    assert "Missing cost:    ['polars']" in message
+    assert "Missing exec:    []" in message
+    assert "Missing codegen: []" in message
+    assert "Missing contract: []" in message

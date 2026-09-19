@@ -11,17 +11,17 @@
 | `src/haute/_execute_lazy.py` | The shared execution core: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), `_execute_lazy` (lazy plan + seed-plan seeding and capture + dataframe-cache seeding), and `_execute_eager_core`/`EagerResult` (eager materialisation and preview error adaptation). |
 | `src/haute/_contracts.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution consumes the shared column-contract model and registry lookup. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution reads the canonical node registry. |
-| `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, profile-independent projection decisions, fan-in edge demands, materialisation/opaque boundaries, demand-only source-scan projection (a node's configured column selection bounds what may be demanded but is never pushed into or validated against a physical read), and bounded strategy diagnostics. |
+| `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, profile-independent projection decisions, fan-in edge demands, materialisation/opaque boundaries, derivation of each code node's recompute facts (`recompute_facts_by_node(...)`), demand-only source-scan projection (a node's configured column selection bounds what may be demanded but is never pushed into or validated against a physical read), and bounded strategy diagnostics. |
 | `src/haute/_execution_schemas.py` | Canonical Pydantic API DTOs for execution-strategy diagnostic boundaries, reasons, provenance, bounded collections, calibration, and the versioned diagnostic payload. `src/haute/schemas.py` re-exports the public models so existing imports remain stable. |
 | `src/haute/_column_lineage.py` | Fail-closed AST interpreter for linear Polars frame programs: exact forward schema transfer, per-input backward column demand, and a closed row-effect class (row-preserving, row-non-increasing, bounded-expansion, or unavailable) for the supported operation vocabulary, plus the audited per-namespace registry of `str`/`dt` expression methods whose bare string arguments Polars parses as literals and the audited `_LITERAL_ARGUMENT_EXPRESSION_METHODS` registry of plain-expression replacement methods whose arguments it parses as literals. |
-| `src/haute/_polars_operations.py` | The closed, receiver-aware registry of recognised Polars operations (`PolarsOperation` entries keyed by receiver, namespace, and name) with their class, evidence-backed policy, expansion, chunk-proof status, lineage support, and materialisation memory factor in basis points, plus the lookup helpers the chunk classifier, the lineage/cardinality analyser, and the planner derive their vocabularies from. Import-time validation rejects duplicate keys and class/policy/expansion combinations that contradict each other. |
+| `src/haute/_polars_operations.py` | The closed, receiver-aware registry of recognised Polars operations (`PolarsOperation` entries keyed by receiver, namespace, and name) with their class, recompute cost (`costly_to_recompute=`), slice transparency (`slice_transparent=`), evidence-backed policy, expansion, chunk-proof status, lineage support, and materialisation memory factor in basis points, plus the lookup helpers the chunk classifier, the lineage/cardinality analyser, and the planner derive their vocabularies from. Import-time validation rejects duplicate keys and class/policy/expansion combinations that contradict each other. |
 | `src/haute/_polars_selectors.py` | Literal Polars column selectors: `preamble_selector_aliases` (the preamble's `polars.selectors` import aliases), `literal_selector` (the closed grammar that rebuilds a selector written with literal arguments as the Polars object, accepted only when Polars reports a pure column selection), `selector_root` (the selector a computation starts from), and `expand_literal_selector` (expansion against a column set by Polars, refusing positional selectors and dtype-dependent selectors without every dtype). |
 | `src/haute/_execution_context.py` | `ExecutionContext`, `ExecutionProfile`, `ExecutionCancellationToken`, `ExecutionMetricsRecorder`, deterministic request-local fault points, bounded opt-in terminal telemetry, cancellation-latency evidence, cleanup precedence, and RSS-sampling/memory-pressure-event machinery. Contexts created directly may be unbudgeted; admitted contexts carry the resolved limits. |
 | `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (fixed default / explicit env override / adaptive fraction of available RAM), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
 | `src/haute/_chunked_writes.py` | Bounded chunked writes: `sliceable` (positive proof on Polars' optimised IR that slicing a frame equals slicing its single Parquet/IPC scan or in-memory input), `write_parts` (a node output as ordered `part-NNNNN.parquet` files: a chunked edge join, one native sink per slice, or one native sink), `JoinRecipe`, `reads_only_memory`, `part_paths`/`scan_parts`. |
 | `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` selects `auto` or streaming execution and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve fault, collect-count, and typed-error telemetry. `bounded_collect_batches` streams batches from a query run on a dedicated thread, so an engine panic raises instead of ending the stream early. It also owns the Python scans that expose opaque Python steps to Polars pushdown (`row_local_python_scan`, `limited_python_scan`, `key_prefix_python_scan`) and the parked scan-failure registry every collect seam re-raises from. |
 | `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion, `optimiserApply` artifact dispatch, and output response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
-| `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`; owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component, and `pass_through_selected_edge` / `PASS_THROUGH_NODE_TYPES`, which state the incoming edge a pass-through node's built function returns. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
+| `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`, declaring every type's recompute cost (`recompute_cost=`); owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component, and `pass_through_selected_edge` / `PASS_THROUGH_NODE_TYPES`, which state the incoming edge a pass-through node's built function returns. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
 | `src/haute/_node_builder.py` | `NodeBuildHooks` and `wrap_builder`, the interception seam used by deploy scoring while preserving the canonical runtime builders. |
 | `src/haute/_topo.py` | Strict `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), explicit `topo_sort_ids_filtered` (opt-in subset traversal returning both the order and every dropped edge/endpoint), and `ancestors` (BFS over reversed edges). The default sorter never silently ignores an unknown endpoint. |
 | `src/haute/graph_utils.py` | Canonical outward re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. Low-level engine modules import canonical graph models from `_types.py` and pure helpers from `_graph_utils.py` directly; importing back through this heavyweight facade would re-enter `_execute_lazy.py` and create an execution/RAM-estimation cycle. |
@@ -415,7 +415,10 @@ the engine owns the call order, the `input_snapshot_auto_build` warning, and the
 regenerated into the frontend contracts. A planned execution adds, the same way,
 `shared_snapshot_seeds` (node, identity digest, generation id, the columns read),
 `shared_snapshot_captures` (node, identity digest, capture kind, outcome `published`,
-`superseded`, or `quota`, the published generation id or null, the columns written), and
+`superseded`, or `quota`, the published generation id or null, the columns written),
+`shared_snapshot_capture_skips` (node and reason, `cheap_segment` or
+`slice_transparent_feeder`, recorded from the plan's `skipped_captures` when the plan is
+entered and carried through worker evidence like the other lists), and
 `warnings` (`code`, `node_id`, `reason`), which carries `snapshot_capture_skipped` with
 reason `quota` and `snapshot_capture_superseded` for every capture that kept its own
 data. `_runtime_input_paths` signs a snapshot-backed
@@ -543,7 +546,12 @@ into its own part file (a single file appended chunk by chunk is seven times slo
 `write_parts(directory, frame, *, join=None, chunk_rows=None, fast_checkpoint=True,
 execution_context=None, node_id=None)` writes a node output that way as ordered
 `part-NNNNN.parquet` files and returns its `ChunkedWrite` (`strategy`, `parts`,
-`staged_inputs`, `native_reason`), checkpointing between parts:
+`staged_inputs`, `native_reason`, `digests`), checkpointing between parts; each part's
+xxh64 digest is computed while the part is written (a `HashingWriter` around the sink,
+and around `write_parquet` for an in-memory part), returned as `ChunkedWrite.digests`,
+and handed to the capture's artifact before publication; a prewritten scored file's digest
+comes from its `ScoreOutputDestination`; an explicit node-data build hands over its write's
+digests the same way:
 
 - **`sliceable(lf)`** walks Polars' optimised IR of `lf.slice(1, 1)` (`LazyFrame._ldf.visit()`,
   IR major version 14; another version answers False). It is True only for one chain of
@@ -691,7 +699,12 @@ request's streaming chunk size, `current_streaming_chunk_size()`) into a staging
 under the plan's token, and its capture record (`shared_snapshot_captures` evidence) carries
 the write's `write_strategy`, `write_parts`, and `write_staged_inputs` (a batch Model Score's
 own scored file is `prewritten`): all columns for an all-column demand, otherwise
-the negotiated columns present in the schema, carrier-preserving. A batch Model Score
+the negotiated columns present in the schema, carrier-preserving. Each part's xxh64 digest is
+computed while the part is written (a `HashingWriter` around the sink, and around
+`write_parquet` for an in-memory part), returned as `ChunkedWrite.digests`, and handed to the
+capture's artifact before publication; a prewritten scored file's digest comes from its
+`ScoreOutputDestination`; an explicit node-data build hands over its write's digests the same
+way. A batch Model Score
 (any scenario but `live`) whose output is exactly its scored file — no post-processing
 `code`, `selected_columns`, or `column_renames` — is not sunk at all: its capture is staged
 before the node is built, the node is built inside `model_score_output_destination`, and the
@@ -1407,7 +1420,39 @@ present a structural or schema result as execution evidence.
   `materialisation_boundary` policy (`group_by`/`groupby`, `sort`, `unique`,
   `join`, `join_asof`, `top_k`, `bottom_k`, `reverse`, `shift`, `explode`) — plus
   `materialising_expression_methods()` (`over`, `shift`, `diff`, `pct_change`),
-  matched receiver-aware in evaluation order. The
+  matched receiver-aware in evaluation order. Every entry also carries
+  `costly_to_recompute: bool` and `slice_transparent: bool`. Class defaults are that
+  `row_local` and `row_expanding` default cheap, while `order_dependent`, `fan_in_stateful`,
+  and `opaque` entries must declare their cost explicitly, and construction raises for any
+  entry that does not. Order-dependent entries declared costly are expression `arg_sort`,
+  `rank`, `sort`, `sort_by`, `unique`, `n_unique`, `value_counts`; frame `sort`, `top_k`,
+  `bottom_k`, `unique`; and function `arg_sort_by`. Order-dependent entries declared cheap are
+  expression `backward_fill`, `forward_fill`, `cum_count`, `cum_max`, `cum_min`, `cum_prod`,
+  `cum_sum`, `diff`, `pct_change`, `shift`, `reverse`, `ewm_mean`, `rolling_max`,
+  `rolling_mean`, `rolling_min`, `rolling_std`, `rolling_sum`, `interpolate`, `implode`,
+  `first`, `last`, `head`, `tail`; frame `gather`, `head`, `limit`, `slice`, `tail`, `sample`,
+  `reverse`, `shift`, `with_row_index`; and function `arg_where`. Fan-in entries declared costly
+  are expression `over`, `median`, `mode`, `quantile`; and frame `agg`, `group_by`, `groupby`,
+  `group_by_dynamic`, `join`, `join_asof`, `join_where`, `merge_sorted`, `pivot`, `rolling`,
+  `upsample`. Fan-in entries declared cheap are expression `sum`, `mean`, `min`, `max`, `count`,
+  `len`, `std`, `var`, `arg_max`, `arg_min`; frame `interpolate`; namespace `str.concat`,
+  `str.join`; and function `len`. Opaque entries declared costly are expression `map_elements`,
+  `map_batches`, `pipe`, `register_plugin`, `rolling_map`, and frame `collect`,
+  `collect_batches`, `fetch`, `iter_rows`, `lazy`, `map_batches`, `partition_by`, `pipe`,
+  `rows`, `sink_csv`, `sink_parquet`, `to_numpy`, `to_pandas`, `with_context`, while opaque
+  entries declared cheap are function `all`, `exclude`, `first`, `last`, `nth`, `selectors`.
+  Slice transparency is true for every `row_local` entry of every receiver except frame
+  `filter` and `drop_nulls`, and false for every other class; selector functions are decided by
+  call form, where `pl.all()`, `pl.first()`, and `pl.last()` with no argument, `pl.nth(...)`,
+  `pl.exclude(...)`, and `pl.selectors.*` are projections and slice-transparent, while
+  `pl.all("flag")`, `pl.first("x")`, and `pl.last("x")` with a column argument are reductions
+  and not transparent. `full_input_work` is a derived accessor returning true for an operation
+  that is costly to recompute and whose class is not `opaque`. The accessors
+  `costly_frame_methods()`, `costly_expression_methods()`, `recompute_cost(receiver, name,
+  namespace=None)`, `slice_transparent(receiver, name, namespace=None)`, and
+  `full_input_work(receiver, name, namespace=None)` query these policies, each returning
+  `None` for an unregistered name. The memory policy, its factor, the boundary sets, and the
+  estimator are independent of recompute cost. The
   classifier holds one fact for every simple name: a *proven frame* (one of
   the node's input frame names per incoming edge, as `_build_funcs` binds
   them, `df`, or a name definitely bound from a proven frame), a *provable
@@ -1508,6 +1553,91 @@ present a structural or schema result as execution evidence.
   every derived set equal to the registry, and
   `tests/performance/test_execution_engine_certification.py` keeps the policies
   equal to fresh-process measurements.
+- **Code-node recompute facts.** `haute.projection.recompute_facts_by_node(order, node_map,
+  relevant_edges=, submodels=, preamble=)` derives `NodeRecomputeFacts(cost,
+  slice_transparent, full_input_work, reason)` for every node whose config carries non-blank
+  `code` (`POLARS`, `EXPLORE`, `SCENARIO_EXPANDER`, `MODEL_SCORE` post-code, `DATA_INPUT`
+  post-load code, `EXTERNAL_FILE`). It reuses the receiver-aware AST walk with an optional
+  report mode returning every call in evaluation order, categorized as:
+  - **registered**: a frame-, expression-, namespace-, or `pl.`-function call attributed to
+    a frame or expression receiver (or `pl` for a function), evaluated against its registry
+    entry. Calls on `pl.<name>` for a registered `polars_function` are registered; any other
+    (`pl.concat`, `pl.read_parquet`, `pl.DataFrame`) is unresolved
+    (`unresolved_call:pl.<name>`). Callee chains rooted at `pl.selectors` or a selector
+    alias (preamble alias or node `import polars.selectors as ...`) are selector
+    constructions and not reported. A namespace receiver uses its `namespace` registry entry
+    when registered, else is unregistered (cheap, not transparent). A non-frame receiver
+    uses its `expr` entry when registered, else is unresolved when any argument is a proven
+    or may-frame, else unregistered (cheap, not transparent). A proven-frame receiver uses
+    its `frame` entry when registered, else is an unregistered frame method (costly). A
+    may-frame receiver checks all registered `frame` and `expr` entries for the name: costly
+    if any is, transparent only if all are, full-input work if any is; if neither is
+    registered it is unresolved (`unresolved_call:<name>`). A method taken as a value is
+    reported like its call.
+  - **scalar builtin**: a call whose callee is a `Name` in the closed list of
+    scalar-returning builtins — `int`, `float`, `str`, `bool`, `len`, `round`, `abs`,
+    `repr`, `isinstance`, `issubclass`, `hasattr`, `callable`, `id`, `hash`, `ord`, `chr`,
+    `bin`, `hex`, `divmod`, `pow`, `format`, `print` — that is not shadowed. Top-level names
+    bound by the preamble (`preamble_names`) are parsed from preamble assignments,
+    definitions, and imports, where names a preamble `import`/`from … import` binds are
+    provable non-frames and other preamble names stay may-frames. A builtin is shadowed when
+    its name is bound anywhere in the node's code (assignment, walrus, loop or `with` target,
+    `def`, `class`, `import`, or a function or lambda parameter) or anywhere in the
+    preamble; a shadowed builtin is treated as an ordinary name. An unshadowed scalar
+    builtin is a proven non-frame call, never reported, and its result is a proven
+    non-frame.
+  - **pass-through builtin**: a call whose callee is a `Name` in the closed list of
+    container, iterator, and selection builtins — `next`, `iter`, `list`, `tuple`, `dict`,
+    `set`, `frozenset`, `getattr`, `min`, `max`, `sorted`, `reversed`, `zip`, `enumerate`,
+    `map`, `filter`, `any`, `all`, `sum`, `range` — unshadowed as above. It is never
+    reported by itself, and its result takes the combined fact of its arguments (a may-frame
+    when any argument is a proven or may-frame, else a non-frame). A callback argument
+    handed to one of them — a positional callable argument of `map` or `filter`, or a `key=`
+    argument of `sorted`, `min`, or `max` — is classified as if called: a `lambda` has its
+    body walked with may-frame parameters; a `Name` or `Attribute` that is a scalar builtin
+    or `pl`-rooted is a non-frame call; any other callable is reported as
+    `unresolved_callback:<name>` and makes the node costly. A shadowed name or any builtin
+    outside the two lists falls to the unresolved rule.
+  - **unresolved**: a `Name` callee that is not an unshadowed listed builtin (a local `def`,
+    a preamble helper, a class, a shadowed or unlisted builtin), or any other callee shape
+    (`(fns[0])(df)`, `make()(df)`), is unresolved when any argument is a proven or may-frame,
+    or when the call is the whole value of an assignment or walrus whose target name is `df`
+    or is used anywhere in the node as the direct receiver of a method call. An unresolved
+    call with neither is not reported.
+  The cost rule marks a node **costly** when any reported call is registered with a costly
+  entry, is an unregistered frame method, is unresolved (`unresolved_call`) or an unresolved
+  callback, or when the code fails to parse; an unregistered expression or namespace method
+  is cheap and not transparent; otherwise **cheap**. The slice-transparency rule marks a node
+  slice-transparent when it is cheap and every reported call has `slice_transparent=True`
+  (registered `polars_function` `all`, `first`, or `last` with any positional argument is a
+  reduction and not transparent; with none it is a projection and transparent); empty code is
+  cheap and transparent. The reason string names the first deciding call: `costly:<name>`,
+  `unregistered_frame_method:<name>`, `unresolved_call:<name>`,
+  `unresolved_callback:<name>`, `opaque:<name>`, `syntax_error`, `blank_code`, and `cheap`.
+  `full_input_work` is true when a reported registered call is full-input work. The boundary
+  walk's own output is unchanged: the report mode is an optional argument and builtin fact
+  rules apply only in report mode.
+- **Every builder declares its recompute cost.** `NodeRegistryEntry` carries
+  `recompute_cost: RecomputeCost | None` (`RecomputeCost = Literal["cheap", "costly", "code",
+  "source"]`) and `slice_transparent: bool = True`. Every builder declares its type's
+  recompute cost on the execution side via `register_exec(node_type, *, recompute_cost=...,
+  slice_transparent=...)`, where `_builders._register` makes `recompute_cost` required and
+  passes `slice_transparent=False` only for `SCENARIO_EXPANDER`, and
+  `validate_registry_complete` raises at import for any `NodeType` lacking a `recompute_cost`.
+  The declarations are: `API_INPUT`, `DATA_INPUT`, `CONSTANT` are `source`; `POLARS`,
+  `EXTERNAL_FILE` are `code`; `EDGE_JOIN`, `RATING_STEP`, `MODEL_SCORE`, `OPTIMISER_APPLY`
+  are `costly`; `BANDING`, `OUTPUT`, `DATA_OUTPUT`, `LIVE_SWITCH`, `OPTIMISER`, `MODELLING`,
+  `SUBMODEL`, `SUBMODEL_PORT`, `EXPLORE`, `SCENARIO_EXPANDER` are `cheap`.
+  `recompute_facts_by_node` returns facts for every node in `order` except a `source` type
+  with blank `code`: a `code` type takes its code's facts (blank code: cheap, transparent,
+  reason `blank_code`); a `costly` type is costly and not transparent (reason
+  `builder:<type>`), taking its code's full-input work when it has code; a `cheap` type takes its registry transparency, combined with its
+  code's facts when it has non-blank `code` (costly if either says so, transparent only if
+  both); and a `source` type with code takes its code's facts. For builder slice transparency,
+  `BANDING` (a `with_columns` of cut expressions), `OUTPUT`, `DATA_OUTPUT`, and every
+  pass-through are transparent, `SCENARIO_EXPANDER` (an explode) is not, and costly types are
+  never asked. Post-builder column shaping (`selected_columns`, `column_renames`) is
+  transparent.
 - **The chunk classifier is a receiver-aware AST walk with a closed decision
   vocabulary.** There is no textual prefilter: a comment or string literal containing
   `.sort(` cannot affect eligibility. Frame-level methods are admitted only when the
@@ -2118,6 +2248,7 @@ present a structural or schema result as execution evidence.
 - `tests/test_materialisation_calibration.py` — upward-only materialisation-estimate calibration, conservative rounding, profile isolation, and planner/admission integration.
 - `tests/test_process_memory.py` — platform-dispatched RSS and liveness probes, including malformed, inaccessible, and Windows-handle cases.
 - `tests/test_projection_aware_admission.py` — materialisation-boundary admission estimates use exact projected edge demand and preserve conservative fallback behaviour.
+- `tests/test_projection_recompute_facts.py` — classification of code-bearing and builder nodes into recompute cost, slice transparency, and full-input work: receiver-aware registered calls, pass-through and scalar builtins, unresolved calls and callbacks, reduction forms, and builder cost declarations combined with code facts.
 - `tests/test_projection_lineage_integration.py` — edge-identity and API-port
   integration of compositional lineage, terminal modelling schema propagation,
   and fail-visible ambiguous/unsupported boundaries.

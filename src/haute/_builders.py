@@ -81,6 +81,7 @@ from haute._registry import (
     MODELLING_NODE_SEMANTICS,
     NODE_REGISTRY,
     NodeInputPolicy,
+    RecomputeCost,
 )
 from haute._registry import (
     register_exec as _register_exec_in_registry,
@@ -271,9 +272,11 @@ NodeBuilder = Callable[[NodeBuildContext], tuple[str, Callable, bool]]
 def _register(
     node_type: NodeType,
     *,
+    recompute_cost: RecomputeCost,
     columns: _ColumnContractFn | None = None,
     opaque: bool = False,
     is_behavioural: bool = False,
+    slice_transparent: bool = True,
 ) -> Callable[[NodeBuilder], NodeBuilder]:
     """Decorator to register a node builder for a given NodeType.
 
@@ -310,6 +313,8 @@ def _register(
         node_type,
         column_contract=contract_fn,
         is_behavioural=is_behavioural,
+        recompute_cost=recompute_cost,
+        slice_transparent=slice_transparent,
     )
 
     def decorator(fn: NodeBuilder) -> NodeBuilder:
@@ -493,7 +498,7 @@ def _config_with_resolved_data_path(config: Mapping[str, Any]) -> Mapping[str, A
     return {**config, "path": resolved}
 
 
-@_register(NodeType.API_INPUT, opaque=True)
+@_register(NodeType.API_INPUT, recompute_cost="source", opaque=True)
 def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
 
@@ -525,7 +530,7 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, api_source_fn, True
 
 
-@_register(NodeType.DATA_INPUT, opaque=True)
+@_register(NodeType.DATA_INPUT, recompute_cost="source", opaque=True)
 def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     code = str(config.get("code") or "").strip()
@@ -560,7 +565,7 @@ def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, data_input_fn, True
 
 
-@_register(NodeType.DATA_OUTPUT, columns=_passthrough_columns)
+@_register(NodeType.DATA_OUTPUT, recompute_cost="cheap", columns=_passthrough_columns)
 def _build_data_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # During normal run/preview, dataOutput is a pass-through.
     # The actual write happens via write_data_output() on explicit user action.
@@ -573,7 +578,7 @@ def _constant_columns(config: dict[str, Any]) -> _ColumnContract:
     return produced or {"constant"}, set()
 
 
-@_register(NodeType.CONSTANT, columns=_constant_columns)
+@_register(NodeType.CONSTANT, recompute_cost="source", columns=_constant_columns)
 def _build_constant(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     raw_values = config.get("values", []) or []
@@ -596,7 +601,12 @@ def _build_constant(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, constant_fn, True
 
 
-@_register(NodeType.LIVE_SWITCH, columns=_passthrough_columns, is_behavioural=True)
+@_register(
+    NodeType.LIVE_SWITCH,
+    recompute_cost="cheap",
+    columns=_passthrough_columns,
+    is_behavioural=True,
+)
 def _build_live_switch(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     input_scenario_map: dict[str, str] = config.get("input_scenario_map", {})
@@ -624,7 +634,7 @@ def _build_live_switch(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, switch_fn, False
 
 
-@_register(NodeType.EXPLORE, columns=_explore_columns)
+@_register(NodeType.EXPLORE, recompute_cost="cheap", columns=_explore_columns)
 def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     code = str(ctx.config.get("code") or "").strip()
     if not code:
@@ -652,7 +662,7 @@ def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, explore_with_code, False
 
 
-@_register(NodeType.EXTERNAL_FILE, opaque=True)
+@_register(NodeType.EXTERNAL_FILE, recompute_cost="code", opaque=True)
 def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     code = str(config.get("code") or "").strip()
@@ -708,7 +718,12 @@ def _output_columns(config: dict[str, Any]) -> _ColumnContract:
     return (set(), referenced)
 
 
-@_register(NodeType.OUTPUT, columns=_output_columns, is_behavioural=True)
+@_register(
+    NodeType.OUTPUT,
+    recompute_cost="cheap",
+    columns=_output_columns,
+    is_behavioural=True,
+)
 def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     if config.get("outputMapping") is None:
@@ -752,7 +767,12 @@ def _banding_columns(config: dict[str, Any]) -> _ColumnContract:
     return produced, referenced
 
 
-@_register(NodeType.BANDING, columns=_banding_columns, is_behavioural=True)
+@_register(
+    NodeType.BANDING,
+    recompute_cost="cheap",
+    columns=_banding_columns,
+    is_behavioural=True,
+)
 def _build_banding(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     factors = _normalise_banding_factors(config)
@@ -789,7 +809,12 @@ def _rating_step_columns(config: dict[str, Any]) -> _ColumnContract:
     return produced, referenced
 
 
-@_register(NodeType.RATING_STEP, columns=_rating_step_columns, is_behavioural=True)
+@_register(
+    NodeType.RATING_STEP,
+    recompute_cost="costly",
+    columns=_rating_step_columns,
+    is_behavioural=True,
+)
 def _build_rating_step(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     tables = normalise_rating_tables(config)
@@ -833,7 +858,13 @@ def _scenario_expander_columns(config: dict[str, Any]) -> _ColumnContract:
     return produced, set()
 
 
-@_register(NodeType.SCENARIO_EXPANDER, columns=_scenario_expander_columns, is_behavioural=True)
+@_register(
+    NodeType.SCENARIO_EXPANDER,
+    recompute_cost="cheap",
+    slice_transparent=False,
+    columns=_scenario_expander_columns,
+    is_behavioural=True,
+)
 def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     # Fail loud at build time on a misconfigured step count (the shared
@@ -874,7 +905,7 @@ def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool
     return ctx.func_name, scenario_expand_with_code, False
 
 
-@_register(NodeType.OPTIMISER, columns=_passthrough_columns)
+@_register(NodeType.OPTIMISER, recompute_cost="cheap", columns=_passthrough_columns)
 def _build_optimiser(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # Pass-through in preview mode. Solving happens via /api/optimiser/solve.
     # When data_input is configured, select that specific input so the
@@ -942,7 +973,12 @@ def _optimiser_apply_columns(config: dict[str, Any]) -> _ColumnContract:
     return produced, None
 
 
-@_register(NodeType.OPTIMISER_APPLY, columns=_optimiser_apply_columns, is_behavioural=True)
+@_register(
+    NodeType.OPTIMISER_APPLY,
+    recompute_cost="costly",
+    columns=_optimiser_apply_columns,
+    is_behavioural=True,
+)
 def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     _artifact_path = config.get("artifact_path", "")
@@ -986,7 +1022,11 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, optimiser_apply_fn, False
 
 
-@_register(MODELLING_NODE_SEMANTICS.node_type, columns=_passthrough_columns)
+@_register(
+    MODELLING_NODE_SEMANTICS.node_type,
+    recompute_cost="cheap",
+    columns=_passthrough_columns,
+)
 def _build_modelling(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # Pass-through in preview mode. Training happens via /api/modelling/train.
     return ctx.func_name, _modelling_passthrough_fn, False
@@ -1142,7 +1182,12 @@ def _declared_categorical_levels_for_model_score(
     return merge_categorical_level_declarations(declarations)
 
 
-@_register(NodeType.MODEL_SCORE, columns=_model_score_columns, is_behavioural=True)
+@_register(
+    NodeType.MODEL_SCORE,
+    recompute_cost="costly",
+    columns=_model_score_columns,
+    is_behavioural=True,
+)
 def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     code = str(config.get("code") or "").strip()
@@ -1195,7 +1240,7 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, scorer.score, False
 
 
-@_register(NodeType.POLARS, opaque=True)
+@_register(NodeType.POLARS, recompute_cost="code", opaque=True)
 def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     _src_names = list(ctx.source_names)
@@ -1276,7 +1321,7 @@ def _incomplete_transform(message: str) -> Callable[..., _Frame]:
     return incomplete_transform_fn
 
 
-@_register(NodeType.EDGE_JOIN, opaque=True)
+@_register(NodeType.EDGE_JOIN, recompute_cost="costly", opaque=True)
 def _build_edge_join(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     build_edge_join_kwargs(ctx.config)
     base_index, join_index = resolve_edge_join_role_indices(
@@ -1311,12 +1356,12 @@ def _build_edge_join(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 # KeyError.  Codegen takes the strict stance (see
 # ``_codegen_builders._gen_submodel``): by the time codegen dispatches, the
 # submodel must have been split into its own file via ``graph_to_code_multi``.
-@_register(NodeType.SUBMODEL, columns=_passthrough_columns)
+@_register(NodeType.SUBMODEL, recompute_cost="cheap", columns=_passthrough_columns)
 def _build_submodel(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, _passthrough_fn, False
 
 
-@_register(NodeType.SUBMODEL_PORT, columns=_passthrough_columns)
+@_register(NodeType.SUBMODEL_PORT, recompute_cost="cheap", columns=_passthrough_columns)
 def _build_submodel_port(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, _passthrough_fn, False
 

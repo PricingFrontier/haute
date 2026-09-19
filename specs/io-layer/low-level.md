@@ -47,18 +47,18 @@ relationship is recorded in `specs/ownership.toml`.
   `InputPreparationOutcome` are the picklable request/outcome pair of the worker entry
   point.
 - `SourceCacheMetadata` records identity, generation, optional freshness signature, the
-  ordered part list (`parts`: each part's name, size, SHA-256, and rows; `layout_version` 2),
-  total size and rows, columns, schema, creation time, profile, and build class.
+  ordered part list (`parts`: each part's name, size, xxh64 `digest` (16 lowercase hex),
+  and rows; `layout_version` 3), total size and rows, columns, schema, creation time,
+  profile, and build class.
 - `SourceCacheGeneration` names its immutable `meta.json` and its ordered part files
   (`data_paths`, `part-00000.parquet`, `part-00001.parquet`, …; `lazy_frame` scans exactly
-  that list). Metadata without layout version 2 is the retired single-file layout: it is
-  read as absent (`SourceCacheLegacyLayoutError`, a `SourceCacheGenerationMissingError`),
-  never as corruption, so a build replaces it. Before a generation is trusted, its directory
-  must be a plain directory inside its identity and every artifact a plain, single-link file
-  inside the generation; each part's size, SHA-256, footer row count, and schema must match
-  its record;
-  `SourceCacheGenerationMissingError` (a `SourceCacheCorruptError`) reports a named
-  generation that does not exist.
+  that list). A generation written in layout 1 or 2 reads as absent
+  (`SourceCacheLegacyLayoutError`, a `SourceCacheGenerationMissingError`), never as
+  corruption, so a build replaces it. Before a generation is trusted, its directory must be
+  a plain directory inside its identity and every artifact a plain, single-link file inside
+  the generation; each part's size, xxh64 `digest`, footer row count, and schema must match
+  its record; `SourceCacheGenerationMissingError` (a `SourceCacheCorruptError`) reports a
+  named generation that does not exist.
 - `SourceCacheStore` coordinates same-root handles in-process, publishes generations, tracks
   local leases and verified-generation memos, applies quotas, reclaims provably stale
   staging, and exposes `build`, `lease`, `lease_generation`, `clear`, and `status`. Leases
@@ -217,8 +217,12 @@ an in-place or non-atomic fallback.
    carries the parent-chosen pair): a LazyFrame through `write_parts`, sliced a chunk at a
    time where the source can be sliced; Arrow iterables are checked at every batch and
    written against one schema into `part-00000.parquet`.
-4. Publication computes artifact integrity evidence, reads footer/schema/row counts, writes
-   canonical `meta.json`, and validates the staged generation.
+4. Publication computes artifact integrity evidence: a LazyFrame build uses the digests
+   recorded while the parts were written (`describe_parts(directory, digests=)` hashes only
+   a part with no recorded digest), while an Arrow-batch builder's parts are still hashed
+   in a read pass. Publication reads every part's footer and schema but never re-reads a
+   part in full to hash it; verification and the verified-generation memo check xxh64.
+   It writes canonical `meta.json` and validates the staged generation.
 5. Quota admission rejects the incoming publication when projected byte/count limits would
    be exceeded; it never evicts another identity's current generation.
 6. The staging directory is atomically renamed and `current.json` is atomically replaced.
@@ -332,18 +336,21 @@ delegates every non-`node_output` identity to `SourceCacheStore` unchanged.
   file's lock cannot be acquired; a dead marker (and token file) is removed.
 - **Publication.** `stage_node_output(identity)` allocates a request-owned
   `NodeSnapshotArtifact` staging directory. `publish_node_output(identity, artifact,
-  columns, dependencies, explicit, profile, refresh)` validates the artifact (SHA-256,
-  footer, schema; an explicit column set must name existing columns) and writes `meta.json`
-  outside the locks, then under the identity's publication lock applies the publication
-  rule. `explicit` marks an explicit cache build: only it may `refresh`, pin the slot, or
-  replace a corrupt latest generation; an automatic capture raises the corruption. A
-  superseded outcome returns the artifact. Otherwise, under the lease lock, it admits
-  quota, renames staging to the generation, seeds the verified memo, creates the
-  publisher's marker and in-process count, writes the pointer, records the identity in the
-  slot index (moving the pin to it when `explicit` or when the slot is already pinned), and
-  retires the superseded generation when no live marker holds it. Any failure after the
-  publisher's lease exists releases that lease before raising. The returned
-  `NodeSnapshotPublication` holds the lease (or owns the artifact) until closed.
+  columns, dependencies, explicit, profile, refresh)` uses the digests recorded while the
+  parts were written (`NodeSnapshotArtifact.record_digests`; `describe_parts(directory,
+  digests=)` hashes only a part with no recorded digest), reads every part's footer and schema
+  but never re-reads a part in full to hash it, validates the artifact (xxh64 `digest`,
+  footer, schema; an explicit column set must name existing columns; verification and the
+  verified-generation memo check xxh64), and writes `meta.json` outside the locks, then under
+  the identity's publication lock applies the publication rule. `explicit` marks an explicit
+  cache build: only it may `refresh`, pin the slot, or replace a corrupt latest generation;
+  an automatic capture raises the corruption. A superseded outcome returns the artifact.
+  Otherwise, under the lease lock, it admits quota, renames staging to the generation, seeds
+  the verified memo, creates the publisher's marker and in-process count, writes the pointer,
+  records the identity in the slot index (moving the pin to it when `explicit` or when the
+  slot is already pinned), and retires the superseded generation when no live marker holds
+  it. Any failure after the publisher's lease exists releases that lease before raising.
+  The returned `NodeSnapshotPublication` holds the lease (or owns the artifact) until closed.
 - **Quota.** Admission projects published plus retained staging bytes, excluding the
   artifact being admitted and subtracting the superseded generation when unheld. When over
   the byte or count limit it lists unleased, unpinned node-output generations, non-current

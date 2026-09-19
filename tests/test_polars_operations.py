@@ -11,19 +11,28 @@ from haute._column_lineage import (
     analyze_polars_lineage,
 )
 from haute._polars_operations import (
+    _RECOMPUTE_COST_DECLARATIONS,
     POLARS_OPERATIONS,
     OperationClass,
     OperationPolicy,
     OperationReceiver,
     PolarsOperation,
+    _op,
+    _resolve_recompute_facts,
+    costly_expression_methods,
+    costly_frame_methods,
+    full_input_work,
     lineage_supported_frame_methods,
     materialisation_factor_basis_points,
     materialising_expression_methods,
     materialising_frame_methods,
     measured_operation_names,
     operation,
+    recompute_cost,
     registered_names,
+    slice_transparent,
     validate_operations,
+    validate_recompute_declarations,
 )
 from haute.chunking import (
     _ROW_LOCAL_DF_METHOD_NAMES,
@@ -527,3 +536,211 @@ def test_unmeasured_operations_declare_no_evidence() -> None:
         entry = operation(OperationReceiver.FRAME, name)
         assert entry is not None, name
         assert entry.memory_evidence == "none", name
+
+
+# --------------------------------------------- recompute cost and transparency
+
+
+def test_every_operation_declares_recompute_cost_and_slice_transparency() -> None:
+    for entry in POLARS_OPERATIONS.values():
+        assert type(entry.costly_to_recompute) is bool
+        assert type(entry.slice_transparent) is bool
+
+    for op_class in (
+        OperationClass.ORDER_DEPENDENT,
+        OperationClass.FAN_IN_STATEFUL,
+        OperationClass.OPAQUE,
+    ):
+        policy = (
+            OperationPolicy.OPAQUE
+            if op_class is OperationClass.OPAQUE
+            else OperationPolicy.STREAMING
+        )
+        fresh = _op(
+            OperationReceiver.EXPR,
+            "fresh_probe_op",
+            op_class,
+            policy,
+            "fresh probe note",
+        )
+        with pytest.raises(
+            RuntimeError,
+            match="order-dependent, fan-in, and opaque operations must declare",
+        ):
+            _resolve_recompute_facts((fresh,))
+
+    bad_declarations = dict(_RECOMPUTE_COST_DECLARATIONS)
+    bad_declarations[(OperationReceiver.FRAME, None, "stale_missing_entry")] = True
+    with pytest.raises(RuntimeError, match="names no existing Polars operation"):
+        validate_recompute_declarations(declarations=bad_declarations)
+
+
+@pytest.mark.parametrize(
+    ("receiver", "name", "namespace", "expected"),
+    [
+        # Cheap examples
+        (OperationReceiver.FRAME, "explode", None, False),
+        (OperationReceiver.FRAME, "reverse", None, False),
+        (OperationReceiver.FRAME, "shift", None, False),
+        (OperationReceiver.EXPR, "diff", None, False),
+        (OperationReceiver.EXPR, "pct_change", None, False),
+        (OperationReceiver.EXPR, "cum_sum", None, False),
+        (OperationReceiver.FRAME, "head", None, False),
+        (OperationReceiver.FRAME, "slice", None, False),
+        (OperationReceiver.EXPR, "sum", None, False),
+        (OperationReceiver.POLARS_FUNCTION, "all", None, False),
+        # Costly examples
+        (OperationReceiver.FRAME, "group_by", None, True),
+        (OperationReceiver.FRAME, "sort", None, True),
+        (OperationReceiver.EXPR, "sort", None, True),
+        (OperationReceiver.EXPR, "sort_by", None, True),
+        (OperationReceiver.POLARS_FUNCTION, "arg_sort_by", None, True),
+        (OperationReceiver.EXPR, "rank", None, True),
+        (OperationReceiver.FRAME, "unique", None, True),
+        (OperationReceiver.EXPR, "unique", None, True),
+        (OperationReceiver.EXPR, "n_unique", None, True),
+        (OperationReceiver.FRAME, "top_k", None, True),
+        (OperationReceiver.FRAME, "bottom_k", None, True),
+        (OperationReceiver.FRAME, "join", None, True),
+        (OperationReceiver.FRAME, "join_asof", None, True),
+        (OperationReceiver.EXPR, "over", None, True),
+        (OperationReceiver.FRAME, "pivot", None, True),
+        (OperationReceiver.FRAME, "rolling", None, True),
+        (OperationReceiver.EXPR, "median", None, True),
+        (OperationReceiver.EXPR, "map_elements", None, True),
+    ],
+)
+def test_recompute_cost_examples(
+    receiver: OperationReceiver,
+    name: str,
+    namespace: str | None,
+    expected: bool,
+) -> None:
+    assert recompute_cost(receiver, name, namespace) is expected
+    if expected and namespace is None:
+        if receiver is OperationReceiver.FRAME:
+            assert name in costly_frame_methods()
+        elif receiver is OperationReceiver.EXPR:
+            assert name in costly_expression_methods()
+
+
+def test_recompute_cost_is_independent_of_memory_policy() -> None:
+    explode = operation(OperationReceiver.FRAME, "explode")
+    assert explode is not None
+    assert explode.policy is OperationPolicy.MATERIALISATION_BOUNDARY
+    assert explode.costly_to_recompute is False
+
+    expr_sort = operation(OperationReceiver.EXPR, "sort")
+    assert expr_sort is not None
+    assert expr_sort.policy is OperationPolicy.STREAMING
+    assert expr_sort.costly_to_recompute is True
+
+    for receiver, name in (
+        (OperationReceiver.FRAME, "explode"),
+        (OperationReceiver.FRAME, "reverse"),
+        (OperationReceiver.FRAME, "shift"),
+        (OperationReceiver.EXPR, "diff"),
+        (OperationReceiver.EXPR, "pct_change"),
+    ):
+        entry = operation(receiver, name)
+        assert entry is not None, f"{receiver}.{name}"
+        assert entry.costly_to_recompute is False
+        assert not entry.chunk_admitted
+
+    for name in ("head", "slice", "with_row_index"):
+        entry = operation(OperationReceiver.FRAME, name)
+        assert entry is not None, f"frame.{name}"
+        assert not entry.chunk_admitted
+
+
+_TRANSPARENT_CASES: list[tuple[OperationReceiver, str, str | None, bool]] = [
+    # Transparent
+    (OperationReceiver.FRAME, "select", None, True),
+    (OperationReceiver.FRAME, "with_columns", None, True),
+    (OperationReceiver.FRAME, "rename", None, True),
+    (OperationReceiver.FRAME, "drop", None, True),
+    (OperationReceiver.FRAME, "cast", None, True),
+    (OperationReceiver.FRAME, "fill_null", None, True),
+    (OperationReceiver.FRAME, "fill_nan", None, True),
+    (OperationReceiver.FRAME, "unnest", None, True),
+    (OperationReceiver.POLARS_FUNCTION, "col", None, True),
+    (OperationReceiver.POLARS_FUNCTION, "lit", None, True),
+    (OperationReceiver.POLARS_FUNCTION, "when", None, True),
+    (OperationReceiver.POLARS_FUNCTION, "concat_str", None, True),
+    (OperationReceiver.POLARS_FUNCTION, "all", None, True),
+    (OperationReceiver.POLARS_FUNCTION, "first", None, True),
+    (OperationReceiver.POLARS_FUNCTION, "last", None, True),
+    (OperationReceiver.POLARS_FUNCTION, "nth", None, True),
+    (OperationReceiver.POLARS_FUNCTION, "exclude", None, True),
+    (OperationReceiver.EXPR, "alias", None, True),
+    (OperationReceiver.EXPR, "cast", None, True),
+    (OperationReceiver.EXPR, "is_in", None, True),
+    (OperationReceiver.NAMESPACE, "to_lowercase", "str", True),
+    (OperationReceiver.NAMESPACE, "year", "dt", True),
+    # Not transparent
+    (OperationReceiver.FRAME, "filter", None, False),
+    (OperationReceiver.FRAME, "drop_nulls", None, False),
+    (OperationReceiver.FRAME, "explode", None, False),
+    (OperationReceiver.FRAME, "head", None, False),
+    (OperationReceiver.FRAME, "sample", None, False),
+    (OperationReceiver.FRAME, "with_row_index", None, False),
+    (OperationReceiver.EXPR, "over", None, False),
+    (OperationReceiver.EXPR, "shift", None, False),
+    (OperationReceiver.EXPR, "first", None, False),
+    (OperationReceiver.EXPR, "sum", None, False),
+    (OperationReceiver.POLARS_FUNCTION, "len", None, False),
+]
+
+
+@pytest.mark.parametrize(
+    ("receiver", "name", "namespace", "expected"),
+    _TRANSPARENT_CASES,
+)
+def test_slice_transparent_examples(
+    receiver: OperationReceiver,
+    name: str,
+    namespace: str | None,
+    expected: bool,
+) -> None:
+    assert slice_transparent(receiver, name, namespace) is expected
+
+
+@pytest.mark.parametrize(
+    ("receiver", "name", "namespace", "expected"),
+    [
+        # Full-input work
+        (OperationReceiver.FRAME, "sort", None, True),
+        (OperationReceiver.EXPR, "sort", None, True),
+        (OperationReceiver.FRAME, "unique", None, True),
+        (OperationReceiver.EXPR, "unique", None, True),
+        (OperationReceiver.EXPR, "rank", None, True),
+        (OperationReceiver.EXPR, "n_unique", None, True),
+        (OperationReceiver.EXPR, "value_counts", None, True),
+        (OperationReceiver.FRAME, "group_by", None, True),
+        (OperationReceiver.FRAME, "join", None, True),
+        (OperationReceiver.EXPR, "over", None, True),
+        (OperationReceiver.FRAME, "pivot", None, True),
+        (OperationReceiver.FRAME, "rolling", None, True),
+        (OperationReceiver.EXPR, "median", None, True),
+        # Not full-input work
+        (OperationReceiver.EXPR, "map_elements", None, False),
+        (OperationReceiver.EXPR, "map_batches", None, False),
+        (OperationReceiver.FRAME, "pipe", None, False),
+        (OperationReceiver.FRAME, "explode", None, False),
+        (OperationReceiver.FRAME, "shift", None, False),
+        (OperationReceiver.EXPR, "sum", None, False),
+    ],
+)
+def test_full_input_work_examples(
+    receiver: OperationReceiver,
+    name: str,
+    namespace: str | None,
+    expected: bool,
+) -> None:
+    assert full_input_work(receiver, name, namespace) is expected
+
+
+def test_full_input_work_returns_none_for_unregistered_name() -> None:
+    assert full_input_work(OperationReceiver.FRAME, "unregistered_op") is None
+    assert recompute_cost(OperationReceiver.FRAME, "unregistered_op") is None
+    assert slice_transparent(OperationReceiver.FRAME, "unregistered_op") is None

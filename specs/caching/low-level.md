@@ -40,10 +40,12 @@ layer is primary and caching is a consumer.
   per-node source overrides, `refresh`, and an explicit build's node. `SeedPlanDecision` is
   its pickle-safe resolution: seeds (`SeedDecision`: identity, generation id, generation
   columns, demand, recorded dependencies), captures (`CaptureDecision`: identity,
-  `CaptureKind`, negotiated and strict columns), the executed nodes, the selected edge of
-  every executed pass-through node, the planning demands, the lineage and runtime-input
-  fingerprints, and the plan fingerprint. `SeedPlan` holds the seed leases and whatever the
-  run registers; `SeedPlanHandoff` carries a plan to a spawned worker.
+  `CaptureKind`, negotiated and strict columns), `skipped_captures` mapping each capture
+  point the bounded rule declined to its reason (`cheap_segment` or
+  `slice_transparent_feeder`), the executed nodes, the selected edge of every executed
+  pass-through node, the planning demands, the lineage and runtime-input fingerprints, and
+  the plan fingerprint. `SeedPlan` holds the seed leases and whatever the run registers;
+  `SeedPlanHandoff` carries a plan to a spawned worker.
 
 ### Checked cache-input inventory
 
@@ -246,21 +248,48 @@ resulting plan.
   is fresh and covers its demand; an empty demand is covered by any generation. The walk stops
   at a seed and never reads the metadata of anything above it. Every other visited node is
   executed.
-- **Capture points** are executed nodes, other than pass-through types, non-`node_output` points,
-  and the explicit build's node, that are: `consumed` — the producer a consumed node resolves
-  to along selected edges (a port producer is never captured); `model_score` — a Model Score
-  whose scenario (per-node override, else the source) is not `live`; `materialising` — a node
-  `materialising_operators_by_node` names, read from instance-resolved configs so an instance
-  runs its original's operations; or `structural` — a non-source node with more than
-  one effective parent, more than one executed child, or an executed child with more than one
-  effective parent.
-- **Preview capture points.** A `PREVIEW_EAGER` request, whose row limit already stops every
-  other read early, captures only the executed, non-pass-through `node_output` nodes that call a
-  materialising operation (`materialising`) or have more than one distinct effective input —
-  `(source, sourceHandle)` — (`structural`). Being consumed, fanning out, feeding a join, or
-  being a Model Score (which scores row-locally under a limit) does not by itself make a node a
-  capture point; a target, fan-out, or join feeder that is itself a join or materialisation is
-  captured. A preview may seed its own target. A node whose own or instance-resolved config
+- **Capture points** are executed nodes, other than pass-through types, non-`node_output`
+  points, and the explicit build's node, with configs read instance-resolved so an instance
+  runs its original's operations. Capture decisions evaluate the segment upstream of each
+  node. The segment is the walk up effective edges from the node (inclusive) that stops at,
+  and excludes, a seed, a capture point already decided in this resolution (captures are
+  decided in execution order), or a source base case. A node's own facts come from
+  `recompute_facts_by_node` (code) and `NODE_REGISTRY[node_type].recompute_cost` (builders);
+  all of these are planning-time facts, and no builder runs while capture points are decided.
+  The source base cases and their facts are: a seed or an already-decided capture point is
+  cheap and slice-transparent (a generation is a Parquet leaf); a `DATA_INPUT` with blank
+  post-load code is cheap and slice-transparent whether reading direct Parquet or a prepared
+  snapshot, and with post-load code takes its code's recompute facts; an `API_INPUT` with a
+  structured path (`is_json_api_input_path`) is cheap and slice-transparent, and with a
+  flat-file path is costly; a `CONSTANT` is cheap and slice-transparent; and an
+  `EXTERNAL_FILE` is not a base case, continuing the walk through its inputs. A node with
+  several distinct effective inputs takes the conjunction over every input's segment.
+  Pass-through nodes contribute nothing and the walk follows their selected edge.
+  The bounded capture rule evaluates executed nodes in execution order under six-step precedence:
+  1. batch Model Score (scenario not `live`) is captured as `model_score` (its scored file is
+     the artifact);
+  2. a node whose recompute facts are costly and whose type is not a `costly` builder
+     (its cost comes from its code) is captured as `materialising`;
+  3. an `EDGE_JOIN` node, or a node with more than one distinct `(source, sourceHandle)`
+     effective input, is captured as `structural`;
+  4. if the segment is costly, the node is captured as `consumed` if it is a consumed
+     producer, else `structural` if it fans out (more than one executed child) or feeds a
+     join (a child that is an `EDGE_JOIN` or has more than one distinct effective input),
+     else not captured; a `costly` builder that rules 1 and 3 do not capture (a Rating
+     Step, a live Model Score) is decided here, because its segment includes itself;
+  5. if the segment is cheap and slice-transparent, the node is not captured; when it is a
+     consumed producer, fans out, or feeds a join, the skip is recorded as
+     `slice_transparent_feeder` if it feeds a join, else `cheap_segment`;
+  6. if the segment is cheap and not slice-transparent, the node is captured as `structural`
+     only if it feeds a join; otherwise a fan-out or consumed producer is skipped with reason
+     `cheap_segment`.
+- **Preview capture points.** In a `PREVIEW_EAGER` request, a code node is captured when
+  `recompute_facts_by_node` reports a registered call that is full-input work (costly to
+  recompute and not opaque, so a row limit cannot bound it), or a node with more than one
+  distinct effective input; frame and expression `sort`, `unique`, `rank`, `group_by`, `join`,
+  `over`, and `pivot` are captured, while `explode`, `shift`, `map_elements`, `pipe`, and a node
+  whose only costly call is unresolved are not captured. A preview records no skips. A preview may
+  seed its own target. A node whose own or instance-resolved config
   selects or renames its output columns (`selected_columns`, `column_renames`) is seeded only
   from a generation that recorded its unshaped columns: a preview reports every node's columns
   before that shaping — the columns its Columns editor offers and its stale-selection warnings
@@ -286,10 +315,13 @@ resulting plan.
   after an ancestor is cleared. Resolution restarts until nothing drops; a dropped seed is never
   re-added.
 - **Decision.** A capture records the negotiated columns it writes and the strict columns the run
-  itself needs — none for a `best_effort_demand` request. `runtime_input_fingerprint` is `dataframe_graph_input_fingerprint` over only the
-  executed nodes (a seed's inputs cannot change what the run reads); `lineage_fingerprint` is the
-  graph fingerprint of the target's upstream subgraph; `fingerprint` is `seed-plan:v1:` and the
-  SHA-256 of the sorted `(identity digest, generation id)` pairs of the seeds only.
+  itself needs — none for a `best_effort_demand` request. The decision carries `skipped_captures`
+  mapping each skipped capture point to its reason (`cheap_segment` or `slice_transparent_feeder`),
+  and `SeedPlanHandoff` carries it to a spawned worker. `runtime_input_fingerprint` is
+  `dataframe_graph_input_fingerprint` over only the executed nodes (a seed's inputs cannot change
+  what the run reads); `lineage_fingerprint` is the graph fingerprint of the target's upstream
+  subgraph; `fingerprint` is `seed-plan:v1:` and the SHA-256 of the sorted `(identity digest,
+  generation id)` pairs of the seeds only.
 - **Leasing.** `open_resolved_seed_plan` resolves, leases every seed with `lease_generation`, and
   confirms each is still its identity's latest generation. A seed retired or replaced in between
   re-resolves, at most three times, then raises `SourceCacheGenerationMissingError`.
@@ -409,6 +441,10 @@ and tested by the [IO layer](../io-layer/low-level.md).
 - A seed plan never seeds a stale generation, never reads metadata above a seed, never seeds
   an explicit build's own node, and seeds nothing on a refresh.
 - A pass-through node is never captured; the producer its selected edge names is.
+- A cheap, slice-transparent segment is never captured, whatever its fan-out, join feeding,
+  or consumers.
+- Capture points and skips are decided from graph, registry, and store facts alone, identical
+  for `resolve_seed_plan`, `open_resolved_seed_plan`, and the handoff.
 
 ## Error handling
 

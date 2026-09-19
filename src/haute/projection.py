@@ -32,12 +32,17 @@ from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name, build_parents_of, edge_input_name
 from haute._polars_operations import (
     EXPRESSION_NAMESPACE_NAMES,
+    OperationPolicy,
     OperationReceiver,
+    PolarsOperation,
+    full_input_work,
     materialising_expression_methods,
     materialising_frame_methods,
+    operation,
     registered_names,
 )
 from haute._polars_selectors import preamble_selector_aliases
+from haute._registry import NODE_REGISTRY, ensure_registry_ready
 from haute._topo import ancestors, topo_sort_ids
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.errors import ContractMismatchError
@@ -45,22 +50,27 @@ from haute.errors import ContractMismatchError
 __all__ = [
     "AllExcept",
     "AllExceptColumns",
+    "NodeRecomputeFacts",
     "ProjectionDiagnostics",
     "ProjectionEdgeKey",
     "ProjectionPlan",
     "ProjectionRuleCoverage",
     "ProjectionRequest",
     "ProjectionReason",
+    "ReportCategory",
+    "ReportedCall",
     "SourceScanProjection",
     "UNPROJECTED_STREAMING_BOUNDARY_RULE_NAME",
     "api_input_port_columns_by_node",
     "builder_required_output_columns_by_node",
+    "code_recompute_facts",
     "has_configured_column_renames",
     "explain",
     "model_score_required_output_columns",
     "plan",
     "projection_rule_coverage_by_node_type",
     "ratebook_factor_required_columns",
+    "recompute_facts_by_node",
     "with_runtime_inferred_streaming_edges",
     "simple_join_calls_for_parent_inputs",
     "source_scan_projection",
@@ -1507,6 +1517,92 @@ which left the operator to a lexical tie-break. The classifier walks in Python
 evaluation order, so the order it records is the order the frame is transformed.
 """
 
+ReportCategory = Literal[
+    "registered",
+    "unregistered",
+    "unregistered_frame_method",
+    "unresolved_call",
+    "unresolved_callback",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ReportedCall:
+    """One call or method-as-value evaluated during AST inspection."""
+
+    evaluation_index: int
+    lineno: int
+    col_offset: int
+    category: ReportCategory
+    name: str
+    entries: tuple[PolarsOperation, ...]
+    positional_arguments: int
+
+
+@dataclass(frozen=True, slots=True)
+class NodeRecomputeFacts:
+    """Recompute cost, slice transparency, and full-input work for a graph node."""
+
+    cost: Literal["cheap", "costly"]
+    slice_transparent: bool
+    full_input_work: bool
+    reason: str
+
+
+SCALAR_BUILTINS = frozenset(
+    {
+        "int",
+        "float",
+        "str",
+        "bool",
+        "len",
+        "round",
+        "abs",
+        "repr",
+        "isinstance",
+        "issubclass",
+        "hasattr",
+        "callable",
+        "id",
+        "hash",
+        "ord",
+        "chr",
+        "bin",
+        "hex",
+        "divmod",
+        "pow",
+        "format",
+        "print",
+    }
+)
+
+PASS_THROUGH_BUILTINS = frozenset(
+    {
+        "next",
+        "iter",
+        "list",
+        "tuple",
+        "dict",
+        "set",
+        "frozenset",
+        "getattr",
+        "min",
+        "max",
+        "sorted",
+        "reversed",
+        "zip",
+        "enumerate",
+        "map",
+        "filter",
+        "any",
+        "all",
+        "sum",
+        "range",
+    }
+)
+
+_ALL_BUILTIN_NAMES = SCALAR_BUILTINS | PASS_THROUGH_BUILTINS
+
 _COMPREHENSION_TYPES = (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
 
 # What a value provably is: a frame chain, provably not a frame, or unresolvable.
@@ -1546,11 +1642,147 @@ def _is_non_frame(fact: _BindingFact) -> bool:
     return fact in ("non_frame", "namespace")
 
 
+@dataclass(frozen=True, slots=True)
+class _PreambleFacts:
+    """Pre-computed facts derived once from graph preamble text."""
+
+    imports: frozenset[str]
+    shadowed_builtins: frozenset[str]
+    selector_aliases: frozenset[str]
+
+
+def _build_preamble_facts(preamble: str = "") -> _PreambleFacts:
+    """Extract imports, shadowed builtins, and selector aliases from preamble text once."""
+    if not isinstance(preamble, str) or not preamble.strip():
+        return _PreambleFacts(
+            imports=frozenset(),
+            shadowed_builtins=frozenset(),
+            selector_aliases=frozenset(),
+        )
+    try:
+        tree = ast.parse(preamble)
+    except SyntaxError:
+        return _PreambleFacts(
+            imports=frozenset(),
+            shadowed_builtins=frozenset(),
+            selector_aliases=frozenset(),
+        )
+
+    names: set[str] = set()
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Import):
+            for alias in stmt.names:
+                names.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(stmt, ast.ImportFrom):
+            for alias in stmt.names:
+                if alias.name != "*":
+                    names.add(alias.asname or alias.name)
+
+    return _PreambleFacts(
+        imports=frozenset(names),
+        shadowed_builtins=_shadowed_builtins(tree),
+        selector_aliases=preamble_selector_aliases(preamble),
+    )
+
+
+def _preamble_imports(preamble: str) -> frozenset[str]:
+    return _build_preamble_facts(preamble).imports
+
+
+def _shadowed_builtins(code_tree: ast.AST, preamble_tree: ast.AST | None = None) -> frozenset[str]:
+    shadowed: set[str] = set()
+
+    def scan(root: ast.AST) -> None:
+        for node in ast.walk(root):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+                if node.id in _ALL_BUILTIN_NAMES:
+                    shadowed.add(node.id)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if node.name in _ALL_BUILTIN_NAMES:
+                    shadowed.add(node.name)
+            elif isinstance(node, ast.arg):
+                if node.arg in _ALL_BUILTIN_NAMES:
+                    shadowed.add(node.arg)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    name = (alias.asname or alias.name).split(".")[0]
+                    if name in _ALL_BUILTIN_NAMES:
+                        shadowed.add(name)
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name != "*":
+                        name = alias.asname or alias.name
+                        if name in _ALL_BUILTIN_NAMES:
+                            shadowed.add(name)
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                if node.name in _ALL_BUILTIN_NAMES:
+                    shadowed.add(node.name)
+
+    scan(code_tree)
+    if preamble_tree is not None:
+        for stmt in getattr(preamble_tree, "body", ()):
+            scan(stmt)
+    return frozenset(shadowed)
+
+
+def _node_selector_roots(tree: ast.AST) -> frozenset[str]:
+    roots: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "polars.selectors":
+                    roots.add(alias.asname or "polars.selectors")
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "polars.selectors":
+                for alias in node.names:
+                    if alias.name != "*":
+                        roots.add(alias.asname or alias.name)
+            elif node.module == "polars":
+                for alias in node.names:
+                    if alias.name == "selectors":
+                        roots.add(alias.asname or alias.name)
+    return frozenset(roots)
+
+
+def _is_rooted_at_pl(node: ast.AST) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id == "pl"
+    if isinstance(node, ast.Attribute):
+        return _is_rooted_at_pl(node.value)
+    return False
+
+
+def _is_selector_construction(func: ast.AST, selector_roots: frozenset[str]) -> bool:
+    """Only the selector construction itself (pl.selectors.<name>(...), <alias>.<name>(...), or a
+    name imported from polars.selectors) is exempt; methods called on its result are classified
+    as expressions.
+    """
+    if isinstance(func, ast.Name):
+        return func.id in selector_roots
+    if isinstance(func, ast.Attribute):
+        val = func.value
+        if (
+            isinstance(val, ast.Attribute)
+            and isinstance(val.value, ast.Name)
+            and val.value.id in ("pl", "polars")
+            and val.attr == "selectors"
+        ):
+            return True
+        if isinstance(val, ast.Name) and val.id in selector_roots:
+            return True
+    return False
+
+
 def _materialising_calls_in_source_order(
     tree: ast.Module,
     input_names: frozenset[str],
     materialising: frozenset[str],
     materialising_expressions: frozenset[str] = frozenset(),
+    *,
+    report: list[ReportedCall] | None = None,
+    preamble_imports: frozenset[str] = frozenset(),
+    shadowed_builtins: frozenset[str] = frozenset(),
+    selector_roots: frozenset[str] = frozenset(),
 ) -> list[_MaterialisingCall]:
     """Classify materialising calls with the receiver state at each evaluation.
 
@@ -1604,9 +1836,24 @@ def _materialising_calls_in_source_order(
     works within each row's value. A may-frame receiver -- a helper's parameter,
     or a value that may be a frame or an expression -- admits both rules.
     """
-    facts_by_name: dict[str, _BindingFact] = {name: "frame" for name in (*input_names, "df")}
+    if report is not None:
+        facts_by_name: dict[str, _BindingFact] = {name: "non_frame" for name in preamble_imports}
+        facts_by_name.update({name: "frame" for name in (*input_names, "df")})
+    else:
+        facts_by_name = {name: "frame" for name in (*input_names, "df")}
     facts_by_name["pl"] = "non_frame"
+    sel_roots = selector_roots | _node_selector_roots(tree)
     found: list[_MaterialisingCall] = []
+
+    receiver_names: set[str] = set()
+    if report is not None:
+        for n in ast.walk(tree):
+            if (
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute)
+                and isinstance(n.func.value, ast.Name)
+            ):
+                receiver_names.add(n.func.value.id)
 
     def expression_boundary(attribute: ast.Attribute, receiver: _BindingFact) -> bool:
         # A proven frame has no expression methods, and ``expr.list.shift`` works
@@ -1625,6 +1872,26 @@ def _materialising_calls_in_source_order(
                 attr,
             )
         )
+
+    def report_call(
+        call_node: ast.AST,
+        category: ReportCategory,
+        name: str,
+        entries: tuple[PolarsOperation, ...],
+        positional_arguments: int,
+    ) -> None:
+        if report is not None:
+            report.append(
+                ReportedCall(
+                    evaluation_index=len(report),
+                    lineno=getattr(call_node, "lineno", _MAX_TOPOLOGICAL_RANK),
+                    col_offset=getattr(call_node, "col_offset", _MAX_TOPOLOGICAL_RANK),
+                    category=category,
+                    name=name,
+                    entries=entries,
+                    positional_arguments=positional_arguments,
+                )
+            )
 
     def name_fact(name: str) -> _BindingFact:
         return facts_by_name.get(name, "unknown")
@@ -1664,7 +1931,12 @@ def _materialising_calls_in_source_order(
             if root is not None:
                 facts.append((root, "unknown"))
 
-    def evaluate(node: ast.AST, *, definite: bool) -> _BindingFact:
+    def evaluate(
+        node: ast.AST,
+        *,
+        definite: bool,
+        target_is_receiver: bool = False,
+    ) -> _BindingFact:
         """Walk ``node`` in evaluation order and return the fact of its value.
 
         Walrus bindings take effect and materialising calls are recorded as
@@ -1675,7 +1947,15 @@ def _materialising_calls_in_source_order(
         if isinstance(node, ast.Name):
             return name_fact(node.id)
         if isinstance(node, ast.NamedExpr):
-            fact = evaluate(node.value, definite=definite)
+            target_is_rec = (
+                (
+                    isinstance(node.target, ast.Name)
+                    and (node.target.id == "df" or node.target.id in receiver_names)
+                )
+                if report is not None
+                else False
+            )
+            fact = evaluate(node.value, definite=definite, target_is_receiver=target_is_rec)
             bound: list[tuple[str, _BindingFact]] = []
             collect(node.target, fact, None, bound)
             apply_facts(bound, definite=definite)
@@ -1689,6 +1969,32 @@ def _materialising_calls_in_source_order(
                 node, fact
             ):
                 record(node, node.attr)
+            if report is not None:
+                matched: tuple[PolarsOperation, ...] = ()
+                if fact == "frame":
+                    op = operation(OperationReceiver.FRAME, node.attr)
+                    if op is not None:
+                        matched = (op,)
+                elif fact == "non_frame":
+                    op = operation(OperationReceiver.EXPR, node.attr)
+                    if op is not None:
+                        matched = (op,)
+                elif fact == "unknown":
+                    op_f = operation(OperationReceiver.FRAME, node.attr)
+                    op_e = operation(OperationReceiver.EXPR, node.attr)
+                    matched = tuple(op for op in (op_f, op_e) if op is not None)
+
+                if matched and any(
+                    op.costly_to_recompute or op.policy is OperationPolicy.MATERIALISATION_BOUNDARY
+                    for op in matched
+                ):
+                    report_call(
+                        node,
+                        "registered",
+                        node.attr,
+                        matched,
+                        0,
+                    )
             if (
                 isinstance(node.value, ast.Name)
                 and node.value.id == "pl"
@@ -1706,39 +2012,260 @@ def _materialising_calls_in_source_order(
             evaluate(node.slice, definite=definite)
             return fact
         if isinstance(node, ast.Call):
-            materialises = False
+            if report is None:
+                materialises = False
+                if isinstance(node.func, ast.Attribute):
+                    receiver = evaluate(node.func.value, definite=definite)
+                    materialises = (
+                        node.func.attr in materialising and not _is_non_frame(receiver)
+                    ) or expression_boundary(node.func, receiver)
+                    if not _is_non_frame(receiver):
+                        fact = receiver
+                    elif (
+                        isinstance(node.func.value, ast.Name)
+                        and node.func.value.id == "pl"
+                        and node.func.attr not in _POLARS_EXPRESSION_FUNCTIONS
+                    ):
+                        fact = "unknown"
+                    else:
+                        fact = "non_frame"
+                else:
+                    # Any other callable (a user function, a preamble helper, a
+                    # builtin) may return a frame.
+                    evaluate(node.func, definite=definite)
+                    fact = "unknown"
+                for argument in node.args:
+                    evaluate(argument, definite=definite)
+                for keyword in node.keywords:
+                    evaluate(keyword.value, definite=definite)
+                if materialises:
+                    # Python evaluates the receiver, then the arguments, then the
+                    # call. Recording before the arguments reported
+                    # ``left.join(right.sort(...))`` as join-then-sort, which is the
+                    # reverse of the order the frames are actually transformed in.
+                    assert isinstance(node.func, ast.Attribute)
+                    record(node, node.func.attr)
+                return fact
+
+            # Report mode (report is not None)
+            if _is_selector_construction(node.func, sel_roots):
+                if isinstance(node.func, ast.Attribute):
+                    evaluate(node.func.value, definite=definite)
+                else:
+                    evaluate(node.func, definite=definite)
+                for argument in node.args:
+                    evaluate(argument, definite=definite)
+                for keyword in node.keywords:
+                    evaluate(keyword.value, definite=definite)
+                return "non_frame"
+
             if isinstance(node.func, ast.Attribute):
                 receiver = evaluate(node.func.value, definite=definite)
                 materialises = (
                     node.func.attr in materialising and not _is_non_frame(receiver)
                 ) or expression_boundary(node.func, receiver)
-                if not _is_non_frame(receiver):
-                    fact = receiver
+
+                arg_facts: list[_BindingFact] = []
+                for argument in node.args:
+                    arg_fact = evaluate(
+                        argument.value if isinstance(argument, ast.Starred) else argument,
+                        definite=definite,
+                    )
+                    arg_facts.append(arg_fact)
+                for keyword in node.keywords:
+                    kw_fact = evaluate(keyword.value, definite=definite)
+                    arg_facts.append(kw_fact)
+
+                any_arg_frame_or_unknown = any(f in ("frame", "unknown") for f in arg_facts)
+
+                # Subcases by receiver
+                category: ReportCategory
+                call_name: str
+                entries: tuple[PolarsOperation, ...]
+
+                if isinstance(node.func.value, ast.Name) and node.func.value.id == "pl":
+                    entry = operation(OperationReceiver.POLARS_FUNCTION, node.func.attr)
+                    if entry is not None:
+                        category = "registered"
+                        call_name = node.func.attr
+                        entries = (entry,)
+                        fact = "non_frame"
+                    else:
+                        category = "unresolved_call"
+                        call_name = f"pl.{node.func.attr}"
+                        entries = ()
+                        fact = "unknown"
                 elif (
-                    isinstance(node.func.value, ast.Name)
-                    and node.func.value.id == "pl"
-                    and node.func.attr not in _POLARS_EXPRESSION_FUNCTIONS
-                ):
-                    fact = "unknown"
-                else:
-                    fact = "non_frame"
-            else:
-                # Any other callable (a user function, a preamble helper, a
-                # builtin) may return a frame.
-                evaluate(node.func, definite=definite)
-                fact = "unknown"
-            for argument in node.args:
-                evaluate(argument, definite=definite)
-            for keyword in node.keywords:
-                evaluate(keyword.value, definite=definite)
-            if materialises:
-                # Python evaluates the receiver, then the arguments, then the
-                # call. Recording before the arguments reported
-                # ``left.join(right.sort(...))`` as join-then-sort, which is the
-                # reverse of the order the frames are actually transformed in.
-                assert isinstance(node.func, ast.Attribute)
-                record(node, node.func.attr)
-            return fact
+                    isinstance(node.func.value, ast.Attribute)
+                    and node.func.value.attr in EXPRESSION_NAMESPACE_NAMES
+                ) or receiver == "namespace":
+                    namespace_attr = (
+                        node.func.value.attr
+                        if (
+                            isinstance(node.func.value, ast.Attribute)
+                            and node.func.value.attr in EXPRESSION_NAMESPACE_NAMES
+                        )
+                        else None
+                    )
+                    entry = (
+                        operation(
+                            OperationReceiver.NAMESPACE,
+                            node.func.attr,
+                            namespace=namespace_attr,
+                        )
+                        if namespace_attr
+                        else None
+                    )
+                    if entry is not None:
+                        category = "registered"
+                        call_name = node.func.attr
+                        entries = (entry,)
+                        fact = "non_frame"
+                    else:
+                        category = "unregistered"
+                        call_name = node.func.attr
+                        entries = ()
+                        fact = "non_frame"
+                elif receiver == "non_frame":
+                    entry = operation(OperationReceiver.EXPR, node.func.attr)
+                    if entry is not None:
+                        category = "registered"
+                        call_name = node.func.attr
+                        entries = (entry,)
+                        fact = "non_frame"
+                    elif any_arg_frame_or_unknown:
+                        category = "unresolved_call"
+                        call_name = node.func.attr
+                        entries = ()
+                        fact = "unknown"
+                    else:
+                        category = "unregistered"
+                        call_name = node.func.attr
+                        entries = ()
+                        fact = "non_frame"
+                elif receiver == "frame":
+                    entry = operation(OperationReceiver.FRAME, node.func.attr)
+                    if entry is not None:
+                        category = "registered"
+                        call_name = node.func.attr
+                        entries = (entry,)
+                        fact = "frame"
+                    else:
+                        category = "unregistered_frame_method"
+                        call_name = node.func.attr
+                        entries = ()
+                        fact = "frame"
+                else:  # receiver == "unknown"
+                    entry_f = operation(OperationReceiver.FRAME, node.func.attr)
+                    entry_e = operation(OperationReceiver.EXPR, node.func.attr)
+                    matched_entries = tuple(e for e in (entry_f, entry_e) if e is not None)
+                    if matched_entries:
+                        category = "registered"
+                        call_name = node.func.attr
+                        entries = matched_entries
+                        fact = "unknown"
+                    else:
+                        category = "unresolved_call"
+                        call_name = node.func.attr
+                        entries = ()
+                        fact = "unknown"
+
+                report_call(node, category, call_name, entries, len(node.args))
+
+                if materialises:
+                    assert isinstance(node.func, ast.Attribute)
+                    record(node, node.func.attr)
+                return fact
+
+            # Non-Attribute call
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id in SCALAR_BUILTINS
+                and node.func.id not in shadowed_builtins
+            ):
+                for argument in node.args:
+                    evaluate(argument, definite=definite)
+                for keyword in node.keywords:
+                    evaluate(keyword.value, definite=definite)
+                return "non_frame"
+
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id in PASS_THROUGH_BUILTINS
+                and node.func.id not in shadowed_builtins
+            ):
+                callback_node: ast.AST | None = None
+                if node.func.id in ("map", "filter") and node.args:
+                    callback_node = node.args[0]
+                elif node.func.id in ("sorted", "min", "max"):
+                    callback_node = next(
+                        (kw.value for kw in node.keywords if kw.arg == "key"), None
+                    )
+
+                arg_facts = []
+                for arg in node.args:
+                    arg_node = arg.value if isinstance(arg, ast.Starred) else arg
+                    arg_facts.append(evaluate(arg_node, definite=definite))
+                for kw in node.keywords:
+                    arg_facts.append(evaluate(kw.value, definite=definite))
+
+                if callback_node is not None and not isinstance(callback_node, ast.Lambda):
+                    cb_fine = False
+                    cb_name = ""
+                    if isinstance(callback_node, ast.Name):
+                        cb_name = callback_node.id
+                        if (
+                            callback_node.id in SCALAR_BUILTINS
+                            and callback_node.id not in shadowed_builtins
+                        ):
+                            cb_fine = True
+                    elif isinstance(callback_node, ast.Attribute):
+                        cb_name = ast.unparse(callback_node)
+                        if _is_rooted_at_pl(callback_node):
+                            cb_fine = True
+                    else:
+                        cb_name = ast.unparse(callback_node)
+
+                    if not cb_fine:
+                        report_call(
+                            callback_node,
+                            "unresolved_callback",
+                            cb_name,
+                            (),
+                            0,
+                        )
+
+                if all(f in ("non_frame", "namespace") for f in arg_facts):
+                    return "non_frame"
+                return "unknown"
+
+            # Other Name callee or other callee shape
+            evaluate(node.func, definite=definite)
+            arg_facts = []
+            for arg in node.args:
+                arg_facts.append(
+                    evaluate(arg.value if isinstance(arg, ast.Starred) else arg, definite=definite)
+                )
+            for kw in node.keywords:
+                arg_facts.append(evaluate(kw.value, definite=definite))
+
+            any_arg_frame_or_unknown = any(f in ("frame", "unknown") for f in arg_facts)
+            is_unresolved = any_arg_frame_or_unknown or target_is_receiver
+            if is_unresolved:
+                call_name = (
+                    node.func.id
+                    if isinstance(node.func, ast.Name)
+                    else (ast.unparse(node.func) or "call")
+                )
+                report_call(
+                    node,
+                    "unresolved_call",
+                    call_name,
+                    (),
+                    len(node.args),
+                )
+            return "unknown"
+
         if isinstance(node, ast.BoolOp):
             first, *rest = node.values
             operand_facts = [evaluate(first, definite=definite)]
@@ -1811,6 +2338,7 @@ def _materialising_calls_in_source_order(
         value: ast.AST | None,
         *,
         definite: bool,
+        target_is_receiver: bool = False,
     ) -> None:
         """Evaluate ``value`` once, then bind all ``targets`` from its captured facts."""
         element_facts: list[_BindingFact] | None = None
@@ -1826,7 +2354,7 @@ def _materialising_calls_in_source_order(
                 else "unknown"
             )
         else:
-            fact = evaluate(value, definite=definite)
+            fact = evaluate(value, definite=definite, target_is_receiver=target_is_receiver)
         facts: list[tuple[str, _BindingFact]] = []
         for target in targets:
             collect(target, fact, element_facts, facts)
@@ -1872,11 +2400,37 @@ def _materialising_calls_in_source_order(
 
     def visit(node: ast.AST, *, definite: bool) -> None:
         if isinstance(node, ast.Assign):
-            bind_targets(node.targets, node.value, definite=definite)
+            target_is_rec = (
+                any(
+                    isinstance(t, ast.Name) and (t.id == "df" or t.id in receiver_names)
+                    for t in node.targets
+                )
+                if report is not None
+                else False
+            )
+            bind_targets(
+                node.targets,
+                node.value,
+                definite=definite,
+                target_is_receiver=target_is_rec,
+            )
             return
         if isinstance(node, ast.AnnAssign):
             if node.value is not None:
-                bind_targets((node.target,), node.value, definite=definite)
+                target_is_rec = (
+                    (
+                        isinstance(node.target, ast.Name)
+                        and (node.target.id == "df" or node.target.id in receiver_names)
+                    )
+                    if report is not None
+                    else False
+                )
+                bind_targets(
+                    (node.target,),
+                    node.value,
+                    definite=definite,
+                    target_is_receiver=target_is_rec,
+                )
             return
         if isinstance(node, ast.AugAssign):
             # Python reads the target before it evaluates the right-hand side,
@@ -1947,6 +2501,152 @@ def _materialising_calls_in_source_order(
     return found
 
 
+def _fold_recompute_report(report: list[ReportedCall]) -> NodeRecomputeFacts:
+    """Fold a sequence of reported AST calls into node recompute facts."""
+    has_full_input = any(
+        c.category == "registered"
+        and any(full_input_work(e.receiver, e.name, e.namespace) for e in c.entries)
+        for c in report
+    )
+
+    # 1. Costly check: first deciding call decides cost and reason
+    for call in report:
+        if call.category == "unregistered_frame_method":
+            return NodeRecomputeFacts(
+                cost="costly",
+                slice_transparent=False,
+                full_input_work=has_full_input,
+                reason=f"unregistered_frame_method:{call.name}",
+            )
+        if call.category == "unresolved_call":
+            return NodeRecomputeFacts(
+                cost="costly",
+                slice_transparent=False,
+                full_input_work=has_full_input,
+                reason=f"unresolved_call:{call.name}",
+            )
+        if call.category == "unresolved_callback":
+            return NodeRecomputeFacts(
+                cost="costly",
+                slice_transparent=False,
+                full_input_work=has_full_input,
+                reason=f"unresolved_callback:{call.name}",
+            )
+        if call.category == "registered" and any(e.costly_to_recompute for e in call.entries):
+            return NodeRecomputeFacts(
+                cost="costly",
+                slice_transparent=False,
+                full_input_work=has_full_input,
+                reason=f"costly:{call.name}",
+            )
+
+    # 2. Cheap - check slice transparency
+    first_opaque_name: str | None = None
+    for call in report:
+        if call.category != "registered":
+            first_opaque_name = call.name
+            break
+        if any(not e.slice_transparent for e in call.entries):
+            first_opaque_name = call.name
+            break
+        if any(
+            e.receiver is OperationReceiver.POLARS_FUNCTION
+            and call.name in ("all", "first", "last")
+            and call.positional_arguments > 0
+            for e in call.entries
+        ):
+            first_opaque_name = call.name
+            break
+
+    if first_opaque_name is not None:
+        return NodeRecomputeFacts(
+            cost="cheap",
+            slice_transparent=False,
+            full_input_work=has_full_input,
+            reason=f"opaque:{first_opaque_name}",
+        )
+
+    return NodeRecomputeFacts(
+        cost="cheap",
+        slice_transparent=True,
+        full_input_work=has_full_input,
+        reason="cheap",
+    )
+
+
+def code_recompute_facts(
+    code: str,
+    input_names: frozenset[str],
+    *,
+    preamble: str = "",
+    preamble_facts: _PreambleFacts | None = None,
+) -> NodeRecomputeFacts:
+    """Derive recompute cost, slice transparency, and full-input work for code."""
+    if not isinstance(code, str) or not code.strip():
+        return NodeRecomputeFacts(
+            cost="cheap",
+            slice_transparent=True,
+            full_input_work=False,
+            reason="blank_code",
+        )
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return NodeRecomputeFacts(
+            cost="costly",
+            slice_transparent=False,
+            full_input_work=False,
+            reason="syntax_error",
+        )
+
+    if preamble_facts is None:
+        preamble_facts = _build_preamble_facts(preamble)
+
+    pre_imports = preamble_facts.imports
+    shadowed = _shadowed_builtins(tree) | preamble_facts.shadowed_builtins
+    sel_roots = preamble_facts.selector_aliases | _node_selector_roots(tree)
+
+    materialising = materialising_frame_methods()
+    materialising_expressions = materialising_expression_methods()
+    report: list[ReportedCall] = []
+
+    _materialising_calls_in_source_order(
+        tree,
+        input_names,
+        materialising,
+        materialising_expressions,
+        report=report,
+        preamble_imports=pre_imports,
+        shadowed_builtins=shadowed,
+        selector_roots=sel_roots,
+    )
+
+    return _fold_recompute_report(report)
+
+
+def _edge_input_names_by_node(
+    node_map: Mapping[str, GraphNode],
+    relevant_edges: Iterable[GraphEdge],
+    submodels: Mapping[str, Any] | None = None,
+) -> dict[str, set[str]]:
+    """Derive incoming input frame names per node from the supplied edges."""
+    input_names_by_node: dict[str, set[str]] = {}
+    for edge in relevant_edges:
+        source_node = node_map.get(edge.source)
+        if source_node is None:
+            continue
+        try:
+            name = edge_input_name(edge, source_node, submodels=submodels)
+        except ValueError:
+            # A malformed edge (an apiInput edge with no frame label) has no
+            # input name to contribute. Skipping it stays conservative: an
+            # unnamed input never hides a boundary, and the node builder is the
+            # fail-loud point that reports the malformed edge to the user.
+            continue
+        input_names_by_node.setdefault(edge.target, set()).add(name)
+    return input_names_by_node
+
+
 def materialising_operator_sequences_by_node(
     order: Iterable[str],
     node_map: Mapping[str, GraphNode],
@@ -1975,20 +2675,7 @@ def materialising_operator_sequences_by_node(
     frame's ``group_by`` does, and rebinding an alias after its group-by
     cannot hide one.
     """
-    input_names_by_node: dict[str, set[str]] = {}
-    for edge in relevant_edges:
-        source_node = node_map.get(edge.source)
-        if source_node is None:
-            continue
-        try:
-            name = edge_input_name(edge, source_node, submodels=submodels)
-        except ValueError:
-            # A malformed edge (an apiInput edge with no frame label) has no
-            # input name to contribute. Skipping it stays conservative: an
-            # unnamed input never hides a boundary, and the node builder is the
-            # fail-loud point that reports the malformed edge to the user.
-            continue
-        input_names_by_node.setdefault(edge.target, set()).add(name)
+    input_names_by_node = _edge_input_names_by_node(node_map, relevant_edges, submodels=submodels)
     return materialising_operator_sequences_by_input_names(order, node_map, input_names_by_node)
 
 
@@ -2071,6 +2758,113 @@ def materialising_operators_by_input_names(
     return first_materialising_operators(
         materialising_operator_sequences_by_input_names(order, node_map, input_names_by_node)
     )
+
+
+def recompute_facts_by_node(
+    order: Iterable[str],
+    node_map: Mapping[str, GraphNode],
+    *,
+    relevant_edges: Iterable[GraphEdge],
+    submodels: Mapping[str, Any] | None = None,
+    preamble: str = "",
+) -> Mapping[str, NodeRecomputeFacts]:
+    """Return recompute facts by node in topological execution order.
+
+    - Calls ``ensure_registry_ready()`` first.
+    - Omit a ``source`` type with blank ``code`` from the mapping.
+    - A ``source`` type with code takes its code's facts.
+    - A ``code`` type takes its code's facts (blank code: cheap, transparent, ``blank_code``).
+    - A ``costly`` type is costly and not transparent (reason ``builder:<type>``),
+      taking its code's full-input work when it has code.
+    - A ``cheap`` type takes its registry transparency, combined with its code's
+      facts when it has code.
+    """
+    ensure_registry_ready()
+    preamble_facts = _build_preamble_facts(preamble)
+    input_names_by_node = _edge_input_names_by_node(node_map, relevant_edges, submodels=submodels)
+    found: dict[str, NodeRecomputeFacts] = {}
+
+    for node_id in order:
+        node = node_map.get(node_id)
+        if node is None:
+            continue
+        node_type = node.data.nodeType
+        reg_entry = NODE_REGISTRY.get(node_type)
+        reg_cost = reg_entry.recompute_cost if reg_entry is not None else None
+        reg_slice_transparent = reg_entry.slice_transparent if reg_entry is not None else True
+
+        raw_code = node.data.config.get("code")
+        has_code = isinstance(raw_code, str) and bool(raw_code.strip())
+        code_str = raw_code if isinstance(raw_code, str) else ""
+
+        if reg_cost == "source":
+            if not has_code:
+                continue
+            found[node_id] = code_recompute_facts(
+                code_str,
+                frozenset(input_names_by_node.get(node_id, ())),
+                preamble=preamble,
+                preamble_facts=preamble_facts,
+            )
+        elif reg_cost == "code":
+            found[node_id] = code_recompute_facts(
+                code_str,
+                frozenset(input_names_by_node.get(node_id, ())),
+                preamble=preamble,
+                preamble_facts=preamble_facts,
+            )
+        elif reg_cost == "costly":
+            code_full_input = False
+            if has_code:
+                code_facts = code_recompute_facts(
+                    code_str,
+                    frozenset(input_names_by_node.get(node_id, ())),
+                    preamble=preamble,
+                    preamble_facts=preamble_facts,
+                )
+                code_full_input = code_facts.full_input_work
+            found[node_id] = NodeRecomputeFacts(
+                cost="costly",
+                slice_transparent=False,
+                full_input_work=code_full_input,
+                reason=f"builder:{node_type.value}",
+            )
+        elif reg_cost == "cheap":
+            if has_code:
+                code_facts = code_recompute_facts(
+                    code_str,
+                    frozenset(input_names_by_node.get(node_id, ())),
+                    preamble=preamble,
+                    preamble_facts=preamble_facts,
+                )
+                if code_facts.cost == "costly":
+                    found[node_id] = code_facts
+                else:
+                    slice_trans = reg_slice_transparent and code_facts.slice_transparent
+                    if not reg_slice_transparent:
+                        reason = f"builder:{node_type.value}"
+                    elif not code_facts.slice_transparent:
+                        reason = code_facts.reason
+                    else:
+                        reason = "cheap"
+                    found[node_id] = NodeRecomputeFacts(
+                        cost="cheap",
+                        slice_transparent=slice_trans,
+                        full_input_work=code_facts.full_input_work,
+                        reason=reason,
+                    )
+            else:
+                reason = "cheap" if reg_slice_transparent else f"builder:{node_type.value}"
+                found[node_id] = NodeRecomputeFacts(
+                    cost="cheap",
+                    slice_transparent=reg_slice_transparent,
+                    full_input_work=False,
+                    reason=reason,
+                )
+        else:
+            raise RuntimeError(f"NodeType {node_type.value!r} declares no recompute cost")
+
+    return MappingProxyType(found)
 
 
 def builder_required_output_columns_by_node(

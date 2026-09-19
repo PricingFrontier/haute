@@ -30,7 +30,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from haute._types import MODELLING_CONFIG_KEYS, NodeType
 
@@ -43,6 +43,9 @@ ExecFn = Callable[..., tuple[str, Callable[..., Any], bool]]
 
 #: Codegen-side builder signature: ``(node, source_names) -> generated-source-str``.
 CodegenFn = Callable[["GraphNode", list[str]], str]
+
+#: Declared recompute cost for a NodeType.
+RecomputeCost = Literal["cheap", "costly", "code", "source"]
 
 
 class NodeInputPolicy(Enum):
@@ -98,6 +101,14 @@ class NodeRegistryEntry:
     #: codegen twin must route through a shared ``apply_*_from_config`` helper
     #: (the same one the executor calls), so canvas and file cannot diverge.
     is_behavioural: bool = False
+    #: Declared recompute cost for this NodeType ("cheap", "costly", "code",
+    #: or "source"). Set on the EXEC side at registration; enforced by
+    #: :func:`validate_registry_complete`.
+    recompute_cost: RecomputeCost | None = None
+    #: Whether Polars pushes a slice through this builder step unchanged.
+    #: Transparent for row-preserving transforms and pass-throughs; False for
+    #: row-multiplying transforms like scenarioExpander.
+    slice_transparent: bool = True
 
 
 #: The canonical registry: one entry per :class:`NodeType`.
@@ -119,6 +130,8 @@ def register_exec(
     *,
     column_contract: Callable[[dict[str, Any]], Any] | None = None,
     is_behavioural: bool = False,
+    recompute_cost: RecomputeCost | None = None,
+    slice_transparent: bool = True,
 ) -> Callable[[ExecFn], ExecFn]:
     """Decorator to register the exec builder for *node_type*.
 
@@ -129,6 +142,12 @@ def register_exec(
 
     *is_behavioural* marks a stateful-apply node whose codegen body must not
     be a bare passthrough — enforced by :func:`validate_registry_complete`.
+
+    *recompute_cost* declares whether recomputing this builder is cheap,
+    costly, delegated to code, or a source base case.
+
+    *slice_transparent* declares whether Polars pushes a slice through this
+    builder step unchanged.
     """
 
     def decorator(fn: ExecFn) -> ExecFn:
@@ -142,6 +161,9 @@ def register_exec(
             entry.column_contract = column_contract
         if is_behavioural:
             entry.is_behavioural = True
+        if recompute_cost is not None:
+            entry.recompute_cost = recompute_cost
+        entry.slice_transparent = slice_transparent
         return fn
 
     return decorator
@@ -224,6 +246,7 @@ def validate_registry_complete() -> None:
     missing_exec: list[NodeType] = []
     missing_codegen: list[NodeType] = []
     missing_contract: list[NodeType] = []
+    missing_cost: list[NodeType] = []
     for nt in NodeType:
         entry = NODE_REGISTRY.get(nt)
         if entry is None or entry.exec is None:
@@ -232,13 +255,16 @@ def validate_registry_complete() -> None:
             missing_codegen.append(nt)
         if entry is None or entry.column_contract is None:
             missing_contract.append(nt)
-    if missing_exec or missing_codegen or missing_contract:
+        if entry is None or entry.recompute_cost is None:
+            missing_cost.append(nt)
+    if missing_exec or missing_codegen or missing_contract or missing_cost:
         raise RuntimeError(
             "NODE_REGISTRY is incomplete — every NodeType must register an "
-            "exec builder, a codegen builder, AND a column contract.\n"
+            "exec builder, a codegen builder, a column contract, AND declare recompute cost.\n"
             f"  Missing exec:    {[n.value for n in missing_exec]}\n"
             f"  Missing codegen: {[n.value for n in missing_codegen]}\n"
-            f"  Missing contract: {[n.value for n in missing_contract]}"
+            f"  Missing contract: {[n.value for n in missing_contract]}\n"
+            f"  Missing cost:    {[n.value for n in missing_cost]}"
         )
 
     _validate_behavioural_bodies_not_passthrough()

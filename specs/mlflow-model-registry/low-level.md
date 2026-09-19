@@ -134,7 +134,8 @@
   `_temp_file_scope` (batch-scorer temp-parquet cleanup bookkeeping);
   `_score_output_destination: ContextVar[ScoreOutputDestination | None]`
   (set by `model_score_output_destination(path)`: the next batch score in
-  that scope writes its output to `path` and marks the destination used).
+  that scope writes its output to `path`, records the xxh64 `digest` of the
+  file it received, and marks the destination used).
 
 ## Candidate-run contract
 
@@ -359,10 +360,13 @@ no reduced-arity path for earlier delegate signatures.
   cleanup, and returns a lazy scan of it. Inside a
   `model_score_output_destination` scope the output is written to that
   destination instead of a temporary file and is never registered for
-  cleanup: the planned lazy engine uses this to make a batch Model Score's
-  scored file the staged artifact of its shared-snapshot capture, so the
-  scored rows are written once (see the
-  [execution engine](../execution-engine/low-level.md)).
+  cleanup: the destination also records the xxh64 `digest` of the file it
+  received — scored chunks through one `ParquetWriter` and an empty result
+  through `pq.write_table`, both written through one `HashingWriter` — while
+  a temporary scored file (no destination) records none. The planned lazy
+  engine uses this to make a batch Model Score's scored file the staged
+  artifact of its shared-snapshot capture, so the scored rows are written once
+  (see the [execution engine](../execution-engine/low-level.md)).
 
 ### Batched chunk loop — `_batch_score_to_parquet` (`_model_scorer.py`)
 
