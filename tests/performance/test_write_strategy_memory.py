@@ -5,8 +5,12 @@ with input row count, while the sliced strategy remains bounded.
 
 The passthrough control (``passthrough_native``), a native filter that keeps every
 row, proves the growth belongs to the native sink
-itself rather than to filtering. A change in these relationships represents a
-change in the justification for CACHE-S20 (input-sliced writes for row-local nodes).
+itself rather than to filtering.
+
+These relationships are why the chunked writer slices where it can: a capture, an
+explicit build and training preparation all take a bounded path, and a Data Output
+is the one full-frame write still on the native sink (``CACHE-S21``, which cites
+this artifact). A change in them changes the case for that work.
 """
 
 from __future__ import annotations
