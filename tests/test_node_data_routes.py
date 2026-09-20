@@ -12,10 +12,13 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
+import haute._chunked_writes
+import haute._execute_lazy
 import haute._node_snapshots as node_snapshots_module
 from haute._data_points import DataPoint, DataPointResolver
 from haute._hashing import content_hash
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+from haute._polars_utils import current_streaming_chunk_size, temporary_streaming_chunk_size
 from haute.routes import _node_data_service as service_mod
 from tests.conftest import make_edge, make_graph
 
@@ -1321,3 +1324,188 @@ def test_explicit_build_publishes_with_write_time_digests(
         part_path = gen.generation.directory / part.name
         assert len(part.digest) == 16
         assert part.digest == content_hash(part_path)
+
+
+def _captured_join_graph(project: Path, claims_path: Path) -> dict[str, Any]:
+    return make_graph(
+        {
+            "source_file": str(project / "main.py"),
+            "preamble": "import polars as pl",
+            "nodes": [
+                {
+                    "id": "quotes",
+                    "data": {
+                        "label": "quotes",
+                        "nodeType": "dataInput",
+                        "config": {
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "path": str(project / "quotes.parquet"),
+                            "arguments": {},
+                        },
+                    },
+                },
+                {
+                    "id": "claims",
+                    "data": {
+                        "label": "claims",
+                        "nodeType": "dataInput",
+                        "config": {
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "path": str(claims_path),
+                            "arguments": {},
+                        },
+                    },
+                },
+                {
+                    "id": "join_node",
+                    "data": {
+                        "label": "join_node",
+                        "nodeType": "edgeJoin",
+                        "config": {
+                            "how": "left",
+                            "on": "policy_id",
+                            "selected_columns": ["policy_id", "premium", "claim_amount"],
+                            "column_renames": {"claim_amount": "loss"},
+                        },
+                    },
+                },
+                {
+                    "id": "target_node",
+                    "data": {
+                        "label": "target_node",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": (
+                                "df = join_node.with_columns("
+                                "(pl.col('premium') * 2).alias('double'))"
+                            )
+                        },
+                    },
+                },
+                {
+                    "id": "explore",
+                    "data": {
+                        "label": "explore",
+                        "nodeType": "explore",
+                        "config": {},
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("claims", "join_node", target_handle="join").model_dump(),
+                make_edge("quotes", "join_node", target_handle="base").model_dump(),
+                make_edge("join_node", "target_node").model_dump(),
+                make_edge("target_node", "explore").model_dump(),
+            ],
+        }
+    ).model_dump()
+
+
+def test_an_explicit_build_and_its_captures_share_the_requested_chunk_size(
+    client: TestClient,
+    project: Path,
+    in_process_worker: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claims_path = project / "claims.parquet"
+    pl.DataFrame(
+        {
+            "policy_id": list(range(1000)),
+            "claim_amount": [float(i * 10) for i in range(1000)],
+        }
+    ).write_parquet(claims_path)
+
+    recorded: list[tuple[int, int | None]] = []
+    real_write_parts = haute._chunked_writes.write_parts
+
+    def _recording_write_parts(*args: Any, **kwargs: Any) -> Any:
+        ambient = current_streaming_chunk_size()
+        chunk_rows = kwargs.get("chunk_rows")
+        recorded.append((ambient, chunk_rows))
+        return real_write_parts(*args, **kwargs)
+
+    monkeypatch.setattr(service_mod, "write_parts", _recording_write_parts, raising=False)
+    monkeypatch.setattr(haute._execute_lazy, "write_parts", _recording_write_parts)
+    monkeypatch.setattr(haute._chunked_writes, "write_parts", _recording_write_parts)
+
+    graph = _captured_join_graph(project, claims_path)
+    requested_size = 200
+    job = _cache(client, graph, "explore", streaming_chunk_size=requested_size)
+    assert job["status"] == "completed"
+
+    assert len(recorded) >= 2
+    for ambient, chunk_rows in recorded:
+        effective_size = chunk_rows if chunk_rows is not None else ambient
+        assert effective_size == requested_size
+        assert ambient == requested_size
+
+    captures = job["execution_metrics"]["shared_snapshot_captures"]
+    join_capture = next(c for c in captures if c["node_id"] == "join_node")
+    assert join_capture["write_chunk_rows"] == requested_size
+
+    resolver = _resolver(project, graph)
+    identity = resolver.node_output_slot("target_node").identity(
+        resolver.node_output_signature("target_node")
+    )
+    gen = resolver.store.latest_generation(identity)
+    assert gen is not None
+    assert len(gen.generation.metadata.parts) > 1
+
+    gen_df = gen.generation.lazy_frame.collect().sort("policy_id")
+    expected = (
+        pl.read_parquet(project / "quotes.parquet")
+        .join(pl.read_parquet(claims_path), on="policy_id", how="left")
+        .select(["policy_id", "premium", "claim_amount"])
+        .rename({"claim_amount": "loss"})
+        .with_columns((pl.col("premium") * 2).alias("double"))
+        .sort("policy_id")
+    )
+    assert_frame_equal(gen_df.select(expected.columns), expected)
+
+
+def test_a_build_without_a_chunk_size_leaves_the_ambient_size_alone(
+    client: TestClient,
+    project: Path,
+    in_process_worker: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claims_path = project / "claims.parquet"
+    pl.DataFrame(
+        {
+            "policy_id": list(range(1000)),
+            "claim_amount": [float(i * 10) for i in range(1000)],
+        }
+    ).write_parquet(claims_path)
+
+    recorded: list[tuple[int, int | None]] = []
+    real_write_parts = haute._chunked_writes.write_parts
+
+    def _recording_write_parts(*args: Any, **kwargs: Any) -> Any:
+        ambient = current_streaming_chunk_size()
+        chunk_rows = kwargs.get("chunk_rows")
+        recorded.append((ambient, chunk_rows))
+        return real_write_parts(*args, **kwargs)
+
+    monkeypatch.setattr(service_mod, "write_parts", _recording_write_parts, raising=False)
+    monkeypatch.setattr(haute._execute_lazy, "write_parts", _recording_write_parts)
+    monkeypatch.setattr(haute._chunked_writes, "write_parts", _recording_write_parts)
+
+    graph = _captured_join_graph(project, claims_path)
+    ambient_size = 350
+    assert ambient_size != current_streaming_chunk_size()
+
+    with temporary_streaming_chunk_size(ambient_size):
+        job = _cache(client, graph, "explore")
+        assert job["status"] == "completed"
+        assert len(recorded) >= 2
+        for ambient, chunk_rows in recorded:
+            effective_size = chunk_rows if chunk_rows is not None else ambient
+            assert effective_size == ambient_size
+            assert ambient == ambient_size
+        assert current_streaming_chunk_size() == ambient_size
+
+    assert current_streaming_chunk_size() != ambient_size

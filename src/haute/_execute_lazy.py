@@ -2300,6 +2300,7 @@ class _PlannedCaptures:
             generation_id=generation_id,
             write_strategy=written.strategy if written is not None else "prewritten",
             write_parts=written.chunks if written is not None else None,
+            write_chunk_rows=written.chunk_rows if written is not None else None,
         )
         context = self.execution_context
         if context is None:
@@ -2314,6 +2315,7 @@ class _PlannedCaptures:
                 columns=columns,
                 write_strategy=written.strategy if written is not None else "prewritten",
                 write_parts=written.chunks if written is not None else None,
+                write_chunk_rows=written.chunk_rows if written is not None else None,
                 write_staged_inputs=written.staged_inputs if written is not None else None,
             )
         )

@@ -226,6 +226,7 @@ class SharedSnapshotCaptureRecord:
     # files it wrote and the inputs it had to stage first.
     write_strategy: str | None = None
     write_parts: int | None = None
+    write_chunk_rows: int | None = None
     write_staged_inputs: int | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -238,6 +239,7 @@ class SharedSnapshotCaptureRecord:
             "columns": self.columns.to_json(),
             "write_strategy": self.write_strategy,
             "write_parts": self.write_parts,
+            "write_chunk_rows": self.write_chunk_rows,
             "write_staged_inputs": self.write_staged_inputs,
         }
 

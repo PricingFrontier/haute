@@ -754,7 +754,8 @@ function parseSharedSnapshotCapture(
             ["chunked_join", "sliced", "native", "prewritten"] as const,
           ),
         }),
-    ...optionalNullableCount(parser, obj, "write_parts", field),
+    ...optionalNullablePositiveCount(parser, obj, "write_parts", field),
+    ...optionalNullablePositiveCount(parser, obj, "write_chunk_rows", field),
     ...optionalNullableCount(parser, obj, "write_staged_inputs", field),
   }
 }
@@ -779,13 +780,24 @@ function optionalNullableCount<K extends string>(
   obj: Record<string, unknown>,
   key: K,
   field: string,
+  { positive = false }: { positive?: boolean } = {},
 ): Partial<Record<K, number | null>> {
   const value = obj[key]
   if (value === undefined) return {}
   if (value === null) return { [key]: null } as Partial<Record<K, number | null>>
+  const expectCount = positive ? expectPositiveInteger : expectNonNegativeInteger
   return {
-    [key]: expectNonNegativeInteger(parser, value, `${field}.${key}`),
+    [key]: expectCount(parser, value, `${field}.${key}`),
   } as Partial<Record<K, number | null>>
+}
+
+function optionalNullablePositiveCount<K extends string>(
+  parser: string,
+  obj: Record<string, unknown>,
+  key: K,
+  field: string,
+): Partial<Record<K, number | null>> {
+  return optionalNullableCount(parser, obj, key, field, { positive: true })
 }
 
 function parseExecutionWarning(parser: string, value: unknown, field: string): ExecutionWarning {
@@ -2336,6 +2348,14 @@ function expectNonNegativeInteger(parser: string, value: unknown, field: string)
   const parsed = expectSafeInteger(parser, value, field)
   if (parsed < 0) {
     throw new Error(`${parser}: expected ${field} to be a non-negative integer`)
+  }
+  return parsed
+}
+
+function expectPositiveInteger(parser: string, value: unknown, field: string): number {
+  const parsed = expectSafeInteger(parser, value, field)
+  if (parsed < 1) {
+    throw new Error(`${parser}: expected ${field} to be a positive integer`)
   }
   return parsed
 }

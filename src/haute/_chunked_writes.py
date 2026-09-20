@@ -249,6 +249,7 @@ class ChunkedWrite:
     parts: tuple[str, ...]
     chunks: int
     staged_inputs: int
+    chunk_rows: int | None = None
     native_reason: str | None = None
     digests: Mapping[str, str] = field(default_factory=lambda: _EMPTY_DIGESTS)
 
@@ -388,23 +389,30 @@ def write_parts(
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
             parts.ensure_one()
-            return _report(parts, "chunked_join", staged_inputs=staged, node_id=node_id)
+            return _report(
+                parts,
+                "chunked_join",
+                chunk_rows=None if shape.how == "cross" else rows,
+                staged_inputs=staged,
+                node_id=node_id,
+            )
     if join is None and sliceable(frame):
         total = row_count(frame, execution_context=execution_context)
         for offset in range(0, total, rows):
             parts.sink(frame.slice(offset, rows))
         parts.ensure_one()
-        return _report(parts, "sliced", node_id=node_id)
+        return _report(parts, "sliced", chunk_rows=rows, node_id=node_id)
     if native_reason is None:
         native_reason = "join_not_chunkable" if join is not None else "not_sliceable"
     parts.sink(frame, conform=False)
-    return _report(parts, "native", native_reason=native_reason, node_id=node_id)
+    return _report(parts, "native", chunk_rows=None, native_reason=native_reason, node_id=node_id)
 
 
 def _report(
     parts: _Parts,
     strategy: WriteStrategy,
     *,
+    chunk_rows: int | None = None,
     staged_inputs: int = 0,
     native_reason: str | None = None,
     node_id: str | None,
@@ -414,6 +422,7 @@ def _report(
         parts=tuple(parts.names),
         chunks=len(parts.names),
         staged_inputs=staged_inputs,
+        chunk_rows=chunk_rows,
         native_reason=native_reason,
         digests=MappingProxyType(dict(parts.digests)),
     )
@@ -422,6 +431,7 @@ def _report(
         node_id=node_id,
         strategy=strategy,
         parts=written.chunks,
+        chunk_rows=chunk_rows,
         staged_inputs=staged_inputs,
         native_reason=native_reason,
     )

@@ -871,7 +871,10 @@ entirely and leave every touched file in whatever state it happened to be in."
   refresh build seeds nothing yet still captures its fan-out and join feeder; a build whose seed
   is refreshed before it publishes ends `contract_error` rather than reporting the node cached;
   and a build worker stopped, timed out, or killed at its memory cap ends with that status and
-  removes the capture it had staged.
+  removes the capture it had staged. `test_an_explicit_build_and_its_captures_share_the_requested_chunk_size`
+  and `test_a_build_without_a_chunk_size_leaves_the_ambient_size_alone` verify that an explicit
+  build and its captures share the requested chunk size, that the capture evidence records it,
+  and that an unconfigured build leaves the ambient chunk size alone.
 - `tests/test_analysis_results.py` covers the profile route: an uncached point asking to be
   cached, a profile computed once and then served from the store, a second request joining the
   running profile, a refreshed point never returning the previous profile, admission failure,

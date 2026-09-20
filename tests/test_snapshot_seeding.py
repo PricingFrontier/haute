@@ -1205,6 +1205,7 @@ def test_metrics_report_seeds_captures_and_warnings(
         "columns": ["a"],
         "write_strategy": "native",
         "write_parts": 1,
+        "write_chunk_rows": None,
         "write_staged_inputs": 0,
     }
     assert first.metrics["warnings"] == []

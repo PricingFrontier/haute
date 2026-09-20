@@ -2468,6 +2468,9 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   selection and reversed after collection.
   `test_a_heavy_row_that_loses_a_match_is_refused` verifies that a heavy row that loses a
   match raises a RuntimeError naming both the expected and written counts.
+  `test_a_write_reports_the_rows_per_part_it_chunked_at` verifies that `ChunkedWrite.chunk_rows`
+  reports the rows-per-part bound applied by a sliced write or keyed chunked join, None for
+  native writes and cross joins, and the ambient streaming chunk size when none was requested.
 
 **Known coverage note:** `_execution_admission.py` has no dedicated test file; its
 behaviour is tested directly from `test_execution_context.py` and through route/service

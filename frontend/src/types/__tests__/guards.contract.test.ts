@@ -666,6 +666,7 @@ describe("API response guards", () => {
             columns: ["premium", "region"],
             write_strategy: "chunked_join",
             write_parts: 20,
+            write_chunk_rows: 500,
             write_staged_inputs: 0,
           },
         ],
@@ -683,6 +684,7 @@ describe("API response guards", () => {
     expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.columns).toEqual(["premium", "region"])
     expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_strategy).toBe("chunked_join")
     expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_parts).toBe(20)
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_chunk_rows).toBe(500)
     expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_staged_inputs).toBe(0)
     expect(parsed.execution_metrics?.shared_snapshot_capture_skips).toEqual([
       { node_id: "select_1", reason: "cheap_segment" },
@@ -690,6 +692,29 @@ describe("API response guards", () => {
     expect(parsed.execution_metrics?.warnings).toEqual([
       { code: "snapshot_capture_skipped", node_id: "banding", reason: "quota" },
     ])
+  })
+
+  it("accepts null write_chunk_rows in shared snapshot captures", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        shared_snapshot_captures: [
+          {
+            node_id: "banding",
+            identity_digest: "d2",
+            kind: "consumed",
+            outcome: "quota",
+            generation_id: null,
+            columns: ["premium", "region"],
+            write_strategy: "sliced",
+            write_parts: 20,
+            write_chunk_rows: null,
+          },
+        ],
+      },
+    })
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_chunk_rows).toBeNull()
   })
 
   it("rejects a negative write_parts in shared snapshot captures", () => {
@@ -713,6 +738,144 @@ describe("API response guards", () => {
         },
       }),
     ).toThrow(/write_parts/i)
+  })
+
+  it("rejects a negative write_chunk_rows in shared snapshot captures", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_captures: [
+            {
+              node_id: "banding",
+              identity_digest: "d2",
+              kind: "consumed",
+              outcome: "quota",
+              generation_id: null,
+              columns: ["premium", "region"],
+              write_strategy: "sliced",
+              write_chunk_rows: -1,
+            },
+          ],
+        },
+      }),
+    ).toThrow(/write_chunk_rows/i)
+  })
+
+  it("rejects a non-numeric write_chunk_rows in shared snapshot captures", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_captures: [
+            {
+              node_id: "banding",
+              identity_digest: "d2",
+              kind: "consumed",
+              outcome: "quota",
+              generation_id: null,
+              columns: ["premium", "region"],
+              write_strategy: "sliced",
+              write_chunk_rows: "twenty",
+            },
+          ],
+        },
+      }),
+    ).toThrow(/write_chunk_rows/i)
+  })
+
+  it("rejects a zero write_parts in shared snapshot captures", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_captures: [
+            {
+              node_id: "banding",
+              identity_digest: "d2",
+              kind: "consumed",
+              outcome: "quota",
+              generation_id: null,
+              columns: ["premium", "region"],
+              write_strategy: "sliced",
+              write_parts: 0,
+            },
+          ],
+        },
+      }),
+    ).toThrow(/write_parts/i)
+  })
+
+  it("rejects a zero write_chunk_rows in shared snapshot captures", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_captures: [
+            {
+              node_id: "banding",
+              identity_digest: "d2",
+              kind: "consumed",
+              outcome: "quota",
+              generation_id: null,
+              columns: ["premium", "region"],
+              write_strategy: "sliced",
+              write_chunk_rows: 0,
+            },
+          ],
+        },
+      }),
+    ).toThrow(/write_chunk_rows/i)
+  })
+
+  it("accepts a count of 1 for write_parts and write_chunk_rows in shared snapshot captures", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        shared_snapshot_captures: [
+          {
+            node_id: "banding",
+            identity_digest: "d2",
+            kind: "consumed",
+            outcome: "quota",
+            generation_id: null,
+            columns: ["premium", "region"],
+            write_strategy: "sliced",
+            write_parts: 1,
+            write_chunk_rows: 1,
+          },
+        ],
+      },
+    })
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_parts).toBe(1)
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_chunk_rows).toBe(1)
+  })
+
+  it("accepts zero write_staged_inputs in shared snapshot captures", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        shared_snapshot_captures: [
+          {
+            node_id: "banding",
+            identity_digest: "d2",
+            kind: "consumed",
+            outcome: "quota",
+            generation_id: null,
+            columns: ["premium", "region"],
+            write_strategy: "sliced",
+            write_staged_inputs: 0,
+          },
+        ],
+      },
+    })
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_staged_inputs).toBe(0)
   })
 
   it("rejects an unknown write_strategy in shared snapshot captures", () => {

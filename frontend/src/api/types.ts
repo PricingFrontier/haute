@@ -206,6 +206,7 @@ export interface SharedSnapshotCapture {
   columns: "all" | string[]
   write_strategy?: "chunked_join" | "sliced" | "native" | "prewritten" | null
   write_parts?: number | null
+  write_chunk_rows?: number | null
   write_staged_inputs?: number | null
 }
 
