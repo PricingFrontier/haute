@@ -20,6 +20,7 @@ import polars as pl
 import pytest
 from fastapi import HTTPException
 
+from haute._chunked_writes import ChunkedWrite
 from haute._execution_context import (
     ExecutionCancellationToken,
     ExecutionContext,
@@ -281,8 +282,18 @@ class TestPreparationProjection:
 
         sunk_frames: list[object] = []
 
-        def fake_bounded_sink(frame, path, **kwargs):
+        def fake_write_file(
+            destination,
+            frame,
+            *,
+            recipe=None,
+            chunk_rows=None,
+            execution_context=None,
+            node_id=None,
+        ):
             sunk_frames.append(frame)
+            frame.collect().write_parquet(destination)
+            return ChunkedWrite(strategy="native", parts=(), chunks=1, staged_inputs=0)
 
         def lazy_returns_target(*args, **kwargs):
             return ({"n": lf}, [], {}, {})
@@ -293,7 +304,7 @@ class TestPreparationProjection:
                 "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
-            patch("haute._polars_utils.bounded_sink", side_effect=fake_bounded_sink),
+            patch("haute._chunked_writes.write_file", side_effect=fake_write_file),
             patch("haute._polars_utils._malloc_trim"),
             p1,
             p2,
@@ -329,8 +340,18 @@ class TestPreparationProjection:
         lf = pl.LazyFrame({"y": [1.0, 2.0], "x1": [0.1, 0.2]})
         sunk_frames: list[object] = []
 
-        def fake_bounded_sink(frame, path, **kwargs):
+        def fake_write_file(
+            destination,
+            frame,
+            *,
+            recipe=None,
+            chunk_rows=None,
+            execution_context=None,
+            node_id=None,
+        ):
             sunk_frames.append(frame)
+            frame.collect().write_parquet(destination)
+            return ChunkedWrite(strategy="native", parts=(), chunks=1, staged_inputs=0)
 
         def lazy_returns_target(*args, **kwargs):
             return ({"n": lf}, [], {}, {})
@@ -341,7 +362,7 @@ class TestPreparationProjection:
                 "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
-            patch("haute._polars_utils.bounded_sink", side_effect=fake_bounded_sink),
+            patch("haute._chunked_writes.write_file", side_effect=fake_write_file),
             patch("haute._polars_utils._malloc_trim"),
             p1,
             p2,
@@ -570,8 +591,18 @@ class TestPreparationWithExecutionContext:
         sunk_frames: list[object] = []
         executions: list[dict[str, object]] = []
 
-        def fake_bounded_sink(frame, path, **kwargs):
+        def fake_write_file(
+            destination,
+            frame,
+            *,
+            recipe=None,
+            chunk_rows=None,
+            execution_context=None,
+            node_id=None,
+        ):
             sunk_frames.append(frame)
+            frame.collect().write_parquet(destination)
+            return ChunkedWrite(strategy="native", parts=(), chunks=1, staged_inputs=0)
 
         def lazy_returns_target(*args, **kwargs):
             executions.append(kwargs)
@@ -585,7 +616,7 @@ class TestPreparationWithExecutionContext:
                 "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
-            patch("haute._polars_utils.bounded_sink", side_effect=fake_bounded_sink),
+            patch("haute._chunked_writes.write_file", side_effect=fake_write_file),
             patch("haute._polars_utils._malloc_trim"),
             p1,
             p2,

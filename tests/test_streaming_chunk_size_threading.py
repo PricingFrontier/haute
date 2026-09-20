@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
+from haute._chunked_writes import ChunkedWrite
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from tests.conftest import make_ready_file_input_config
@@ -432,9 +433,18 @@ class TestTrainPreparationChunkSize:
 
         captured: dict[str, object] = {}
 
-        def fake_bounded_sink(lf, path, **kwargs):
-            captured.update(kwargs)
-            pl.DataFrame({"claim_count": [1.0], "driver_age": [40]}).write_parquet(path)
+        def fake_write_file(
+            destination,
+            frame,
+            *,
+            recipe=None,
+            chunk_rows=None,
+            execution_context=None,
+            node_id=None,
+        ):
+            captured["chunk_rows"] = chunk_rows
+            pl.DataFrame({"claim_count": [1.0], "driver_age": [40]}).write_parquet(destination)
+            return ChunkedWrite(strategy="native", parts=(), chunks=1, staged_inputs=0)
 
         def fake_execute_lazy(*_args, **_kwargs):
             return (
@@ -469,8 +479,8 @@ class TestTrainPreparationChunkSize:
                     MagicMock(write_text=MagicMock()),
                 ),
                 patch(
-                    "haute._polars_utils.bounded_sink",
-                    side_effect=fake_bounded_sink,
+                    "haute._chunked_writes.write_file",
+                    side_effect=fake_write_file,
                 ),
             ):
                 outcome = prepare_training_data(request, execution_context=context)
@@ -482,11 +492,11 @@ class TestTrainPreparationChunkSize:
 
     def test_uses_request_value(self, tmp_path):
         captured = self._run(tmp_path, streaming_chunk_size=12345)
-        assert captured.get("streaming_chunk_size") == 12345
+        assert captured.get("chunk_rows") == 12345
 
     def test_default_when_missing(self, tmp_path):
         captured = self._run(tmp_path, streaming_chunk_size=None)
-        assert captured.get("streaming_chunk_size") == DEFAULT_STREAMING_CHUNK_SIZE
+        assert captured.get("chunk_rows") == DEFAULT_STREAMING_CHUNK_SIZE
 
 
 # ---------------------------------------------------------------------------
