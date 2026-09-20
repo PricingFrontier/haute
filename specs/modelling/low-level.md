@@ -322,10 +322,12 @@
    failed: <exc>")` (500/`error`), never a bare exception.
    Expected child failures are returned, never raised across the boundary: a
    `TrainingPreparationFailure` carries `terminal_reason`
-   (`contract_error`|`memory_limited`|`error`), the job `message`/`fields`, and the
+   (`contract_error`|`memory_limited`|`cancelled`|`error`), the job `message`/`fields`, and the
    `http_status_code`/`http_detail`, computed in the child with the same
    `_http_failure_job_parts`/`contract_error_job_fields`/`_memory_limit_http_exception`
-   helpers the in-thread path used, so job records and HTTP payloads are unchanged. Every
+   helpers the in-thread path used, so job records and HTTP payloads are unchanged. A cancelled
+   run maps to `cancelled` with `CLIENT_CLOSED_REQUEST_STATUS`, both in the mapper and ahead of
+   the worker's own catch-all, so a cancellation is never reported as a pipeline failure. Every
    child failure removes the parquet first — no partial training artifact ever exists.
    The parent maps the outcome: a `failure` transitions to its `terminal_reason` and raises
    the paired `HTTPException`; a success whose `parquet_path` differs from the parent's, or

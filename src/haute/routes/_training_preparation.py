@@ -26,6 +26,7 @@ from haute._execution_admission import (
     create_isolated_execution_context,
 )
 from haute._execution_context import (
+    ExecutionCancelledError,
     ExecutionContext,
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
@@ -57,6 +58,7 @@ from haute.routes._contract_errors import (
 )
 from haute.routes._helpers import find_typed_node
 from haute.routes._memory_messages import memory_limit_user_message
+from haute.routes._synchronous_analysis import CLIENT_CLOSED_REQUEST_STATUS
 from haute.schemas import (
     TrainingFeatureSelectionDiagnosticPayload,
 )
@@ -539,7 +541,9 @@ def _check_gpu_vram(
 # Hard-capped preparation worker (EXEC-P06)
 # ---------------------------------------------------------------------------
 
-TrainingPreparationTerminalReason = Literal["contract_error", "memory_limited", "error"]
+TrainingPreparationTerminalReason = Literal[
+    "contract_error", "memory_limited", "error", "cancelled"
+]
 
 
 @dataclass(frozen=True)
@@ -930,7 +934,17 @@ def preparation_failure_outcome(
     """
     job_id = request.job_id
     tmp_parquet = request.parquet_path
-    if isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
+    if isinstance(exc, ExecutionCancelledError):
+        # A cancelled run is not a failed one. Without this it falls to the
+        # generic branch and the user is told the pipeline failed and to go
+        # read the server logs, while the log beside it says cancelled.
+        failure = TrainingPreparationFailure(
+            terminal_reason="cancelled",
+            message="Cancelled",
+            http_status_code=CLIENT_CLOSED_REQUEST_STATUS,
+            http_detail="Training preparation was cancelled",
+        )
+    elif isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
         logger.warning(
             "pipeline_exec_memory_limited",
             error=str(exc),
@@ -1048,6 +1062,19 @@ def prepare_training_data_worker(
                 _memory_limit_http_exception(exc),
                 job_id=request.job_id,
                 terminal_reason="memory_limited",
+            ),
+            parquet_path=request.parquet_path,
+            execution_metrics=None,
+        )
+    except ExecutionCancelledError:
+        # Before the generic branch, which would report a cancelled run as a
+        # pipeline failure pointing the user at the server logs.
+        return _finalise_preparation_failure(
+            TrainingPreparationFailure(
+                terminal_reason="cancelled",
+                message="Cancelled",
+                http_status_code=CLIENT_CLOSED_REQUEST_STATUS,
+                http_detail="Training preparation was cancelled",
             ),
             parquet_path=request.parquet_path,
             execution_metrics=None,

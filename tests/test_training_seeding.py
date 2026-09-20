@@ -1435,9 +1435,9 @@ def test_cancellation_mid_write_leaves_no_prepared_parquet(
         [("src", "A"), ("A", "train")],
     )
     run = _train(monkeypatch, graph, streaming_chunk_size=40)
-    # What the write owes on cancellation: nothing left where the parquet would be.
-    # The job's own terminal reason is a separate contract, covered elsewhere.
-    assert run.job["status"] != "completed", run.job.get("message")
+    # A cancelled run reports as cancelled, not as a pipeline failure pointing
+    # the user at the server logs, and leaves nothing where the parquet would be.
+    assert run.job["status"] == "cancelled", run.job.get("message")
     assert len(run.parquet_paths) >= 1
     for path in run.parquet_paths:
         assert not Path(path).exists()
