@@ -344,10 +344,27 @@ which the cost rule leaves to the consumer, takes that path in every bounded
 run. The memory-safety aim therefore holds for sliceable frames and edge
 joins and is unproven for the most common node shape.
 
-**Plan:** Measure first: a performance artifact records the native sink's peak
-RSS for a filter, a filter with row-local derived columns, and an unnest over
-a 10M-row input at the default chunk size. If any grows with the input, write
-a chunk-local single-input node a slice of its input at a time: the engine
+**Plan:** Measured on 20-Sep-2026: the native sink's peak grows with its input
+while the sliced strategy's stays bounded, growing about 1.3 times over a
+fourfold input rather than in step with it. On 60-column real data, fresh process
+per case, peak private bytes over a clean baseline:
+
+| Rows | filter (native) | filter with derived columns (native) | unnest (sliced) | sort (native control) |
+|---|---|---|---|---|
+| 2.5M | 2520 MB | 2650 MB | 1465 MB | 5520 MB |
+| 5M | 4446 MB | 4940 MB | 1577 MB | 10063 MB |
+| 10M | 6128 MB | 8607 MB | 1604 MB | 14375 MB |
+
+The artifact carries a passthrough control, every row kept, forced down the
+same native path: it grew 1.97 to 2.00 times against the filter's 2.02 to
+2.25, so the predicate adds almost nothing and the growth belongs to the
+native sink itself rather than to filtering. Recorded as a permanent reproducible artifact in
+`tests/performance/test_write_strategy_memory.py`, which measures a 40-column
+fixture at 1.5M and 6M rows and asserts the relationship rather than any byte
+count: every native case grew at least 1.97x there against the sliced
+control's 1.32x.
+The package proceeds on this evidence. Write a chunk-local single-input node
+a slice of its input at a time: the engine
 already knows a node's builder function and its one input frame, and the
 union of the function applied to each input slice equals its output exactly
 when the function is chunk-local. That proof is the existing closed
