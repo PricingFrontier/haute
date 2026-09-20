@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 import polars as pl
 import pyarrow.parquet as pq
@@ -15,7 +17,9 @@ from polars.testing import assert_frame_equal
 import haute._source_cache as source_cache_module
 from haute._chunked_writes import write_parts
 from haute._execution_context import ExecutionProfile
+from haute._file_ops import atomic_write_text
 from haute._hashing import content_hash
+from haute._node_config_recovery import _DISCRIMINANTS
 from haute._node_snapshots import (
     BOUNDED_SEMANTICS_CLASS,
     NodeSnapshotColumns,
@@ -27,9 +31,38 @@ from haute._node_snapshots import (
     snapshot_write_class,
 )
 from haute._source_cache import (
+    SourceCacheBuildContext,
     SourceCacheGenerationMissingError,
     SourceCacheIdentity,
+    classify_identity_marker,
 )
+from haute._types import NodeType
+
+
+@dataclass
+class _LazyBuilder:
+    frame: pl.LazyFrame
+
+    def build(self, context: SourceCacheBuildContext) -> pl.LazyFrame:
+        context.checkpoint()
+        return self.frame
+
+
+def _input_identity(name: str = "input1", provider: str = "file") -> SourceCacheIdentity:
+    return SourceCacheIdentity(provider=provider, descriptor={"path": f"{name}.parquet"})
+
+
+def _build_input_snapshot(
+    store: NodeSnapshotStore | source_cache_module.SourceCacheStore,
+    identity: SourceCacheIdentity,
+    frame: pl.DataFrame | None = None,
+) -> None:
+    df = frame if frame is not None else pl.DataFrame({"x": [1, 2, 3]})
+    context = SourceCacheBuildContext(
+        profile=ExecutionProfile.LAZY_SINK,
+        build_class="bounded",
+    )
+    store.build(identity, _LazyBuilder(df.lazy()), context=context)
 
 
 def _slot(tmp_path: Path, node_id: str = "join") -> NodeSnapshotSlot:
@@ -238,7 +271,7 @@ def test_a_cleared_dependency_leaves_its_descendant_current(tmp_path: Path) -> N
 def test_eviction_retires_the_least_recently_used_unleased_automatic_generation(
     tmp_path: Path,
 ) -> None:
-    store = NodeSnapshotStore(tmp_path, max_generations=2)
+    store = NodeSnapshotStore(tmp_path, node_output_max_generations=2)
     old_slot = _slot(tmp_path, "old")
     recent_slot = _slot(tmp_path, "recent")
     # Publish in the opposite order to use, so eviction follows last use, not creation.
@@ -257,7 +290,7 @@ def test_eviction_retires_the_least_recently_used_unleased_automatic_generation(
 def test_eviction_spares_leased_and_pinned_generations_and_then_rejects(
     tmp_path: Path,
 ) -> None:
-    store = NodeSnapshotStore(tmp_path, max_generations=2)
+    store = NodeSnapshotStore(tmp_path, node_output_max_generations=2)
     pinned_slot = _slot(tmp_path, "pinned")
     leased_slot = _slot(tmp_path, "leased")
     with _publish(store, pinned_slot.identity("s1"), pl.DataFrame({"a": [1]}), explicit=True):
@@ -281,7 +314,7 @@ def test_eviction_spares_leased_and_pinned_generations_and_then_rejects(
 
 
 def test_quota_rejection_is_the_existing_quota_error(tmp_path: Path) -> None:
-    store = NodeSnapshotStore(tmp_path, max_generations=1)
+    store = NodeSnapshotStore(tmp_path, node_output_max_generations=1)
     with _publish(
         store, _slot(tmp_path, "a").identity("s1"), pl.DataFrame({"a": [1]}), explicit=True
     ):
@@ -628,7 +661,7 @@ def test_eviction_sizes_a_generation_by_all_of_its_parts(tmp_path: Path) -> None
     quota = part0_old_size + total_new_size
     assert quota < total_old_size + total_new_size
     assert quota >= total_new_size
-    store.max_bytes = quota
+    store.node_output_max_bytes = quota
 
     with store.publish_node_output(
         new_identity,
@@ -692,3 +725,373 @@ def test_publication_reads_no_part_in_full_after_writing_it(
         assert len(pub.generation.generation.metadata.parts) == len(expected_digests)
         for part in pub.generation.generation.metadata.parts:
             assert part.digest == expected_digests[part.name]
+
+
+def test_input_snapshots_do_not_consume_node_output_slots(tmp_path: Path) -> None:
+    store = NodeSnapshotStore(tmp_path, max_generations=10, node_output_max_generations=1)
+    for i in range(3):
+        _build_input_snapshot(store, _input_identity(f"inp_{i}"), pl.DataFrame({"x": [i]}))
+    node_id = _slot(tmp_path, "node").identity("s1")
+    with _publish(store, node_id, pl.DataFrame({"a": [42]})) as pub:
+        assert pub.outcome == "published"
+        assert pub.generation is not None
+    with store.lease(node_id) as leased:
+        assert_frame_equal(leased.lazy_frame.collect(), pl.DataFrame({"a": [42]}))
+    assert store.slot_status(_slot(tmp_path, "node"), "s1").state == "current"
+
+
+def test_node_outputs_do_not_consume_input_snapshot_slots(tmp_path: Path) -> None:
+    store = NodeSnapshotStore(tmp_path, max_generations=1, node_output_max_generations=10)
+    for i in range(3):
+        _published_id(
+            store,
+            _slot(tmp_path, f"node_{i}").identity("s1"),
+            pl.DataFrame({"a": [i]}),
+        )
+    inp = _input_identity("single_input")
+    _build_input_snapshot(store, inp, pl.DataFrame({"val": [99]}))
+    with store.lease(inp) as leased:
+        assert_frame_equal(leased.lazy_frame.collect(), pl.DataFrame({"val": [99]}))
+    assert store.open_generation(inp).generation_id is not None
+
+
+def test_a_node_output_admission_never_evicts_an_input_snapshot(tmp_path: Path) -> None:
+    store = NodeSnapshotStore(tmp_path, max_generations=10, node_output_max_generations=2)
+    inp1 = _input_identity("inp1")
+    inp2 = _input_identity("inp2")
+    _build_input_snapshot(store, inp1, pl.DataFrame({"x": [10]}))
+    _build_input_snapshot(store, inp2, pl.DataFrame({"x": [20]}))
+
+    node1 = _slot(tmp_path, "n1").identity("s1")
+    node2 = _slot(tmp_path, "n2").identity("s1")
+    _published_id(store, node1, pl.DataFrame({"a": [1]}))
+    _published_id(store, node2, pl.DataFrame({"a": [2]}))
+    _set_last_used(store, node1, 100.0)
+    _set_last_used(store, node2, 200.0)
+
+    node3 = _slot(tmp_path, "n3").identity("s1")
+    _published_id(store, node3, pl.DataFrame({"a": [3]}))
+
+    assert store.slot_status(_slot(tmp_path, "n1"), "s1").state == "missing"
+    assert store.slot_status(_slot(tmp_path, "n2"), "s1").state == "current"
+    assert store.slot_status(_slot(tmp_path, "n3"), "s1").state == "current"
+
+    with store.lease(inp1) as gen1:
+        assert_frame_equal(gen1.lazy_frame.collect(), pl.DataFrame({"x": [10]}))
+    with store.lease(inp2) as gen2:
+        assert_frame_equal(gen2.lazy_frame.collect(), pl.DataFrame({"x": [20]}))
+
+
+def test_each_budget_counts_only_its_own_bytes_including_staging(tmp_path: Path) -> None:
+    store = NodeSnapshotStore(tmp_path)
+
+    node_gen_id = _slot(tmp_path, "gen_node").identity("s1")
+    _published_id(store, node_gen_id, pl.DataFrame({"a": [1] * 50}))
+
+    art_node_extra = store.stage_node_output(node_gen_id)
+    pl.DataFrame({"extra": [2] * 50}).write_parquet(art_node_extra.part_path(0))
+
+    node_staging_only = _slot(tmp_path, "stage_only_node").identity("s1")
+    art_node_only = store.stage_node_output(node_staging_only)
+    pl.DataFrame({"only": [3] * 50}).write_parquet(art_node_only.part_path(0))
+
+    inp_gen_id = _input_identity("gen_inp")
+    _build_input_snapshot(store, inp_gen_id, pl.DataFrame({"x": [1] * 50}))
+
+    staging_inp_extra = store.identity_path(inp_gen_id) / ".staging-retextra"
+    staging_inp_extra.mkdir()
+    pl.DataFrame({"extra_in": [2] * 50}).write_parquet(staging_inp_extra / "part-00000.parquet")
+
+    inp_staging_only = _input_identity("stage_only_inp")
+    staging_only_dir = store.identity_path(inp_staging_only)
+    staging_only_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(staging_only_dir / "provider", "file\n")
+    staging_inp_only = staging_only_dir / ".staging-retstage"
+    staging_inp_only.mkdir()
+    pl.DataFrame({"only_in": [3] * 50}).write_parquet(staging_inp_only / "part-00000.parquet")
+
+    _node_count, node_bytes = store._bucket_usage("node_output")
+    _inp_count, inp_bytes = store._bucket_usage("input")
+    assert node_bytes > 0
+    assert inp_bytes > 0
+
+    # Add large staging to input side so inp_bytes alone exceeds node limit
+    art_node_overflow_check = store.identity_path(inp_staging_only) / ".staging-huge"
+    art_node_overflow_check.mkdir()
+    (art_node_overflow_check / "data.parquet").write_bytes(b"x" * 20_000)
+    _inp_count, inp_bytes = store._bucket_usage("input")
+
+    # Pin node output limit: node side fits, but input bytes alone would exceed it
+    store.node_output_max_bytes = node_bytes + 2000
+    assert inp_bytes > store.node_output_max_bytes
+
+    new_node_id = _slot(tmp_path, "new_node_ok").identity("s1")
+    with _publish(store, new_node_id, pl.DataFrame({"new_node": [8] * 10})) as pub:
+        assert pub.outcome == "published"
+
+    # Add large staging to node side so node_bytes alone exceeds input limit
+    node_huge = store.identity_path(node_staging_only) / ".staging-huge-node"
+    node_huge.mkdir()
+    (node_huge / "data.parquet").write_bytes(b"x" * 40_000)
+    _node_count, node_bytes = store._bucket_usage("node_output")
+
+    # Pin input limit: input side fits, but node bytes alone would exceed it
+    store.max_bytes = inp_bytes + 2000
+    assert node_bytes > store.max_bytes
+
+    new_inp_id = _input_identity("new_inp_ok")
+    _build_input_snapshot(store, new_inp_id, pl.DataFrame({"new_in": [9] * 10}))
+    with store.lease(new_inp_id) as gen:
+        assert_frame_equal(gen.lazy_frame.collect(), pl.DataFrame({"new_in": [9] * 10}))
+
+    # A publication whose own bucket overflows is still refused:
+    _inp_count, current_inp_bytes = store._bucket_usage("input")
+    store.max_bytes = current_inp_bytes + 100
+    overflow_inp = _input_identity("overflow_inp")
+    with pytest.raises(source_cache_module.SourceCacheQuotaExceededError):
+        _build_input_snapshot(store, overflow_inp, pl.DataFrame({"ov": [1] * 50}))
+
+    # Node side: pin existing candidates or make them unevictable by leasing them
+    _node_count, current_node_bytes = store._bucket_usage("node_output")
+    store.node_output_max_bytes = current_node_bytes + 100
+    with (
+        store.lease(node_gen_id),
+        store.lease(new_node_id),
+    ):
+        overflow_node = _slot(tmp_path, "overflow_node").identity("s1")
+        with pytest.raises(NodeSnapshotQuotaRejectedError) as raised:
+            _publish(store, overflow_node, pl.DataFrame({"ov_node": [1] * 50}))
+        raised.value.artifact.close()
+
+    # The other bucket's snapshots are untouched afterwards
+    with store.lease(node_gen_id) as leased_node:
+        assert_frame_equal(leased_node.lazy_frame.collect(), pl.DataFrame({"a": [1] * 50}))
+    with store.lease(inp_gen_id) as leased_inp:
+        assert_frame_equal(leased_inp.lazy_frame.collect(), pl.DataFrame({"x": [1] * 50}))
+
+
+def test_an_identity_whose_marker_is_unreadable_is_charged_to_both_budgets(
+    tmp_path: Path,
+) -> None:
+    # Note: this file's existing corruption helper (_corrupt_latest) overwrites
+    # Parquet data and leaves the marker readable, so it does not exercise this.
+    store = NodeSnapshotStore(tmp_path)
+    slot = _slot(tmp_path, "unreadable_marker")
+    identity = slot.identity("s1")
+
+    _published_id(store, identity, pl.DataFrame({"a": [1] * 50}))
+    gen_id = store._current_generation_id(identity.digest)
+    assert gen_id is not None
+    gen_dir = store._generation_dir(identity.digest, gen_id)
+    gen_size = source_cache_module.generation_bytes(gen_dir)
+    assert gen_size > 0
+
+    # Corrupt the marker file
+    marker_path = store.identity_path(identity) / "provider"
+    assert marker_path.exists()
+    marker_path.write_text("unknown_provider_value\n", encoding="utf-8")
+    assert classify_identity_marker(store.identity_path(identity)) == "unknown"
+
+    node_count, node_bytes = store._bucket_usage("node_output")
+    inp_count, inp_bytes = store._bucket_usage("input")
+    assert node_count >= 1
+    assert node_bytes >= gen_size
+    assert inp_count >= 1
+    assert inp_bytes >= gen_size
+
+    # Real admission in both buckets sees the unreadable identity's bytes and count:
+    # 1. Input bucket: building an input snapshot sees the unreadable identity
+    inp_id = _input_identity("inp_charged_unknown")
+    inp_frame = pl.DataFrame({"x": [1] * 50})
+    store.max_generations = 1
+    with pytest.raises(source_cache_module.SourceCacheQuotaExceededError):
+        _build_input_snapshot(store, inp_id, inp_frame)
+    store.max_generations = 64
+
+    store.max_bytes = gen_size + 100
+    with pytest.raises(source_cache_module.SourceCacheQuotaExceededError):
+        _build_input_snapshot(store, inp_id, inp_frame)
+    store.max_bytes = 20 * 1024 * 1024 * 1024
+
+    # 2. Node-output bucket: publishing a new node output sees the unreadable identity
+    other_node_slot = _slot(tmp_path, "other_node")
+    other_node_ident = other_node_slot.identity("s1")
+    other_frame = pl.DataFrame({"b": [2] * 50})
+    store.node_output_max_generations = 1
+    with store.lease(identity):
+        with pytest.raises(NodeSnapshotQuotaRejectedError) as raised:
+            _publish(store, other_node_ident, other_frame)
+        raised.value.artifact.close()
+    store.node_output_max_generations = 512
+
+    store.node_output_max_bytes = gen_size + 100
+    with store.lease(identity):
+        with pytest.raises(NodeSnapshotQuotaRejectedError) as raised:
+            _publish(store, other_node_ident, other_frame)
+        raised.value.artifact.close()
+    store.node_output_max_bytes = 40 * 1024 * 1024 * 1024
+
+    # An explicit refresh of that identity large enough to exceed the limit without free
+    # credit is refused.
+    # Existing generation is 498 bytes; replacement is 1807 bytes.
+    # Correct accounting projection: 1807 bytes (counts the 498-byte unreadable
+    # generation and refunds it upon replacement: 498 - 498 + 1807 = 1807).
+    # Wrongly-credited projection: 1309 bytes (did not count the 498-byte
+    # generation, but subtracted it upon replacement anyway: 0 - 498 + 1807 = 1309).
+    # Setting node_output_max_bytes = 1500 sits strictly between the two projections:
+    # the correct accounting refuses (1807 > 1500), while the wrongly-credited
+    # projection would admit (1309 <= 1500).
+    store.node_output_max_bytes = 1500
+    large_frame = pl.DataFrame({"a": list(range(500))})
+    with pytest.raises(NodeSnapshotQuotaRejectedError) as raised:
+        _publish(store, identity, large_frame, explicit=True, refresh=True)
+    raised.value.artifact.close()
+
+
+def test_a_filesystem_error_during_admission_walk_fails_publication_and_preserves_generations(
+    tmp_path: Path,
+) -> None:
+    store = NodeSnapshotStore(tmp_path)
+    slot1 = _slot(tmp_path, "node1")
+    ident1 = slot1.identity("s1")
+    gen1_id = _published_id(store, ident1, pl.DataFrame({"a": [1] * 50}))
+    gen1_dir = store._generation_dir(ident1.digest, gen1_id)
+    part_files = tuple(gen1_dir.glob("part-*.parquet"))
+    assert len(part_files) == 1
+    part_file = part_files[0]
+    gen1_size = source_cache_module.generation_bytes(gen1_dir)
+    assert gen1_size > 0
+
+    inp_id = _input_identity("inp1")
+    _build_input_snapshot(store, inp_id, pl.DataFrame({"x": [10, 20, 30]}))
+
+    slot2 = _slot(tmp_path, "node2")
+    ident2 = slot2.identity("s2")
+    store.node_output_max_bytes = gen1_size + 100
+
+    target_norm = os.path.normcase(str(part_file))
+    orig_stat = Path.stat
+
+    def selective_stat(self: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if os.path.normcase(str(self)) == target_norm:
+            raise PermissionError(f"simulated permission denied on {self.name}")
+        return orig_stat(self, *args, **kwargs)
+
+    with patch.object(Path, "stat", selective_stat):
+        with pytest.raises(PermissionError, match="simulated permission denied"):
+            _publish(store, ident2, pl.DataFrame({"b": [2] * 50}))
+
+    assert store._current_generation_id(ident2.digest) is None
+
+    assert store._current_generation_id(ident1.digest) == gen1_id
+    with store.lease(ident1) as leased1:
+        assert_frame_equal(leased1.lazy_frame.collect(), pl.DataFrame({"a": [1] * 50}))
+
+    with store.lease(inp_id) as leased_inp:
+        assert_frame_equal(leased_inp.lazy_frame.collect(), pl.DataFrame({"x": [10, 20, 30]}))
+
+
+def test_a_generation_with_unreadable_metadata_stays_in_its_marked_budget(
+    tmp_path: Path,
+) -> None:
+    store = NodeSnapshotStore(tmp_path)
+    slot = _slot(tmp_path, "corrupt_meta")
+    identity = slot.identity("s1")
+
+    _published_id(store, identity, pl.DataFrame({"a": [1] * 50}))
+    gen_id = store._current_generation_id(identity.digest)
+    assert gen_id is not None
+    gen_dir = store._generation_dir(identity.digest, gen_id)
+    gen_size = source_cache_module.generation_bytes(gen_dir)
+    assert gen_size > 0
+
+    marker_path = store.identity_path(identity) / "provider"
+    assert marker_path.read_text(encoding="utf-8").strip() == "node_output"
+
+    (gen_dir / "meta.json").write_text("corrupted json {", encoding="utf-8")
+
+    node_count, node_bytes = store._bucket_usage("node_output")
+    inp_count, inp_bytes = store._bucket_usage("input")
+
+    assert node_count == 1
+    assert node_bytes == gen_size
+    assert inp_count == 0
+    assert inp_bytes == 0
+
+
+def test_the_node_output_quota_reads_its_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = NodeSnapshotStore(tmp_path)
+    assert store.node_output_max_bytes == 40 * 1024 * 1024 * 1024
+    assert store.node_output_max_generations == 512
+
+    monkeypatch.setenv("HAUTE_NODE_SNAPSHOT_MAX_BYTES", "2048")
+    monkeypatch.setenv("HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS", "16")
+    env_store = NodeSnapshotStore(tmp_path / "env")
+    assert env_store.node_output_max_bytes == 2048
+    assert env_store.node_output_max_generations == 16
+
+    override_store = NodeSnapshotStore(
+        tmp_path / "override",
+        node_output_max_bytes=4096,
+        node_output_max_generations=32,
+    )
+    assert override_store.node_output_max_bytes == 4096
+    assert override_store.node_output_max_generations == 32
+
+    monkeypatch.setenv("HAUTE_NODE_SNAPSHOT_MAX_BYTES", "invalid")
+    with pytest.raises(RuntimeError):
+        NodeSnapshotStore(tmp_path / "inv_bytes")
+    monkeypatch.setenv("HAUTE_NODE_SNAPSHOT_MAX_BYTES", "0")
+    with pytest.raises(RuntimeError):
+        NodeSnapshotStore(tmp_path / "zero_bytes")
+    monkeypatch.setenv("HAUTE_NODE_SNAPSHOT_MAX_BYTES", "2048")
+
+    monkeypatch.setenv("HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS", "-1")
+    with pytest.raises(RuntimeError):
+        NodeSnapshotStore(tmp_path / "neg_gen")
+    monkeypatch.undo()
+
+    for bad_bytes in (0, -1, True, False):
+        with pytest.raises(
+            ValueError, match="source-cache node_output_max_bytes must be a positive integer"
+        ):
+            NodeSnapshotStore(tmp_path / "bad_b", node_output_max_bytes=bad_bytes)  # type: ignore[arg-type]
+
+    for bad_gens in (0, -5, True, False):
+        with pytest.raises(
+            ValueError, match="source-cache node_output_max_generations must be a positive integer"
+        ):
+            NodeSnapshotStore(tmp_path / "bad_g", node_output_max_generations=bad_gens)  # type: ignore[arg-type]
+
+
+def test_marker_input_providers_match_data_input_types_and_exclude_node_output(
+    tmp_path: Path,
+) -> None:
+    expected_data_inputs = _DISCRIMINANTS[NodeType.DATA_INPUT][1]
+    assert source_cache_module.NODE_OUTPUT_PROVIDER not in expected_data_inputs
+    assert source_cache_module.KNOWN_INPUT_PROVIDERS == expected_data_inputs
+
+    for provider in expected_data_inputs:
+        provider_dir = tmp_path / f"input_{provider}"
+        provider_dir.mkdir()
+        (provider_dir / "provider").write_text(f"{provider}\n", encoding="utf-8")
+        assert classify_identity_marker(provider_dir) == "input"
+
+    node_out_dir = tmp_path / "node_out"
+    node_out_dir.mkdir()
+    (node_out_dir / "provider").write_text(
+        f"{source_cache_module.NODE_OUTPUT_PROVIDER}\n", encoding="utf-8"
+    )
+    assert classify_identity_marker(node_out_dir) == "node_output"
+    assert classify_identity_marker(node_out_dir) != "input"
+
+
+def test_the_node_output_quota_does_not_inherit_input_limits(tmp_path: Path) -> None:
+    store = NodeSnapshotStore(tmp_path, max_bytes=1024, max_generations=2)
+    assert store.max_bytes == 1024
+    assert store.max_generations == 2
+    assert store.node_output_max_bytes == 40 * 1024 * 1024 * 1024
+    assert store.node_output_max_generations == 512

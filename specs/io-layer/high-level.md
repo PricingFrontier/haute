@@ -123,9 +123,9 @@ Leases are process-local. A superseded generation is retired only after
 generation was published, so a reader in another process finishes its scan; an explicit
 clear and quota pressure reclaim immediately, the latter logged.
 
-Node outputs share the same store root, byte quota, generation cap, and environment
-variables as input snapshots, as a `node_output` provider. A node-output identity is a
-slot — pipeline source file, node, source, and execution semantics class — plus the node's
+Node outputs live in the same store as a `node_output` provider with their own budget. A
+node-output identity is a slot — pipeline source file, node, source, and execution
+semantics class — plus the node's
 checked data signature, so every signature of a node keeps its own generation and a
 reverted edit finds its earlier snapshot again. A per-slot index lists a slot's identities:
 for a requested signature the slot is `current` when that identity has a fresh generation,

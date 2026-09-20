@@ -231,8 +231,9 @@ an in-place or non-atomic fallback.
 Construction of a store handle inspects staging directories only. It recursively finds the
 newest activity timestamp and removes a directory only when that timestamp predates
 `HAUTE_INPUT_CACHE_STAGING_MAX_AGE_SECONDS`; stat failures and recent staging are preserved.
-Non-current generations are never startup-swept. Staging bytes are included in quota
-projection, excluding only the build currently being admitted.
+Non-current generations are never startup-swept. Staging bytes under an identity are
+included in that identity's budget projection, excluding only the build currently being
+admitted.
 
 ### Snapshot lease lifecycle
 
@@ -260,8 +261,17 @@ projection, excluding only the build currently being admitted.
 
 ### Node-output snapshots
 
-`src/haute/_node_snapshots.py` extends the store as `NodeSnapshotStore`, a subclass that
-delegates every non-`node_output` identity to `SourceCacheStore` unchanged.
+`src/haute/_node_snapshots.py` extends the store as `NodeSnapshotStore`, a subclass
+that delegates every non-`node_output` identity to `SourceCacheStore` unchanged.
+The store maintains two budgets: input snapshots, which is every provider that is
+not `node_output`, keeping `HAUTE_INPUT_CACHE_MAX_GENERATIONS` (64) and
+`HAUTE_INPUT_CACHE_MAX_BYTES` (20 GiB) and the `max_generations` / `max_bytes`
+constructor arguments; and node outputs, having
+`HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS` (512) and `HAUTE_NODE_SNAPSHOT_MAX_BYTES`
+(40 GiB) and the `node_output_max_generations` / `node_output_max_bytes`
+constructor arguments on `NodeSnapshotStore`, validated the way the existing
+pair is: a positive integer, a bool refused, an unusable environment value
+refused the same way.
 
 - **Identity.** `NodeSnapshotSlot(pipeline_source_file, node_id, source, semantics_class)`
   has a SHA-256 slot digest. `slot.identity(signature)` is a `SourceCacheIdentity` with
@@ -307,17 +317,24 @@ delegates every non-`node_output` identity to `SourceCacheStore` unchanged.
   `stage_node_output` under its plan's staging token and publishes it with
   `explicit=False`, continuing from the returned artifact whenever it is not published.
 - **Layout.** Node-output identities live beside input identities under
-  `.haute_cache/inputs/<identity digest>/` (`current.json`, `generations/<id>/`,
-  `.staging-<token>/`, `.retired-<hex>/`). Each generation's `meta.json` carries a
-  `node_output` block (metadata version 2: slot, slot digest, signature, `column_set` of
-  `"all"` or a sorted list, and `dependencies` as identity digest → generation id). The
-  per-slot index is `.haute_cache/inputs/.node-slots/<slot digest>.json` (identities and
-  the pinned identity), rewritten atomically under the lease lock. Locks live in
-  `.haute_cache/inputs/.locks/` (`publication-<identity digest>.lock`, `leases.lock`) and
-  process tokens in `.haute_cache/inputs/.processes/<token>.lock`. Lease markers are
-  `.lease-<12-hex token>` files directly in the generation directory, and last use is the
-  `meta.json` modification time; both keep the deepest path inside the traditional Windows
-  limit beneath long temporary roots.
+  `.haute_cache/inputs/<identity digest>/` (`provider`, `current.json`,
+  `generations/<id>/`, `.staging-<token>/`, `.retired-<hex>/`). A `provider`
+  file directly in the identity directory holds the provider name as one line,
+  written atomically as part of creating that directory before anything is
+  staged into it, by both paths that create one (a node-output staging allocation
+  and an input-snapshot build). An identity whose marker is missing, unreadable,
+  or not a provider the store knows is charged to both budgets, in generations
+  and bytes, so unreadable data is never free; it is never skipped. Each
+  generation's `meta.json` carries a `node_output` block (metadata version 2:
+  slot, slot digest, signature, `column_set` of `"all"` or a sorted list, and
+  `dependencies` as identity digest → generation id). The per-slot index is
+  `.haute_cache/inputs/.node-slots/<slot digest>.json` (identities and the pinned
+  identity), rewritten atomically under the lease lock. Locks live in
+  `.haute_cache/inputs/.locks/` (`publication-<identity digest>.lock`,
+  `leases.lock`) and process tokens in `.haute_cache/inputs/.processes/<token>.lock`.
+  Lease markers are `.lease-<12-hex token>` files directly in the generation
+  directory, and last use is the `meta.json` modification time; both keep the
+  deepest path inside the traditional Windows limit beneath long temporary roots.
 - **Status.** `latest_generation(identity)` validates the pointer's generation through the
   store's metadata/digest/verified-memo path and reports its columns, dependencies,
   freshness, retention, and last use. `slot_status(slot, signature)` is `current` or
@@ -351,14 +368,26 @@ delegates every non-`node_output` identity to `SourceCacheStore` unchanged.
   slot is already pinned), and retires the superseded generation when no live marker holds
   it. Any failure after the publisher's lease exists releases that lease before raising.
   The returned `NodeSnapshotPublication` holds the lease (or owns the artifact) until closed.
-- **Quota.** Admission projects published plus retained staging bytes, excluding the
-  artifact being admitted and subtracting the superseded generation when unheld. When over
-  the byte or count limit it lists unleased, unpinned node-output generations, non-current
-  first then by last use, and raises `NodeSnapshotQuotaRejectedError` (a
-  `SourceCacheQuotaExceededError` carrying the artifact) without evicting when even all of
-  them would not make room. Otherwise it retires candidates in order, re-checking markers at
-  the `evict_before_marker_check` fault point, removing an evicted current generation's
-  pointer and index entry, and logs `node_snapshot_evicted`.
+- **Quota.** What each budget counts: its own generations and their bytes, plus
+  the staging bytes under its identities, including an identity that holds
+  staging and no generation yet. An identity whose marker is missing,
+  unreadable, or not a known provider is charged to both budgets. Admission and
+  reclaiming read one budget: an input publication counts and reclaims within
+  the input budget, a node-output publication within the node-output budget,
+  and a node-output admission never counts or evicts an input snapshot.
+  Admission projects published plus retained staging bytes, excluding the
+  artifact being admitted, and the subtraction made for an unheld superseded
+  generation applies only to usage the projection actually counted. When over
+  the byte or count limit it lists unleased, unpinned node-output generations,
+  non-current first then by last use, and raises `NodeSnapshotQuotaRejectedError`
+  (a `SourceCacheQuotaExceededError` carrying the artifact) without evicting
+  when even all of them would not make room. Otherwise it retires candidates in
+  order, re-checking markers at the `evict_before_marker_check` fault point,
+  removing an evicted current generation's pointer and index entry, and logs
+  `node_snapshot_evicted`. Tests prove input snapshots do not consume
+  node-output slots and the mirror, a node-output admission retires only node
+  outputs, each budget counts its own bytes including staging, and
+  unclassifiable identities are charged to both budgets.
 - **Clear and pin.** `clear_slot(slot)` removes every indexed identity's pointer, retires
   each unheld generation, and deletes the index; `clear(identity)` does the same for one
   identity. `pin(identity)` pins a slot to an identity that has a current generation.
@@ -376,16 +405,42 @@ when that proof is readable and older than the configured threshold; a recent,
 racing, or unreadable tree remains. No generation directory is part of startup
 cleanup.
 
-Before publication, quota accounting totals every published Parquet plus every
-retained staging byte except the staging tree being admitted, then adds the
-new artifact and generation count. The old current generation for the same
-identity is subtracted only if locally unleased and not named in the build
+The store enforces two budgets: input snapshots, which is every provider that is
+not `node_output`, keeping `HAUTE_INPUT_CACHE_MAX_GENERATIONS` (64) and
+`HAUTE_INPUT_CACHE_MAX_BYTES` (20 GiB) and the `max_generations` / `max_bytes`
+constructor arguments; and node outputs, having
+`HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS` (512) and `HAUTE_NODE_SNAPSHOT_MAX_BYTES`
+(40 GiB) and the `node_output_max_generations` / `node_output_max_bytes`
+constructor arguments on `NodeSnapshotStore`, validated the way the existing
+pair is. An identity is classified by a `provider` file directly in the identity
+directory holding the provider name as one line, written atomically as part of
+creating that directory, before anything is staged into it, by both paths that
+create one. An identity whose marker is missing, unreadable, or not a provider
+the store knows is charged to both budgets, in generations and bytes, so
+unreadable data is never free; it is never skipped.
+
+Before publication, quota accounting reads one budget: an input publication
+counts and reclaims within the input budget, a node-output publication within
+the node-output budget, and a node-output admission never counts or evicts an
+input snapshot. What each budget counts is its own generations and their bytes,
+plus the staging bytes under its identities, including an identity that holds
+staging and no generation yet. Quota accounting totals those published bytes
+plus retained staging bytes under that budget's identities except the staging
+tree being admitted, then adds the new artifact and generation count. The
+subtraction both admission paths make for an unheld superseded generation
+applies only to usage the projection counted: the old current generation for the
+same identity is subtracted only if locally unleased and not named in the build
 context's `retained_generation_ids`, because successful pointer replacement
-makes it reclaimable; a retained id is a lease held by the supervising parent of
-a spawned build, which the child cannot see. No current generation for another identity
-is an eviction candidate. If the projection still exceeds byte or count limits,
-admission raises an actionable quota error and leaves every pointer/generation
-unchanged.
+makes it reclaimable (a retained id is a lease held by the supervising parent of
+a spawned build, which the child cannot see). Every input provider draws on one
+input budget, where publication past that budget is refused rather than evicting
+another identity's current generation: no current generation for another
+identity is an eviction candidate. If the projection still exceeds byte or count
+limits, admission raises an actionable quota error
+(`SourceCacheQuotaExceededError`) and leaves every pointer/generation unchanged.
+Tests prove that each budget counts its own bytes including staging, that every
+input provider draws on one input budget with oversized publications refused,
+and that an identity with an unreadable marker is charged to both budgets.
 
 Snapshot-mode execution contacts the configured provider only through automatic
 preparation, which is the explicit build path scheduled before planning under a hard cap.
@@ -724,7 +779,20 @@ failure sections above are the maintained answers.
   staged-artifact handover on rejection, pin inheritance and explicit pinning, no rehash
   on a second lease, named-generation leases through refresh and clear, validation only
   after the lease marker exists, malformed generation ids, the publisher's lease released
-  when its handoff fails, lease markers, and recorded metadata.
+  when its handoff fails, lease markers, recorded metadata, and the two-budget quota
+  scenarios: input snapshots not consuming node-output slots and the mirror
+  (`test_input_snapshots_do_not_consume_node_output_slots`,
+  `test_node_outputs_do_not_consume_input_snapshot_slots`); a
+  node-output admission retiring only node outputs
+  (`test_a_node_output_admission_never_evicts_an_input_snapshot`); each budget counting its own bytes
+  including staging (`test_each_budget_counts_only_its_own_bytes_including_staging`); every input
+  provider drawing on one input budget, where a publication past that budget is refused rather than
+  evicting another identity's current generation (`tests/test_source_cache.py`'s
+  `test_input_providers_share_one_budget`); an identity with an unreadable marker charged to both
+  budgets and an oversized refresh of it refused
+  (`test_an_identity_whose_marker_is_unreadable_is_charged_to_both_budgets`,
+  `test_a_generation_with_unreadable_metadata_stays_in_its_marked_budget`); and the new environment
+  variables being read and validated (`test_the_node_output_quota_reads_its_environment`).
 - `tests/test_node_snapshot_cross_process.py` covers two worker processes publishing one
   identity once, a paused reader in another process keeping its generation through
   eviction and clear, a killed reader's dead marker making its generation evictable, a
@@ -733,8 +801,10 @@ failure sections above are the maintained answers.
 - `tests/test_source_cache.py` additionally covers a build context with the parent-chosen
   pair staging under `.staging-<staging_token>` and publishing `generation_id`, beneath a
   temporary root long enough that a full-UUID staging name would exceed Windows'
-  traditional path limit; a context carrying only one of the pair being rejected; and
+  traditional path limit; a context carrying only one of the pair being rejected;
   `reconcile_unpublished` returning `published` for a current generation (nothing removed),
   removing an unreferenced renamed generation without touching the current one or another
   build's staging, removing the token's staging directory, and reporting `absent`
-  otherwise.
+  otherwise; and every input provider drawing on one input budget, where a publication past
+  that budget is refused rather than evicting another identity's current generation
+  (`test_input_providers_share_one_budget`).

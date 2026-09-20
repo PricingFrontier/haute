@@ -181,7 +181,7 @@ def test_a_paused_reader_keeps_its_generation_through_eviction_and_clear(
     results = ctx.Queue()
     release = ctx.Event()
     root = str(tmp_path)
-    store = NodeSnapshotStore(tmp_path, max_generations=1)
+    store = NodeSnapshotStore(tmp_path, node_output_max_generations=1)
     identity = _slot(root, "join").identity("s1")
     with _publish(store, identity, [1, 2, 3]):
         pass
@@ -217,7 +217,7 @@ def test_a_killed_readers_marker_is_dead_and_its_generation_becomes_evictable(
     results = ctx.Queue()
     release = ctx.Event()
     root = str(tmp_path)
-    store = NodeSnapshotStore(tmp_path, max_generations=1)
+    store = NodeSnapshotStore(tmp_path, node_output_max_generations=1)
     identity = _slot(root, "join").identity("s1")
     with _publish(store, identity, [1]):
         pass
@@ -249,7 +249,7 @@ def test_a_lease_paused_before_its_marker_blocks_eviction_and_keeps_the_generati
     resume = ctx.Event()
     finish = ctx.Event()
     root = str(tmp_path)
-    store = NodeSnapshotStore(tmp_path, max_generations=1)
+    store = NodeSnapshotStore(tmp_path, node_output_max_generations=1)
     identity = _slot(root, "join").identity("s1")
     with _publish(store, identity, [5]) as publication:
         generation_id = publication.generation.generation_id
@@ -298,7 +298,7 @@ def test_eviction_paused_before_its_marker_check_makes_a_waiting_lease_fail_clea
     resume = ctx.Event()
     finish = ctx.Event()
     root = str(tmp_path)
-    store = NodeSnapshotStore(tmp_path, max_generations=1)
+    store = NodeSnapshotStore(tmp_path, node_output_max_generations=1)
     identity = _slot(root, "join").identity("s1")
     with _publish(store, identity, [5]) as publication:
         generation_id = publication.generation.generation_id

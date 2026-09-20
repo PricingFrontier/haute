@@ -50,6 +50,7 @@ from haute._cache import (
     graph_fingerprint,
 )
 from haute._chunked_writes import part_name, part_paths, scan_parts
+from haute._env import int_env
 from haute._execution_context import ExecutionProfile
 from haute._file_lock import _acquire_file_lock, _release_file_lock
 from haute._file_ops import atomic_write_text, remove_tree
@@ -69,9 +70,11 @@ from haute._source_cache import (
     SourceCacheMetadata,
     SourceCacheQuotaExceededError,
     SourceCacheStore,
+    _ensure_identity_marker,
     _validate_generation_id,
     _validate_staging_token,
     _verification_key,
+    classify_identity_marker,
     describe_parts,
     generation_bytes,
     new_staging_token,
@@ -83,6 +86,8 @@ logger = get_logger(component="node_snapshots")
 NODE_SNAPSHOT_METADATA_VERSION = 2
 NODE_SNAPSHOT_EXECUTION_SEMANTICS_VERSION = "node-snapshot:v1"
 BOUNDED_SEMANTICS_CLASS = "bounded"
+DEFAULT_NODE_SNAPSHOT_MAX_BYTES = 40 * 1024 * 1024 * 1024
+DEFAULT_NODE_SNAPSHOT_MAX_GENERATIONS = 512
 _SLOT_INDEX_SCHEMA_VERSION = 1
 _LAST_USED_UPDATE_INTERVAL_SECONDS = 60.0
 # Lease markers sit directly in the generation directory under short names:
@@ -566,6 +571,8 @@ class NodeSnapshotStore(SourceCacheStore):
         max_bytes: int | None = None,
         max_generations: int | None = None,
         retire_grace_seconds: float | None = None,
+        node_output_max_bytes: int | None = None,
+        node_output_max_generations: int | None = None,
     ) -> None:
         super().__init__(
             root,
@@ -573,6 +580,31 @@ class NodeSnapshotStore(SourceCacheStore):
             max_generations=max_generations,
             retire_grace_seconds=retire_grace_seconds,
         )
+        if node_output_max_bytes is None:
+            node_output_max_bytes = int_env(
+                "HAUTE_NODE_SNAPSHOT_MAX_BYTES",
+                DEFAULT_NODE_SNAPSHOT_MAX_BYTES,
+            )
+        if (
+            isinstance(node_output_max_bytes, bool)
+            or not isinstance(node_output_max_bytes, int)
+            or node_output_max_bytes <= 0
+        ):
+            raise ValueError("source-cache node_output_max_bytes must be a positive integer")
+        self.node_output_max_bytes = node_output_max_bytes
+
+        if node_output_max_generations is None:
+            node_output_max_generations = int_env(
+                "HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS",
+                DEFAULT_NODE_SNAPSHOT_MAX_GENERATIONS,
+            )
+        if (
+            isinstance(node_output_max_generations, bool)
+            or not isinstance(node_output_max_generations, int)
+            or node_output_max_generations <= 0
+        ):
+            raise ValueError("source-cache node_output_max_generations must be a positive integer")
+        self.node_output_max_generations = node_output_max_generations
         self._locks_dir = self.inputs_root / ".locks"
         self._processes_dir = self.inputs_root / ".processes"
         self._slots_dir = self.inputs_root / ".node-slots"
@@ -1123,6 +1155,7 @@ class NodeSnapshotStore(SourceCacheStore):
         )
         identity_dir = self.identity_path(identity)
         identity_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_identity_marker(identity_dir, identity.provider)
         staging = identity_dir / f".staging-{token}"
         staging.mkdir()
         return NodeSnapshotArtifact(identity, staging)
@@ -1369,23 +1402,28 @@ class NodeSnapshotStore(SourceCacheStore):
         the lock is released; raises :class:`NodeSnapshotQuotaRejectedError`
         without evicting anything when even full eviction cannot make room.
         """
-        size = self._generation_bytes() + self._staging_bytes(exclude=artifact.directory)
-        count = self._generation_count()
-        if superseded_id is not None:
+        count, size = self._bucket_usage("node_output", exclude=artifact.directory)
+        if superseded_id is not None and classify_identity_marker(self.identity_path(identity)) in {
+            "node_output",
+            "unknown",
+        }:
             superseded_dir = self._generation_dir(identity.digest, superseded_id)
             if superseded_dir.is_dir() and not self._has_live_holders_locked(superseded_dir):
                 size -= generation_bytes(superseded_dir)
                 count -= 1
         projected_size = size + new_size_bytes
         projected_count = count + 1
-        if projected_size <= self.max_bytes and projected_count <= self.max_generations:
+        if (
+            projected_size <= self.node_output_max_bytes
+            and projected_count <= self.node_output_max_generations
+        ):
             return []
 
         candidates = self._eviction_candidates_locked(exclude=(identity.digest, superseded_id))
         reclaimable_size = sum(candidate[2] for candidate in candidates)
         if (
-            projected_size - reclaimable_size > self.max_bytes
-            or projected_count - len(candidates) > self.max_generations
+            projected_size - reclaimable_size > self.node_output_max_bytes
+            or projected_count - len(candidates) > self.node_output_max_generations
         ):
             raise NodeSnapshotQuotaRejectedError(
                 "source-cache quota exceeded: pinned and in-use snapshots are kept until "
@@ -1395,7 +1433,10 @@ class NodeSnapshotStore(SourceCacheStore):
             )
         retired: list[Path] = []
         for identity_digest, generation_id, generation_size, _order in candidates:
-            if projected_size <= self.max_bytes and projected_count <= self.max_generations:
+            if (
+                projected_size <= self.node_output_max_bytes
+                and projected_count <= self.node_output_max_generations
+            ):
                 break
             _fault_point("evict_before_marker_check")
             generation_dir = self._generation_dir(identity_digest, generation_id)
@@ -1420,7 +1461,10 @@ class NodeSnapshotStore(SourceCacheStore):
                 size_bytes=generation_size,
                 was_current=was_current,
             )
-        if projected_size > self.max_bytes or projected_count > self.max_generations:
+        if (
+            projected_size > self.node_output_max_bytes
+            or projected_count > self.node_output_max_generations
+        ):
             # A candidate gained a live holder between selection and retirement.
             self._delete_retired(retired)
             raise NodeSnapshotQuotaRejectedError(

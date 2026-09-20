@@ -591,7 +591,7 @@ def test_quota_rejected_captures_serve_the_write(
     from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotSlot
     from haute.executor import write_data_output
 
-    full = NodeSnapshotStore(project, max_generations=1)
+    full = NodeSnapshotStore(project, node_output_max_generations=1)
     # One pinned generation of an unrelated slot fills the quota.
     filler = NodeSnapshotSlot(str(project / "other.py"), "filler", "batch", "bounded").identity(
         "filler-signature"

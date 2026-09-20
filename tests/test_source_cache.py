@@ -1296,3 +1296,24 @@ def test_quota_sums_parts(tmp_path: Path) -> None:
                 builder,
                 context=_context(),
             )
+
+
+def test_input_providers_share_one_budget(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path, max_generations=1)
+    file_id = SourceCacheIdentity(provider="file", descriptor={"path": "first.parquet"})
+    file_df = pl.DataFrame({"a": [1, 2, 3]})
+    store.build(file_id, _LazyBuilder(file_df.lazy()), context=_context())
+
+    with store.lease(file_id) as leased:
+        assert_frame_equal(leased.lazy_frame.collect(), file_df)
+
+    db_id = SourceCacheIdentity(
+        provider="database",
+        descriptor={"connection": "DB_URL", "query": "SELECT * FROM t"},
+    )
+    with pytest.raises(SourceCacheQuotaExceededError):
+        store.build(db_id, _LazyBuilder(pl.DataFrame({"b": [4, 5]}).lazy()), context=_context())
+
+    with store.lease(file_id) as leased:
+        assert_frame_equal(leased.lazy_frame.collect(), file_df)
+    assert store.open_generation(file_id).generation_id is not None

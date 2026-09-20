@@ -48,6 +48,9 @@ _DEFAULT_RETIRE_GRACE_SECONDS = 30 * 60
 # Provider of node-output snapshots; their publication, leases, and retirement
 # live in ``haute._node_snapshots``.
 NODE_OUTPUT_PROVIDER = "node_output"
+CacheBucket = Literal["node_output", "input"]
+IdentityClassification = Literal["node_output", "input", "unknown"]
+KNOWN_INPUT_PROVIDERS = frozenset({"file", "lakehouse", "database", "databricks", "inline"})
 
 logger = get_logger(component="source_cache")
 
@@ -294,6 +297,36 @@ def generation_bytes(generation_dir: Path) -> int:
         except FileNotFoundError:
             continue
     return total
+
+
+def _ensure_identity_marker(identity_dir: Path, provider: str) -> None:
+    marker = identity_dir / "provider"
+    if not marker.exists():
+        atomic_write_text(marker, f"{provider}\n")
+
+
+def classify_identity_marker(identity_dir: Path) -> IdentityClassification:
+    """Classify an identity directory's budget bucket from its provider marker.
+
+    Answers ``"node_output"``, ``"input"``, or ``"unknown"``. A missing,
+    unreadable, or unrecognised marker answers ``"unknown"``.
+    """
+    marker = identity_dir / "provider"
+    try:
+        if not marker.is_file() or marker.is_symlink():
+            return "unknown"
+        text = marker.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return "unknown"
+    lines = text.splitlines()
+    if len(lines) != 1:
+        return "unknown"
+    provider = lines[0].strip()
+    if provider == NODE_OUTPUT_PROVIDER:
+        return "node_output"
+    if provider in KNOWN_INPUT_PROVIDERS:
+        return "input"
+    return "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -731,41 +764,83 @@ class SourceCacheStore:
                 writer.close()
         return {}
 
-    def _generation_bytes(self) -> int:
-        total = 0
-        for path in self.inputs_root.glob("*/generations/*/part-*.parquet"):
+    def _bucket_usage(
+        self,
+        bucket: CacheBucket,
+        *,
+        exclude: Path | None = None,
+    ) -> tuple[int, int]:
+        """Return (generation_count, total_bytes) for *bucket*.
+
+        Performs one walk over the identity directories under ``inputs_root``.
+        An identity classified as *bucket* or as ``"unknown"`` is counted in
+        both generations and bytes (generation parts plus staging under those
+        identities, excluding *exclude*).
+        """
+        count = 0
+        bytes_total = 0
+        try:
+            entries = tuple(self.inputs_root.iterdir())
+        except FileNotFoundError:
+            return 0, 0
+        for identity_dir in entries:
+            if not identity_dir.is_dir() or identity_dir.is_symlink():
+                continue
+            classification = classify_identity_marker(identity_dir)
+            if classification != bucket and classification != "unknown":
+                continue
+
+            generations_dir = identity_dir / "generations"
             try:
-                total += path.stat().st_size
+                gen_dirs = tuple(generations_dir.iterdir())
             except FileNotFoundError:
-                continue
-        return total
+                gen_dirs = ()
+            for gen_dir in gen_dirs:
+                if not gen_dir.is_dir() or gen_dir.is_symlink():
+                    continue
+                has_meta = False
+                try:
+                    for entry in gen_dir.iterdir():
+                        if entry.name == "meta.json" and not entry.is_symlink() and entry.is_file():
+                            has_meta = True
+                        elif (
+                            is_part_name(entry.name) and not entry.is_symlink() and entry.is_file()
+                        ):
+                            try:
+                                bytes_total += entry.stat().st_size
+                            except FileNotFoundError:
+                                pass
+                except FileNotFoundError:
+                    continue
+                if has_meta:
+                    count += 1
 
-    def _staging_bytes(self, *, exclude: Path | None = None) -> int:
-        total = 0
-        for staging in self.inputs_root.glob("*/.staging-*"):
-            if (
-                not staging.is_dir()
-                or staging.is_symlink()
-                or (exclude is not None and staging == exclude)
-            ):
-                continue
-            for root, directories, files in os.walk(staging, followlinks=False):
-                root_path = Path(root)
-                directories[:] = [
-                    name for name in directories if not (root_path / name).is_symlink()
-                ]
-                for name in files:
-                    path = root_path / name
-                    if path.is_symlink():
-                        continue
-                    try:
-                        total += path.stat().st_size
-                    except FileNotFoundError:
-                        continue
-        return total
-
-    def _generation_count(self) -> int:
-        return sum(1 for _ in self.inputs_root.glob("*/generations/*/meta.json"))
+            try:
+                staging_entries = tuple(identity_dir.iterdir())
+            except FileNotFoundError:
+                staging_entries = ()
+            for staging in staging_entries:
+                if (
+                    not staging.name.startswith(".staging-")
+                    or not staging.is_dir()
+                    or staging.is_symlink()
+                    or (exclude is not None and staging == exclude)
+                ):
+                    continue
+                for root, directories, files in os.walk(staging, followlinks=False):
+                    root_path = Path(root)
+                    directories[:] = [
+                        name for name in directories if not (root_path / name).is_symlink()
+                    ]
+                    for name in files:
+                        file_path = root_path / name
+                        if file_path.is_symlink():
+                            continue
+                        try:
+                            bytes_total += file_path.stat().st_size
+                        except FileNotFoundError:
+                            continue
+        return count, bytes_total
 
     def _admit_publication_within_quota(
         self,
@@ -775,22 +850,22 @@ class SourceCacheStore:
         staging_path: Path,
         retained_generation_ids: frozenset[str] = frozenset(),
     ) -> None:
-        current_size = self._generation_bytes() + self._staging_bytes(exclude=staging_path)
-        current_count = self._generation_count()
+        current_count, current_size = self._bucket_usage("input", exclude=staging_path)
         reclaimable = 0
         reclaimable_count = 0
-        try:
-            current_id = self._read_pointer(identity)
-            current_dir = self.identity_path(identity) / "generations" / current_id
-            if (
-                self._leases.get((identity.digest, current_id), 0) == 0
-                and current_id not in retained_generation_ids
-                and current_dir.is_dir()
-            ):
-                reclaimable = generation_bytes(current_dir)
-                reclaimable_count = 1
-        except (FileNotFoundError, SourceCacheCorruptError):
-            pass
+        if classify_identity_marker(self.identity_path(identity)) in {"input", "unknown"}:
+            try:
+                current_id = self._read_pointer(identity)
+                current_dir = self.identity_path(identity) / "generations" / current_id
+                if (
+                    self._leases.get((identity.digest, current_id), 0) == 0
+                    and current_id not in retained_generation_ids
+                    and current_dir.is_dir()
+                ):
+                    reclaimable = generation_bytes(current_dir)
+                    reclaimable_count = 1
+            except (FileNotFoundError, SourceCacheCorruptError):
+                pass
 
         projected_bytes = current_size - reclaimable + new_size_bytes
         projected_count = current_count - reclaimable_count + 1
@@ -827,6 +902,8 @@ class SourceCacheStore:
                 except (FileNotFoundError, SourceCacheLegacyLayoutError):
                     pass
             identity_dir = self.identity_path(identity)
+            identity_dir.mkdir(parents=True, exist_ok=True)
+            _ensure_identity_marker(identity_dir, identity.provider)
             generations_dir = identity_dir / "generations"
             generations_dir.mkdir(parents=True, exist_ok=True)
             # Keep the staging sibling deliberately short: ``atomic_write_text``

@@ -468,7 +468,7 @@ def test_quota_full_sampled_join_computed_once(project: Path) -> None:
             explicit=True,
             profile=ExecutionProfile.NODE_SNAPSHOT,
         ).close()
-    full = NodeSnapshotStore(project, max_generations=2)
+    full = NodeSnapshotStore(project, node_output_max_generations=2)
 
     with _planned(graph, full, required={"T": ["id", "r", "d"]}) as (_plan, context, execute):
         output, calls = execute()
@@ -1079,7 +1079,7 @@ def test_model_score_quota_rejection_keeps_scored_file(
     from haute._node_snapshots import NodeSnapshotSlot
 
     graph = _scored_graph(project)
-    full = NodeSnapshotStore(project, max_generations=1)
+    full = NodeSnapshotStore(project, node_output_max_generations=1)
     # One pinned generation of an unrelated slot fills the quota.
     filler = NodeSnapshotSlot(str(project / "other.py"), "filler", "batch", "bounded").identity(
         "filler-signature"

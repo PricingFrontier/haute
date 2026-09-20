@@ -348,7 +348,7 @@ def test_eager_quota_rejected_capture_continues_from_own_artifact(
 ) -> None:
     graph = _join_graph(project)
     identity = _identity(NodeSnapshotStore(project), graph, "join")
-    full = NodeSnapshotStore(project, max_generations=1)
+    full = NodeSnapshotStore(project, node_output_max_generations=1)
     filler = NodeSnapshotSlot(str(project / "other.py"), "filler", "live", "bounded").identity(
         "filler-signature"
     )
@@ -954,7 +954,7 @@ def test_capture_then_clear_or_evict_never_serves_the_cached_response(
     if removal == "clear":
         store.clear(identity)
     else:
-        full = NodeSnapshotStore(project, max_generations=1)
+        full = NodeSnapshotStore(project, node_output_max_generations=1)
         filler = NodeSnapshotSlot(str(project / "other.py"), "filler", "live", "bounded").identity(
             "filler-signature"
         )
@@ -1193,7 +1193,7 @@ def test_partial_hit_under_captures_executes_as_a_miss(
 
     # Every capture is refused for quota, so each preview plans the capture
     # again and stores under the key it computed before executing.
-    full = NodeSnapshotStore(project, max_generations=1)
+    full = NodeSnapshotStore(project, node_output_max_generations=1)
     filler = NodeSnapshotSlot(str(project / "other.py"), "filler", "live", "bounded").identity(
         "filler-signature"
     )
