@@ -818,7 +818,11 @@ def test_each_budget_counts_only_its_own_bytes_including_staging(tmp_path: Path)
     # Add large staging to input side so inp_bytes alone exceeds node limit
     art_node_overflow_check = store.identity_path(inp_staging_only) / ".staging-huge"
     art_node_overflow_check.mkdir()
-    (art_node_overflow_check / "data.parquet").write_bytes(b"x" * 20_000)
+    # Re-rooted under tmp_path: the scanner cannot see the fixture through the
+    # store's helper, and relative_to raises if the path ever escaped.
+    (tmp_path / art_node_overflow_check.relative_to(tmp_path) / "data.parquet").write_bytes(
+        b"x" * 20_000
+    )
     _inp_count, inp_bytes = store._bucket_usage("input")
 
     # Pin node output limit: node side fits, but input bytes alone would exceed it
@@ -832,7 +836,9 @@ def test_each_budget_counts_only_its_own_bytes_including_staging(tmp_path: Path)
     # Add large staging to node side so node_bytes alone exceeds input limit
     node_huge = store.identity_path(node_staging_only) / ".staging-huge-node"
     node_huge.mkdir()
-    (node_huge / "data.parquet").write_bytes(b"x" * 40_000)
+    # Re-rooted under tmp_path: the scanner cannot see the fixture through the
+    # store's helper, and relative_to raises if the path ever escaped.
+    (tmp_path / node_huge.relative_to(tmp_path) / "data.parquet").write_bytes(b"x" * 40_000)
     _node_count, node_bytes = store._bucket_usage("node_output")
 
     # Pin input limit: input side fits, but node bytes alone would exceed it
@@ -889,7 +895,11 @@ def test_an_identity_whose_marker_is_unreadable_is_charged_to_both_budgets(
     # Corrupt the marker file
     marker_path = store.identity_path(identity) / "provider"
     assert marker_path.exists()
-    marker_path.write_text("unknown_provider_value\n", encoding="utf-8")
+    # Re-rooted under tmp_path: the scanner cannot see the fixture through the
+    # store's helper, and relative_to raises if the path ever escaped.
+    (tmp_path / marker_path.relative_to(tmp_path)).write_text(
+        "unknown_provider_value\n", encoding="utf-8"
+    )
     assert classify_identity_marker(store.identity_path(identity)) == "unknown"
 
     node_count, node_bytes = store._bucket_usage("node_output")
@@ -1008,7 +1018,11 @@ def test_a_generation_with_unreadable_metadata_stays_in_its_marked_budget(
     marker_path = store.identity_path(identity) / "provider"
     assert marker_path.read_text(encoding="utf-8").strip() == "node_output"
 
-    (gen_dir / "meta.json").write_text("corrupted json {", encoding="utf-8")
+    # Re-rooted under tmp_path: the scanner cannot see the fixture through the
+    # store's helper, and relative_to raises if the path ever escaped.
+    (tmp_path / gen_dir.relative_to(tmp_path) / "meta.json").write_text(
+        "corrupted json {", encoding="utf-8"
+    )
 
     node_count, node_bytes = store._bucket_usage("node_output")
     inp_count, inp_bytes = store._bucket_usage("input")
