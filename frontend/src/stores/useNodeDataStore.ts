@@ -124,6 +124,11 @@ export interface NodeDataStore {
    */
   epoch: number
   /**
+   * Bounded record of snapshot generation ids announced to consumers, so a
+   * duplicated announcement is a no-op.
+   */
+  announcedCaptures: string[]
+  /**
    * Record an authoritative `point` payload, whichever consumer asked for it.
    * *identity* is the asking consumer's data identity, which its own reads of
    * `consumerSlots` are then gated on.
@@ -168,6 +173,12 @@ export interface NodeDataStore {
    * own capture — so every consumer asks the backend again.
    */
   bumpEpoch: () => void
+  /**
+   * Record snapshot generation ids announced to consumers and answer whether
+   * at least one was not already recorded, so a duplicated announcement is a
+   * no-op. Does not raise the epoch itself.
+   */
+  noteAnnouncedCaptures: (generationIds: string[]) => boolean
   reset: () => void
 }
 
@@ -212,13 +223,16 @@ function withJob(
   return { ...jobs, [slotKey]: job }
 }
 
-const useNodeDataStore = create<NodeDataStore>((set) => ({
+export const ANNOUNCED_CAPTURES_CAP = 256
+
+const useNodeDataStore = create<NodeDataStore>((set, get) => ({
   slots: {},
   jobs: {},
   profiles: {},
   profileJobs: {},
   profileFailures: {},
   consumerSlots: {},
+  announcedCaptures: [],
   epoch: 0,
 
   observePoint: (point, source, identity) =>
@@ -479,6 +493,28 @@ const useNodeDataStore = create<NodeDataStore>((set) => ({
 
   bumpEpoch: () => set((state) => ({ epoch: state.epoch + 1 })),
 
+  noteAnnouncedCaptures: (generationIds) => {
+    if (generationIds.length === 0) return false
+    const current = get().announcedCaptures
+    const existing = new Set(current)
+    const toAdd: string[] = []
+    for (const id of generationIds) {
+      if (!existing.has(id)) {
+        existing.add(id)
+        toAdd.push(id)
+      }
+    }
+    if (toAdd.length === 0) return false
+    const updated = [...current, ...toAdd]
+    set({
+      announcedCaptures:
+        updated.length > ANNOUNCED_CAPTURES_CAP
+          ? updated.slice(updated.length - ANNOUNCED_CAPTURES_CAP)
+          : updated,
+    })
+    return true
+  },
+
   // The epoch keeps counting through a reset, so a consumer whose graph did
   // not change still observes that its answer no longer belongs to this
   // document and asks again.
@@ -490,6 +526,7 @@ const useNodeDataStore = create<NodeDataStore>((set) => ({
       profileJobs: {},
       profileFailures: {},
       consumerSlots: {},
+      announcedCaptures: [],
       epoch: state.epoch + 1,
     })),
 }))

@@ -590,6 +590,26 @@ describe("API response guards", () => {
     ).toThrow(/port_label/)
   })
 
+  it.each([
+    ["an empty string", ""],
+    ["a whitespace-only string", "   "],
+    ["an omitted field", undefined],
+    ["a non-string value", 123],
+  ])(
+    "rejects a seed plan entry with %s generation_id",
+    (_label, invalidValue) => {
+      const fixture = loadUiContractFixture<{ seed_plan: Record<string, unknown>[] }>("preview_node")
+      const { generation_id: _omitted, ...entryWithoutGenId } = fixture.seed_plan[0]
+      const entry =
+        invalidValue === undefined
+          ? entryWithoutGenId
+          : { ...entryWithoutGenId, generation_id: invalidValue }
+      expect(() =>
+        parsePreviewNodeResponse({ ...fixture, seed_plan: [entry] }),
+      ).toThrow(/generation_id/)
+    },
+  )
+
   it("parses the inputs a preview would read", () => {
     expect(parsePreviewInputsResponse({ input_node_ids: ["policies", "quotes"] })).toEqual({
       input_node_ids: ["policies", "quotes"],

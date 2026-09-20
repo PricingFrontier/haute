@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
 
 import type { NodeDataPointResponse } from "../../api/types"
-import useNodeDataStore, { columnsCoverDemand } from "../useNodeDataStore"
+import useNodeDataStore, { columnsCoverDemand, ANNOUNCED_CAPTURES_CAP } from "../useNodeDataStore"
 
 function point(overrides: Partial<NodeDataPointResponse> = {}): NodeDataPointResponse {
   return {
@@ -288,3 +288,73 @@ describe("useNodeDataStore epoch for a preview's own capture", () => {
     expect(useNodeDataStore.getState().epoch).toBe(before + 1)
   })
 })
+
+describe("useNodeDataStore noteAnnouncedCaptures", () => {
+  beforeEach(() => {
+    useNodeDataStore.getState().reset()
+  })
+
+  it("records ids and answers unseen only the first time, and an empty list answers false", () => {
+    const store = useNodeDataStore.getState()
+    const beforeEpoch = store.epoch
+
+    expect(store.noteAnnouncedCaptures([])).toBe(false)
+    expect(useNodeDataStore.getState().announcedCaptures).toEqual([])
+    expect(useNodeDataStore.getState().epoch).toBe(beforeEpoch)
+
+    expect(store.noteAnnouncedCaptures(["gen-a", "gen-b"])).toBe(true)
+    expect(useNodeDataStore.getState().announcedCaptures).toEqual(["gen-a", "gen-b"])
+    expect(useNodeDataStore.getState().epoch).toBe(beforeEpoch)
+
+    // Repeated announcements of the same ids return false and leave the record unchanged
+    expect(store.noteAnnouncedCaptures(["gen-a"])).toBe(false)
+    expect(store.noteAnnouncedCaptures(["gen-b"])).toBe(false)
+    expect(store.noteAnnouncedCaptures(["gen-a", "gen-b"])).toBe(false)
+    expect(useNodeDataStore.getState().announcedCaptures).toEqual(["gen-a", "gen-b"])
+
+    // A batch containing at least one unseen id answers true and records the new id
+    expect(store.noteAnnouncedCaptures(["gen-a", "gen-c"])).toBe(true)
+    expect(useNodeDataStore.getState().announcedCaptures).toEqual(["gen-a", "gen-b", "gen-c"])
+    expect(useNodeDataStore.getState().epoch).toBe(beforeEpoch)
+
+    expect(store.noteAnnouncedCaptures(["gen-c"])).toBe(false)
+  })
+
+  it("drops the oldest ids past the cap so announcing an evicted id again answers true", () => {
+    const store = useNodeDataStore.getState()
+    const ids = Array.from({ length: ANNOUNCED_CAPTURES_CAP }, (_, i) => `gen-${i}`)
+
+    expect(store.noteAnnouncedCaptures(ids)).toBe(true)
+    expect(useNodeDataStore.getState().announcedCaptures.length).toBe(ANNOUNCED_CAPTURES_CAP)
+    expect(useNodeDataStore.getState().announcedCaptures[0]).toBe("gen-0")
+
+    // Pushing one more id evicts the oldest (gen-0)
+    expect(store.noteAnnouncedCaptures(["gen-cap"])).toBe(true)
+    const state = useNodeDataStore.getState()
+    expect(state.announcedCaptures.length).toBe(ANNOUNCED_CAPTURES_CAP)
+    expect(state.announcedCaptures[0]).toBe("gen-1")
+    expect(state.announcedCaptures[ANNOUNCED_CAPTURES_CAP - 1]).toBe("gen-cap")
+    expect(state.announcedCaptures.includes("gen-0")).toBe(false)
+
+    // Announcing the evicted gen-0 answers true again
+    expect(store.noteAnnouncedCaptures(["gen-0"])).toBe(true)
+    // gen-cap was not evicted, so announcing it answers false
+    expect(store.noteAnnouncedCaptures(["gen-cap"])).toBe(false)
+  })
+
+  it("clears the record on reset while the epoch still rises", () => {
+    const store = useNodeDataStore.getState()
+    expect(store.noteAnnouncedCaptures(["gen-a"])).toBe(true)
+    expect(useNodeDataStore.getState().announcedCaptures).toEqual(["gen-a"])
+    const beforeEpoch = useNodeDataStore.getState().epoch
+
+    useNodeDataStore.getState().reset()
+
+    expect(useNodeDataStore.getState().announcedCaptures).toEqual([])
+    expect(useNodeDataStore.getState().epoch).toBe(beforeEpoch + 1)
+
+    // Announcing gen-a after reset answers true again
+    expect(useNodeDataStore.getState().noteAnnouncedCaptures(["gen-a"])).toBe(true)
+  })
+})
+

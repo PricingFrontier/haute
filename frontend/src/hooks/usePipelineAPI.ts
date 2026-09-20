@@ -144,9 +144,12 @@ function columnsEqual(a: ColumnDef[] | undefined, b: ColumnDef[] | undefined): b
   return columnsEqualByFingerprint(a, b)
 }
 
-/** True when a preview wrote a shared snapshot that other reads may now use. */
-function capturedSnapshots(result: NodeResult | PreviewNodeResponse): boolean {
-  return "seed_plan" in result && (result.seed_plan ?? []).some((entry) => entry.kind === "captured")
+/** Generation ids of shared snapshots this preview wrote that other reads may now use. */
+function capturedGenerationIds(result: NodeResult | PreviewNodeResponse): string[] {
+  if (!("seed_plan" in result) || !result.seed_plan) return []
+  return result.seed_plan
+    .filter((entry) => entry.kind === "captured")
+    .map((entry) => entry.generation_id)
 }
 
 function resultToPreview(
@@ -664,15 +667,16 @@ export default function usePipelineAPI({
     // fetched again.
     let storedPreview: PreviewData | null = null
     let storedAtEpoch = snapshotNodeDataEpoch
-    let rootCaptured = false
-    let propagationCaptured = false
-    const announceOwnCaptures = () => {
-      const { epoch, bumpEpoch } = useNodeDataStore.getState()
-      if (storedPreview && epoch === storedAtEpoch) {
+    let rootCapturedIds: string[] = []
+    const propagationCapturedIds: string[] = []
+    const announceOwnCaptures = (generationIds: string[]) => {
+      const { epoch, bumpEpoch, noteAnnouncedCaptures } = useNodeDataStore.getState()
+      const announced = noteAnnouncedCaptures(generationIds)
+      if (announced && storedPreview && epoch === storedAtEpoch) {
         storedAtEpoch = epoch + 1
         useNodeResultsStore.getState().advancePreviewEpoch(node.id, storedPreview, storedAtEpoch)
       }
-      bumpEpoch()
+      if (announced) bumpEpoch()
     }
 
     // Cascade downstream when a node's columns change. The snapshotted
@@ -809,7 +813,8 @@ export default function usePipelineAPI({
             signal: controller.signal,
           })
             .then((result) => {
-              if (capturedSnapshots(result)) propagationCaptured = true
+              const capturedIds = capturedGenerationIds(result)
+              if (capturedIds.length > 0) propagationCapturedIds.push(...capturedIds)
               if (!requestStillCurrent()) return
               if (!result.columns) {
                 settleNode(nodeId, false)
@@ -923,7 +928,7 @@ export default function usePipelineAPI({
           ).then(executePreview)
     previewRequest
       .then((result) => {
-        rootCaptured = capturedSnapshots(result)
+        rootCapturedIds = capturedGenerationIds(result)
         // Superseded by a newer preview request: that request owns the
         // panel surface and will reach its own terminal state.
         if (previewRequestSeq.current !== requestId) return
@@ -994,14 +999,14 @@ export default function usePipelineAPI({
       .finally(() => {
         // Announced before the preview stops being busy, so the refetch of a
         // stale displayed preview never sees the entry before its re-stamp.
-        if (rootCaptured) announceOwnCaptures()
+        if (rootCapturedIds.length > 0) announceOwnCaptures(rootCapturedIds)
         if (previewRequestSeq.current === requestId) {
           setPreviewBusy(false)
         }
         void propagationDone.finally(() => {
           // After the whole cascade: announcing earlier could refetch the
           // displayed preview and so abort the cascade under it.
-          if (propagationCaptured) announceOwnCaptures()
+          if (propagationCapturedIds.length > 0) announceOwnCaptures(propagationCapturedIds)
           if (previewAbort.current === controller) {
             previewAbort.current = null
           }
@@ -1186,7 +1191,8 @@ export default function usePipelineAPI({
           })
             .then((result) => {
               // The refreshed preview is requested after this, at the raised epoch.
-              if (capturedSnapshots(result)) useNodeDataStore.getState().bumpEpoch()
+              const { bumpEpoch, noteAnnouncedCaptures } = useNodeDataStore.getState()
+              if (noteAnnouncedCaptures(capturedGenerationIds(result))) bumpEpoch()
               if (!requestStillCurrent()) return
               if (result.columns) {
                 setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, upstream.id, result, snapshotSource, structuralVersion))
@@ -1333,8 +1339,8 @@ export default function usePipelineAPI({
         })
       })
       .then((result) => {
-        const captured = capturedSnapshots(result)
-        const { epoch, bumpEpoch } = useNodeDataStore.getState()
+        const { epoch, bumpEpoch, noteAnnouncedCaptures } = useNodeDataStore.getState()
+        const captured = noteAnnouncedCaptures(capturedGenerationIds(result))
         if (previewRequestSeq.current !== requestId) {
           if (captured) bumpEpoch()
           return

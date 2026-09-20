@@ -163,6 +163,7 @@ describe("usePipelineAPI — previews and the node-data epoch", () => {
       structuralVersion: 0,
     })
     useNodeResultsStore.setState({ previews: {}, columnCache: {} })
+    useNodeDataStore.getState().reset()
     mockLoad.mockReset().mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
     mockPreview.mockReset()
   })
@@ -311,5 +312,101 @@ describe("usePipelineAPI — previews and the node-data epoch", () => {
 
     expect(calls).toEqual(["A", "B"])
     expect(useNodeResultsStore.getState().getPreview("A")?.nodeDataEpoch).toBe(before + 1)
+  })
+
+  it("leaves the epoch unchanged when a response's captured generation ids were already announced", async () => {
+    mockPreview.mockResolvedValue(envelope("A", [captured("join")]))
+    const A = makeNode("A")
+    const B = makeNode("B")
+    const { result } = await renderLoaded([A, B])
+    const before = epoch()
+
+    act(() => result.current.fetchPreview(A, { debounceMs: 0 }))
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+    await settle(result)
+    expect(epoch()).toBe(before + 1)
+
+    // B returns the same generation id that was already announced by A.
+    mockPreview.mockResolvedValue(envelope("B", [captured("join")]))
+    act(() => result.current.fetchPreview(B, { debounceMs: 0 }))
+    await waitFor(() => expect(result.current.previewData?.nodeId).toBe("B"))
+    await settle(result)
+
+    expect(epoch()).toBe(before + 1)
+  })
+
+  it("raises the epoch once for a response naming a generation id not seen before", async () => {
+    mockPreview.mockResolvedValue(envelope("A", [captured("join-1")]))
+    const A = makeNode("A")
+    const B = makeNode("B")
+    const { result } = await renderLoaded([A, B])
+    const before = epoch()
+
+    act(() => result.current.fetchPreview(A, { debounceMs: 0 }))
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+    await settle(result)
+    expect(epoch()).toBe(before + 1)
+
+    // B returns a new generation id
+    mockPreview.mockResolvedValue(envelope("B", [captured("join-2")]))
+    act(() => result.current.fetchPreview(B, { debounceMs: 0 }))
+    await waitFor(() => expect(result.current.previewData?.nodeId).toBe("B"))
+    await settle(result)
+
+    expect(epoch()).toBe(before + 2)
+  })
+
+  it("keeps request epoch and does not refetch a frame preview whose capture was already announced, while stamping one past it for a new generation", async () => {
+    const A = makeNode("A")
+    const { result } = await renderLoaded([A])
+
+    // Pre-record the generation id so it has already been announced
+    useNodeDataStore.getState().noteAnnouncedCaptures(["join-generation"])
+    const before = epoch()
+
+    mockPreview.mockResolvedValue(envelope("A", [captured("join")]))
+    act(() => result.current.previewNodeFrame("A", "claims"))
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+    await settle(result)
+
+    // Epoch was not bumped, and frame preview was not refetched
+    expect(epoch()).toBe(before)
+    expect(mockPreview).toHaveBeenCalledTimes(1)
+
+    // Now a frame preview naming a new generation id
+    mockPreview.mockResolvedValue(envelope("A", [captured("new-join")]))
+    act(() => result.current.previewNodeFrame("A", "policies"))
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+    await settle(result)
+
+    // Stamped one past it, epoch bumped by 1, not refetched
+    expect(epoch()).toBe(before + 1)
+    expect(mockPreview).toHaveBeenCalledTimes(2)
+  })
+
+  it("raises the epoch again for a duplicate announcement after a store reset", async () => {
+    mockPreview.mockResolvedValue(envelope("A", [captured("join")]))
+    const A = makeNode("A")
+    const B = makeNode("B")
+    const { result } = await renderLoaded([A, B])
+    const before = epoch()
+
+    act(() => result.current.fetchPreview(A, { debounceMs: 0 }))
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+    await settle(result)
+    expect(epoch()).toBe(before + 1)
+
+    // Reset clears announced captures while raising epoch
+    act(() => useNodeDataStore.getState().reset())
+    const afterReset = epoch()
+    expect(afterReset).toBe(before + 2)
+
+    // Second announcement of the same response raises the epoch again
+    mockPreview.mockResolvedValue(envelope("B", [captured("join")]))
+    act(() => result.current.fetchPreview(B, { debounceMs: 0 }))
+    await waitFor(() => expect(result.current.previewData?.nodeId).toBe("B"))
+    await settle(result)
+
+    expect(epoch()).toBe(afterReset + 1)
   })
 })

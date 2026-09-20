@@ -1462,6 +1462,8 @@ again through the editor and save paths.
     duplicate announcement leaving the epoch untouched while a new generation
     raises it once; a frame preview not being refetched for a duplicate
     announcement; and a reset making the next announcement count again.
+    `frontend/src/hooks/__tests__/usePipelineAPI.nodeDataEpoch.test.ts` covers
+    the hook's announcement cases.
     The cache-identity fixtures in
     `frontend/src/hooks/__tests__/usePipelineAPI.gaps.test.ts` record the
     current epoch, so each varies only the dimension it tests.

@@ -549,6 +549,8 @@ same Vitest config.
   moved on never being written — including a clear that lands after it — the shared poller
   completing or failing a build, and the fence dropping every slot. The identity suite covers
   the instance original of an upstream instance and a moved port handle.
+  `frontend/src/stores/__tests__/useNodeDataStore.test.ts` covers the store's record of
+  announced captures.
 - **Delegated data-point builds** (`frontend/src/hooks/__tests__/useNodeDataCache.delegation.test.tsx`):
   two consumers of one delegated point drive the real `ensureInputSnapshots` helper against the
   API seam — a stale snapshot is rebuilt with `refresh` instead of being served as it is, a
