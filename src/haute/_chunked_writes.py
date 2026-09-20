@@ -224,7 +224,7 @@ class WriteRecipe:
         return self.apply(self.input)
 
 
-def _check_recipe_equivalence(recipe: WriteRecipe, frame: pl.LazyFrame) -> None:
+def check_recipe_equivalence(recipe: WriteRecipe, frame: pl.LazyFrame) -> None:
     # Limit: two in-memory frames of equal schema are indistinguishable this way.
     # It catches a recipe bound to a different plan, not one bound to an identical
     # plan over different data.
@@ -475,7 +475,7 @@ def write_parts(
         return _report(parts, "sliced", chunk_rows=rows, node_id=node_id)
 
     if recipe is not None and recipe.fn is not None:
-        _check_recipe_equivalence(recipe, frame)
+        check_recipe_equivalence(recipe, frame)
         if not sliceable(recipe.input):
             parts.sink(frame, conform=False)
             return _report(

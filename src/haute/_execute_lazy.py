@@ -15,7 +15,15 @@ import polars as pl
 import haute.execution as execution_facade
 import haute.projection as projection_planner
 from haute._builders import _passthrough_fn
-from haute._chunked_writes import ChunkedWrite, JoinRecipe, WriteRecipe, part_name, write_parts
+from haute._chunked_writes import (
+    ChunkedWrite,
+    JoinRecipe,
+    RecipeEquivalenceError,
+    WriteRecipe,
+    check_recipe_equivalence,
+    part_name,
+    write_parts,
+)
 from haute._column_lineage import analyze_polars_lineage
 from haute._contracts import Contract, get_column_contract
 from haute._edge_join import (
@@ -1967,6 +1975,56 @@ def _execute_lazy(
                 execution_context.checkpoint(label="before_node", node_id=nid)
             edge = decision.pass_through_edges[nid]
             selected = select_edge_source_output(lazy_outputs[edge.source], edge)
+            parent_recipe = built_write_recipes.get(edge.source)
+            if parent_recipe is not None:
+                if parent_recipe.fn is None:
+                    built_write_recipes[nid] = WriteRecipe(
+                        input=parent_recipe.input,
+                        fn=None,
+                        reason=parent_recipe.reason,
+                        blocking_operator=parent_recipe.blocking_operator,
+                    )
+                else:
+                    # Two conditions, each carrying its own weight. The identity test is the
+                    # multi-frame guard: ``select_edge_source_output`` returns the parent's own
+                    # object for a single-frame parent, and a different one for a sub-frame the
+                    # parent's recipe does not describe. The second is the replacement test,
+                    # because ``lazy_outputs[parent]`` is written after a capture or a cache
+                    # materialisation has already replaced the frame — every replacement site
+                    # records the node in ``cache_backed_node_ids``.
+                    link_proved = (
+                        selected is lazy_outputs[edge.source]
+                        and edge.source not in cache_backed_node_ids
+                    )
+                    if not link_proved:
+                        selected_lf = (
+                            selected if isinstance(selected, pl.LazyFrame) else selected.lazy()
+                        )
+                        try:
+                            check_recipe_equivalence(parent_recipe, selected_lf)
+                            link_proved = True
+                        except RecipeEquivalenceError:
+                            link_proved = False
+                    if link_proved:
+                        pass_through_edge = edge
+                        pass_through_config = node_map[nid].data.config
+
+                        def project(
+                            lf: pl.LazyFrame,
+                            target_edge: GraphEdge = pass_through_edge,
+                        ) -> pl.LazyFrame:
+                            res = _apply_edge_projection(target_edge, lf)[0]
+                            return res if isinstance(res, pl.LazyFrame) else res.lazy()
+
+                        def column_step(
+                            lf: pl.LazyFrame,
+                            config: dict[str, Any] = pass_through_config,
+                        ) -> pl.LazyFrame:
+                            out = _apply_selected_columns(lf, config)
+                            out = _apply_column_renames(out, config)
+                            return out if isinstance(out, pl.LazyFrame) else out.lazy()
+
+                        built_write_recipes[nid] = parent_recipe.then(project).then(column_step)
             passed: pl.LazyFrame | pl.DataFrame
             passed, _projected_cols = _apply_edge_projection(edge, selected)
             passed = _apply_selected_columns(passed, node_map[nid].data.config)

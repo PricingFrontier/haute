@@ -1603,3 +1603,554 @@ def test_captured_instance_node_referencing_original_source_names_is_input_slice
     assert capture["write_strategy"] == "input_sliced"
     assert capture["write_native_reason"] is None
     assert capture["write_blocking_operator"] is None
+
+
+def test_composed_passthrough_recipe_over_filtered_parent_is_input_sliced_and_equals_native(
+    project: Path, tmp_path: Path, store: NodeSnapshotStore
+) -> None:
+    from haute._chunked_writes import WriteRecipe, part_paths, scan_parts, sliceable, write_parts
+    from haute.executor import _compile_preamble, _pipeline_dir
+
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("other", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("A", NodeType.POLARS, _code("df = src.filter(pl.col('a') >= 0)")),
+            ("P", NodeType.MODELLING, {}),
+            (
+                "J",
+                NodeType.EDGE_JOIN,
+                {
+                    "how": "left",
+                    "on": "id",
+                    "selected_columns": ["id", "a", "d"],
+                },
+            ),
+            ("B", NodeType.POLARS, _code("df = J.filter(pl.col('a') >= 0)")),
+            ("T", NodeType.MODELLING, {}),
+        ],
+        [
+            GraphEdge(id="e_src", source="src", target="A"),
+            GraphEdge(id="e_ap", source="A", target="P"),
+            GraphEdge(id="e_pj", source="P", target="J", targetHandle="base"),
+            GraphEdge(id="e_oj", source="other", target="J", targetHandle="join"),
+            GraphEdge(id="e_jb", source="J", target="B"),
+            GraphEdge(id="e_bt", source="B", target="T"),
+        ],
+    )
+    custom_write_recipes: dict[str, WriteRecipe] = {}
+    calls: Counter[str] = Counter()
+    with _planned(
+        graph,
+        store,
+        target="T",
+        required={"T": ["id", "a", "d"], "P": ["a", "id"]},
+    ) as (
+        plan,
+        context,
+        _execute,
+    ):
+        outputs, *_ = execute_lazy_graph(
+            graph,
+            _counting_build(calls),
+            target_node_id="T",
+            preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+            or None,
+            source="live",
+            enforce_contracts=True,
+            required_columns_by_node={"T": ["id", "a", "d"], "P": ["a", "id"]},
+            execution_context=context,
+            prepare_inputs=False,
+            snapshot_plan=plan,
+            write_recipes=custom_write_recipes,
+            preserve_node_ids={"P"},
+        )
+    assert "P" in custom_write_recipes
+    recipe = custom_write_recipes["P"]
+    p_frame = outputs["P"]
+
+    assert sliceable(recipe.input) is True
+    assert sliceable(p_frame) is False
+
+    target_dir = tmp_path / "passthrough_parts"
+    target_dir.mkdir()
+    res = write_parts(target_dir, p_frame, recipe=recipe, chunk_rows=80)
+    assert res.strategy == "input_sliced"
+    assert res.input_slices == 3
+    assert res.chunks == 3
+    assert len(res.parts) == 3
+    assert res.native_reason is None
+    assert res.blocking_operator is None
+
+    written_df = scan_parts(part_paths(target_dir)).collect()
+    native_df = p_frame.collect()
+    assert_frame_equal(written_df, native_df)
+
+
+def test_passthrough_recipe_over_rejected_parent_records_parent_rejection(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    from haute._chunked_writes import WriteRecipe
+    from haute.executor import _compile_preamble, _pipeline_dir
+
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("other", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("A", NodeType.POLARS, _code("df = src.filter(pl.col('a') >= 0).head(50)")),
+            ("P", NodeType.MODELLING, {}),
+            (
+                "J",
+                NodeType.EDGE_JOIN,
+                {
+                    "how": "left",
+                    "on": "id",
+                    "selected_columns": ["id", "a", "d"],
+                },
+            ),
+            ("B", NodeType.POLARS, _code("df = J.filter(pl.col('a') >= 0)")),
+            ("T", NodeType.MODELLING, {}),
+        ],
+        [
+            GraphEdge(id="e_src", source="src", target="A"),
+            GraphEdge(id="e_ap", source="A", target="P"),
+            GraphEdge(id="e_pj", source="P", target="J", targetHandle="base"),
+            GraphEdge(id="e_oj", source="other", target="J", targetHandle="join"),
+            GraphEdge(id="e_jb", source="J", target="B"),
+            GraphEdge(id="e_bt", source="B", target="T"),
+        ],
+    )
+    custom_write_recipes: dict[str, WriteRecipe] = {}
+    calls: Counter[str] = Counter()
+    with _planned(
+        graph,
+        store,
+        target="T",
+        required={"T": ["id", "a", "d"], "P": ["a", "id"]},
+    ) as (
+        plan,
+        context,
+        _execute,
+    ):
+        execute_lazy_graph(
+            graph,
+            _counting_build(calls),
+            target_node_id="T",
+            preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+            or None,
+            source="live",
+            enforce_contracts=True,
+            required_columns_by_node={"T": ["id", "a", "d"], "P": ["a", "id"]},
+            execution_context=context,
+            prepare_inputs=False,
+            snapshot_plan=plan,
+            write_recipes=custom_write_recipes,
+        )
+    assert "P" in custom_write_recipes
+    recipe = custom_write_recipes["P"]
+    assert recipe.fn is None
+    assert recipe.reason == "unsupported_frame_method"
+    assert recipe.blocking_operator == "head"
+    assert recipe.reason == custom_write_recipes["A"].reason
+    assert recipe.blocking_operator == custom_write_recipes["A"].blocking_operator
+
+
+def test_passthrough_over_parent_with_no_recipe_gets_no_recipe_entry(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    from haute._chunked_writes import WriteRecipe
+    from haute.executor import _compile_preamble, _pipeline_dir
+
+    graph = _graph(
+        project,
+        [
+            ("src1", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("src2", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("other", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            (
+                "A",
+                NodeType.POLARS,
+                _code("df = src1.join(src2, on='id', how='left')"),
+            ),
+            ("P", NodeType.MODELLING, {}),
+            (
+                "J",
+                NodeType.EDGE_JOIN,
+                {
+                    "how": "left",
+                    "on": "id",
+                    "selected_columns": ["id", "a", "d"],
+                },
+            ),
+            ("B", NodeType.POLARS, _code("df = J.filter(pl.col('a') >= 0)")),
+            ("T", NodeType.MODELLING, {}),
+        ],
+        [
+            GraphEdge(id="e_s1", source="src1", target="A"),
+            GraphEdge(id="e_s2", source="src2", target="A"),
+            GraphEdge(id="e_ap", source="A", target="P"),
+            GraphEdge(id="e_pj", source="P", target="J", targetHandle="base"),
+            GraphEdge(id="e_oj", source="other", target="J", targetHandle="join"),
+            GraphEdge(id="e_jb", source="J", target="B"),
+            GraphEdge(id="e_bt", source="B", target="T"),
+        ],
+    )
+    custom_write_recipes: dict[str, WriteRecipe] = {}
+    calls: Counter[str] = Counter()
+    with _planned(
+        graph,
+        store,
+        target="T",
+        required={"T": ["id", "a", "d"], "P": ["a", "id"]},
+    ) as (
+        plan,
+        context,
+        _execute,
+    ):
+        execute_lazy_graph(
+            graph,
+            _counting_build(calls),
+            target_node_id="T",
+            preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+            or None,
+            source="live",
+            enforce_contracts=True,
+            required_columns_by_node={"T": ["id", "a", "d"], "P": ["a", "id"]},
+            execution_context=context,
+            prepare_inputs=False,
+            snapshot_plan=plan,
+            write_recipes=custom_write_recipes,
+        )
+    assert "A" not in custom_write_recipes
+    assert "P" not in custom_write_recipes
+
+
+def test_passthrough_recipe_with_multiple_edges_follows_selected_edge_schema(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    from haute._chunked_writes import WriteRecipe
+    from haute.executor import _compile_preamble, _pipeline_dir
+
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("other", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("A", NodeType.POLARS, _code("df = src.filter(pl.col('a') >= 0)")),
+            ("C", NodeType.POLARS, _code("df = other.filter(pl.col('d') >= 0)")),
+            (
+                "P",
+                NodeType.OPTIMISER,
+                {"data_input": "C"},
+            ),
+            (
+                "J",
+                NodeType.EDGE_JOIN,
+                {
+                    "how": "left",
+                    "on": "id",
+                    "selected_columns": ["id", "d"],
+                },
+            ),
+            ("B", NodeType.POLARS, _code("df = J.filter(pl.col('d') >= 0)")),
+            ("T", NodeType.MODELLING, {}),
+        ],
+        [
+            GraphEdge(id="e_src", source="src", target="A"),
+            GraphEdge(id="e_other", source="other", target="C"),
+            GraphEdge(id="e_ap", source="A", target="P"),
+            GraphEdge(id="e_cp", source="C", target="P"),
+            GraphEdge(id="e_pj", source="P", target="J", targetHandle="base"),
+            GraphEdge(id="e_other_j", source="other", target="J", targetHandle="join"),
+            GraphEdge(id="e_jb", source="J", target="B"),
+            GraphEdge(id="e_bt", source="B", target="T"),
+        ],
+    )
+    custom_write_recipes: dict[str, WriteRecipe] = {}
+    calls: Counter[str] = Counter()
+    with _planned(
+        graph,
+        store,
+        target="T",
+        required={"T": ["id", "d"], "P": ["id", "d"]},
+    ) as (
+        plan,
+        context,
+        _execute,
+    ):
+        execute_lazy_graph(
+            graph,
+            _counting_build(calls),
+            target_node_id="T",
+            preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+            or None,
+            source="live",
+            enforce_contracts=True,
+            required_columns_by_node={"T": ["id", "d"], "P": ["id", "d"]},
+            execution_context=context,
+            prepare_inputs=False,
+            snapshot_plan=plan,
+            write_recipes=custom_write_recipes,
+        )
+    assert "P" in custom_write_recipes
+    recipe = custom_write_recipes["P"]
+    assert recipe.fn is not None
+    recipe_schema = recipe.native().collect_schema()
+    c_schema = custom_write_recipes["C"].native().collect_schema()
+    assert recipe_schema == c_schema
+    assert "d" in recipe_schema.names()
+    assert "a" not in recipe_schema.names()
+    assert "b" not in recipe_schema.names()
+
+
+def test_link_proof_refuses_captured_parent_output_and_omits_child_recipe(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    from haute._chunked_writes import WriteRecipe
+    from haute.executor import _compile_preamble, _pipeline_dir
+
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("other", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("A", NodeType.POLARS, _code("df = src.filter(pl.col('a') >= 0)")),
+            ("P", NodeType.MODELLING, {}),
+            (
+                "J1",
+                NodeType.EDGE_JOIN,
+                {
+                    "how": "left",
+                    "on": "id",
+                    "selected_columns": ["id", "a", "d"],
+                },
+            ),
+            (
+                "J2",
+                NodeType.EDGE_JOIN,
+                {
+                    "how": "left",
+                    "on": "id",
+                    "selected_columns": ["id", "a", "d"],
+                },
+            ),
+            ("T", NodeType.MODELLING, {}),
+        ],
+        [
+            GraphEdge(id="e_src", source="src", target="A"),
+            GraphEdge(id="e_aj1", source="A", target="J1", targetHandle="base"),
+            GraphEdge(id="e_oj1", source="other", target="J1", targetHandle="join"),
+            GraphEdge(id="e_ap", source="A", target="P"),
+            GraphEdge(id="e_j1j2", source="J1", target="J2", targetHandle="base"),
+            GraphEdge(id="e_pj2", source="P", target="J2", targetHandle="join"),
+            GraphEdge(id="e_j2t", source="J2", target="T"),
+        ],
+    )
+    custom_write_recipes: dict[str, WriteRecipe] = {}
+    calls: Counter[str] = Counter()
+    with _planned(
+        graph,
+        store,
+        target="T",
+        required={"T": ["id", "a", "d"], "A": ["id", "a"]},
+    ) as (
+        plan,
+        context,
+        _execute,
+    ):
+        assert "A" in plan.decision.captures
+        assert "P" not in plan.decision.captures
+        execute_lazy_graph(
+            graph,
+            _counting_build(calls),
+            target_node_id="T",
+            preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+            or None,
+            source="live",
+            enforce_contracts=True,
+            required_columns_by_node={"T": ["id", "a", "d"], "A": ["id", "a"]},
+            execution_context=context,
+            prepare_inputs=False,
+            snapshot_plan=plan,
+            write_recipes=custom_write_recipes,
+        )
+    assert "A" in custom_write_recipes
+    assert "P" not in custom_write_recipes
+
+
+def test_composed_shaped_passthrough_recipe_is_input_sliced_and_preserves_shaped_columns(
+    project: Path, tmp_path: Path, store: NodeSnapshotStore
+) -> None:
+    from haute._chunked_writes import WriteRecipe, part_paths, scan_parts, sliceable, write_parts
+    from haute.executor import _compile_preamble, _pipeline_dir
+
+    p_config = {
+        "selected_columns": ["b", "id", "a"],
+        "column_renames": {"b": "b_renamed"},
+    }
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("other", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("A", NodeType.POLARS, _code("df = src.filter(pl.col('a') >= 0)")),
+            ("P", NodeType.MODELLING, p_config),
+            (
+                "J",
+                NodeType.EDGE_JOIN,
+                {
+                    "how": "left",
+                    "on": "id",
+                    "selected_columns": ["id", "a", "d"],
+                },
+            ),
+            ("B", NodeType.POLARS, _code("df = J.filter(pl.col('a') >= 0)")),
+            ("T", NodeType.MODELLING, {}),
+        ],
+        [
+            GraphEdge(id="e_src", source="src", target="A"),
+            GraphEdge(id="e_ap", source="A", target="P"),
+            GraphEdge(id="e_pj", source="P", target="J", targetHandle="base"),
+            GraphEdge(id="e_oj", source="other", target="J", targetHandle="join"),
+            GraphEdge(id="e_jb", source="J", target="B"),
+            GraphEdge(id="e_bt", source="B", target="T"),
+        ],
+    )
+    custom_write_recipes: dict[str, WriteRecipe] = {}
+    calls: Counter[str] = Counter()
+    with _planned(
+        graph,
+        store,
+        target="T",
+        required={"T": ["id", "a", "d"], "P": ["b_renamed", "id", "a"]},
+    ) as (
+        plan,
+        context,
+        _execute,
+    ):
+        outputs, *_ = execute_lazy_graph(
+            graph,
+            _counting_build(calls),
+            target_node_id="T",
+            preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+            or None,
+            source="live",
+            enforce_contracts=True,
+            required_columns_by_node={"T": ["id", "a", "d"], "P": ["b_renamed", "id", "a"]},
+            execution_context=context,
+            prepare_inputs=False,
+            snapshot_plan=plan,
+            write_recipes=custom_write_recipes,
+            preserve_node_ids={"P"},
+        )
+    assert "P" in custom_write_recipes
+    recipe = custom_write_recipes["P"]
+    p_frame = outputs["P"]
+
+    assert sliceable(recipe.input) is True
+    assert sliceable(p_frame) is False
+
+    target_dir = tmp_path / "shaped_passthrough_parts"
+    target_dir.mkdir()
+    res = write_parts(target_dir, p_frame, recipe=recipe, chunk_rows=80)
+    assert res.strategy == "input_sliced"
+    assert res.input_slices == 3
+    assert res.chunks == 3
+    assert len(res.parts) == 3
+    assert res.native_reason is None
+    assert res.blocking_operator is None
+
+    written_df = scan_parts(part_paths(target_dir)).collect()
+    native_df = p_frame.collect()
+    assert_frame_equal(written_df, native_df)
+    assert written_df.columns == ["b_renamed", "id", "a"]
+    assert native_df.columns == ["b_renamed", "id", "a"]
+
+
+def test_two_hop_passthrough_chain_recipe_over_filtered_parent_is_input_sliced_and_equals_native(
+    project: Path, tmp_path: Path, store: NodeSnapshotStore
+) -> None:
+    from haute._chunked_writes import WriteRecipe, part_paths, scan_parts, sliceable, write_parts
+    from haute.executor import _compile_preamble, _pipeline_dir
+
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("other", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("A", NodeType.POLARS, _code("df = src.filter(pl.col('a') >= 0)")),
+            ("P1", NodeType.MODELLING, {}),
+            ("P2", NodeType.MODELLING, {}),
+            (
+                "J",
+                NodeType.EDGE_JOIN,
+                {
+                    "how": "left",
+                    "on": "id",
+                    "selected_columns": ["id", "a", "d"],
+                },
+            ),
+            ("B", NodeType.POLARS, _code("df = J.filter(pl.col('a') >= 0)")),
+            ("T", NodeType.MODELLING, {}),
+        ],
+        [
+            GraphEdge(id="e_src", source="src", target="A"),
+            GraphEdge(id="e_ap1", source="A", target="P1"),
+            GraphEdge(id="e_p1p2", source="P1", target="P2"),
+            GraphEdge(id="e_p2j", source="P2", target="J", targetHandle="base"),
+            GraphEdge(id="e_oj", source="other", target="J", targetHandle="join"),
+            GraphEdge(id="e_jb", source="J", target="B"),
+            GraphEdge(id="e_bt", source="B", target="T"),
+        ],
+    )
+    custom_write_recipes: dict[str, WriteRecipe] = {}
+    calls: Counter[str] = Counter()
+    with _planned(
+        graph,
+        store,
+        target="T",
+        required={"T": ["id", "a", "d"], "P2": ["a", "id"]},
+    ) as (
+        plan,
+        context,
+        _execute,
+    ):
+        outputs, *_ = execute_lazy_graph(
+            graph,
+            _counting_build(calls),
+            target_node_id="T",
+            preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+            or None,
+            source="live",
+            enforce_contracts=True,
+            required_columns_by_node={"T": ["id", "a", "d"], "P2": ["a", "id"]},
+            execution_context=context,
+            prepare_inputs=False,
+            snapshot_plan=plan,
+            write_recipes=custom_write_recipes,
+            preserve_node_ids={"P2"},
+        )
+    assert "P2" in custom_write_recipes
+    recipe = custom_write_recipes["P2"]
+    p2_frame = outputs["P2"]
+
+    assert sliceable(recipe.input) is True
+    assert sliceable(p2_frame) is False
+    # The input to the grandchild recipe is the original scan, not either pass-through's output.
+    assert "SCAN" in recipe.input.explain()
+
+    target_dir = tmp_path / "chained_passthrough_parts"
+    target_dir.mkdir()
+    res = write_parts(target_dir, p2_frame, recipe=recipe, chunk_rows=80)
+    assert res.strategy == "input_sliced"
+    assert res.input_slices == 3
+    assert res.chunks == 3
+    assert len(res.parts) == 3
+    assert res.native_reason is None
+    assert res.blocking_operator is None
+
+    written_df = scan_parts(part_paths(target_dir)).collect()
+    native_df = p2_frame.collect()
+    assert_frame_equal(written_df, native_df)

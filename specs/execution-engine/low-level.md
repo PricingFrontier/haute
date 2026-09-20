@@ -610,7 +610,12 @@ write recipes for single-input `NodeType.POLARS` nodes by classifying their code
 `classify_chunk_local_polars_code` (with bound source frame names and preamble selector aliases)
 and composing the node's column shaping step as finish; an ineligible node carries the decision's
 reason and blocking operator without a function, and `write_recipes` hands them to callers that
-write a node in full (`_PlannedCaptures.capture` composing its own column step, and `_build_node_snapshot`).
+write a node in full (`_PlannedCaptures.capture` composing its own column step, and
+`_build_node_snapshot`). For pass-through nodes (`PASS_THROUGH_NODE_TYPES`), the engine composes
+a pass-through's recipe forward from its parent's (`parent_recipe.then(project).then(column_step)`)
+across the selected edge (`pass_through_selected_edge`), gated by frame identity or the equivalence
+check (`check_recipe_equivalence`); a rejected parent recipe rejects the child with the parent's
+reason and blocking operator.
 
 **Batch collection (`_polars_utils.py`).** `bounded_collect_batches(lf, *, chunk_size,
 maintain_order=False, execution_context=None, stage_name="collect_batches", node_id=None)`
@@ -2221,9 +2226,19 @@ present a structural or schema result as execution evidence.
   and before publication; the metrics payload; and plan exclusivity and matching. A bounded
   run over a cheap consumed segment reads it directly, captures nothing with skip
   `cheap_segment`, and a second identical run recomputes it with an equal result. A captured
-  chunk-local node writes `input_sliced` across more than one slice, a captured node whose code
-  the classifier rejects writes `native` with that decision's reason and blocking operator, and a
-  captured two-input node gets no recipe and records no classifier reason.
+  chunk-local node writes `input_sliced` across more than one slice. In the recipe map, a
+  pass-through whose parent is a chunk-local filter node composes the parent recipe forward with
+  sliceable input and writes `input_sliced` across more than one slice matching native output; a
+  shaped pass-through composes its column selection and renames forward and writes the selected
+  subset under the new names in configured order; a pass-through chained over a pass-through
+  parent composes across two hops with sliceable scan input; a pass-through whose parent's recipe
+  was rejected gets an entry with no function carrying the parent's reason and blocking operator;
+  a pass-through whose parent has no recipe gets no entry; a pass-through with multiple incoming
+  edges follows `pass_through_selected_edge` with the selected parent's schema; and a parent whose
+  output was replaced by a capture refuses the link proof and gets no entry for its pass-through
+  child. A captured node whose code the classifier rejects writes `native` with that decision's
+  reason and blocking operator, and a captured two-input node gets no recipe and records no
+  classifier reason.
 - `tests/test_node_snapshot_retention.py` (`test_publication_reads_no_part_in_full_after_writing_it`),
   `tests/test_model_scorer.py` (`test_prewritten_scored_generation_carries_its_digest`), and
   `tests/test_node_data_routes.py` (`test_explicit_build_publishes_with_write_time_digests`) verify

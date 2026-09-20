@@ -1326,7 +1326,7 @@ def test_no_query_holds_more_than_one_input_slice(tmp_path: Path) -> None:
     assert res.strategy == "input_sliced"
     assert res.input_slices == 5
 
-    # Slicing [1:] assumes exactly one prior full-input call from _check_recipe_equivalence;
+    # Slicing [1:] assumes exactly one prior full-input call from check_recipe_equivalence;
     # the subsequent length assertion makes any change in prior calls fail loudly.
     write_slice_calls = slice_rows_seen[1:]
     assert len(write_slice_calls) == 5
