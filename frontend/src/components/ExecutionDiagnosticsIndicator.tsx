@@ -2,6 +2,7 @@ import { AlertCircle, AlertTriangle } from "lucide-react"
 import type { ExecutionMetrics } from "../api/types"
 import {
   buildMemoryPressureDiagnostic,
+  buildRefusedCaptureDiagnostic,
   executionProjectionWarning,
   executionStrategyLocation,
 } from "../utils/executionDiagnostics"
@@ -65,25 +66,45 @@ export default function ExecutionDiagnosticsIndicator({ metrics }: ExecutionDiag
   if (!metrics) return null
   const strategy = strategyIndicator(metrics)
   const pressure = buildMemoryPressureDiagnostic(metrics)
-  const content: IndicatorContent | null = strategy?.severity === "error"
-    ? strategy
-    : strategy && pressure
+  const refusal = buildRefusedCaptureDiagnostic(metrics)
+
+  let baseContent: IndicatorContent | null = null
+  if (strategy?.severity === "error") {
+    baseContent = strategy
+  } else if (strategy && pressure) {
+    baseContent = {
+      ...strategy,
+      // The memory-pressure finding is the terminal one: it names the
+      // indicator even when a warned strategy is also rendered.
+      title: "Preview memory pressure",
+      explanation: `${strategy.explanation} ${pressure.message}`,
+      remediation: [strategy.remediation, ...pressure.details].filter(Boolean).join("; "),
+    }
+  } else if (strategy) {
+    baseContent = strategy
+  } else if (pressure) {
+    baseContent = {
+      severity: "warning",
+      title: "Preview memory pressure",
+      explanation: pressure.message,
+      remediation: pressure.details.join("; "),
+    }
+  }
+
+  const content: IndicatorContent | null = baseContent && refusal
+    ? {
+        ...baseContent,
+        explanation: `${baseContent.explanation} ${refusal.message}`,
+        remediation: [baseContent.remediation, refusal.remediation].filter(Boolean).join("; "),
+      }
+    : baseContent ?? (refusal
       ? {
-          ...strategy,
-          // The memory-pressure finding is the terminal one: it names the
-          // indicator even when a warned strategy is also rendered.
-          title: "Preview memory pressure",
-          explanation: `${strategy.explanation} ${pressure.message}`,
-          remediation: [strategy.remediation, ...pressure.details].filter(Boolean).join("; "),
+          severity: "warning",
+          title: "Node capture was skipped",
+          explanation: refusal.message,
+          remediation: refusal.remediation,
         }
-      : strategy ?? (pressure
-        ? {
-        severity: "warning",
-        title: "Preview memory pressure",
-        explanation: pressure.message,
-        remediation: pressure.details.join("; "),
-          }
-        : null)
+      : null)
   if (!content) return null
 
   const isError = content.severity === "error"

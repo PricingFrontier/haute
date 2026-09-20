@@ -41,7 +41,7 @@ or where it will not hold at scale.
 |---|---|---|
 | One store, every consumer | Node outputs, input snapshots, and analyses share `.haute_cache`; previews, bounded runs, explicit builds, and traces run under one seed plan. | API-input tables still live in the JSON cache (`CACHE-S08`). |
 | No duplicated runs | A bounded run seeds from any fresh covering generation and captures a join, fan-out, join feeder, batch Model Score, or consumed producer only where recomputing it costs more than the cache round trip, and records why it skipped the others; a preview seeds the same way and captures only the joins and costly full-input work it must compute in full. A chain of plain transforms is recomputed by every preview and bounded run by design, because recomputing it costs less than the cache round trip. Each capture publishes as soon as it is written, so a run that fails or is cancelled later keeps what it had already published. A preview served from the response cache reports its generations as seeded, and the canvas raises the node-data epoch only for a capture generation it has not seen, so a repeat preview costs no refetch. | Two consumers that resolve the same cold capture point at the same time, or an explicit build and an automatic capture of one node, both compute it; the publication lock decides only who publishes (`CACHE-S19`). |
-| Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. Node outputs have their own budget which input snapshots neither consume nor are evicted by. | A capture refused for want of room is invisible to the user (`CACHE-S12`). A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). Every preview prepares the graph several times and signs every lineage node per resolution (`CACHE-S17`). |
+| Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. Node outputs have their own budget which input snapshots neither consume nor are evicted by. A preview says when a node was not cached and how to fix it. | The store's usage is invisible, and a job's refused capture is (`CACHE-S12`). A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). Every preview prepares the graph several times and signs every lineage node per resolution (`CACHE-S17`). |
 | Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | Any other plan, including an ordinary filter over a large input, is written by one native streaming sink whose peak memory is Polars' to bound (`CACHE-S20`). Full joins rescan the base per lookup chunk and cross joins collect the lookup side (`CACHE-S18`). |
 | Failures are recoverable | A corrupt generation is reported, never silently repaired; a plan whose inputs moved before collection stops. | The corrupt error reaches the user as store text with no pointer to Re-cache; a mid-run input change continues instead of stopping (`CACHE-S16`). |
 
@@ -49,7 +49,7 @@ or where it will not hold at scale.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CACHE-S12 | Planned | P2 | A refused capture is visible, and the store's usage is. |
+| CACHE-S12 | Planned | P2 | The store's usage is visible, and a job's refused capture is. |
 | CACHE-S13 | Planned | P2 | A capturing preview finishes as a job instead of dying at the interactive timeout. |
 | CACHE-S19 | Planned | P2 | Two consumers that need the same cold capture compute it once. |
 | CACHE-S16 | Planned | P2 | Corrupt generations and mid-run input changes surface as typed, actionable failures. |
@@ -86,31 +86,46 @@ affected-file list.
 
 ### CACHE-S12 — A refused capture and the store's usage are visible
 
-**Why:** The node-output budgets themselves are delivered
-(`HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS`, `HAUTE_NODE_SNAPSHOT_MAX_BYTES`). A
-capture refused for want of room is recorded as the `quota` outcome and an
-execution warning that nothing shows the user. The store's usage against its
-two budgets is not visible anywhere.
+**Why:** Node outputs have their own budget. A refused capture is now shown in
+the preview pane's execution-diagnostics indicator, naming the node and both
+remedies. The store's usage against its two budgets is visible nowhere, so a
+user cannot tell how close the cache is to refusing the next capture. The
+node-data job status still says nothing when a build's capture was refused.
 
-**Plan:** Surface a `quota` capture outcome as an execution warning the
-preview panel and the node-data job status show, naming the node and the two
-remedies: clear an unused snapshot or raise the quota. Add a settings entry
-reporting the store's usage against both budgets. The placement of both is a
-product decision still to take.
+**Plan:** Two items, with the usage surface designed rather than sketched:
 
-**Acceptance:** A capture that falls to `quota` appears as a warning in the
-preview response and the node-data job status, covered by a route test and a
-frontend test; the settings entry reports the store's generations and bytes
-against both budgets, covered by a route test and a frontend test.
+- **Usage surface (deferred by decision, 20-Sep-2026).** It reports, per budget
+  (node outputs, and input snapshots), the generations used against the limit
+  and the bytes used against the limit, and names the environment variable
+  behind each limit (`HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS`,
+  `HAUTE_NODE_SNAPSHOT_MAX_BYTES`, `HAUTE_INPUT_CACHE_MAX_GENERATIONS`,
+  `HAUTE_INPUT_CACHE_MAX_BYTES`). The numbers come from the store's existing
+  per-bucket accounting (`_bucket_usage`), read through one read-only endpoint
+  that returns both budgets in one response and takes no arguments. That
+  accounting walks every identity, generation and staging entry, which is what
+  an admission already pays, so the endpoint answers an explicit request and
+  the response is a snapshot, not a subscription. A surface that wants to poll
+  needs an incremental count in the store first; decide which before building
+  it, and say which in the change. Where it appears is
+  deferred: the toolbar is being changed on another branch, so placing it now
+  would conflict, and the placement decision belongs with that work.
+- **Job status.** A build whose capture was refused says so in the node-data
+  job status, the same way the preview pane now does.
+
+**Acceptance:** For the usage surface, a route test proves the endpoint
+reports both budgets' generations and bytes against their limits, and a
+frontend test proves whatever displays it shows both budgets and names the
+variable behind each limit. For the job status, a route test proves a
+refused capture appears in the job status payload, and a frontend test
+proves it is shown.
 
 **Owning specifications:** [server API](../server-api/low-level.md)
 (execution warnings); [frontend shared](../frontend-shared/low-level.md).
 
-**Dependencies:** None.
+**Dependencies:** The usage surface depends on the toolbar work being settled.
 
-**Evidence:** `src/haute/routes/pipeline.py`; `src/haute/routes/node_data.py`;
-`src/haute/_source_cache.py` (`_bucket_usage`);
-`frontend/src/panels/DataPreview.tsx`.
+**Evidence:** `src/haute/routes/node_data.py`;
+`src/haute/_source_cache.py` (`_bucket_usage`).
 
 ### CACHE-S13 — Capturing previews as jobs
 

@@ -116,9 +116,16 @@ Modelling and optimiser result presentation belongs to
   A failed autosave or flush preserves the dirty draft and blocks file switching until a later
   save succeeds. Shared preview chrome supports resizing, collapse and keyboard-accessible
   roving tabs.
-- Preview places actionable projection-boundary, rejected-strategy, or memory
-  pressure detail behind an accessible status icon beside the row/column
-  summary. A successfully admitted materialisation boundary is informational and
+- Preview places actionable projection-boundary, rejected-strategy, memory
+  pressure, or cache quota refusal detail behind an accessible status icon beside
+  the row/column summary. A capture the cache refused under quota
+  (`snapshot_capture_skipped` with reason `quota`, excluding superseded captures)
+  reports as a warning naming every refused node in arrival order; its remediation
+  names both remedies: clear unneeded cached node data, or raise the node-output cache quota
+  via `HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS` and `HAUTE_NODE_SNAPSHOT_MAX_BYTES`.
+  The refusal renders alone when no other diagnostic exists, or appends in one sentence
+  to coexisting diagnostic content, which keeps its own severity, title and remediation.
+  A successfully admitted materialisation boundary is informational and
   stays silent only when the same plan has no unprojected boundary and its execution
   metrics report no memory pressure. Mixed plans keep the real projection issue
   visible at the unprojected node. Explore
