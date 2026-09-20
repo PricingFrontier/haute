@@ -114,20 +114,48 @@ node-data job status still says nothing when a build's capture was refused.
   it, and say which in the change. Where it appears is
   deferred: the toolbar is being changed on another branch, so placing it now
   would conflict, and the placement decision belongs with that work.
-- **Job status.** A build whose capture was refused says so in the node-data
-  job status, the same way the preview pane now does.
+- **Job status — evidence delivered 20-Sep-2026, display outstanding.** A build
+  whose capture was refused now records the same execution warning an automatic
+  capture does (`snapshot_capture_skipped`, the node id, `reason="quota"`), and
+  a failing build's `worker_evidence` survives into its job's
+  `execution_metrics` for every failure kind, not only quota. What is left is
+  purely where it appears, which is deferred with the usage surface below
+  because it is the same toolbar decision.
+
+  What the display needs, for whoever takes the toolbar work:
+
+  - Nothing new has to be computed or fetched. `NodeDataStatusResponse` already
+    carries `execution_metrics`, and `ExecutionDiagnosticsIndicator` already
+    renders a refused capture naming the node and both remedies — it is simply
+    mounted in one place only (`frontend/src/panels/DataPreview.tsx:499`), from
+    the preview's metrics.
+  - `nodeDataOnFail` in `frontend/src/hooks/useBackgroundJobs.ts` currently
+    discards the failure message (`void _message`) and finishes the job, so a
+    failed build says nothing anywhere. That is the wiring point.
+  - Placement candidates, in the order I would argue for them: beside the
+    node's own cache button, where the user pressed Build and where the
+    `corrupt` state already offers Re-cache; or a toast, which is louder but
+    detaches the message from the node it names. A build failure is about one
+    node, so the node's own surface reads better than a global one.
+  - Whatever is chosen should reuse `ExecutionDiagnosticsIndicator` rather than
+    write second copy for the same warning, so the two paths cannot drift in
+    wording or in which remedies they name.
 
 **Acceptance:** For the usage surface, a route test proves the endpoint
 reports both budgets' generations and bytes against their limits, and a
 frontend test proves whatever displays it shows both budgets and names the
-variable behind each limit. For the job status, a route test proves a
-refused capture appears in the job status payload, and a frontend test
-proves it is shown.
+variable behind each limit. For the job status, the route half is delivered —
+`tests/test_node_data_routes.py` proves a refused build's job carries the
+refusal warning naming the node — and what remains is a frontend test that it
+is shown, once placement is decided.
 
 **Owning specifications:** [server API](../server-api/low-level.md)
 (execution warnings); [frontend shared](../frontend-shared/low-level.md).
 
-**Dependencies:** The usage surface depends on the toolbar work being settled.
+**Dependencies:** Both remaining halves are display, and both wait on the
+toolbar work: the usage surface has nowhere to live until then, and the
+job-status warning should be placed in the same pass rather than guessing at a
+spot that work may move.
 
 **Evidence:** `src/haute/routes/node_data.py`;
 `src/haute/_source_cache.py` (`_bucket_usage`).

@@ -161,12 +161,15 @@ class _WorkerReportedError(RuntimeError):
         detail: str,
         payload: dict[str, Any] | None,
         terminal_reason: str | None,
+        worker_evidence: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(detail)
         self.kind = kind
         self.detail = detail
         self.payload = payload
         self.terminal_reason = terminal_reason
+        # What the worker did before it failed, so the job's metrics can say so.
+        self.worker_evidence = worker_evidence
 
 
 class NodeSnapshotInputsChangedError(RuntimeError):
@@ -204,25 +207,42 @@ def _run_node_snapshot_worker(
     from haute._sandbox import set_project_root
 
     set_project_root(Path(request.project_root))
+    context: ExecutionContext | None = None
+
+    def evidence() -> dict[str, Any] | None:
+        """What the build did before it stopped.
+
+        A failure's seeds, captures and warnings are the job's only account of
+        the run; without them a refused capture, for one, reaches the user as
+        the store's own text naming no node.
+        """
+        return context.worker_evidence() if context is not None else None
+
     try:
-        execution_context = create_isolated_execution_context(budget)
+        context = create_isolated_execution_context(budget)
         try:
-            return _build_node_snapshot(request, execution_context)
+            return _build_node_snapshot(request, context)
         finally:
-            execution_context.release_admission(preserve_primary_error=True)
+            context.release_admission(preserve_primary_error=True)
     except PUBLIC_CONTRACT_ERROR_TYPES as exc:
         return _NodeSnapshotWorkerOutcome(
             failure_kind="public_contract",
             detail=str(exc),
             payload=contract_error_job_fields(exc),
             terminal_reason=contract_error_terminal_reason(exc),
+            worker_evidence=evidence(),
         )
     except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
         return _NodeSnapshotWorkerOutcome(
-            failure_kind="memory", detail=str(exc), payload=exc.to_payload()
+            failure_kind="memory",
+            detail=str(exc),
+            payload=exc.to_payload(),
+            worker_evidence=evidence(),
         )
     except NodeSnapshotQuotaRejectedError as exc:
-        return _NodeSnapshotWorkerOutcome(failure_kind="quota", detail=str(exc))
+        return _NodeSnapshotWorkerOutcome(
+            failure_kind="quota", detail=str(exc), worker_evidence=evidence()
+        )
     except (
         ContractMismatchError,
         SchemaMismatchError,
@@ -231,7 +251,9 @@ def _run_node_snapshot_worker(
         NodeSnapshotInputsChangedError,
         NodeDataPointInvalidError,
     ) as exc:
-        return _NodeSnapshotWorkerOutcome(failure_kind="contract", detail=str(exc))
+        return _NodeSnapshotWorkerOutcome(
+            failure_kind="contract", detail=str(exc), worker_evidence=evidence()
+        )
 
 
 def _build_node_snapshot(
@@ -329,6 +351,14 @@ def _build_node_snapshot(
             )
         except NodeSnapshotQuotaRejectedError as exc:
             exc.artifact.close()
+            # An automatic capture refused by quota records this warning
+            # (``_execute_lazy._PlannedCaptures.capture``) and the preview pane
+            # names the node and both remedies from it. A build the user asked
+            # for said nothing at all, so its failure reached them as the
+            # store's own text with no node in it. Same warning, same display.
+            execution_context.record_execution_warning(
+                "snapshot_capture_skipped", node_id=request.node_id, reason="quota"
+            )
             raise
         except BaseException:
             artifact.close()
@@ -503,7 +533,11 @@ def _validated_worker_success(outcome: object) -> _NodeSnapshotWorkerOutcome:
         elif outcome.payload is not None:
             raise RuntimeError("node-snapshot worker failure carried an unexpected payload")
         raise _WorkerReportedError(
-            outcome.failure_kind, outcome.detail, outcome.payload, outcome.terminal_reason
+            outcome.failure_kind,
+            outcome.detail,
+            outcome.payload,
+            outcome.terminal_reason,
+            outcome.worker_evidence,
         )
     if outcome.outcome not in ("published", "superseded"):
         raise RuntimeError("node-snapshot worker omitted its publication outcome")
@@ -512,6 +546,25 @@ def _validated_worker_success(outcome: object) -> _NodeSnapshotWorkerOutcome:
     if (outcome.outcome == "published") != isinstance(outcome.generation_id, str):
         raise RuntimeError("node-snapshot worker outcome and generation disagree")
     return outcome
+
+
+def _adopting_worker_failure_evidence(
+    execution_context: ExecutionContext,
+    raw: Any,
+) -> _NodeSnapshotWorkerOutcome:
+    """Validate a worker's outcome, keeping a failure's evidence for the job.
+
+    A failing worker's seeds, captures and warnings are adopted before the error
+    propagates, so the job that is about to go terminal still reports what the
+    build did — a capture the store refused, above all, which otherwise reaches
+    the user as the store's own text naming no node.
+    """
+    try:
+        return _validated_worker_success(raw)
+    except _WorkerReportedError as exc:
+        if exc.worker_evidence is not None:
+            execution_context.adopt_worker_evidence(exc.worker_evidence)
+        raise
 
 
 class NodeDataService:
@@ -985,6 +1038,7 @@ class NodeDataService:
         start_time: float,
         *,
         label: str,
+        execution_context: ExecutionContext | None = None,
     ) -> None:
         """Record one job failure with the shared worker failure envelope."""
         elapsed = time.monotonic() - start_time
@@ -1009,6 +1063,16 @@ class NodeDataService:
             else:
                 fields = {"error": exc.detail}
                 terminal_reason = "contract_error"
+            if execution_context is not None:
+                # What the build did before it stopped. A capture the store
+                # refused is recorded here as the warning the preview pane
+                # already renders, naming the node and both remedies.
+                fields = {
+                    **fields,
+                    "execution_metrics": ExecutionMetricsPayload.model_validate(
+                        execution_context.metrics_payload(status=terminal_reason)
+                    ),
+                }
             self._lifecycle.transition(
                 job_id,
                 to=terminal_reason,
@@ -1179,7 +1243,8 @@ class NodeDataService:
             ) as plan:
                 request = replace(request, seed_plan=plan.handoff())
                 budget = isolated_execution_budget(execution_context)
-                outcome = _validated_worker_success(
+                outcome = _adopting_worker_failure_evidence(
+                    execution_context,
                     run_isolated_worker(
                         _run_node_snapshot_worker,
                         request,
@@ -1190,7 +1255,7 @@ class NodeDataService:
                             stop_reason=lambda: token.terminal_reason if token.cancelled else None,
                             process_name=f"haute-node-snapshot-worker-{job_id}",
                         ),
-                    )
+                    ),
                 )
             if outcome.worker_evidence is not None:
                 execution_context.adopt_worker_evidence(outcome.worker_evidence)
@@ -1228,7 +1293,14 @@ class NodeDataService:
         except Exception as exc:  # noqa: BLE001 - a background job records every failure.
             # Before the failure is published, for the same reason.
             self._discard_staging(request)
-            self._fail_job(job_id, exc, token, start_time, label="Cache build")
+            self._fail_job(
+                job_id,
+                exc,
+                token,
+                start_time,
+                label="Cache build",
+                execution_context=execution_context,
+            )
         finally:
             if execution_context is not None:
                 execution_context.release_admission()
