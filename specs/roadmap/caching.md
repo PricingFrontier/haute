@@ -51,7 +51,7 @@ or where it will not hold at scale.
 |---|---|---:|---|
 | CACHE-S12 | Planned | P2 | The store's usage is visible; a refused build's job already says which node. |
 | CACHE-S13 | Planned | P3 | A capturing preview finishes as a job instead of dying at the interactive timeout. Unproven: no measured preview approaches the timeout. |
-| CACHE-S19 | Planned | P2 | Two consumers that need the same cold capture compute it once. |
+| CACHE-S19 | Deferred | P3 | Two consumers that need the same cold capture compute it once. |
 | CACHE-S22 | Planned | P3 | The shapes that cannot carry a write recipe at all can. |
 | CACHE-S17 | Planned | P3 | Planning and store housekeeping cost stays flat as graphs and stores grow. |
 | CACHE-S18 | Planned | P3 | Full and cross joins are written with a bounded number of scans and a bounded part product. |
@@ -59,9 +59,9 @@ or where it will not hold at scale.
 
 ## Planned improvements
 
-Delivery order is `CACHE-S17` → `CACHE-S22` → `CACHE-S18` → `CACHE-S19`,
-and each of the last three is gated on a measurement named in its own entry
-rather than started on the strength of its shape; `CACHE-S08` is deferred, and
+Delivery order is `CACHE-S17` → `CACHE-S22` → `CACHE-S18`, each gated on a
+measurement named in its own entry rather than started on the strength of its
+shape; `CACHE-S19` is deferred with the others; `CACHE-S08` is deferred, and
 `CACHE-S12`'s remaining half waits on the toolbar work its usage surface
 would land in, so it is taken whenever that settles rather than in this
 order. `CACHE-S13` moved down on 20-Sep-2026 because measurement showed
@@ -258,7 +258,23 @@ node-data builds join a running build (`src/haute/routes/_node_data_service.py`,
 `run`). The aim's "computed once" therefore holds after publication, not
 during it.
 
-**Measured 20-Sep-2026, and it argues for waiting.** The duplicate computation
+**Deferred 20-Sep-2026.** The server never has concurrent users, so the only
+way two consumers reach one cold identity at once is one person's own
+overlapping work — a preview while their training job runs, which is the case
+this entry names. That can happen, but it is rarer than two people, and the
+measurement below says it does not happen at all in practice. Against that,
+this is the most dangerous change left in the component: it alters behaviour
+under the store's lease lock, where a mistake is a cross-process data hazard
+rather than a slow write. The value is small, the risk is the largest here,
+and the lock discipline it would change is currently correct.
+
+**Activation trigger:** a real project's logs show
+`node_snapshot_capture_superseded` outside a deliberately constructed race —
+that is, one person's overlapping operations actually colliding on a cold
+identity often enough to be worth the risk. If it is built, it gets its own
+review rather than a share of a batch.
+
+**The measurement.** The duplicate computation
 this removes already announces itself: a losing publication logs
 `node_snapshot_capture_superseded` and records `outcome: "superseded"`. Tallied
 over the seeding, node-data, Data Output, training and cross-process suites:
