@@ -279,6 +279,10 @@ export interface ExecutionMetrics {
   shared_snapshot_captures: SharedSnapshotCapture[]
   shared_snapshot_capture_skips: SharedSnapshotCaptureSkip[]
   warnings: ExecutionWarning[]
+  training_write_strategy?: string | null
+  training_write_input_slices?: number | null
+  training_write_native_reason?: string | null
+  training_write_blocking_operator?: string | null
 }
 
 export interface NodeResult {

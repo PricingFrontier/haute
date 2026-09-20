@@ -15,9 +15,12 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from haute._logging import get_logger
+
+if TYPE_CHECKING:
+    from haute._chunked_writes import ChunkedWrite
 
 EXECUTION_METRICS_SCHEMA_VERSION = 1
 EXECUTION_TELEMETRY_SCHEMA_VERSION = 1
@@ -914,6 +917,10 @@ class ExecutionContext:
     _shared_snapshot_capture_skips: list[Any] = field(default_factory=list, init=False)
     _preview_seed_plan: tuple[Any, ...] = field(default=(), init=False)
     _execution_warnings: list[dict[str, str | None]] = field(default_factory=list, init=False)
+    _training_write_strategy: str | None = field(default=None, init=False)
+    _training_write_input_slices: int | None = field(default=None, init=False)
+    _training_write_native_reason: str | None = field(default=None, init=False)
+    _training_write_blocking_operator: str | None = field(default=None, init=False)
     _cache_proof_miss_reason_counts: dict[ExecutionCacheProofMissReason, int] = field(
         default_factory=lambda: {reason: 0 for reason in ExecutionCacheProofMissReason},
         init=False,
@@ -1252,6 +1259,25 @@ class ExecutionContext:
         with self._evidence_lock:
             return self._preview_seed_plan
 
+    def record_training_write(
+        self, outcome: ChunkedWrite, *, native_reason: str | None = None
+    ) -> None:
+        """Record the outcome of one training frame write.
+
+        ``native_reason`` is the caller's own reason for a write that could not
+        take a recipe — a row-limit sample, or a recipe that did not match the
+        frame. It is kept only when the write actually came back native: a
+        sampled frame may still slice on its own, and a reason for a strategy
+        that did not happen would be a false statement in the evidence.
+        """
+        with self._evidence_lock:
+            self._training_write_strategy = outcome.strategy
+            self._training_write_input_slices = outcome.input_slices
+            self._training_write_blocking_operator = outcome.blocking_operator
+            self._training_write_native_reason = (
+                (native_reason or outcome.native_reason) if outcome.strategy == "native" else None
+            )
+
     def worker_evidence(self) -> dict[str, list[dict[str, Any]]]:
         """This execution's input preparation, seeds, captures, and warnings.
 
@@ -1349,6 +1375,10 @@ class ExecutionContext:
         payload["rss_limit_bytes"] = self._effective_rss_limit_bytes()
         payload["admission"] = self.admission.to_dict() if self.admission is not None else None
         with self._evidence_lock:
+            payload["training_write_strategy"] = self._training_write_strategy
+            payload["training_write_input_slices"] = self._training_write_input_slices
+            payload["training_write_native_reason"] = self._training_write_native_reason
+            payload["training_write_blocking_operator"] = self._training_write_blocking_operator
             payload["input_preparation"] = [record.to_dict() for record in self._input_preparation]
             payload["shared_snapshot_seeds"] = [
                 record.to_dict() for record in self._shared_snapshot_seeds

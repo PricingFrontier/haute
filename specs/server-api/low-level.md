@@ -59,6 +59,10 @@
   `result_revision`, `capability_hash`, `plan_hash`, semantic diff,
   verification tier/evidence, warnings and ledger reference as applicable.
   Unknown fields remain rejected at typed HTTP boundaries.
+- `ExecutionMetricsPayload` (`_execution_schemas.py`, re-exported by `schemas.py`) carries
+  the execution metrics payload across routes and worker processes, including scalar
+  single-file training write evidence: `training_write_strategy`, `training_write_input_slices`
+  (`ge=1`), `training_write_native_reason`, and `training_write_blocking_operator`.
 
 **Exception hierarchy** (`errors.py`, abridged to route-relevant branches) — every subclass
 roots at `HauteError`, which renders
@@ -896,6 +900,14 @@ entirely and leave every touched file in whatever state it happened to be in."
   reporting its generations as seeded (`test_a_repeat_preview_announces_its_generations_as_seeded`),
   and an extended cache hit reporting the plan it ran under
   (`test_an_extended_cache_hit_reports_the_current_plans_generations`).
+- `tests/test_training_seeding.py` covers training preparation: a modelling node over a chunk-local
+  filter parent writes its prepared parquet `input_sliced` across several slices, with rows,
+  order and schema equal to the native result, and its metrics report `training_write_strategy`
+  and `training_write_input_slices` through the worker path; a run with column exclusions
+  composes the drop into the recipe; a run with a row-limit sample takes the native path with
+  `training_write_native_reason="row_limit_sample"`; a mismatched recipe degrades to native with
+  `training_write_native_reason="recipe_mismatch"` and a recorded warning; and cancellation
+  mid-write leaves no prepared parquet.
 
 Tests live under `tests/`, one file per module or per feature slice, using FastAPI's
 `TestClient` against a temporary project directory (a `haute.toml` + pipeline `.py` fixture)

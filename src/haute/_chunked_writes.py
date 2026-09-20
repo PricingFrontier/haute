@@ -64,7 +64,7 @@ WriteStrategy = Literal["chunked_join", "sliced", "input_sliced", "native"]
 
 
 class RecipeEquivalenceError(ValueError):
-    """Raised when a write recipe's native plan does not match the frame handed to write_parts."""
+    """Raised when a write recipe's native plan does not match the frame handed to the writer."""
 
 
 def part_name(index: int) -> str:
@@ -234,11 +234,11 @@ def check_recipe_equivalence(recipe: WriteRecipe, frame: pl.LazyFrame) -> None:
     recipe_native = recipe.native()
     if recipe_native.collect_schema() != frame.collect_schema():
         raise RecipeEquivalenceError(
-            "Write recipe schema does not match the frame handed to write_parts"
+            "Write recipe schema does not match the frame handed to the writer"
         )
     if recipe_native.explain(optimized=False) != frame.explain(optimized=False):
         raise RecipeEquivalenceError(
-            "Write recipe plan does not match the frame handed to write_parts"
+            "Write recipe plan does not match the frame handed to the writer"
         )
 
 

@@ -2447,12 +2447,15 @@ class TestTrainingProjection:
         )
 
         def fake_execute_lazy(*_args, **_kwargs):
-            return (
-                {"train": pl.DataFrame({"claim_count": [1.0], "driver_age": [40]}).lazy()},
-                ["train"],
-                {},
-                {},
+            # Filtered so the frame is not sliceable: training's writer slices a
+            # frame it can slice and would never reach the native sink this test
+            # is about.
+            frame = (
+                pl.DataFrame({"claim_count": [1.0], "driver_age": [40]})
+                .lazy()
+                .filter(pl.col("claim_count") > 0)
             )
+            return ({"train": frame}, ["train"], {}, {})
 
         parquet_path = str(tmp_path / "prepared.parquet")
         request = TrainingPreparationRequest(
@@ -2473,7 +2476,7 @@ class TestTrainingProjection:
             patch("haute.modelling._algorithms._mem_checkpoint"),
             patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
             patch(
-                "haute._polars_utils.bounded_sink",
+                "haute._chunked_writes.bounded_sink",
                 side_effect=BoundedMemoryUnsupportedError("Bounded streaming sink failed"),
             ),
         ):

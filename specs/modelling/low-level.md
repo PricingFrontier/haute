@@ -284,9 +284,21 @@
    feature-selection diagnostic from the materialised schema, rejects HTTP
    422/`contract_error` if target/metadata/exclusion rules leave no feature columns, validates
    the required columns actually arrived, projects away excluded columns while retaining
-   explicit `feature_columns` even when a stale `exclude` entry also names them, streams the
-   result to the parent's temp parquet with `bounded_sink` under the context's
-   `training_sink_write` stage, and then runs the target/task gate;
+   explicit `feature_columns` even when a stale `exclude` entry also names them (composing
+   column drops into an admitted recipe), writes the prepared frame to the parent's temp parquet
+   with a single `write_file` call under the context's `training_sink_write` stage — which
+   slices the frame directly when sliceable (`strategy="sliced"`), or slices the recipe's input
+   when the node carries one (`strategy="input_sliced"`), or sinks natively and records why
+   (`strategy="native"`, `native_reason` naming the recipe's reason or `not_sliceable`);
+   a row-limit sample discards the recipe and takes the native path with
+   `native_reason="row_limit_sample"` unless the sampled frame is itself sliceable;
+   a `RecipeEquivalenceError` writes again through the same `write_file` with no recipe, which
+   always lands on `native` with `native_reason="recipe_mismatch"` and warning code
+   `recipe_mismatch`: the equivalence check runs only on the branch a non-sliceable frame reaches,
+   so the second write finds that same frame unsliceable too; and execution metrics record the
+   write outcome across four fields (`training_write_strategy`, `training_write_input_slices`,
+   `training_write_native_reason`, `training_write_blocking_operator`) — and then runs the
+   target/task gate;
    `training_target_task_issue` (`_target_check.py`) validates the sunk parquet's
    target column against the configured task and the effective metric set
    (`effective_metrics` — explicit config metrics or the objective-implied defaults,
@@ -1309,7 +1321,17 @@ rows/features) and retry.
   through the routes keeps preparation's captures and seeds. A failed fit
   (`tests/test_training_worker_protocol.py::test_failed_fit_keeps_the_jobs_preparation_evidence`)
   and a failed or completed dispersion estimate (`tests/test_modelling_routes.py`) keep them
-  too.
+  too. The single `write_file` training write is covered across its strategies: a modelling node
+  directly off a data input writes `sliced` with rows, order and schema equal to the native
+  result; a modelling node over a chunk-local filter parent writes its prepared parquet
+  `input_sliced` across several slices, reporting `training_write_strategy` and
+  `training_write_input_slices` through the worker path; column exclusions compose into the
+  write recipe; a row-limit sample takes the native path with
+  `training_write_native_reason="row_limit_sample"` while a sliceable sample records no native
+  reason; a mismatched recipe degrades to native with
+  `training_write_native_reason="recipe_mismatch"` and records a `recipe_mismatch` warning;
+  mid-write failure fails the job `error` leaving no prepared parquet; and cancellation
+  mid-write leaves no prepared parquet.
 - `tests/test_training_preparation_worker.py` pins the hard-capped preparation
   worker: exactly one `haute-training-prep` launch per preparation with the budget's
   `memory_limit_bytes`, the remaining job timeout, and a `stop_reason` that reads the

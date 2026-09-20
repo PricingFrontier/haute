@@ -920,6 +920,34 @@ function parseExecutionMetrics(
     warnings: optionalArray(parser, obj, "warnings", (item, itemField) =>
       parseExecutionWarning(parser, item, itemField),
     ),
+    ...(obj.training_write_strategy === undefined
+      ? {}
+      : {
+          training_write_strategy: expectNullableString(
+            parser,
+            obj.training_write_strategy,
+            `${field}.training_write_strategy`,
+          ),
+        }),
+    ...optionalNullablePositiveCount(parser, obj, "training_write_input_slices", field),
+    ...(obj.training_write_native_reason === undefined
+      ? {}
+      : {
+          training_write_native_reason: expectNullableString(
+            parser,
+            obj.training_write_native_reason,
+            `${field}.training_write_native_reason`,
+          ),
+        }),
+    ...(obj.training_write_blocking_operator === undefined
+      ? {}
+      : {
+          training_write_blocking_operator: expectNullableString(
+            parser,
+            obj.training_write_blocking_operator,
+            `${field}.training_write_blocking_operator`,
+          ),
+        }),
   }
 }
 

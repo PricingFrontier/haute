@@ -547,6 +547,10 @@ class ExecutionMetricsPayload(BaseModel):
         default_factory=list
     )
     warnings: list[ExecutionWarningPayload] = Field(default_factory=list)
+    training_write_strategy: str | None = None
+    training_write_input_slices: int | None = Field(default=None, ge=1)
+    training_write_native_reason: str | None = None
+    training_write_blocking_operator: str | None = None
 
     @model_validator(mode="after")
     def _validate_calibration_evidence(self) -> ExecutionMetricsPayload:

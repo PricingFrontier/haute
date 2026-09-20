@@ -20,17 +20,19 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
+from haute._chunked_writes import WriteRecipe
 from haute._data_points import DataPointResolver
 from haute._execution_context import (
     ExecutionCancellationToken,
     ExecutionContext,
     ExecutionProfile,
 )
+from haute._execution_schemas import ExecutionMetricsPayload
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._sandbox import set_project_root
 from haute._source_cache import SourceCacheIdentity
 from haute._types import PipelineGraph
-from haute.routes import _training_lifecycle
+from haute.routes import _training_lifecycle, _training_preparation
 from haute.routes._job_store import JobStore
 from haute.routes._train_service import TrainService
 from haute.routes._training_preparation import prepare_training_data_worker
@@ -87,8 +89,13 @@ def _graph(
     project: Path,
     nodes: list[tuple[str, str, dict[str, Any]]],
     edges: list[tuple[str, str]],
+    *,
+    modelling_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """A graph whose modelling node ``train`` reads the last listed producer."""
+    train_config = dict(_MODELLING)
+    if modelling_config is not None:
+        train_config.update(modelling_config)
     return {
         "nodes": [
             *(
@@ -97,7 +104,7 @@ def _graph(
             ),
             {
                 "id": "train",
-                "data": {"label": "train", "nodeType": "modelling", "config": _MODELLING},
+                "data": {"label": "train", "nodeType": "modelling", "config": train_config},
             },
         ],
         "edges": [
@@ -206,14 +213,25 @@ def _train(
     before_child: Callable[[Any], None] | None = None,
     child: Callable[[Any, Any], Any] | None = None,
     timeout: int = 600,
+    streaming_chunk_size: int | None = None,
+    row_limit: int | None = None,
 ) -> _Run:
     """Prepare one training run through the supervising parent and its child."""
     calls = _counting_builds(monkeypatch)
     run = _Run({}, pl.DataFrame(), calls)
     store = JobStore()
     service = TrainService(store)
-    body = TrainRequest.model_validate({"graph": graph, "node_id": "train", "source": source})
+    body_payload: dict[str, Any] = {"graph": graph, "node_id": "train", "source": source}
+    if streaming_chunk_size is not None:
+        body_payload["streaming_chunk_size"] = streaming_chunk_size
+    body = TrainRequest.model_validate(body_payload)
     config = dict(body.graph.node_map["train"].data.config)
+    if row_limit is not None:
+        monkeypatch.setattr(
+            TrainService,
+            "_estimate_ram",
+            lambda *args, **kwargs: (None, row_limit, _ROWS, 4),
+        )
     job_id = store.create_job(
         {
             "status": "running",
@@ -350,7 +368,7 @@ def test_second_training_run_seeds_first_runs_captures(
     assert second.captures == {}
     assert second.calls["src"] == 0
     assert second.calls["other"] == 0
-    assert second.calls["B"] == 1
+    assert second.calls["B"] == 3
     assert_frame_equal(second.frame, first.frame)
 
 
@@ -1180,3 +1198,246 @@ def test_consumed_select_below_a_rating_step_is_captured_and_seeded(
     assert second.captures == {}
     assert second.calls["src"] == 0
     assert_frame_equal(second.frame, first.frame)
+
+
+def test_modelling_node_over_chunk_local_filter_writes_input_sliced(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph = _graph(
+        project,
+        [
+            ("src", "dataInput", _data_input(project, "quotes.parquet")),
+            ("A", "polars", {"code": "df = src.filter(pl.col('a') >= 2)"}),
+        ],
+        [("src", "A"), ("A", "train")],
+    )
+    run = _train(monkeypatch, graph, streaming_chunk_size=40)
+    assert run.job["status"] == "running", run.job.get("message")
+    validated = ExecutionMetricsPayload.model_validate(run.metrics)
+    assert validated.training_write_strategy == "input_sliced"
+    assert validated.training_write_input_slices == 3
+    assert validated.training_write_native_reason is None
+    assert validated.training_write_blocking_operator is None
+    expected = pl.read_parquet(project / "quotes.parquet").filter(pl.col("a") >= 2)
+    assert_frame_equal(run.frame, expected)
+
+
+def test_training_write_composes_column_exclusions(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph = _graph(
+        project,
+        [
+            ("src", "dataInput", _data_input(project, "quotes.parquet")),
+            ("A", "polars", {"code": "df = src.filter(pl.col('a') >= 2)"}),
+        ],
+        [("src", "A"), ("A", "train")],
+        modelling_config={"exclude": ["b"]},
+    )
+    run = _train(monkeypatch, graph, streaming_chunk_size=40)
+    assert run.job["status"] == "running", run.job.get("message")
+    validated = ExecutionMetricsPayload.model_validate(run.metrics)
+    assert validated.training_write_strategy == "input_sliced"
+    assert validated.training_write_input_slices == 3
+    assert validated.training_write_native_reason is None
+    assert "b" not in run.frame.columns
+    expected = pl.read_parquet(project / "quotes.parquet").filter(pl.col("a") >= 2).drop("b")
+    assert_frame_equal(run.frame, expected)
+
+
+def test_training_write_under_row_limit_takes_native_path(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph = _graph(
+        project,
+        [
+            ("src", "dataInput", _data_input(project, "quotes.parquet")),
+            ("A", "polars", {"code": "df = src.filter(pl.col('a') >= 2)"}),
+        ],
+        [("src", "A"), ("A", "train")],
+    )
+    run = _train(monkeypatch, graph, streaming_chunk_size=40, row_limit=50)
+    assert run.job["status"] == "running", run.job.get("message")
+    validated = ExecutionMetricsPayload.model_validate(run.metrics)
+    assert validated.training_write_strategy == "native"
+    assert validated.training_write_native_reason == "row_limit_sample"
+    assert validated.training_write_input_slices is None
+    assert len(run.frame) == 50
+
+
+def test_mismatched_write_recipe_degrades_to_native_with_warning(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_execute = _training_preparation.execute_lazy_graph
+
+    def execute_with_mismatched_recipe(*args: Any, **kwargs: Any) -> Any:
+        res = real_execute(*args, **kwargs)
+        write_recipes = kwargs.get("write_recipes")
+        if write_recipes is not None and "train" in write_recipes:
+            orig = write_recipes["train"]
+            write_recipes["train"] = WriteRecipe(
+                input=orig.input,
+                fn=lambda lf: lf.filter(pl.col("id") > 0),
+            )
+        return res
+
+    monkeypatch.setattr(_training_preparation, "execute_lazy_graph", execute_with_mismatched_recipe)
+
+    graph = _graph(
+        project,
+        [
+            ("src", "dataInput", _data_input(project, "quotes.parquet")),
+            ("A", "polars", {"code": "df = src.filter(pl.col('a') >= 2)"}),
+        ],
+        [("src", "A"), ("A", "train")],
+    )
+    run = _train(monkeypatch, graph, streaming_chunk_size=40)
+    assert run.job["status"] == "running", run.job.get("message")
+    expected = pl.read_parquet(project / "quotes.parquet").filter(pl.col("a") >= 2)
+    assert_frame_equal(run.frame, expected)
+
+    validated = ExecutionMetricsPayload.model_validate(run.metrics)
+    assert validated.training_write_strategy == "native"
+    assert validated.training_write_native_reason == "recipe_mismatch"
+    assert validated.training_write_input_slices is None
+    assert any(w.code == "recipe_mismatch" for w in validated.warnings)
+
+
+def test_write_failure_that_is_not_a_mismatch_fails_the_job(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mid-write failure must not be swallowed and rewritten over.
+
+    The seam catches ``RecipeEquivalenceError`` alone, because that check runs
+    before a byte is written. Any other failure may have left a part-written
+    file, so degrading to a native rewrite would hide it. Catching ``Exception``
+    instead would turn this job green.
+    """
+    from haute import _chunked_writes
+
+    real_write_file = _chunked_writes.write_file
+    attempts: list[int] = []
+
+    def explode_once(*args: Any, **kwargs: Any) -> Any:
+        # Only the first attempt dies. The degrade path writes again with no
+        # recipe, so a broad catch would quietly succeed here and the job would
+        # come back green — which is exactly what this test must not allow.
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("the writer died half way")
+        return real_write_file(*args, **kwargs)
+
+    monkeypatch.setattr(_chunked_writes, "write_file", explode_once)
+
+    graph = _graph(
+        project,
+        [
+            ("src", "dataInput", _data_input(project, "quotes.parquet")),
+            ("A", "polars", {"code": "df = src.filter(pl.col('a') >= 2)"}),
+        ],
+        [("src", "A"), ("A", "train")],
+    )
+    run = _train(monkeypatch, graph, streaming_chunk_size=40)
+    assert run.job["status"] == "error", run.job.get("message")
+    assert not Path(run.parquet_paths[0]).exists()
+
+
+def test_modelling_node_directly_off_data_input_writes_sliced(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph = _graph(
+        project,
+        [
+            ("src", "dataInput", _data_input(project, "quotes.parquet")),
+        ],
+        [("src", "train")],
+    )
+    run = _train(monkeypatch, graph, streaming_chunk_size=40)
+    assert run.job["status"] == "running", run.job.get("message")
+    validated = ExecutionMetricsPayload.model_validate(run.metrics)
+    assert validated.training_write_strategy == "sliced"
+    assert validated.training_write_native_reason is None
+    assert validated.training_write_blocking_operator is None
+    expected = pl.read_parquet(project / "quotes.parquet")
+    assert_frame_equal(run.frame, expected)
+
+
+def test_sliceable_sampled_frame_records_no_native_reason(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        _training_preparation,
+        "_seeded_training_sample",
+        lambda lf, limit: lf.slice(0, limit),
+    )
+    graph = _graph(
+        project,
+        [
+            ("src", "dataInput", _data_input(project, "quotes.parquet")),
+        ],
+        [("src", "train")],
+    )
+    run = _train(monkeypatch, graph, streaming_chunk_size=40, row_limit=50)
+    assert run.job["status"] == "running", run.job.get("message")
+    validated = ExecutionMetricsPayload.model_validate(run.metrics)
+    assert validated.training_write_strategy == "sliced"
+    assert validated.training_write_native_reason is None
+    assert len(run.frame) == 50
+
+
+def test_training_write_records_discarded_reason_only_for_native_strategy() -> None:
+    from haute._chunked_writes import ChunkedWrite
+
+    context = ExecutionContext(
+        operation="test",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_limit_bytes=1024 * 1024,
+    )
+    context.record_training_write(
+        ChunkedWrite(strategy="sliced", parts=(), chunks=1, staged_inputs=0),
+        native_reason="row_limit_sample",
+    )
+    assert context.metrics_payload()["training_write_strategy"] == "sliced"
+    assert context.metrics_payload()["training_write_native_reason"] is None
+
+    context.record_training_write(
+        ChunkedWrite(strategy="input_sliced", parts=(), chunks=1, staged_inputs=0),
+        native_reason="row_limit_sample",
+    )
+    assert context.metrics_payload()["training_write_strategy"] == "input_sliced"
+    assert context.metrics_payload()["training_write_native_reason"] is None
+
+    context.record_training_write(
+        ChunkedWrite(strategy="native", parts=(), chunks=1, staged_inputs=0),
+        native_reason="row_limit_sample",
+    )
+    assert context.metrics_payload()["training_write_strategy"] == "native"
+    assert context.metrics_payload()["training_write_native_reason"] == "row_limit_sample"
+
+
+def test_cancellation_mid_write_leaves_no_prepared_parquet(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orig_record_chunk = ExecutionContext.record_chunk
+
+    def cancel_during_chunk(self: ExecutionContext, *args: Any, **kwargs: Any) -> Any:
+        orig_record_chunk(self, *args, **kwargs)
+        self.cancel()
+
+    monkeypatch.setattr(ExecutionContext, "record_chunk", cancel_during_chunk)
+
+    graph = _graph(
+        project,
+        [
+            ("src", "dataInput", _data_input(project, "quotes.parquet")),
+            ("A", "polars", {"code": "df = src.filter(pl.col('a') >= 2)"}),
+        ],
+        [("src", "A"), ("A", "train")],
+    )
+    run = _train(monkeypatch, graph, streaming_chunk_size=40)
+    # What the write owes on cancellation: nothing left where the parquet would be.
+    # The job's own terminal reason is a separate contract, covered elsewhere.
+    assert run.job["status"] != "completed", run.job.get("message")
+    assert len(run.parquet_paths) >= 1
+    for path in run.parquet_paths:
+        assert not Path(path).exists()

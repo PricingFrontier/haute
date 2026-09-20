@@ -1066,6 +1066,64 @@ describe("API response guards", () => {
     expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_input_slices).toBe(1)
   })
 
+  it("preserves training write metrics evidence", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        training_write_strategy: "input_sliced",
+        training_write_input_slices: 3,
+        training_write_native_reason: "unsupported_frame_method",
+        training_write_blocking_operator: "head",
+      },
+    })
+    expect(parsed.execution_metrics?.training_write_strategy).toBe("input_sliced")
+    expect(parsed.execution_metrics?.training_write_input_slices).toBe(3)
+    expect(parsed.execution_metrics?.training_write_native_reason).toBe("unsupported_frame_method")
+    expect(parsed.execution_metrics?.training_write_blocking_operator).toBe("head")
+  })
+
+  it("accepts null training write fields in execution metrics", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        training_write_strategy: null,
+        training_write_input_slices: null,
+        training_write_native_reason: null,
+        training_write_blocking_operator: null,
+      },
+    })
+    expect(parsed.execution_metrics?.training_write_strategy).toBeNull()
+    expect(parsed.execution_metrics?.training_write_input_slices).toBeNull()
+    expect(parsed.execution_metrics?.training_write_native_reason).toBeNull()
+    expect(parsed.execution_metrics?.training_write_blocking_operator).toBeNull()
+  })
+
+  it("rejects a negative training_write_input_slices in execution metrics", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          training_write_input_slices: -1,
+        },
+      }),
+    ).toThrow(/training_write_input_slices/i)
+  })
+
+  it("rejects a zero training_write_input_slices in execution metrics", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          training_write_input_slices: 0,
+        },
+      }),
+    ).toThrow(/training_write_input_slices/i)
+  })
+
   it("defaults shared snapshot evidence to empty lists when omitted", () => {
     // The fixture predates shared snapshots, so it carries none of these fields.
     const parsed = parsePreviewNodeResponse({

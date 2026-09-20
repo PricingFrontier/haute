@@ -736,10 +736,14 @@ def _execute_and_sink_training_frame(
     execution_context: ExecutionContext,
 ) -> TrainingFeatureSelectionDiagnosticPayload:
     """Materialise the projected training frame into ``request.parquet_path``."""
+    from haute._chunked_writes import (
+        RecipeEquivalenceError,
+        WriteRecipe,
+        write_file,
+    )
     from haute._polars_utils import (
         DEFAULT_STREAMING_CHUNK_SIZE,
         _malloc_trim,
-        bounded_sink,
     )
     from haute.executor import _build_node_fn, _compile_preamble, _pipeline_dir, _preview_cache
     from haute.modelling._algorithms import _mem_checkpoint, _mem_log_path
@@ -781,6 +785,7 @@ def _execute_and_sink_training_frame(
     ) as plan:
         _mem_checkpoint("before _execute_lazy")
         chunk_size = request.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
+        write_recipes: dict[str, WriteRecipe] = {}
         lazy_outputs, _order, _parents, _id_to_name = execute_lazy_graph(
             graph,
             _build_node_fn,
@@ -792,6 +797,7 @@ def _execute_and_sink_training_frame(
             execution_context=execution_context,
             prepare_inputs=False,
             snapshot_plan=plan,
+            write_recipes=write_recipes,
         )
 
         target_lf = lazy_outputs.get(node_id)
@@ -801,8 +807,12 @@ def _execute_and_sink_training_frame(
                 "Make sure an upstream data source is connected and producing data."
             )
 
+        recipe: WriteRecipe | None = write_recipes.get(node_id)
+        discarded_reason: str | None = None
         if request.row_limit:
             target_lf = _seeded_training_sample(target_lf, request.row_limit)
+            recipe = None
+            discarded_reason = "row_limit_sample"
 
         target_schema = target_lf.collect_schema()
         schema_cols = target_schema.names()
@@ -846,12 +856,56 @@ def _execute_and_sink_training_frame(
             ]
             if drop_cols:
                 target_lf = target_lf.drop(drop_cols)
+                if recipe is not None:
+                    cols_to_drop = list(drop_cols)
+
+                    def _drop_excluded_columns(lf: pl.LazyFrame) -> pl.LazyFrame:
+                        return lf.drop(cols_to_drop)
+
+                    recipe = recipe.then(_drop_excluded_columns)
                 _mem_checkpoint(f"projected: dropped {len(drop_cols)} excluded columns")
 
         _mem_checkpoint("before sink_parquet")
         execution_context.checkpoint(label="before_training_sink_write", node_id=node_id)
         with execution_context.stage("training_sink_write", node_id=node_id):
-            bounded_sink(target_lf, tmp_parquet, streaming_chunk_size=chunk_size)
+            try:
+                written = write_file(
+                    tmp_parquet,
+                    target_lf,
+                    recipe=recipe,
+                    chunk_rows=chunk_size,
+                    execution_context=execution_context,
+                    node_id=node_id,
+                )
+                # A row limit discards the recipe, but the sampled frame may still
+                # slice on its own; the recorder keeps the discarded reason only if
+                # the write did come back native.
+                execution_context.record_training_write(
+                    written,
+                    native_reason=discarded_reason,
+                )
+            except RecipeEquivalenceError as exc:
+                # The check runs before a byte is written, so nothing partial exists
+                # and writing again is safe. Going back through the same writer keeps
+                # one writer and one recorded outcome; it cannot recover a bounded
+                # write, because the equivalence check is only reached on the branch a
+                # non-sliceable frame takes, so this second write lands on native too.
+                execution_context.record_execution_warning(
+                    "recipe_mismatch",
+                    node_id=node_id,
+                    reason=str(exc),
+                )
+                written = write_file(
+                    tmp_parquet,
+                    target_lf,
+                    chunk_rows=chunk_size,
+                    execution_context=execution_context,
+                    node_id=node_id,
+                )
+                execution_context.record_training_write(
+                    written,
+                    native_reason="recipe_mismatch",
+                )
         execution_context.checkpoint(label="after_training_sink_write", node_id=node_id)
 
         del lazy_outputs, target_lf
