@@ -23,21 +23,24 @@ seeding that a `banding-rating-ui` review examined on 19 September 2026 are
 delivered and specified; their packages are retired from this roadmap.
 Choosing captures by recompute cost, recording why a candidate was skipped,
 computing part digests during the write, heavy-row index windows and their
-cardinality check, and one chunk size per explicit build with its reported
-rows-per-part bound were delivered on the same branch and are specified in
+cardinality check, one chunk size per explicit build with its reported
+rows-per-part bound, and reporting a preview served from the response cache
+as seeded while raising the node-data epoch only for an unseen capture
+generation were delivered on the same branch and are specified in
 [caching](../caching/low-level.md#seed-plans), the
 [IO layer](../io-layer/low-level.md#node-output-snapshots), the
-[execution engine](../execution-engine/low-level.md), and the
-[server API](../server-api/low-level.md#node-data-builds). The review
-found no data-corruption defect and confirmed the chunked join against the
-native join on a lookup side whose hot key matched ten times the chunk size.
-What remains is where the delivered behaviour is narrower than the aim or
-where it will not hold at scale.
+[execution engine](../execution-engine/low-level.md), the
+[server API](../server-api/low-level.md#node-data-builds), and
+[frontend shared](../frontend-shared/low-level.md#the-shared-data-cache). The
+review found no data-corruption defect and confirmed the chunked join against
+the native join on a lookup side whose hot key matched ten times the chunk
+size. What remains is where the delivered behaviour is narrower than the aim
+or where it will not hold at scale.
 
 | Aim | Delivered | Gap |
 |---|---|---|
 | One store, every consumer | Node outputs, input snapshots, and analyses share `.haute_cache`; previews, bounded runs, explicit builds, and traces run under one seed plan. | API-input tables still live in the JSON cache (`CACHE-S08`). |
-| No duplicated runs | A bounded run seeds from any fresh covering generation and captures a join, fan-out, join feeder, batch Model Score, or consumed producer only where recomputing it costs more than the cache round trip, and records why it skipped the others; a preview seeds the same way and captures only the joins and costly full-input work it must compute in full. A chain of plain transforms is recomputed by every preview and bounded run by design, because recomputing it costs less than the cache round trip. Each capture publishes as soon as it is written, so a run that fails or is cancelled later keeps what it had already published. | Two consumers that resolve the same cold capture point at the same time, or an explicit build and an automatic capture of one node, both compute it; the publication lock decides only who publishes (`CACHE-S19`). A repeat preview served from the response cache announces captures it did not make (`CACHE-S14`). |
+| No duplicated runs | A bounded run seeds from any fresh covering generation and captures a join, fan-out, join feeder, batch Model Score, or consumed producer only where recomputing it costs more than the cache round trip, and records why it skipped the others; a preview seeds the same way and captures only the joins and costly full-input work it must compute in full. A chain of plain transforms is recomputed by every preview and bounded run by design, because recomputing it costs less than the cache round trip. Each capture publishes as soon as it is written, so a run that fails or is cancelled later keeps what it had already published. A preview served from the response cache reports its generations as seeded, and the canvas raises the node-data epoch only for a capture generation it has not seen, so a repeat preview costs no refetch. | Two consumers that resolve the same cold capture point at the same time, or an explicit build and an automatic capture of one node, both compute it; the publication lock decides only who publishes (`CACHE-S19`). |
 | Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. | Sixty-four generations and 20 GiB are shared with input snapshots, so captures evict each other or fall to `quota` (`CACHE-S12`). A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). Every preview prepares the graph several times and signs every lineage node per resolution (`CACHE-S17`). |
 | Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | Any other plan, including an ordinary filter over a large input, is written by one native streaming sink whose peak memory is Polars' to bound (`CACHE-S20`). Full joins rescan the base per lookup chunk and cross joins collect the lookup side (`CACHE-S18`). |
 | Failures are recoverable | A corrupt generation is reported, never silently repaired; a plan whose inputs moved before collection stops. | The corrupt error reaches the user as store text with no pointer to Re-cache; a mid-run input change continues instead of stopping (`CACHE-S16`). |
@@ -46,7 +49,6 @@ where it will not hold at scale.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CACHE-S14 | Planned | P2 | A preview announces only the snapshots it wrote. |
 | CACHE-S12 | Planned | P2 | Node-output snapshots have their own quota, large enough for capture-everything use, and a visible quota outcome. |
 | CACHE-S13 | Planned | P2 | A capturing preview finishes as a job instead of dying at the interactive timeout. |
 | CACHE-S19 | Planned | P2 | Two consumers that need the same cold capture compute it once. |
@@ -58,7 +60,7 @@ where it will not hold at scale.
 
 ## Planned improvements
 
-Delivery order is `CACHE-S14` → `CACHE-S12` → `CACHE-S13` → `CACHE-S19` →
+Delivery order is `CACHE-S12` → `CACHE-S13` → `CACHE-S19` →
 `CACHE-S16` → `CACHE-S20` → `CACHE-S17` → `CACHE-S18`; `CACHE-S08` is
 deferred. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
@@ -81,37 +83,6 @@ the specification sections its **Owning specifications** line names before
 its behaviour changes; the roadmap records the direction and the acceptance
 evidence, not the contract text. Each package's **Evidence** line is also its
 affected-file list.
-
-### CACHE-S14 — A preview announces only what it wrote
-
-**Why:** A preview served from the response cache replays the stored
-`seed_plan`, whose entries keep the `captured` kind of the execution that
-stored them (`src/haute/executor.py`, cache-hit branch). The frontend treats
-any `captured` entry as "this request wrote a snapshot"
-(`frontend/src/hooks/usePipelineAPI.ts`, `capturedSnapshots`) and raises the
-node-data epoch, so every open consumer asks the backend for its point again
-and the trace's semantic context renews, on every repeat preview.
-
-**Plan:** On a response-cache hit the backend reports every listed generation
-as `seeded`: the entry names what the response was computed from and what
-this request leased and verified, and `captured` means this request published
-it. Keep the frontend rule, and add a guard in `announceOwnCaptures` that
-raises the epoch only for generation ids the store has not observed, so a
-duplicated announcement is a no-op.
-
-**Acceptance:** `tests/test_preview_snapshot_seeding.py` proves a repeat
-preview lists its generations as `seeded`; the frontend epoch test proves a
-response whose captured generations are already known does not raise the
-epoch, and one whose generation is new does.
-
-**Owning specifications:** [server API](../server-api/low-level.md) (preview
-`seed_plan`); [frontend shared](../frontend-shared/low-level.md#the-shared-data-cache).
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/executor.py` (`_execute_graph_core`);
-`frontend/src/hooks/usePipelineAPI.ts`; `frontend/src/hooks/useTracing.ts`;
-`frontend/src/stores/useNodeDataStore.ts`.
 
 ### CACHE-S12 — A quota for node outputs
 
