@@ -55,6 +55,7 @@ _SLICEABLE_SCAN_TYPES = frozenset({"parquet", "ipc"})
 _SLICE_TRANSPARENT_NODES = frozenset({"HStack", "Select", "SimpleProjection"})
 _SLICE_TRANSPARENT_MAP_FUNCTIONS = frozenset({"rename", "unnest"})
 _MATCHES_COLUMN = "__haute_chunk_matches"
+_INDEX_COLUMN = "__haute_chunk_index"
 
 WriteStrategy = Literal["chunked_join", "sliced", "native"]
 
@@ -593,6 +594,7 @@ class _ChunkJoin:
         self.keep_lookup_order = keep_lookup_order
         self.finish = finish
         self.execution_context = execution_context
+        self._index: tuple[str, pl.LazyFrame] | None = None
 
     def _collect(self, lf: pl.LazyFrame) -> pl.DataFrame:
         # These queries scan the whole lookup side for a chunk's keys: the
@@ -673,7 +675,7 @@ class _ChunkJoin:
         start = 0
         while start < chunk.height:
             if expected[start] > self.rows:
-                self._write_heavy_row(chunk.slice(start, 1))
+                self._write_heavy_row(chunk.slice(start, 1), expected[start])
                 start += 1
                 continue
             end = start
@@ -692,18 +694,44 @@ class _ChunkJoin:
             self._sink(group, self._collect(group_matches).lazy())
             start = end
 
-    def _write_heavy_row(self, row: pl.DataFrame) -> None:
+    @property
+    def _index_column(self) -> str | None:
+        return self._index[0] if self._index is not None else None
+
+    def _resolve_index(self) -> tuple[str, pl.LazyFrame]:
+        if self._index is None:
+            names = set(self.lookup.collect_schema().names())
+            index = _INDEX_COLUMN
+            suffix = 0
+            while index in names:
+                index = f"{_INDEX_COLUMN}_{suffix}"
+                suffix += 1
+            self._index = (index, self.lookup.with_row_index(index))
+        return self._index
+
+    def _heavy_window(self, matches: pl.LazyFrame, cursor: int | None) -> pl.LazyFrame:
+        index, _ = self._resolve_index()
+        pending = matches if cursor is None else matches.filter(pl.col(index) > cursor)
+        return pending.bottom_k(self.rows, by=index)
+
+    def _write_heavy_row(self, row: pl.DataFrame, expected: int) -> None:
         """One driving row whose matches exceed a part: its matches a part at a time."""
-        matches = self._matches(row)
-        offset = 0
+        index, indexed_lookup = self._resolve_index()
+        matches = self._matches(row, indexed_lookup)
+        cursor: int | None = None
+        written = 0
         while True:
-            window = self._collect(matches.slice(offset, self.rows))
+            window = self._collect(self._heavy_window(matches, cursor))
             if window.height == 0:
-                return
-            self._sink(row, window.lazy())
-            offset += window.height
+                break
+            window = window.sort(index)
+            cursor = int(window.get_column(index)[-1])
+            self._sink(row, window.drop(index).lazy())
+            written += window.height
             if window.height < self.rows:
-                return
+                break
+        if written != expected:
+            raise RuntimeError(f"heavy row wrote {written} rows, expected {expected}")
 
 
 def _unique_key_violation(

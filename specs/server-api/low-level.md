@@ -546,9 +546,12 @@ as `build_node_id` so only strictly upstream points are seeded, the request's `r
 seeds nothing but still captures) whose captures stage under the build's own token, and — with
 that plan leased until the worker has exited — runs `_run_node_snapshot_worker` in an
 isolated worker with `HAUTE_NODE_SNAPSHOT_TIMEOUT` (default 1800 s), passing the plan's handoff
-in the request. The child sets the project root, confirms the bound identity, adopts the plan
-(leasing the same generations), executes the node under it with `enforce_contracts=True` and
-`prepare_inputs=False` — intermediate capture points are published as automatic generations —
+in the request. The child sets the project root, confirms the bound identity, and runs its whole
+execution and its target write under the request's `streaming_chunk_size`, so the target and every
+capture the run makes resolve the same size (a request that names no size leaves the process
+default in force): it adopts the plan (leasing the same generations), executes the node under it
+with `enforce_contracts=True` and `prepare_inputs=False` — intermediate capture points are
+published as automatic generations —
 rejects a multi-frame output (`node_snapshot_multi_frame_unsupported`), sinks the frame into
 staging named by the parent's token, confirms the identity again, and publishes with
 `explicit=True`, the request's `refresh`, and as `dependencies` the closure the plan recorded

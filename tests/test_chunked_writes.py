@@ -884,3 +884,165 @@ def test_parts_carry_write_time_digests(
     assert list(written_empty.digests) == list(written_empty.parts)
     for name in written_empty.parts:
         assert written_empty.digests[name] == content_hash(target_empty / name)
+
+
+def test_a_hot_key_spanning_parts_equals_the_native_join(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lookup_file = tmp_path / "lookup.parquet"
+    lookup_df = pl.DataFrame(
+        {
+            "k": ["hot"] * 70 + ["cold1"] * 15 + ["cold2"] * 15,
+            "v": list(range(100)),
+        }
+    )
+    lookup_df.write_parquet(lookup_file, row_group_size=10)
+    lookup = pl.scan_parquet(lookup_file)
+    base = pl.DataFrame({"k": ["hot", "cold1"], "d": [1, 2]}).lazy()
+    recipe = JoinRecipe(base, lookup, {"how": "inner", "on": "k"})
+    chunk_rows = 15
+    target = tmp_path / "parts"
+    target.mkdir()
+
+    window_calls = 0
+    real_heavy_window = haute._chunked_writes._ChunkJoin._heavy_window
+
+    def _counting_heavy_window(
+        self: Any, matches: pl.LazyFrame, cursor: int | None
+    ) -> pl.LazyFrame:
+        nonlocal window_calls
+        window_calls += 1
+        return real_heavy_window(self, matches, cursor)
+
+    monkeypatch.setattr(haute._chunked_writes._ChunkJoin, "_heavy_window", _counting_heavy_window)
+
+    written = write_parts(target, recipe.native(), join=recipe, chunk_rows=chunk_rows)
+    assert written.strategy == "chunked_join"
+    assert window_calls > 1
+
+    got = scan_parts(part_paths(target)).collect()
+    native = recipe.native().collect()
+    assert got.sort(got.columns).equals(native.sort(native.columns))
+
+
+def test_a_heavy_rows_windows_survive_a_reordered_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lookup = pl.DataFrame({"k": ["hot"] * 45 + ["other"] * 5, "v": list(range(50))}).lazy()
+    base = pl.DataFrame({"k": ["hot", "other"], "d": [1, 2]}).lazy()
+    recipe = JoinRecipe(base, lookup, {"how": "inner", "on": "k"})
+    chunk_rows = 10
+    target = tmp_path / "parts"
+    target.mkdir()
+
+    window_calls = 0
+    real_heavy_window = haute._chunked_writes._ChunkJoin._heavy_window
+
+    def _reordering_heavy_window(
+        self: Any, matches: pl.LazyFrame, cursor: int | None
+    ) -> pl.LazyFrame:
+        nonlocal window_calls
+        call_idx = window_calls
+        window_calls += 1
+        # Patching _collect instead would prove nothing, because that only
+        # reorders rows the selection already chose. The permutation must
+        # happen before the window is selected.
+        descending = (call_idx % 2) == 1
+        reordered = matches.sort("v", descending=descending)
+        return real_heavy_window(self, reordered, cursor)
+
+    monkeypatch.setattr(haute._chunked_writes._ChunkJoin, "_heavy_window", _reordering_heavy_window)
+
+    written = write_parts(target, recipe.native(), join=recipe, chunk_rows=chunk_rows)
+    assert written.strategy == "chunked_join"
+    assert window_calls >= 2
+
+    got = scan_parts(part_paths(target)).collect()
+    native = recipe.native().collect()
+    assert got.sort(got.columns).equals(native.sort(native.columns))
+
+
+def test_a_heavy_row_keeps_the_lookups_order_when_the_join_asks_for_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lookup = pl.DataFrame({"k": ["hot"] * 45 + ["other"] * 5, "v": list(range(50))}).lazy()
+    base = pl.DataFrame({"k": ["hot", "other"], "d": [1, 2]}).lazy()
+    recipe = JoinRecipe(
+        base,
+        lookup,
+        {"how": "left", "on": "k", "maintainOrder": "left_right"},
+    )
+    chunk_rows = 10
+    target = tmp_path / "parts"
+    target.mkdir()
+
+    window_calls = 0
+    real_heavy_window = haute._chunked_writes._ChunkJoin._heavy_window
+    real_collect = haute._chunked_writes._ChunkJoin._collect
+
+    def _reordering_heavy_window(
+        self: Any, matches: pl.LazyFrame, cursor: int | None
+    ) -> pl.LazyFrame:
+        nonlocal window_calls
+        call_idx = window_calls
+        window_calls += 1
+        descending = (call_idx % 2) == 1
+        reordered = matches.sort("v", descending=descending)
+        return real_heavy_window(self, reordered, cursor)
+
+    def _reversing_collect(self: Any, lf: pl.LazyFrame) -> pl.DataFrame:
+        df = real_collect(self, lf)
+        if self._index_column is not None and self._index_column in df.columns:
+            return df.reverse()
+        return df
+
+    monkeypatch.setattr(haute._chunked_writes._ChunkJoin, "_heavy_window", _reordering_heavy_window)
+    monkeypatch.setattr(haute._chunked_writes._ChunkJoin, "_collect", _reversing_collect)
+
+    written = write_parts(target, recipe.native(), join=recipe, chunk_rows=chunk_rows)
+    assert written.strategy == "chunked_join"
+    assert window_calls >= 2
+
+    got = scan_parts(part_paths(target)).collect()
+    native = recipe.native().collect()
+    assert got.equals(native)
+
+
+def test_a_heavy_row_that_loses_a_match_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lookup = pl.DataFrame({"k": ["hot"] * 25, "v": list(range(25))}).lazy()
+    base = pl.DataFrame({"k": ["hot"], "d": [1]}).lazy()
+    recipe = JoinRecipe(base, lookup, {"how": "inner", "on": "k"})
+    chunk_rows = 10
+    target = tmp_path / "parts"
+    target.mkdir()
+
+    dropped = False
+    window_calls = 0
+    real_heavy_window = haute._chunked_writes._ChunkJoin._heavy_window
+    real_collect = haute._chunked_writes._ChunkJoin._collect
+
+    def _counting_heavy_window(
+        self: Any, matches: pl.LazyFrame, cursor: int | None
+    ) -> pl.LazyFrame:
+        nonlocal window_calls
+        window_calls += 1
+        return real_heavy_window(self, matches, cursor)
+
+    def _dropping_collect(self: Any, lf: pl.LazyFrame) -> pl.DataFrame:
+        nonlocal dropped
+        df = real_collect(self, lf)
+        if not dropped and self._index_column is not None and self._index_column in df.columns:
+            dropped = True
+            return df.slice(1)
+        return df
+
+    monkeypatch.setattr(haute._chunked_writes._ChunkJoin, "_heavy_window", _counting_heavy_window)
+    monkeypatch.setattr(haute._chunked_writes._ChunkJoin, "_collect", _dropping_collect)
+
+    with pytest.raises(RuntimeError, match=r"heavy row wrote 9 rows, expected 25"):
+        write_parts(target, recipe.native(), join=recipe, chunk_rows=chunk_rows)
+
+    assert dropped
+    assert window_calls == 1

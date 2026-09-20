@@ -571,7 +571,15 @@ digests the same way:
   driving chunk probes its lookup matches (`semi` on the chunk's keys, `head(chunk_rows + 1)`);
   when they fit and their keys are unique the chunk joins them directly, otherwise per-key
   match counts split the chunk into consecutive groups of at most `chunk_rows` expected output
-  rows, and one driving row with more matches is joined against them `chunk_rows` at a time.
+  rows, and a driving row whose matches exceed a part is written a window at a time. A window
+  is an index range, not an offset: the writer reads the lookup with a row index (a reserved
+  name made unique against the lookup's own columns), each window is the `chunk_rows` smallest
+  indices above the previous window's maximum, and the collected window is sorted by that index
+  and the index dropped before it is joined. The windows are disjoint and complete whatever
+  order the engine returns rows in, and the sort restores the lookup's own order, which
+  `bottom_k` does not promise. The writer counts the rows it wrote for that driving row and
+  raises `RuntimeError` naming the expected and written counts if they disagree, so a short or
+  over-long read fails loudly instead of publishing a wrong part.
   A `semi`/`anti` join reads only the lookup's distinct keys. A `full` join adds the lookup
   rows no driving row matched, once each, as the full join of an empty base with them.
   `maintain_order` naming the driving side keeps Polars' order (ordered parts are collected
@@ -579,6 +587,11 @@ digests the same way:
   an order led by the lookup side, is written natively (`native_reason`).
 - **Sliced**: a sliceable frame is written one `slice(offset, chunk_rows)` per part.
 - **Native**: anything else is one native sink into `part-00000.parquet`.
+
+A sliced write and a keyed chunked join report the resolved `chunk_rows` as their
+rows-per-part bound. A native write and a cross join report none, because neither applies
+that bound: a native write is one sink at the ambient streaming chunk size, and a cross join
+sizes its parts by the lookup side.
 
 Every part is conformed to the output's schema; an empty output is one empty part. The lazy
 engine and the eager core build a recipe for every edge join they build, from exactly the
@@ -697,9 +710,11 @@ capture point is captured only after that check.
 Every capture point is written by `write_parts` (`fast_checkpoint=True`, in chunks of the
 request's streaming chunk size, `current_streaming_chunk_size()`) into a staging directory
 under the plan's token, and its capture record (`shared_snapshot_captures` evidence) carries
-the write's `write_strategy`, `write_parts`, and `write_staged_inputs` (a batch Model Score's
-own scored file is `prewritten`): all columns for an all-column demand, otherwise
-the negotiated columns present in the schema, carrier-preserving. Each part's xxh64 digest is
+the write's `write_strategy`, `write_parts`, `write_chunk_rows` (the rows-per-part bound the
+capture's write applied, null for a native write, a cross join, and a prewritten scored file),
+and `write_staged_inputs` (a batch Model Score's own scored file is `prewritten`): all columns
+for an all-column demand, otherwise the negotiated columns present in the schema,
+carrier-preserving. Each part's xxh64 digest is
 computed while the part is written (a `HashingWriter` around the sink, and around
 `write_parquet` for an in-memory part), returned as `ChunkedWrite.digests`, and handed to the
 capture's artifact before publication; a prewritten scored file's digest comes from its
@@ -2443,6 +2458,16 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   same graph, pinning the `_node_apply.py` shared-implementation guarantee.
 - **`test_polars_execution_strategy_slice0.py`** — projection/streaming strategy
   selection (`plan_execution_strategy`/`plan_prepared_execution_strategy`).
+- **`tests/test_chunked_writes.py`** — `test_a_hot_key_spanning_parts_equals_the_native_join`
+  verifies that a lookup written to Parquet with several row groups and a hot key matching
+  across parts equals the native join multiset.
+  `test_a_heavy_rows_windows_survive_a_reordered_read` confirms that heavy-row index windows
+  survive pre-selection match reordering without duplicating or dropping rows.
+  `test_a_heavy_row_keeps_the_lookups_order_when_the_join_asks_for_it` verifies that an
+  ordered chunked join restores the lookup's order even when windows are reordered before
+  selection and reversed after collection.
+  `test_a_heavy_row_that_loses_a_match_is_refused` verifies that a heavy row that loses a
+  match raises a RuntimeError naming both the expected and written counts.
 
 **Known coverage note:** `_execution_admission.py` has no dedicated test file; its
 behaviour is tested directly from `test_execution_context.py` and through route/service
