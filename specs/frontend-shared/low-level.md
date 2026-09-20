@@ -510,10 +510,13 @@ it (specified in the [server API](../server-api/low-level.md#node-data-builds)).
    `clear` removes the point's analyses through `/api/node-data/clear` and then clears delegated
    data through the route the point names. A document fence change drops every slot, because slots belong to one
    document and source, and the epoch keeps counting through that reset so a consumer whose
-   graph did not change still asks again. A preview that captured a snapshot no slot reported
-   raises the epoch through `bumpEpoch`, so every consumer asks again; a stored preview records
-   the epoch its request was sent under (`useNodeResultsStore.setPreview`), and
-   `advancePreviewEpoch` re-stamps only the entry still holding the same response.
+   graph did not change still asks again. The node-data epoch is raised for a `captured`
+   generation the store has not seen before. The store records the generation ids it has
+   announced, bounded so a long session cannot grow it without limit, oldest dropped first,
+   and cleared by the store's reset while the epoch keeps counting. When the epoch rises,
+   every consumer asks again; a stored preview records the epoch its request was sent under
+   (`useNodeResultsStore.setPreview`), and `advancePreviewEpoch` re-stamps only the entry still
+   holding the same response.
 4. Availability is per consumer: a fresh generation covering the consumer's demand is `current`,
    a fresh one that does not is `partial`, a superseded one is `stale`, and a point with no
    answer yet is `checking` rather than `missing`. `DataCacheButton` renders exactly that state,
@@ -534,8 +537,10 @@ same Vitest config.
   `frontend/src/panels/__tests__/dataPointIdentity.test.ts`,
   `frontend/src/__tests__/hooks/useBackgroundJobs.nodeData.test.ts`): one slot entry shared by
   two consumers, the epoch rising only when the data changes or a preview's own capture is
-  announced, a build adopted from another
-  client, two consumers deriving `current` and `partial` from one narrow generation, progress
+  announced — a duplicate announcement leaving the epoch untouched while a new generation
+  raises it once, and a reset making the next announcement count again — a build adopted from
+  another client, two consumers deriving `current` and `partial` from one narrow generation,
+  progress
   from a build either of them started, delegation handing over exactly the producer node, a
   forced or stale delegated build replacing data the ensure pass would skip, a delegated build
   shown to another consumer and cancelled through the slot, delegated clears, a point read

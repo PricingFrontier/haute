@@ -30,7 +30,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from contextlib import AbstractContextManager, ExitStack, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -1385,7 +1385,9 @@ def _execute_graph_core(
             avail_cols = cached["available_columns"]
             output_cols = cached["output_columns"]
             frame_cols = cached["frame_columns"]
-            read_generations = tuple(cached.get("seed_plan", ()))
+            read_generations = tuple(
+                replace(generation, kind="seeded") for generation in cached.get("seed_plan", ())
+            )
     elif cached is not None:
         # Partial hit — extend with newly-needed nodes
         logger.debug(

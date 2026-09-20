@@ -598,18 +598,21 @@ reconciliation rather than dropping them or committing a second mutation.
     `structuralVersion` and was requested at that epoch it short-circuits with
     no network call, otherwise it shows the cached data while re-fetching in
     the background. The stored entry records the epoch the request was sent
-    under. A response whose `seed_plan` lists a `captured` entry raises the
-    epoch once it has been applied, before the preview stops being busy: if the
-    epoch still equals the one the stored preview is current at, the entry is
-    first re-stamped to the raised epoch (`advancePreviewEpoch`), so the
-    preview's own capture never fetches it again; if something else moved the
-    epoch while it was in flight, it keeps its request epoch and is fetched
-    again at once. A superseded response's captures still raise the epoch.
-    `refreshPreview`'s upstream previews and `previewNodeFrame` raise it for
-    their captures too; neither is stored. A frame preview keeps the epoch it
-    is current at — its request epoch, or one past it for its own captures when
-    nothing else moved the epoch — and its frame beside the object the panel
-    shows. A separate effect fetches the displayed preview again — a frame
+    under. A response whose `seed_plan` lists a `captured` entry announces its
+    captured generation ids once it has been applied, before the preview stops
+    being busy; the announcement raises the epoch only for a generation the
+    store has not seen. If the announcement raised the epoch and the epoch still
+    equals the one the stored preview is current at, the entry is first
+    re-stamped to the raised epoch (`advancePreviewEpoch`), so the preview's own
+    capture never fetches it again; if something else moved the epoch while it
+    was in flight, it keeps its request epoch and is fetched again at once. A
+    superseded response raises the epoch only then. `refreshPreview`'s upstream
+    previews and `previewNodeFrame` announce their captures too; neither is
+    stored. A frame preview keeps the epoch it is current at — stamped one past
+    its request epoch only when its announcement raised the epoch and nothing
+    else moved the epoch, keeping its request epoch otherwise — and its frame
+    beside the object the panel shows. A separate effect fetches the displayed
+    preview again — a frame
     preview for its frame through `previewNodeFrame` — whenever it is the stored
     entry or such a frame preview, no request for it is running, and its epoch
     differs from the store's — a snapshot was
@@ -1455,7 +1458,10 @@ again through the editor and save paths.
     preview from an older epoch shown and fetched again, and one from the
     current epoch answered without a request; a displayed frame preview fetched
     again for its frame, and not for its own capture; a downstream capture
-    announced after the cascade without fetching the displayed root again.
+    announced after the cascade without fetching the displayed root again; a
+    duplicate announcement leaving the epoch untouched while a new generation
+    raises it once; a frame preview not being refetched for a duplicate
+    announcement; and a reset making the next announcement count again.
     The cache-identity fixtures in
     `frontend/src/hooks/__tests__/usePipelineAPI.gaps.test.ts` record the
     current epoch, so each varies only the dimension it tests.

@@ -1780,3 +1780,65 @@ def test_preview_no_longer_captures_explode_or_a_limited_udf_but_still_captures_
     p_join = _preview(join_graph, store, "banding", row_limit=row_limit)
     assert "join" in p_join.captures
     assert p_join.captures["join"]["outcome"] == "published"
+
+
+def test_a_repeat_preview_announces_its_generations_as_seeded(
+    project: Path, api: Any, builds: Counter[str]
+) -> None:
+    from haute.executor import _preview_cache
+
+    graph = _join_graph(project)
+    first = _post_preview(api, graph, "banding")
+    assert _plan_of(first) == [("join", "captured")]
+    gen_id = first["seed_plan"][0]["generation_id"]
+
+    builds.clear()
+    second = _post_preview(api, graph, "banding")
+
+    assert not builds, "the repeat preview is a backend cache hit"
+    assert _plan_of(second) == [("join", "seeded")]
+    assert second["seed_plan"][0]["generation_id"] == gen_id
+    assert [entry["kind"] for entry in second["seed_plan"]] == ["seeded"]
+
+    assert len(_preview_cache) == 1
+    key = next(iter(_preview_cache._data))
+    cached_entry = _preview_cache.get(key)
+    assert cached_entry is not None
+    assert [g.kind for g in cached_entry["seed_plan"]] == ["captured"]
+
+
+def test_an_extended_cache_hit_reports_the_current_plans_generations(
+    project: Path, api: Any, builds: Counter[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute.executor as executor
+
+    graph = _join_graph(project)
+    first = _post_preview(api, graph, "banding")
+    assert _plan_of(first) == [("join", "captured")]
+    gen_id = first["seed_plan"][0]["generation_id"]
+
+    assert len(executor._preview_cache) == 1
+    key = next(iter(executor._preview_cache._data))
+    entry = executor._preview_cache.get(key)
+    assert entry is not None
+    assert [g.kind for g in entry["seed_plan"]] == ["captured"]
+    del entry["eager_outputs"]["banding"]
+
+    extend_events: list[dict[str, Any]] = []
+    real_debug = executor.logger.debug
+
+    def recording_debug(event: str, *args: Any, **kwargs: Any) -> Any:
+        if event == "preview_cache_extend":
+            extend_events.append(kwargs)
+        return real_debug(event, *args, **kwargs)
+
+    monkeypatch.setattr(executor.logger, "debug", recording_debug)
+    builds.clear()
+
+    second = _post_preview(api, graph, "banding")
+
+    assert len(extend_events) == 1
+    assert set(builds) == {"banding"}
+    assert builds["banding"] == 1
+    assert _plan_of(second) == [("join", "seeded")]
+    assert second["seed_plan"][0]["generation_id"] == gen_id
