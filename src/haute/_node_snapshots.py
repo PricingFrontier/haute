@@ -545,6 +545,10 @@ class _NodeSnapshotCoordination:
     publication_locks: dict[str, _StoreFileLock] = field(default_factory=dict)
     token: str | None = None
     token_handle: Any | None = None
+    # Retired directories are swept once per process per root, not on every
+    # store construction: the sweep globs the whole store, and a preview builds
+    # several stores while nothing between them can retire anything.
+    retired_cleaned: bool = False
 
 
 _COORDINATION_GUARD = threading.Lock()
@@ -617,7 +621,11 @@ class NodeSnapshotStore(SourceCacheStore):
                 )
                 _COORDINATION[key] = coordination
         self._coordination = coordination
-        self._cleanup_retired()
+        with coordination.guard:
+            already_cleaned = coordination.retired_cleaned
+            coordination.retired_cleaned = True
+        if not already_cleaned:
+            self._cleanup_retired()
 
     # ------------------------------------------------------------------ paths
 

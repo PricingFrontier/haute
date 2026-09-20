@@ -268,6 +268,35 @@ def test_a_cleared_dependency_leaves_its_descendant_current(tmp_path: Path) -> N
     assert store.slot_status(downstream_slot, "s1").state == "current"
 
 
+def test_retired_directories_are_swept_once_per_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sweep globs the whole store, so it runs once, not per construction.
+
+    A preview builds several stores for one root and nothing between them can
+    retire anything, so repeating the walk is pure cost that grows with the
+    store.
+    """
+    from haute import _node_snapshots as module
+
+    sweeps: list[Path] = []
+    real_cleanup = module.NodeSnapshotStore._cleanup_retired
+
+    def counting_cleanup(self: module.NodeSnapshotStore) -> None:
+        sweeps.append(self.inputs_root)
+        real_cleanup(self)
+
+    monkeypatch.setattr(module.NodeSnapshotStore, "_cleanup_retired", counting_cleanup)
+    module._COORDINATION.clear()
+
+    first = module.NodeSnapshotStore(tmp_path)
+    module.NodeSnapshotStore(tmp_path)
+    module.NodeSnapshotStore(tmp_path)
+
+    assert len(sweeps) == 1
+    assert sweeps[0] == first.inputs_root
+
+
 def test_eviction_retires_the_least_recently_used_unleased_automatic_generation(
     tmp_path: Path,
 ) -> None:
