@@ -50,7 +50,7 @@ or where it will not hold at scale.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | CACHE-S12 | Planned | P2 | The store's usage is visible, and a job's refused capture is. |
-| CACHE-S13 | Planned | P2 | A capturing preview finishes as a job instead of dying at the interactive timeout. |
+| CACHE-S13 | Planned | P3 | A capturing preview finishes as a job instead of dying at the interactive timeout. Unproven: no measured preview approaches the timeout. |
 | CACHE-S19 | Planned | P2 | Two consumers that need the same cold capture compute it once. |
 | CACHE-S16 | Planned | P2 | Corrupt generations and mid-run input changes surface as typed, actionable failures. |
 | CACHE-S20 | Planned | P2 | Row-local single-input nodes are written a slice of their input at a time. |
@@ -60,9 +60,14 @@ or where it will not hold at scale.
 
 ## Planned improvements
 
-Delivery order is `CACHE-S12` → `CACHE-S13` → `CACHE-S19` →
-`CACHE-S16` → `CACHE-S20` → `CACHE-S17` → `CACHE-S18`; `CACHE-S08` is
-deferred. A package must not bypass
+Delivery order is `CACHE-S20` → `CACHE-S19` → `CACHE-S16` →
+`CACHE-S17` → `CACHE-S13` → `CACHE-S18`; `CACHE-S08` is deferred, and
+`CACHE-S12`'s remaining half waits on the toolbar work its usage surface
+would land in, so it is taken whenever that settles rather than in this
+order. `CACHE-S13` moved down on 20-Sep-2026 because measurement showed
+no preview near its timeout; `CACHE-S20` moved up because the cost rule now
+sends the commonest node shape down the one write path whose memory is
+unproven. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
 specified. Every package builds on the node-output snapshot store (signature,
 slot index, column widening, retention, cross-process leases, and the
@@ -131,15 +136,39 @@ proves it is shown.
 
 **Why:** A preview whose plan captures a join writes the whole join to disk
 before it returns rows, inside the interactive worker's timeout
-(`HAUTE_PREVIEW_TIMEOUT`, default 120 seconds). A join over data of any size
-exceeds that, the request answers 504, the worker is killed, and its staging
-is discarded, so the unfinished capture is lost and the next preview repeats
-it. Captures the worker had already published survive, because each capture
-publishes as soon as it is written.
+(`HAUTE_PREVIEW_TIMEOUT`, default 120 seconds). When a capture exceeds that,
+the request answers 504, the worker is killed, and its staging is discarded,
+so the unfinished capture is lost and the next preview repeats it. Captures
+the worker had already published survive, because each capture publishes as
+soon as it is written.
 
-**Plan:** First, when the resolved plan has captures, bound the preview
-worker by the sink timeout (`HAUTE_SINK_TIMEOUT`, default 300 seconds) rather
-than the interactive one. Then dispatch by a typed **capture-work estimate**:
+Measured on `haute-setup-testing` on 20-Sep-2026, that ceiling is far away.
+Previewing a 10M-row, 110-column join captured and published it in 9.9
+seconds, writing 982 MB at about 160 MB/s; previewing the model-score node
+below it took 6.1 seconds; previewing the cheap slice below the join, seeded
+from its capture, took 0.7 seconds. No preview timeout is recorded anywhere
+in that project. Reaching 120 seconds needs roughly an order of magnitude
+more data in one capture, or a node where computing rather than writing
+dominates: a batch Model Score or a group-by over the full data with no
+upstream row limit. This package is therefore unproven rather than urgent,
+and it is ordered after the packages whose problems are demonstrated.
+
+**Plan:** Measure before building. A performance artifact records preview
+time against capture size on the largest real pipeline, so the threshold
+below is chosen from data rather than guessed, and the package stays shelved
+while no preview approaches the ceiling.
+
+Raising the timeout alone is not the cheap first step it looks like: the
+route dispatches the preview to a worker before any plan exists, because the
+plan is opened inside the worker (`routes/pipeline.py`, `timeout_seconds=`),
+so the route cannot tell a capturing preview from any other without resolving
+the plan itself, which is the work `CACHE-S17` is trying to remove. Giving
+every shared-snapshot preview the sink timeout is possible but makes a hung
+preview take 300 seconds to fail, so it is a decision to take deliberately,
+not a free win.
+
+When the measurements justify it, dispatch by a typed **capture-work
+estimate**:
 for each capture point, the row count of each effective input as the nearest
 materialised point below it records it (a seed generation's or an input
 snapshot's metadata, a direct Parquet footer, a JSON table cache's
