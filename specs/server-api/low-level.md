@@ -553,7 +553,8 @@ default in force): it adopts the plan (leasing the same generations), executes t
 with `enforce_contracts=True` and `prepare_inputs=False` — intermediate capture points are
 published as automatic generations —
 rejects a multi-frame output (`node_snapshot_multi_frame_unsupported`), sinks the frame into
-staging named by the parent's token, confirms the identity again, and publishes with
+staging named by the parent's token via `write_parts` (passing the node's join recipe or
+write recipe from execution, so a chunk-local filter writes `input_sliced`), confirms the identity again, and publishes with
 `explicit=True`, the request's `refresh`, and as `dependencies` the closure the plan recorded
 for the node, so replacing any snapshot it seeded or captured makes it stale. A superseded
 publication counts as cached only when a current, full-width generation of the node exists;
@@ -874,7 +875,7 @@ entirely and leave every touched file in whatever state it happened to be in."
   removes the capture it had staged. `test_an_explicit_build_and_its_captures_share_the_requested_chunk_size`
   and `test_a_build_without_a_chunk_size_leaves_the_ambient_size_alone` verify that an explicit
   build and its captures share the requested chunk size, that the capture evidence records it,
-  and that an unconfigured build leaves the ambient chunk size alone.
+  and that an unconfigured build leaves the ambient chunk size alone. An explicit build of a chunk-local filter node writes `input_sliced` across several parts and equals the native result.
 - `tests/test_analysis_results.py` covers the profile route: an uncached point asking to be
   cached, a profile computed once and then served from the store, a second request joining the
   running profile, a refreshed point never returning the previous profile, admission failure,

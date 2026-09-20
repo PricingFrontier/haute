@@ -751,12 +751,31 @@ function parseSharedSnapshotCapture(
             parser,
             obj.write_strategy,
             `${field}.write_strategy`,
-            ["chunked_join", "sliced", "native", "prewritten"] as const,
+            ["chunked_join", "sliced", "input_sliced", "native", "prewritten"] as const,
           ),
         }),
     ...optionalNullablePositiveCount(parser, obj, "write_parts", field),
     ...optionalNullablePositiveCount(parser, obj, "write_chunk_rows", field),
     ...optionalNullableCount(parser, obj, "write_staged_inputs", field),
+    ...optionalNullablePositiveCount(parser, obj, "write_input_slices", field),
+    ...(obj.write_native_reason === undefined
+      ? {}
+      : {
+          write_native_reason: expectNullableString(
+            parser,
+            obj.write_native_reason,
+            `${field}.write_native_reason`,
+          ),
+        }),
+    ...(obj.write_blocking_operator === undefined
+      ? {}
+      : {
+          write_blocking_operator: expectNullableString(
+            parser,
+            obj.write_blocking_operator,
+            `${field}.write_blocking_operator`,
+          ),
+        }),
   }
 }
 

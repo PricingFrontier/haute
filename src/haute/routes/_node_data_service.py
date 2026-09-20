@@ -247,7 +247,7 @@ def _build_node_snapshot(
     """
     import polars as pl
 
-    from haute._chunked_writes import JoinRecipe, write_parts
+    from haute._chunked_writes import JoinRecipe, WriteRecipe, write_parts
     from haute._polars_utils import temporary_streaming_chunk_size
     from haute.execution import execute_lazy_graph
     from haute.executor import _build_node_fn, _compile_preamble, _pipeline_dir
@@ -270,6 +270,7 @@ def _build_node_snapshot(
         ) as plan,
     ):
         join_recipes: dict[str, JoinRecipe] = {}
+        write_recipes: dict[str, WriteRecipe] = {}
         unshaped_frames: dict[str, pl.LazyFrame] = {}
         outputs, *_ = execute_lazy_graph(
             graph,
@@ -282,6 +283,7 @@ def _build_node_snapshot(
             prepare_inputs=False,
             snapshot_plan=plan,
             join_recipes=join_recipes,
+            write_recipes=write_recipes,
             unshaped_frames=unshaped_frames,
         )
         output = outputs[request.node_id]
@@ -296,6 +298,7 @@ def _build_node_snapshot(
                     artifact.directory,
                     output.lazy() if isinstance(output, pl.DataFrame) else output,
                     join=join_recipes.get(request.node_id),
+                    recipe=write_recipes.get(request.node_id),
                     fast_checkpoint=True,
                     execution_context=execution_context,
                     node_id=request.node_id,

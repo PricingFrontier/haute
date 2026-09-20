@@ -102,7 +102,7 @@ from haute.projection import (
 )
 
 if TYPE_CHECKING:
-    from haute._chunked_writes import JoinRecipe
+    from haute._chunked_writes import JoinRecipe, WriteRecipe
     from haute._seed_plans import SeedPlan
 
 __all__ = [
@@ -1523,6 +1523,7 @@ def execute_lazy_graph(
     prepare_inputs: bool = True,
     snapshot_plan: SeedPlan | None = None,
     join_recipes: dict[str, JoinRecipe] | None = None,
+    write_recipes: dict[str, WriteRecipe] | None = None,
     unshaped_frames: dict[str, pl.LazyFrame] | None = None,
 ) -> LazyExecutionResult:
     """Execute a graph lazily through the shared production engine.
@@ -1537,6 +1538,8 @@ def execute_lazy_graph(
     ``dataframe_cache_request`` (deploy scoring) materialises node outputs.
     ``join_recipes``, when given, receives the recipe of every edge join the
     run builds, so a caller writing one in full can write it in chunks;
+    ``write_recipes``, when given, receives the recipe of every single-input
+    node the run builds, so a caller writing one in full can write it in chunks;
     ``unshaped_frames`` receives, for every node that selects or renames its
     columns, its frame before that step.
     """
@@ -1559,6 +1562,7 @@ def execute_lazy_graph(
         prepare_inputs=prepare_inputs,
         snapshot_plan=snapshot_plan,
         join_recipes=join_recipes,
+        write_recipes=write_recipes,
         unshaped_frames=unshaped_frames,
     )
 

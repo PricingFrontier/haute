@@ -1509,3 +1509,89 @@ def test_a_build_without_a_chunk_size_leaves_the_ambient_size_alone(
         assert current_streaming_chunk_size() == ambient_size
 
     assert current_streaming_chunk_size() != ambient_size
+
+
+@pytest.mark.usefixtures("in_process_worker")
+def test_explicit_build_of_a_chunk_local_filter_is_input_sliced_and_equals_native(
+    client: TestClient, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorded_writes: list[haute._chunked_writes.ChunkedWrite] = []
+    real_write_parts = haute._chunked_writes.write_parts
+
+    def _recording_write_parts(*args: Any, **kwargs: Any) -> Any:
+        written = real_write_parts(*args, **kwargs)
+        recorded_writes.append(written)
+        return written
+
+    monkeypatch.setattr(service_mod, "write_parts", _recording_write_parts, raising=False)
+    monkeypatch.setattr(haute._execute_lazy, "write_parts", _recording_write_parts)
+    monkeypatch.setattr(haute._chunked_writes, "write_parts", _recording_write_parts)
+
+    graph = make_graph(
+        {
+            "source_file": str(project / "main.py"),
+            "preamble": "import polars as pl",
+            "nodes": [
+                {
+                    "id": "quotes",
+                    "data": {
+                        "label": "quotes",
+                        "nodeType": "dataInput",
+                        "config": {
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "path": str(project / "quotes.parquet"),
+                            "arguments": {},
+                        },
+                    },
+                },
+                {
+                    "id": "filter_node",
+                    "data": {
+                        "label": "filter_node",
+                        "nodeType": "polars",
+                        "config": {"code": "df = quotes.filter(pl.col('premium') > 200)"},
+                    },
+                },
+                {
+                    "id": "explore",
+                    "data": {
+                        "label": "explore",
+                        "nodeType": "explore",
+                        "config": {},
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("quotes", "filter_node").model_dump(),
+                make_edge("filter_node", "explore").model_dump(),
+            ],
+        }
+    ).model_dump()
+
+    job = _cache(client, graph, "explore", streaming_chunk_size=200)
+    assert job["status"] == "completed"
+
+    assert len(recorded_writes) == 1
+    write = recorded_writes[0]
+    assert write.strategy == "input_sliced"
+    assert write.input_slices == 5
+    assert write.chunks == 5
+
+    resolver = _resolver(project, graph)
+    identity = resolver.node_output_slot("filter_node").identity(
+        resolver.node_output_signature("filter_node")
+    )
+    gen = resolver.store.latest_generation(identity)
+    assert gen is not None
+    assert len(gen.generation.metadata.parts) == 5
+    assert len(gen.generation.data_paths) == 5
+
+    gen_df = gen.generation.lazy_frame.collect().sort("policy_id")
+    expected = (
+        pl.read_parquet(project / "quotes.parquet")
+        .filter(pl.col("premium") > 200)
+        .sort("policy_id")
+    )
+    assert_frame_equal(gen_df, expected)

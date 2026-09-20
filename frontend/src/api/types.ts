@@ -204,10 +204,13 @@ export interface SharedSnapshotCapture {
   outcome: "published" | "superseded" | "quota"
   generation_id: string | null
   columns: "all" | string[]
-  write_strategy?: "chunked_join" | "sliced" | "native" | "prewritten" | null
+  write_strategy?: "chunked_join" | "sliced" | "input_sliced" | "native" | "prewritten" | null
   write_parts?: number | null
   write_chunk_rows?: number | null
   write_staged_inputs?: number | null
+  write_input_slices?: number | null
+  write_native_reason?: string | null
+  write_blocking_operator?: string | null
 }
 
 /** A candidate capture point skipped under cost gating. */

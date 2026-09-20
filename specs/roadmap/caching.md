@@ -42,7 +42,7 @@ or where it will not hold at scale.
 | One store, every consumer | Node outputs, input snapshots, and analyses share `.haute_cache`; previews, bounded runs, explicit builds, and traces run under one seed plan. | API-input tables still live in the JSON cache (`CACHE-S08`). |
 | No duplicated runs | A bounded run seeds from any fresh covering generation and captures a join, fan-out, join feeder, batch Model Score, or consumed producer only where recomputing it costs more than the cache round trip, and records why it skipped the others; a preview seeds the same way and captures only the joins and costly full-input work it must compute in full. A chain of plain transforms is recomputed by every preview and bounded run by design, because recomputing it costs less than the cache round trip. Each capture publishes as soon as it is written, so a run that fails or is cancelled later keeps what it had already published. A preview served from the response cache reports its generations as seeded, and the canvas raises the node-data epoch only for a capture generation it has not seen, so a repeat preview costs no refetch. | Two consumers that resolve the same cold capture point at the same time, or an explicit build and an automatic capture of one node, both compute it; the publication lock decides only who publishes (`CACHE-S19`). |
 | Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. Node outputs have their own budget which input snapshots neither consume nor are evicted by. A preview says when a node was not cached and how to fix it. | The store's usage is invisible, and a job's refused capture is (`CACHE-S12`). A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). Every preview prepares the graph several times and signs every lineage node per resolution (`CACHE-S17`). |
-| Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | Any other plan, including an ordinary filter over a large input, is written by one native streaming sink whose peak memory is Polars' to bound (`CACHE-S20`). Full joins rescan the base per lookup chunk and cross joins collect the lookup side (`CACHE-S18`). |
+| Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A node with one input whose code is provably row-local is written a slice of its input at a time where a capture or an explicit build writes it, so its memory does not grow with the input. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | Training preparation's parquet and a Data Output's Parquet still write any such node through one native streaming sink, whose peak memory grows with the input (`CACHE-S20`). Full joins rescan the base per lookup chunk and cross joins collect the lookup side (`CACHE-S18`). |
 | Failures are recoverable | A corrupt generation is reported, never silently repaired; a plan whose inputs moved before collection stops. | The corrupt error reaches the user as store text with no pointer to Re-cache; a mid-run input change continues instead of stopping (`CACHE-S16`). |
 
 ## Priorities
@@ -329,102 +329,47 @@ payloads); [frontend shared](../frontend-shared/low-level.md).
 (`_should_publish_locked`); `src/haute/_execute_lazy.py`;
 `src/haute/errors.py`; `src/haute/routes/_contract_errors.py`.
 
-### CACHE-S20 — Input-sliced writes for row-local nodes
+### CACHE-S20 — Input-sliced writes for the consumers that write one file
 
-**Why:** The chunked writer slices a frame only when Polars pushes a slice
-down to its single leaf (`src/haute/_chunked_writes.py`, `sliceable`), which
-Polars refuses for a filter, because slicing after a filter is not slicing
-before it. Every such plan, including an ordinary filter or a row-local
-transform with a filter in it over a large input, is written by one native
-streaming sink (`write_parts`, `native` strategy), whose peak memory is
-Polars' to bound and which the module's own rationale does not trust for one
-long query. The same native sink is how training preparation writes its
-parquet and how a Data Output writes Parquet, so an uncaptured cheap segment,
-which the cost rule leaves to the consumer, takes that path in every bounded
-run. The memory-safety aim therefore holds for sliceable frames and edge
-joins and is unproven for the most common node shape.
+**Why:** Measured on 20-Sep-2026 and recorded in
+`tests/performance/test_write_strategy_memory.py`: over a fourfold input the native write
+path's peak memory roughly doubles, while a sliced write grows about a third. A passthrough
+that keeps every row grows almost as much as a filter does, so the cost belongs to that write
+path rather than to filtering.
 
-**Plan:** Measured on 20-Sep-2026: the native sink's peak grows with its input
-while the sliced strategy's stays bounded, growing about 1.3 times over a
-fourfold input rather than in step with it. On 60-column real data, fresh process
-per case, peak private bytes over a clean baseline:
+The writer, captures and explicit node-data builds are delivered: a Polars node with one input
+whose code the closed allowlist `classify_chunk_local_polars_code` admits is written a slice of
+its input at a time (`input_sliced`), the engine hands the recipe over as it hands join recipes,
+the writer refuses a recipe whose input Polars will not slice, and the capture record carries
+the strategy, the slice count, and the reason and blocking operator when it stayed native.
 
-| Rows | filter (native) | filter with derived columns (native) | unnest (sliced) | sort (native control) |
-|---|---|---|---|---|
-| 2.5M | 2520 MB | 2650 MB | 1465 MB | 5520 MB |
-| 5M | 4446 MB | 4940 MB | 1577 MB | 10063 MB |
-| 10M | 6128 MB | 8607 MB | 1604 MB | 14375 MB |
+What remains is every OTHER full-frame write, which is where the commonest shape of all lives:
+a cheap uncaptured segment, which the cost rule leaves to its consumer, is written by training
+preparation and by a Data Output through the native sink on every bounded run.
 
-The artifact carries a passthrough control, every row kept, forced down the
-same native path: it grew 1.97 to 2.00 times against the filter's 2.02 to
-2.25, so the predicate adds almost nothing and the growth belongs to the
-native sink itself rather than to filtering. Recorded as a permanent reproducible artifact in
-`tests/performance/test_write_strategy_memory.py`, which measures a 40-column
-fixture at 1.5M and 6M rows and asserts the relationship rather than any byte
-count: every native case grew at least 1.97x there against the sliced
-control's 1.32x.
-The package proceeds on this evidence. Write a chunk-local single-input node
-a slice of its input at a time: the engine
-already knows a node's builder function and its one input frame, and the
-union of the function applied to each input slice equals its output exactly
-when the function is chunk-local. That proof is the existing closed
-allowlist `classify_chunk_local_polars_code` in `src/haute/chunking.py`,
-which admits a node's code only when every construct is recognised and
-rejects positional and cross-row operations, so `head`, `slice`, `limit`,
-`tail`, `with_row_index`, `sample`, `unique`, cumulative and window
-expressions, and any operation it does not name stay native; the absence of
-a materialisation boundary is not a proof and is not used as one. A node
-without code is admitted only when its builder declares its step chunk-local
-(selection, renames, an unnest, an explode, a filter on a row-local
-predicate). The allowlist is extended, if at all, one operation at a time
-with an equivalence test. Route every full-frame write through the chunked
-writer, captures, explicit builds, training preparation's parquet, and a
-Data Output's Parquet, so the strategy applies to an uncaptured cheap
-consumed segment as much as to a capture. A consumer receives only a node's
-final frame today, so the engine hands it the recipe as it already hands
-join recipes: `execute_lazy_graph` fills a caller-supplied
-`write_recipes` map with, for every node whose segment the proof accepts,
-its sliceable input frame, the builder function to apply per slice, the
-engine's own post-builder shaping (selected columns, then renames) composed
-after it exactly as `JoinRecipe.finish` composes it for a join, and the
-proof's reason, so the recipe reproduces the exact frame the engine hands
-out and nothing else. A consumer that transforms that frame further
-composes each row-local step into the recipe through the same `then`
-mechanism (training's column exclusions and projections, a Data Output's
-selected columns); any step that is not chunk-local, above all training's
-seeded sample under a row limit, which is a global draw and cannot be taken
-slice by slice, invalidates the recipe, and that write takes the native
-path with the reason recorded. A recipe is only ever applied to the frame it
-was bound to: passing it with any other frame is an error.
-Because training preparation and a Data Output each need one regular file
-at a fixed staging path, the writer gains a single-file mode beside
-`write_parts`: it drives the same slices through one Parquet writer, one row
-group per slice, into the destination's staging file, so the existing
-sign-then-publish contract and every atomic-replace and cleanup rule of the
-consumer are untouched. Record the strategy (`input_sliced`), the proof's
-reason, and the input slice count in the capture record and the consumer's
-execution metrics.
+**Plan:** Give the writer a single-file mode beside `write_parts`, driving the same slices
+through one Parquet writer, one row group per slice, into the destination's staging file, so
+every atomic-replace, sign-then-publish and cleanup rule of those consumers is untouched. A
+consumer composes its own row-local steps into the recipe through `then` (training's column
+exclusions and projections, a Data Output's selected columns); any step that is not chunk-local,
+above all training's seeded sample under a row limit, which is a global draw and cannot be taken
+slice by slice, invalidates the recipe and that write takes the native path with the reason
+recorded. Admit code-free nodes whose builder declares its step chunk-local (selection, renames,
+an unnest, an explode, a filter on a row-local predicate).
 
-**Acceptance:** The artifact records the measurements and the decision.
-If implemented: `tests/test_chunked_writes.py` proves equality with the
-native result for a filter, a filter with derived columns, an unnest, and an
-explode; proves `head`, `slice`, `with_row_index`, `unique`, a shift, a
-window function, and a group-by stay native with the classifier's reason;
-and proves no query in the sliced write holds more than one input slice;
-`tests/test_snapshot_seeding.py` proves a captured filter node reports
-`input_sliced` and a captured `head` node reports `native`;
-`tests/test_training_seeding.py` proves a cheap consumed filter over a
-large input is written input-sliced by training preparation into its single
-parquet, across several slices, equal to the native result, without
-publishing a snapshot; that a node with selected and renamed columns and a
-training run with column exclusions are written equal to the native result
-across several slices; that a training run with a row-limit sample takes
-the native path with the reason recorded and its rows equal the unsliced
-sample; that a recipe passed with a frame other than the one it was bound
-to is refused; and that a cancellation mid-write leaves no partial file
-where the output would be; `tests/test_data_output_seeding.py` proves the
-same for a Data Output with selected columns through its staging path and
-that the signed publication contract is unchanged.
+One shape needs work before it can carry a recipe at all: a Data Input with editor code has no
+input frame the engine hands out, because its scan lives inside its builder, so the builder must
+expose that scan first.
+
+**Acceptance:** `tests/test_training_seeding.py` proves a cheap consumed filter over a large
+input is written input-sliced by training preparation into its single parquet, across several
+slices, equal to the native result, without publishing a snapshot; that a node with selected and
+renamed columns and a training run with column exclusions are written equal to the native result
+across several slices; that a training run with a row-limit sample takes the native path with the
+reason recorded and its rows equal the unsliced sample; and that a cancellation mid-write leaves
+no partial file where the output would be. `tests/test_data_output_seeding.py` proves the same
+for a Data Output with selected columns through its staging path, and that the signed publication
+contract is unchanged.
 
 **Owning specifications:** [IO layer](../io-layer/low-level.md) (chunked
 writes, single-file mode); [execution engine](../execution-engine/low-level.md)
@@ -434,14 +379,8 @@ writes, single-file mode); [execution engine](../execution-engine/low-level.md)
 
 **Dependencies:** None.
 
-**Evidence:** `src/haute/_chunked_writes.py`; `src/haute/_execute_lazy.py`
-(`_PlannedCaptures.capture`, `_edge_join_recipe`, the `join_recipes`
-handoff); `src/haute/execution.py` (`execute_lazy_graph`);
-`src/haute/chunking.py` (`classify_chunk_local_polars_code`);
-`src/haute/_builders.py`; `src/haute/routes/_training_preparation.py`
-(`_execute_and_sink_training_frame`); `src/haute/executor.py`
-(`prepare_data_output`, `_run_lazy`); `src/haute/_polars_io_registry.py`
-(Data Output Parquet writer).
+**Evidence:** `src/haute/_chunked_writes.py`; `src/haute/modelling/_training_job.py`;
+`src/haute/executor.py` (the Data Output write); `src/haute/_builders.py` (a Data Input's scan).
 
 ### CACHE-S17 — Flat planning and housekeeping cost
 

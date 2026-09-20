@@ -688,6 +688,9 @@ describe("API response guards", () => {
             write_parts: 20,
             write_chunk_rows: 500,
             write_staged_inputs: 0,
+            write_input_slices: 4,
+            write_native_reason: "unsupported_frame_method",
+            write_blocking_operator: "head",
           },
         ],
         shared_snapshot_capture_skips: [
@@ -706,6 +709,9 @@ describe("API response guards", () => {
     expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_parts).toBe(20)
     expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_chunk_rows).toBe(500)
     expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_staged_inputs).toBe(0)
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_input_slices).toBe(4)
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_native_reason).toBe("unsupported_frame_method")
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_blocking_operator).toBe("head")
     expect(parsed.execution_metrics?.shared_snapshot_capture_skips).toEqual([
       { node_id: "select_1", reason: "cheap_segment" },
     ])
@@ -918,6 +924,146 @@ describe("API response guards", () => {
         },
       }),
     ).toThrow(/write_strategy/i)
+  })
+
+  it("accepts input_sliced as write_strategy in shared snapshot captures", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        shared_snapshot_captures: [
+          {
+            node_id: "banding",
+            identity_digest: "d2",
+            kind: "consumed",
+            outcome: "quota",
+            generation_id: null,
+            columns: ["premium", "region"],
+            write_strategy: "input_sliced",
+            write_input_slices: 3,
+          },
+        ],
+      },
+    })
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_strategy).toBe("input_sliced")
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_input_slices).toBe(3)
+  })
+
+  it("accepts null write_input_slices, write_native_reason, and write_blocking_operator in shared snapshot captures", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        shared_snapshot_captures: [
+          {
+            node_id: "banding",
+            identity_digest: "d2",
+            kind: "consumed",
+            outcome: "quota",
+            generation_id: null,
+            columns: ["premium", "region"],
+            write_strategy: "native",
+            write_input_slices: null,
+            write_native_reason: null,
+            write_blocking_operator: null,
+          },
+        ],
+      },
+    })
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_input_slices).toBeNull()
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_native_reason).toBeNull()
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_blocking_operator).toBeNull()
+  })
+
+  it("rejects a negative write_input_slices in shared snapshot captures", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_captures: [
+            {
+              node_id: "banding",
+              identity_digest: "d2",
+              kind: "consumed",
+              outcome: "quota",
+              generation_id: null,
+              columns: ["premium", "region"],
+              write_strategy: "input_sliced",
+              write_input_slices: -1,
+            },
+          ],
+        },
+      }),
+    ).toThrow(/write_input_slices/i)
+  })
+
+  it("rejects a zero write_input_slices in shared snapshot captures", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_captures: [
+            {
+              node_id: "banding",
+              identity_digest: "d2",
+              kind: "consumed",
+              outcome: "quota",
+              generation_id: null,
+              columns: ["premium", "region"],
+              write_strategy: "input_sliced",
+              write_input_slices: 0,
+            },
+          ],
+        },
+      }),
+    ).toThrow(/write_input_slices/i)
+  })
+
+  it("rejects a non-numeric write_input_slices in shared snapshot captures", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_captures: [
+            {
+              node_id: "banding",
+              identity_digest: "d2",
+              kind: "consumed",
+              outcome: "quota",
+              generation_id: null,
+              columns: ["premium", "region"],
+              write_strategy: "input_sliced",
+              write_input_slices: "two",
+            },
+          ],
+        },
+      }),
+    ).toThrow(/write_input_slices/i)
+  })
+
+  it("accepts a count of 1 for write_input_slices in shared snapshot captures", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        shared_snapshot_captures: [
+          {
+            node_id: "banding",
+            identity_digest: "d2",
+            kind: "consumed",
+            outcome: "quota",
+            generation_id: null,
+            columns: ["premium", "region"],
+            write_strategy: "input_sliced",
+            write_input_slices: 1,
+          },
+        ],
+      },
+    })
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_input_slices).toBe(1)
   })
 
   it("defaults shared snapshot evidence to empty lists when omitted", () => {

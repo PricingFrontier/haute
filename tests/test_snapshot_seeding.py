@@ -1207,6 +1207,9 @@ def test_metrics_report_seeds_captures_and_warnings(
         "write_parts": 1,
         "write_chunk_rows": None,
         "write_staged_inputs": 0,
+        "write_input_slices": None,
+        "write_native_reason": "not_sliceable",
+        "write_blocking_operator": None,
     }
     assert first.metrics["warnings"] == []
     assert first.metrics["shared_snapshot_capture_skips"] == [
@@ -1436,3 +1439,167 @@ def test_bounded_run_over_cheap_consumed_segment_reads_it_directly_and_next_run_
     assert second.captures == {}
     assert second.calls["src"] == 1
     assert_frame_equal(second.frame, first.frame)
+
+
+def test_captured_chunk_local_node_reports_input_sliced_across_slices(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    from haute._polars_utils import temporary_streaming_chunk_size
+
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("other", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("A", NodeType.POLARS, _code("df = src.filter(pl.col('a') >= 0)")),
+            (
+                "J",
+                NodeType.EDGE_JOIN,
+                {
+                    "how": "left",
+                    "on": "id",
+                    "selected_columns": ["id", "a", "d"],
+                },
+            ),
+            ("B", NodeType.POLARS, _code("df = J.filter(pl.col('a') >= 0)")),
+            ("T", NodeType.MODELLING, {}),
+        ],
+        [
+            GraphEdge(id="e_src", source="src", target="A"),
+            GraphEdge(id="e0", source="other", target="J", targetHandle="join"),
+            GraphEdge(id="e1", source="A", target="J", targetHandle="base"),
+            GraphEdge(id="e2", source="J", target="B"),
+            GraphEdge(id="e3", source="B", target="T"),
+        ],
+    )
+    with temporary_streaming_chunk_size(80):
+        run = _run(graph, store, required={"T": ["id", "a", "d"], "A": ["a", "id"]})
+    capture = run.captures["A"]
+    assert capture["write_strategy"] == "input_sliced"
+    assert capture["write_input_slices"] == 3
+    assert capture["write_parts"] == 3
+    assert capture["write_native_reason"] is None
+    assert capture["write_blocking_operator"] is None
+
+
+def test_captured_rejected_node_reports_native_with_reason_and_blocking_operator(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    from haute._polars_utils import temporary_streaming_chunk_size
+
+    graph = _join_graph(
+        project,
+        a_code="df = src.filter(pl.col('a') >= 0).head(50)",
+    )
+    with temporary_streaming_chunk_size(80):
+        run = _run(graph, store, required={"T": ["a"]})
+    capture = run.captures["A"]
+    assert capture["write_strategy"] == "native"
+    assert capture["write_native_reason"] == "unsupported_frame_method"
+    assert capture["write_blocking_operator"] == "head"
+    assert capture["write_input_slices"] is None
+    assert capture["write_parts"] == 1
+
+
+def test_captured_two_input_node_gets_no_recipe_and_no_classifier_reason(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    graph = _join_graph(project)
+    run = _run(graph, store, required={"T": ["a"]})
+    capture = run.captures["J"]
+    assert capture["write_strategy"] == "native"
+    assert capture["write_native_reason"] == "not_sliceable"
+    assert capture["write_blocking_operator"] is None
+    assert capture["write_input_slices"] is None
+
+
+def test_captured_chunk_local_node_empty_input_publishes_and_metrics_validate(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    empty_parquet = project / "empty_quotes.parquet"
+    pl.DataFrame(
+        {"id": [], "a": [], "d": []},
+        schema={"id": pl.Int64, "a": pl.Float64, "d": pl.Utf8},
+    ).write_parquet(empty_parquet)
+
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(empty_parquet)),
+            ("other", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("A", NodeType.POLARS, _code("df = src.filter(pl.col('a') >= 0)")),
+            (
+                "J",
+                NodeType.EDGE_JOIN,
+                {
+                    "how": "left",
+                    "on": "id",
+                    "selected_columns": ["id", "a", "d"],
+                },
+            ),
+            ("B", NodeType.POLARS, _code("df = J.filter(pl.col('a') >= 0)")),
+            ("T", NodeType.MODELLING, {}),
+        ],
+        [
+            GraphEdge(id="e_src", source="src", target="A"),
+            GraphEdge(id="e0", source="other", target="J", targetHandle="join"),
+            GraphEdge(id="e1", source="A", target="J", targetHandle="base"),
+            GraphEdge(id="e2", source="J", target="B"),
+            GraphEdge(id="e3", source="B", target="T"),
+        ],
+    )
+    run = _run(graph, store, required={"T": ["id", "a", "d"], "A": ["a", "id"]})
+    capture = run.captures["A"]
+    assert capture["outcome"] == "published"
+    assert capture["write_strategy"] == "input_sliced"
+    assert capture["write_input_slices"] == 1
+    assert capture["write_parts"] == 1
+    assert capture["write_native_reason"] is None
+    assert capture["write_blocking_operator"] is None
+
+    validated = ExecutionMetricsPayload.model_validate(run.metrics)
+    assert any(c.node_id == "A" for c in validated.shared_snapshot_captures)
+    assert store.latest_generation(_identity(store, graph, "A")) is not None
+
+
+def test_captured_instance_node_referencing_original_source_names_is_input_sliced(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    from haute._polars_utils import temporary_streaming_chunk_size
+
+    graph = _graph(
+        project,
+        [
+            ("src1", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("src2", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("orig", NodeType.POLARS, _code("df = src1.filter(pl.col('a') >= 0)")),
+            (
+                "inst",
+                NodeType.POLARS,
+                {"instanceOf": "orig", "code": "df = src1.filter(pl.col('a') >= 0)"},
+            ),
+            (
+                "J",
+                NodeType.EDGE_JOIN,
+                {
+                    "how": "left",
+                    "on": "id",
+                    "selected_columns": ["id", "a", "b"],
+                },
+            ),
+            ("T", NodeType.MODELLING, {}),
+        ],
+        [
+            GraphEdge(id="e_orig", source="src1", target="orig"),
+            GraphEdge(id="e_inst", source="src2", target="inst"),
+            GraphEdge(id="e_base", source="inst", target="J", targetHandle="base"),
+            GraphEdge(id="e_join", source="src1", target="J", targetHandle="join"),
+            GraphEdge(id="e_t", source="J", target="T"),
+        ],
+    )
+    with temporary_streaming_chunk_size(80):
+        run = _run(graph, store, required={"T": ["id", "a", "b"], "inst": ["a", "id"]})
+    capture = run.captures["inst"]
+    assert capture["write_strategy"] == "input_sliced"
+    assert capture["write_native_reason"] is None
+    assert capture["write_blocking_operator"] is None

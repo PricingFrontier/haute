@@ -15,7 +15,7 @@ import polars as pl
 import haute.execution as execution_facade
 import haute.projection as projection_planner
 from haute._builders import _passthrough_fn
-from haute._chunked_writes import ChunkedWrite, JoinRecipe, part_name, write_parts
+from haute._chunked_writes import ChunkedWrite, JoinRecipe, WriteRecipe, part_name, write_parts
 from haute._column_lineage import analyze_polars_lineage
 from haute._contracts import Contract, get_column_contract
 from haute._edge_join import (
@@ -56,6 +56,7 @@ from haute._types import (
     PipelineGraph,
     _Frame,
 )
+from haute.chunking import classify_chunk_local_polars_code
 from haute.errors import (
     ConfigError,
     ContractMismatchError,
@@ -97,6 +98,62 @@ def _edge_join_recipe(
         return renamed if isinstance(renamed, pl.LazyFrame) else renamed.lazy()
 
     return JoinRecipe(frames[base_index], frames[join_index], join_config, finish=finish)
+
+
+def _write_recipe(
+    fn: Callable[..., Any],
+    node: GraphNode,
+    input_frames: Sequence[Any],
+    *,
+    frame_names: Sequence[str] = (),
+    orig_frame_names: Sequence[str] | None = None,
+    selector_aliases: frozenset[str] = frozenset(),
+) -> WriteRecipe | None:
+    """A chunk-local single-input node's recipe, from the exact frame its builder receives.
+
+    Only a Polars node with exactly one input frame qualifies; anything else
+    has no recipe and is written natively without recording a decision. When
+    eligible, the recipe carries the transform function and the single input
+    frame; when ineligible, it carries the classifier's reason and blocking
+    operator without a function. The recipe ends with the node's own column
+    step (selected columns, then renames), matching how edge joins finish.
+    """
+    if node.data.nodeType != NodeType.POLARS or len(input_frames) != 1:
+        return None
+    frame = input_frames[0]
+    input_lf = frame.lazy() if isinstance(frame, pl.DataFrame) else frame
+    if not isinstance(input_lf, pl.LazyFrame):
+        return None
+    shaping = dict(node.data.config)
+    decision = classify_chunk_local_polars_code(
+        shaping.get("code"),
+        frame_names=[*frame_names, *(orig_frame_names or ())],
+        selector_aliases=selector_aliases,
+    )
+
+    def finish(lf: pl.LazyFrame) -> pl.LazyFrame:
+        selected = _apply_selected_columns(lf, shaping)
+        renamed = _apply_column_renames(selected, shaping)
+        return renamed if isinstance(renamed, pl.LazyFrame) else renamed.lazy()
+
+    if not decision.eligible:
+        return WriteRecipe(
+            input=input_lf,
+            fn=None,
+            finish=finish,
+            reason=decision.reason,
+            blocking_operator=decision.blocking_operator,
+        )
+
+    def node_fn(lf: pl.LazyFrame) -> pl.LazyFrame:
+        result = fn(lf)
+        return result if isinstance(result, pl.LazyFrame) else result.lazy()
+
+    return WriteRecipe(
+        input=input_lf,
+        fn=node_fn,
+        finish=finish,
+    )
 
 
 def _shapes_output(node: GraphNode) -> bool:
@@ -1063,6 +1120,7 @@ def _execute_lazy(
     prepare_inputs: bool = True,
     snapshot_plan: SeedPlan | None = None,
     join_recipes: dict[str, JoinRecipe] | None = None,
+    write_recipes: dict[str, WriteRecipe] | None = None,
     unshaped_frames: dict[str, pl.LazyFrame] | None = None,
 ) -> tuple[dict[str, _Frame], list[str], dict[str, list[str]], dict[str, str]]:
     """Execute a graph lazily and return per-node LazyFrames.
@@ -1383,6 +1441,7 @@ def _execute_lazy(
     # A planned execution admits and estimates only what it builds: nothing on
     # an unselected pass-through branch, nothing a seed covers.
     planned_node_ids = decision.executed_node_ids if decision is not None else None
+    preamble_aliases = preamble_selector_aliases(graph.preamble or "")
     group_by_operators = {
         node_id: operator
         for node_id, operator in projection_planner.materialising_operators_by_node(
@@ -1423,7 +1482,7 @@ def _execute_lazy(
             schema_only=schema_only,
             relevant_edges=relevant_edges,
             submodels=graph.submodels,
-            selector_aliases=preamble_selector_aliases(graph.preamble or ""),
+            selector_aliases=preamble_aliases,
             materialising_node_ids=planned_node_ids,
         )
     public_projection_plan = public_strategy_result.projection_plan
@@ -1439,7 +1498,7 @@ def _execute_lazy(
             normalised_required_columns,
             relevant_edges=relevant_edges,
             submodels=graph.submodels,
-            selector_aliases=preamble_selector_aliases(graph.preamble or ""),
+            selector_aliases=preamble_aliases,
         )
         if cache_broadens_projection
         else projection_plan
@@ -1462,6 +1521,10 @@ def _execute_lazy(
     # invariant on switch nodes.
     incoming_edges_by_target = prepared_execution.incoming_edges_by_target
     all_incoming_edges_by_target = prepared_execution.all_incoming_edges_by_target
+    original_node_map = dict(graph.node_map)
+    all_edges_by_target = {
+        target: list(edges) for target, edges in all_incoming_edges_by_target.items()
+    }
 
     # Build executable functions — delegates to _build_funcs with
     # row_limit=None (lazy path never caps source output).
@@ -1639,7 +1702,7 @@ def _execute_lazy(
             edge_demands,
             node_map,
             graph.submodels,
-            preamble_selector_aliases(graph.preamble or ""),
+            preamble_aliases,
         )
 
     def _build_lazy_node(boundary: NodeBoundary) -> tuple[_Frame, bool, GraphNode]:
@@ -1772,6 +1835,32 @@ def _execute_lazy(
             recipe = _edge_join_recipe(boundary.fn, node, input_lfs)
             if recipe is not None:
                 built_join_recipes[nid] = recipe
+            write_names: list[str] = []
+            for edge in boundary.incoming_edges:
+                if edge.source in node_map:
+                    source_node = node_map[edge.source]
+                    try:
+                        write_names.append(
+                            edge_input_name(edge, source_node, submodels=graph.submodels)
+                        )
+                    except ValueError:
+                        # API-input null handle only; _build_funcs raises first for every other.
+                        pass
+            orig_names = resolve_orig_source_names(
+                node,
+                original_node_map,
+                all_edges_by_target,
+            )
+            write_rec = _write_recipe(
+                boundary.fn,
+                node,
+                input_lfs,
+                frame_names=write_names,
+                orig_frame_names=orig_names,
+                selector_aliases=preamble_aliases,
+            )
+            if write_rec is not None:
+                built_write_recipes[nid] = write_rec
             lf = boundary_runner.invoke(boundary, input_lfs)
 
         if isinstance(lf, pl.DataFrame):
@@ -1834,6 +1923,7 @@ def _execute_lazy(
     execution_order = list(order)
     # Edge joins built in this run, so a full write of one can be chunked.
     built_join_recipes: dict[str, JoinRecipe] = join_recipes if join_recipes is not None else {}
+    built_write_recipes: dict[str, WriteRecipe] = write_recipes if write_recipes is not None else {}
     built_unshaped_frames: dict[str, pl.LazyFrame] = (
         unshaped_frames if unshaped_frames is not None else {}
     )
@@ -2003,6 +2093,7 @@ def _execute_lazy(
                     prewritten=scored_prewritten,
                     prewritten_digest=scored_digest,
                     join=built_join_recipes.get(nid),
+                    recipe=built_write_recipes.get(nid),
                     unshaped_columns=(
                         _schema_pairs(built_unshaped_frames[nid])
                         if nid in built_unshaped_frames
@@ -2158,6 +2249,7 @@ class _PlannedCaptures:
         prewritten: bool = False,
         prewritten_digest: str | None = None,
         join: JoinRecipe | None = None,
+        recipe: WriteRecipe | None = None,
         unshaped_columns: Sequence[tuple[str, str]] | None = None,
     ) -> pl.LazyFrame:
         """Write one capture point through the chunked writer and continue from it.
@@ -2165,7 +2257,9 @@ class _PlannedCaptures:
         With ``prewritten``, *artifact* already holds the node's output — a
         batch Model Score's scored file — and is published without a second
         write. With ``join``, the recipe *frame* was built from, an edge join
-        is written a driving chunk at a time.
+        is written a driving chunk at a time. With ``recipe``, the write recipe
+        *frame* was built from, a chunk-local single-input node is written a
+        slice of its input at a time.
         """
         from haute._node_snapshots import (
             NodeSnapshotColumns,
@@ -2216,6 +2310,8 @@ class _PlannedCaptures:
             sink_lf = sink_lf.select(ordered)
             if join is not None:
                 join = join.then(lambda lf: lf.select(ordered))
+            if recipe is not None:
+                recipe = recipe.then(lambda lf: lf.select(ordered))
             # A scored file holds what the scorer was asked to write; it is
             # published as that whole file.
             columns = NodeSnapshotColumns.of(schema_cols if prewritten else ordered)
@@ -2232,6 +2328,7 @@ class _PlannedCaptures:
                         artifact.directory,
                         sink_lf,
                         join=join,
+                        recipe=recipe,
                         chunk_rows=current_streaming_chunk_size(),
                         fast_checkpoint=True,
                         execution_context=context,
@@ -2301,6 +2398,9 @@ class _PlannedCaptures:
             write_strategy=written.strategy if written is not None else "prewritten",
             write_parts=written.chunks if written is not None else None,
             write_chunk_rows=written.chunk_rows if written is not None else None,
+            write_input_slices=written.input_slices if written is not None else None,
+            write_native_reason=written.native_reason if written is not None else None,
+            write_blocking_operator=written.blocking_operator if written is not None else None,
         )
         context = self.execution_context
         if context is None:
@@ -2317,6 +2417,9 @@ class _PlannedCaptures:
                 write_parts=written.chunks if written is not None else None,
                 write_chunk_rows=written.chunk_rows if written is not None else None,
                 write_staged_inputs=written.staged_inputs if written is not None else None,
+                write_input_slices=written.input_slices if written is not None else None,
+                write_native_reason=written.native_reason if written is not None else None,
+                write_blocking_operator=written.blocking_operator if written is not None else None,
             )
         )
         if outcome == "quota":

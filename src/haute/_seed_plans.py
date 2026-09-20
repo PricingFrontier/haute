@@ -228,6 +228,9 @@ class SharedSnapshotCaptureRecord:
     write_parts: int | None = None
     write_chunk_rows: int | None = None
     write_staged_inputs: int | None = None
+    write_input_slices: int | None = None
+    write_native_reason: str | None = None
+    write_blocking_operator: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -241,6 +244,9 @@ class SharedSnapshotCaptureRecord:
             "write_parts": self.write_parts,
             "write_chunk_rows": self.write_chunk_rows,
             "write_staged_inputs": self.write_staged_inputs,
+            "write_input_slices": self.write_input_slices,
+            "write_native_reason": self.write_native_reason,
+            "write_blocking_operator": self.write_blocking_operator,
         }
 
 

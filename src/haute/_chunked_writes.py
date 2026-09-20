@@ -486,9 +486,7 @@ def write_parts(
                 node_id=node_id,
             )
         total = row_count(recipe.input, execution_context=execution_context)
-        slice_count = 0
         for offset in range(0, total, rows):
-            slice_count += 1
             parts.sink(recipe.apply(recipe.input.slice(offset, rows)))
         parts.ensure_one()
         # input_slices always equals the part count on this path.
@@ -496,7 +494,7 @@ def write_parts(
             parts,
             "input_sliced",
             chunk_rows=rows,
-            input_slices=slice_count,
+            input_slices=len(parts.names),
             node_id=node_id,
         )
 

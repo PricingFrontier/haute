@@ -1426,3 +1426,36 @@ def test_write_strategy_precedence_join_over_recipe_and_sliced_over_input_sliced
     assert len(res2.parts) == 4
     got = scan_parts(part_paths(target2)).collect()
     assert got.equals(sliceable_frame.collect())
+
+
+def test_input_sliced_empty_input_reports_one_slice_and_one_part(tmp_path: Path) -> None:
+    source_path = tmp_path / "empty.parquet"
+    df = pl.DataFrame({"id": [], "val": []}, schema={"id": pl.Int64, "val": pl.Float64})
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+
+    # Frame has a filter so sliceable(frame) is False, but scan is sliceable.
+    frame = scan.filter(pl.col("id") > 0)
+    assert sliceable(frame) is False
+    assert sliceable(scan) is True
+
+    recipe = WriteRecipe(
+        input=scan,
+        fn=lambda lf: lf.filter(pl.col("id") > 0),
+    )
+    target = tmp_path / "empty_out"
+    target.mkdir()
+    res = write_parts(target, frame, recipe=recipe, chunk_rows=10)
+    assert res.strategy == "input_sliced"
+    assert res.chunks == 1
+    assert res.input_slices == 1
+    assert res.input_slices == len(res.parts) == res.chunks
+    assert res.chunk_rows == 10
+    assert res.native_reason is None
+    assert res.blocking_operator is None
+
+    got = scan_parts(part_paths(target)).collect()
+    expected = frame.collect()
+    assert got.schema == expected.schema
+    assert got.height == 0
+    assert got.equals(expected)

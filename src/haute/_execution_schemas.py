@@ -454,10 +454,15 @@ class SharedSnapshotCapturePayload(BaseModel):
     outcome: Literal["published", "superseded", "quota"]
     generation_id: str | None = None
     columns: Literal["all"] | list[str]
-    write_strategy: Literal["chunked_join", "sliced", "native", "prewritten"] | None = None
+    write_strategy: (
+        Literal["chunked_join", "sliced", "input_sliced", "native", "prewritten"] | None
+    ) = None
     write_parts: int | None = Field(default=None, ge=1)
     write_chunk_rows: int | None = Field(default=None, ge=1)
     write_staged_inputs: int | None = Field(default=None, ge=0)
+    write_input_slices: int | None = Field(default=None, ge=1)
+    write_native_reason: str | None = None
+    write_blocking_operator: str | None = None
 
 
 class SharedSnapshotCaptureSkipPayload(BaseModel):
