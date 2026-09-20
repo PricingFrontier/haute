@@ -804,9 +804,17 @@ def test_a_source_capture_waits_for_the_input_check(
     assert not _staging_dirs(store)
 
 
-def test_a_source_capture_whose_input_changes_before_publishing_keeps_its_data(
+def test_a_source_capture_whose_input_changes_before_publishing_stops_the_run(
     project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A source whose input moved mid-run stops, and publishes nothing.
+
+    It used to keep its artifact and carry on, which is the mix the pre-run
+    check exists to prevent: this run would have read a seed signed for the old
+    input beside branches recomputed from the new one.
+    """
+    from haute.errors import SnapshotPlanInputsChangedError
+
     graph = _captured_source_graph(project)
 
     def rewrite_source() -> None:
@@ -815,11 +823,10 @@ def test_a_source_capture_whose_input_changes_before_publishing_keeps_its_data(
         )
 
     _pause_at(monkeypatch, "src", rewrite_source)
-    run = _run(graph, store, required={"T": ["a1"]})
+    with pytest.raises(SnapshotPlanInputsChangedError):
+        _run(graph, store, required={"T": ["a1"]})
 
-    assert run.captures["src"]["outcome"] == "superseded"
     assert store.latest_generation(_identity(store, graph, "src")) is None
-    assert run.frame.height == _ROWS
 
 
 def test_pass_through_returns_the_selected_api_port(
@@ -1160,9 +1167,47 @@ def test_inputs_changed_before_collection_fails(project: Path, store: NodeSnapsh
             execute()
 
 
-def test_inputs_changed_before_publish_keeps_artifact(
+def test_a_capture_published_before_the_inputs_moved_stays_published(
     project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Stopping mid-run does not unpublish what was already correct.
+
+    A capture published before the change was computed from the inputs its
+    identity signs, so it stays. Only the unfinished one is discarded, and
+    nothing after it is published.
+    """
+    from haute.errors import SnapshotPlanInputsChangedError
+
+    # ``sort`` makes ``A`` a capture point of its own rather than a
+    # slice-transparent feeder, so ``A`` publishes before ``J`` is reached.
+    graph = _join_graph(
+        project, a_code="df = src.with_columns((pl.col('a') * 2).alias('a2')).sort('a')"
+    )
+
+    def rewrite_source() -> None:
+        pl.DataFrame({"id": [0], "a": [1], "b": [2], "c": [3]}).write_parquet(
+            project / "quotes.parquet"
+        )
+
+    # Bound before the run: the rewrite moves what a fresh signature would
+    # sign, and what stays published is the identity ``A`` was computed for.
+    identity_a = _identity(store, graph, "A")
+    identity_j = _identity(store, graph, "J")
+
+    _pause_at(monkeypatch, "J", rewrite_source)
+    with pytest.raises(SnapshotPlanInputsChangedError):
+        _run(graph, store, required={"T": ["a"]})
+
+    assert store.latest_generation(identity_a) is not None
+    assert store.latest_generation(identity_j) is None
+
+
+def test_inputs_changed_before_publish_stops_the_run(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run stops rather than publishing, or reading, a mixed result."""
+    from haute.errors import SnapshotPlanInputsChangedError
+
     graph = _join_graph(
         project, a_code="df = src.with_columns((pl.col('a') * 2).alias('a2')).sort('a')"
     )
@@ -1173,14 +1218,10 @@ def test_inputs_changed_before_publish_keeps_artifact(
         )
 
     _pause_at(monkeypatch, "A", rewrite_source)
-    run = _run(graph, store, required={"T": ["a"]})
+    with pytest.raises(SnapshotPlanInputsChangedError):
+        _run(graph, store, required={"T": ["a"]})
 
-    assert run.captures["A"]["outcome"] == "superseded"
-    assert {"code": "snapshot_capture_superseded", "node_id": "A", "reason": None} in run.metrics[
-        "warnings"
-    ]
     assert store.latest_generation(_identity(store, graph, "A")) is None
-    assert run.frame.height == _ROWS
 
 
 def test_metrics_report_seeds_captures_and_warnings(

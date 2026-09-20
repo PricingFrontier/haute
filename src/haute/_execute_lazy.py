@@ -2397,11 +2397,18 @@ class _PlannedCaptures:
                 artifact.record_digests({part_name(0): prewritten_digest})
             _snapshot_fault_point("snapshot_capture_before_publish", node_id)
             if self._inputs_changed():
-                # Computed from inputs the plan's signatures do not describe:
-                # the run keeps its own data but publishes none of it.
-                plan.register_artifact(artifact)
-                self._record(capture, "superseded", None, columns, written)
-                return artifact.lazy_frame()
+                # The pre-run check exists to stop exactly this mix: seeds
+                # computed from the old inputs read beside branches recomputed
+                # from the new ones. Keeping this artifact and carrying on
+                # produced that mix in the one case the check cannot cover,
+                # because the change happened after it ran. Discard the
+                # unfinished staging and stop; whatever published before the
+                # change stays published under the identities it was computed
+                # for, and nothing further is published.
+                from haute.errors import SnapshotPlanInputsChangedError
+
+                artifact.close()
+                raise SnapshotPlanInputsChangedError(target_node_id=self._decision.target_node_id)
             publication = store.publish_node_output(
                 capture.identity,
                 artifact,
