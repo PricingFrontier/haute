@@ -22,9 +22,13 @@ analysis-result store, seed plans, chunked writes, and the preview and trace
 seeding that a `banding-rating-ui` review examined on 19 September 2026 are
 delivered and specified; their packages are retired from this roadmap.
 Choosing captures by recompute cost, recording why a candidate was skipped,
-and computing part digests during the write were delivered on the same
-branch and are specified in [caching](../caching/low-level.md#seed-plans) and
-the [IO layer](../io-layer/low-level.md#node-output-snapshots). The review
+computing part digests during the write, heavy-row index windows and their
+cardinality check, and one chunk size per explicit build with its reported
+rows-per-part bound were delivered on the same branch and are specified in
+[caching](../caching/low-level.md#seed-plans), the
+[IO layer](../io-layer/low-level.md#node-output-snapshots), the
+[execution engine](../execution-engine/low-level.md), and the
+[server API](../server-api/low-level.md#node-data-builds). The review
 found no data-corruption defect and confirmed the chunked join against the
 native join on a lookup side whose hot key matched ten times the chunk size.
 What remains is where the delivered behaviour is narrower than the aim or
@@ -34,15 +38,14 @@ where it will not hold at scale.
 |---|---|---|
 | One store, every consumer | Node outputs, input snapshots, and analyses share `.haute_cache`; previews, bounded runs, explicit builds, and traces run under one seed plan. | API-input tables still live in the JSON cache (`CACHE-S08`). |
 | No duplicated runs | A bounded run seeds from any fresh covering generation and captures a join, fan-out, join feeder, batch Model Score, or consumed producer only where recomputing it costs more than the cache round trip, and records why it skipped the others; a preview seeds the same way and captures only the joins and costly full-input work it must compute in full. A chain of plain transforms is recomputed by every preview and bounded run by design, because recomputing it costs less than the cache round trip. Each capture publishes as soon as it is written, so a run that fails or is cancelled later keeps what it had already published. | Two consumers that resolve the same cold capture point at the same time, or an explicit build and an automatic capture of one node, both compute it; the publication lock decides only who publishes (`CACHE-S19`). A repeat preview served from the response cache announces captures it did not make (`CACHE-S14`). |
-| Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. | Sixty-four generations and 20 GiB are shared with input snapshots, so captures evict each other or fall to `quota` (`CACHE-S12`). A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). Every preview prepares the graph several times and signs every lineage node per resolution (`CACHE-S17`). |
-| Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. | Any other plan, including an ordinary filter over a large input, is written by one native streaming sink whose peak memory is Polars' to bound (`CACHE-S20`). A heavy-row window relies on unspecified order stability (`CACHE-S15`). Full joins rescan the base per lookup chunk and cross joins collect the lookup side (`CACHE-S18`). |
+| Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. | Sixty-four generations and 20 GiB are shared with input snapshots, so captures evict each other or fall to `quota` (`CACHE-S12`). A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). Every preview prepares the graph several times and signs every lineage node per resolution (`CACHE-S17`). |
+| Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | Any other plan, including an ordinary filter over a large input, is written by one native streaming sink whose peak memory is Polars' to bound (`CACHE-S20`). Full joins rescan the base per lookup chunk and cross joins collect the lookup side (`CACHE-S18`). |
 | Failures are recoverable | A corrupt generation is reported, never silently repaired; a plan whose inputs moved before collection stops. | The corrupt error reaches the user as store text with no pointer to Re-cache; a mid-run input change continues instead of stopping (`CACHE-S16`). |
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CACHE-S15 | Planned | P2 | Chunked writes read heavy-row windows in a proven order and chunk one build at one size. |
 | CACHE-S14 | Planned | P2 | A preview announces only the snapshots it wrote. |
 | CACHE-S12 | Planned | P2 | Node-output snapshots have their own quota, large enough for capture-everything use, and a visible quota outcome. |
 | CACHE-S13 | Planned | P2 | A capturing preview finishes as a job instead of dying at the interactive timeout. |
@@ -55,9 +58,9 @@ where it will not hold at scale.
 
 ## Planned improvements
 
-Delivery order is `CACHE-S15` → `CACHE-S14` →
-`CACHE-S12` → `CACHE-S13` → `CACHE-S19` → `CACHE-S16` → `CACHE-S20` →
-`CACHE-S17` → `CACHE-S18`; `CACHE-S08` is deferred. A package must not bypass
+Delivery order is `CACHE-S14` → `CACHE-S12` → `CACHE-S13` → `CACHE-S19` →
+`CACHE-S16` → `CACHE-S20` → `CACHE-S17` → `CACHE-S18`; `CACHE-S08` is
+deferred. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
 specified. Every package builds on the node-output snapshot store (signature,
 slot index, column widening, retention, cross-process leases, and the
@@ -78,41 +81,6 @@ the specification sections its **Owning specifications** line names before
 its behaviour changes; the roadmap records the direction and the acceptance
 evidence, not the contract text. Each package's **Evidence** line is also its
 affected-file list.
-### CACHE-S15 — Chunked writes: proven order, one chunk size
-
-**Why:** `_ChunkJoin._write_heavy_row` in `src/haute/_chunked_writes.py`
-writes one driving row whose matches exceed a part by re-executing an
-unordered semi-join with successive slice offsets, and assumes the lookup
-rows come back in the same order each time. Polars 1.44.2 happened to keep
-that order in a 3M-row probe, but it is not a documented contract, and a
-change in morsel scheduling would duplicate or drop matches silently. An
-explicit node-data build also writes its target at the request's chunk size
-(`src/haute/routes/_node_data_service.py`, `_build_node_snapshot`) while the
-captures inside the same execution use the process default
-(`current_streaming_chunk_size`), so one build chunks at two sizes.
-
-**Plan:** Make the heavy-row semi-join ordered (`maintain_order="left"`, the
-lookup side's own order) for that path only, or attach a row index to the
-staged lookup and window by index range; either way the windows are disjoint
-and complete by construction. Run the node-data worker's execution under
-`temporary_streaming_chunk_size(request.streaming_chunk_size)` so captures and
-the target write share one size, and record that size in the capture record.
-
-**Acceptance:** `tests/test_chunked_writes.py` gains a regression with a hot
-key matching several parts over a lookup side of several row groups and
-asserts equality with the native join, run with a chunk size small enough that
-the heavy-row path is exercised; `tests/test_node_data_routes.py` proves an
-explicit build's captures report the request's chunk size.
-
-**Owning specifications:** [IO layer](../io-layer/low-level.md) (chunked
-writes); [server API](../server-api/low-level.md#node-data-builds).
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_chunked_writes.py`;
-`src/haute/routes/_node_data_service.py`; `src/haute/_execute_lazy.py`
-(`_PlannedCaptures.capture`); `src/haute/_seed_plans.py`
-(`SharedSnapshotCaptureRecord`).
 
 ### CACHE-S14 — A preview announces only what it wrote
 
