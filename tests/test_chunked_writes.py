@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import datetime
 import random
 from collections.abc import Callable
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import polars as pl
+import pyarrow.parquet as pq
 import pytest
 from polars.io.plugins import register_io_source
 
 import haute._chunked_writes
 from haute._chunked_writes import (
+    SINGLE_FILE_ROW_GROUP_SIZE,
     JoinRecipe,
     RecipeEquivalenceError,
     WriteRecipe,
@@ -20,10 +24,15 @@ from haute._chunked_writes import (
     part_paths,
     scan_parts,
     sliceable,
+    write_file,
     write_parts,
 )
 from haute._hashing import content_hash
-from haute._polars_utils import current_streaming_chunk_size, temporary_streaming_chunk_size
+from haute._polars_utils import (
+    bounded_sink,
+    current_streaming_chunk_size,
+    temporary_streaming_chunk_size,
+)
 from haute.chunking import classify_chunk_local_polars_code
 
 
@@ -1459,3 +1468,444 @@ def test_input_sliced_empty_input_reports_one_slice_and_one_part(tmp_path: Path)
     assert got.schema == expected.schema
     assert got.height == 0
     assert got.equals(expected)
+
+
+# ---------------------------------------------------------------------------
+# Single-file mode
+# ---------------------------------------------------------------------------
+
+
+def test_single_file_filter_equals_native_and_writes_one_file(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.parquet"
+    df = pl.DataFrame({"id": list(range(20)), "val": list(range(20))})
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+    assert sliceable(scan) is True
+
+    def fn(lf: pl.LazyFrame) -> pl.LazyFrame:
+        filtered = lf.filter(pl.col("val") >= 0)
+        n = filtered.select(pl.len()).collect().item()
+        if n <= 10:
+            return filtered.with_columns(pl.col("val").cast(pl.Int32))
+        return filtered.with_columns(pl.col("val").cast(pl.Int64))
+
+    recipe = WriteRecipe(input=scan, fn=fn)
+    frame = recipe.native()
+    assert sliceable(frame) is False
+
+    dest = tmp_path / "out.parquet"
+    res = write_file(dest, frame, recipe=recipe, chunk_rows=10)
+    assert res.strategy == "input_sliced"
+    assert res.parts == ()
+    assert res.chunks == 0
+    assert res.input_slices == 2
+    assert res.chunk_rows == 10
+    assert res.native_reason is None
+    assert res.blocking_operator is None
+    assert dest.is_file()
+    assert len(list(tmp_path.glob("part-*"))) == 0
+
+    got = pl.read_parquet(dest)
+    expected = frame.collect()
+    assert got.schema == expected.schema
+    assert got.equals(expected)
+
+
+def test_single_file_each_applied_function_sees_at_most_chunk_rows(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.parquet"
+    df = pl.DataFrame({"id": list(range(50)), "val": list(range(50))})
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+    assert sliceable(scan) is True
+
+    chunk_rows = 10
+    slice_rows_seen: list[int] = []
+
+    def tracking_fn(slice_lf: pl.LazyFrame) -> pl.LazyFrame:
+        n = slice_lf.select(pl.len()).collect().item()
+        slice_rows_seen.append(n)
+        return slice_lf.filter(pl.col("val") > 5)
+
+    recipe = WriteRecipe(input=scan, fn=tracking_fn)
+    frame = scan.filter(pl.col("val") > 5)
+    assert sliceable(frame) is False
+
+    dest = tmp_path / "out.parquet"
+    res = write_file(dest, frame, recipe=recipe, chunk_rows=chunk_rows)
+    assert res.strategy == "input_sliced"
+    assert res.input_slices == 5
+
+    # Slicing [1:] assumes exactly one prior full-input call from check_recipe_equivalence
+    write_slice_calls = slice_rows_seen[1:]
+    assert len(write_slice_calls) == 5
+    for count in write_slice_calls:
+        assert count <= chunk_rows, (
+            f"Applied function saw {count} rows, expected at most {chunk_rows}"
+        )
+
+    got = pl.read_parquet(dest)
+    expected = frame.collect()
+    assert got.equals(expected)
+
+
+def test_single_file_compression_codec_equals_natively_sunk_file(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.parquet"
+    df = pl.DataFrame({"id": list(range(30)), "val": list(range(30))})
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+    frame = scan.filter(pl.col("val") > 2)
+    assert sliceable(frame) is False
+
+    recipe = WriteRecipe(input=scan, fn=lambda lf: lf.filter(pl.col("val") > 2))
+
+    single_dest = tmp_path / "single.parquet"
+    native_dest = tmp_path / "native.parquet"
+
+    write_file(single_dest, frame, recipe=recipe, chunk_rows=10)
+    bounded_sink(frame, native_dest)
+
+    single_pf = pq.ParquetFile(single_dest)
+    native_pf = pq.ParquetFile(native_dest)
+
+    single_codec = single_pf.metadata.row_group(0).column(0).compression
+    native_codec = native_pf.metadata.row_group(0).column(0).compression
+    assert single_codec == native_codec
+    assert single_codec.upper() == "ZSTD"
+
+
+def test_single_file_largest_row_group_equals_row_group_constant(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.parquet"
+    total_rows = 150_000
+    df = pl.DataFrame({"a": list(range(total_rows))})
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+    frame = scan.filter(pl.col("a") >= 0)
+    assert sliceable(frame) is False
+
+    recipe = WriteRecipe(input=scan, fn=lambda lf: lf.filter(pl.col("a") >= 0))
+    dest = tmp_path / "single.parquet"
+
+    write_file(dest, frame, recipe=recipe, chunk_rows=total_rows)
+
+    pf = pq.ParquetFile(dest)
+    largest_rg = max(pf.metadata.row_group(i).num_rows for i in range(pf.metadata.num_row_groups))
+    assert largest_rg == SINGLE_FILE_ROW_GROUP_SIZE
+
+
+def test_single_file_all_empty_input_writes_one_file_with_right_schema_and_zero_rows(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "empty.parquet"
+    df = pl.DataFrame({"id": [], "val": []}, schema={"id": pl.Int64, "val": pl.Float64})
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+    frame = scan.filter(pl.col("id") > 0)
+    assert sliceable(frame) is False
+    assert sliceable(scan) is True
+
+    recipe = WriteRecipe(input=scan, fn=lambda lf: lf.filter(pl.col("id") > 0))
+    dest = tmp_path / "empty_out.parquet"
+
+    res = write_file(dest, frame, recipe=recipe, chunk_rows=10)
+    assert res.strategy == "input_sliced"
+    assert res.chunks == 0
+    assert res.parts == ()
+    assert res.input_slices == 1
+    assert res.chunk_rows == 10
+    assert res.native_reason is None
+    assert res.blocking_operator is None
+    assert dest.is_file()
+
+    got = pl.read_parquet(dest)
+    expected = frame.collect()
+    assert got.schema == expected.schema
+    assert got.height == 0
+    assert got.equals(expected)
+
+
+def test_single_file_selective_filter_writes_no_zero_row_group_and_counts_applied_slices(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.parquet"
+    df = pl.DataFrame({"id": list(range(30)), "val": list(range(30))})
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+    # Slices 0..9 and 20..29 have rows matching predicate; slice 10..19 has none.
+    filter_expr = (pl.col("id") < 10) | (pl.col("id") >= 20)
+    frame = scan.filter(filter_expr)
+    assert sliceable(frame) is False
+
+    recipe = WriteRecipe(input=scan, fn=lambda lf: lf.filter(filter_expr))
+    dest = tmp_path / "selective.parquet"
+
+    res = write_file(dest, frame, recipe=recipe, chunk_rows=10)
+    # Count of slices applied is 3 (all 3 slices driven through recipe)
+    assert res.strategy == "input_sliced"
+    assert res.input_slices == 3
+
+    # File contains no zero-row row groups (empty slice skipped)
+    pf = pq.ParquetFile(dest)
+    assert pf.metadata.num_row_groups == 2
+    for i in range(pf.metadata.num_row_groups):
+        assert pf.metadata.row_group(i).num_rows > 0
+
+    got = pl.read_parquet(dest)
+    assert got.height == 20
+    assert got.equals(frame.collect())
+
+
+def test_single_file_unsliceable_input_falls_back_to_native_with_reason(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.parquet"
+    df = pl.DataFrame({"id": list(range(20)), "val": list(range(20))})
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+
+    unsliceable_input = scan.filter(pl.col("id") > 0)
+    assert sliceable(unsliceable_input) is False
+
+    unsliceable_recipe = WriteRecipe(
+        input=unsliceable_input,
+        fn=lambda lf: lf.filter(pl.col("val") > 5),
+    )
+    frame = unsliceable_recipe.native()
+    assert sliceable(frame) is False
+
+    dest = tmp_path / "unsliceable_out.parquet"
+    res = write_file(dest, frame, recipe=unsliceable_recipe, chunk_rows=5)
+    assert res.strategy == "native"
+    assert res.native_reason == "input_not_sliceable"
+    assert res.parts == ()
+    assert res.chunks == 0
+    assert dest.is_file()
+
+    got = pl.read_parquet(dest)
+    assert got.equals(frame.collect())
+
+
+def test_single_file_misbound_recipe_raises_and_creates_no_file(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.parquet"
+    df = pl.DataFrame({"id": list(range(20)), "val": list(range(20))})
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+
+    frame = scan.filter(pl.col("val") > 2)
+    assert sliceable(frame) is False
+
+    mismatched_recipe = WriteRecipe(input=scan, fn=lambda lf: lf.filter(pl.col("val") > 10))
+    dest = tmp_path / "never_created.parquet"
+
+    with pytest.raises(RecipeEquivalenceError, match=r"plan"):
+        write_file(dest, frame, recipe=mismatched_recipe, chunk_rows=5)
+    assert not dest.exists()
+
+
+def test_single_file_sliceable_frame_no_recipe_written_sliced_across_multiple_slices(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.parquet"
+    df = pl.DataFrame({"id": list(range(25)), "val": [float(i * 2) for i in range(25)]})
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+    frame = scan.select("id", "val")
+    assert sliceable(frame) is True
+
+    dest = tmp_path / "out.parquet"
+    res = write_file(dest, frame, chunk_rows=10)
+    assert res.strategy == "sliced"
+    assert res.chunk_rows == 10
+    assert res.input_slices is None
+    assert res.parts == ()
+    assert res.chunks == 0
+    assert res.native_reason is None
+    assert res.blocking_operator is None
+    assert dest.is_file()
+
+    pf = pq.ParquetFile(dest)
+    num_slices = pf.metadata.num_row_groups
+    assert num_slices == 3
+    assert num_slices > 1
+
+    native_dest = tmp_path / "native.parquet"
+    bounded_sink(frame, native_dest)
+    native_got = pl.read_parquet(native_dest)
+
+    got = pl.read_parquet(dest)
+    expected = frame.collect()
+    assert got.schema == expected.schema
+    assert got.equals(expected)
+    assert got.equals(native_got)
+
+
+def test_single_file_sliceable_frame_with_recipe_takes_sliced_over_input_sliced(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.parquet"
+    df = pl.DataFrame({"a": list(range(20)), "b": list(range(20))})
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+
+    frame = scan.select("a", "b")
+    assert sliceable(frame) is True
+
+    recipe = WriteRecipe(input=scan, fn=lambda lf: lf.select("a", "b"))
+    dest = tmp_path / "prec_sliced.parquet"
+
+    res = write_file(dest, frame, recipe=recipe, chunk_rows=5)
+    assert res.strategy == "sliced"
+    assert res.chunk_rows == 5
+    assert res.input_slices is None
+    assert res.parts == ()
+    assert res.chunks == 0
+    assert dest.is_file()
+
+    got = pl.read_parquet(dest)
+    expected = frame.collect()
+    assert got.schema == expected.schema
+    assert got.equals(expected)
+
+
+def test_single_file_empty_sliceable_frame_writes_one_file_with_right_schema_and_zero_rows(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "empty_source.parquet"
+    df = pl.DataFrame({"id": [], "val": []}, schema={"id": pl.Int64, "val": pl.Float64})
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+    frame = scan.select("id", "val")
+    assert sliceable(frame) is True
+
+    dest = tmp_path / "empty_out.parquet"
+    res = write_file(dest, frame, chunk_rows=10)
+    assert res.strategy == "sliced"
+    assert res.chunk_rows == 10
+    assert res.input_slices is None
+    assert res.parts == ()
+    assert res.chunks == 0
+    assert res.native_reason is None
+    assert res.blocking_operator is None
+    assert dest.is_file()
+
+    got = pl.read_parquet(dest)
+    expected = frame.collect()
+    assert got.schema == expected.schema
+    assert got.height == 0
+    assert got.equals(expected)
+
+
+def test_single_file_mixed_dtype_frame_sliced_across_slices_equals_bounded_sink(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "mixed_source.parquet"
+    df = pl.DataFrame(
+        {
+            "str_col": [f"text_{i}" for i in range(10)],
+            "bin_col": [f"bytes_{i}".encode() for i in range(10)],
+            "struct_col": [{"s": f"nested_{i}"} for i in range(10)],
+            "date_col": [datetime.date(2026, 1, 1 + i) for i in range(10)],
+            "dt_tz_col": [
+                datetime.datetime(2026, 1, 1, 12, 0, i, tzinfo=datetime.UTC) for i in range(10)
+            ],
+            "dec_col": [Decimal(f"{i}.50") for i in range(10)],
+            "list_col": [[i, i + 1] for i in range(10)],
+            "null_col": [None] * 10,
+        }
+    )
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+    assert sliceable(scan) is True
+
+    chunk_rows = 5
+    dest = tmp_path / "mixed_sliced.parquet"
+    res = write_file(dest, scan, chunk_rows=chunk_rows)
+    assert res.strategy == "sliced"
+    assert res.chunk_rows == chunk_rows
+    assert res.parts == ()
+    assert res.chunks == 0
+    assert dest.is_file()
+
+    pf = pq.ParquetFile(dest)
+    num_slices = pf.metadata.num_row_groups
+    assert num_slices == 2
+    assert num_slices > 1
+
+    native_dest = tmp_path / "mixed_native.parquet"
+    bounded_sink(scan, native_dest)
+
+    got = pl.read_parquet(dest)
+    native_got = pl.read_parquet(native_dest)
+    assert got.schema == df.schema
+    assert got.equals(native_got)
+    assert got.equals(df)
+
+
+def test_single_file_apply_raising_on_second_slice_raises_and_leaves_no_file(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.parquet"
+    df = pl.DataFrame({"id": list(range(20)), "val": list(range(20))})
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+
+    def failing_fn(slice_lf: pl.LazyFrame) -> pl.LazyFrame:
+        n = slice_lf.select(pl.len()).collect().item()
+        first_val = slice_lf.select(pl.col("val").first()).collect().item()
+        if n == 5 and first_val == 5:
+            raise RuntimeError("simulated failure on second slice")
+        return slice_lf.filter(pl.col("val") >= 0)
+
+    recipe = WriteRecipe(input=scan, fn=failing_fn)
+    frame = recipe.native()
+    assert sliceable(frame) is False
+    assert sliceable(recipe.input) is True
+
+    dest = tmp_path / "failed.parquet"
+    with pytest.raises(RuntimeError, match="simulated failure on second slice"):
+        write_file(dest, frame, recipe=recipe, chunk_rows=5)
+
+    assert not dest.exists()
+    assert not dest.with_suffix(".parquet.tmp").exists()
+
+
+def test_single_file_positive_rows_with_every_slice_filtered_out_writes_zero_row_file(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.parquet"
+    df = pl.DataFrame({"id": list(range(20)), "val": [float(i) for i in range(20)]})
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+
+    filter_expr = pl.col("id") > 1000
+    recipe = WriteRecipe(input=scan, fn=lambda lf: lf.filter(filter_expr))
+    frame = recipe.native()
+    assert sliceable(frame) is False
+    assert sliceable(recipe.input) is True
+
+    dest = tmp_path / "all_filtered.parquet"
+    res = write_file(dest, frame, recipe=recipe, chunk_rows=10)
+    assert res.strategy == "input_sliced"
+    assert res.input_slices == 2
+    assert res.chunk_rows == 10
+    assert res.parts == ()
+    assert res.chunks == 0
+    assert dest.is_file()
+
+    got = pl.read_parquet(dest)
+    expected = frame.collect()
+    assert got.schema == expected.schema
+    assert got.height == 0
+    assert got.equals(expected)
+
+
+def test_single_file_records_chunk_per_written_slice_in_execution_context(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.parquet"
+    df = pl.DataFrame({"id": list(range(30))})
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+
+    ctx = _FakeExecutionContext(cancel_on_chunk=999)
+    dest = tmp_path / "ctx_out.parquet"
+    res = write_file(dest, scan, chunk_rows=10, execution_context=ctx)  # type: ignore[arg-type]
+    assert res.strategy == "sliced"
+    assert ctx.chunks_recorded == 3

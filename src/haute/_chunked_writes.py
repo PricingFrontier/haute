@@ -29,6 +29,7 @@ from types import MappingProxyType
 from typing import IO, TYPE_CHECKING, Any, Literal, cast
 
 import polars as pl
+import pyarrow.parquet as pq
 
 from haute._edge_join import build_edge_join_kwargs
 from haute._hashing import HashingWriter
@@ -36,6 +37,7 @@ from haute._logging import get_logger
 from haute._polars_utils import (
     atomic_write,
     bounded_hashed_sink,
+    bounded_sink,
     current_streaming_chunk_size,
     execution_collect,
 )
@@ -47,6 +49,7 @@ logger = get_logger(component="chunked_writes")
 
 PART_PREFIX = "part-"
 PART_SUFFIX = ".parquet"
+SINGLE_FILE_ROW_GROUP_SIZE = 100_000
 _SUPPORTED_IR_MAJOR = 14
 _SLICEABLE_SCAN_TYPES = frozenset({"parquet", "ipc"})
 # Row-count-preserving plan nodes a slice passes through unchanged. Anything
@@ -309,6 +312,8 @@ class ChunkedWrite:
     chunk_rows: int | None = None
     native_reason: str | None = None
     blocking_operator: str | None = None
+    # On the parts path, the part count written; on the single-file path,
+    # the slices applied to the recipe.
     input_slices: int | None = None
     digests: Mapping[str, str] = field(default_factory=lambda: _EMPTY_DIGESTS)
 
@@ -452,16 +457,18 @@ def write_parts(
                 shutil.rmtree(staging, ignore_errors=True)
             parts.ensure_one()
             return _report(
-                parts,
                 "chunked_join",
+                parts=parts.names,
+                digests=parts.digests,
                 chunk_rows=None if shape.how == "cross" else rows,
                 staged_inputs=staged,
                 node_id=node_id,
             )
         parts.sink(frame, conform=False)
         return _report(
-            parts,
             "native",
+            parts=parts.names,
+            digests=parts.digests,
             chunk_rows=None,
             native_reason=native_reason or "join_not_chunkable",
             node_id=node_id,
@@ -472,15 +479,22 @@ def write_parts(
         for offset in range(0, total, rows):
             parts.sink(frame.slice(offset, rows))
         parts.ensure_one()
-        return _report(parts, "sliced", chunk_rows=rows, node_id=node_id)
+        return _report(
+            "sliced",
+            parts=parts.names,
+            digests=parts.digests,
+            chunk_rows=rows,
+            node_id=node_id,
+        )
 
     if recipe is not None and recipe.fn is not None:
         check_recipe_equivalence(recipe, frame)
         if not sliceable(recipe.input):
             parts.sink(frame, conform=False)
             return _report(
-                parts,
                 "native",
+                parts=parts.names,
+                digests=parts.digests,
                 chunk_rows=None,
                 native_reason="input_not_sliceable",
                 node_id=node_id,
@@ -491,8 +505,9 @@ def write_parts(
         parts.ensure_one()
         # input_slices always equals the part count on this path.
         return _report(
-            parts,
             "input_sliced",
+            parts=parts.names,
+            digests=parts.digests,
             chunk_rows=rows,
             input_slices=len(parts.names),
             node_id=node_id,
@@ -501,8 +516,9 @@ def write_parts(
     if recipe is not None:
         parts.sink(frame, conform=False)
         return _report(
-            parts,
             "native",
+            parts=parts.names,
+            digests=parts.digests,
             chunk_rows=None,
             native_reason=recipe.reason,
             blocking_operator=recipe.blocking_operator,
@@ -510,30 +526,39 @@ def write_parts(
         )
 
     parts.sink(frame, conform=False)
-    return _report(parts, "native", chunk_rows=None, native_reason="not_sliceable", node_id=node_id)
+    return _report(
+        "native",
+        parts=parts.names,
+        digests=parts.digests,
+        chunk_rows=None,
+        native_reason="not_sliceable",
+        node_id=node_id,
+    )
 
 
 def _report(
-    parts: _Parts,
     strategy: WriteStrategy,
     *,
+    parts: Sequence[str] = (),
+    digests: Mapping[str, str] = _EMPTY_DIGESTS,
     chunk_rows: int | None = None,
     staged_inputs: int = 0,
     native_reason: str | None = None,
     blocking_operator: str | None = None,
     input_slices: int | None = None,
-    node_id: str | None,
+    node_id: str | None = None,
 ) -> ChunkedWrite:
+    parts_tuple = tuple(parts)
     written = ChunkedWrite(
         strategy=strategy,
-        parts=tuple(parts.names),
-        chunks=len(parts.names),
+        parts=parts_tuple,
+        chunks=len(parts_tuple),
         staged_inputs=staged_inputs,
         chunk_rows=chunk_rows,
         native_reason=native_reason,
         blocking_operator=blocking_operator,
         input_slices=input_slices,
-        digests=MappingProxyType(dict(parts.digests)),
+        digests=MappingProxyType(dict(digests)) if digests else _EMPTY_DIGESTS,
     )
     logger.info(
         "chunked_write",
@@ -547,6 +572,126 @@ def _report(
         input_slices=input_slices,
     )
     return written
+
+
+def _sink_slices(
+    destination: Path,
+    *,
+    source: pl.LazyFrame,
+    schema: pl.Schema,
+    rows: int,
+    apply: Callable[[pl.LazyFrame], pl.LazyFrame],
+    execution_context: ExecutionContext | None,
+    node_id: str | None,
+) -> int:
+    """Drive ``source`` a slice at a time through one Parquet writer, and count the slices.
+
+    One writer means one file, so every slice is cast to ``schema`` before it is
+    handed over — the same conforming ``_Parts.sink`` does, for the same reason:
+    a slice may narrow a dtype the whole frame widens. An empty slice is skipped
+    rather than written, so a selective filter leaves no run of zero-row row
+    groups, and the returned count is therefore the slices APPLIED, not the
+    tables written. Row groups are bounded independently of the slice size, or a
+    bounded write would only move the peak from here to every later reader.
+    """
+    total = row_count(source, execution_context=execution_context)
+    arrow_schema = pl.DataFrame(schema=schema).to_arrow().schema
+    with atomic_write(destination) as tmp_dest:
+        with pq.ParquetWriter(tmp_dest, arrow_schema, compression="zstd") as writer:
+            for offset in range(0, total, rows):
+                if execution_context is not None:
+                    execution_context.checkpoint(label="chunked_write", node_id=node_id)
+                slice_df = execution_collect(
+                    apply(source.slice(offset, rows)), execution_context=execution_context
+                )
+                if slice_df.height == 0:
+                    continue
+                conformed = slice_df.select(
+                    [pl.col(name).cast(dtype, strict=True) for name, dtype in schema.items()]
+                )
+                writer.write_table(conformed.to_arrow(), row_group_size=SINGLE_FILE_ROW_GROUP_SIZE)
+                if execution_context is not None:
+                    execution_context.record_chunk()
+    # An empty input drives no slice, but it still wrote one file's worth of output.
+    return len(range(0, total, rows)) if total > 0 else 1
+
+
+def write_file(
+    destination: str | Path,
+    frame: pl.LazyFrame,
+    *,
+    recipe: WriteRecipe | None = None,
+    chunk_rows: int | None = None,
+    execution_context: ExecutionContext | None = None,
+    node_id: str | None = None,
+) -> ChunkedWrite:
+    """Write ``frame`` into ``destination`` as one parquet file.
+
+    ``recipe``, when given, is the write recipe ``frame`` was built from;
+    the write is then performed a slice of its input at a time when chunk-local.
+    When the recipe is absent, rejected or unsliceable, ``frame`` is sunk
+    natively. The file is written directly to ``destination`` without part
+    files or hashing. Atomicity is owned by this function for every strategy:
+    on failure nothing is left at ``destination``, and a successful write appears
+    atomically via temporary file rename.
+    """
+    dest = Path(destination)
+    rows = _chunk_rows(chunk_rows)
+    if sliceable(frame):
+        _sink_slices(
+            dest,
+            source=frame,
+            schema=frame.collect_schema(),
+            rows=rows,
+            apply=_identity,
+            execution_context=execution_context,
+            node_id=node_id,
+        )
+        return _report("sliced", chunk_rows=rows, node_id=node_id)
+
+    if recipe is not None and recipe.fn is not None:
+        check_recipe_equivalence(recipe, frame)
+        if not sliceable(recipe.input):
+            bounded_sink(frame, dest, streaming_chunk_size=rows)
+            return _report(
+                "native",
+                chunk_rows=None,
+                native_reason="input_not_sliceable",
+                node_id=node_id,
+            )
+        applied_slices = _sink_slices(
+            dest,
+            source=recipe.input,
+            schema=frame.collect_schema(),
+            rows=rows,
+            apply=recipe.apply,
+            execution_context=execution_context,
+            node_id=node_id,
+        )
+        return _report(
+            "input_sliced",
+            chunk_rows=rows,
+            input_slices=applied_slices,
+            node_id=node_id,
+        )
+
+    if recipe is not None:
+        bounded_sink(frame, dest, streaming_chunk_size=rows)
+        return _report(
+            "native",
+            chunk_rows=None,
+            native_reason=recipe.reason,
+            blocking_operator=recipe.blocking_operator,
+            node_id=node_id,
+        )
+
+    bounded_sink(frame, dest, streaming_chunk_size=rows)
+    return _report(
+        "native",
+        chunk_rows=None,
+        native_reason="not_sliceable",
+        node_id=node_id,
+    )
 
 
 def scan_parts(paths: Sequence[Path]) -> pl.LazyFrame:
