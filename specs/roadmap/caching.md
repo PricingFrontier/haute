@@ -42,18 +42,16 @@ or where it will not hold at scale.
 | One store, every consumer | Node outputs, input snapshots, and analyses share `.haute_cache`; previews, bounded runs, explicit builds, and traces run under one seed plan. | API-input tables still live in the JSON cache (`CACHE-S08`). |
 | No duplicated runs | A bounded run seeds from any fresh covering generation and captures a join, fan-out, join feeder, batch Model Score, or consumed producer only where recomputing it costs more than the cache round trip, and records why it skipped the others; a preview seeds the same way and captures only the joins and costly full-input work it must compute in full. A chain of plain transforms is recomputed by every preview and bounded run by design, because recomputing it costs less than the cache round trip. Each capture publishes as soon as it is written, so a run that fails or is cancelled later keeps what it had already published. A preview served from the response cache reports its generations as seeded, and the canvas raises the node-data epoch only for a capture generation it has not seen, so a repeat preview costs no refetch. | Two consumers that resolve the same cold capture point at the same time, or an explicit build and an automatic capture of one node, both compute it; the publication lock decides only who publishes (`CACHE-S19`). |
 | Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. Node outputs have their own budget which input snapshots neither consume nor are evicted by. A preview says when a node was not cached and how to fix it. | The store's usage is invisible, and a job's refused capture is (`CACHE-S12`). A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). Every preview prepares the graph several times and signs every lineage node per resolution (`CACHE-S17`). |
-| Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A node with one input whose code is provably row-local is written a slice of its input at a time where a capture or an explicit build writes it, so its memory does not grow with the input. A pass-through node carries its parent's recipe forward, and training preparation writes its prepared parquet through the same bounded writer, slicing the frame or the recipe's input and recording which. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | A Data Output's Parquet still writes any such node through one native streaming sink, whose peak memory grows with the input (`CACHE-S21`). Full joins rescan the base per lookup chunk and cross joins collect the lookup side (`CACHE-S18`). |
-| Failures are recoverable | A corrupt generation is reported, never silently repaired; a plan whose inputs moved before collection stops. | The corrupt error reaches the user as store text with no pointer to Re-cache; a mid-run input change continues instead of stopping (`CACHE-S16`). |
+| Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A node with one input whose code is provably row-local is written a slice of its input at a time where a capture or an explicit build writes it, so its memory does not grow with the input. A pass-through node carries its parent's recipe forward, and training preparation writes its prepared parquet through the same bounded writer, slicing the frame or the recipe's input and recording which. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | Full joins rescan the base per lookup chunk and cross joins collect the lookup side (`CACHE-S18`). Full joins rescan the base per lookup chunk and cross joins collect the lookup side (`CACHE-S18`). |
+| Failures are recoverable | A corrupt generation is reported, never silently repaired, and names the node whose cache to clear or rebuild; a plan whose inputs moved stops, before collection and again if they move before a capture publishes. | — |
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CACHE-S12 | Planned | P2 | The store's usage is visible, and a job's refused capture is. |
+| CACHE-S12 | Planned | P2 | The store's usage is visible; a refused build's job already says which node. |
 | CACHE-S13 | Planned | P3 | A capturing preview finishes as a job instead of dying at the interactive timeout. Unproven: no measured preview approaches the timeout. |
 | CACHE-S19 | Planned | P2 | Two consumers that need the same cold capture compute it once. |
-| CACHE-S16 | Planned | P2 | Corrupt generations and mid-run input changes surface as typed, actionable failures. |
-| CACHE-S21 | Planned | P2 | A Data Output's Parquet write is written a slice at a time. |
 | CACHE-S22 | Planned | P3 | The shapes that cannot carry a write recipe at all can. |
 | CACHE-S17 | Planned | P3 | Planning and store housekeeping cost stays flat as graphs and stores grow. |
 | CACHE-S18 | Planned | P3 | Full and cross joins are written with a bounded number of scans and a bounded part product. |
@@ -61,13 +59,14 @@ or where it will not hold at scale.
 
 ## Planned improvements
 
-Delivery order is `CACHE-S19` → `CACHE-S16` → `CACHE-S21` →
-`CACHE-S17` → `CACHE-S13` → `CACHE-S22` → `CACHE-S18`; `CACHE-S08` is deferred, and
+Delivery order is `CACHE-S17` → `CACHE-S22` → `CACHE-S18` → `CACHE-S19`,
+and each of the last three is gated on a measurement named in its own entry
+rather than started on the strength of its shape; `CACHE-S08` is deferred, and
 `CACHE-S12`'s remaining half waits on the toolbar work its usage surface
 would land in, so it is taken whenever that settles rather than in this
 order. `CACHE-S13` moved down on 20-Sep-2026 because measurement showed
-no preview near its timeout. `CACHE-S21` carries the one full-frame write
-path still unbounded. A package must not bypass
+no preview near its timeout. Every full-frame write is now bounded, so what
+is left is measured against cost rather than shape. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
 specified. Every package builds on the node-output snapshot store (signature,
 slot index, column widening, retention, cross-process leases, and the
@@ -259,6 +258,31 @@ node-data builds join a running build (`src/haute/routes/_node_data_service.py`,
 `run`). The aim's "computed once" therefore holds after publication, not
 during it.
 
+**Measured 20-Sep-2026, and it argues for waiting.** The duplicate computation
+this removes already announces itself: a losing publication logs
+`node_snapshot_capture_superseded` and records `outcome: "superseded"`. Tallied
+over the seeding, node-data, Data Output, training and cross-process suites:
+157 published against 6 superseded, and every one of those six comes from a
+test that constructs the race on purpose. So in ordinary operation the case is
+rare, while this is the most correctness-sensitive package left — it changes
+what happens under the store's lease lock, where a mistake is a cross-process
+data hazard rather than a slow write.
+
+That is not a retirement: a test suite does not run a preview and a training
+job against one cold lineage the way two people sharing a project do, and this
+repository's runs cannot measure that. It is a gate. The event is already
+logged, so counting it in a real project's logs answers the question at no
+cost, and the work should wait for that count rather than be built on the
+strength of the shape alone. If it is built, it gets its own review: claims
+under the lease lock are not a package to fold into a batch.
+
+Its stated dependency on `CACHE-S13` is soft and should not block it. This
+package's own plan has a route that must answer promptly open with waiting
+disabled, so without `CACHE-S13` the policy is simply that a preview never
+waits — it computes as it does today and the claim holder publishes — which
+loses nothing against today and keeps the value for the consumers that do run
+long: training, a Data Output, and an explicit build.
+
 **Plan:** Add cross-process in-flight **claims** to the store, settled when
 a plan opens and never during execution, so every plan that runs is one
 resolution that passed ancestry agreement whole. A claim is a per-identity
@@ -316,77 +340,6 @@ the job path so it is not bounded by the interactive timeout.
 `src/haute/_execute_lazy.py` (`_PlannedCaptures`);
 `src/haute/_execution_context.py`.
 
-### CACHE-S16 — Typed failures
-
-**Why:** Plan resolution propagates a corrupt generation as the store's
-`SourceCacheCorruptError`, and an automatic capture surfaces corruption rather
-than repairing it, by design. Every preview and run through that lineage then
-fails with store text until the user presses Re-cache or Clear on the right
-node, and nothing tells them which node. Separately, the pre-collection check
-stops a run whose inputs moved since planning, but a capture that finds its
-inputs moved mid-run keeps its own artifact and continues
-(`src/haute/_execute_lazy.py`, `_PlannedCaptures.capture`), so seeds computed
-from the old inputs are joined with branches computed from the new ones, the
-very mix the check exists to prevent.
-
-**Plan:** Raise a public contract error, `SnapshotCorruptError`, carrying the
-producer node id and label from plan resolution and from the publication
-rule's corrupt branch; map it to 422 with the node in its payload; have the
-frontend toast name the node and point to its cache button, whose `corrupt`
-state already offers Re-cache. Make a mid-run input change raise
-`SnapshotPlanInputsChangedError`, matching the pre-run check and the error's
-own documentation: the unfinished capture's staging is discarded, captures
-the run published before the change stay published under the identities they
-were computed for, and nothing further is published. Prove the eager
-engine's per-node error capture never swallows either error.
-
-**Acceptance:** `tests/test_seed_plans.py` and
-`tests/test_node_snapshot_retention.py` prove the typed error and its node;
-route tests prove the 422 payload for preview, training preparation, and Data
-Output; a frontend test proves the toast; `tests/test_snapshot_seeding.py`
-proves an input change after the first capture published stops the run,
-leaves that capture published, and publishes nothing further.
-
-**Owning specifications:** [caching](../caching/low-level.md#seed-plans)
-(error handling); [server API](../server-api/low-level.md) (contract error
-payloads); [frontend shared](../frontend-shared/low-level.md).
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_seed_plans.py`; `src/haute/_node_snapshots.py`
-(`_should_publish_locked`); `src/haute/_execute_lazy.py`;
-`src/haute/errors.py`; `src/haute/routes/_contract_errors.py`.
-
-### CACHE-S21 — A Data Output's Parquet write, a slice at a time
-
-**Why:** A Data Output is the one full-frame write still unbounded: on a bounded run it writes
-the node's whole frame through one native streaming sink, whose peak the
-artifact in `tests/performance/test_write_strategy_memory.py` measures at roughly double over a
-fourfold input while a bounded write grows about a third. Under the cost rule a cheap segment is
-left to its consumer, so this is the commonest write that remains unbounded.
-
-**Plan:** Put the seam inside `write_polars_output` (`src/haute/_polars_io_registry.py`), not at
-its caller. That function validates a user's own `arguments` against `sink_parquet`'s signature
-and forwards them; the single-file writer is pyarrow's and takes different names and values, so
-the write must translate the arguments it can and fall back to the native sink for any it cannot,
-recording which. Only a Parquet destination qualifies; every other format and the database output
-keep today's path with the reason recorded. The executor's staging path, signature and reported
-row count are unchanged — `write_file` owns its own atomicity, so nothing may wrap it in a second
-temporary-file-and-rename.
-
-**Acceptance:** `tests/test_data_output_seeding.py` proves a Data Output over a sliceable frame
-and one over a chunk-local node's recipe are each written a slice at a time, equal to the native
-result and with the same reported row count and publication contract; that a user argument the
-pyarrow writer cannot take falls back to the native sink with that reason recorded; and that a
-non-Parquet destination is unchanged with `output_format_not_sliceable`.
-
-**Owning specifications:** [IO layer](../io-layer/low-level.md) (the output registry);
-[server API](../server-api/low-level.md) (Data Output writes).
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_polars_io_registry.py:961-1003`; `src/haute/executor.py`.
-
 ### CACHE-S22 — The shapes that cannot carry a write recipe at all
 
 **Why:** The chunked writer slices a node's input when the engine can hand it a write recipe.
@@ -403,9 +356,18 @@ box is not decidable by its type at all (`src/haute/_builders.py:648-660`). The 
 classifier's reach over the code it is given, and it should be answered by measuring which
 refusals occur in real graphs before widening anything.
 
-**Plan:** Measure first: record the refusal reasons and blocking operators real runs produce, and
-widen the allowlist only where the evidence names an operation worth admitting. Expose a Data
-Input's scan as an input frame separately.
+**Measured 20-Sep-2026, and it retires the allowlist half.** Every recipe refusal is now logged
+(`write_recipe_refused`, with the node, reason, blocking operator and position), and tallied over
+the seeding, node-data and Data Output suites: 74 admitted against 41 refused, whose blocking
+operators were `sort` 32, `head` 4, `collect` 3, `pl.int_range` 1 and one unresolved name. Every
+one of those is global by definition — a slice cannot be sorted, or headed, or collected, and
+give the same answer as the whole — so each is refused correctly and there is nothing the
+evidence asks to admit. Widening the allowlist is not work; confirming it against a real project's
+graphs, rather than this repository's, is the only thing left to say about it.
+
+**Plan:** What remains is the other shape: a Data Input with editor code has no input frame the
+engine hands out, because its scan lives inside its builder. Expose that scan so a recipe can name
+it.
 
 **Acceptance:** Named once the measurement says which refusals are worth removing.
 
@@ -428,9 +390,21 @@ part's footer, Arrow schema, and Polars schema. Each process that leases
 creates a token file under `.processes` and each identity ever published a
 lock file under `.locks`; nothing sweeps either.
 
-**Plan:** Measure first: a performance artifact records planning time per
-preview against graph size on the largest real pipeline, and the store
-operations' time against generation count. Then: keep one prepared graph and
+**Measured 20-Sep-2026, and the quadratic claim did not hold.** Seed-plan
+resolution over a chain of row-local nodes, three runs each, best of three:
+10 nodes 0.142s, 20 nodes 0.257s, 40 nodes 0.738s, 80 nodes 1.235s. Eight times
+the nodes costs 8.7 times the time and the per-node cost is flat at 13–18ms, so
+growth is linear, not quadratic. What the measurement does support is the
+absolute cost: 15ms per node, paid again in admission, in each resolution
+round, in the post-capture key and in execution, is over a second of planning
+for an eighty-node graph before anything is read. The memoisation half of this
+package is justified by that; the store-walk half still needs its own
+measurement against generation count, which this did not take.
+
+The once-per-process retired-directory sweep is delivered: it globbed the whole
+store on every store construction, and a preview builds several.
+
+**Plan:** Keep one prepared graph and
 its structural facts (order, effective edges, pass-through edges,
 materialising operators, projection inputs) across lease attempts and
 preparation rounds, while every node signature and identity is recomputed
@@ -505,6 +479,14 @@ costs the product of the two sides divided by the chunk size and the second is
 unbounded in memory on the lookup side. The uniqueness check filters its input
 once per hash partition, so it is a rescanning algorithm too and not a model
 for this package.
+
+**Checked for usage 20-Sep-2026, not yet for cost.** Full and cross joins do
+occur — across this repository's graphs, 7 full and 10 cross against 105 left
+and 35 inner — so this does not retire on nobody using it. What is still
+unmeasured is whether any real graph pays the cost at a size where it matters:
+the rescanning is real in the code, but a full join over two small sides costs
+nothing worth days of partitioning work. Measure a full join and a cross join
+at the sizes a real store actually holds before building this.
 
 **Plan:** Partition physically, not by rescanning. In one pass over each
 side, write the lookup side's whole rows, keys and payload, and the base
