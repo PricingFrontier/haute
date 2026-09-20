@@ -283,6 +283,9 @@ export interface ExecutionMetrics {
   training_write_input_slices?: number | null
   training_write_native_reason?: string | null
   training_write_blocking_operator?: string | null
+  data_output_write_strategy?: string | null
+  data_output_write_input_slices?: number | null
+  data_output_write_native_reason?: string | null
 }
 
 export interface NodeResult {

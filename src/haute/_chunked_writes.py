@@ -23,6 +23,7 @@ from __future__ import annotations
 import math
 import shutil
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -574,6 +575,25 @@ def _report(
     return written
 
 
+@contextmanager
+def _destination(destination: Path, *, atomic: bool) -> Iterator[Path]:
+    """Where the slice loop writes, and what a failure leaves behind.
+
+    ``pq.ParquetWriter`` closes its footer on the way out of an exception, so a
+    write that died half way leaves a shorter file that reads back perfectly.
+    Writing through a temporary and renaming is what makes a failure leave
+    nothing — unless the caller is already writing to a staging path it will
+    rename or discard itself, where a second temporary would leave a hidden
+    sibling in a directory the caller governs and does not sweep.
+    """
+    if not atomic:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        yield destination
+        return
+    with atomic_write(destination) as tmp:
+        yield tmp
+
+
 def _sink_slices(
     destination: Path,
     *,
@@ -583,6 +603,7 @@ def _sink_slices(
     apply: Callable[[pl.LazyFrame], pl.LazyFrame],
     execution_context: ExecutionContext | None,
     node_id: str | None,
+    atomic: bool = True,
 ) -> int:
     """Drive ``source`` a slice at a time through one Parquet writer, and count the slices.
 
@@ -596,8 +617,8 @@ def _sink_slices(
     """
     total = row_count(source, execution_context=execution_context)
     arrow_schema = pl.DataFrame(schema=schema).to_arrow().schema
-    with atomic_write(destination) as tmp_dest:
-        with pq.ParquetWriter(tmp_dest, arrow_schema, compression="zstd") as writer:
+    with _destination(destination, atomic=atomic) as target:
+        with pq.ParquetWriter(target, arrow_schema, compression="zstd") as writer:
             for offset in range(0, total, rows):
                 if execution_context is not None:
                     execution_context.checkpoint(label="chunked_write", node_id=node_id)
@@ -624,6 +645,7 @@ def write_file(
     chunk_rows: int | None = None,
     execution_context: ExecutionContext | None = None,
     node_id: str | None = None,
+    atomic: bool = True,
 ) -> ChunkedWrite:
     """Write ``frame`` into ``destination`` as one parquet file.
 
@@ -633,7 +655,10 @@ def write_file(
     natively. The file is written directly to ``destination`` without part
     files or hashing. Atomicity is owned by this function for every strategy:
     on failure nothing is left at ``destination``, and a successful write appears
-    atomically via temporary file rename.
+    atomically via temporary file rename. Pass ``atomic=False`` only when the
+    caller is already writing to a staging path it will rename or discard
+    itself — a second temporary would leave a hidden sibling in a directory the
+    caller governs and does not sweep.
     """
     dest = Path(destination)
     rows = _chunk_rows(chunk_rows)
@@ -646,13 +671,14 @@ def write_file(
             apply=_identity,
             execution_context=execution_context,
             node_id=node_id,
+            atomic=atomic,
         )
         return _report("sliced", chunk_rows=rows, node_id=node_id)
 
     if recipe is not None and recipe.fn is not None:
         check_recipe_equivalence(recipe, frame)
         if not sliceable(recipe.input):
-            bounded_sink(frame, dest, streaming_chunk_size=rows)
+            bounded_sink(frame, dest, streaming_chunk_size=rows, atomic=atomic)
             return _report(
                 "native",
                 chunk_rows=None,
@@ -667,6 +693,7 @@ def write_file(
             apply=recipe.apply,
             execution_context=execution_context,
             node_id=node_id,
+            atomic=atomic,
         )
         return _report(
             "input_sliced",
@@ -676,7 +703,7 @@ def write_file(
         )
 
     if recipe is not None:
-        bounded_sink(frame, dest, streaming_chunk_size=rows)
+        bounded_sink(frame, dest, streaming_chunk_size=rows, atomic=atomic)
         return _report(
             "native",
             chunk_rows=None,
@@ -685,7 +712,7 @@ def write_file(
             node_id=node_id,
         )
 
-    bounded_sink(frame, dest, streaming_chunk_size=rows)
+    bounded_sink(frame, dest, streaming_chunk_size=rows, atomic=atomic)
     return _report(
         "native",
         chunk_rows=None,

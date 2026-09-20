@@ -613,15 +613,25 @@ def streaming_sink(
     *,
     fmt: str = "parquet",
     fast_checkpoint: bool = False,
+    atomic: bool = True,
 ) -> None:
-    """Sink a LazyFrame with Polars streaming and no eager fallback."""
+    """Sink a LazyFrame with Polars streaming and no eager fallback.
+
+    ``atomic=False`` writes straight to ``path``, for a caller already writing
+    to a staging file it will rename or discard itself: a second temporary
+    would leave a hidden sibling in a directory that caller governs and does
+    not sweep.
+    """
     path = Path(path)
     compression = _checkpoint_compression(fast_checkpoint)
 
     def _do_sink(target: Path) -> None:
         _streaming_sink_to_path(lf, target, fmt=fmt, compression=compression)
 
-    _write_atomically_if_possible(path, _do_sink)
+    if atomic:
+        _write_atomically_if_possible(path, _do_sink)
+    else:
+        _do_sink(path)
 
 
 def _bounded_sink_execute(
@@ -647,13 +657,14 @@ def bounded_sink(
     fmt: str = "parquet",
     fast_checkpoint: bool = False,
     streaming_chunk_size: int | None = None,
+    atomic: bool = True,
 ) -> None:
     """Sink a LazyFrame through the native streaming API."""
     path = Path(path)
     _bounded_sink_execute(
         path,
         streaming_chunk_size,
-        lambda: streaming_sink(lf, path, fmt=fmt, fast_checkpoint=fast_checkpoint),
+        lambda: streaming_sink(lf, path, fmt=fmt, fast_checkpoint=fast_checkpoint, atomic=atomic),
     )
 
 

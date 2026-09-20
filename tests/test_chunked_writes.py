@@ -1682,6 +1682,45 @@ def test_single_file_unsliceable_input_falls_back_to_native_with_reason(tmp_path
     assert got.equals(frame.collect())
 
 
+def test_single_file_non_atomic_write_makes_no_temporary_of_its_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``atomic=False`` must reach every strategy, not only the sliced loop.
+
+    A caller passing it is already writing to a staging path it renames or
+    discards. A temporary beside that path is a hidden sibling in a directory
+    the caller governs and never sweeps, so a hard kill orphans it — and the
+    rename on success means a finished run cannot see the difference, which is
+    why this watches the write rather than the directory afterwards.
+    """
+    from haute import _polars_utils
+
+    staged: list[Path] = []
+    real_atomic_write = _polars_utils.atomic_write
+
+    def recording(dest: Path, **kwargs: Any) -> Any:
+        staged.append(Path(dest))
+        return real_atomic_write(dest, **kwargs)
+
+    monkeypatch.setattr(_polars_utils, "atomic_write", recording)
+
+    source = tmp_path / "source.parquet"
+    pl.DataFrame({"id": list(range(40)), "val": list(range(40))}).write_parquet(source)
+    # Sorted, so neither the frame nor any recipe can be sliced: this is the
+    # writer's own native branch.
+    frame = pl.scan_parquet(source).sort("val")
+    assert sliceable(frame) is False
+
+    dest = tmp_path / "out" / "result.parquet"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    written = write_file(dest, frame, chunk_rows=10, atomic=False)
+
+    assert written.strategy == "native"
+    assert [path for path in staged if path.resolve().parent == dest.parent.resolve()] == []
+    assert pl.read_parquet(dest).height == 40
+
+
 def test_single_file_misbound_recipe_raises_and_creates_no_file(tmp_path: Path) -> None:
     source_path = tmp_path / "source.parquet"
     df = pl.DataFrame({"id": list(range(20)), "val": list(range(20))})

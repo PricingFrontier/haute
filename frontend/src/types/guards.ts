@@ -948,6 +948,25 @@ function parseExecutionMetrics(
             `${field}.training_write_blocking_operator`,
           ),
         }),
+    ...(obj.data_output_write_strategy === undefined
+      ? {}
+      : {
+          data_output_write_strategy: expectNullableString(
+            parser,
+            obj.data_output_write_strategy,
+            `${field}.data_output_write_strategy`,
+          ),
+        }),
+    ...optionalNullablePositiveCount(parser, obj, "data_output_write_input_slices", field),
+    ...(obj.data_output_write_native_reason === undefined
+      ? {}
+      : {
+          data_output_write_native_reason: expectNullableString(
+            parser,
+            obj.data_output_write_native_reason,
+            `${field}.data_output_write_native_reason`,
+          ),
+        }),
   }
 }
 

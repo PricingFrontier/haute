@@ -131,7 +131,7 @@ def _inline_worker(monkeypatch: pytest.MonkeyPatch, child: Any = None) -> list[A
     return handoffs
 
 
-def _write(monkeypatch: pytest.MonkeyPatch, graph: dict[str, Any]) -> _Write:
+def _write(monkeypatch: pytest.MonkeyPatch, graph: dict[str, Any], **extra: Any) -> _Write:
     from fastapi.testclient import TestClient
 
     from haute.server import app
@@ -139,7 +139,7 @@ def _write(monkeypatch: pytest.MonkeyPatch, graph: dict[str, Any]) -> _Write:
     calls = _counting_builds(monkeypatch)
     response = TestClient(app, raise_server_exceptions=False).post(
         "/api/pipeline/write-output",
-        json={"graph": graph, "node_id": "out", "overwrite": True},
+        json={"graph": graph, "node_id": "out", "overwrite": True, **extra},
     )
     return _Write(response.status_code, response.json(), Counter(calls))
 
@@ -155,6 +155,97 @@ def _staging(project: Path) -> list[Path]:
 # ---------------------------------------------------------------------------
 # Acceptance
 # ---------------------------------------------------------------------------
+
+
+def test_data_output_over_a_sliceable_frame_is_written_sliced(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The last full-frame write that still used an unbounded sink.
+
+    The Data Output reads its producer's captured snapshot, which is a scan, so
+    Polars slices the frame itself and the write never needs a recipe. The rows
+    must equal what the native sink wrote.
+    """
+    graph = _graph(project)
+    write = _write(monkeypatch, graph)
+
+    assert write.status_code == 200, write.body
+    metrics = write.metrics
+    assert metrics["data_output_write_strategy"] == "sliced"
+    assert metrics["data_output_write_native_reason"] is None
+
+    expected = (
+        pl.read_parquet(project / "quotes.parquet")
+        .join(pl.read_parquet(project / "claims.parquet"), on="id")
+        .with_columns((pl.col("a") + pl.col("d")).alias("e"))
+        .sort("id")
+    )
+    assert_frame_equal(_result(project), expected)
+
+
+def test_data_output_over_a_chunk_local_recipe_is_written_input_sliced(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recipe path, which the captured-snapshot case never reaches.
+
+    Straight off a data input with one row-local filter: nothing upstream is
+    captured, so the output's own frame is a filter and cannot be sliced, and
+    what the writer slices is the recipe's input — the scan.
+    """
+    graph = _graph(project)
+    graph["nodes"] = [n for n in graph["nodes"] if n["id"] in {"quotes", "out"}]
+    graph["nodes"].insert(
+        1,
+        {
+            "id": "F",
+            "data": {
+                "label": "F",
+                "nodeType": "polars",
+                "config": {"code": "df = quotes.filter(pl.col('a') >= 0)"},
+            },
+        },
+    )
+    graph["edges"] = [
+        {"id": "e0", "source": "quotes", "target": "F"},
+        {"id": "e1", "source": "F", "target": "out"},
+    ]
+
+    write = _write(monkeypatch, graph, streaming_chunk_size=40)
+
+    assert write.status_code == 200, write.body
+    metrics = write.metrics
+    assert metrics["data_output_write_strategy"] == "input_sliced"
+    assert (metrics["data_output_write_input_slices"] or 0) > 1
+    expected = pl.read_parquet(project / "quotes.parquet").filter(pl.col("a") >= 0)
+    assert_frame_equal(_result(project), expected)
+
+
+def test_data_output_with_user_arguments_keeps_the_native_sink(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A user's own sink arguments are not translated, and the write says so.
+
+    ``sink_parquet`` and the chunked writer's pyarrow writer take different
+    names and different values for the same ideas, so translating them would
+    risk writing a different file than the user asked for.
+    """
+    graph = _graph(project)
+    for node in graph["nodes"]:
+        if node["id"] == "out":
+            node["data"]["config"]["arguments"] = {"compression": "snappy"}
+
+    write = _write(monkeypatch, graph)
+
+    assert write.status_code == 200, write.body
+    metrics = write.metrics
+    assert metrics.get("data_output_write_strategy") == "native"
+    # Named, so a later decision about which arguments are worth translating
+    # has something to count rather than a bare reason.
+    assert (
+        metrics.get("data_output_write_native_reason")
+        == "output_arguments_not_translatable:compression"
+    )
+    assert _result(project).height > 0
 
 
 def test_second_data_output_run_seeds_producer(

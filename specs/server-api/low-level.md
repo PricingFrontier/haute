@@ -62,7 +62,20 @@
 - `ExecutionMetricsPayload` (`_execution_schemas.py`, re-exported by `schemas.py`) carries
   the execution metrics payload across routes and worker processes, including scalar
   single-file training write evidence: `training_write_strategy`, `training_write_input_slices`
-  (`ge=1`), `training_write_native_reason`, and `training_write_blocking_operator`.
+  (`ge=1`), `training_write_native_reason`, and `training_write_blocking_operator`; and the same
+  for a Data Output's own file, `data_output_write_strategy`, `data_output_write_input_slices`
+  (`ge=1`) and `data_output_write_native_reason`. The two are named apart rather than shared
+  because this payload is carried by every operation, and a preview should not report four null
+  training fields nor a training run three null output ones. Each set's native reason is recorded
+  only where the write did come back native: a reason for a strategy that did not happen would be
+  a false statement in the evidence. A Data Output that writes eagerly or to a database records no
+  strategy at all, because the chunked writer is not on that path.
+
+- A refused capture reaches a node-data build's job as the warning an automatic capture records
+  (`snapshot_capture_skipped`, the node, `reason="quota"`), because a failing build's
+  `worker_evidence` is adopted before its error propagates and a failed job is written with its
+  execution metrics. Without it a build the user asked for reported the store's own text, naming
+  no node, while the same refusal in a preview named one.
 
 **Exception hierarchy** (`errors.py`, abridged to route-relevant branches) — every subclass
 roots at `HauteError`, which renders
@@ -827,7 +840,13 @@ use the same stable codes and named fields under terminal `contract_error` (or `
 | `LiveSwitchScenarioError` | `live_switch_scenario_missing` | `switch`, `scenario`, `available_mappings` |
 | `OutputNestingKeyError` | `output_nesting_key_null` | `frame`, `output_path`, `key` |
 | `SnapshotPlanInputsChangedError` | `snapshot_plan_inputs_changed` | `target_node_id` |
+| `SnapshotCorruptError` | `snapshot_corrupt` | `node_id`, `node_label` |
 | `SeedPlanExpiredError` | `preview_seed_plan_expired` | `node_id` |
+
+A preview answers `snapshot_plan_inputs_changed` for inputs that moved before it collected
+anything and, since the mid-run case now stops too, for inputs that move while it runs: it
+would otherwise render a seed signed for the old inputs beside a branch recomputed from the
+new ones. Both are the same 422 the frontend already handles.
 
 Except for handlers that return a `JSONResponse` directly, `HTTPException` responses use
 FastAPI's `{"detail": <string-or-object>}` envelope; this includes structured 507 memory

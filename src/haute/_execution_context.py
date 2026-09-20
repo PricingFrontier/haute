@@ -921,6 +921,9 @@ class ExecutionContext:
     _training_write_input_slices: int | None = field(default=None, init=False)
     _training_write_native_reason: str | None = field(default=None, init=False)
     _training_write_blocking_operator: str | None = field(default=None, init=False)
+    _data_output_write_strategy: str | None = field(default=None, init=False)
+    _data_output_write_input_slices: int | None = field(default=None, init=False)
+    _data_output_write_native_reason: str | None = field(default=None, init=False)
     _cache_proof_miss_reason_counts: dict[ExecutionCacheProofMissReason, int] = field(
         default_factory=lambda: {reason: 0 for reason in ExecutionCacheProofMissReason},
         init=False,
@@ -1278,6 +1281,20 @@ class ExecutionContext:
                 (native_reason or outcome.native_reason) if outcome.strategy == "native" else None
             )
 
+    def record_data_output_write(
+        self, *, strategy: str, native_reason: str | None = None, input_slices: int | None = None
+    ) -> None:
+        """Record how one Data Output's file was written, and why.
+
+        Separate from the training fields because this payload is shared by
+        every operation: a preview should not carry four permanently null
+        training fields, nor a training run four null output ones.
+        """
+        with self._evidence_lock:
+            self._data_output_write_strategy = strategy
+            self._data_output_write_input_slices = input_slices
+            self._data_output_write_native_reason = native_reason if strategy == "native" else None
+
     def worker_evidence(self) -> dict[str, list[dict[str, Any]]]:
         """This execution's input preparation, seeds, captures, and warnings.
 
@@ -1379,6 +1396,9 @@ class ExecutionContext:
             payload["training_write_input_slices"] = self._training_write_input_slices
             payload["training_write_native_reason"] = self._training_write_native_reason
             payload["training_write_blocking_operator"] = self._training_write_blocking_operator
+            payload["data_output_write_strategy"] = self._data_output_write_strategy
+            payload["data_output_write_input_slices"] = self._data_output_write_input_slices
+            payload["data_output_write_native_reason"] = self._data_output_write_native_reason
             payload["input_preparation"] = [record.to_dict() for record in self._input_preparation]
             payload["shared_snapshot_seeds"] = [
                 record.to_dict() for record in self._shared_snapshot_seeds

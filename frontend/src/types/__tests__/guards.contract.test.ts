@@ -1083,6 +1083,33 @@ describe("API response guards", () => {
     expect(parsed.execution_metrics?.training_write_blocking_operator).toBe("head")
   })
 
+  it("preserves a Data Output's write metrics evidence", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        data_output_write_strategy: "sliced",
+        data_output_write_input_slices: 4,
+        data_output_write_native_reason: null,
+      },
+    })
+    expect(parsed.execution_metrics?.data_output_write_strategy).toBe("sliced")
+    expect(parsed.execution_metrics?.data_output_write_input_slices).toBe(4)
+    expect(parsed.execution_metrics?.data_output_write_native_reason).toBeNull()
+  })
+
+  it("rejects a non-positive Data Output slice count", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          data_output_write_input_slices: 0,
+        },
+      }),
+    ).toThrow()
+  })
+
   it("accepts null training write fields in execution metrics", () => {
     const parsed = parsePreviewNodeResponse({
       ...loadUiContractFixture<Record<string, unknown>>("preview_node"),

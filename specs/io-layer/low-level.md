@@ -488,6 +488,28 @@ the same destination. Destination preview and explicit writes share this resolve
 bounded sink discipline. Sidecar loading and parent-directory preparation are owned by the
 generated pipeline/runtime seam.
 
+A Parquet sink is written a slice at a time rather than through one native sink whose peak
+grows with the input. The seam is inside `write_polars_output()` rather than at its caller,
+because that function validates the user's own `arguments` against `sink_parquet`'s signature
+and forwards them, while the chunked writer is pyarrow's and takes different names and
+different values for the same ideas. Rather than translate them and risk writing a different
+file than the user asked for, the bounded path is taken only when there are no arguments to
+translate; anything else keeps the native sink and records
+`output_arguments_not_translatable:<names>`, naming the arguments that blocked it, as a
+non-Parquet destination records `output_format_not_sliceable`. Which arguments are worth
+translating is a question about which ones people actually set, and the names are recorded so
+that question has something to count.
+
+`write_file()` (`_chunked_writes.py`) is the single-file counterpart of `write_parts()`: it
+slices the frame directly where Polars can slice it, slices a write recipe's input where the
+node carries one, and otherwise sinks natively and records why. It owns its own atomicity for
+every strategy — pyarrow's writer closes its footer on the way out of an exception, so a write
+that died half way would otherwise leave a shorter file that reads back perfectly — except
+where a caller passes `atomic=False` because it is already writing to a staging path it will
+rename or discard itself, as the Data Output's executor does. That flag reaches every
+strategy, the native sink included: a temporary beside the caller's staging file is a hidden
+sibling in a directory the caller governs and never sweeps.
+
 The frame a Data Output writes is computed under a seed plan (the execution-engine
 specification owns it): the node's producer is read from a shared snapshot when a fresh one
 covers the output's columns, and otherwise it — and every join, fan-out, and materialisation

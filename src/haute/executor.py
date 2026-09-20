@@ -2261,6 +2261,9 @@ def prepare_data_output(
         plans.enter_context(
             temporary_streaming_chunk_size(streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE)
         )
+        # The engine fills this while it runs; the Data Output's own write reads
+        # its entry to slice the frame rather than sink the whole of it.
+        output_write_recipes: dict[str, Any] = {}
         # Pin a preamble fingerprint snapshot at admission so chunk execution
         # shares one namespace without re-hashing.
         pinned = preamble_execution_fingerprint(
@@ -2298,6 +2301,7 @@ def prepare_data_output(
                 execution_context=execution_context,
                 prepare_inputs=False,
                 snapshot_plan=plan,
+                write_recipes=output_write_recipes,
             )
             lf = lazy_outputs.get(output_node_id)
             if lf is None:
@@ -2329,6 +2333,9 @@ def prepare_data_output(
                 frame,
                 config,
                 resolved_path=staging_out or out,
+                recipe=output_write_recipes.get(output_node_id),
+                execution_context=execution_context,
+                node_id=output_node_id,
             )
 
         if execution_context is not None:
