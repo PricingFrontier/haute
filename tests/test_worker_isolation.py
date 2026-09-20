@@ -412,11 +412,19 @@ def test_isolated_worker_returns_picklable_value() -> None:
     assert result["pid"] != os.getpid()
 
 
+# Spawning a Python process and moving 8 MB back through the queue is slow on
+# Windows and slower again under a full parallel run, where this budget was the
+# only thing failing the suite. The deadline is widened, never the assertion:
+# what the test proves is that the whole payload arrives before the child is
+# joined, not that it arrives quickly.
+_LARGE_RESULT_DRAIN_TIMEOUT_SECONDS = 30
+
+
 def test_isolated_worker_drains_large_result_before_joining_child() -> None:
     result = run_isolated_worker(
         _return_large_payload,
         8 * 1024 * 1024,
-        config=IsolatedWorkerConfig(timeout_seconds=5),
+        config=IsolatedWorkerConfig(timeout_seconds=_LARGE_RESULT_DRAIN_TIMEOUT_SECONDS),
     )
 
     assert len(result) == 8 * 1024 * 1024
