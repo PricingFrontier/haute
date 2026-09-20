@@ -41,7 +41,7 @@ or where it will not hold at scale.
 |---|---|---|
 | One store, every consumer | Node outputs, input snapshots, and analyses share `.haute_cache`; previews, bounded runs, explicit builds, and traces run under one seed plan. | API-input tables still live in the JSON cache (`CACHE-S08`). |
 | No duplicated runs | A bounded run seeds from any fresh covering generation and captures a join, fan-out, join feeder, batch Model Score, or consumed producer only where recomputing it costs more than the cache round trip, and records why it skipped the others; a preview seeds the same way and captures only the joins and costly full-input work it must compute in full. A chain of plain transforms is recomputed by every preview and bounded run by design, because recomputing it costs less than the cache round trip. Each capture publishes as soon as it is written, so a run that fails or is cancelled later keeps what it had already published. A preview served from the response cache reports its generations as seeded, and the canvas raises the node-data epoch only for a capture generation it has not seen, so a repeat preview costs no refetch. | Two consumers that resolve the same cold capture point at the same time, or an explicit build and an automatic capture of one node, both compute it; the publication lock decides only who publishes (`CACHE-S19`). |
-| Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. | Sixty-four generations and 20 GiB are shared with input snapshots, so captures evict each other or fall to `quota` (`CACHE-S12`). A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). Every preview prepares the graph several times and signs every lineage node per resolution (`CACHE-S17`). |
+| Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. Node outputs have their own budget which input snapshots neither consume nor are evicted by. | A capture refused for want of room is invisible to the user (`CACHE-S12`). A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). Every preview prepares the graph several times and signs every lineage node per resolution (`CACHE-S17`). |
 | Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | Any other plan, including an ordinary filter over a large input, is written by one native streaming sink whose peak memory is Polars' to bound (`CACHE-S20`). Full joins rescan the base per lookup chunk and cross joins collect the lookup side (`CACHE-S18`). |
 | Failures are recoverable | A corrupt generation is reported, never silently repaired; a plan whose inputs moved before collection stops. | The corrupt error reaches the user as store text with no pointer to Re-cache; a mid-run input change continues instead of stopping (`CACHE-S16`). |
 
@@ -49,7 +49,7 @@ or where it will not hold at scale.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CACHE-S12 | Planned | P2 | Node-output snapshots have their own quota, large enough for capture-everything use, and a visible quota outcome. |
+| CACHE-S12 | Planned | P2 | A refused capture is visible, and the store's usage is. |
 | CACHE-S13 | Planned | P2 | A capturing preview finishes as a job instead of dying at the interactive timeout. |
 | CACHE-S19 | Planned | P2 | Two consumers that need the same cold capture compute it once. |
 | CACHE-S16 | Planned | P2 | Corrupt generations and mid-run input changes surface as typed, actionable failures. |
@@ -84,45 +84,32 @@ its behaviour changes; the roadmap records the direction and the acceptance
 evidence, not the contract text. Each package's **Evidence** line is also its
 affected-file list.
 
-### CACHE-S12 — A quota for node outputs
+### CACHE-S12 — A refused capture and the store's usage are visible
 
-**Why:** `SourceCacheStore` bounds the whole store at 64 generations and
-20 GiB (`HAUTE_INPUT_CACHE_MAX_GENERATIONS`, `HAUTE_INPUT_CACHE_MAX_BYTES`),
-limits set for input snapshots. Node-output captures count against the same
-numbers: input snapshots are never evicted by a node-output publication but
-occupy the count, and once previews capture every join in every lineage per
-source the remaining slots fill within a session. Admission then retires
-current, unpinned node outputs LRU-first, so captures evict each other, and
-when pinned and leased generations alone exceed the cap every capture falls to
-the `quota` outcome with only an execution warning that nothing surfaces.
+**Why:** The node-output budgets themselves are delivered
+(`HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS`, `HAUTE_NODE_SNAPSHOT_MAX_BYTES`). A
+capture refused for want of room is recorded as the `quota` outcome and an
+execution warning that nothing shows the user. The store's usage against its
+two budgets is not visible anywhere.
 
-**Plan:** Give node outputs their own quota
-(`HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS`, default 512;
-`HAUTE_NODE_SNAPSHOT_MAX_BYTES`, default 40 GiB) counted over node-output
-generations only, leaving the input-snapshot numbers as they are; admission
-and eviction candidates read one provider's generations, and the store's
-byte and generation totals are kept per provider. Surface a `quota` capture
-outcome as an execution warning the preview panel and job status show, naming
-the node and the two remedies: clear an unused snapshot or raise the quota.
-Add a settings entry that reports the store's usage against both quotas.
+**Plan:** Surface a `quota` capture outcome as an execution warning the
+preview panel and the node-data job status show, naming the node and the two
+remedies: clear an unused snapshot or raise the quota. Add a settings entry
+reporting the store's usage against both budgets. The placement of both is a
+product decision still to take.
 
-**Acceptance:** `tests/test_node_snapshot_retention.py` proves input
-snapshots do not consume node-output slots and that node outputs do not
-consume input-snapshot slots, and that a node-output admission never evicts
-an input snapshot; a capture that falls to `quota` appears as a warning in the
+**Acceptance:** A capture that falls to `quota` appears as a warning in the
 preview response and the node-data job status, covered by a route test and a
-frontend test.
+frontend test; the settings entry reports the store's generations and bytes
+against both budgets, covered by a route test and a frontend test.
 
-**Owning specifications:** [IO layer](../io-layer/low-level.md#node-output-snapshots)
-(quota, admission, eviction); [server API](../server-api/low-level.md)
+**Owning specifications:** [server API](../server-api/low-level.md)
 (execution warnings); [frontend shared](../frontend-shared/low-level.md).
 
 **Dependencies:** None.
 
-**Evidence:** `src/haute/_source_cache.py` (`__init__`, `_generation_bytes`,
-`_generation_count`); `src/haute/_node_snapshots.py`
-(`_admit_node_output_locked`, `_eviction_candidates_locked`);
-`src/haute/_execute_lazy.py` (`_PlannedCaptures._record`);
+**Evidence:** `src/haute/routes/pipeline.py`; `src/haute/routes/node_data.py`;
+`src/haute/_source_cache.py` (`_bucket_usage`);
 `frontend/src/panels/DataPreview.tsx`.
 
 ### CACHE-S13 — Capturing previews as jobs
@@ -179,7 +166,9 @@ route, job lifecycle, response schema); [caching](../caching/low-level.md#seed-p
 (capture-work estimate); [frontend preview](../frontend-preview-explore/low-level.md);
 [frontend shared](../frontend-shared/low-level.md#the-shared-data-cache).
 
-**Dependencies:** `CACHE-S12` so a job's captures have room.
+**Dependencies:** None. The capacity `CACHE-S12` was needed for is
+delivered: node outputs have their own budget, which input snapshots neither
+consume nor evict.
 
 **Evidence:** `src/haute/routes/pipeline.py` (`_preview_canonical_graph`,
 `_preview_timeout`); `src/haute/routes/_background_jobs.py`;
