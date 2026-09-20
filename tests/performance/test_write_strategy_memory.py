@@ -34,6 +34,7 @@ EXPECTED_STRATEGIES: dict[str, str] = {
     "filter": "native",
     "filter_with_derived_columns": "native",
     "unnest": "sliced",
+    "filter_with_recipe": "input_sliced",
 }
 
 
@@ -122,7 +123,13 @@ def test_write_strategy_memory(tmp_path: Path) -> None:
     _create_source_parquet(source_small, _SMALL_ROWS)
     _create_source_parquet(source_large, _LARGE_ROWS)
 
-    cases = ("passthrough_native", "filter", "filter_with_derived_columns", "unnest")
+    cases = (
+        "passthrough_native",
+        "filter",
+        "filter_with_derived_columns",
+        "unnest",
+        "filter_with_recipe",
+    )
     ratios: dict[str, float] = {}
 
     for case in cases:
@@ -167,13 +174,15 @@ def test_write_strategy_memory(tmp_path: Path) -> None:
                 f"Native case {case!r} incremental peak ratio {ratio:.2f} is below 1.6 "
                 f"({inc_small / (1024 * 1024):.1f} MB -> {inc_large / (1024 * 1024):.1f} MB)"
             )
-        elif expected_strategy == "sliced":
-            # The sliced case stays bounded whatever the input: measured 1.30 to
-            # 1.32 over the same 4x row step, against every native case's 1.97 or
-            # more, so this ceiling separates the two behaviours with room for
-            # host variance.
+        elif expected_strategy in ("sliced", "input_sliced"):
+            # The sliced and input-sliced cases stay bounded whatever the input:
+            # unnest measured 1.30 to 1.44 over the same 4x row step, against every
+            # native case's 1.97 or more; filter_with_recipe measured 1.37 against
+            # filter's 2.03 to 2.25, tracking the sliced control under the same 1.5x
+            # ceiling.
             assert ratio <= 1.5, (
-                f"Sliced case {case!r} incremental peak ratio {ratio:.2f} exceeds 1.5 "
+                f"Bounded case {case!r} ({expected_strategy}) incremental peak ratio "
+                f"{ratio:.2f} exceeds 1.5 "
                 f"({inc_small / (1024 * 1024):.1f} MB -> {inc_large / (1024 * 1024):.1f} MB)"
             )
 
@@ -194,3 +203,10 @@ def test_write_strategy_memory(tmp_path: Path) -> None:
             f"{sliced_ratio:.2f}x: the two strategies are not behaving differently, so this "
             f"artifact is no longer measuring what it claims"
         )
+
+    # The same computation under two strategies is the most direct proof the fix
+    # works: filter under native grew 2.03x against input-sliced's 1.37x (1.48x separation).
+    assert ratios["filter"] >= 1.25 * ratios["filter_with_recipe"], (
+        f"Native filter grew {ratios['filter']:.2f}x against input-sliced filter's "
+        f"{ratios['filter_with_recipe']:.2f}x: the two strategies are not behaving differently"
+    )

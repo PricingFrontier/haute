@@ -57,7 +57,11 @@ _SLICE_TRANSPARENT_MAP_FUNCTIONS = frozenset({"rename", "unnest"})
 _MATCHES_COLUMN = "__haute_chunk_matches"
 _INDEX_COLUMN = "__haute_chunk_index"
 
-WriteStrategy = Literal["chunked_join", "sliced", "native"]
+WriteStrategy = Literal["chunked_join", "sliced", "input_sliced", "native"]
+
+
+class RecipeEquivalenceError(ValueError):
+    """Raised when a write recipe's native plan does not match the frame handed to write_parts."""
 
 
 def part_name(index: int) -> str:
@@ -183,6 +187,59 @@ class JoinRecipe:
 
 
 @dataclass(frozen=True, slots=True)
+class WriteRecipe:
+    """A chunk-local single-input node's recipe, and the row-local step after it."""
+
+    input: pl.LazyFrame
+    fn: Callable[[pl.LazyFrame], pl.LazyFrame] | None = None
+    finish: Callable[[pl.LazyFrame], pl.LazyFrame] = _identity
+    reason: str | None = None
+    blocking_operator: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.fn is None and self.reason is None:
+            raise ValueError("A rejected write recipe must carry a reason")
+
+    def then(self, step: Callable[[pl.LazyFrame], pl.LazyFrame]) -> WriteRecipe:
+        """This recipe followed by another row-local step."""
+        first = self.finish
+        return WriteRecipe(
+            self.input,
+            fn=self.fn,
+            finish=lambda lf: step(first(lf)),
+            reason=self.reason,
+            blocking_operator=self.blocking_operator,
+        )
+
+    def apply(self, lf: pl.LazyFrame) -> pl.LazyFrame:
+        """Apply this recipe's computation to an input slice or full frame."""
+        if self.fn is None:
+            raise ValueError("Cannot apply a rejected write recipe")
+        return self.finish(self.fn(lf))
+
+    def native(self) -> pl.LazyFrame:
+        """The whole computation as one Polars plan, as the builder produces it."""
+        if self.fn is None:
+            raise ValueError("Cannot construct native plan for a rejected write recipe")
+        return self.apply(self.input)
+
+
+def _check_recipe_equivalence(recipe: WriteRecipe, frame: pl.LazyFrame) -> None:
+    # Limit: two in-memory frames of equal schema are indistinguishable this way.
+    # It catches a recipe bound to a different plan, not one bound to an identical
+    # plan over different data.
+    recipe_native = recipe.native()
+    if recipe_native.collect_schema() != frame.collect_schema():
+        raise RecipeEquivalenceError(
+            "Write recipe schema does not match the frame handed to write_parts"
+        )
+    if recipe_native.explain(optimized=False) != frame.explain(optimized=False):
+        raise RecipeEquivalenceError(
+            "Write recipe plan does not match the frame handed to write_parts"
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class _JoinShape:
     how: str
     kwargs: dict[str, Any]
@@ -251,6 +308,8 @@ class ChunkedWrite:
     staged_inputs: int
     chunk_rows: int | None = None
     native_reason: str | None = None
+    blocking_operator: str | None = None
+    input_slices: int | None = None
     digests: Mapping[str, str] = field(default_factory=lambda: _EMPTY_DIGESTS)
 
 
@@ -347,6 +406,7 @@ def write_parts(
     frame: pl.LazyFrame,
     *,
     join: JoinRecipe | None = None,
+    recipe: WriteRecipe | None = None,
     chunk_rows: int | None = None,
     fast_checkpoint: bool = True,
     execution_context: ExecutionContext | None = None,
@@ -355,8 +415,10 @@ def write_parts(
     """Write ``frame`` into ``directory`` as ordered part files.
 
     ``join``, when given, is the recipe ``frame`` was built from; the join is
-    then written a driving chunk at a time where its semantics allow. The
-    directory must exist and hold no parts yet. Inputs the write stages are
+    then written a driving chunk at a time where its semantics allow.
+    ``recipe``, when given, is the write recipe ``frame`` was built from;
+    the write is then performed a slice of its input at a time when chunk-local.
+    The directory must exist and hold no parts yet. Inputs the write stages are
     kept in a private subdirectory and removed before returning.
     """
     rows = _chunk_rows(chunk_rows)
@@ -396,16 +458,61 @@ def write_parts(
                 staged_inputs=staged,
                 node_id=node_id,
             )
-    if join is None and sliceable(frame):
+        parts.sink(frame, conform=False)
+        return _report(
+            parts,
+            "native",
+            chunk_rows=None,
+            native_reason=native_reason or "join_not_chunkable",
+            node_id=node_id,
+        )
+
+    if sliceable(frame):
         total = row_count(frame, execution_context=execution_context)
         for offset in range(0, total, rows):
             parts.sink(frame.slice(offset, rows))
         parts.ensure_one()
         return _report(parts, "sliced", chunk_rows=rows, node_id=node_id)
-    if native_reason is None:
-        native_reason = "join_not_chunkable" if join is not None else "not_sliceable"
+
+    if recipe is not None and recipe.fn is not None:
+        _check_recipe_equivalence(recipe, frame)
+        if not sliceable(recipe.input):
+            parts.sink(frame, conform=False)
+            return _report(
+                parts,
+                "native",
+                chunk_rows=None,
+                native_reason="input_not_sliceable",
+                node_id=node_id,
+            )
+        total = row_count(recipe.input, execution_context=execution_context)
+        slice_count = 0
+        for offset in range(0, total, rows):
+            slice_count += 1
+            parts.sink(recipe.apply(recipe.input.slice(offset, rows)))
+        parts.ensure_one()
+        # input_slices always equals the part count on this path.
+        return _report(
+            parts,
+            "input_sliced",
+            chunk_rows=rows,
+            input_slices=slice_count,
+            node_id=node_id,
+        )
+
+    if recipe is not None:
+        parts.sink(frame, conform=False)
+        return _report(
+            parts,
+            "native",
+            chunk_rows=None,
+            native_reason=recipe.reason,
+            blocking_operator=recipe.blocking_operator,
+            node_id=node_id,
+        )
+
     parts.sink(frame, conform=False)
-    return _report(parts, "native", chunk_rows=None, native_reason=native_reason, node_id=node_id)
+    return _report(parts, "native", chunk_rows=None, native_reason="not_sliceable", node_id=node_id)
 
 
 def _report(
@@ -415,6 +522,8 @@ def _report(
     chunk_rows: int | None = None,
     staged_inputs: int = 0,
     native_reason: str | None = None,
+    blocking_operator: str | None = None,
+    input_slices: int | None = None,
     node_id: str | None,
 ) -> ChunkedWrite:
     written = ChunkedWrite(
@@ -424,6 +533,8 @@ def _report(
         staged_inputs=staged_inputs,
         chunk_rows=chunk_rows,
         native_reason=native_reason,
+        blocking_operator=blocking_operator,
+        input_slices=input_slices,
         digests=MappingProxyType(dict(parts.digests)),
     )
     logger.info(
@@ -434,6 +545,8 @@ def _report(
         chunk_rows=chunk_rows,
         staged_inputs=staged_inputs,
         native_reason=native_reason,
+        blocking_operator=blocking_operator,
+        input_slices=input_slices,
     )
     return written
 

@@ -14,6 +14,8 @@ from polars.io.plugins import register_io_source
 import haute._chunked_writes
 from haute._chunked_writes import (
     JoinRecipe,
+    RecipeEquivalenceError,
+    WriteRecipe,
     is_part_name,
     part_paths,
     scan_parts,
@@ -22,6 +24,7 @@ from haute._chunked_writes import (
 )
 from haute._hashing import content_hash
 from haute._polars_utils import current_streaming_chunk_size, temporary_streaming_chunk_size
+from haute.chunking import classify_chunk_local_polars_code
 
 
 def _sample_df() -> pl.DataFrame:
@@ -1100,3 +1103,326 @@ def test_a_write_reports_the_rows_per_part_it_chunked_at(tmp_path: Path) -> None
         assert default_write.strategy == "sliced"
         assert default_write.chunk_rows == ambient
         assert default_write.chunk_rows == current_streaming_chunk_size()
+
+
+def test_input_sliced_filter_and_derived_columns_equal_native_strict_order(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.parquet"
+    df = pl.DataFrame(
+        {
+            "id": list(range(100)),
+            "val": [float(i * 3) for i in range(100)],
+            "grp": [f"g_{i % 5}" for i in range(100)],
+        }
+    )
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+
+    cases = [
+        # (a) Plain filter
+        (
+            "filter",
+            scan.filter(pl.col("id") % 2 == 0),
+            WriteRecipe(input=scan, fn=lambda lf: lf.filter(pl.col("id") % 2 == 0)),
+        ),
+        # (b) Filter with row-local derived columns
+        (
+            "filter_derived",
+            scan.filter(pl.col("id") > 15).with_columns(
+                d1=pl.col("val") * 2.0,
+                d2=pl.col("id") + 10,
+            ),
+            WriteRecipe(
+                input=scan,
+                fn=lambda lf: lf.filter(pl.col("id") > 15).with_columns(
+                    d1=pl.col("val") * 2.0,
+                    d2=pl.col("id") + 10,
+                ),
+            ),
+        ),
+    ]
+
+    for name, frame, recipe in cases:
+        target = tmp_path / f"out_{name}"
+        target.mkdir()
+        res = write_parts(target, frame, recipe=recipe, chunk_rows=15)
+        assert res.strategy == "input_sliced"
+        assert res.chunks > 1
+        assert res.input_slices == 7
+        assert res.chunk_rows == 15
+        assert res.native_reason is None
+        assert res.blocking_operator is None
+
+        got = scan_parts(part_paths(target)).collect()
+        expected = frame.collect()
+        assert got.schema == expected.schema
+        # Strict row order on monotonic key 'id'
+        assert got["id"].to_list() == expected["id"].to_list()
+        assert got.equals(expected)
+
+
+def test_unsupported_chunk_local_operations_stay_native_with_reason_and_operator(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.parquet"
+    df = pl.DataFrame(
+        {
+            "id": list(range(50)),
+            "val": [float(i) for i in range(50)],
+            "k": ["a", "b"] * 25,
+            "s": [{"sub": i} for i in range(50)],
+            "lst": [[1, 2]] * 50,
+        }
+    )
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+    filtered = scan.filter(pl.col("id") > 2)
+
+    # Every one must be built over a non-sliceable input so sliceable(frame) is False.
+    unsupported_cases = [
+        ("head", "df = parent.head(10)", filtered.head(10), "unsupported_frame_method", "head"),
+        (
+            "slice",
+            "df = parent.slice(2, 10)",
+            filtered.slice(2, 10),
+            "unsupported_frame_method",
+            "slice",
+        ),
+        (
+            "with_row_index",
+            "df = parent.with_row_index('idx')",
+            filtered.with_row_index("idx"),
+            "unsupported_frame_method",
+            "with_row_index",
+        ),
+        ("unique", "df = parent.unique()", filtered.unique(), "unsupported_frame_method", "unique"),
+        ("shift", "df = parent.shift(1)", filtered.shift(1), "unsupported_frame_method", "shift"),
+        (
+            "window",
+            "df = parent.select(pl.col('val').over('k'))",
+            filtered.select(pl.col("val").over("k")),
+            "unsupported_expression_method",
+            "over",
+        ),
+        (
+            "group_by",
+            "df = parent.group_by('k').len()",
+            filtered.group_by("k").len(),
+            "unsupported_frame_method",
+            "group_by",
+        ),
+        (
+            "unnest",
+            "df = parent.unnest('s')",
+            filtered.unnest("s"),
+            "unsupported_frame_method",
+            "unnest",
+        ),
+        (
+            "explode",
+            "df = parent.explode('lst')",
+            filtered.explode("lst"),
+            "unsupported_frame_method",
+            "explode",
+        ),
+    ]
+
+    for name, code_str, frame, expected_reason, expected_op in unsupported_cases:
+        decision = classify_chunk_local_polars_code(code_str, frame_names=("parent",))
+        assert not decision.eligible, f"Case {name} unexpectedly classified as eligible"
+        assert decision.reason == expected_reason, f"Case {name} reason mismatch"
+        assert decision.blocking_operator == expected_op, f"Case {name} operator mismatch"
+
+        assert sliceable(frame) is False, f"Frame for {name} must not be sliceable"
+        target = tmp_path / f"out_{name}"
+        target.mkdir()
+        recipe = WriteRecipe(
+            input=filtered,
+            fn=None,  # A rejected recipe carries no function
+            reason=decision.reason,
+            blocking_operator=decision.blocking_operator,
+        )
+        res = write_parts(target, frame, recipe=recipe, chunk_rows=5)
+        assert res.strategy == "native", f"Case {name} expected native strategy"
+        assert res.native_reason == decision.reason, f"Case {name} reason mismatch"
+        assert res.blocking_operator == decision.blocking_operator, (
+            f"Case {name} blocking_operator mismatch"
+        )
+        assert res.chunk_rows is None
+        assert res.input_slices is None
+
+        got = scan_parts(part_paths(target)).collect()
+        expected = frame.collect()
+        assert got.sort(got.columns, nulls_last=True).equals(
+            expected.sort(expected.columns, nulls_last=True)
+        )
+
+
+def test_rejected_write_recipe_requires_reason_and_cannot_be_applied() -> None:
+    frame = pl.DataFrame({"a": [1]}).lazy()
+    with pytest.raises(ValueError, match="rejected write recipe must carry a reason"):
+        WriteRecipe(input=frame, fn=None, reason=None)
+
+    rejected = WriteRecipe(input=frame, fn=None, reason="unsupported_frame_method")
+    with pytest.raises(ValueError, match="rejected write recipe"):
+        rejected.apply(frame)
+    with pytest.raises(ValueError, match="rejected write recipe"):
+        rejected.native()
+
+
+def test_recipe_input_not_sliceable_falls_back_to_native(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.parquet"
+    df = pl.DataFrame({"id": list(range(30)), "v": list(range(30))})
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+
+    # Input is a filtered scan, which is NOT sliceable
+    unsliceable_input = scan.filter(pl.col("id") > 5)
+    assert sliceable(unsliceable_input) is False
+
+    def fn(lf: pl.LazyFrame) -> pl.LazyFrame:
+        return lf.filter(pl.col("v") % 2 == 0)
+
+    recipe = WriteRecipe(input=unsliceable_input, fn=fn)
+    frame = recipe.native()
+    assert sliceable(frame) is False
+
+    target = tmp_path / "fallback_target"
+    target.mkdir()
+    res = write_parts(target, frame, recipe=recipe, chunk_rows=5)
+    assert res.strategy == "native"
+    assert res.native_reason == "input_not_sliceable"
+    assert res.blocking_operator is None
+    assert res.chunk_rows is None
+    assert res.input_slices is None
+
+    got = scan_parts(part_paths(target)).collect()
+    expected = frame.collect()
+    assert got.equals(expected)
+
+
+def test_no_query_holds_more_than_one_input_slice(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.parquet"
+    df = pl.DataFrame({"id": list(range(50)), "val": list(range(50))})
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+    assert sliceable(scan) is True
+
+    chunk_rows = 10
+    slice_rows_seen: list[int] = []
+
+    def tracking_fn(slice_lf: pl.LazyFrame) -> pl.LazyFrame:
+        n = slice_lf.select(pl.len()).collect().item()
+        slice_rows_seen.append(n)
+        return slice_lf.filter(pl.col("val") > 5)
+
+    recipe = WriteRecipe(input=scan, fn=tracking_fn)
+    frame = scan.filter(pl.col("val") > 5)
+
+    target = tmp_path / "slice_bounded_target"
+    target.mkdir()
+    res = write_parts(target, frame, recipe=recipe, chunk_rows=chunk_rows)
+    assert res.strategy == "input_sliced"
+    assert res.input_slices == 5
+
+    # Slicing [1:] assumes exactly one prior full-input call from _check_recipe_equivalence;
+    # the subsequent length assertion makes any change in prior calls fail loudly.
+    write_slice_calls = slice_rows_seen[1:]
+    assert len(write_slice_calls) == 5
+    for count in write_slice_calls:
+        assert count <= chunk_rows, (
+            f"Applied function saw {count} rows, expected at most {chunk_rows}"
+        )
+
+    got = scan_parts(part_paths(target)).collect()
+    expected = frame.collect()
+    assert got.equals(expected)
+
+    # An unsliceable input falls back to native under sliceable(recipe.input)
+    unsliceable_input = scan.filter(pl.col("id") > 0)
+    assert sliceable(unsliceable_input) is False
+    unsliceable_recipe = WriteRecipe(
+        input=unsliceable_input,
+        fn=lambda lf: lf.filter(pl.col("val") > 5),
+    )
+    unsliceable_target = tmp_path / "unsliceable_target"
+    unsliceable_target.mkdir()
+    res_unsliceable = write_parts(
+        unsliceable_target,
+        unsliceable_recipe.native(),
+        recipe=unsliceable_recipe,
+        chunk_rows=chunk_rows,
+    )
+    assert res_unsliceable.strategy == "native"
+    assert res_unsliceable.native_reason == "input_not_sliceable"
+
+
+def test_recipe_equivalence_mismatch_raises_and_writes_no_part(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.parquet"
+    df = pl.DataFrame({"id": list(range(30)), "val": list(range(30))})
+    df.write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+
+    # Frame has predicate val > 2
+    frame = scan.filter(pl.col("val") > 2)
+
+    # 1. Recipe has a different predicate (val > 10)
+    mismatched_recipe = WriteRecipe(input=scan, fn=lambda lf: lf.filter(pl.col("val") > 10))
+    target1 = tmp_path / "mismatch_plan"
+    target1.mkdir()
+    with pytest.raises(RecipeEquivalenceError, match=r"plan"):
+        write_parts(target1, frame, recipe=mismatched_recipe, chunk_rows=5)
+    assert not part_paths(target1)
+
+    # 2. Recipe has a different schema (selects only 'id')
+    schema_mismatch_recipe = WriteRecipe(input=scan, fn=lambda lf: lf.select("id"))
+    target2 = tmp_path / "mismatch_schema"
+    target2.mkdir()
+    with pytest.raises(RecipeEquivalenceError, match=r"schema"):
+        write_parts(target2, frame, recipe=schema_mismatch_recipe, chunk_rows=5)
+    assert not part_paths(target2)
+
+
+def test_write_strategy_precedence_join_over_recipe_and_sliced_over_input_sliced(
+    tmp_path: Path,
+) -> None:
+    base = pl.DataFrame({"k": [1, 2, 3], "x": [10, 20, 30]}).lazy()
+    lookup = pl.DataFrame({"k": [1, 2], "y": [100, 200]}).lazy()
+    join_recipe = JoinRecipe(base, lookup, {"how": "inner", "on": "k"})
+
+    # 1. Join recipe wins over write recipe
+    recipe = WriteRecipe(input=base, fn=lambda lf: lf.filter(pl.col("x") > 10))
+    target1 = tmp_path / "prec_join"
+    target1.mkdir()
+    res1 = write_parts(
+        target1,
+        join_recipe.native(),
+        join=join_recipe,
+        recipe=recipe,
+        chunk_rows=2,
+    )
+    assert res1.strategy == "chunked_join"
+
+    # 2. A frame that is itself sliceable takes 'sliced' rather than 'input_sliced'
+    source_path = tmp_path / "sliceable.parquet"
+    pl.DataFrame({"a": list(range(20)), "b": list(range(20))}).write_parquet(source_path)
+    scan = pl.scan_parquet(source_path)
+
+    sliceable_frame = scan.select("a", "b")
+    assert sliceable(sliceable_frame) is True
+
+    sliceable_recipe = WriteRecipe(input=scan, fn=lambda lf: lf.select("a", "b"))
+    target2 = tmp_path / "prec_sliced"
+    target2.mkdir()
+    res2 = write_parts(
+        target2,
+        sliceable_frame,
+        recipe=sliceable_recipe,
+        chunk_rows=5,
+    )
+    assert res2.strategy == "sliced"
+    assert res2.chunk_rows == 5
+    assert len(res2.parts) == 4
+    got = scan_parts(part_paths(target2)).collect()
+    assert got.equals(sliceable_frame.collect())

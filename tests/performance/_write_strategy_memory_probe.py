@@ -20,7 +20,7 @@ from pathlib import Path
 
 import polars as pl
 
-from haute._chunked_writes import write_parts
+from haute._chunked_writes import WriteRecipe, write_parts
 from scripts.memory_smoke import StdlibMemorySampler
 
 CASES: tuple[str, ...] = (
@@ -28,27 +28,28 @@ CASES: tuple[str, ...] = (
     "filter",
     "filter_with_derived_columns",
     "unnest",
+    "filter_with_recipe",
 )
 
 
-def build_frame(case: str, source_path: Path) -> pl.LazyFrame:
-    """Build the LazyFrame for the requested benchmark case."""
+def build_frame_and_recipe(case: str, source_path: Path) -> tuple[pl.LazyFrame, WriteRecipe | None]:
+    """Build the LazyFrame and optional WriteRecipe for the requested benchmark case."""
     scan = pl.scan_parquet(source_path)
     if case == "passthrough_native":
         # Full-width passthrough forced down the native strategy while retaining every
         # row: Polars will not push a slice through a filter, so sliceable() returns
         # False. This serves as the control attributing memory growth to the sink.
-        return scan.filter(pl.lit(True))
+        return scan.filter(pl.lit(True)), None
     if case == "filter":
         # Row-local predicate filtering a subset of rows.
-        return scan.filter(pl.col("i00") > 100)
+        return scan.filter(pl.col("i00") > 100), None
     if case == "filter_with_derived_columns":
         # Row-local predicate plus derived columns.
         return scan.filter(pl.col("i00") > 100).with_columns(
             d1=pl.col("f00") * 2.0,
             d2=pl.col("f01") + pl.col("f02"),
             d3=pl.col("i00") + 1,
-        )
+        ), None
     if case == "unnest":
         # Struct constructed and unnested; sliceable() recognizes unnest as slice-
         # transparent, so this takes the sliced strategy and serves as the bounded control.
@@ -57,7 +58,15 @@ def build_frame(case: str, source_path: Path) -> pl.LazyFrame:
                 pl.col("f00").alias("unnested_1"),
                 pl.col("f01").alias("unnested_2"),
             )
-        ).unnest("struct_col")
+        ).unnest("struct_col"), None
+    if case == "filter_with_recipe":
+        # Filter with chunk-local WriteRecipe; exercises input-sliced writes.
+        frame = scan.filter(pl.col("i00") > 100)
+        recipe = WriteRecipe(
+            input=scan,
+            fn=lambda lf: lf.filter(pl.col("i00") > 100),
+        )
+        return frame, recipe
     raise ValueError(f"unknown case {case!r}")
 
 
@@ -75,12 +84,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     gc.collect()
     rss_before = sampler.process_rss_bytes(os.getpid())
 
-    frame = build_frame(args.case, args.source)
+    frame, recipe = build_frame_and_recipe(args.case, args.source)
     with tempfile.TemporaryDirectory(dir=args.output.parent) as tmp_dir:
         parts_dir = Path(tmp_dir) / "parts"
         parts_dir.mkdir(parents=True, exist_ok=True)
         started = time.perf_counter()
-        report = write_parts(parts_dir, frame, fast_checkpoint=True)
+        report = write_parts(parts_dir, frame, recipe=recipe, fast_checkpoint=True)
         elapsed_seconds = time.perf_counter() - started
         sunk_rows = int(pl.scan_parquet(parts_dir / "*.parquet").select(pl.len()).collect().item())
         rss_after = sampler.process_rss_bytes(os.getpid())
