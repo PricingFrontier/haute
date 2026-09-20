@@ -343,5 +343,25 @@ describe("executionDiagnostics", () => {
 
       expect(executionErrorDetailMessage(error)).toBe("Auto-range exceeded its memory budget.")
     })
+
+    it("names the node whose cached data is unreadable, and both remedies", () => {
+      // A corrupt generation used to reach the user as the store's own text,
+      // which named no node, so they could not tell whose cache to press.
+      const error = {
+        rawDetail: {
+          error_code: "snapshot_corrupt",
+          node_id: "B",
+          node_label: "Banding",
+          message:
+            "The cached data for 'Banding' is unreadable. Re-cache that node to rebuild it, "
+            + "or clear it to run without a cache.",
+        },
+      }
+
+      const message = executionErrorDetailMessage(error)
+      expect(message).toContain("Banding")
+      expect(message).toMatch(/re-cache/i)
+      expect(message).toMatch(/clear it/i)
+    })
   })
 })

@@ -1303,12 +1303,9 @@ def test_explicit_build_refused_by_quota_names_the_node_in_its_warnings(
     same warning here, an explicit build's refusal reached the user as the
     store's own text with no node in it.
     """
-    real_publish = NodeSnapshotStore.publish_node_output
 
     def refuse(self: NodeSnapshotStore, identity: Any, artifact: Any, **kwargs: Any) -> Any:
-        raise NodeSnapshotQuotaRejectedError(
-            "Node-output cache is full after eviction.", artifact
-        )
+        raise NodeSnapshotQuotaRejectedError("Node-output cache is full after eviction.", artifact)
 
     monkeypatch.setattr(NodeSnapshotStore, "publish_node_output", refuse)
 
@@ -1322,7 +1319,6 @@ def test_explicit_build_refused_by_quota_names_the_node_in_its_warnings(
     assert refusals, f"no refusal warning in {warnings}"
     assert refusals[0]["node_id"] == "join"
     assert refusals[0]["reason"] == "quota"
-    assert real_publish is not None
 
 
 def test_explicit_build_publishes_with_write_time_digests(

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from haute._analysis_results import AnalysisKey, AnalysisResultStore
 from haute._data_points import (
@@ -1066,13 +1067,23 @@ class NodeDataService:
             if execution_context is not None:
                 # What the build did before it stopped. A capture the store
                 # refused is recorded here as the warning the preview pane
-                # already renders, naming the node and both remedies.
-                fields = {
-                    **fields,
-                    "execution_metrics": ExecutionMetricsPayload.model_validate(
-                        execution_context.metrics_payload(status=terminal_reason)
-                    ),
-                }
+                # already renders, naming the node and both remedies. Evidence
+                # is worth less than the transition, though: a payload that
+                # will not validate must not leave the job running for ever,
+                # so it is dropped with a log line and the job still ends.
+                try:
+                    fields = {
+                        **fields,
+                        "execution_metrics": ExecutionMetricsPayload.model_validate(
+                            execution_context.metrics_payload(status=terminal_reason)
+                        ),
+                    }
+                except ValidationError as metrics_exc:
+                    logger.warning(
+                        "node_data_failure_metrics_invalid",
+                        job_id=job_id,
+                        error=str(metrics_exc),
+                    )
             self._lifecycle.transition(
                 job_id,
                 to=terminal_reason,
