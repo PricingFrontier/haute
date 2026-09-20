@@ -20,6 +20,7 @@ from haute.errors import (
     RatingFactorDtypeContractError,
     RatingFactorMissingError,
     SeedPlanExpiredError,
+    SnapshotCorruptError,
     SnapshotPlanInputsChangedError,
     TraceCorrelationUnsupportedError,
     is_public_contract_error,
@@ -52,6 +53,7 @@ PUBLIC_CONTRACT_ERROR_TYPES: tuple[type[HauteError], ...] = (
     LiveSwitchScenarioError,
     OutputNestingKeyError,
     InputPreparationError,
+    SnapshotCorruptError,
     SnapshotPlanInputsChangedError,
     SeedPlanExpiredError,
 )

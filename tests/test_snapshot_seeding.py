@@ -22,7 +22,7 @@ from haute._execution_schemas import ExecutionMetricsPayload
 from haute._hashing import content_hash
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._seed_plans import SeedPlan, SeedPlanRequest, open_seed_plan
-from haute._source_cache import SourceCacheCorruptError, SourceCacheIdentity
+from haute._source_cache import SourceCacheIdentity
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import (
     ContractMismatchError,
@@ -1142,6 +1142,8 @@ def test_strict_column_missing_fails(project: Path, store: NodeSnapshotStore) ->
 def test_corrupt_latest_generation_fails_the_run(
     project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from haute.errors import SnapshotCorruptError
+
     graph = _join_graph(project, b_code="df = J.filter(pl.col('a') >= 0).sort('a')")
     _run(graph, store, required={"T": ["a"]})
     b_identity = _identity(store, graph, "B")
@@ -1152,8 +1154,12 @@ def test_corrupt_latest_generation_fails_the_run(
         latest.generation.data_paths[0].write_bytes(b"corrupt")
 
     _pause_at(monkeypatch, "B", corrupt_b)
-    with pytest.raises(SourceCacheCorruptError):
+    with pytest.raises(SnapshotCorruptError) as raised:
         _run(graph, NodeSnapshotStore(project), required={"T": ["a", "b"]})
+    # The store reports corruption against an identity; the run names the node,
+    # so the message points at a cache button the user can actually press.
+    assert raised.value.node_id == "B"
+    assert raised.value.to_payload()["error_code"] == "snapshot_corrupt"
     assert not _staging_dirs(store)
 
 
@@ -1222,6 +1228,8 @@ def test_inputs_changed_before_publish_stops_the_run(
         _run(graph, store, required={"T": ["a"]})
 
     assert store.latest_generation(_identity(store, graph, "A")) is None
+    # The unfinished capture's staging is discarded, not left holding quota.
+    assert not _staging_dirs(store)
 
 
 def test_metrics_report_seeds_captures_and_warnings(

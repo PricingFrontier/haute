@@ -60,6 +60,7 @@ from haute._node_snapshots import (
 )
 from haute._registry import NODE_REGISTRY
 from haute._source_cache import (
+    SourceCacheCorruptError,
     SourceCacheGeneration,
     SourceCacheGenerationMissingError,
     SourceCacheIdentity,
@@ -427,6 +428,25 @@ class _Resolver:
             return (edge,)
         return tuple(self.prepared.incoming_edges_by_target.get(node_id, ()))
 
+    def latest_for(self, node_id: str) -> NodeSnapshotGeneration | None:
+        """This node's latest generation, naming the node if its data is corrupt.
+
+        The store reports corruption against an identity, which says nothing a
+        user can act on: every preview and run through the lineage failed with
+        the store's own text and no way to tell which node's cache to clear or
+        rebuild.
+        """
+        from haute.errors import SnapshotCorruptError
+
+        try:
+            return self.store.latest_generation(self.identity(node_id))
+        except SourceCacheCorruptError as exc:
+            node = self.node_map.get(node_id)
+            raise SnapshotCorruptError(
+                node_id=node_id,
+                node_label=(node.data.label if node is not None else None),
+            ) from exc
+
     def is_node_output(self, node_id: str) -> bool:
         """Whether *node_id*'s output is a node-output snapshot point.
 
@@ -517,7 +537,7 @@ class _Resolver:
         if not self.is_node_output(node_id):
             return None
         identity = self.identity(node_id)
-        latest = self.store.latest_generation(identity)
+        latest = self.latest_for(node_id)
         if latest is None or not latest.fresh:
             return None
         if self.preview and self.shapes_output(node_id) and latest.unshaped_columns is None:
@@ -728,7 +748,7 @@ class _Resolver:
                 extra = self.capture_columns.get(node_id)
                 if extra:
                     demand = demand.union(NodeSnapshotColumns.of(extra))
-                latest = self.store.latest_generation(self.identity(node_id))
+                latest = self.latest_for(node_id)
                 if latest is not None:
                     demand = demand.union(latest.columns)
                 existing = required.get(node_id)
@@ -1112,6 +1132,17 @@ class SeedPlan:
             staging_token=staging_token,
             owns_staging=owns_staging,
         )
+        # Corruption first seen between resolution and open reads the same
+        # metadata resolution reads, and would otherwise reach the user as the
+        # store's own text against an identity, naming no node.
+        node_by_digest = {seed.identity.digest: node_id for node_id, seed in decision.seeds.items()}
+
+        def corrupt_named(digest: str, exc: SourceCacheCorruptError) -> Exception:
+            from haute.errors import SnapshotCorruptError
+
+            node_id = node_by_digest.get(digest)
+            return SnapshotCorruptError(node_id=node_id) if node_id is not None else exc
+
         try:
             for identity, generation_id in decision.generations:
                 try:
@@ -1122,9 +1153,14 @@ class SeedPlan:
                     if require_current:
                         raise _SeedMovedError(identity.digest) from None
                     raise
+                except SourceCacheCorruptError as exc:
+                    raise corrupt_named(identity.digest, exc) from exc
             if require_current:
                 for identity, generation_id in decision.generations:
-                    latest = store.latest_generation(identity)
+                    try:
+                        latest = store.latest_generation(identity)
+                    except SourceCacheCorruptError as exc:
+                        raise corrupt_named(identity.digest, exc) from exc
                     if latest is None or latest.generation_id != generation_id or not latest.fresh:
                         raise _SeedMovedError(identity.digest)
         except BaseException:

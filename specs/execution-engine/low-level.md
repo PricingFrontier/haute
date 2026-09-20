@@ -722,7 +722,13 @@ planned on the full graph, exactly as the seed planner planned it. Source nodes 
 topological — and only once every source is bound is the runtime-input fingerprint of the
 executed nodes recomputed; if it no longer equals the plan's, the run raises
 `SnapshotPlanInputsChangedError` before anything is collected. A source that is itself a
-capture point is captured only after that check.
+capture point is captured only after that check. The one case that check cannot cover is a
+change that happens after it ran: a capture that finds the fingerprint moved before it
+publishes raises the same error rather than keeping its artifact and continuing, which would
+read a seed signed for the old inputs beside a branch recomputed from the new ones — the mix
+the check exists to prevent. The unfinished staging is discarded; whatever published before
+the change stays published, under the identities it was computed for, and nothing after it is
+published.
 
 Every capture point is written by `write_parts` (`fast_checkpoint=True`, in chunks of the
 request's streaming chunk size, `current_streaming_chunk_size()`) into a staging directory
@@ -2058,6 +2064,14 @@ present a structural or schema result as execution evidence.
   planned execution's inputs moved between plan resolution and its sources being bound.
   Public code `snapshot_plan_inputs_changed` with `target_node_id`, adapted to
   422 / `contract_error` like every public contract error; the run is started again.
+- `SnapshotCorruptError` (`haute.errors`, extends `ExecutionError`) — a node's cached data is
+  unreadable. Raised where the node is known, which the store is not: plan resolution
+  (`_Resolver.latest_for`) and the capture publication branch both translate the store's
+  `SourceCacheCorruptError`, which reports against an identity. Public code `snapshot_corrupt`
+  with `node_id` and `node_label`, adapted to 422 / `contract_error`; the message names the
+  node and both remedies, so the frontend's existing authored-message path shows it with no
+  code of its own. A corrupt generation is still reported rather than repaired: only an
+  explicit build replaces one.
 - `SeedPlanExpiredError` (`haute.errors`, extends `ExecutionError`) — a listed seed plan
   names a generation that is gone or a point whose identity the graph no longer produces.
   Public code `preview_seed_plan_expired` with `node_id`, adapted to 409; the preview it
@@ -2222,8 +2236,9 @@ present a structural or schema result as execution evidence.
   rename is sunk after it, and a quota rejection keeps the scored file; a two-input
   modelling node never builds its unselected branch; a
   pass-through returns the selected API-input port; best-effort and strict missing
-  columns; a corrupt latest generation fails the run; inputs changed before collection
-  and before publication; the metrics payload; and plan exclusivity and matching. A bounded
+  columns; a corrupt latest generation fails the run naming the node; inputs changed before
+  collection, and before publication, both stop the run, the second leaving an earlier
+  capture published under the identity it was computed for; the metrics payload; and plan exclusivity and matching. A bounded
   run over a cheap consumed segment reads it directly, captures nothing with skip
   `cheap_segment`, and a second identical run recomputes it with an equal result. A captured
   chunk-local node writes `input_sliced` across more than one slice. In the recipe map, a

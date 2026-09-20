@@ -802,16 +802,29 @@ def test_retained_seed_carries_the_negotiated_demand(
     assert decision.captures["G"].columns == NodeSnapshotColumns.of({"a", "b"})
 
 
-def test_corrupt_generation_fails_resolution(project: Path, store: NodeSnapshotStore) -> None:
-    from haute._source_cache import SourceCacheCorruptError
+def test_corrupt_generation_fails_resolution_naming_the_node(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    """Resolution says which node's cache is unreadable, not just that one is.
+
+    The store reports corruption against an identity. Every preview and run
+    through the lineage failed with that text, and nothing in it told the user
+    whose cache button to press.
+    """
+    from haute.errors import SnapshotCorruptError
 
     graph = _chain(project)
     generation = _publish(store, graph, "C")
     identity = _identity(store, graph, "C")
     _corrupt(_generation_dir(store, identity, generation))
 
-    with pytest.raises(SourceCacheCorruptError):
+    with pytest.raises(SnapshotCorruptError) as raised:
         resolve_seed_plan(_request(graph, required={"T": ["a"]}), store=NodeSnapshotStore(project))
+
+    assert raised.value.node_id == "C"
+    payload = raised.value.to_payload()
+    assert payload["error_code"] == "snapshot_corrupt"
+    assert payload["node_id"] == "C"
 
 
 def test_resolution_drops_across_rounds_until_stable(

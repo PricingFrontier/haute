@@ -472,6 +472,30 @@ class SnapshotPlanInputsChangedError(ExecutionError):
         )
 
 
+class SnapshotCorruptError(ExecutionError):
+    """Raised when a node's cached data is unreadable and names the node.
+
+    A corrupt generation is reported, never silently repaired: an automatic
+    capture surfaces it so the user decides. Without the node, every preview
+    and run through that lineage failed with the store's own text and nothing
+    said which node's cache to clear or rebuild, so the message named a problem
+    the user could not act on.
+    """
+
+    error_code = "snapshot_corrupt"
+    public_fields = ("node_id", "node_label")
+
+    def __init__(self, *, node_id: str, node_label: str | None = None) -> None:
+        self.node_id = node_id
+        self.node_label = node_label
+        super().__init__(
+            f"The cached data for '{node_label or node_id}' is unreadable. "
+            "Re-cache that node to rebuild it, or clear it to run without a cache.",
+            node_id=node_id,
+            node_label=node_label,
+        )
+
+
 class SeedPlanExpiredError(ExecutionError):
     """Raised when a trace's seed plan names data that is no longer there.
 

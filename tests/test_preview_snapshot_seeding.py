@@ -1102,9 +1102,10 @@ def _rewrite_extra(project: Path, value: int) -> None:
     )
 
 
-def test_input_change_after_capture_stores_nothing(
+def test_input_change_after_capture_stops_the_preview(
     project: Path, api: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A preview whose inputs move mid-run fails rather than showing a mix."""
     from haute._execute_lazy import _PlannedCaptures
     from haute.executor import _preview_cache
 
@@ -1119,9 +1120,16 @@ def test_input_change_after_capture_stores_nothing(
 
     monkeypatch.setattr(_PlannedCaptures, "capture", capture_then_rewrite)
 
-    _post_preview(api, graph, "banded")
+    response = api.post(
+        "/api/pipeline/preview",
+        json={"graph": graph.model_dump(mode="json"), "node_id": "banded", "row_limit": 200},
+    )
 
-    # Its inputs moved while it ran: no key describes what it computed.
+    # Its inputs moved while it ran, so what it had computed would have read a
+    # seed signed for the old inputs beside a branch recomputed from the new
+    # ones. It stops rather than showing that, and nothing is keyed.
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["error_code"] == "snapshot_plan_inputs_changed"
     assert len(_preview_cache) == 0
 
 

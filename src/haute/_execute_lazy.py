@@ -56,7 +56,7 @@ from haute._polars_utils import (
     projected_or_carrier_columns,
     streaming_collect,
 )
-from haute._source_cache import SourceCacheError
+from haute._source_cache import SourceCacheCorruptError, SourceCacheError
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -145,6 +145,18 @@ def _write_recipe(
         return renamed if isinstance(renamed, pl.LazyFrame) else renamed.lazy()
 
     if not decision.eligible:
+        # Every refusal, not only the ones a write happens to report. A node
+        # refused here takes the unbounded path however cheap its work is, and
+        # which operations that costs us is a question about real graphs: the
+        # allowlist should be widened on evidence, not on guesswork.
+        logger.debug(
+            "write_recipe_refused",
+            node_id=node.id,
+            reason=decision.reason,
+            blocking_operator=decision.blocking_operator,
+            line=decision.line,
+            column=decision.column,
+        )
         return WriteRecipe(
             input=input_lf,
             fn=None,
@@ -2422,6 +2434,20 @@ class _PlannedCaptures:
             plan.register_artifact(exc.artifact)
             self._record(capture, "quota", None, columns, written)
             return exc.artifact.lazy_frame()
+        except SourceCacheCorruptError as exc:
+            # The publication rule reports corruption rather than repairing it,
+            # deliberately — only an explicit build replaces a corrupt
+            # generation. It reports it against an identity, though, which tells
+            # the user nothing they can act on, so name the node here where it
+            # is known.
+            from haute.errors import SnapshotCorruptError
+
+            artifact.close()
+            node = self.graph.node_map.get(node_id)
+            raise SnapshotCorruptError(
+                node_id=node_id,
+                node_label=(node.data.label if node is not None else None),
+            ) from exc
         except BaseException:
             artifact.close()
             raise
