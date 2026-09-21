@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
 
-import type { NodeDataPointResponse } from "../../api/types"
+import type { NodeDataPointResponse, NodeDataProfile } from "../../api/types"
 import useNodeDataStore, { columnsCoverDemand, ANNOUNCED_CAPTURES_CAP } from "../useNodeDataStore"
 
 function point(overrides: Partial<NodeDataPointResponse> = {}): NodeDataPointResponse {
@@ -29,6 +29,26 @@ function point(overrides: Partial<NodeDataPointResponse> = {}): NodeDataPointRes
     reads_directly: false,
     build_endpoint: null,
     clear_endpoint: null,
+    ...overrides,
+  }
+}
+
+function profile(overrides: Partial<NodeDataProfile> = {}): NodeDataProfile {
+  return {
+    row_count: 1000,
+    column_count: 4,
+    columns: [],
+    overview_summary: {
+      data_quality: {
+        issue_count: 0,
+        issues: [],
+        duplicate_row_count: null,
+        duplicate_ratio: null,
+      },
+      categorical_summary: [],
+    },
+    data_version: "gen-1",
+    generated_at: 1,
     ...overrides,
   }
 }
@@ -355,6 +375,172 @@ describe("useNodeDataStore noteAnnouncedCaptures", () => {
 
     // Announcing gen-a after reset answers true again
     expect(useNodeDataStore.getState().noteAnnouncedCaptures(["gen-a"])).toBe(true)
+  })
+
+  // Every action below can arrive for a slot the store no longer holds: a poll
+  // or a callback that outlived the consumer it was started for. None of them
+  // may resurrect a slot from a status message, and none may raise the epoch —
+  // that would send every consumer back to the server to learn nothing.
+  it("ignores every job action naming a slot it does not hold", () => {
+    const store = useNodeDataStore.getState()
+    const beforeEpoch = useNodeDataStore.getState().epoch
+    const cancel = vi.fn()
+
+    store.startJob("gone||live", {
+      jobId: "job-1",
+      message: "Caching data",
+      startedByLabel: "Explore",
+    })
+    store.updateJobProgress("gone||live", { status: "running", progress: 0.5, message: "Half way" })
+    store.finishJob("gone||live", { status: "completed", progress: 1, message: "Data is cached" })
+    store.startDelegatedBuild("gone||live", {
+      token: "token-1",
+      message: "Building",
+      startedByLabel: "Explore",
+      cancel,
+    })
+    store.forgetSlot("gone||live")
+
+    const after = useNodeDataStore.getState()
+    expect(after.slots).toEqual({})
+    expect(after.jobs).toEqual({})
+    expect(after.epoch).toBe(beforeEpoch)
+    expect(cancel).not.toHaveBeenCalled()
+  })
+
+  it("ignores progress for a slot that holds no running job", () => {
+    const store = useNodeDataStore.getState()
+    store.observePoint(point(), "live", IDENTITY)
+    const before = useNodeDataStore.getState().slots["join||live"]
+
+    store.updateJobProgress("join||live", { status: "running", progress: 0.5, message: "Half way" })
+
+    // The very same slot object: nothing was rewritten, so no consumer re-renders.
+    expect(useNodeDataStore.getState().slots["join||live"]).toBe(before)
+    expect(useNodeDataStore.getState().jobs).toEqual({})
+  })
+
+  it("keeps the running message when progress arrives without one", () => {
+    const store = useNodeDataStore.getState()
+    store.observePoint(
+      point({ state: "missing", generation: null, data_version: null }),
+      "live",
+      IDENTITY,
+    )
+    store.startJob("join||live", {
+      jobId: "job-1",
+      message: "Caching data",
+      startedByLabel: "Explore",
+    })
+
+    store.updateJobProgress("join||live", { status: "running", progress: 0.4, message: "" })
+
+    const job = useNodeDataStore.getState().jobs["join||live"]
+    expect(job.progress).toBe(0.4)
+    // An empty message means "no news", not "stop saying what you were saying".
+    expect(job.message).toBe("Caching data")
+  })
+
+  it("keeps the running job when the point reports the build without naming it", () => {
+    const store = useNodeDataStore.getState()
+    store.observePoint(
+      point({ state: "missing", generation: null, data_version: null }),
+      "live",
+      IDENTITY,
+    )
+    store.startJob("join||live", {
+      jobId: "job-1",
+      message: "Caching data",
+      startedByLabel: "Explore",
+    })
+
+    // The point agrees a build is running but carries no job of its own, as a
+    // poll that raced the job's registration does.
+    store.observePoint(
+      point({ state: "building", generation: null, data_version: null, job: null }),
+      "live",
+      IDENTITY,
+    )
+
+    expect(useNodeDataStore.getState().slots["join||live"].job).toEqual({
+      jobId: "job-1",
+      progress: 0.03,
+      message: "Caching data",
+      startedByLabel: "Explore",
+    })
+  })
+
+  it("tracks a profile job's progress, keeping the running message when none arrives", () => {
+    const store = useNodeDataStore.getState()
+    store.observePoint(point(), "live", IDENTITY)
+    store.startProfileJob("join||live", {
+      jobId: "profile-1",
+      message: "Profiling data",
+      startedByLabel: "Explore",
+      dataVersion: "gen-1",
+    })
+
+    store.updateProfileProgress("join||live", {
+      status: "running",
+      progress: 0.6,
+      message: "Scanning columns",
+    })
+    expect(useNodeDataStore.getState().profileJobs["join||live"]).toMatchObject({
+      progress: 0.6,
+      message: "Scanning columns",
+    })
+
+    store.updateProfileProgress("join||live", { status: "running", progress: 0.8, message: "" })
+    expect(useNodeDataStore.getState().profileJobs["join||live"]).toMatchObject({
+      progress: 0.8,
+      message: "Scanning columns",
+    })
+  })
+
+  it("ignores profile progress and completion for a slot running no profile", () => {
+    const store = useNodeDataStore.getState()
+    store.observePoint(point(), "live", IDENTITY)
+    const beforeEpoch = useNodeDataStore.getState().epoch
+
+    store.updateProfileProgress("join||live", {
+      status: "running",
+      progress: 0.5,
+      message: "Scanning columns",
+    })
+    store.finishProfileJob("join||live", {
+      status: "completed",
+      progress: 1,
+      message: "Profiled",
+      profile: profile(),
+    })
+
+    const after = useNodeDataStore.getState()
+    expect(after.profileJobs).toEqual({})
+    // Nothing was asked for, so nothing was learned and nothing failed.
+    expect(after.profiles).toEqual({})
+    expect(after.profileFailures).toEqual({})
+    expect(after.epoch).toBe(beforeEpoch)
+  })
+
+  it("says why a profile is absent when its job ends with neither profile nor reason", () => {
+    const store = useNodeDataStore.getState()
+    store.observePoint(point(), "live", IDENTITY)
+    store.startProfileJob("join||live", {
+      jobId: "profile-1",
+      message: "Profiling data",
+      startedByLabel: "Explore",
+      dataVersion: "gen-1",
+    })
+
+    // A terminal status carrying no profile, no error and no message — the
+    // shape a cancelled or evicted job reports.
+    store.finishProfileJob("join||live", { status: "failed", progress: 1, message: "" })
+
+    expect(useNodeDataStore.getState().profileJobs).toEqual({})
+    expect(useNodeDataStore.getState().profileFailures["join||live"]).toEqual({
+      dataVersion: "gen-1",
+      message: "Profiling this data did not finish.",
+    })
   })
 })
 

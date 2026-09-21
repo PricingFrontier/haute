@@ -450,6 +450,20 @@ describe("request() core via loadPipeline", () => {
     expect(mockFetch).toHaveBeenCalledTimes(3)
   })
 
+  it("does not ask again once a session is established", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ ok: true }))
+
+    await bootstrapHauteSession(true)
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+
+    // The cookie is already held. Callers guard themselves with a bootstrap,
+    // so asking again would put a round trip in front of every one of them.
+    await bootstrapHauteSession()
+    await bootstrapHauteSession()
+
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+  })
+
   it("returns parsed JSON on success", async () => {
     const data = {
       nodes: [{ id: "1" }],
@@ -1527,6 +1541,19 @@ describe("request() edge cases", () => {
       expect(err).not.toBeInstanceOf(ApiError)
       expect(err).toBeInstanceOf(TypeError)
     }
+  })
+
+  it("says how long a timeout waited, in seconds when the wait is whole seconds", () => {
+    // This message reaches the user verbatim, so a two-minute wait must not
+    // read "120000 ms" and a one-second wait must not read "1 seconds".
+    const message = (timeoutMs: number) =>
+      new ApiTimeoutError("/api/pipeline/preview", timeoutMs).message
+
+    expect(message(120_000)).toBe("Request timed out after 120 seconds.")
+    expect(message(1000)).toBe("Request timed out after 1 second.")
+    // Not a whole number of seconds, and under a second: reported as given.
+    expect(message(1500)).toBe("Request timed out after 1500 ms.")
+    expect(message(500)).toBe("Request timed out after 500 ms.")
   })
 
   it("surfaces client-side request timeouts as ApiTimeoutError, not AbortError", async () => {

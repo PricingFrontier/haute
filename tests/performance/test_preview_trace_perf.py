@@ -821,6 +821,9 @@ async def test_route_supersession_rejects_obsolete_preview_and_trace_work(
             "row_index": 0,
             "row_limit": 100,
             "source": "live",
+            # Required: the generations the explained preview read. This trace
+            # explains a preview that read none, so the plan is empty.
+            "seed_plan": [],
         }
 
     transport = httpx.ASGITransport(app=app)
