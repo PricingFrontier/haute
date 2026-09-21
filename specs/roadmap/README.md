@@ -22,6 +22,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | `EDA-E09` |
 | [Modelling](modelling.md) | RustyStats 0.9.0 upgrade, GLM terms pane, per-feature fits, interaction fits | `MOD-T00` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P11` |
+| [Pipeline config](pipeline-config.md) | Repair, save validation, and the error a rejected config reports | `PCFG-R01` |
 
 ## Working protocol
 

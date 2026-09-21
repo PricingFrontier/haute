@@ -144,6 +144,7 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "explore-eda",
     "modelling",
     "optimiser",
+    "pipeline-config",
 )
 _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = ()
 _COMPONENT_PACKAGE_HEADING = re.compile(
