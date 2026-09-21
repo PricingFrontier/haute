@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest"
-import {
-  columnFingerprint,
-  columnsEqualByFingerprint,
-} from "../columnFingerprint"
+import { columnFingerprint } from "../columnFingerprint"
 import type { ColumnFingerprintInput } from "../columnFingerprint"
 
 const baseColumns: ColumnFingerprintInput = [
@@ -20,7 +17,6 @@ describe("columnFingerprint", () => {
     ]
 
     expect(columnFingerprint(baseColumns)).toBe(columnFingerprint(equivalent))
-    expect(columnsEqualByFingerprint(baseColumns, equivalent)).toBe(true)
   })
 
   it("changes when order, name, or dtype changes", () => {

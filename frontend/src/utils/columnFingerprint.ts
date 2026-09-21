@@ -24,10 +24,3 @@ export function columnFingerprint(columns: ColumnFingerprintInput | undefined): 
   }
   return parts.join(COLUMN_SEPARATOR)
 }
-
-export function columnsEqualByFingerprint(
-  a: ColumnFingerprintInput | undefined,
-  b: ColumnFingerprintInput | undefined,
-): boolean {
-  return columnFingerprint(a) === columnFingerprint(b)
-}

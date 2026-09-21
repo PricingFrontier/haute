@@ -71,7 +71,7 @@ vi.mock("../../utils/makePreviewData", () => ({
 }))
 
 import { loadPipeline, previewNode } from "../../api/client"
-import { makeNode, makeEdge } from "../../test-utils/factories"
+import { makeNode } from "../../test-utils/factories"
 import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
@@ -284,34 +284,6 @@ describe("usePipelineAPI — previews and the node-data epoch", () => {
 
     expect(epoch()).toBe(before + 1)
     expect(mockPreview).toHaveBeenCalledTimes(1)
-  })
-
-  it("announces a downstream capture after the cascade without fetching the displayed preview again", async () => {
-    const calls: string[] = []
-    const pending = new Map<string, (value: PreviewEnvelope) => void>()
-    mockPreview.mockImplementation(({ nodeId }: { nodeId: string }) => {
-      calls.push(nodeId)
-      return new Promise((resolve) => { pending.set(nodeId, resolve) })
-    })
-    const A = makeNode("A")
-    const B = makeNode("B")
-    const { result } = await renderLoaded([A, B], [makeEdge("A", "B")])
-    const before = epoch()
-
-    act(() => result.current.fetchPreview(A, { debounceMs: 0 }))
-    await waitFor(() => expect(calls).toEqual(["A"]), { timeout: STEP_TIMEOUT_MS })
-    // A's new columns cascade to B.
-    await act(async () => { pending.get("A")!(envelope("A", [], "a_col")) })
-    await waitFor(() => expect(calls).toEqual(["A", "B"]), { timeout: STEP_TIMEOUT_MS })
-    expect(epoch()).toBe(before)
-
-    // B captured a join below A: announced once the cascade is done.
-    await act(async () => { pending.get("B")!(envelope("B", [captured("join")], "b_col")) })
-    await waitFor(() => expect(epoch()).toBe(before + 1), { timeout: STEP_TIMEOUT_MS })
-    await settle(result)
-
-    expect(calls).toEqual(["A", "B"])
-    expect(useNodeResultsStore.getState().getPreview("A")?.nodeDataEpoch).toBe(before + 1)
   })
 
   it("leaves the epoch unchanged when a response's captured generation ids were already announced", async () => {

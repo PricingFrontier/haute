@@ -8,6 +8,8 @@ import {
   analyzeEdgeJoinNode,
   type EdgeJoinColumnInfo,
 } from "../../utils/edgeJoinValidation"
+import useGraphStore from "../../stores/useGraphStore"
+import useSettingsStore from "../../stores/useSettingsStore"
 import { useGraph } from "../useGraph"
 import { INPUT_STYLE, SELECT_STYLE } from "./_shared"
 import type { OnUpdateConfig, SimpleEdge, SimpleNode } from "./_shared"
@@ -60,11 +62,16 @@ export default function EdgeJoinEditor({
 }) {
   const { allNodes, edges, submodels } = useGraph()
   const nodeMap = new Map(allNodes.map((node) => [node.id, node]))
+  const structuralVersion = useGraphStore((state) => state.structuralVersion)
+  const activeSource = useSettingsStore((state) => state.activeSource)
   const analysis = analyzeEdgeJoinNode({
     nodeId,
     config,
     nodes: allNodes,
     edges,
+    // Key dropdowns are still offered from whatever columns are known; the
+    // fence only decides whether a missing key is reported as a fact.
+    columnsFence: { structuralVersion, activeSource },
   })
   const {
     diagnostics,

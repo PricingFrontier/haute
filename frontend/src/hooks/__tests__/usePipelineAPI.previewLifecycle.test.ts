@@ -16,8 +16,8 @@
  *   - superseded by a NEWER request (seq mismatch) → drop; the newer request
  *     owns the panel (covered by usePipelineAPI.abortStale.test.ts);
  *   - structuralVersion changed but seq still current → the panel must still
- *     terminalize (data or error). Graph mutation (column application +
- *     downstream cascade) stays version-gated so stale columns are never
+ *     terminalize (data or error). Graph mutation (column application)
+ *     stays version-gated so stale columns are never
  *     written into a restructured graph;
  *   - node deleted mid-flight → handleDeleteNode already cleared the panel;
  *     the late response must not resurrect it or re-create cache entries.
@@ -308,8 +308,8 @@ describe("usePipelineAPI — preview lifecycle terminal states (W0)", () => {
     // No silent retry: exactly the one request the click issued.
     expect(mockPreview).toHaveBeenCalledTimes(1)
 
-    // Graph mutation stays version-gated: no column application or
-    // downstream cascade from a response computed against the old graph.
+    // Graph mutation stays version-gated: no column application from a
+    // response computed against the old graph.
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(result.current.nodeStatuses).toEqual({})
 

@@ -8,7 +8,7 @@
 - Preview requests may seed `requestedPreviewColumns` from cached columns only
   when their structural version and source match the request. Missing provenance
   or a mismatch requires schema discovery by omitting that optional projection.
-  This applies to direct, recovery, downstream propagation and upstream refresh
+  This applies to direct, recovery and upstream refresh
   requests. Fresh schemas retain the initial preview column limit.
 - Deselecting join columns must therefore let downstream pass-through previews
   discover the remaining columns without requesting the old schema. Actual code

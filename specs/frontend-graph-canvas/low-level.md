@@ -651,10 +651,8 @@ reconciliation rather than dropping them or committing a second mutation.
     memory-limit 507 reads as plain language — see
     [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md)),
     else the string detail, else the thrown error's message.
-    `previewNode()` resolves into `resultToPreview`; if the response's
-    columns differ from the node's previous columns
-    (`columnsEqualByFingerprint`), `propagate(nodeId)` kicks off the
-    downstream cascade. Every write of `_columns`/`_availableColumns`/
+    `previewNode()` resolves into `resultToPreview`. Every write of
+    `_columns`/`_availableColumns`/
     `_schemaWarnings` onto node data — the direct-fetch path, the
     schema-map path (`applyPreviewSchemaMapsToNodes`), and the
     stale-upstream gap-fill in `refreshPreview` — also stamps
@@ -672,19 +670,29 @@ reconciliation rather than dropping them or committing a second mutation.
     `_columns`/`_availableColumns`/`_schemaWarnings`/`_columnsSource`
     deleted from its data via destructuring, returning it to the
     pre-preview state.
-17. **Downstream cascade (`propagate`, inside
-    `fetchPreviewImmediate`).** BFS-reaches every node downstream of the
-    changed node, tracks per-node pending-parent counts, and only enqueues a
-    node once every parent that could change its columns has settled;
-    `settleNode` recurses through unchanged nodes without previewing them.
-    A bounded ready-queue (`drainReadyQueue`) runs at most
-    `DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT` (4) previews concurrently. The
-    whole cascade resolves once every reachable node has settled, the
-    request is still current, or the shared `AbortController` fires. A
-    cascade preview's captures raise the epoch only after the whole cascade
-    has resolved, with the root's stored entry re-stamped as above: raising it
-    earlier would fetch the displayed root again and so abort the cascade
-    under it.
+17. **No downstream cascade.** A preview previews its target and nothing
+    below it. The response's `node_columns`/`node_available_columns`/
+    `node_frame_columns` maps already carry every *ancestor*'s schema — the
+    preview route asks the executor for them with
+    `include_schema_metadata=True`, which resolves them without
+    materialising those ancestors — and `applyPreviewSchemaMapsToNodes`
+    writes them onto node data. The readers of a column stash are: an
+    editor, which reads its own node's `_columns` or an upstream source's
+    through `NodePanel.edgeSourceColumns`; the save-time edge-join gate,
+    which reads *any* join's two inputs and therefore only reports a
+    missing key for a stash stamped with the current structural version and
+    source (`EdgeJoinColumnsFence`); and the canvas warning badge
+    (`PipelineNode`, `_schemaWarnings`), refreshed lazily by the next
+    preview at or below that node. For editors, a descendant's columns are
+    never read before that descendant is previewed in its own right, so
+    refreshing them eagerly materialised frames to produce metadata that
+    was always recomputed anyway, and captured those frames into the shared
+    node-data cache for nodes the user was frequently about to change.
+    `usePipelineAPI.noDownstreamPreviews.test.ts` pins the absence,
+    including for a response that genuinely changes the target's columns —
+    the condition the removed cascade fired on. `refreshPreview`'s
+    stale-upstream gap-fill is the one place a preview request fans out
+    into several, bounded by `PREVIEW_FANOUT_CONCURRENCY_LIMIT` (4).
 18. **Save (`usePipelineAPI.handleSave`).** Refuses to run while drilled
     into a submodel. Runs `validateConfigRefs` (warns, does not block) and
     `findFirstInvalidEdgeJoin` (blocks with an error toast if invalid).
@@ -1180,8 +1188,9 @@ array-only payload or omitted-edge compatibility branch is supported.
   each distinguish three outcomes on preview failure: an abort or
   supersession (`isAbortError`/`isPreviewSupersededError`) is silent
   cancellation; an `ApiTimeoutError` additionally toasts `error`; anything
-  else paints an error `PreviewData` and — for cascade/upstream members —
-  toasts a `warning` naming the failing node, without aborting siblings.
+  else paints an error `PreviewData` and — for a refresh's upstream
+  members — toasts a `warning` naming the failing node, without aborting
+  siblings.
 - `usePipelineAPI.handleSave` never throws out of the hook: `ApiError`
   detail is preferred when present, else the exception's `message`, else a
   literal `"unknown error"`; every branch resolves `false` after toasting.
@@ -1442,23 +1451,19 @@ again through the editor and save paths.
   - `frontend/src/hooks/__tests__/usePipelineAPI.abortStale.test.ts` (#31) — switching the selected
     node while a preview is aborted clears the prior node's preview data
     and the aborted fetch never re-paints onto the new node's panel.
-  - `frontend/src/hooks/__tests__/usePipelineAPI.propagation.test.ts` (Phase 2D-5, largest cascade
-    suite) — linear-order cascading; source/rowLimit captured at cascade
-    start surviving a mid-flight store flip; halting at an unchanged
-    downstream node; no duplicate downstream work from an overlapping
-    second `fetchPreview`; direct-children fan-out; concurrency cap under
-    wide fan-out; stale-supersession toast suppression vs genuine-conflict
-    warnings; diamond-shaped dedup (shared child previews once, waits for
-    the slower branch); no-op when the previewed node has no downstream
-    edges; one downstream rejection does not abort sibling previews.
+  - `frontend/src/hooks/__tests__/usePipelineAPI.noDownstreamPreviews.test.ts`
+    — a preview issues exactly one request when its node has downstream
+    children, when the response genuinely changes that node's columns (the
+    condition the removed cascade fired on), and along a chain, so no
+    descendant is materialised for metadata nothing reads before that
+    descendant is previewed itself.
   - `frontend/src/hooks/__tests__/usePipelineAPI.nodeDataEpoch.test.ts` — the
     displayed preview fetched again once a snapshot is published after its
     request; a preview's own capture raising the epoch without fetching it
     again; an own capture whose epoch moved in flight fetched again; a stored
     preview from an older epoch shown and fetched again, and one from the
     current epoch answered without a request; a displayed frame preview fetched
-    again for its frame, and not for its own capture; a downstream capture
-    announced after the cascade without fetching the displayed root again; a
+    again for its frame, and not for its own capture; a
     duplicate announcement leaving the epoch untouched while a new generation
     raises it once; a frame preview not being refetched for a duplicate
     announcement; and a reset making the next announcement count again.
@@ -1474,8 +1479,7 @@ again through the editor and save paths.
     preparation is prepared again and previewed at its new version, with the
     abandoned preparation never ending the new request's busy state, and a
     graph that keeps changing stops with the refresh instruction.
-  - `frontend/src/hooks/__tests__/usePipelineAPI.refPattern.test.ts` (#33/#34) — a single
-    `activeSource` snapshot spans a fetch and its downstream cascade;
+  - `frontend/src/hooks/__tests__/usePipelineAPI.refPattern.test.ts` (#33/#34) —
     `handleSave` reads `activeSource` at invocation time, not a stale
     closure; a `rowLimit` change mid-fetch does not affect the
     already-running preview.

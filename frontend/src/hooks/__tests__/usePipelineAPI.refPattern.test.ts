@@ -7,16 +7,17 @@
  *   the store mid-operation can be silently missed or, worse, picked up
  *   partially.
  *
- * #34 `activeSourceRef.current` in the cascade is captured lazily from a
- *   ref that updates via effect — but within a single `propagateDownstream`
- *   run (which chains multiple `previewNode` promises), the ref can flip
- *   mid-cascade when the user changes the active source, causing a column
- *   mismatch (downstream node previewed with the NEW source vs. the source
- *   originally used for the start-of-cascade node).
+ * #34 `activeSourceRef.current` is captured lazily from a ref that updates via
+ *   effect, so it could flip part-way through an operation spanning several
+ *   `previewNode` promises and mix two sources into one result.
  *
- * The fix for both items is a local capture at cascade start:
+ * The fix for both items is a local capture when the operation starts:
  *     const snapshotSource = activeSourceRef.current
- *     // use snapshotSource for every previewNode call in this cascade
+ *     // use snapshotSource for every previewNode call it makes
+ *
+ * The downstream cascade that made #34 reachable is gone (see
+ * `usePipelineAPI.noDownstreamPreviews.test.ts`); the refresh's upstream
+ * fan-out is now the operation that spans several previews.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
@@ -84,7 +85,7 @@ vi.mock("../../utils/makePreviewData", () => ({
 }))
 
 import { loadPipeline, previewNode } from "../../api/client"
-import { makeNode, makeEdge } from "../../test-utils/factories"
+import { makeNode } from "../../test-utils/factories"
 import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
@@ -119,7 +120,7 @@ async function advanceTimers(ms: number) {
   })
 }
 
-describe("usePipelineAPI — activeSource captured at cascade start (#33, #34)", () => {
+describe("usePipelineAPI — settings captured at fetch start (#33, #34)", () => {
   beforeEach(() => {
     vi.useRealTimers()
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live", "staging"] })
@@ -140,78 +141,6 @@ describe("usePipelineAPI — activeSource captured at cascade start (#33, #34)",
     vi.useRealTimers()
     cleanup()
     vi.restoreAllMocks()
-  })
-
-  it("fetchPreview + downstream cascade uses a single snapshot of activeSource", async () => {
-    // Catches: if the cascade reads activeSourceRef.current (or
-    // useSettingsStore.getState().activeSource) afresh for each
-    // downstream node, switching the active source after the root
-    // preview starts causes downstream previews to use a different
-    // source — producing column schemas that don't match the root.
-    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
-
-    const seenSources: string[] = []
-    let finishRootPreview!: () => void
-    const rootPreviewPending = new Promise<void>((resolve) => { finishRootPreview = resolve })
-    mockPreview.mockImplementation(async ({ nodeId, source }) => {
-      seenSources.push(source ?? "<none>")
-      // Hold the root response until the source switches, independently of
-      // how long loading the preview preparation module takes.
-      if (nodeId === "root") {
-        await rootPreviewPending
-        return {
-          node_id: nodeId,
-          status: "ok",
-          row_count: 1,
-          column_count: 1,
-          // Columns differ from downstream's expected schema to trigger cascade
-          columns: [{ name: "new_col", dtype: "f64" }],
-          preview: [{ new_col: 1 }],
-        }
-      }
-      // Downstream nodes
-      return {
-        node_id: nodeId,
-        status: "ok",
-        row_count: 1,
-        column_count: 1,
-        columns: [{ name: "ds_col", dtype: "f64" }],
-        preview: [{ ds_col: 1 }],
-      }
-    })
-
-    const root = makeNode("root")
-    const ds1 = makeNode("ds1")
-    const ds2 = makeNode("ds2")
-    const params = makeParams()
-    params.graphRef.current = {
-      nodes: [root, ds1, ds2],
-      edges: [makeEdge("root", "ds1"), makeEdge("root", "ds2")],
-    }
-    const { result } = renderHook(() => usePipelineAPI(params))
-    await waitFor(() => expect(result.current.loading).toBe(false))
-
-    useSettingsStore.setState({ activeSource: "live" })
-
-    act(() => { result.current.fetchPreview(root, { debounceMs: 0 }) })
-    await waitFor(() => expect(seenSources).toEqual(["live"]))
-
-    // While root preview is mid-flight, the user flips the active source.
-    act(() => {
-      useSettingsStore.setState({ activeSource: "staging" })
-    })
-
-    await act(async () => { finishRootPreview() })
-    await waitFor(() => expect(seenSources).toHaveLength(3))
-
-    // CORRECT behaviour: all three previews used the same source
-    // captured when fetchPreview was invoked ("live").  Under the
-    // pre-fix code, root would use "live" (captured via ref before
-    // the cascade starts) and the two downstream nodes would see
-    // "staging" because propagateDownstream reads activeSourceRef
-    // at call time.
-    const distinctSources = Array.from(new Set(seenSources))
-    expect(distinctSources).toEqual(["live"])
   })
 
   it("handleSave reads activeSource at invocation time, not via stale closure", async () => {
@@ -266,6 +195,13 @@ describe("usePipelineAPI — activeSource captured at cascade start (#33, #34)",
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     useSettingsStore.setState({ rowLimit: 100 })
+
+    // The preview path lazily imports ./ensureInputSnapshots. Resolve that
+    // import while real timers are still installed: a dynamic import left
+    // pending when fake timers take over never settles, so the preview would
+    // never fire and this test would fail for a reason that has nothing to do
+    // with rowLimit capture.
+    await import("../ensureInputSnapshots")
 
     vi.useFakeTimers()
 
