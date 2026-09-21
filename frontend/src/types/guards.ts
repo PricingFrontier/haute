@@ -13,6 +13,11 @@ import {
   validateExecutionStrategyDiagnostic,
 } from "../generated/api-contracts.execution-strategy-diagnostic.validators.mjs"
 import type {
+  CacheBudgetUsage,
+  CacheNodeEntry,
+  CacheNodesResponse,
+  CacheOwnerEntry,
+  CacheUsageResponse,
   DatabricksCatalogsResponse,
   DatabricksSchemasResponse,
   DatabricksTablesResponse,
@@ -2002,6 +2007,101 @@ function parseInputCacheGeneration(value: unknown, field: string): InputCacheGen
 export function parseInputCacheBuildResponse(value: unknown): InputCacheBuildResponse { const p = "parseInputCacheBuildResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), status: expectStringLiteral(p, obj.status, "field `status`", ["running"]), joined: expectBoolean(p, obj.joined, "field `joined`") } }
 export function parseInputCacheSnapshotResponse(value: unknown): InputCacheSnapshotResponse { const p = "parseInputCacheSnapshotResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), state: expectStringLiteral(p, obj.state, "field `state`", INPUT_CACHE_SNAPSHOT_STATES), freshness: expectStringLiteral(p, obj.freshness, "field `freshness`", INPUT_CACHE_FRESHNESS), generation: obj.generation === null ? null : parseInputCacheGeneration(obj.generation, "field `generation`") } }
 export function parseInputCacheJobStatusResponse(value: unknown): InputCacheJobStatusResponse { const p = "parseInputCacheJobStatusResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), status: expectStringLiteral(p, obj.status, "field `status`", JOB_STATUS_VALUES), terminal_reason: expectNullableString(p, obj.terminal_reason, "field `terminal_reason`"), message: expectString(p, obj.message, "field `message`"), refresh: expectBoolean(p, obj.refresh, "field `refresh`"), build_class: expectStringLiteral(p, obj.build_class, "field `build_class`", BUILD_CLASSES), progress: parseInputCacheProgress(obj.progress, "field `progress`"), snapshot: obj.snapshot === null ? null : parseInputCacheSnapshotResponse(obj.snapshot), error_code: expectNullableString(p, obj.error_code, "field `error_code`") } }
+function parseCacheBudgetUsage(value: unknown, field: string): CacheBudgetUsage {
+  const p = "parseCacheUsageResponse"
+  const obj = expectPlainObject(p, value, field)
+  return {
+    generations_used: expectNonNegativeInteger(p, obj.generations_used, `${field}.generations_used`),
+    generations_limit: expectPositiveInteger(p, obj.generations_limit, `${field}.generations_limit`),
+    generations_limit_variable: expectNonBlankString(p, obj.generations_limit_variable, `${field}.generations_limit_variable`),
+    bytes_used: expectNonNegativeInteger(p, obj.bytes_used, `${field}.bytes_used`),
+    bytes_limit: expectPositiveInteger(p, obj.bytes_limit, `${field}.bytes_limit`),
+    bytes_limit_variable: expectNonBlankString(p, obj.bytes_limit_variable, `${field}.bytes_limit_variable`),
+  }
+}
+
+export function parseCacheUsageResponse(value: unknown): CacheUsageResponse {
+  const p = "parseCacheUsageResponse"
+  const obj = expectPlainObject(p, value)
+  return {
+    schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"),
+    node_outputs: parseCacheBudgetUsage(obj.node_outputs, "field `node_outputs`"),
+    input_snapshots: parseCacheBudgetUsage(obj.input_snapshots, "field `input_snapshots`"),
+  }
+}
+
+const CACHE_POINT_KINDS = ["data_input", "api_input_table", "node_output"] as const
+const CACHE_POINT_STATES = [
+  "current",
+  "stale",
+  "partial",
+  "missing",
+  "building",
+  "corrupt",
+] as const
+const CACHE_RETENTIONS = ["pinned", "automatic"] as const
+const CACHE_BUCKETS = ["node_output", "input"] as const
+
+function parseCacheNodeEntry(value: unknown, field: string): CacheNodeEntry {
+  const p = "parseCacheNodesResponse"
+  const obj = expectPlainObject(p, value, field)
+  return {
+    node_id: expectNonBlankString(p, obj.node_id, `${field}.node_id`),
+    kind: obj.kind === null
+      ? null
+      : expectStringLiteral(p, obj.kind, `${field}.kind`, CACHE_POINT_KINDS),
+    state: obj.state === null
+      ? null
+      : expectStringLiteral(p, obj.state, `${field}.state`, CACHE_POINT_STATES),
+    reads_directly: expectBoolean(p, obj.reads_directly, `${field}.reads_directly`),
+    reads_from: expectNullableString(p, obj.reads_from, `${field}.reads_from`),
+    shares_snapshot_with: parseArray(p, obj.shares_snapshot_with, `${field}.shares_snapshot_with`, (value, at) => expectNonBlankString(p, value, at)),
+    row_count: expectNullableNumber(p, obj.row_count, `${field}.row_count`),
+    generations: expectNonNegativeInteger(p, obj.generations, `${field}.generations`),
+    size_bytes: expectNonNegativeInteger(p, obj.size_bytes, `${field}.size_bytes`),
+    newest_created_at: expectNullableNumber(p, obj.newest_created_at, `${field}.newest_created_at`),
+    retention: obj.retention === null
+      ? null
+      : expectStringLiteral(p, obj.retention, `${field}.retention`, CACHE_RETENTIONS),
+    unavailable_reason: expectNullableString(p, obj.unavailable_reason, `${field}.unavailable_reason`),
+  }
+}
+
+function parseCacheOwnerEntry(value: unknown, field: string): CacheOwnerEntry {
+  const p = "parseCacheNodesResponse"
+  const obj = expectPlainObject(p, value, field)
+  return {
+    bucket: expectStringLiteral(p, obj.bucket, `${field}.bucket`, CACHE_BUCKETS),
+    label: expectNonBlankString(p, obj.label, `${field}.label`),
+    node_id: expectNullableString(p, obj.node_id, `${field}.node_id`),
+    source: expectNullableString(p, obj.source, `${field}.source`),
+    generations: expectNonNegativeInteger(p, obj.generations, `${field}.generations`),
+    row_count: expectNullableNumber(p, obj.row_count, `${field}.row_count`),
+    size_bytes: expectNonNegativeInteger(p, obj.size_bytes, `${field}.size_bytes`),
+    newest_created_at: expectNullableNumber(p, obj.newest_created_at, `${field}.newest_created_at`),
+  }
+}
+
+export function parseCacheNodesResponse(value: unknown): CacheNodesResponse {
+  const p = "parseCacheNodesResponse"
+  const obj = expectPlainObject(p, value)
+  return {
+    schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"),
+    source: expectString(p, obj.source, "field `source`"),
+    nodes: parseArray(p, obj.nodes, "field `nodes`", parseCacheNodeEntry),
+    other: parseArray(p, obj.other, "field `other`", parseCacheOwnerEntry),
+    unattributed_generations: expectNonNegativeInteger(
+      p, obj.unattributed_generations, "field `unattributed_generations`",
+    ),
+    unattributed_bytes: expectNonNegativeInteger(
+      p, obj.unattributed_bytes, "field `unattributed_bytes`",
+    ),
+    unmarked_identities: expectNonNegativeInteger(
+      p, obj.unmarked_identities, "field `unmarked_identities`",
+    ),
+  }
+}
+
 export function parseInputCacheCancelResponse(value: unknown): InputCacheCancelResponse { const p = "parseInputCacheCancelResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), cancellation_requested: expectBoolean(p, obj.cancellation_requested, "field `cancellation_requested`"), status: expectStringLiteral(p, obj.status, "field `status`", JOB_STATUS_VALUES) } }
 
 // ---------------------------------------------------------------------------

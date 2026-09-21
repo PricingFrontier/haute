@@ -28,6 +28,15 @@ _node_data_service = NodeDataService(_store)
 RequestT = TypeVar("RequestT", bound=NodeDataRequest)
 
 
+def node_data_service() -> NodeDataService:
+    """The shared service, so another route resolves points against its jobs.
+
+    A second service would keep its own view of which builds are running, so a
+    node being built would read as merely stale there.
+    """
+    return _node_data_service
+
+
 def _prepared(body: RequestT) -> RequestT:
     graph = flatten_graph(body.graph)
     _ensure_source_file(graph)

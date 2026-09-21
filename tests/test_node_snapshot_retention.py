@@ -35,6 +35,7 @@ from haute._source_cache import (
     SourceCacheGenerationMissingError,
     SourceCacheIdentity,
     classify_identity_marker,
+    generation_bytes,
 )
 from haute._types import NodeType
 
@@ -129,27 +130,71 @@ def test_write_and_read_class_mappings() -> None:
     assert snapshot_read_classes(ExecutionProfile.PREVIEW_EAGER) == frozenset({"bounded"})
 
 
-def test_edit_and_revert_finds_the_earlier_signature_without_a_build(tmp_path: Path) -> None:
+def test_publishing_a_signature_replaces_the_slots_previous_one(tmp_path: Path) -> None:
+    """A node holds one dataset: a re-cache replaces, it does not accumulate.
+
+    The earlier signature's data is gone, so an edit and a revert recompute
+    rather than finding the old snapshot still on disk. That is the trade this
+    policy makes deliberately: disk is not spent keeping every version a node
+    has ever had.
+    """
     store = NodeSnapshotStore(tmp_path)
     slot = _slot(tmp_path)
     first = slot.identity("s1")
     second = slot.identity("s2")
 
     assert store.slot_status(slot, "s1").state == "missing"
-    first_id = _published_id(store, first, pl.DataFrame({"a": [1]}))
+    _published_id(store, first, pl.DataFrame({"a": [1]}))
     assert store.slot_status(slot, "s2").state == "stale"
     _published_id(store, second, pl.DataFrame({"a": [2]}))
 
-    reverted = store.slot_status(slot, "s1")
-    assert reverted.state == "current"
-    assert reverted.generation is not None
-    assert reverted.generation.generation_id == first_id
     assert store.slot_status(slot, "s2").state == "current"
+    assert store.slot_status(slot, "s1").state == "stale"
     assert store.slot_status(slot, "s3").state == "stale"
+
+    # Not merely unselectable: the bytes are gone from the store.
+    assert _slot_generation_bytes(store, tmp_path) == _identity_bytes(store, second)
 
     store.clear_slot(slot)
     assert store.slot_status(slot, "s1").state == "missing"
     assert store.slot_status(slot, "s2").state == "missing"
+
+
+def _identity_bytes(store: NodeSnapshotStore, identity: SourceCacheIdentity) -> int:
+    generations = store.inputs_root / identity.digest / "generations"
+    return sum(generation_bytes(child) for child in generations.iterdir() if child.is_dir())
+
+
+def _slot_generation_bytes(store: NodeSnapshotStore, tmp_path: Path) -> int:
+    """Every node-output byte the store holds, whichever signature wrote it."""
+    total = 0
+    for identity_dir in store.inputs_root.iterdir():
+        generations = identity_dir / "generations"
+        if not generations.is_dir():
+            continue
+        for child in generations.iterdir():
+            if child.is_dir():
+                total += generation_bytes(child)
+    return total
+
+
+def test_a_signature_a_reader_still_holds_survives_until_it_releases(
+    tmp_path: Path,
+) -> None:
+    """A scan in flight must not have its files deleted underneath it."""
+    store = NodeSnapshotStore(tmp_path)
+    slot = _slot(tmp_path)
+    first = slot.identity("s1")
+    _published_id(store, first, pl.DataFrame({"a": [1]}))
+
+    with store.lease(first) as leased:
+        assert leased is not None
+        _published_id(store, slot.identity("s2"), pl.DataFrame({"a": [2]}))
+        # Still readable: the reader holds it, so publication left it alone.
+        assert _identity_bytes(store, first) > 0
+
+    # Released, and with no pointer naming it, it retires on release.
+    assert _identity_bytes(store, first) == 0
 
 
 def test_widening_serves_narrow_readers_and_stales_descendants(tmp_path: Path) -> None:
@@ -362,8 +407,9 @@ def test_a_pin_passes_to_the_slots_newest_signature(tmp_path: Path) -> None:
     with _publish(store, slot.identity("s2"), pl.DataFrame({"a": [2]})) as second:
         assert second.generation.retention == "pinned"
 
-    assert store.slot_status(slot, "s1").generation.retention == "automatic"
     assert store.slot_status(slot, "s2").generation.retention == "pinned"
+    # The pin follows the slot's one dataset; the signature it left has none.
+    assert store.slot_status(slot, "s1").generation is None
 
 
 def test_pin_marks_an_existing_current_generation(tmp_path: Path) -> None:
@@ -1138,3 +1184,39 @@ def test_the_node_output_quota_does_not_inherit_input_limits(tmp_path: Path) -> 
     assert store.max_generations == 2
     assert store.node_output_max_bytes == 40 * 1024 * 1024 * 1024
     assert store.node_output_max_generations == 512
+
+
+def test_a_holder_that_dies_leaves_nothing_clear_slot_cannot_remove(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A superseded signature a reader held stays reachable after that reader dies.
+
+    Publication leaves such a signature indexed and unpointed rather than
+    dropping it: if it were dropped, a holder that died without releasing would
+    strand its generation where `clear_slot` (which walks the index) and the
+    retired sweep (which knows only `.retired-*`) can never see it — and the
+    node would show two datasets with a Clear that cannot remove one.
+    """
+    store = NodeSnapshotStore(tmp_path)
+    slot = _slot(tmp_path)
+    first = slot.identity("s1")
+    first_id = _published_id(store, first, pl.DataFrame({"a": [1, 2, 3]}))
+
+    # A reader in another process holds s1: its marker is present and, while the
+    # publish runs, its process token reads as alive.
+    token = "deadbeefdead"
+    generation_dir = store.inputs_root / first.digest / "generations" / first_id
+    (generation_dir / f".lease-{token}").touch()
+    alive = store._token_alive
+    monkeypatch.setattr(
+        store, "_token_alive", lambda candidate: True if candidate == token else alive(candidate)
+    )
+
+    _published_id(store, slot.identity("s2"), pl.DataFrame({"a": [4, 5, 6]}))
+    assert _identity_bytes(store, first) > 0, "a held generation survives the publish, by design"
+
+    monkeypatch.setattr(store, "_token_alive", alive)  # the holder dies without releasing
+
+    store.clear_slot(slot)
+    assert _identity_bytes(store, first) == 0
+    assert all(owner.generations <= 1 for owner in store.inventory().owners)

@@ -29,6 +29,7 @@ from haute._data_points import (
     PointKind,
     PointResolution,
     consumer_point,
+    point_kind,
 )
 from haute._env import float_env
 from haute._execution_admission import (
@@ -52,13 +53,20 @@ from haute._node_snapshots import (
     NodeSnapshotSlot,
     NodeSnapshotStore,
 )
+from haute._polars_io_registry import PolarsIoConfigError
 from haute._seed_plans import (
     SeedPlan,
     SeedPlanHandoff,
     SeedPlanRequest,
     open_resolved_seed_plan,
 )
-from haute._source_cache import SourceCacheIdentity, new_staging_token
+from haute._source_cache import (
+    SourceCacheCorruptError,
+    SourceCacheError,
+    SourceCacheIdentity,
+    new_staging_token,
+)
+from haute._types import PipelineGraph
 from haute._worker_isolation import (
     IsolatedWorkerError,
     IsolatedWorkerMemoryLimitExceededError,
@@ -623,6 +631,83 @@ class NodeDataService:
         consumer, resolver = self._resolver(body)
         return self._point_response(consumer, resolver)
 
+    def points_for_graph(
+        self, graph: PipelineGraph, source: str, store: NodeSnapshotStore | None = None
+    ) -> list[tuple[str, NodeDataPointResponse | None, str | None, str | None]]:
+        """Resolve every node's point once, as ``(node id, point, reason, input digest)``.
+
+        The fourth element is the identity digest of the snapshot behind a
+        snapshot-backed input, so a caller can tell which of the store's input
+        snapshots this node is the reader of. It is ``None`` for every other
+        kind, and for a Data Input read straight from Parquet.
+
+        One resolver and one store for the whole graph, because the per-node
+        cost is the resolution itself and a caller asking about every node
+        should not pay for a fresh resolver each time.
+
+        A node whose point cannot be resolved — a Banding with nothing wired
+        into it, say — yields ``(node id, None, reason)`` rather than failing
+        the batch: a report about every node is worth more than one that stops
+        at the first node that is not wired up yet.
+        """
+        resolver = DataPointResolver(
+            graph,
+            source=source,
+            store=store if store is not None else NodeSnapshotStore(node_data_project_root()),
+            building=self._building,
+        )
+        resolved: list[tuple[str, NodeDataPointResponse | None, str | None, str | None]] = []
+        seen: set[str] = set()
+        for node in graph.nodes:
+            # A posted graph is not guaranteed unique ids, and a duplicate would
+            # otherwise produce two rows claiming the same node's bytes.
+            if node.id in seen:
+                continue
+            seen.add(node.id)
+            try:
+                consumer = consumer_point(graph, node.id)
+                resolution = self._resolve(consumer, resolver)
+                identity = resolution.input_identity
+                resolved.append(
+                    (
+                        node.id,
+                        self._response_for(consumer, resolver, resolution),
+                        None,
+                        identity.digest if identity is not None else None,
+                    )
+                )
+            except NodeDataPointInvalidError as exc:
+                resolved.append((node.id, None, str(exc), None))
+            except HTTPException as exc:
+                # `_resolve` reports an invalid point this way; one node's bad
+                # wiring is a row in the report, not a failed request.
+                resolved.append((node.id, None, str(exc.detail), None))
+            except SourceCacheCorruptError as exc:
+                # The node's data exists and is damaged, which is a state the
+                # surfaces already have a remedy for — not something the report
+                # cannot describe. `consumer_point` succeeded, so the kind and
+                # the producer are knowable without a resolution; only the
+                # generation is not.
+                resolved.append(
+                    (
+                        node.id,
+                        self._corrupt_response(consumer, resolver),
+                        None,
+                        None,
+                    )
+                )
+                logger.info("cache_report_corrupt_point", node_id=node.id, detail=str(exc))
+            except (PolarsIoConfigError, SourceCacheError) as exc:
+                # A Data Input with no path raises `PolarsIoConfigError` while
+                # resolving its own identity; a store damaged past naming an
+                # identity raises `SourceCacheError`. Both are named rather than
+                # caught as the `ValueError` they derive from, so a programming
+                # error still surfaces as a 500 instead of quietly becoming a
+                # row reason. A report about every node is worth least
+                # precisely when one node is half-configured.
+                resolved.append((node.id, None, str(exc), None))
+        return resolved
+
     def point_for(
         self, consumer: ConsumerPoint, resolver: DataPointResolver
     ) -> NodeDataPointResponse:
@@ -638,7 +723,45 @@ class NodeDataService:
     def _point_response(
         self, consumer: ConsumerPoint, resolver: DataPointResolver
     ) -> NodeDataPointResponse:
-        resolution = self._resolve(consumer, resolver)
+        return self._response_for(consumer, resolver, self._resolve(consumer, resolver))
+
+    def _corrupt_response(
+        self, consumer: ConsumerPoint, resolver: DataPointResolver
+    ) -> NodeDataPointResponse:
+        """The row for a point whose data is on disk and unreadable.
+
+        Everything but the generation is knowable without resolving: the kind
+        is a graph lookup and the producer comes from the consumer point. The
+        caller supplies the bytes from its own accounting, because the budget
+        charges a corrupt generation like any other.
+        """
+        return NodeDataPointResponse(
+            consumer_node_id=consumer.consumer_node_id,
+            point=NodeDataPointRef(
+                producer_node_id=consumer.point.producer_node_id,
+                port_label=consumer.point.port_label,
+            ),
+            slot_key=(
+                f"{consumer.point.producer_node_id}|"
+                f"{consumer.point.port_label or ''}|{resolver.source}"
+            ),
+            kind=point_kind(resolver.graph, consumer.point),
+            state="corrupt",
+            demand=_columns_payload(consumer.demand),
+        )
+
+    def _response_for(
+        self,
+        consumer: ConsumerPoint,
+        resolver: DataPointResolver,
+        resolution: PointResolution,
+    ) -> NodeDataPointResponse:
+        """Build the response from a resolution the caller already has.
+
+        Split out so a caller that needs the resolution itself — the cache
+        report, which identifies a node's input snapshot by its identity —
+        does not resolve the same point twice to get both.
+        """
         response = NodeDataPointResponse(
             consumer_node_id=consumer.consumer_node_id,
             point=NodeDataPointRef(

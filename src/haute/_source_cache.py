@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Final, Literal, Protocol, runtime_checkable
 
 import polars as pl
 
@@ -47,9 +47,17 @@ _DEFAULT_STAGING_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 _DEFAULT_RETIRE_GRACE_SECONDS = 30 * 60
 # Provider of node-output snapshots; their publication, leases, and retirement
 # live in ``haute._node_snapshots``.
-NODE_OUTPUT_PROVIDER = "node_output"
+# ``Final`` narrows this to its literal type, so it can be passed wherever a
+# ``CacheBucket`` is expected rather than only compared against one.
+NODE_OUTPUT_PROVIDER: Final = "node_output"
 CacheBucket = Literal["node_output", "input"]
 IdentityClassification = Literal["node_output", "input", "unknown"]
+# The environment variables behind the input budget's limits. They are named
+# rather than inlined because the usage report tells a user which variable to
+# change: reading the limit and reporting its name from one constant is what
+# stops the two from drifting.
+INPUT_CACHE_MAX_BYTES_VARIABLE = "HAUTE_INPUT_CACHE_MAX_BYTES"
+INPUT_CACHE_MAX_GENERATIONS_VARIABLE = "HAUTE_INPUT_CACHE_MAX_GENERATIONS"
 KNOWN_INPUT_PROVIDERS = frozenset({"file", "lakehouse", "database", "databricks", "inline"})
 
 logger = get_logger(component="source_cache")
@@ -511,12 +519,12 @@ class SourceCacheStore:
         self.inputs_root = self.root / ".haute_cache" / "inputs"
         self.inputs_root.mkdir(parents=True, exist_ok=True)
         if max_bytes is None:
-            max_bytes = int_env("HAUTE_INPUT_CACHE_MAX_BYTES", 20 * 1024 * 1024 * 1024)
+            max_bytes = int_env(INPUT_CACHE_MAX_BYTES_VARIABLE, 20 * 1024 * 1024 * 1024)
         if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
             raise ValueError("source-cache max_bytes must be a positive integer")
         self.max_bytes = max_bytes
         if max_generations is None:
-            max_generations = int_env("HAUTE_INPUT_CACHE_MAX_GENERATIONS", 64)
+            max_generations = int_env(INPUT_CACHE_MAX_GENERATIONS_VARIABLE, 64)
         if (
             isinstance(max_generations, bool)
             or not isinstance(max_generations, int)

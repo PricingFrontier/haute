@@ -60,7 +60,10 @@ from haute._json_shred._publication import (
 )
 from haute._logging import get_logger
 from haute._source_cache import (
+    INPUT_CACHE_MAX_BYTES_VARIABLE,
+    INPUT_CACHE_MAX_GENERATIONS_VARIABLE,
     NODE_OUTPUT_PROVIDER,
+    CacheBucket,
     SourceCacheCorruptError,
     SourceCacheError,
     SourceCacheGeneration,
@@ -88,6 +91,10 @@ NODE_SNAPSHOT_EXECUTION_SEMANTICS_VERSION = "node-snapshot:v1"
 BOUNDED_SEMANTICS_CLASS = "bounded"
 DEFAULT_NODE_SNAPSHOT_MAX_BYTES = 40 * 1024 * 1024 * 1024
 DEFAULT_NODE_SNAPSHOT_MAX_GENERATIONS = 512
+# As with the input budget's variables in ``haute._source_cache``: the usage
+# report names the variable it read the limit from, so the two cannot drift.
+NODE_SNAPSHOT_MAX_BYTES_VARIABLE = "HAUTE_NODE_SNAPSHOT_MAX_BYTES"
+NODE_SNAPSHOT_MAX_GENERATIONS_VARIABLE = "HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS"
 _SLOT_INDEX_SCHEMA_VERSION = 1
 _LAST_USED_UPDATE_INTERVAL_SECONDS = 60.0
 # Lease markers sit directly in the generation directory under short names:
@@ -118,6 +125,239 @@ _BOUNDED_SNAPSHOT_PROFILES = frozenset(
         ExecutionProfile.NODE_SNAPSHOT,
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class CacheBudgetUsage:
+    """One budget's usage against its limits, and the variables that set them."""
+
+    generations_used: int
+    generations_limit: int
+    generations_limit_variable: str
+    bytes_used: int
+    bytes_limit: int
+    bytes_limit_variable: str
+
+
+@dataclass(frozen=True, slots=True)
+class CacheUsageReport:
+    """Both of the store's budgets, which are independent of one another.
+
+    Node outputs and input snapshots neither consume nor evict one another, so
+    there is no combined total to report and none is offered.
+    """
+
+    node_outputs: CacheBudgetUsage
+    input_snapshots: CacheBudgetUsage
+
+
+@dataclass(frozen=True, slots=True)
+class CacheOwnerUsage:
+    """What one owner holds on disk: a node's output for a source, or an input.
+
+    ``label`` is what to call it when the owner is no longer in anybody's
+    graph — the node id for a node output, the source's path or table for an
+    input snapshot.
+    """
+
+    bucket: CacheBucket
+    node_id: str | None
+    source: str | None
+    label: str
+    #: The pipeline whose node this is; several can share one project root.
+    pipeline_source_file: str | None
+    generations: int
+    size_bytes: int
+    newest_row_count: int | None
+    newest_created_at: float | None
+    # The identities this owner covers, so a caller holding one — a node's
+    # resolved input snapshot, say — can tell whether this owner is its own.
+    identity_digests: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class CacheInventory:
+    """Every generation on disk, attributed to the owner its metadata names.
+
+    ``unattributed_*`` covers what could not be attributed — a generation whose
+    ``meta.json`` is absent or unreadable, and staging under an identity that
+    holds no readable generation. It is reported rather than dropped so the
+    owners' bytes plus the unattributed bytes account for what the budgets say.
+
+    ``unmarked_identities`` counts identities that hold generations but whose
+    provider marker does not classify. Those are charged to *both* budgets at
+    admission, and therefore in :class:`CacheUsageReport`, while the inventory
+    attributes each to the one bucket its metadata names — so this is the
+    number that explains a difference between the two.
+    """
+
+    owners: tuple[CacheOwnerUsage, ...]
+    unattributed_generations: int
+    unattributed_bytes: int
+    unmarked_identities: int
+
+
+# Descriptor keys that name an input source without disclosing anything: a
+# descriptor is already credential-free by construction, but naming the keys
+# read here keeps an unexpected one from reaching a browser.
+_INPUT_LABEL_KEYS = ("path", "table", "name")
+
+
+def _input_label(provider: str, descriptor: Mapping[str, object]) -> str:
+    for key in _INPUT_LABEL_KEYS:
+        value = descriptor.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return provider
+
+
+@dataclass(slots=True)
+class _OwnerAccumulator:
+    bucket: CacheBucket
+    node_id: str | None
+    source: str | None
+    label: str
+    pipeline_source_file: str | None = None
+    generations: int = 0
+    size_bytes: int = 0
+    newest_row_count: int | None = None
+    newest_created_at: float | None = None
+    identity_digests: set[str] = field(default_factory=set)
+
+    def add(self, *, size_bytes: int, row_count: int | None, created_at: float | None) -> None:
+        self.generations += 1
+        self.size_bytes += size_bytes
+        if created_at is not None and (
+            self.newest_created_at is None or created_at > self.newest_created_at
+        ):
+            self.newest_created_at = created_at
+            self.newest_row_count = row_count
+
+    def frozen(self) -> CacheOwnerUsage:
+        return CacheOwnerUsage(
+            bucket=self.bucket,
+            node_id=self.node_id,
+            source=self.source,
+            label=self.label,
+            pipeline_source_file=self.pipeline_source_file,
+            generations=self.generations,
+            size_bytes=self.size_bytes,
+            newest_row_count=self.newest_row_count,
+            newest_created_at=self.newest_created_at,
+            identity_digests=frozenset(self.identity_digests),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _GenerationFacts:
+    """The little of a generation's metadata the inventory reads."""
+
+    provider: str
+    descriptor: Mapping[str, object]
+    row_count: int | None
+    created_at: float | None
+
+
+def _read_generation_facts(generation_dir: Path) -> _GenerationFacts | None:
+    """Read one generation's owner facts, or ``None`` when it cannot be read.
+
+    Deliberately forgiving: the inventory reports what it cannot attribute
+    rather than failing, so a half-written or hand-damaged ``meta.json`` costs
+    a row in the unattributed total and nothing else.
+    """
+    try:
+        raw = json.loads((generation_dir / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    identity = raw.get("identity")
+    if not isinstance(identity, dict):
+        return None
+    provider = identity.get("provider")
+    descriptor = identity.get("descriptor")
+    if not isinstance(provider, str) or not provider or not isinstance(descriptor, dict):
+        return None
+    row_count = raw.get("row_count")
+    created_at = raw.get("created_at")
+    return _GenerationFacts(
+        provider=provider,
+        descriptor=descriptor,
+        row_count=row_count
+        if isinstance(row_count, int) and not isinstance(row_count, bool)
+        else None,
+        created_at=float(created_at) if isinstance(created_at, (int, float)) else None,
+    )
+
+
+def _owner_for(
+    facts: _GenerationFacts, identity_digest: str
+) -> tuple[tuple[str, str, str], _OwnerAccumulator]:
+    """The owner a generation belongs to, keyed so its generations group.
+
+    A node output groups by node and source, which is what that node costs the
+    budget across however many signatures it still has. An input snapshot groups
+    by **identity**, never by its descriptor's label: the same file read with
+    different arguments is a different identity with the same path, and merging
+    the two would report one set of bytes for both — and then lose the rest
+    entirely once a reader claimed the merged owner.
+    """
+    if facts.provider == NODE_OUTPUT_PROVIDER:
+        node_id = facts.descriptor.get("node_id")
+        source = facts.descriptor.get("source")
+        pipeline = facts.descriptor.get("pipeline_source_file")
+        if (
+            isinstance(node_id, str)
+            and node_id
+            and isinstance(source, str)
+            and source
+            and isinstance(pipeline, str)
+            and pipeline
+        ):
+            # Several pipelines can share one project root, and therefore one
+            # store. Without the pipeline in the key, `alt.py`'s `join` would be
+            # reported on `main.py`'s `join` row.
+            return (
+                (pipeline, node_id, source),
+                _OwnerAccumulator(
+                    bucket="node_output",
+                    node_id=node_id,
+                    source=source,
+                    label=node_id,
+                    pipeline_source_file=pipeline,
+                ),
+            )
+    label = _input_label(facts.provider, facts.descriptor)
+    return (
+        ("input", facts.provider, identity_digest),
+        _OwnerAccumulator(bucket="input", node_id=None, source=None, label=label),
+    )
+
+
+def _staging_bytes(identity_dir: Path) -> int:
+    """Bytes held by an identity's in-flight staging directories."""
+    total = 0
+    try:
+        entries = tuple(identity_dir.iterdir())
+    except FileNotFoundError:
+        return 0
+    for staging in entries:
+        if not staging.name.startswith(".staging-") or not staging.is_dir() or staging.is_symlink():
+            continue
+        for root, directories, files in os.walk(staging, followlinks=False):
+            root_path = Path(root)
+            directories[:] = [name for name in directories if not (root_path / name).is_symlink()]
+            for name in files:
+                file_path = root_path / name
+                # The budget's own walk skips symlinked files; counting them
+                # here would make the report and the bar disagree.
+                if file_path.is_symlink():
+                    continue
+                try:
+                    total += file_path.stat().st_size
+                except (FileNotFoundError, OSError):
+                    continue
+    return total
 
 
 def _fault_point(name: str) -> None:
@@ -586,7 +826,7 @@ class NodeSnapshotStore(SourceCacheStore):
         )
         if node_output_max_bytes is None:
             node_output_max_bytes = int_env(
-                "HAUTE_NODE_SNAPSHOT_MAX_BYTES",
+                NODE_SNAPSHOT_MAX_BYTES_VARIABLE,
                 DEFAULT_NODE_SNAPSHOT_MAX_BYTES,
             )
         if (
@@ -599,7 +839,7 @@ class NodeSnapshotStore(SourceCacheStore):
 
         if node_output_max_generations is None:
             node_output_max_generations = int_env(
-                "HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS",
+                NODE_SNAPSHOT_MAX_GENERATIONS_VARIABLE,
                 DEFAULT_NODE_SNAPSHOT_MAX_GENERATIONS,
             )
         if (
@@ -626,6 +866,122 @@ class NodeSnapshotStore(SourceCacheStore):
             coordination.retired_cleaned = True
         if not already_cleaned:
             self._cleanup_retired()
+
+    # ------------------------------------------------------------------ usage
+
+    def usage_report(self) -> CacheUsageReport:
+        """Report both budgets' usage against their limits.
+
+        One walk per budget over the identity directories — the same walk, and
+        the same cost, an admission pays. It is deliberately not cheap enough
+        to poll: a caller asks for it when a user asks to see it. An identity
+        whose marker does not classify counts against both budgets here exactly
+        as it does at admission, so what this reports is what would refuse the
+        next capture, not a second opinion about it.
+        """
+        node_generations, node_bytes = self._bucket_usage(NODE_OUTPUT_PROVIDER)
+        input_generations, input_bytes = self._bucket_usage("input")
+        return CacheUsageReport(
+            node_outputs=CacheBudgetUsage(
+                generations_used=node_generations,
+                generations_limit=self.node_output_max_generations,
+                generations_limit_variable=NODE_SNAPSHOT_MAX_GENERATIONS_VARIABLE,
+                bytes_used=node_bytes,
+                bytes_limit=self.node_output_max_bytes,
+                bytes_limit_variable=NODE_SNAPSHOT_MAX_BYTES_VARIABLE,
+            ),
+            input_snapshots=CacheBudgetUsage(
+                generations_used=input_generations,
+                generations_limit=self.max_generations,
+                generations_limit_variable=INPUT_CACHE_MAX_GENERATIONS_VARIABLE,
+                bytes_used=input_bytes,
+                bytes_limit=self.max_bytes,
+                bytes_limit_variable=INPUT_CACHE_MAX_BYTES_VARIABLE,
+            ),
+        )
+
+    def inventory(self) -> CacheInventory:
+        """Attribute every generation on disk to the owner its metadata names.
+
+        A generation's ``meta.json`` records the whole identity payload, so a
+        node output names its node and source and an input snapshot names its
+        provider and descriptor — no graph is needed to say whose data this is,
+        which is what lets the report name a node that no longer exists.
+
+        Like :meth:`usage_report` this takes no lock and mutates nothing, and
+        it is one pass over the identity directories plus one small read per
+        generation. It is for an explicit request, not a poll.
+        """
+        owners: dict[tuple[str, str, str], _OwnerAccumulator] = {}
+        unattributed_generations = 0
+        unattributed_bytes = 0
+        unmarked_identities = 0
+        try:
+            entries = tuple(self.inputs_root.iterdir())
+        except FileNotFoundError:
+            return CacheInventory((), 0, 0, 0)
+
+        for identity_dir in entries:
+            if (
+                not identity_dir.is_dir()
+                or identity_dir.is_symlink()
+                # `.locks`, `.processes` and `.node-slots` are the store's own
+                # bookkeeping, not identities, and hold no generations.
+                or identity_dir.name.startswith(".")
+            ):
+                continue
+
+            identity_owner: _OwnerAccumulator | None = None
+            identity_generations = 0
+            try:
+                generation_dirs = tuple((identity_dir / "generations").iterdir())
+            except FileNotFoundError:
+                generation_dirs = ()
+            for generation_dir in generation_dirs:
+                if not generation_dir.is_dir() or generation_dir.is_symlink():
+                    continue
+                facts = _read_generation_facts(generation_dir)
+                if facts is None:
+                    # A generation with no readable metadata still occupies the
+                    # disk the budget counts, so it is reported, not skipped.
+                    if (size := generation_bytes(generation_dir)) or (
+                        generation_dir / "meta.json"
+                    ).exists():
+                        unattributed_generations += 1
+                        unattributed_bytes += size
+                    continue
+                identity_generations += 1
+                key, accumulator = _owner_for(facts, identity_dir.name)
+                owner = owners.setdefault(key, accumulator)
+                owner.identity_digests.add(identity_dir.name)
+                owner.add(
+                    size_bytes=generation_bytes(generation_dir),
+                    row_count=facts.row_count,
+                    created_at=facts.created_at,
+                )
+                identity_owner = owner
+
+            if identity_generations and classify_identity_marker(identity_dir) == "unknown":
+                unmarked_identities += 1
+
+            staging_bytes = _staging_bytes(identity_dir)
+            if staging_bytes:
+                # Staging counts against the budget while it is being written.
+                if identity_owner is not None:
+                    identity_owner.size_bytes += staging_bytes
+                else:
+                    unattributed_bytes += staging_bytes
+
+        ordered = sorted(
+            (owner.frozen() for owner in owners.values()),
+            key=lambda owner: (-owner.size_bytes, owner.label),
+        )
+        return CacheInventory(
+            owners=tuple(ordered),
+            unattributed_generations=unattributed_generations,
+            unattributed_bytes=unattributed_bytes,
+            unmarked_identities=unmarked_identities,
+        )
 
     # ------------------------------------------------------------------ paths
 
@@ -999,6 +1355,12 @@ class NodeSnapshotStore(SourceCacheStore):
                     retired_path = self._retire_generation_locked(identity.digest, generation_id)
                     if retired_path is not None:
                         retired.append(retired_path)
+                    if not self._generations_remaining_locked(identity.digest):
+                        # This was the last generation of a signature a
+                        # publication superseded and left indexed while we held
+                        # it. Nothing will ever select it again, so drop it from
+                        # the slot index now that it holds nothing.
+                        self._prune_identity_locked(identity)
         finally:
             self._delete_retired(retired)
 
@@ -1117,6 +1479,52 @@ class NodeSnapshotStore(SourceCacheStore):
                 retired.extend(self._retire_non_current_locked(identity.digest))
         finally:
             self._delete_retired(retired)
+
+    def _generations_remaining_locked(self, identity_digest: str) -> bool:
+        """Whether *identity_digest* still holds a generation. Caller holds the lease lock."""
+        try:
+            return any(
+                child.is_dir() and not child.is_symlink()
+                for child in (self.inputs_root / identity_digest / "generations").iterdir()
+            )
+        except FileNotFoundError:
+            return False
+
+    def _retire_superseded_signatures_locked(
+        self, index: dict[str, Any], identity: SourceCacheIdentity
+    ) -> list[Path]:
+        """Retire every other signature of the slot *identity* was just published to.
+
+        A node holds one dataset per slot: publishing replaces what was there
+        rather than adding to it, so a node whose inputs or configuration change
+        never costs a second full copy of its output. Mutates *index*, which the
+        caller writes. Caller holds the lease lock.
+
+        The mechanics are `clear_slot`'s: drop the pointer so nothing selects the
+        signature again, then retire its generations. A generation another reader
+        still holds is left alone and retires when that reader releases it —
+        `_release_node_lease` retires a generation whose pointer has gone — so a
+        scan in flight never has its files deleted underneath it. A scan that
+        outlives its lease was always a contract violation; under this policy it
+        costs the scan its files at the next re-cache rather than at the next
+        eviction, so the `with` discipline at every call site matters more.
+
+        A signature whose generation survived stays *indexed and unpointed*.
+        Dropping it from the index would strand that generation where nothing
+        can find it: `clear_slot` walks the index, the retired sweep only knows
+        `.retired-*`, and the holder may die without ever releasing — leaving a
+        node showing two datasets and a Clear that cannot remove one, which is
+        the very promise this policy exists to keep. Indexed and unpointed, the
+        next publish and any `clear_slot` retry it.
+        """
+        retired: list[Path] = []
+        for digest in [d for d in index["identities"] if d != identity.digest]:
+            (self.inputs_root / digest / "current.json").unlink(missing_ok=True)
+            retired.extend(self._retire_non_current_locked(digest))
+            if self._generations_remaining_locked(digest):
+                continue
+            del index["identities"][digest]
+        return retired
 
     def clear_slot(self, slot: NodeSnapshotSlot) -> None:
         """Remove every identity of *slot* and its pin; leased generations retire on release."""
@@ -1360,6 +1768,7 @@ class NodeSnapshotStore(SourceCacheStore):
                         if explicit or index["pinned_identity"] is not None:
                             # A pin belongs to the slot and passes to its newest publication.
                             index["pinned_identity"] = identity.digest
+                        retired.extend(self._retire_superseded_signatures_locked(index, identity))
                         self._write_slot_index_locked(slot, index)
                         if superseded_id is not None and superseded_id != generation_id:
                             superseded_dir = self._generation_dir(identity.digest, superseded_id)

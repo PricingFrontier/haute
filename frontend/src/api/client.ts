@@ -11,6 +11,8 @@
 import type {
   ApplyOptimiserRequest,
   ApplyOptimiserResponse,
+  CacheNodesResponse,
+  CacheUsageResponse,
   DatabricksCatalogsResponse,
   DatabricksSchemasResponse,
   DatabricksTablesResponse,
@@ -110,6 +112,8 @@ import type {
 } from "./types"
 import {
   parseApplyOptimiserResponse,
+  parseCacheNodesResponse,
+  parseCacheUsageResponse,
   parseDatabricksCatalogsResponse,
   parseDatabricksSchemasResponse,
   parseDatabricksTablesResponse,
@@ -1174,6 +1178,36 @@ export function fetchIoCapabilities(
   options?: { signal?: AbortSignal },
 ): Promise<IoCapabilitiesResponse> {
   return request<unknown>("/api/io-capabilities", options).then(parseIoCapabilitiesResponse)
+}
+
+// ---------------------------------------------------------------------------
+// Cache usage (the cache settings pane)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read both cache budgets' usage against their limits.
+ *
+ * The server walks every identity, generation and staging entry to answer
+ * this — what an admission pays — so a caller asks for it when a user asks to
+ * see it, and never on a timer.
+ */
+export function fetchCacheUsage(
+  options?: { signal?: AbortSignal },
+): Promise<CacheUsageResponse> {
+  return request<unknown>("/api/cache/usage", options).then(parseCacheUsageResponse)
+}
+
+/**
+ * Report every node of `graph` and everything else the store holds.
+ *
+ * Costs one point resolution per node on top of the store walk, so it is read
+ * with the usage on open and on Refresh, never on a timer.
+ */
+export function fetchCacheNodes(
+  payload: { graph: unknown; source: string },
+  options?: { signal?: AbortSignal },
+): Promise<CacheNodesResponse> {
+  return post<unknown>("/api/cache/nodes", payload, options).then(parseCacheNodesResponse)
 }
 
 // ---------------------------------------------------------------------------

@@ -26,10 +26,11 @@
 | `src/haute/routes/io_capabilities.py` | `/api/io-capabilities`, the versioned provider/format/cache capability contract consumed by the input and output editors. |
 | `src/haute/routes/input_cache.py` | `/api/input-cache/*`, the shared build/status/cancel/clear lifecycle for snapshot-backed inputs. |
 | `src/haute/routes/node_data.py` | `/api/node-data/point`, `/run`, `/status/{job_id}`, `/cancel/{job_id}`, and `/clear` for the data a consumer node reads. |
+| `src/haute/routes/cache.py` | `GET /api/cache/usage`, the report of both snapshot-store budgets against their limits, and `POST /api/cache/nodes`, the per-node report of what each node of a graph holds within them. Both answer one explicit request; the first takes no arguments and names the environment variable behind each limit. |
 | `src/haute/routes/banding.py` | FastAPI router (`/api/banding`): whole-dataset statistics for the banding factor being edited, delegating to `_banding_stats.py`. |
 | `src/haute/routes/rating.py` | FastAPI router (`/api/rating`): whole-dataset levels for the raw factor columns a Rating Step rates on, delegating to `_rating_levels.py`. |
 | `src/haute/routes/_rating_levels.py` | Reads those levels over the node's shared data point under `run_synchronous_analysis`, keyed by the rating lookup's own key expression. |
-| `src/haute/routes/_node_data_service.py` | `NodeDataService`: consumer point responses, delegation, explicit node-output build jobs in isolated workers, the data-profile job, supersession, cancellation, and clear. |
+| `src/haute/routes/_node_data_service.py` | `NodeDataService`: consumer point responses, delegation, explicit node-output build jobs in isolated workers, the data-profile job, supersession, cancellation, and clear. `points_for_graph` resolves every node of a graph against one resolver for the per-node cache report, returning each node's input-snapshot identity digest alongside its point. |
 | `src/haute/routes/_synchronous_analysis.py` | Request-time analyses of a leased point: admitted execution, memoisation by data version, and client-disconnect cancellation. |
 | `src/haute/routes/utility.py` | `/api/utility` CRUD (list/read/create/update/delete) for `utility/*.py` helper modules, with AST syntax validation on every write. |
 | `src/haute/routes/_save_pipeline.py` | `SavePipelineService` — the transactional save orchestrator: singleton/name-collision/load-error validation, codegen invocation, config-file + sidecar writes, stale-config cleanup, and rollback. |
@@ -600,6 +601,76 @@ alone. Every resource failure carries `error_code` `memory_limit` with the execu
 `error_detail`, whether the execution reported the limit, admission refused it, or the parent
 killed the worker over its RSS limit.
 
+### Cache usage
+
+**Cache usage** (`routes/cache.py`): `GET /api/cache/usage` takes no arguments and returns
+`CacheUsageResponse` — `node_outputs` and `input_snapshots`, each reporting
+`generations_used`/`generations_limit` and `bytes_used`/`bytes_limit` plus the name of the
+environment variable behind each limit. The numbers come from
+`NodeSnapshotStore.usage_report()`, which walks the identity directories once per budget
+through the store's own `_bucket_usage` accounting, so an identity whose marker does not
+classify counts against both budgets here exactly as it does at admission: what the response
+reports is what would refuse the next capture, not a second opinion about it. The variable
+names are reported rather than assumed by the client because the server is what reads them
+(`INPUT_CACHE_MAX_*_VARIABLE` in `_source_cache.py`, `NODE_SNAPSHOT_MAX_*_VARIABLE` in
+`_node_snapshots.py`, each used both to read the limit and to report its name), so a user told
+to raise a limit is told the name the store actually read. The walk is what an admission pays,
+so the endpoint answers an explicit request and its response is a snapshot, not a
+subscription; a surface that wants to poll needs an incremental count in the store first. The
+two budgets are independent — node outputs and input snapshots neither consume nor evict one
+another — so no combined total is reported.
+
+The report reads: it takes no lock and changes no generation. The request is not free of
+writes, though, because constructing `NodeSnapshotStore` creates `.haute_cache/inputs` when
+it is absent and, once per process per root, sweeps retired directories — the same
+construction every other store-backed route performs, not something this endpoint adds.
+
+**Per-node cache report** (`routes/cache.py`): `POST /api/cache/nodes` takes a graph and a
+source and returns `CacheNodesResponse`. The graph is flattened first, so a submodel's nodes
+are reported the way they are cached — individually. `NodeDataService.points_for_graph`
+resolves every node's point against one `DataPointResolver` and the caller's store — the whole
+report builds one `NodeSnapshotStore` — because the per-node cost is the resolution itself.
+That cost is `CACHE-S17`'s, multiplied by the node count: each signature re-walks the
+canonical graph, so the batch is quadratic in node copies. It is milliseconds per node at the
+sizes measured and is why this endpoint is asked for explicitly rather than polled; a node whose point cannot be resolved becomes a row
+rather than failing the request, because a report about every node is worth least precisely
+when one node is half-configured. An unwired Banding (`NodeDataPointInvalidError`) and a Data
+Input with no path (`PolarsIoConfigError`, raised resolving its own identity) carry
+`unavailable_reason`; both are named rather than caught as the `ValueError` they derive from,
+so a programming error still surfaces as a 500. A `SourceCacheCorruptError` is different: the
+node's data exists and is damaged, so `_corrupt_response` synthesises the row from the
+consumer point — the kind is a graph lookup and the producer is the point's — with
+`state="corrupt"` and no reason, and the row carries the bytes like any other, because the
+budget charges a corrupt generation like any other. A `PipelineGraph` carries no id-uniqueness
+validator, so a duplicated node id is resolved once; two rows would otherwise claim one
+node's bytes. Each
+row's `state` describes the generation that node would read for its own column demand, while
+`generations`/`size_bytes` are only ever data that row is the one to carry: every signature
+the store holds for it as a node output, or the whole identity behind it when it is a
+snapshot-backed input.
+
+**Every byte is reported exactly once**, which three rules together secure. A node reading an
+upstream point does not carry that point's bytes and names it in `reads_from`, though it still
+carries its own captured output. A shared input snapshot — two Data Inputs with one
+configuration, or one submodel instantiated twice, resolving to a single identity — is charged
+to exactly one reader and named on all of them in `shares_snapshot_with`; the carrier is the
+smallest node id among the readers, never iteration order, so an unrelated edit never moves
+bytes from one row to another. And a row's figures
+come from the inventory's owner for the identity, never from the single generation the point
+resolved, so a non-current generation or an in-flight staging directory under that identity is
+reported rather than dropped. Matching is by identity digest, which `points_for_graph` returns
+for exactly that purpose, because a descriptor's label is not an identity: the same file read
+with different arguments is a different identity with the same path.
+
+The route tracks the identities its rows carry and lists every other owner in `other`, so the
+two halves are exhaustive by construction — a node no longer in the graph, the same node's
+data under another source, an input snapshot nothing reads. `unattributed_*` is what no
+metadata could name. Per budget, the rows plus `other` plus `unattributed_*` therefore equal
+what `GET /api/cache/usage` reports, which is the invariant
+`tests/test_cache_nodes_routes.py` asserts directly. `unmarked_identities` counts
+identities whose provider marker does not classify: admission charges each to *both* budgets,
+so it is what explains a usage report larger than the sum of the rows.
+
 ### The data profile
 
 `POST /api/node-data/profile` answers with the point's profile for its current data version.
@@ -875,6 +946,30 @@ remaining touched files — "recover most of the save" is preferred over "abort 
 entirely and leave every touched file in whatever state it happened to be in."
 
 ## Testing
+
+- `tests/test_cache_nodes_routes.py` covers `POST /api/cache/nodes`: every node of the graph
+  reported including one with nothing cached, a re-cache replacing rather than adding to a
+  node's dataset, two nodes resolving to one input snapshot reporting its bytes once with the
+  second naming the first, a second identity under one path label still accounted for, a
+  misconfigured Data Input leaving the rest of the report intact, the per-budget invariant
+  that rows plus `other` plus `unattributed_*` equal the usage report against a stray
+  generation and a staging directory on disk, a generation whose metadata is unreadable
+  reported as unattributed, a corrupt point reported as a row with `state="corrupt"` and its
+  bytes rather than as an absence, another pipeline's node of the same name kept off this
+  one's row, a shared snapshot's carrier not depending on node order, a
+  node no longer in the graph and a node's data under another source both reported as `other`,
+  an input snapshot reported on its reader's row and nowhere else, a node reading an upstream
+  point carrying no size and naming that node, an unwired Banding reported as a row with a
+  reason rather than failing the request, and the unmarked-identity count that explains a
+  larger usage report.
+
+- `tests/test_cache_usage_routes.py` covers `GET /api/cache/usage`: both budgets' generations
+  and bytes against their pinned limits after one node-output publication and one input
+  snapshot, zero against both in an empty store, the four variable names, that raising
+  each named variable moves the limit the response reports under that name — which is what
+  rules out a name that no longer matches the variable the store reads — and that an
+  identity whose provider marker is unrecognised raises both budgets' generations and
+  bytes, which is the admission behaviour the report is required to mirror.
 
 - `tests/test_node_data_routes.py` covers a missing point for Banding, one build shared by
   Explore and Banding on one parent (`building` with the job, `joined`, then cached), an

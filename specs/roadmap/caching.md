@@ -24,14 +24,19 @@ delivered and specified; their packages are retired from this roadmap.
 Choosing captures by recompute cost, recording why a candidate was skipped,
 computing part digests during the write, heavy-row index windows and their
 cardinality check, one chunk size per explicit build with its reported
-rows-per-part bound, and reporting a preview served from the response cache
+rows-per-part bound, reporting a preview served from the response cache
 as seeded while raising the node-data epoch only for an unseen capture
-generation were delivered on the same branch and are specified in
+generation, and the cache-usage surface — both budgets' generations and bytes
+against their limits, each naming the environment variable behind it, read on
+demand from one argument-free endpoint and shown in a pane opened from the
+toolbar — were delivered on the same branch and are specified in
 [caching](../caching/low-level.md#seed-plans), the
 [IO layer](../io-layer/low-level.md#node-output-snapshots), the
 [execution engine](../execution-engine/low-level.md), the
-[server API](../server-api/low-level.md#node-data-builds), and
-[frontend shared](../frontend-shared/low-level.md#the-shared-data-cache). The
+[server API](../server-api/low-level.md#node-data-builds) and its
+[cache usage](../server-api/low-level.md#cache-usage) section, and
+[frontend shared](../frontend-shared/low-level.md#the-shared-data-cache),
+whose "Cache usage pane" paragraph specifies the pane itself. The
 review found no data-corruption defect and confirmed the chunked join against
 the native join on a lookup side whose hot key matched ten times the chunk
 size. What remains is where the delivered behaviour is narrower than the aim
@@ -41,7 +46,7 @@ or where it will not hold at scale.
 |---|---|---|
 | One store, every consumer | Node outputs, input snapshots, and analyses share `.haute_cache`; previews, bounded runs, explicit builds, and traces run under one seed plan. | API-input tables still live in the JSON cache (`CACHE-S08`). |
 | No duplicated runs | A bounded run seeds from any fresh covering generation and captures a join, fan-out, join feeder, batch Model Score, or consumed producer only where recomputing it costs more than the cache round trip, and records why it skipped the others; a preview seeds the same way and captures only the joins and costly full-input work it must compute in full. A chain of plain transforms is recomputed by every preview and bounded run by design, because recomputing it costs less than the cache round trip. Each capture publishes as soon as it is written, so a run that fails or is cancelled later keeps what it had already published. A preview served from the response cache reports its generations as seeded, and the canvas raises the node-data epoch only for a capture generation it has not seen, so a repeat preview costs no refetch. | Two consumers that resolve the same cold capture point at the same time, or an explicit build and an automatic capture of one node, both compute it; the publication lock decides only who publishes (`CACHE-S19`). |
-| Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. Node outputs have their own budget which input snapshots neither consume nor are evicted by. A preview says when a node was not cached and how to fix it. | The store's usage is invisible, and a job's refused capture is (`CACHE-S12`). A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). Every preview prepares the graph several times and signs every lineage node per resolution (`CACHE-S17`). |
+| Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. Node outputs have their own budget which input snapshots neither consume nor are evicted by. A preview says when a node was not cached and how to fix it. | A job's refused capture is invisible (`CACHE-S12`); the store's usage is not — the toolbar's cache pane reports both budgets. A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). Every preview prepares the graph several times and signs every lineage node per resolution (`CACHE-S17`). |
 | Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A node with one input whose code is provably row-local is written a slice of its input at a time where a capture or an explicit build writes it, so its memory does not grow with the input. A pass-through node carries its parent's recipe forward, and training preparation writes its prepared parquet through the same bounded writer, slicing the frame or the recipe's input and recording which. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | Full joins rescan the base per lookup chunk and cross joins collect the lookup side (`CACHE-S18`). Full joins rescan the base per lookup chunk and cross joins collect the lookup side (`CACHE-S18`). |
 | Failures are recoverable | A corrupt generation is reported, never silently repaired, and names the node whose cache to clear or rebuild; a plan whose inputs moved stops, before collection and again if they move before a capture publishes. | — |
 
@@ -49,7 +54,7 @@ or where it will not hold at scale.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CACHE-S12 | Planned | P2 | The store's usage is visible; a refused build's job already says which node. |
+| CACHE-S12 | Planned | P2 | A refused build says which node it refused, where the user pressed Build. |
 | CACHE-S13 | Planned | P3 | A capturing preview finishes as a job instead of dying at the interactive timeout. Unproven: no measured preview approaches the timeout. |
 | CACHE-S19 | Deferred | P3 | Two consumers that need the same cold capture compute it once. |
 | CACHE-S22 | Planned | P3 | The shapes that cannot carry a write recipe at all can. |
@@ -62,9 +67,8 @@ or where it will not hold at scale.
 Delivery order is `CACHE-S17` → `CACHE-S22` → `CACHE-S18`, each gated on a
 measurement named in its own entry rather than started on the strength of its
 shape; `CACHE-S19` is deferred with the others; `CACHE-S08` is deferred, and
-`CACHE-S12`'s remaining half waits on the toolbar work its usage surface
-would land in, so it is taken whenever that settles rather than in this
-order. `CACHE-S13` moved down on 20-Sep-2026 because measurement showed
+`CACHE-S12` is now one display change at the node, so it is
+taken whenever that surface is next open rather than in this order. `CACHE-S13` moved down on 20-Sep-2026 because measurement showed
 no preview near its timeout. Every full-frame write is now bounded, so what
 is left is measured against cost rather than shape. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
@@ -88,76 +92,49 @@ its behaviour changes; the roadmap records the direction and the acceptance
 evidence, not the contract text. Each package's **Evidence** line is also its
 affected-file list.
 
-### CACHE-S12 — A refused capture and the store's usage are visible
+### CACHE-S12 — A refused capture is visible
 
-**Why:** Node outputs have their own budget. A refused capture is now shown in
-the preview pane's execution-diagnostics indicator, naming the node and both
-remedies. The store's usage against its two budgets is visible nowhere, so a
-user cannot tell how close the cache is to refusing the next capture. The
-node-data job status still says nothing when a build's capture was refused.
+**Why:** A refused capture is shown in the preview pane's
+execution-diagnostics indicator, naming the node and both remedies. The
+node-data job status still says nothing when a build's capture was refused,
+so a user who pressed Build and watched it fail is told nothing anywhere.
 
-**Plan:** Two items, with the usage surface designed rather than sketched:
+**Plan:** Display only — nothing new has to be computed or fetched. A build
+whose capture is refused already records the same execution warning an
+automatic capture does (`snapshot_capture_skipped`, the node id,
+`reason="quota"`), and a failing build's `worker_evidence` already survives
+into its job's `execution_metrics` for every failure kind, not only quota.
+What is left is purely where it appears:
 
-- **Usage surface (deferred by decision, 20-Sep-2026).** It reports, per budget
-  (node outputs, and input snapshots), the generations used against the limit
-  and the bytes used against the limit, and names the environment variable
-  behind each limit (`HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS`,
-  `HAUTE_NODE_SNAPSHOT_MAX_BYTES`, `HAUTE_INPUT_CACHE_MAX_GENERATIONS`,
-  `HAUTE_INPUT_CACHE_MAX_BYTES`). The numbers come from the store's existing
-  per-bucket accounting (`_bucket_usage`), read through one read-only endpoint
-  that returns both budgets in one response and takes no arguments. That
-  accounting walks every identity, generation and staging entry, which is what
-  an admission already pays, so the endpoint answers an explicit request and
-  the response is a snapshot, not a subscription. A surface that wants to poll
-  needs an incremental count in the store first; decide which before building
-  it, and say which in the change. Where it appears is
-  deferred: the toolbar is being changed on another branch, so placing it now
-  would conflict, and the placement decision belongs with that work.
-- **Job status — evidence delivered 20-Sep-2026, display outstanding.** A build
-  whose capture was refused now records the same execution warning an automatic
-  capture does (`snapshot_capture_skipped`, the node id, `reason="quota"`), and
-  a failing build's `worker_evidence` survives into its job's
-  `execution_metrics` for every failure kind, not only quota. What is left is
-  purely where it appears, which is deferred with the usage surface below
-  because it is the same toolbar decision.
+- `NodeDataStatusResponse` already carries `execution_metrics`, and
+  `ExecutionDiagnosticsIndicator` already renders a refused capture naming the
+  node and both remedies — it is simply mounted in one place only
+  (`frontend/src/panels/DataPreview.tsx:499`), from the preview's metrics.
+- `nodeDataOnFail` in `frontend/src/hooks/useBackgroundJobs.ts` currently
+  discards the failure message (`void _message`) and finishes the job, so a
+  failed build says nothing anywhere. That is the wiring point.
+- Place it beside the node's own cache button, where the user pressed Build
+  and where the `corrupt` state already offers Re-cache; a toast is louder but
+  detaches the message from the node it names. A build failure is about one
+  node, so the node's own surface reads better than a global one — which is
+  why it did not go in the toolbar's cache pane when that pane was built.
+- Reuse `ExecutionDiagnosticsIndicator` rather than write a second copy of the
+  same warning, so the two paths cannot drift in wording or in which remedies
+  they name.
 
-  What the display needs, for whoever takes the toolbar work:
-
-  - Nothing new has to be computed or fetched. `NodeDataStatusResponse` already
-    carries `execution_metrics`, and `ExecutionDiagnosticsIndicator` already
-    renders a refused capture naming the node and both remedies — it is simply
-    mounted in one place only (`frontend/src/panels/DataPreview.tsx:499`), from
-    the preview's metrics.
-  - `nodeDataOnFail` in `frontend/src/hooks/useBackgroundJobs.ts` currently
-    discards the failure message (`void _message`) and finishes the job, so a
-    failed build says nothing anywhere. That is the wiring point.
-  - Placement candidates, in the order I would argue for them: beside the
-    node's own cache button, where the user pressed Build and where the
-    `corrupt` state already offers Re-cache; or a toast, which is louder but
-    detaches the message from the node it names. A build failure is about one
-    node, so the node's own surface reads better than a global one.
-  - Whatever is chosen should reuse `ExecutionDiagnosticsIndicator` rather than
-    write second copy for the same warning, so the two paths cannot drift in
-    wording or in which remedies they name.
-
-**Acceptance:** For the usage surface, a route test proves the endpoint
-reports both budgets' generations and bytes against their limits, and a
-frontend test proves whatever displays it shows both budgets and names the
-variable behind each limit. For the job status, the route half is delivered —
-`tests/test_node_data_routes.py` proves a refused build's job carries the
-refusal warning naming the node — and what remains is a frontend test that it
-is shown, once placement is decided.
+**Acceptance:** The route half holds — `tests/test_node_data_routes.py`
+proves a refused build's job carries the refusal warning naming the node — and
+what remains is a frontend test that it is shown at the node.
 
 **Owning specifications:** [server API](../server-api/low-level.md)
 (execution warnings); [frontend shared](../frontend-shared/low-level.md).
 
-**Dependencies:** Both remaining halves are display, and both wait on the
-toolbar work: the usage surface has nowhere to live until then, and the
-job-status warning should be placed in the same pass rather than guessing at a
-spot that work may move.
+**Dependencies:** None. The toolbar work this waited on is done, so it is
+unstarted rather than blocked.
 
 **Evidence:** `src/haute/routes/node_data.py`;
-`src/haute/_source_cache.py` (`_bucket_usage`).
+`frontend/src/hooks/useBackgroundJobs.ts` (`nodeDataOnFail`);
+`frontend/src/components/ExecutionDiagnosticsIndicator.tsx`.
 
 ### CACHE-S13 — Capturing previews as jobs
 

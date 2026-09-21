@@ -509,6 +509,85 @@ export interface IoCapabilitiesResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Cache-usage contracts (/api/cache)
+// ---------------------------------------------------------------------------
+
+/** One budget's usage against its limits, and the variables that set them. */
+export interface CacheBudgetUsage {
+  generations_used: number
+  generations_limit: number
+  generations_limit_variable: string
+  bytes_used: number
+  bytes_limit: number
+  bytes_limit_variable: string
+}
+
+/**
+ * Both budgets in one response. They are independent — node outputs and input
+ * snapshots neither consume nor evict one another — so there is no combined
+ * total here and none should be rendered.
+ */
+export interface CacheUsageResponse {
+  schema_version: 1
+  node_outputs: CacheBudgetUsage
+  input_snapshots: CacheBudgetUsage
+}
+
+/**
+ * One node of the graph. `state`/`row_count` describe the generation this node
+ * would read for its own columns; `generations`/`size_bytes` are every
+ * signature the store still holds for it, which is what it costs the budget.
+ */
+export interface CacheNodeEntry {
+  node_id: string
+  kind: "data_input" | "api_input_table" | "node_output" | null
+  state: "current" | "stale" | "partial" | "missing" | "building" | "corrupt" | null
+  reads_directly: boolean
+  /** The node this one reads from, when that is another node: its cache is
+   *  reported on that node's row, so this row carries no size. */
+  reads_from: string | null
+  /**
+   * Other nodes resolving to the same input snapshot. Every sharer names the
+   * others, and exactly one of them carries the bytes — the one with a size.
+   */
+  shares_snapshot_with: string[]
+  row_count: number | null
+  generations: number
+  size_bytes: number
+  newest_created_at: number | null
+  retention: "pinned" | "automatic" | null
+  /** Why this node has no data point at all — an unwired Banding, say. */
+  unavailable_reason: string | null
+}
+
+/** Cached data not attributable to any node of the graph as it stands. */
+export interface CacheOwnerEntry {
+  bucket: "node_output" | "input"
+  label: string
+  node_id: string | null
+  source: string | null
+  generations: number
+  row_count: number | null
+  size_bytes: number
+  newest_created_at: number | null
+}
+
+export interface CacheNodesResponse {
+  schema_version: 1
+  source: string
+  nodes: CacheNodeEntry[]
+  other: CacheOwnerEntry[]
+  unattributed_generations: number
+  unattributed_bytes: number
+  /**
+   * Identities whose provider marker does not classify. Admission charges each
+   * to BOTH budgets, so this is what explains a usage report larger than the
+   * sum of the entries above.
+   */
+  unmarked_identities: number
+}
+
+// ---------------------------------------------------------------------------
 // Input-cache contracts (/api/input-cache)
 // ---------------------------------------------------------------------------
 

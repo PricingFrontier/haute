@@ -11,7 +11,7 @@
 | `src/haute/_database_io.py` | Credential-free database locator/query validation and bounded read-only SQLite snapshot batches. |
 | `src/haute/_credential_security.py` | Shared URI credential detection and provider-diagnostic redaction. |
 | `src/haute/_source_cache.py` | Primary owner of source-cache identities, generations, metadata, publication, leases, quota, status, and cleanup. |
-| `src/haute/_node_snapshots.py` | Node-output snapshots in the shared store: slot and signature identity, class mappings, slot index, column sets and dependencies, cross-process publication and lease locks, lease markers, retention, eviction, clear, and pin. |
+| `src/haute/_node_snapshots.py` | Node-output snapshots in the shared store: slot and signature identity, class mappings, slot index, column sets and dependencies, cross-process publication and lease locks, lease markers, retention, eviction, clear, and pin; also the per-budget usage report (`usage_report`, `CacheUsageReport`, `CacheBudgetUsage`) and the per-owner inventory (`inventory`, `CacheInventory`, `CacheOwnerUsage`) the cache endpoints serve. |
 | `src/haute/_polars_io_schema.py` | Cached index over the committed Polars callable schema, live introspection of the installed Polars, and the intersection of the two. |
 | `src/haute/_polars_io_arguments.json` | Generated Polars callable signature data checked against the pinned Polars version. |
 | `src/haute/_polars_dtypes.py` | Struct-capable dtype JSON codec used by registry schema arguments. |
@@ -271,7 +271,46 @@ constructor arguments; and node outputs, having
 (40 GiB) and the `node_output_max_generations` / `node_output_max_bytes`
 constructor arguments on `NodeSnapshotStore`, validated the way the existing
 pair is: a positive integer, a bool refused, an unusable environment value
-refused the same way.
+refused the same way. Each of the four limits is read through the constant that
+also names it (`INPUT_CACHE_MAX_GENERATIONS_VARIABLE` /
+`INPUT_CACHE_MAX_BYTES_VARIABLE` in `_source_cache.py`,
+`NODE_SNAPSHOT_MAX_GENERATIONS_VARIABLE` / `NODE_SNAPSHOT_MAX_BYTES_VARIABLE`
+in `_node_snapshots.py`), so a surface that tells a user which variable to
+raise cannot name one the store does not read.
+
+`NodeSnapshotStore.usage_report()` returns a `CacheUsageReport` of two
+`CacheBudgetUsage` values — node outputs and input snapshots — each carrying
+the generations and bytes used, the limits, and those variable names. It takes
+no lock and mutates nothing, and it is one `_bucket_usage` walk per budget:
+the same walk, and the same cost, an admission pays. An identity whose
+provider marker does not classify is therefore counted against both budgets
+here exactly as it is at admission, so the report states what would refuse the
+next capture rather than a second opinion about it. It is deliberately too
+expensive to poll; its consumer is the
+[cache-usage endpoint](../server-api/low-level.md#cache-usage), whose request
+is not free of writes because constructing the store can create the inputs
+root and sweep retired directories.
+
+`NodeSnapshotStore.inventory()` attributes every generation on disk to the owner its
+metadata names, returning a `CacheInventory` of `CacheOwnerUsage` values. A generation's
+`meta.json` records the whole identity payload, so a node output names its node and source
+and an input snapshot names its provider and descriptor: no graph is needed to say whose
+data this is, which is what lets a report name a node that no longer exists. A node output groups by node and source; an input
+snapshot groups by **identity**, never by its descriptor's label, because the same file read
+with different arguments is a different identity with the same path and merging them would
+report one owner's bytes for both. Each owner carries the identity digests it covers, so a
+caller holding one — a node's resolved input snapshot — can tell whether that owner is its
+own. A generation whose `meta.json` is absent
+or unreadable, and staging under an identity with no readable generation, are reported as
+`unattributed_*` rather than dropped, so the owners' bytes plus the unattributed bytes
+account for what the budgets say — and, since the walk skips symlinked files exactly as the
+budget's own does, the two totals cannot diverge on one. A node-output owner is keyed by
+pipeline, node and source, because several pipelines can share one project root and therefore
+one store. `unmarked_identities` counts identities holding
+generations whose provider marker does not classify; those are charged to both budgets at
+admission while the inventory attributes each to the one bucket its metadata names, so that
+count is what explains a difference between the two. Like `usage_report` it takes no lock
+and mutates nothing.
 
 - **Identity.** `NodeSnapshotSlot(pipeline_source_file, node_id, source, semantics_class)`
   has a SHA-256 slot digest. `slot.identity(signature)` is a `SourceCacheIdentity` with
@@ -339,7 +378,10 @@ refused the same way.
   store's metadata/digest/verified-memo path and reports its columns, dependencies,
   freshness, retention, and last use. `slot_status(slot, signature)` is `current` or
   `stale` from that generation, `stale` when another indexed identity has a current
-  generation, `missing` otherwise, and `corrupt` when validation fails.
+  generation, `missing` otherwise, and `corrupt` when validation fails. Because a slot holds
+  one signature, the "another indexed identity" case is now the window in which a reader
+  still holds the signature a publication superseded, not an indefinitely retained
+  alternative version.
 - **Leases.** `lease(identity)` reads the pointer, then under the lease lock confirms the
   directory and the pointer, increments the in-process count, and on 0 → 1 creates this
   process's marker; a pointer that moved (or a generation retired meanwhile) re-selects.
@@ -366,7 +408,22 @@ refused the same way.
   the verified memo, creates the publisher's marker and in-process count, writes the pointer,
   records the identity in the slot index (moving the pin to it when `explicit` or when the
   slot is already pinned), and retires the superseded generation when no live marker holds
-  it. Any failure after the publisher's lease exists releases that lease before raising.
+  it. **One dataset per slot.** It then retires every *other* signature the slot index
+  lists, by `clear_slot`'s mechanics — drop the pointer so nothing selects that signature
+  again, then retire its generations — and drops each from the index. A node therefore holds
+  one dataset, and a re-cache after an edit replaces what was there rather than adding a
+  second full copy of that node's output beside it. The consequence is deliberate: an edit
+  and a revert recompute, because the earlier signature's data is gone. A generation another
+  reader still holds is left alone and retires when that reader releases it, since
+  `_release_node_lease` retires a generation whose pointer has gone — a scan in flight never
+  has its files deleted underneath it, though a scan that outlives its lease, always a
+  contract violation, now loses its files at the next re-cache rather than the next eviction.
+  Such a signature stays **indexed and unpointed**: dropping it from the index would strand
+  its generation where `clear_slot`, which walks the index, could never see it if the holder
+  died without releasing, leaving a node showing two datasets and a Clear that cannot remove
+  one. Indexed, the next publish and any `clear_slot` retry it, and `_release_node_lease`
+  prunes it when it retires the last generation of an unpointed identity. Any failure after the publisher's lease exists
+  releases that lease before raising.
   The returned `NodeSnapshotPublication` holds the lease (or owns the artifact) until closed.
 - **Quota.** What each budget counts: its own generations and their bytes, plus
   the staging bytes under its identities, including an identity that holds
@@ -792,7 +849,9 @@ failure sections above are the maintained answers.
   runtime-file, utility-module, preamble, source, class, and contract-enforcement
   invalidation, and slot and signature stability for downstream edits and Explore
   presentation fields.
-- `tests/test_node_snapshot_retention.py` covers the class mappings, edit and revert,
+- `tests/test_node_snapshot_retention.py` covers the class mappings, a publication
+  replacing the slot's previous signature (including that the bytes leave the store, and
+  that a signature a reader still holds survives until it releases),
   widening with descendant staleness, the publication rule (fresh equal width, stale
   replacement, never narrowing a stale generation, refresh only by explicit builds, a writer
   bound to a replaced dependency, cleared dependencies, a corrupt latest generation surfaced

@@ -1351,6 +1351,119 @@ class NodeDataClearResponse(BaseModel):
     point: NodeDataPointResponse
 
 
+# ---------------------------------------------------------------------------
+# /api/cache
+# ---------------------------------------------------------------------------
+
+
+class CacheBudgetUsagePayload(BaseModel):
+    """One budget's usage against its limits, naming the variable behind each.
+
+    The variable names are reported rather than known by the client because
+    the server is what reads them: a user told to raise a limit is told the
+    name the store actually read.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    generations_used: int = Field(ge=0)
+    generations_limit: int = Field(gt=0)
+    generations_limit_variable: str
+    bytes_used: int = Field(ge=0)
+    bytes_limit: int = Field(gt=0)
+    bytes_limit_variable: str
+
+
+class CacheUsageResponse(BaseModel):
+    """Both budgets in one response, because both are walked in one request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    node_outputs: CacheBudgetUsagePayload
+    input_snapshots: CacheBudgetUsagePayload
+
+
+class CacheNodesRequest(BaseModel):
+    """The graph whose nodes to report on, and the source they are read for."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    graph: Graph
+    source: str = "live"
+
+
+class CacheNodeEntry(BaseModel):
+    """One node of the graph: what it reads now, and what it holds on disk.
+
+    ``state`` and ``row_count`` describe the generation the node would read
+    for its own column demand; ``generations`` and ``size_bytes`` are what the
+    store holds for that node and source across every signature, which is what
+    the node actually costs the budget.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    kind: NodeDataPointKind | None = None
+    state: NodeDataPointState | None = None
+    reads_directly: bool = False
+    # The node this one reads from, when that is another node. Its cache is
+    # reported on *its* row, so this node's size stays empty rather than
+    # repeating a figure that would then sum to more than the store holds.
+    reads_from: str | None = None
+    # Other nodes resolving to the same input snapshot — two Data Inputs with
+    # one configuration, or one submodel instantiated twice. Every sharer names
+    # the others, and exactly one of them carries the bytes: the one with a
+    # size. One identity, one set of bytes, whichever row you read first.
+    shares_snapshot_with: list[str] = Field(default_factory=list)
+    row_count: int | None = None
+    generations: int = Field(default=0, ge=0)
+    size_bytes: int = Field(default=0, ge=0)
+    newest_created_at: float | None = None
+    retention: Literal["pinned", "automatic"] | None = None
+    # Why this node has no point at all — unwired Banding, say. Never an
+    # internal error: an unreportable node is a row, not a failed request.
+    unavailable_reason: str | None = None
+
+
+class CacheOwnerEntry(BaseModel):
+    """Cached data not attributed to any node of the graph as it stands.
+
+    A node that was deleted or renamed, a node's data for another source, or
+    an input snapshot whose Data Input no longer reads it. Each still occupies
+    the budget, so each is named.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    bucket: Literal["node_output", "input"]
+    label: str
+    node_id: str | None = None
+    source: str | None = None
+    generations: int = Field(ge=0)
+    row_count: int | None = None
+    size_bytes: int = Field(ge=0)
+    newest_created_at: float | None = None
+
+
+class CacheNodesResponse(BaseModel):
+    """Every node of the graph, and everything else the store holds."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    source: str
+    nodes: list[CacheNodeEntry]
+    other: list[CacheOwnerEntry]
+    unattributed_generations: int = Field(ge=0)
+    unattributed_bytes: int = Field(ge=0)
+    # Identities whose provider marker does not classify. Admission charges
+    # each to BOTH budgets, so this is what explains a usage report that
+    # exceeds the sum of the entries above.
+    unmarked_identities: int = Field(ge=0)
+
+
 ExplorePivotMemberKind = Literal[
     "null",
     "string",

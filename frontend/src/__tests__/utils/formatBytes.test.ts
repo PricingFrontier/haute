@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { formatBytes } from "../../utils/formatBytes"
+import { formatBytes, formatByteSize } from "../../utils/formatBytes"
 
 describe("formatBytes", () => {
   it("returns bytes for values under 1 KB", () => {
@@ -28,5 +28,46 @@ describe("formatBytes", () => {
 
   it("handles exact boundary at 1 MB", () => {
     expect(formatBytes(1024 * 1024)).toBe("1.0 MB")
+  })
+})
+
+describe("formatByteSize", () => {
+  const KIB = 1024
+  const MIB = 1024 * KIB
+  const GIB = 1024 * MIB
+  const TIB = 1024 * GIB
+
+  it("returns bytes below 1 KB", () => {
+    expect(formatByteSize(0)).toBe("0 B")
+    expect(formatByteSize(1023)).toBe("1023 B")
+  })
+
+  it("climbs through every unit, unlike formatBytes which stops at MB", () => {
+    expect(formatByteSize(KIB)).toBe("1.0 KB")
+    expect(formatByteSize(MIB)).toBe("1.0 MB")
+    expect(formatByteSize(3.8 * GIB)).toBe("3.8 GB")
+    expect(formatByteSize(40 * GIB)).toBe("40 GB")
+    expect(formatByteSize(2 * TIB)).toBe("2.0 TB")
+  })
+
+  it("drops the decimal at ten and above, so a value and its limit stay short", () => {
+    expect(formatByteSize(9.94 * MIB)).toBe("9.9 MB")
+    expect(formatByteSize(512 * MIB)).toBe("512 MB")
+  })
+
+  it("applies the threshold to the printed value, not the held one", () => {
+    // 9.96 would round to "10.0 MB", which beside "10 MB" reads as a bug.
+    expect(formatByteSize(9.96 * MIB)).toBe("10 MB")
+    expect(formatByteSize(9.94 * MIB)).toBe("9.9 MB")
+  })
+
+  it("carries a rounded value into the next unit instead of printing 1024", () => {
+    // 1023.999 KB must read as 1.0 MB, not "1024 KB".
+    expect(formatByteSize(MIB - 1)).toBe("1.0 MB")
+    expect(formatByteSize(GIB - 1)).toBe("1.0 GB")
+  })
+
+  it("stops at the largest unit rather than inventing one", () => {
+    expect(formatByteSize(5000 * TIB)).toBe("5000 TB")
   })
 })

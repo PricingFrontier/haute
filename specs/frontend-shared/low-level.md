@@ -44,8 +44,9 @@
 | `frontend/src/components/Tooltip.tsx` | Zero-delay hover and focus tooltip. The bubble renders into the document body with fixed positioning, so scrolling or overflow-clipped panels never cut it off; it is placed from the anchor's viewport rectangle, clamped inside the viewport horizontally, flipped between top and bottom when the preferred side would clip, closed on scroll or resize, wraps long unbroken text such as URLs, and describes the control that takes focus: a single element child receives the tooltip in its described-by reference (unless its accessible label already is the tooltip text), a function child receives the id to place on a nested control such as a native radio inside its label, and only text or fragment children leave the reference on the hover wrapper. |
 | `frontend/src/components/ContextMenu.tsx` | Node right-click menu: rename/duplicate/create-instance/dissolve-submodel/delete, arrow-key roving focus. |
 | `frontend/src/components/KeyboardShortcuts.tsx` | `?`-triggered modal listing keyboard shortcuts, built on `ModalShell`. |
-| `frontend/src/components/Toolbar.tsx` | App top chrome: 56px 2-tier stacked column layout with package-derived browser version, source selector, row-limit/chunk-size inputs with synchronized dynamic character width, undo/redo with visible text labels, integer-ms timing and memory breakdowns, Submodel/Instance selection actions, utility/imports buttons, assistant and external Documentation link, zoom in/out, centre/layout, and Save + Commit nested under `BranchIndicator`. Actions share the `.toolbar-btn` surface; selection actions carry `aria-disabled` rather than `disabled` so unavailable actions stay focusable with informative tooltips. Numeric fields suppress native spinners without clipping either configured values or maximums. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). |
+| `frontend/src/components/Toolbar.tsx` | App top chrome: 56px 2-tier stacked column layout with package-derived browser version, source selector, row-limit/chunk-size inputs with synchronized dynamic character width, undo/redo with visible text labels, integer-ms timing and memory breakdowns, Submodel/Instance selection actions, utility/imports buttons, assistant and external Documentation link, zoom in/out, centre/layout, and Save + Commit nested under `BranchIndicator`. Actions share the `.toolbar-btn` surface; selection actions carry `aria-disabled` rather than `disabled` so unavailable actions stay focusable with informative tooltips. Numeric fields suppress native spinners without clipping either configured values or maximums. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). The Source selector and a Cache button share a two-row grid column, so the Cache button is exactly as wide as the selector above it whatever the active source is named; the Cache button opens `CacheSettingsModal` from the toolbar's own local state, unlike the MLflow modal's UI-store flag. |
 | `frontend/src/components/MlflowSettingsModal.tsx` | `ModalShell`-based MLflow destinations inventory editor: an MLflow server URL field, a Local folder field showing the resolved folder, a read-only Databricks block (selected profile, the dedicated MLflow host, or the missing configuration), one Test action per remote with its inline categorised result, and Save through `PUT /api/mlflow/settings` (`tracking_uri` and `folder` only) followed by `invalidateMlflow()`. Rendered by the toolbar while the UI store's MLflow-settings-open flag is set; opened from each node's MLflow gear or greyed light. |
+| `frontend/src/components/CacheSettingsModal.tsx` | `ModalShell`-based cache usage pane: both snapshot-store budgets (node outputs, input snapshots) as generations and bytes against their limits, each meter naming the environment variable the server reported for that limit, plus an explicit Refresh; beneath them every node of the open pipeline with its state and what it holds, a group for cached data belonging to no node of it, and footnotes for what could not be attributed. Reads `GET /api/cache/usage` and `POST /api/cache/nodes` on open and on Refresh only. Rendered by the toolbar from its own local open state and opened by the toolbar's Cache button. |
 | `frontend/src/components/BreakdownDropdown.tsx` | Sorted, accessible timing/memory breakdown disclosure used by the shared toolbar. |
 | `frontend/src/panels/ImportsPanel.tsx` | Active pipeline-imports right panel: `PanelShell` plus `CodeEditor`, explanatory always-included imports, and callback-only preamble mutation/close handling. `App.tsx` supplies the graph-store-backed preamble and selects it through `importsOpen`. |
 | `frontend/src/components/BackgroundJobPolling.tsx` | Zero-render mount point (`memo`) that only invokes `useBackgroundJobs()`. |
@@ -398,6 +399,46 @@ viewport cannot contain them on one row. Its height adapts, all actions remain
 reachable, and it never causes document-level horizontal overflow or scrolling
 that displaces the pipeline canvas. Menus and settings dialogs remain unclipped.
 
+**Cache usage pane (`CacheSettingsModal`).** The pane answers how close the
+cache is to refusing the next capture, and which limit to raise when it does.
+It reads `GET /api/cache/usage` when it opens and renders one block per budget
+— "Node outputs" and "Input snapshots" — each with a Generations meter and a
+Size meter showing the used value against the limit, a bar that turns
+`--warning-strong` at three quarters of the limit and `--danger` at nine
+tenths, and the name of the environment variable behind that limit as the
+server reported it. The names are never hardcoded in the browser: the server
+reads those variables, so it is what reports them, and a rename therefore
+reaches the pane without a frontend change. The two budgets are independent —
+neither consumes nor evicts the other — so the pane shows no combined total.
+
+Refreshing is explicit. The server answers the endpoint by walking every
+identity, generation and staging entry, which is what an admission pays, so
+the pane never polls and nothing subscribes it to store changes; a surface
+that wants to poll needs an incremental count in the store first. A failed
+read renders `apiErrorMessage` beside the last good numbers rather than
+replacing them, because stale usage with a stated error is more use than an
+empty pane. Closing the pane abandons whichever read is in flight — the
+latest, which after a Refresh is not the one the opening effect started.
+
+Beneath the budgets the pane lists **every node of the open pipeline** for the active
+source, from `POST /api/cache/nodes`, which it reads in the same pair of requests as the
+usage and on the same explicit Refresh. It builds the graph payload itself from
+`usePanelGraphContext` and the graph store rather than taking it as a prop, since the
+toolbar has no graph of its own to pass. Each row shows the node's label (its id when the
+canvas has none, which is how a node the store holds but the graph has lost still reads),
+its state, and its size. What a row does *not* show is as deliberate: a node reading an
+upstream point says "reads <that node>", because the point's bytes belong to that node's
+row — it still shows a size of its own when the store holds its captured output, which a
+node in the middle of a lineage often has; a node sharing an input snapshot with an earlier
+row says "same source as <that node>" and shows no size, because that identity is reported
+once; a direct file read says "Read directly" rather than "Cached", because a
+Parquet scan holds no cache whatever its point's state says. A second group names cached
+data belonging to no node of this pipeline — a deleted node, another source, an unread
+input snapshot — and a footnote states any bytes that could not be attributed and any
+identities counted against both budgets, which is what stops the bars above reading as
+wrong when they exceed the rows below. The whole body scrolls beneath a fixed title and
+Refresh, because a large pipeline's list is longer than any viewport.
+
 **MLflow settings modal (`MlflowSettingsModal`).** The modal is the
 inventory editor. It fetches `GET /api/mlflow/settings` on mount, reads the
 inventory from the store (triggering the first fetch if pending), and
@@ -649,6 +690,18 @@ same Vitest config.
   empty-name and duplicate-name error text, `aria-invalid`/
   `aria-describedby` wiring, the error clearing on next keystroke and on
   successful submission),
+  `frontend/src/components/__tests__/CacheSettingsModal.test.tsx` (both budgets'
+  generations and bytes against their limits, all four variable names, a
+  renamed variable proving the names come from the response rather than the
+  browser, one read on open and one per Refresh with ten minutes of fake time
+  advanced on either side of the click so a poll would fail the test, the
+  opening read and a Refresh's read each abandoned when the pane closes, a
+  failed read reported beside the last good numbers, and no combined total;
+  and for the node list: every node listed including one with nothing cached,
+  the canvas's label with the id as fallback, a direct read never called
+  "cached", a node that reads elsewhere carrying no size and naming that node,
+  cached data belonging to no node of the pipeline, the unattributed and
+  unmarked footnotes, and one node request per read for the active source),
   `frontend/src/panels/__tests__/ImportsPanel.test.tsx`,
   `frontend/src/__tests__/components/BreadcrumbBar.test.tsx` (root-level),
   `frontend/src/__tests__/components/KeyboardShortcuts.test.tsx` (root-level),
