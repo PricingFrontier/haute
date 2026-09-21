@@ -271,8 +271,12 @@ def _pinned_admission_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     exercise admission and memory limits raise or set their own, which still
     takes precedence over this.
     """
-    monkeypatch.setenv("HAUTE_NODE_SNAPSHOT_MEMORY_LIMIT_MB", "1024")
-    monkeypatch.setenv("HAUTE_EXPLORE_MEMORY_LIMIT_MB", "1024")
+    # Pinned so the limit does not move with the machine, at each profile's
+    # own adaptive floor: below it, a real worker is capped under what the
+    # policy calls a reasonable minimum and reports memory_limited for
+    # reasons that have nothing to do with the test.
+    monkeypatch.setenv("HAUTE_NODE_SNAPSHOT_MEMORY_LIMIT_MB", "4096")
+    monkeypatch.setenv("HAUTE_EXPLORE_MEMORY_LIMIT_MB", "4096")
 
 
 @pytest.fixture(autouse=True)
