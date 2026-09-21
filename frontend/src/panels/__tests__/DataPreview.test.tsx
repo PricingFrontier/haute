@@ -941,7 +941,7 @@ describe("DataPreview", () => {
   })
 })
 
-describe("DataPreview cached data label", () => {
+describe("DataPreview status row", () => {
   const entry = (nodeId: string, nodeLabel: string, kind: "seeded" | "captured") => ({
     node_id: nodeId,
     port_label: null,
@@ -957,7 +957,10 @@ describe("DataPreview cached data label", () => {
     cleanup()
   })
 
-  it("lists the nodes whose cached data the rows were computed from", () => {
+  // The status row is for things the user has to act on. Which nodes a preview
+  // read cached data from is how the pipeline is meant to work, not a finding,
+  // and naming it here put routine provenance where warnings live.
+  it("says nothing about which cached data the rows were computed from", () => {
     render(
       <DataPreview
         data={makePreview({
@@ -969,13 +972,9 @@ describe("DataPreview cached data label", () => {
         })}
       />,
     )
-    expect(screen.getByTestId("preview-seeded-from").textContent).toBe(
-      "Using cached data from Claims join, Exposure totals",
-    )
-  })
 
-  it("shows no cached data label for a preview that read no snapshot", () => {
-    render(<DataPreview data={makePreview({ seed_plan: [entry("rating_join", "Rating join", "captured")] })} />)
     expect(screen.queryByTestId("preview-seeded-from")).toBeNull()
+    expect(screen.queryByText(/cached data/i)).toBeNull()
+    expect(screen.queryByText(/Claims join/)).toBeNull()
   })
 })

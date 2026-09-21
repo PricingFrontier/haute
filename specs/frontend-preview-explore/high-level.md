@@ -23,8 +23,9 @@ Modelling and optimiser result presentation belongs to
 - Data previews render loading, error and successful data, support column search, selected-frame
   switching, trace-cell clicks, and virtualise large row/column grids. Row limits, column
   limits, and the table's rendering do not depend on where the rows came from.
-- When a preview's rows were computed from shared snapshots instead of recomputing those
-  nodes, the panel shows "Using cached data from" with their node labels. A preview is current
+- A preview's rows being computed from shared snapshots instead of recomputed is how the
+  pipeline is meant to work, so the panel says nothing about it; its status row carries
+  warnings and errors only. A preview is current
   only while no snapshot has been published, widened, refreshed, or cleared since it was
   requested: the displayed preview is then fetched again — a backend cache hit when its seeds
   did not change — and other nodes' stored previews when next displayed. A preview's own

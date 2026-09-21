@@ -73,9 +73,11 @@
    render spacer cells for skipped columns.
 3. One delegated tbody click handler reads row/column dataset attributes and calls the supplied
    trace callback. Embedded mode omits outer frame chrome; normal mode uses the shared frame.
-4. When any `seed_plan` entry is `seeded`, the status bar of an `ok` preview shows "Using cached
-   data from" with those entries' node labels; a preview that read no snapshot — including one
-   that only captured — shows no label.
+4. The status bar of an `ok` preview states its row and column counts and any execution
+   diagnostic, and nothing about where its rows came from. Reading a `seeded` entry instead of
+   recomputing the node is ordinary operation, not a finding, so it is not reported there; the
+   warning and error affordances stay for things the user has to act on. `seed_plan` still
+   reaches the trace, which is seeded from exactly what the preview read.
 
 ### Explore and overview
 
@@ -362,9 +364,9 @@ Tests live in `frontend/src/panels/__tests__/DataPreview.test.tsx`,
 `frontend/src/panels/__tests__/UtilityPanel.test.tsx`, plus the focused overview suites under
 `frontend/src/panels/explore/__tests__/` and
 `frontend/src/__tests__/editors/ExploreChartsConfig.test.tsx`. They cover virtualisation, frames, search, trace click
-delegation, boundary/rejected execution diagnostics, the cached data label listing only
-seeded nodes, pivot identity/result/job lifecycle,
-overview/chart card ordering and config, the data-cache action and profile lifecycle, chart
+delegation, boundary/rejected execution diagnostics, the status bar naming no seeded
+nodes, pivot identity/result/job lifecycle,
+overview/chart card ordering and config, the data-cache state and profile lifecycle, chart
 list/configure/back/toggle behavior, chart
 visualisation empty/error states, roving-tab accessibility, utility save-flush/stale-response behaviour and
 syntax errors. The Explore suites also pin progressbar name/value semantics, TSV headers and
