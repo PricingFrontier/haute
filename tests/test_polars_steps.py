@@ -3501,7 +3501,9 @@ def test_data_input_steps_guard_the_deploy_bundled_snapshot_path(tmp_path: Path)
 
     ds_path = tmp_path / "factors.parquet"
     pl.DataFrame({"area": ["A", "B"], "factor": [1.1, 1.2]}).write_parquet(ds_path)
-    remap = {"static_ds__snapshot.parquet": str(ds_path)}
+    # A bundled snapshot is its generation's parts, one artifact each, scanned
+    # in part order — not a single file.
+    remap = {"static_ds__snapshot.part-00000.parquet": str(ds_path)}
     input_df = pl.DataFrame({"x": [1.0]})
 
     scored = score_graph(

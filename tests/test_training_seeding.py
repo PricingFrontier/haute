@@ -60,7 +60,12 @@ _MODELLING = {
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(haute_scratch)
     set_project_root(haute_scratch)
-    monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_MB", "1024")
+    # Every profile a training run admits under. These are adaptive by
+    # default, so an unpinned one scales to whatever memory the machine has
+    # left and refuses the run on a loaded CI worker — a job that reports
+    # memory_limited for reasons that have nothing to do with the test.
+    for profile in ("TRAINING", "NODE_SNAPSHOT", "PREVIEW", "SINK"):
+        monkeypatch.setenv(f"HAUTE_{profile}_MEMORY_LIMIT_MB", "1024")
     (haute_scratch / "main.py").write_text("# pipeline\n", encoding="utf-8")
     pl.DataFrame(
         {

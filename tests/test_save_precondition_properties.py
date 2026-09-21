@@ -91,15 +91,27 @@ class RevisionModel:
         self.clients: dict[str, int | None] = {"A": None, "B": None}
         self.accepted: list[tuple[str, str]] = []
         self._token_counter: int = 0
+        self._token_by_content: dict[str, int] = {}
 
     def save(self, client: str, label: str) -> bool:
-        if self.clients[client] == self.disk:
+        if self.clients[client] != self.disk:
+            return False
+        # Revisions are byte-true, so a save is not a new generation just
+        # because it happened: one that lands on bytes seen before reports that
+        # generation's token. A save writes the whole file from its label's
+        # payload, so the label is the content. Minting a token per save
+        # instead made a re-save of identical bytes look like a move nobody
+        # else had seen, and every other client stale against a document that
+        # had not changed.
+        token = self._token_by_content.get(label)
+        if token is None:
             self._token_counter += 1
-            self.disk = self._token_counter
-            self.clients[client] = self._token_counter
-            self.accepted.append((client, label))
-            return True
-        return False
+            token = self._token_counter
+            self._token_by_content[label] = token
+        self.disk = token
+        self.clients[client] = token
+        self.accepted.append((client, label))
+        return True
 
     def external_edit(self) -> None:
         if self.disk is not None:
@@ -135,6 +147,7 @@ _seq_strategy = st.lists(_op_strategy, min_size=1, max_size=6)
 
 @pr_budget(25)
 @example(ops=[("save", "A", "b"), ("save", "A", "b")])
+@example(ops=[("save", "A", "c"), ("reload", "B"), ("save", "A", "c"), ("save", "B", "b")])
 @given(ops=_seq_strategy)
 def test_saves_follow_the_revision_model_and_stale_writes_never_replace_accepted_generations(
     tmp_path: Path,

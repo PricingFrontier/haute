@@ -412,7 +412,7 @@ def test_streaming_auto_range_capture_serves_the_solve(
                     "column_name": "scenario_value",
                     "min_value": 0.9,
                     "max_value": 1.1,
-                    "steps": _SCENARIOS,
+                    "stepCount": _SCENARIOS,
                     "step_column": "scenario_index",
                 },
             ),
