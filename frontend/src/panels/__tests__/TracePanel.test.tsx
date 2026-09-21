@@ -4,6 +4,10 @@ import TracePanel from "../TracePanel"
 import type { TraceResult, TraceStep } from "../../types/trace"
 import { downloadTextFile } from "../editors/shared/tableClipboard"
 
+// The click handler is synchronous, but a whole parallel suite run can starve
+// this worker for longer than waitFor's 1s default before it retries.
+const DOWNLOAD_TIMEOUT_MS = 10_000
+
 vi.mock("../editors/shared/tableClipboard", () => ({
   downloadTextFile: vi.fn(() => true),
 }))
@@ -80,7 +84,7 @@ describe("TracePanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Download trace as Markdown" }))
 
-    await waitFor(() => expect(downloadTextFile).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(downloadTextFile).toHaveBeenCalledTimes(1), { timeout: DOWNLOAD_TIMEOUT_MS })
     expect(screen.getByRole("alert")).toHaveTextContent("The trace could not be exported")
   })
 

@@ -102,6 +102,11 @@ import {
 } from "../../api/client"
 import { resolveGraphFromRefs } from "../../utils/buildGraph"
 import { makeEdge, makeNode, makeTrainResult } from "../../test-utils/factories"
+
+// A preview that waits on a cache build crosses several effects and mocked
+// requests; a whole parallel suite run makes that slower without making it
+// wrong, and waitFor's 1s default is the thing that gives out first.
+const CACHE_WAIT_TIMEOUT_MS = 10_000
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
 const mockRecoveryPreview = vi.mocked(previewRecoveryNode)
@@ -1639,9 +1644,12 @@ describe("usePipelineAPI", () => {
         node_id: "claims", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0,
       })
       const { result } = renderHook(() => usePipelineAPI(params))
-      await waitFor(() => expect(result.current.loading).toBe(false))
+      await waitFor(() => expect(result.current.loading).toBe(false), { timeout: CACHE_WAIT_TIMEOUT_MS })
       act(() => { result.current.fetchPreview(target, { debounceMs: 0 }) })
-      await waitFor(() => expect(buildJsonCache).toHaveBeenCalledOnce())
+      await waitFor(
+        () => expect(buildJsonCache).toHaveBeenCalledOnce(),
+        { timeout: CACHE_WAIT_TIMEOUT_MS },
+      )
       expect(mockPreview).not.toHaveBeenCalled()
       expect(result.current.previewData?.loading_message).toContain("Caching Quote Input")
       if (outcome === "cancelled") act(() => result.current.cancelPreview())
@@ -1653,7 +1661,10 @@ describe("usePipelineAPI", () => {
           skipped_records: 0, skipped_rows: {},
         })
       })
-      await waitFor(() => expect(result.current.previewBusy).toBe(false))
+      await waitFor(
+        () => expect(result.current.previewBusy).toBe(false),
+        { timeout: CACHE_WAIT_TIMEOUT_MS },
+      )
       if (outcome === "completed") {
         expect(mockPreview).toHaveBeenCalledOnce()
         expect(result.current.previewData?.status).toBe("ok")

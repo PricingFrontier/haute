@@ -555,6 +555,10 @@ afterEach(() => {
 // effects and mocked requests; a whole parallel suite run makes that slower
 // than the one-second default without making it wrong.
 const MODAL_TIMEOUT_MS = 10_000
+// A panel hydrating from a fetched profile crosses a load, several effects and
+// a mocked request; a whole parallel suite run makes that slower without making
+// it wrong, and these queries otherwise keep the 1s default.
+const PANEL_HYDRATION_TIMEOUT_MS = 10_000
 
 describe("App integration — mounts and renders main chrome", () => {
   it("does not open websocket sync while the initial pipeline load is pending", async () => {
@@ -720,16 +724,27 @@ describe("App integration — degraded execution fence", () => {
 
     render(<App />)
     await waitForAppReady()
-    fireEvent.click(await screen.findByTestId("unavailable-node-Broken"))
-    fireEvent.click(await screen.findByRole("button", { name: "Remove unavailable node" }))
-    await screen.findByText("Remove broken.")
+    fireEvent.click(
+      await screen.findByTestId("unavailable-node-Broken", {}, { timeout: PANEL_HYDRATION_TIMEOUT_MS }),
+    )
+    fireEvent.click(
+      await screen.findByRole(
+        "button",
+        { name: "Remove unavailable node" },
+        { timeout: PANEL_HYDRATION_TIMEOUT_MS },
+      ),
+    )
+    await screen.findByText("Remove broken.", {}, { timeout: PANEL_HYDRATION_TIMEOUT_MS })
     expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["broken@10"])
 
     fireEvent.click(screen.getByRole("button", { name: "Remove node" }))
 
-    await waitFor(() => {
-      expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["survivor"])
-    })
+    await waitFor(
+      () => {
+        expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["survivor"])
+      },
+      { timeout: PANEL_HYDRATION_TIMEOUT_MS },
+    )
     expect(useDocumentStatusStore.getState().sourceRevision).toBe("revision-repaired")
     expect(screen.queryByTestId("pipeline-repair-dialog")).not.toBeInTheDocument()
     expect(screen.queryByTestId("node-recovery-diagnostics")).not.toBeInTheDocument()
@@ -1079,15 +1094,23 @@ describe("App integration — load a pipeline with nodes", () => {
 
     render(<App />)
     await waitForAppReady()
-    fireEvent.click(await screen.findByText("Claims Explore"))
-    fireEvent.click((await screen.findAllByRole("tab", { name: "Pivots" })).find(
+    fireEvent.click(await screen.findByText("Claims Explore", {}, { timeout: PANEL_HYDRATION_TIMEOUT_MS }))
+    fireEvent.click((await screen.findAllByRole("tab", { name: "Pivots" }, { timeout: PANEL_HYDRATION_TIMEOUT_MS })).find(
       (tab) => tab.id === "explore-pivots-tab",
     )!)
     await findEditorTestId("explore-pivots-config")
-    fireEvent.click(await screen.findByRole("button", { name: "Add Pivot" }))
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Add Pivot" }, { timeout: PANEL_HYDRATION_TIMEOUT_MS }),
+    )
     fireEvent.click(screen.getByRole("button", { name: /configure pivot/i }))
 
-    expect(await screen.findByRole("group", { name: "post_code_only field actions" })).toBeInTheDocument()
+    expect(
+      await screen.findByRole(
+        "group",
+        { name: "post_code_only field actions" },
+        { timeout: PANEL_HYDRATION_TIMEOUT_MS },
+      ),
+    ).toBeInTheDocument()
   })
 })
 
