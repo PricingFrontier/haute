@@ -534,7 +534,7 @@ describe("useNodeDataStore noteAnnouncedCaptures", () => {
 
     // A terminal status carrying no profile, no error and no message — the
     // shape a cancelled or evicted job reports.
-    store.finishProfileJob("join||live", { status: "failed", progress: 1, message: "" })
+    store.finishProfileJob("join||live", { status: "error", progress: 1, message: "" })
 
     expect(useNodeDataStore.getState().profileJobs).toEqual({})
     expect(useNodeDataStore.getState().profileFailures["join||live"]).toEqual({
