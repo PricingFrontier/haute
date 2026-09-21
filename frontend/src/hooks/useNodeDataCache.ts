@@ -88,6 +88,36 @@ export function deriveAvailability(
   return columnsCoverDemand(generation.columns, point.demand) ? "current" : "partial"
 }
 
+/**
+ * The consumers reading each node's data, so the node's Refresh button can ask
+ * them to bring it up to date.
+ *
+ * This is deliberately not React state: pressing Refresh is a user event, and
+ * the build belongs in that event rather than in a render that reacts to it.
+ * A node can have more than one consumer open, so every one of them is asked;
+ * the backend joins builds of the same data.
+ */
+const nodeDataRefreshHandlers = new Map<string, Set<() => void>>()
+
+function registerNodeDataRefresh(nodeId: string, handler: () => void): () => void {
+  const handlers = nodeDataRefreshHandlers.get(nodeId) ?? new Set<() => void>()
+  handlers.add(handler)
+  nodeDataRefreshHandlers.set(nodeId, handlers)
+  return () => {
+    handlers.delete(handler)
+    if (handlers.size === 0) nodeDataRefreshHandlers.delete(nodeId)
+  }
+}
+
+/**
+ * Ask whoever reads *nodeId*'s data to cache it if what they hold is missing,
+ * stale, partial or unreadable. Nothing happens for a node no open panel reads,
+ * or for data that is already current.
+ */
+export function refreshNodeDataCache(nodeId: string): void {
+  for (const handler of nodeDataRefreshHandlers.get(nodeId) ?? []) handler()
+}
+
 function producerNode(allNodes: SimpleNode[], point: NodeDataPointResponse | null): SimpleNode | null {
   if (!point) return null
   return allNodes.find((candidate) => candidate.id === point.point.producer_node_id) ?? null
@@ -392,6 +422,40 @@ export default function useNodeDataCache({
   const run = useCallback(() => build(false), [build])
   const refresh = useCallback(() => build(true), [build])
 
+  const canBuild = point !== null && !point.reads_directly
+
+  /**
+   * What the node's Refresh button does about this node's cached data. The
+   * cost is decided here rather than at the button: data the consumer can
+   * already use is left alone, so a Refresh pressed to re-read a node's
+   * generated fields does not recompute a dataset that has not changed.
+   * `missing` has nothing to replace, so it builds; `stale`, `partial` and
+   * `corrupt` hold something unusable as it stands, so they rebuild.
+   */
+  // Read when Refresh is pressed rather than captured when the handler was
+  // registered, so a handler registered on an early render still decides
+  // against what the consumer holds now. It settles one commit after the
+  // render it describes, which a user's click is never inside.
+  const latest = useRef({ availability, busy, canBuild, enabled, run, refresh })
+  useEffect(() => {
+    latest.current = { availability, busy, canBuild, enabled, run, refresh }
+  })
+
+  const bringUpToDate = useCallback(() => {
+    const { availability, busy, canBuild, enabled, run, refresh } = latest.current
+    if (!enabled || !canBuild || busy) return
+    // `checking` has no answer yet, so there is nothing to decide against.
+    if (availability === "current" || availability === "building" || availability === "checking") {
+      return
+    }
+    void (availability === "missing" ? run() : refresh())
+  }, [])
+
+  useEffect(() => {
+    if (!nodeId) return
+    return registerNodeDataRefresh(nodeId, bringUpToDate)
+  }, [bringUpToDate, nodeId])
+
   const cancel = useCallback(async () => {
     const fence = captureDocumentExecutionFence()
     if (delegatedBuild && !job) {
@@ -455,7 +519,7 @@ export default function useNodeDataCache({
     columns: point?.generation?.columns ?? null,
     demand: point?.demand ?? null,
     readsDirectly: point?.reads_directly ?? false,
-    canBuild: point !== null && !point.reads_directly,
+    canBuild,
     run,
     refresh,
     cancel,

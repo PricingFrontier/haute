@@ -64,6 +64,7 @@ import useGraphStore from "./stores/useGraphStore"
 import useGitStore from "./stores/useGitStore"
 import useToastStore from "./stores/useToastStore"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
+import { refreshNodeDataCache } from "./hooks/useNodeDataCache"
 import useDocumentStatusStore from "./stores/useDocumentStatusStore"
 import { HAUTE_SESSION_EXPIRED_EVENT } from "./api/client"
 
@@ -1379,7 +1380,13 @@ function FlowEditor() {
   const handlePanelPreviewRefresh = useCallback(() => {
     if (!activePanelNodeId) return
     const refreshTarget = graphRef.current.nodes.find((node) => node.id === activePanelNodeId)
-    if (refreshTarget) refreshPreview(refreshTarget)
+    if (!refreshTarget) return
+    refreshPreview(refreshTarget)
+    // Refresh means "bring this node up to date", so it covers the node's
+    // cached data as well as its preview. A panel that reads no cached data
+    // never sees the ask; one that does decides whether anything needs
+    // computing, and leaves data that is already current alone.
+    refreshNodeDataCache(activePanelNodeId)
   }, [activePanelNodeId, refreshPreview])
 
   // ---------------------------------------------------------------------------

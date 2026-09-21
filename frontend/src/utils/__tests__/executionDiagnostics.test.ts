@@ -353,14 +353,14 @@ describe("executionDiagnostics", () => {
           node_id: "B",
           node_label: "Banding",
           message:
-            "The cached data for 'Banding' is unreadable. Re-cache that node to rebuild it, "
+            "The cached data for 'Banding' is unreadable. Refresh that node to rebuild it, "
             + "or clear it to run without a cache.",
         },
       }
 
       const message = executionErrorDetailMessage(error)
       expect(message).toContain("Banding")
-      expect(message).toMatch(/re-cache/i)
+      expect(message).toMatch(/refresh/i)
       expect(message).toMatch(/clear it/i)
     })
   })

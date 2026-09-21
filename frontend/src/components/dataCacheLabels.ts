@@ -16,7 +16,7 @@ export function dataCacheStatusText(cache: NodeDataCache): string {
     case "checking":
       return "Checking cache"
     default:
-      return "Needs caching"
+      return "Not cached"
   }
 }
 

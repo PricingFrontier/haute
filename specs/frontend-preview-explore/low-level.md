@@ -26,7 +26,7 @@
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-diagnostic banner owned by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md) and consumed by Explore progress and cache reports. |
 | `frontend/src/components/ExecutionDiagnosticsIndicator.tsx` | Compact preview-header execution diagnostic indicator. |
 | `frontend/src/panels/ExplorePreview.tsx` | Explore's shared-data-cache and profile composition: the data-cache action, the profiling progress, and the Preview/Overview/Pivots/Charts tabs. It owns no cache of its own. |
-| `frontend/src/hooks/useNodeDataCache.ts`, `frontend/src/hooks/useNodeDataProfile.ts`, `frontend/src/components/DataCacheButton.tsx`, `frontend/src/components/dataCacheLabels.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned shared data-cache state, the shared `profile` analysis of the data a consumer reads, and the one cache control and its wording every consumer shows. |
+| `frontend/src/hooks/useNodeDataCache.ts`, `frontend/src/hooks/useNodeDataProfile.ts`, `frontend/src/components/DataCacheStatus.tsx`, `frontend/src/components/dataCacheLabels.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned shared data-cache state, the shared `profile` analysis of the data a consumer reads, and the one cache state and its wording every consumer shows. |
 | `frontend/src/panels/explore/exploreDataView.ts` | Adapts a point's profile into what the Explore panes render, and returns nothing when the profile does not describe the data version the point currently holds. |
 | `frontend/src/stores/useNodeDataStore.ts` (`slotForConsumer`, `profileForConsumer`) | [frontend-shared](../frontend-shared/low-level.md)-owned reads of what a consumer node was last told it reads, answered only for the identity the answer was recorded under. |
 | `frontend/src/api/types.ts`, `frontend/src/types/guards.ts`, `frontend/src/stores/useNodeResultsStore.ts`, `frontend/src/stores/useNodeDataStore.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned Explore API contracts, runtime guards, node-scoped pivot job/result state, and the slot-keyed data-point/profile state consumed by the preview panes. |
@@ -104,7 +104,7 @@
    request or of the job — is recorded against that slot and the data version it was asked for,
    shown in the frame's subtitle, and offered as a Retry action; nothing asks again on its own
    while it stands, so a failed profile is never an empty pane with no way forward (a
-   directly-read point has no Re-cache action to recover through). A job's outcome belongs to the
+   directly-read point has no cache to rebuild). A job's outcome belongs to the
    version *it* profiled, not to whatever the point holds when it ends, so a re-cache that
    published while it ran is still profiled rather than inheriting the older attempt's failure. A
    refused cancellation leaves the job running, cancellable, and its failure visible. Preview, Overview, Pivots and Charts mount only
@@ -112,15 +112,19 @@
    `ExploreOverviewPane` is a `React.lazy` boundary, so its report-card and export code stays out
    of startup JavaScript. Suspense renders a labelled Overview loading state inside the existing
    tabpanel until that module is ready.
-4. The cache action is the shared `DataCacheButton`: a filled red `Needs caching` for a point
-   with no data, filled green `Re-cache` when the whole demand is cached, filled yellow
-   `Re-cache` when the cached data is stale or covers only some of the columns this consumer
-   reads, a muted `Checking cache` while the point is being resolved, and — while a build runs —
-   a Cancel button with that build's determinate progress. `Needs caching` sends a plain build;
-   every `Re-cache` state sends a refresh, which is also the recovery path from an unreadable
-   snapshot. A point read straight from its Parquet file has nothing to build, so the control is
-   replaced by `Reads Parquet directly`. The frame's subtitle states the same status in words,
-   and while the profile runs it states the profile's progress instead.
+4. The cache state is the shared `DataCacheStatus`: red `Not cached` for a point with no data,
+   green `Cached` when the whole demand is cached, amber `Cache out of date` or `Cached for some
+   columns` when the cached data is stale or covers only some of the columns this consumer reads,
+   a muted `Checking cache` while the point is being resolved, and — while a build runs — a
+   Cancel button with that build's determinate progress. Nothing in it starts a build: the node's
+   Refresh button does, through `refreshNodeDataCache(nodeId)`, which asks every consumer
+   registered for that node to bring its data up to date. `missing` sends a plain build; `stale`,
+   `partial` and `corrupt` send a refresh, which is also the recovery path from an unreadable
+   snapshot; `current`, `building` and `checking` do nothing, so a Refresh pressed to re-read a
+   node's generated fields never recomputes a dataset that has not changed. A point read straight
+   from its Parquet file has nothing to cache, so the state is replaced by `Reads Parquet
+   directly`. The frame's subtitle states the same status in words, and while the profile runs it
+   states the profile's progress instead.
 5. `frontend/src/panels/explore/overviewConfig.ts` drops malformed config values. The overview
    pane renders no-enabled-cards, no-report, or the ordered enabled renderer set.
    `frontend/src/panels/explore/chartConfig.ts` instead returns an explicit parse failure for a

@@ -4,55 +4,55 @@ import type { NodeDataAvailability, NodeDataCache } from "../hooks/useNodeDataCa
 import { PREVIEW_PANEL_ACTION_BUTTON_CLASS } from "../panels/previewPanelLayout"
 import { dataCacheDetail } from "./dataCacheLabels"
 
-export interface DataCacheButtonProps {
+export interface DataCacheStatusProps {
   cache: NodeDataCache
-  /** Appends the snapshot's size and retention to the button's detail line. */
+  /** Appends the snapshot's size and retention to the detail line. */
   showDetails?: boolean
   className?: string
 }
 
 const AVAILABILITY_LABELS: Record<NodeDataAvailability, string> = {
   checking: "Checking cache",
-  current: "Re-cache",
+  current: "Cached",
   partial: "Cached for some columns",
-  stale: "Re-cache",
-  missing: "Needs caching",
+  stale: "Cache out of date",
+  missing: "Not cached",
   building: "Caching",
-  corrupt: "Re-cache",
+  corrupt: "Cache unreadable",
 }
 
+// Each says what is true and what Refresh would do about it, because Refresh
+// is now the only way to act on any of them.
 const AVAILABILITY_TITLES: Record<NodeDataAvailability, string> = {
   checking: "Asking the server about this data",
-  current: "The whole dataset is cached; cache it again to recompute it",
-  partial: "Cached without every column this node reads; cache it again for all of them",
-  stale: "The cached data is out of date; cache it again",
-  missing: "This data is not cached yet",
+  current: "The whole dataset is cached; Refresh leaves it alone",
+  partial: "Cached without every column this node reads; Refresh caches the rest",
+  stale: "The cached data is out of date; Refresh caches it again",
+  missing: "This data is not cached yet; Refresh caches it",
   building: "This data is being cached",
-  corrupt: "The cached data is unreadable; cache it again",
+  corrupt: "The cached data is unreadable; Refresh caches it again",
 }
 
-function buttonStyle(availability: NodeDataAvailability): { color: string; background: string } {
-  if (availability === "current") {
-    return { color: "var(--text-on-accent)", background: "var(--success-fill)" }
-  }
-  if (availability === "stale" || availability === "partial") {
-    return { color: "var(--text-on-light-accent)", background: "var(--warning-strong)" }
-  }
-  if (availability === "checking") {
-    return { color: "var(--text-muted)", background: "var(--accent-soft)" }
-  }
-  return { color: "var(--text-on-accent)", background: "var(--danger-solid)" }
+function statusColor(availability: NodeDataAvailability): string {
+  if (availability === "current") return "var(--success)"
+  if (availability === "stale" || availability === "partial") return "var(--warning-strong)"
+  if (availability === "checking") return "var(--text-muted)"
+  return "var(--danger)"
 }
 
 /**
- * The one cache control every consumer of a data point shows: its state for
- * this consumer's demand, the progress of whichever consumer's build is
- * running, and cancel while it runs.
+ * What every consumer of a data point shows about it: its state for this
+ * consumer's demand, the progress of whichever consumer's build is running,
+ * and cancel while it runs.
  *
- * A point that is read directly from its file has nothing to build, so the
- * button is replaced by that statement.
+ * Nothing here starts a build. The node's own Refresh button does that, for
+ * the same reason it re-runs the preview: one control for "bring this node up
+ * to date" rather than one per thing that might be out of date.
+ *
+ * A point that is read directly from its file has nothing to cache, so the
+ * state is replaced by that statement.
  */
-export default function DataCacheButton({ cache, showDetails = false, className }: DataCacheButtonProps) {
+export default function DataCacheStatus({ cache, showDetails = false, className }: DataCacheStatusProps) {
   const detail = showDetails ? dataCacheDetail(cache) : null
 
   if (cache.readsDirectly) {
@@ -105,17 +105,13 @@ export default function DataCacheButton({ cache, showDetails = false, className 
     )
   }
 
-  const disabled = !cache.canBuild || cache.busy || cache.availability === "checking"
   return (
     <span className={`inline-flex items-center gap-1 ${className ?? ""}`}>
-      <button
-        type="button"
-        onClick={() => void (cache.availability === "missing" ? cache.run() : cache.refresh())}
-        disabled={disabled}
-        className={`${PREVIEW_PANEL_ACTION_BUTTON_CLASS} disabled:opacity-45 disabled:cursor-not-allowed`}
-        style={buttonStyle(cache.availability)}
+      <span
+        className="inline-flex items-center gap-1 text-[11px] font-medium"
+        style={{ color: statusColor(cache.availability) }}
         title={AVAILABILITY_TITLES[cache.availability]}
-        data-testid="data-cache-button"
+        data-testid="data-cache-status"
       >
         {cache.busy || cache.availability === "checking" ? (
           <Loader2 size={12} className="shrink-0 animate-spin" />
@@ -123,7 +119,7 @@ export default function DataCacheButton({ cache, showDetails = false, className 
           <Database size={12} className="shrink-0" />
         )}
         <span className="truncate">{AVAILABILITY_LABELS[cache.availability]}</span>
-      </button>
+      </span>
       {detail ? (
         <span className="text-[11px] truncate" style={{ color: "var(--text-muted)" }} data-testid="data-cache-detail">
           {detail}

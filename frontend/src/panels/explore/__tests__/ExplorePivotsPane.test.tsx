@@ -313,7 +313,7 @@ describe("ExplorePivotsPane", () => {
 
     expect(
       screen.getByText(
-        "Cache the full Explore data above to calculate this pivot automatically.",
+        "Refresh this node to cache its full data; this pivot then calculates automatically.",
       ),
     ).toBeVisible()
     expect(mockRunExplorePivot).not.toHaveBeenCalled()

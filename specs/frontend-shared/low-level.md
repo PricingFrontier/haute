@@ -25,7 +25,7 @@
 | `frontend/src/hooks/useNodeDataProfile.ts` | The shared `profile` analysis of the data one consumer reads: asked for once per slot and data version while the point is `current`, fenced against a document that has moved on, stored per slot so every pane showing that data gets it, with `cancel` for the running job, and `error` plus `refresh` so a failed attempt is retried rather than left as an empty pane. Each request names the version it asks about, which the job it starts carries. |
 | `frontend/src/utils/operationToken.ts` | `nextOperationToken`: a process-unique token that tells one asynchronous operation apart from the operation that replaced it. |
 | `frontend/src/panels/dataPointIdentity.ts` | `buildNodeDataCacheIdentity`: the identity that gates a consumer's `point` request — its upstream subgraph plus the original of every instance in it, each node's data-affecting configuration, every edge with its handles, the submodels, and the preamble. |
-| `frontend/src/components/DataCacheButton.tsx`, `frontend/src/components/dataCacheLabels.ts` | The shared data-cache control and its status and detail text: state label and colour, progress and cancel while a build runs, the snapshot's rows, size, and retention, and the statement that replaces the button for a point read straight from its file. |
+| `frontend/src/components/DataCacheStatus.tsx`, `frontend/src/components/dataCacheLabels.ts` | The shared data-cache state and its status and detail text: state label and colour, progress and cancel while a build runs, the snapshot's rows, size, and retention, and the statement that replaces the state for a point read straight from its file. Starting a build is not among them: the node's Refresh button does that. |
 | `frontend/src/stores/useSettingsStore.ts` | Zustand store: row limit, streaming chunk size, section open/closed state, the MLflow destinations inventory cache (fetched once with probing, re-fetched by `invalidateMlflow()`), data sources, file-listing cache. The pure destination helpers live in `frontend/src/utils/mlflowDestinations.ts`, and the shared per-node control is the destination selector component described under the MLflow destination surface below. |
 | `frontend/src/stores/useToastStore.ts` | Zustand store: toast queue with dedup, capped at 10 entries. |
 | `frontend/src/stores/useUIStore.ts` | Zustand store: modal/panel open flags (git/utility/imports/assistant, mutually exclusive by construction — each setter clears the others), sync banner, node panel width, per-node Explore/modelling selection memory (editor pane, preview pane, and the configured chart/pivot Configure-subview ids), hover highlight, node search open flag. |
@@ -519,8 +519,8 @@ it (specified in the [server API](../server-api/low-level.md#node-data-builds)).
    holding the same response.
 4. Availability is per consumer: a fresh generation covering the consumer's demand is `current`,
    a fresh one that does not is `partial`, a superseded one is `stale`, and a point with no
-   answer yet is `checking` rather than `missing`. `DataCacheButton` renders exactly that state,
-   with cancel and progress while any consumer's build runs.
+   answer yet is `checking` rather than `missing`. `DataCacheStatus` renders exactly that state,
+   with cancel and progress while any consumer's build runs, and no action to start one.
 
 ## Testing
 

@@ -42,10 +42,10 @@ consumers = ["hosted-project-storage"]
 reason = "The branch indicator hosts the storage and fork chips beside the working-branch control."
 
 [[shared_file]]
-path = "frontend/src/components/DataCacheButton.tsx"
+path = "frontend/src/components/DataCacheStatus.tsx"
 primary = "frontend-shared"
 consumers = ["frontend-preview-explore"]
-reason = "Shared UI owns the one cache control every consumer of a data point shows; the Explore preview renders it in its header."
+reason = "Shared UI owns the one cache state every consumer of a data point shows; the Explore preview renders it in its header."
 
 [[shared_file]]
 path = "frontend/src/components/ExecutionDiagnosticsSummary.tsx"

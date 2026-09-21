@@ -310,7 +310,7 @@ describe("ExploreChartsPane", () => {
 
     expect(
       screen.getByText(
-        "Cache the full Explore data above to calculate this chart automatically.",
+        "Refresh this node to cache its full data; this chart then calculates automatically.",
       ),
     ).toBeVisible()
     expect(mockRunExplorePivot).not.toHaveBeenCalled()

@@ -1,7 +1,7 @@
 import { RefreshCw, XCircle } from "lucide-react"
 import { Suspense, lazy, useCallback, useMemo } from "react"
 
-import DataCacheButton from "../components/DataCacheButton"
+import DataCacheStatus from "../components/DataCacheStatus"
 import { dataCacheStatusText } from "../components/dataCacheLabels"
 import ExecutionDiagnosticsSummary from "../components/ExecutionDiagnosticsSummary"
 import useNodeDataCache from "../hooks/useNodeDataCache"
@@ -120,7 +120,7 @@ export default function ExplorePreview({
       subtitle={`${activeSource} | ${statusText}`}
       actions={
         <span className="inline-flex items-center gap-1">
-          <DataCacheButton cache={cache} showDetails />
+          <DataCacheStatus cache={cache} showDetails />
           {/* The profile runs after the data is cached, so its own progress and
               its retry are actions of their own beside the cache control. */}
           {profiling ? (

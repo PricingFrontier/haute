@@ -228,7 +228,7 @@ export default function ExplorePivotsPane({
                     >
                       {report
                         ? "Calculating automatically…"
-                        : "Cache the full Explore data above to calculate this pivot automatically."}
+                        : "Refresh this node to cache its full data; this pivot then calculates automatically."}
                     </div>
                   )}
                 </>

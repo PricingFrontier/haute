@@ -1026,7 +1026,7 @@ describe("App integration — load a pipeline with nodes", () => {
     const exploreNode = await screen.findByText("Claims Explore")
     fireEvent.click(exploreNode)
 
-    expect(await screen.findByRole("button", { name: "Needs caching" })).toBeInTheDocument()
+    expect(await screen.findByTestId("data-cache-status")).toHaveTextContent("Not cached")
     expect(vi.mocked(api.getNodeDataPoint)).toHaveBeenCalledWith(expect.objectContaining({
       node_id: "explore_1",
       source: "live",

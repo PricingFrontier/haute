@@ -87,7 +87,7 @@ export default function ExploreOverviewPane({ node, report }: ExploreOverviewPan
       >
         <EmptyState
           title="No cached data yet"
-          body="Use 'Needs caching' above to cache the data and populate the enabled cards."
+          body="Refresh this node to cache its data and populate the enabled cards."
         />
       </div>
     )

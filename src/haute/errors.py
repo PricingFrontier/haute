@@ -490,7 +490,7 @@ class SnapshotCorruptError(ExecutionError):
         self.node_label = node_label
         super().__init__(
             f"The cached data for '{node_label or node_id}' is unreadable. "
-            "Re-cache that node to rebuild it, or clear it to run without a cache.",
+            "Refresh that node to rebuild it, or clear it to run without a cache.",
             node_id=node_id,
             node_label=node_label,
         )

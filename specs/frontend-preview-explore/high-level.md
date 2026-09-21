@@ -42,12 +42,14 @@ Modelling and optimiser result presentation belongs to
   joins the running job rather than starting a second one, and one narrow generation can be
   current for Banding while it is only partial for Explore's wider column demand. The state
   survives a browser or backend restart, because it is the point's state and not the browser's.
-- The header cache action is the shared data-cache control: red `Needs caching` when the point
-  has no data, green `Re-cache` when the whole demand is cached, yellow `Re-cache` when the data
-  is stale or covers only some of the columns this consumer reads, and — while a build runs —
-  progress with Cancel in place of the idle action. Re-cache is a forced refresh, not a cache-hit
-  lookup, and is also the recovery path from an unreadable snapshot. A point read straight from
-  its Parquet file states that instead, having nothing to build.
+- The header shows the shared data-cache state and nothing to act on: red `Not cached` when the
+  point has no data, green `Cached` when the whole demand is cached, yellow `Cache out of date`
+  or `Cached for some columns` when the data is stale or covers only some of the columns this
+  consumer reads, and — while a build runs — progress with Cancel. Caching is what the node's own
+  Refresh button does about data that is missing, stale, partial or unreadable; data that is
+  already current is left alone, because the same button is pressed to re-read a node's generated
+  fields. Refresh is also the recovery path from an unreadable snapshot. A point read straight
+  from its Parquet file states that instead, having nothing to cache.
 - Overview cards have a fixed order and are individually enabled from config. They display
   dataset, quality, numeric, categorical and schema information with accessible empty states.
   Schema, numeric-summary, and categorical-summary tables expose native-button actions to copy

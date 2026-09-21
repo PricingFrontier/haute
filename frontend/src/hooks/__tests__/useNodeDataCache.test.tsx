@@ -6,8 +6,8 @@ import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useToastStore from "../../stores/useToastStore"
-import useNodeDataCache, { deriveAvailability } from "../useNodeDataCache"
-import DataCacheButton from "../../components/DataCacheButton"
+import useNodeDataCache, { deriveAvailability, refreshNodeDataCache } from "../useNodeDataCache"
+import DataCacheStatus from "../../components/DataCacheStatus"
 
 vi.mock("../../api/client", () => ({
   getNodeDataPoint: vi.fn(),
@@ -204,6 +204,81 @@ describe("useNodeDataCache", () => {
 
     await waitFor(() => expect(result.current.availability).toBe("current"))
     expect(mockGetPoint.mock.calls.length).toBeGreaterThan(1)
+  })
+
+  // The node's Refresh button is the only way to cache data now, so what it
+  // costs is decided here: data the consumer can already use is left alone,
+  // because the same button is pressed to re-read a node's generated fields.
+  it("caches on a refresh request when nothing is cached", async () => {
+    mockGetPoint.mockResolvedValue(point({ state: "missing", generation: null, data_version: null }))
+    mockRun.mockResolvedValue({
+      status: "started",
+      job_id: "job-refresh",
+      cached: false,
+      message: "Caching started",
+      point: point({ state: "building", generation: null, data_version: null }),
+    })
+    const { result } = renderCache("explore")
+    await waitFor(() => expect(result.current.availability).toBe("missing"))
+
+    await act(async () => {
+      refreshNodeDataCache("explore")
+    })
+
+    await waitFor(() => expect(mockRun).toHaveBeenCalledTimes(1))
+    // Nothing is cached, so there is nothing to replace: it builds rather
+    // than forcing a recompute.
+    expect(mockRun.mock.calls[0][0]).toMatchObject({ node_id: "explore", refresh: false })
+  })
+
+  it("re-caches on a refresh request when what is cached is out of date", async () => {
+    // A node_output's freshness is read off its generation, not the point's
+    // own state word.
+    mockGetPoint.mockResolvedValue(
+      point({ state: "stale", generation: { ...point().generation!, fresh: false } }),
+    )
+    mockRun.mockResolvedValue({
+      status: "started",
+      job_id: "job-stale",
+      cached: false,
+      message: "Caching started",
+      point: point({ state: "building" }),
+    })
+    const { result } = renderCache("explore")
+    await waitFor(() => expect(result.current.availability).toBe("stale"))
+
+    await act(async () => {
+      refreshNodeDataCache("explore")
+    })
+
+    await waitFor(() => expect(mockRun).toHaveBeenCalledTimes(1))
+    expect(mockRun.mock.calls[0][0]).toMatchObject({ node_id: "explore", refresh: true })
+  })
+
+  it("leaves current data alone on a refresh request", async () => {
+    mockGetPoint.mockResolvedValue(point())
+    const { result } = renderCache("explore")
+    await waitFor(() => expect(result.current.availability).toBe("current"))
+
+    await act(async () => {
+      refreshNodeDataCache("explore")
+    })
+
+    // A Refresh pressed to re-read this node's generated fields must not
+    // recompute a dataset that has not changed.
+    expect(mockRun).not.toHaveBeenCalled()
+  })
+
+  it("ignores a refresh request aimed at a different node", async () => {
+    mockGetPoint.mockResolvedValue(point({ state: "missing", generation: null, data_version: null }))
+    const { result } = renderCache("explore")
+    await waitFor(() => expect(result.current.availability).toBe("missing"))
+
+    await act(async () => {
+      refreshNodeDataCache("banding")
+    })
+
+    expect(mockRun).not.toHaveBeenCalled()
   })
 
   it("refreshes a cached point instead of completing as cached", async () => {
@@ -685,7 +760,7 @@ describe("deriveAvailability", () => {
   })
 })
 
-describe("DataCacheButton", () => {
+describe("DataCacheStatus", () => {
   beforeEach(() => {
     useNodeDataStore.getState().reset()
     useSettingsStore.setState({ activeSource: "live", sources: ["live"] })
@@ -703,15 +778,18 @@ describe("DataCacheButton", () => {
 
   function Harness({ nodeId }: { nodeId: string }) {
     const cache = useNodeDataCache({ node: nodeById(nodeId), allNodes: nodes, edges, preamble: "" })
-    return <DataCacheButton cache={cache} showDetails />
+    return <DataCacheStatus cache={cache} showDetails />
   }
 
-  it("asks to cache a point that has nothing cached", async () => {
+  it("says a point has nothing cached", async () => {
     mockGetPoint.mockResolvedValue(point({ state: "missing", generation: null, data_version: null, row_count: null, size_bytes: null, retention: null }))
     render(<Harness nodeId="explore" />)
 
-    await waitFor(() => expect(screen.getByTestId("data-cache-button")).toHaveTextContent("Needs caching"))
+    await waitFor(() => expect(screen.getByTestId("data-cache-status")).toHaveTextContent("Not cached"))
     expect(screen.queryByTestId("data-cache-detail")).toBeNull()
+    // Nothing here starts a build: the node's Refresh button is the one
+    // control that brings the node up to date, cached data included.
+    expect(screen.queryByRole("button")).toBeNull()
   })
 
   it("names a generation that lacks columns this consumer reads", async () => {
@@ -724,7 +802,7 @@ describe("DataCacheButton", () => {
     render(<Harness nodeId="explore" />)
 
     await waitFor(() =>
-      expect(screen.getByTestId("data-cache-button")).toHaveTextContent("Cached for some columns"),
+      expect(screen.getByTestId("data-cache-status")).toHaveTextContent("Cached for some columns"),
     )
     expect(screen.getByTestId("data-cache-detail")).toHaveTextContent("1,000 rows · 1.5 KB · automatic")
   })
@@ -758,6 +836,6 @@ describe("DataCacheButton", () => {
     render(<Harness nodeId="banding" />)
 
     await waitFor(() => expect(screen.getByTestId("data-cache-direct")).toHaveTextContent("Reads Parquet directly"))
-    expect(screen.queryByTestId("data-cache-button")).toBeNull()
+    expect(screen.queryByTestId("data-cache-status")).toBeNull()
   })
 })

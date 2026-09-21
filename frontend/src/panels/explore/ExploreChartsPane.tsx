@@ -224,7 +224,7 @@ function ChartCard({
         <CardMessage>
           {report
             ? "Calculating source Pivot automatically…"
-            : "Cache the full Explore data above to calculate this chart automatically."}
+            : "Refresh this node to cache its full data; this chart then calculates automatically."}
         </CardMessage>
       )}
       {alertMessage && (

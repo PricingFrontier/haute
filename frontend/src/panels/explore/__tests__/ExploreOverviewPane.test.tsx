@@ -48,7 +48,7 @@ describe("ExploreOverviewPane", () => {
       />,
     )
     expect(screen.getByText(/No cached data yet/i)).toBeInTheDocument()
-    expect(screen.getByText(/Needs caching/i)).toBeInTheDocument()
+    expect(screen.getByText(/Refresh this node to cache its data/i)).toBeInTheDocument()
     expect(screen.queryByTestId("explore-dataset-snapshot-card")).not.toBeInTheDocument()
   })
 
@@ -128,7 +128,7 @@ describe("ExploreOverviewPane", () => {
         report={null}
       />,
     )
-    const body = screen.getByText(/Needs caching/i)
+    const body = screen.getByText(/Refresh this node to cache its data/i)
     expect(body.textContent).not.toMatch(/dataset snapshot/i)
   })
 

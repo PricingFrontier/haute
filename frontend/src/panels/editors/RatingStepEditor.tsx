@@ -18,7 +18,7 @@ import {
 import { OneWayEditor } from "./rating/OneWayEditor"
 import { TwoWayGrid } from "./rating/TwoWayGrid"
 import useRatingLevels from "./rating/useRatingLevels"
-import DataCacheButton from "../../components/DataCacheButton"
+import DataCacheStatus from "../../components/DataCacheStatus"
 import type { SimpleNode } from "./_shared"
 import { useGraph } from "../useGraph"
 import useUIStore, { type RatingStepEditorSection } from "../../stores/useUIStore"
@@ -487,7 +487,7 @@ export default function RatingStepEditor({
           >
             {levelsError ? `Reading the whole dataset failed: ${levelsError}` : levelsBasisLabel}
           </span>
-          <DataCacheButton cache={cache} />
+          <DataCacheStatus cache={cache} />
         </div>
       )}
 

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ExecutionMetrics, NodeDataPointResponse } from "../../api/types"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeDataStore from "../../stores/useNodeDataStore"
+import { refreshNodeDataCache } from "../../hooks/useNodeDataCache"
 import useNodeResultsStore, { resetNodeResultsDerivedCaches } from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useToastStore from "../../stores/useToastStore"
@@ -307,7 +308,7 @@ describe("ExplorePreview", () => {
 
     const nodeTitle = screen.getByText("Explore Claims")
     const previewTab = screen.getByRole("tab", { name: "Preview" })
-    const processButton = await screen.findByRole("button", { name: "Needs caching" })
+    await screen.findByTestId("data-cache-status")
 
     expect(screen.getByTestId("explore-preview-frame")).toBeInTheDocument()
     expect(screen.getByTestId("explore-preview-frame")).toHaveStyle({
@@ -316,7 +317,6 @@ describe("ExplorePreview", () => {
     expect(screen.getByTestId("explore-preview-frame-header")).toHaveClass("h-9")
     expect(screen.getByTestId("preview-panel-node-icon").querySelector(".lucide-search")).toBeTruthy()
     expect(screen.getByLabelText("Collapse preview panel")).toBeInTheDocument()
-    expect(processButton).toHaveClass("h-6", "whitespace-nowrap")
     expect(nodeTitle.compareDocumentPosition(previewTab) & globalThis.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.getByRole("tab", { name: "Preview" })).toHaveAttribute("aria-selected", "true")
     expect(screen.getByTestId("data-preview-embedded")).toBeInTheDocument()
@@ -570,19 +570,30 @@ describe("ExplorePreview", () => {
     expect(screen.queryByTestId("explore-dataset-snapshot-card")).not.toBeInTheDocument()
   })
 
-  it("renders the shared cache button state of the data it reads", async () => {
+  it("renders the shared cache state of the data it reads", async () => {
     renderExplore()
 
-    expect(await screen.findByTestId("data-cache-button")).toHaveTextContent("Needs caching")
+    expect(await screen.findByTestId("data-cache-status")).toHaveTextContent("Not cached")
     expect(mockGetNodeDataPoint).toHaveBeenCalledWith(
       expect.objectContaining({ node_id: "explore_1", source: "pricing" }),
     )
-    expect(screen.getByTestId("explore-preview-frame")).toHaveTextContent("pricing | Needs caching")
+    expect(screen.getByTestId("explore-preview-frame")).toHaveTextContent("pricing | Not cached")
   })
 
   it("asks the shared build for the data and shows its progress", async () => {
     renderExplore()
-    fireEvent.click(await screen.findByTestId("data-cache-button"))
+    // Refreshing the node is what caches its data; the pane itself offers no
+    // way to start a build.
+    // Wait for the point to arrive: until it has, the pane does not yet know
+    // whether anything needs caching.
+    expect(await screen.findByTestId("data-cache-status")).toHaveTextContent("Not cached")
+    expect(screen.queryByTestId("data-cache-button")).toBeNull()
+    // Let the pane's effects settle, as they have by the time a user reads the
+    // panel and clicks; only then does Refresh know there is nothing cached.
+    await act(async () => {})
+    await act(async () => {
+      refreshNodeDataCache("explore_1")
+    })
 
     await waitFor(() =>
       expect(mockRunNodeData).toHaveBeenCalledWith(
@@ -598,7 +609,7 @@ describe("ExplorePreview", () => {
 
     renderExplore(null, exploreNodeWithConfig({ overview: { dataset_snapshot: true } }))
 
-    expect(await screen.findByTestId("data-cache-button")).toHaveTextContent("Re-cache")
+    expect(await screen.findByTestId("data-cache-status")).toHaveTextContent("Cached")
     expect(screen.getByTestId("explore-preview-frame")).toHaveTextContent("pricing | Cached")
     fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
     expect(await screen.findByText("4,321")).toBeInTheDocument()
