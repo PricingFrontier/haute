@@ -37,7 +37,7 @@ describe("useRenderedSteps", () => {
   })
 
   it("requests nothing for an empty list and reports the empty status", () => {
-    const { result } = renderHook(() => useRenderedSteps([], ["quotes"]))
+    const { result } = renderHook(() => useRenderedSteps([], ["quotes"], "input"))
     expect(result.current.status).toBe("empty")
     expect(mockRender).not.toHaveBeenCalled()
   })
@@ -45,7 +45,7 @@ describe("useRenderedSteps", () => {
   it("debounces, then reports the rendered code for the current revision", async () => {
     mockRender.mockResolvedValue(okResponse("df = quotes"))
     const onRendered = vi.fn()
-    const { result } = renderHook(() => useRenderedSteps(one, ["quotes"], onRendered))
+    const { result } = renderHook(() => useRenderedSteps(one, ["quotes"], "input", onRendered))
     expect(result.current.status).toBe("pending")
     expect(mockRender).not.toHaveBeenCalled()
     await act(async () => {
@@ -62,7 +62,7 @@ describe("useRenderedSteps", () => {
   it("surfaces a failed render with the failing step and does not report code", async () => {
     mockRender.mockResolvedValue({ ok: false, code: "", step_lines: [], step_index: 1, message: "Add at least one condition." })
     const onRendered = vi.fn()
-    const { result } = renderHook(() => useRenderedSteps(two, ["quotes"], onRendered))
+    const { result } = renderHook(() => useRenderedSteps(two, ["quotes"], "input", onRendered))
     await act(async () => {
       vi.advanceTimersByTime(250)
       await Promise.resolve()
@@ -77,7 +77,7 @@ describe("useRenderedSteps", () => {
     const second = deferred()
     mockRender.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
     const onRendered = vi.fn()
-    const { result, rerender } = renderHook(({ steps }) => useRenderedSteps(steps, ["quotes"], onRendered), {
+    const { result, rerender } = renderHook(({ steps }) => useRenderedSteps(steps, ["quotes"], "input", onRendered), {
       initialProps: { steps: one },
     })
     await act(async () => {
@@ -106,7 +106,7 @@ describe("useRenderedSteps", () => {
 
   it("keeps the last good code but clears its ranges while a newer render is pending", async () => {
     mockRender.mockResolvedValueOnce(okResponse("df = quotes"))
-    const { result, rerender } = renderHook(({ steps }) => useRenderedSteps(steps, ["quotes"]), {
+    const { result, rerender } = renderHook(({ steps }) => useRenderedSteps(steps, ["quotes"], "input"), {
       initialProps: { steps: one },
     })
     await act(async () => {
@@ -127,7 +127,7 @@ describe("useRenderedSteps", () => {
     const pending = deferred()
     mockRender.mockReturnValue(pending.promise)
     const onRendered = vi.fn()
-    const { unmount } = renderHook(() => useRenderedSteps(one, ["quotes"], onRendered))
+    const { unmount } = renderHook(() => useRenderedSteps(one, ["quotes"], "input", onRendered))
     await act(async () => { vi.advanceTimersByTime(250) })
     unmount()
     expect(mockRender.mock.calls[0][0].signal?.aborted).toBe(true)
@@ -140,7 +140,7 @@ describe("useRenderedSteps", () => {
 
   it("reports a transport failure as a list-level error, keeps the last code, and clears its ranges", async () => {
     mockRender.mockResolvedValueOnce(okResponse("df = quotes"))
-    const { result, rerender } = renderHook(({ steps }) => useRenderedSteps(steps, ["quotes"]), { initialProps: { steps: one } })
+    const { result, rerender } = renderHook(({ steps }) => useRenderedSteps(steps, ["quotes"], "input"), { initialProps: { steps: one } })
     await act(async () => {
       vi.advanceTimersByTime(250)
       await Promise.resolve()
@@ -162,7 +162,7 @@ describe("useRenderedSteps", () => {
 
   it("keeps successful line ranges only for the current revision and clears them for empty steps", async () => {
     mockRender.mockResolvedValue({ ok: true, code: "df = quotes\ndf = df.with_columns(\n  pl.col('premium')\n)", step_lines: [[1, 1], [2, 4]], step_index: null, message: "" })
-    const { result, rerender } = renderHook(({ steps }) => useRenderedSteps(steps, ["quotes"]), { initialProps: { steps: two } })
+    const { result, rerender } = renderHook(({ steps }) => useRenderedSteps(steps, ["quotes"], "input"), { initialProps: { steps: two } })
     await act(async () => {
       vi.advanceTimersByTime(250)
       await Promise.resolve()

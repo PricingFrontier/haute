@@ -198,7 +198,7 @@ def _minimal_config_for(nt: NodeType) -> dict[str, Any]:
             "column_name": "multiplier",
             "min_value": 0.8,
             "max_value": 1.2,
-            "steps": 21,
+            "stepCount": 21,
         }
     if nt == NodeType.OPTIMISER_APPLY:
         # Produces at minimum the version column; referenced is opaque

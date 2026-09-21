@@ -15,7 +15,7 @@
  */
 
 import { MODELLING_EXPORT_CONFIG_KEYS, MODELLING_NODE_TYPE } from "./modellingExportConfig"
-import { authoredPolarsConfig } from "./polarsStepInputs"
+import { authoredPolarsConfig, steppedSurfaceFor } from "./polarsStepInputs"
 
 const INPUT_KEYS = ["nodeType", "label", "description", "config", "code", "func_name"] as const
 type InputKey = (typeof INPUT_KEYS)[number]
@@ -66,7 +66,8 @@ function stringifyExploreConfig(value: unknown): string {
         void _pivotFormulas
         void _pivots
         void _charts
-        return rest
+        // Steps are authored; their generated body and validation result are caches.
+        return authoredPolarsConfig(rest)
       })()
   const serialized = JSON.stringify(dataConfig)
   if (serialized === undefined) {
@@ -96,7 +97,12 @@ function stringifyModellingConfig(value: unknown): string {
 }
 
 function stringifyNodeInputValue(data: Record<string, unknown>, key: InputKey): string {
-  if (key === "config" && data.nodeType === "polars") {
+  // Explore first: it is a stepped surface too, but its presentation fields
+  // must stay out of the hash as well as its generated step caches.
+  if (key === "config" && data.nodeType === EXPLORE_NODE_TYPE) {
+    return stringifyExploreConfig(data[key])
+  }
+  if (key === "config" && steppedSurfaceFor(String(data.nodeType)) !== undefined) {
     const config = data.config
     if (config !== null && typeof config === "object" && !Array.isArray(config)) {
       const cached = polarsConfigInputHashCache.get(config)
@@ -105,9 +111,6 @@ function stringifyNodeInputValue(data: Record<string, unknown>, key: InputKey): 
       polarsConfigInputHashCache.set(config, hash)
       return hash
     }
-  }
-  if (key === "config" && data.nodeType === EXPLORE_NODE_TYPE) {
-    return stringifyExploreConfig(data[key])
   }
   if (key === "config" && data.nodeType === MODELLING_NODE_TYPE) {
     return stringifyModellingConfig(data[key])

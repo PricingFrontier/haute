@@ -380,9 +380,12 @@ pair. Deploy never uses the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair.
    frame `sourceHandle`.
 2. Build a `NodeBuildHooks(before_build=_intercept)` wrapper around the shared
    `_build_node_fn` builder. `_intercept` returns a replacement `(func_name, fn,
-   returns_frame)` tuple — or `None` to fall through to the base builder — for four node
-   categories: `apiInput` or `dataInput` source in the live input set (inject the live `DataFrame`
-   directly); retained direct-Parquet `dataInput` nodes (remap their configured path to the
+   returns_frame)` tuple — or `None` to fall through to the base builder — for these node
+   categories: `apiInput` in the live input set (inject the live `DataFrame` directly);
+   `dataInput` in the live input set (passes the injected raw frame through `apply_source_scan`
+   with the execution profile, required columns, materialized code, and preamble context,
+   without opening the provider, then normal executor column post-processing applies);
+   retained direct-Parquet `dataInput` nodes (remap their configured path to the
    bundled source); retained snapshot-backed `dataInput` nodes with bundled
    `node_id__snapshot.part-NNNNN.parquet` parts (one artifact per part of the leased
    generation; scan them in part order through a deploy-only interception

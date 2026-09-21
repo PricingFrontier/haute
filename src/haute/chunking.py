@@ -22,7 +22,7 @@ import polars as pl
 from haute._execution_context import ExecutionProfile
 from haute._input_providers import resolve_data_input
 from haute._logging import get_logger
-from haute._node_apply import _DEFAULT_SCENARIO_STEPS
+from haute._node_apply import scenario_step_count
 from haute._polars_io_registry import (
     PolarsIoConfigError,
     validate_data_input_config,
@@ -2064,16 +2064,15 @@ def _validate_chunkable_input(
 
 
 def _scenario_row_multiplier(node: GraphNode) -> int:
-    raw_steps = node.data.config.get("steps")
-    steps = int(raw_steps) if raw_steps is not None else _DEFAULT_SCENARIO_STEPS
-    if steps < 1:
+    try:
+        return scenario_step_count(node.data.config)
+    except ValueError as exc:
         raise ChunkPlanUnsupportedError(
-            "Chunked scenarioExpander requires steps >= 1.",
+            "Chunked scenarioExpander requires a valid stepCount.",
             node_id=node.id,
             node_type=node.data.nodeType.value,
-            steps=steps,
-        )
-    return steps
+            detail=str(exc),
+        ) from exc
 
 
 def _assert_plan_matches_prepared_graph(plan: ChunkPlan, order: list[str]) -> None:

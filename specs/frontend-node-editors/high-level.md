@@ -369,6 +369,32 @@ stale line ranges to blame a different current step.
 
 Nodes whose config has no `steps` list render the code box exactly as before.
 
+**Stepped code pane.** The Transform editor's mode switch is a shared pane
+(`SteppedCodePane`): a `steps` list renders the step builder, anything else the code
+box, with the discard notice above it when steps were discarded on load. The pane
+takes a start mode. `input` is the Transform's, as described above. `frame` is for a
+surface whose code runs with `df` already bound: there is no start card at all (the
+frame is the node's own, so there is nothing to choose or explain), no start step is
+written or accepted (a persisted `source` step renders as an invalid
+card that can only be deleted), cards are numbered from Step 1, every card can be moved,
+the first card can be opened by "Go to error", and steps can be added without choosing
+an input. The pane's step editor renders against the surface's eligible input names,
+which come from the same table the backend uses (`edges` for a Transform, `none` for a
+Data Input) rather than from the input chips it displays, so it never offers a join the
+executor would refuse: while that list is empty the `Add step` chooser withholds join
+and concat and keeps group by, pivot and unpivot. Column suggestions use the same
+upstream columns the code box used. An empty frame-mode list renders to empty code, so
+the confirmed switch to code on an empty list writes empty code, and the node behaves
+exactly as with an empty code box until a step is added. Every Polars tab (Data Input,
+External File, Scenario Expander, Rating Step, Model Score) and Explore's own "Polars
+Code" pane mount this pane in `frame` mode, with the surface's eligible input names from the shared table: every connected
+input for an External File (whose free code still reaches `obj`, as the tab's code hint
+says), none for the others. A new node of each of these types starts in step mode with
+an empty list, and changing a Data Input's provider or format keeps its steps as it
+keeps its code. Renaming an upstream node rewrites the input references inside a stepped
+External File's steps, as it does for a Transform. A node loaded without a `steps` list
+stays in code mode; the switch is one way.
+
 ## Design rationale
 
 The UI uses specialised editors rather than one schema-driven form because graph node contracts

@@ -781,6 +781,9 @@ class PolarsStepsRenderRequest(BaseModel):
 
     steps: list[dict[str, Any]]
     input_names: list[str] = Field(default_factory=list)
+    #: Where ``df`` comes from: ``input`` for a Transform (the first step
+    #: chooses an input), ``frame`` for a surface whose ``df`` is already bound.
+    start: Literal["input", "frame"]
 
 
 class PolarsStepsRenderResponse(BaseModel):

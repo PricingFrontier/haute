@@ -71,7 +71,7 @@ def _make_scenario_expander_node(label: str) -> GraphNode:
                 "column_name": "scenario_value",
                 "min_value": 0.8,
                 "max_value": 1.2,
-                "steps": 11,
+                "stepCount": 11,
             },
         ),
         position={"x": 0.0, "y": 0.0},

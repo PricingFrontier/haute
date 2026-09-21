@@ -299,17 +299,61 @@ the file is retired on the next save, and logs a warning; an empty body with
 unrenderable steps keeps the steps, because that is how an incomplete step list is
 saved. A sidecar whose `steps` value is not a list fails the parse with a `ConfigError`.
 
+**Stepped surfaces.** The same step list authors the Polars code of every surface
+that has one: a Data Input's post-load code, an External File's code over the loaded
+object, the post-processing of a Rating Step, a Model Score and a Scenario
+Expander, and an Explore node's analysis frame. The renderer takes a required start mode: `input` is the transform's (the
+first step chooses the input and renders `df = <input>`), and `frame` is for a
+surface whose code runs with `df` already bound (the opened snapshot, the first input
+beside `obj`, the rated, scored or expanded frame). In frame mode an empty list renders
+to empty code without error, because the node then simply keeps its base behaviour, a
+`source` step is refused at any position with a step-indexed message, and
+`join`/`concat` references are checked against the surface's eligible input names.
+Explore is the one stepped type with no config folder: its steps travel as a `steps=`
+decorator argument beside its overview, pivot and chart cards, are reconciled against
+the body exactly as a sidecar's are, and leave no `_discarded_sidecar` marker when a
+hand edit discards them (there is no file to retire).
+One table (`STEPPED_NODE_TYPES` in `haute._polars_steps`) maps every stepped node type
+to its start mode and its input eligibility: `edges` for a transform and for an
+External File (whose code sees every connected input by name, the first also as
+`df`), `none` for the surfaces whose code sees only `df` (Data Input, Rating Step,
+Model Score, Scenario Expander, Explore), where a join or concat is refused. Every path that
+renders a node's steps (the node data model, the parser's reconcile, the executor
+builder, codegen, the deploy interceptors and the render endpoint) obtains the
+eligible names from it. Only an `edges` surface has its step references rewritten when
+an input is renamed (a node rename, an Edge Join insertion, a submodel boundary), and a
+stepped `edges` original never carries `inputMapping`. A node
+type outside that table that carries a `steps` key is left alone. A Scenario
+Expander's grid size is its required `stepCount` (a whole number of at least 1, read
+by the executor builder, the generated module's helper, the chunk planner, the RAM
+estimator and the trace enrichment through one `scenario_step_count` function with no
+absent-key default; a new node is created with an explicit 21), so `steps` on that
+type is free for its step list. The node-data invariant, the sidecar filter and the reconcile rule
+apply to every stepped type: a Data Input's `steps` persist in its required
+`config/data_input/<name>.json` sidecar beside its source settings, `code` is always
+their rendering (or empty plus `_steps_error`), and on load the parser compares the
+code extracted from the body with the rendering after the same extraction, so a
+rendering the extractor normalises (a lone `df = (df.head(2))` free-code step loses
+its brackets) still reloads in step mode; the `_discarded_sidecar` marker is set only
+for the transform, whose sidecar is optional, while a Data Input's sidecar stays and
+is next written without `steps`. An unrenderable Data Input step list is saved
+behind the generated placeholder in the function body, so the module raises rather
+than silently reading the source unchanged, and reload keeps the steps behind empty
+code exactly as for a transform. A new Data Input starts in step mode with an
+empty list.
+
 A `free_code` step carries a `code` string containing Python statements and can
-appear anywhere after the source step. Its statements run inline, in order with
+appear anywhere after the source step (anywhere at all in frame mode). Its statements run inline, in order with
 the low-code steps: `df` is the current frame, `pl` is available, and earlier
 Define variable values can be used. Assign transformations back to `df`; later
 steps consume that frame. Multiline expressions, comments, local helpers and
 control flow are supported. Blank or comment-only snippets, invalid Python, and
 node-level `return`, `yield`, `await`, or loop control outside a loop fail with the
 offending step index; returns inside helper functions are allowed. Validation
-compiles but never executes authored code. The stored snippet is preserved;
-rendering normalises line endings and removes trailing whitespace so generated
-code round-trips through the existing extractor. Free code shares the existing
+compiles but never executes authored code; frame validation models `df` already
+bound, and diagnostics and ranges refer to authored lines. The stored snippet is
+preserved; rendering normalises line endings and removes trailing whitespace so
+generated code round-trips through the existing extractor. Free code shares the existing
 code execution and planning contracts, with no separate evaluator. Input renames
 continue to rewrite structured input fields; authored Python is unchanged. Use
 `df` to operate on the current frame across input renames; direct references to

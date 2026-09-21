@@ -21,7 +21,7 @@ from typing import Any, Literal, cast
 import polars as pl
 
 import haute.projection as projection
-from haute._code_extraction import INCOMPLETE_TRANSFORM_MESSAGE
+from haute._code_extraction import INCOMPLETE_STEPS_MESSAGE, INCOMPLETE_TRANSFORM_MESSAGE
 from haute._config_validation import (
     reject_removed_config_keys,
     resolve_exact_input_index,
@@ -49,12 +49,12 @@ from haute._graph_utils import _sanitize_func_name, build_instance_mapping, edge
 from haute._io import _select_columns
 from haute._logging import get_logger
 from haute._node_apply import (
-    _DEFAULT_SCENARIO_STEPS,
     apply_optimiser_apply_from_config,
     assemble_output_from_config,
     expand_scenarios_from_config,
     load_external_object_from_config,
     resolve_api_input_from_config,
+    scenario_step_count,
     select_live_switch_input,
 )
 from haute._output_assembler import (
@@ -62,9 +62,11 @@ from haute._output_assembler import (
     is_active_mapping_entry,
 )
 from haute._polars_steps import (
+    STEPPED_NODE_TYPES,
     STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
     PolarsStepError,
     render_polars_steps,
+    step_input_names,
 )
 from haute._rating import (
     _apply_banding_factors,
@@ -414,8 +416,10 @@ def _explore_fn(df: _Frame) -> _Frame:
 
 
 def _explore_columns(config: dict[str, Any]) -> _ColumnContract:
-    """Explore code can derive/filter arbitrary analysis columns."""
-    return _OPAQUE_CONTRACT if (config.get("code") or "").strip() else _passthrough_columns(config)
+    """Explore code, or a step list (the same program), derives arbitrary analysis columns."""
+    if (config.get("code") or "").strip() or isinstance(config.get("steps"), list):
+        return _OPAQUE_CONTRACT
+    return _passthrough_columns(config)
 
 
 def _configured_pipeline_dir() -> Path | None:
@@ -533,6 +537,12 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 @_register(NodeType.DATA_INPUT, recompute_cost="source", opaque=True)
 def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
+    problem = stepped_code_problem(
+        config, NodeType.DATA_INPUT, step_input_names(NodeType.DATA_INPUT, [])
+    )
+    if problem is not None:
+        # Incomplete post-load steps must not read the source unchanged.
+        return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), True
     code = str(config.get("code") or "").strip()
     preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
@@ -636,6 +646,12 @@ def _build_live_switch(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
 @_register(NodeType.EXPLORE, recompute_cost="cheap", columns=_explore_columns)
 def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
+    problem = stepped_code_problem(
+        ctx.config, NodeType.EXPLORE, step_input_names(NodeType.EXPLORE, [])
+    )
+    if problem is not None:
+        # Incomplete steps must not explore the frame unchanged.
+        return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), False
     code = str(ctx.config.get("code") or "").strip()
     if not code:
         return ctx.func_name, _explore_fn, False
@@ -671,6 +687,23 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
     _in_map = dict(config.get("inputMapping", {})) or None
     _preamble_ext = dict(ctx.preamble_ns) if ctx.preamble_ns else {}
+    if isinstance(config.get("steps"), list):
+        # Steps address the other inputs by their edge names (the first is
+        # already df); an original never carries inputMapping beside them.
+        if _in_map is not None and not config.get("instanceOf"):
+            raise ConfigError(STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE, node_id=ctx.node.id)
+        names = set(_src_names)
+        if _orig_src:
+            names.update(build_instance_mapping(_orig_src, _src_names, _in_map))
+        problem = stepped_code_problem(
+            config, NodeType.EXTERNAL_FILE, step_input_names(NodeType.EXTERNAL_FILE, sorted(names))
+        )
+        if problem is not None:
+            return (
+                ctx.func_name,
+                _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"),
+                False,
+            )
     if code:
 
         def external_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
@@ -817,6 +850,12 @@ def _rating_step_columns(config: dict[str, Any]) -> _ColumnContract:
 )
 def _build_rating_step(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
+    problem = stepped_code_problem(
+        config, NodeType.RATING_STEP, step_input_names(NodeType.RATING_STEP, [])
+    )
+    if problem is not None:
+        # Incomplete post-rating steps must not rate the frame and pass it on.
+        return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), False
     tables = normalise_rating_tables(config)
     combined_outputs = _normalise_combined_outputs(config)
     code = str(config.get("code") or "").strip()
@@ -867,12 +906,15 @@ def _scenario_expander_columns(config: dict[str, Any]) -> _ColumnContract:
 )
 def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    # Fail loud at build time on a misconfigured step count (the shared
-    # helper re-validates at call time for the standalone path).
-    raw_steps = config.get("steps")
-    _steps = int(raw_steps) if raw_steps is not None else _DEFAULT_SCENARIO_STEPS
-    if _steps < 1:
-        raise ValueError(f"Scenario expander requires steps >= 1, got {_steps}")
+    # Fail loud at build time on a missing or misconfigured grid size (the
+    # shared helper re-validates at call time for the standalone path).
+    scenario_step_count(config)
+    problem = stepped_code_problem(
+        config, NodeType.SCENARIO_EXPANDER, step_input_names(NodeType.SCENARIO_EXPANDER, [])
+    )
+    if problem is not None:
+        # Incomplete post-expansion steps must not expand the grid and pass it on.
+        return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), False
     code = str(config.get("code") or "").strip()
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
     _config_captured = dict(config)
@@ -1075,9 +1117,12 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
     out = config.get("output_column", "prediction")
     produced = {out} if out else {"prediction"}
 
-    # Post-processing code can reference arbitrary columns — opaque.
+    # Post-processing code can reference arbitrary columns — opaque. A nonempty
+    # step list is a postprocessing program or incomplete build-time error,
+    # while empty lists retain the model feature contract.
     code = str(config.get("code") or "").strip()
-    if code:
+    steps = config.get("steps")
+    if code or (isinstance(steps, list) and bool(steps)):
         return produced, None
 
     feature_contract_path = config.get("feature_contract_path")
@@ -1190,6 +1235,12 @@ def _declared_categorical_levels_for_model_score(
 )
 def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
+    problem = stepped_code_problem(
+        config, NodeType.MODEL_SCORE, step_input_names(NodeType.MODEL_SCORE, [])
+    )
+    if problem is not None:
+        # Incomplete post-scoring steps must not score the frame and pass it on.
+        return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), False
     code = str(config.get("code") or "").strip()
     # Default to "" (not "run") — empty sourceType means the node is
     # unconfigured and should passthrough.  Codegen and score_from_config
@@ -1261,15 +1312,12 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         # code will execute with so an unknown input names its step.
         if _in_map is not None and not config.get("instanceOf"):
             raise ConfigError(STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE, node_id=ctx.node.id)
-        problem = config.get("_steps_error")
-        if problem is None:
-            names = set(_src_names)
-            if _orig_src:
-                names.update(build_instance_mapping(_orig_src, _src_names, _in_map))
-            try:
-                render_polars_steps(steps, sorted(names))
-            except PolarsStepError as exc:
-                problem = str(exc)
+        names = set(_src_names)
+        if _orig_src:
+            names.update(build_instance_mapping(_orig_src, _src_names, _in_map))
+        problem = stepped_code_problem(
+            config, NodeType.POLARS, step_input_names(NodeType.POLARS, sorted(names))
+        )
         if problem is not None:
             return (
                 ctx.func_name,
@@ -1307,6 +1355,31 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # With no upstream, mark the node as a source so the executor invokes the
     # placeholder instead of failing first with its generic no-input guard.
     return ctx.func_name, _incomplete_transform(INCOMPLETE_TRANSFORM_MESSAGE), incoming_count == 0
+
+
+def stepped_code_problem(
+    config: Mapping[str, Any], node_type: NodeType, names: Iterable[str]
+) -> str | None:
+    """Why a stepped node cannot run, or None when it can.
+
+    ``code`` is already the rendering of ``steps`` (materialised by
+    ``NodeData``); this re-validates the input references against *names*,
+    the names the code will execute with, so an unknown input names its step.
+    The same check guards the executor builders and the deploy interceptors,
+    which read ``config["code"]`` without a builder.
+    """
+    if node_type not in STEPPED_NODE_TYPES or not isinstance(config.get("steps"), list):
+        return None
+    problem = config.get("_steps_error")
+    if problem is not None:
+        return str(problem)
+    try:
+        render_polars_steps(
+            config["steps"], sorted(names), start=STEPPED_NODE_TYPES[node_type].start
+        )
+    except PolarsStepError as exc:
+        return str(exc)
+    return None
 
 
 def _incomplete_transform(message: str) -> Callable[..., _Frame]:

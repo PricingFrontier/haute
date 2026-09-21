@@ -18,10 +18,17 @@ const INPUT_COMMON_KEYS = [
   "categorical_levels",
   "contract",
   "code",
+  // Post-load steps survive a provider or format change exactly as code does.
+  "steps",
 ] as const
+
+// Editor state the step machinery writes beside `steps`; never persisted, so
+// never retained across a provider change, but never a configuration error.
+const STEP_EDITOR_STATE_KEYS = ["_steps_error", "_steps_discarded"] as const
 
 const DATABRICKS_KEYS = new Set([
   ...INPUT_COMMON_KEYS,
+  ...STEP_EDITOR_STATE_KEYS,
   "inputType",
   "http_path",
   "table",

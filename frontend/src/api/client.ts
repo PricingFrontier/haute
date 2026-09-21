@@ -897,14 +897,16 @@ export function previewInputs(args: PreviewInputsArgs): Promise<PreviewInputsRes
 export interface RenderPolarsStepsArgs {
   steps: unknown[]
   inputNames: string[]
+  /** `input` for a Transform (the first step chooses an input), `frame` when `df` is already bound. */
+  start: "input" | "frame"
   signal?: AbortSignal
 }
 
-/** Render a low-code Transform step list to the Polars code it stands for. */
+/** Render a low-code step list to the Polars code it stands for. */
 export function renderPolarsSteps(args: RenderPolarsStepsArgs): Promise<PolarsStepsRenderResponse> {
   return post<unknown>(
     "/api/pipeline/polars-steps/render",
-    { steps: args.steps, input_names: args.inputNames },
+    { steps: args.steps, input_names: args.inputNames, start: args.start },
     { signal: args.signal },
   ).then((data) => parsePolarsStepsRenderResponse(data))
 }

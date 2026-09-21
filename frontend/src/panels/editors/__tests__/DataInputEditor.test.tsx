@@ -499,6 +499,54 @@ describe("DataInputEditor", () => {
     })
   })
 
+  it.each([
+    ["an empty list", []],
+    ["a populated list", [{ id: "l", kind: "limit", n: 2 }]],
+  ])("keeps %s of post-load steps when the format or the provider changes", async (_label, steps) => {
+    const { onReplaceConfig } = renderEditor({
+      inputType: "file",
+      format: "csv",
+      mode: "scan",
+      path: "quotes.csv",
+      arguments: {},
+      steps,
+    })
+
+    fireEvent.change(await screen.findByLabelText("Format"), {
+      target: { value: "json" },
+    })
+    expect(onReplaceConfig).toHaveBeenLastCalledWith({
+      steps,
+      inputType: "file",
+      format: "json",
+      mode: "read",
+      arguments: {},
+      path: "quotes.csv",
+    })
+
+    const provider = await screen.findByRole("radiogroup", { name: "Provider" })
+    fireEvent.click(within(provider).getByRole("radio", { name: "Databricks" }))
+    expect(onReplaceConfig).toHaveBeenLastCalledWith(
+      expect.objectContaining({ steps, inputType: "databricks" }),
+    )
+  })
+
+  it.each([
+    ["a new node's empty step list", { inputType: "file", format: "parquet", mode: "scan", path: "", arguments: {}, steps: [] }],
+    ["step editor state", { inputType: "file", format: "csv", mode: "scan", path: "quotes.csv", arguments: {}, steps: [{ id: "f", kind: "filter", match: "all", conditions: [] }], _steps_error: "Step 1: Add at least one condition." }],
+    ["a discarded step list on Databricks", { inputType: "databricks", http_path: "/sql/1", table: "cat.schema.t", arguments: {}, code: "", _steps_discarded: "Steps were discarded because the body changed." }],
+  ])("reports no configuration error for %s", async (_label, config) => {
+    renderEditor(config)
+    await screen.findByRole("radiogroup", { name: "Provider" })
+    expect(screen.queryByText(/Unexpected configuration keys/)).not.toBeInTheDocument()
+  })
+
+  it("still reports a genuinely unknown configuration key", async () => {
+    renderEditor({ inputType: "file", format: "csv", mode: "scan", path: "quotes.csv", arguments: {}, stepz: [] })
+    await screen.findByLabelText("Format")
+    expect(screen.getByText(/Unexpected configuration keys: stepz\./)).toBeInTheDocument()
+  })
+
   it("switches to Parquet without authoring a cache-mode field", async () => {
     const { onReplaceConfig } = renderEditor({
       inputType: "file",

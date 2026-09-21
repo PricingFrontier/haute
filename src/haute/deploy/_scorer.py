@@ -628,6 +628,42 @@ def score_graph_lazy(
         raise
 
 
+def _reject_incomplete_stepped_nodes(graph: PipelineGraph, relevant_node_ids: set[str]) -> None:
+    """Fail before deploy preparation loads anything or builds functions.
+
+    Deploy score plans fail early at preparation time before model loading or
+    interceptor execution, reporting the same step-numbered message the
+    executor builder would raise.
+    """
+    from haute._builders import stepped_code_problem
+    from haute._code_extraction import INCOMPLETE_STEPS_MESSAGE
+    from haute._polars_steps import is_stepped_config, step_input_names
+    from haute.errors import ConfigError
+
+    node_by_id = {node.id: node for node in graph.nodes}
+    for node in graph.nodes:
+        if node.id not in relevant_node_ids:
+            continue
+        if not is_stepped_config(node.data.nodeType, node.data.config):
+            continue
+        edge_names = [
+            edge_input_name(edge, node_by_id[edge.source])
+            for edge in graph.edges
+            if edge.target == node.id and edge.source in node_by_id
+        ]
+        problem = stepped_code_problem(
+            node.data.config,
+            node.data.nodeType,
+            step_input_names(node.data.nodeType, edge_names),
+        )
+        if problem is not None:
+            raise ConfigError(
+                f"{INCOMPLETE_STEPS_MESSAGE} {problem}",
+                node_id=node.id,
+                node_label=node.data.label,
+            )
+
+
 def _score_graph_lazy(
     graph: PipelineGraph,
     input_df: pl.DataFrame,
@@ -641,6 +677,7 @@ def _score_graph_lazy(
     remap = artifact_paths or {}
     graph = _attach_bundled_feature_contracts(_resolve_runtime_graph_paths(graph), remap)
     relevant_node_ids = set(upstream_node_ids(output_node_id, graph.parents_of)) | {output_node_id}
+    _reject_incomplete_stepped_nodes(graph, relevant_node_ids)
     graph = _attach_bundled_model_contract_inputs(graph, remap, relevant_node_ids)
     node_by_id = {node.id: node for node in graph.nodes}
     parents_of = graph.parents_of
@@ -677,13 +714,42 @@ def _score_graph_lazy(
         config = node.data.config
         func_name = node_fn_name(node)
 
-        # Intercept: apiInput source → inject live DataFrame
-        if node_type in {NodeType.API_INPUT, NodeType.DATA_INPUT} and nid in input_set:
+        # Intercept: apiInput source → inject live DataFrame directly
+        if node_type == NodeType.API_INPUT and nid in input_set:
 
             def inject_input() -> _Frame:
                 return input_lf
 
             return func_name, inject_input, True
+
+        # Intercept: dataInput source → inject live DataFrame through apply_source_scan
+        if node_type == NodeType.DATA_INPUT and nid in input_set:
+            _code = str(config.get("code") or "").strip()
+            _preamble = build_kwargs.get("preamble_ns")
+            _profile = build_kwargs.get("execution_profile")
+            _required = build_kwargs.get("required_output_columns")
+
+            def inject_data_input(
+                _config: dict[str, Any] = config,
+                _node_id: str = nid,
+                _code_value: str = _code,
+                _preamble_ns: dict[str, Any] | None = _preamble,
+                _execution_profile: str | None = _profile,
+                _required_columns: frozenset[str] | set[str] | None = _required,
+            ) -> _Frame:
+                from haute._builders import apply_source_scan
+
+                return apply_source_scan(
+                    input_lf,
+                    profile=_execution_profile,
+                    required_output_columns=_required_columns,
+                    config=_config,
+                    code=_code_value,
+                    preamble_ns=_preamble_ns,
+                    node_id=_node_id,
+                )
+
+            return func_name, inject_data_input, True
 
         # Intercept: retained Data Input snapshot or canonical direct Parquet
         # source. The graph config remains canonical; only this deploy-only

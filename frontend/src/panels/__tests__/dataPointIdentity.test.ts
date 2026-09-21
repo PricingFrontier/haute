@@ -24,6 +24,37 @@ function identity(node = explore, allNodes = [source, node, downstream], preambl
 }
 
 describe("buildExploreCacheIdentity", () => {
+  // Ported from main's cacheIdentity test when this module was renamed: the
+  // behaviour it covers — authored steps counting, their generated code not —
+  // lives in dataAffectingConfig here.
+  it.each([
+    ["the Explore node itself", "explore"],
+    ["a stepped ancestor", "source"],
+  ])("ignores generated step code but not the steps themselves, on %s", (_label, which) => {
+    const steps = [{ id: "l", kind: "limit", n: 2 }]
+    const stepped = (config: Record<string, unknown>) =>
+      which === "explore"
+        ? { ...explore, data: { ...explore.data, config } }
+        : { ...source, data: { ...source.data, config: { path: "claims.parquet", ...config } } }
+
+    const authored = stepped({ steps, code: "" })
+    const nodes = (node: SimpleNode) =>
+      which === "explore" ? [source, node, downstream] : [node, explore, downstream]
+    const target = (node: SimpleNode) => (which === "explore" ? node : explore)
+
+    // The render endpoint filling in the generated code is not a data change.
+    const rendered = stepped({ steps, code: "df = df.head(2)", _steps_error: "" })
+    expect(identity(target(rendered), nodes(rendered))).toEqual(
+      identity(target(authored), nodes(authored)),
+    )
+
+    // Editing the steps is.
+    const edited = stepped({ steps: [{ id: "l", kind: "limit", n: 3 }], code: "" })
+    expect(identity(target(edited), nodes(edited))).not.toEqual(
+      identity(target(authored), nodes(authored)),
+    )
+  })
+
   it("excludes display config and downstream graph changes", () => {
     const displayOnly = {
       ...explore,

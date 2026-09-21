@@ -4842,7 +4842,7 @@ class TestBuilderPostCodeProjection:
                 "column_name": "scenario_value",
                 "min_value": 1.0,
                 "max_value": 3.0,
-                "steps": 3,
+                "stepCount": 3,
                 "step_column": "scenario_index",
                 "code": "df = df.select(result=pl.col('scenario_value') * pl.col('premium'))",
                 "contract": {"inputs": ["premium"], "outputs": ["result"]},
@@ -4866,7 +4866,7 @@ class TestBuilderPostCodeProjection:
             {
                 "min_value": 1.0,
                 "max_value": 1.0,
-                "steps": 2,
+                "stepCount": 2,
                 "step_column": "",
                 "code": "df = df.select(result=pl.col('premium') + pl.col('scenario_index'))",
                 "contract": {"inputs": ["premium"], "outputs": ["result"]},

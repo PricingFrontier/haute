@@ -729,7 +729,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
         ),
         NodeType.DATA_INPUT: _classify_config_fields(
             node_config=("arguments", "records"),
-            user_code=("code",),
+            user_code=("code", "steps"),
             source_selection=(
                 "connection",
                 "format",
@@ -769,7 +769,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
         ),
         NodeType.MODEL_SCORE: _classify_config_fields(
             node_config=("output_column", "task"),
-            user_code=("code",),
+            user_code=("code", "steps"),
             artifacts=(
                 "alias",
                 "artifact_path",
@@ -789,13 +789,13 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
         NodeType.BANDING: _classify_config_fields(node_config=("factors",)),
         NodeType.RATING_STEP: _classify_config_fields(
             node_config=("combinedOutputs", "tables"),
-            user_code=("code",),
+            user_code=("code", "steps"),
         ),
         NodeType.OUTPUT: _classify_config_fields(
             node_config=("outputFormat", "outputMapping"),
         ),
         NodeType.EXPLORE: _classify_config_fields(
-            user_code=("code",),
+            user_code=("code", "steps"),
             excluded={
                 "overview": (
                     "Overview-card visibility affects presentation, not the explored frame."
@@ -811,7 +811,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
         ),
         NodeType.EXTERNAL_FILE: _classify_config_fields(
             node_config=("fileType", "modelClass"),
-            user_code=("code",),
+            user_code=("code", "steps"),
             artifacts=("path",),
         ),
         NodeType.LIVE_SWITCH: _classify_config_fields(
@@ -896,10 +896,10 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
                 "max_value",
                 "min_value",
                 "quote_id",
+                "stepCount",
                 "step_column",
-                "steps",
             ),
-            user_code=("code",),
+            user_code=("code", "steps"),
         ),
         NodeType.OPTIMISER_APPLY: _classify_config_fields(
             node_config=(

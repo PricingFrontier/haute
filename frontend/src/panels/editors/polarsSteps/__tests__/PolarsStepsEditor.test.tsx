@@ -53,6 +53,8 @@ function lastSteps(spy: ReturnType<typeof vi.fn>): unknown {
 function Harness({
   initial,
   inputSources,
+  inputNames = inputSources.map((source) => source.name),
+  start = "input",
   onReplace = vi.fn(),
   errorLine,
   runError,
@@ -60,6 +62,8 @@ function Harness({
 }: {
   initial: Record<string, unknown>
   inputSources: InputSource[]
+  inputNames?: string[]
+  start?: "input" | "frame"
   onReplace?: (config: Record<string, unknown>) => void
   errorLine?: number | null
   runError?: string | null
@@ -68,6 +72,8 @@ function Harness({
   const [config, setConfig] = useState(initial)
   return (
     <PolarsStepsEditor
+      start={start}
+      inputNames={inputNames}
       config={config}
       onUpdate={(keyOrUpdates, value) => {
         if (typeof keyOrUpdates === "string") {
@@ -95,8 +101,10 @@ function Harness({
 function HistoryHarness() {
   const node = useGraphStore((state) => state.nodes[0])
   return <PolarsStepsEditor
+    start="input"
     config={node.data.config as Record<string, unknown>}
     inputSources={[quotes]}
+    inputNames={["quotes"]}
     onUpdate={(keyOrUpdates, value) => {
       const state = useGraphStore.getState()
       const updates = typeof keyOrUpdates === "string" ? { [keyOrUpdates]: value } : keyOrUpdates
@@ -482,5 +490,90 @@ describe("PolarsStepsEditor", () => {
     expect(button).toBeDisabled()
     fireEvent.click(button)
     expect(onReplace).not.toHaveBeenCalled()
+  })
+})
+
+describe("PolarsStepsEditor in frame mode", () => {
+  beforeEach(() => {
+    resetGraphStoreForTests()
+    mockRender.mockReset()
+    mockRender.mockImplementation(async ({ steps }) => ({
+      ok: true,
+      code: steps.map((_, i) => `df = df.step_${i + 1}()`).join("\n"),
+      step_lines: steps.map((_, i) => [i + 1, i + 1]),
+      step_index: null,
+      message: "",
+    }))
+  })
+  afterEach(cleanup)
+
+  it("shows no start card and no input selector", () => {
+    render(<Harness initial={{ steps: [] }} inputSources={[]} start="frame" />)
+    expect(screen.queryByRole("group", { name: "Start from" })).not.toBeInTheDocument()
+    expect(screen.queryByText("Start from")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Start from input")).not.toBeInTheDocument()
+    expect(screen.queryByText("Connect an input to start building steps, or switch to code.")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Add step" })).toBeEnabled()
+    expect(mockRender).not.toHaveBeenCalled()
+  })
+
+  it("adds Step 1 without a source step and renders with start frame and no input names", async () => {
+    const spy = vi.fn()
+    render(<Harness initial={{ steps: [] }} inputSources={[]} start="frame" spy={spy} />)
+    fireEvent.click(screen.getByRole("button", { name: "Add step" }))
+    const menu = screen.getByRole("menu", { name: "Add step" })
+    expect(within(menu).queryByRole("menuitem", { name: "Join another input" })).not.toBeInTheDocument()
+    expect(within(menu).queryByRole("menuitem", { name: "Append inputs" })).not.toBeInTheDocument()
+    const combine = within(menu).getByRole("group", { name: "Combine" })
+    expect(within(combine).getAllByRole("menuitem")).toHaveLength(3)
+    expect(within(menu).getAllByRole("menuitem")).toHaveLength(15)
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Limit rows" }))
+    await waitFor(() => expect(lastSteps(spy)).toHaveLength(1), { timeout: 5000 })
+    expect((lastSteps(spy) as Step[])[0]).toMatchObject({ kind: "limit" })
+    expect(screen.getByRole("button", { name: "Step 1: Limit rows" })).toHaveAttribute("aria-expanded", "true")
+    await waitFor(() => expect(mockRender).toHaveBeenCalled(), { timeout: 5000 })
+    expect(mockRender.mock.calls[0][0]).toMatchObject({ start: "frame", inputNames: [] })
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("code", "df = df.step_1()"), { timeout: 5000 })
+  })
+
+  it("numbers every card from Step 1, moves the first card, and opens it from Go to error", async () => {
+    const spy = vi.fn()
+    render(<Harness initial={{ steps: [filter, limit] }} inputSources={[]} start="frame" spy={spy} />)
+    expect(screen.getByRole("button", { name: "Step 1: Filter rows" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Step 2: Limit rows" })).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Move Step 1: Filter rows up" })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Move Step 2: Limit rows up" }))
+    await waitFor(() => expect(lastSteps(spy)).toEqual([limit, filter]), { timeout: 5000 })
+    expect(screen.getByRole("button", { name: "Step 1: Limit rows" })).toBeInTheDocument()
+
+    mockRender.mockImplementation(async () => ({ ok: false, code: "", step_lines: [], step_index: 0, message: "Row limit must be a whole number greater than zero." }))
+    cleanup()
+    render(<Harness initial={{ steps: [limit, filter] }} inputSources={[]} start="frame" runError="failed" />)
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Step 1: Row limit must be a whole number greater than zero."), { timeout: 5000 })
+    const limitButton = screen.getByRole("button", { name: "Step 1: Limit rows" })
+    expect(limitButton).toHaveAttribute("aria-expanded", "false")
+    fireEvent.click(screen.getByRole("button", { name: "Go to error" }))
+    expect(limitButton).toHaveAttribute("aria-expanded", "true")
+  })
+
+  it("shows a persisted source step as an invalid card that can only be deleted", async () => {
+    const spy = vi.fn()
+    render(<Harness initial={{ steps: [source, limit] }} inputSources={[]} start="frame" spy={spy} />)
+    const invalid = screen.getByRole("button", { name: "Step 1: Invalid step" })
+    expect(invalid.closest("[data-testid='polars-step-card']")).toHaveTextContent("This node starts from df; delete this step.")
+    expect(screen.getByRole("button", { name: "Step 2: Limit rows" })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Delete Step 1: Invalid step" }))
+    await waitFor(() => expect(lastSteps(spy)).toEqual([limit]), { timeout: 5000 })
+  })
+
+  it("switches an empty list to empty code without a render", () => {
+    const onReplace = vi.fn()
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true)
+    render(<Harness initial={{ steps: [], path: "quotes.parquet" }} inputSources={[]} start="frame" onReplace={onReplace} />)
+    fireEvent.click(screen.getByRole("button", { name: "Switch to code" }))
+    expect(confirm).toHaveBeenCalledOnce()
+    expect(onReplace).toHaveBeenCalledWith({ path: "quotes.parquet", code: "" })
+    expect(mockRender).not.toHaveBeenCalled()
+    confirm.mockRestore()
   })
 })

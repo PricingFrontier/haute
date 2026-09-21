@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import pickle
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -11,22 +13,33 @@ import pytest
 from fastapi.testclient import TestClient
 
 from haute._builders import _build_node_fn
-from haute._code_extraction import INCOMPLETE_TRANSFORM_MESSAGE, _extract_user_code
+from haute._code_extraction import (
+    INCOMPLETE_STEPS_MESSAGE,
+    INCOMPLETE_TRANSFORM_MESSAGE,
+    _extract_user_code,
+)
 from haute._config_io import collect_node_configs, node_emits_sidecar
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._flatten import flatten_graph
 from haute._graph_utils import _sanitize_func_name as _sanitize_label
+from haute._polars_io_registry import validate_data_input_config
 from haute._polars_steps import (
     PolarsStepError,
+    RenderedSteps,
+    SteppedSurface,
+    is_stepped_config,
     rename_step_inputs,
     render_polars_steps,
+    step_input_names,
+    stepped_surface_for,
     validate_polars_steps,
 )
 from haute._types import (
     GraphEdge,
     GraphNode,
     NodeData,
+    NodeType,
     PipelineGraph,
     SubmodelDefinition,
     SubmodelEndpoint,
@@ -46,8 +59,11 @@ from tests.conftest import (
     build_test_input_snapshot,
     current_source_revision,
     make_edge,
+    make_file_input_config,
+    make_graph,
     make_source_node,
 )
+from tests.test_codegen_execution_equivalence import _collect, _write_and_import
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -156,13 +172,13 @@ GOLDEN_CODE = "\n".join(
 
 
 def test_golden_payload_renders_exactly() -> None:
-    rendered = render_polars_steps(GOLDEN_STEPS, ["quotes", "rates"])
+    rendered = render_polars_steps(GOLDEN_STEPS, ["quotes", "rates"], start="input")
     assert rendered.code == GOLDEN_CODE
     assert rendered.step_lines == tuple((i + 1, i + 1) for i in range(len(GOLDEN_STEPS)))
 
 
 def test_rendered_code_is_a_fixpoint_of_user_code_extraction() -> None:
-    code = render_polars_steps(GOLDEN_STEPS, ["quotes", "rates"]).code
+    code = render_polars_steps(GOLDEN_STEPS, ["quotes", "rates"], start="input").code
     body = "\n".join(f"    {line}" for line in code.splitlines()) + "\n    return df"
     extracted = _extract_user_code(
         '    """doc"""\n    df: pl.LazyFrame\n' + body, ["quotes", "rates"]
@@ -181,7 +197,7 @@ def test_free_code_renders_multiline_statements_and_tracks_following_steps() -> 
         ")\r\n  "
     )
     steps = [source(), step("c", "free_code", code=snippet), step("l", "limit", n=2)]
-    rendered = render_polars_steps(steps, ["quotes"])
+    rendered = render_polars_steps(steps, ["quotes"], start="input")
     assert (
         rendered.code
         == "df = quotes\n" + snippet.replace("\r\n", "\n").rstrip() + "\ndf = df.head(2)"
@@ -213,14 +229,18 @@ def test_free_code_renders_multiline_statements_and_tracks_following_steps() -> 
 )
 def test_free_code_rejects_invalid_snippets(code: object, fragment: str) -> None:
     with pytest.raises(PolarsStepError, match=fragment) as exc:
-        render_polars_steps([source(), step("c", "free_code", code=code)], ["quotes"])
+        render_polars_steps(
+            [source(), step("c", "free_code", code=code)], ["quotes"], start="input"
+        )
     assert exc.value.step_index == 1
 
 
 def test_free_code_validation_never_executes_the_snippet(tmp_path: Path) -> None:
     marker = tmp_path / "must_not_exist.txt"
     code = f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')"
-    assert render_polars_steps([source(), step("c", "free_code", code=code)]).code.endswith(code)
+    assert render_polars_steps(
+        [source(), step("c", "free_code", code=code)], start="input"
+    ).code.endswith(code)
     assert not marker.exists()
 
 
@@ -378,7 +398,7 @@ def test_free_code_validation_never_executes_the_snippet(tmp_path: Path) -> None
     ],
 )
 def test_each_step_kind_renders_its_statement(kind_step: dict[str, Any], expected: str) -> None:
-    rendered = render_polars_steps([source(), kind_step], ["quotes", "rates"])
+    rendered = render_polars_steps([source(), kind_step], ["quotes", "rates"], start="input")
     assert rendered.code.splitlines()[1] == expected
 
 
@@ -400,7 +420,7 @@ def test_variable_receiver_and_then_branch_render_as_expressions() -> None:
             },
         ),
     ]
-    lines = render_polars_steps(steps, ["quotes"]).code.splitlines()
+    lines = render_polars_steps(steps, ["quotes"], start="input").code.splitlines()
     assert lines[2] == "df = df.with_columns((pl.lit(rate)).alias('x'))"
     assert lines[3] == (
         "df = df.with_columns((pl.when((pl.col('premium') > rate)).then(pl.lit(rate))"
@@ -597,7 +617,7 @@ def test_invalid_payloads_name_their_step(
     label: str, steps: object, index: int | None, fragment: str
 ) -> None:
     with pytest.raises(PolarsStepError) as exc_info:
-        render_polars_steps(steps, ["quotes", "rates"])
+        render_polars_steps(steps, ["quotes", "rates"], start="input")
     assert exc_info.value.step_index == index
     assert fragment in exc_info.value.message
     if index is not None:
@@ -897,7 +917,7 @@ def window(
     ],
 )
 def test_extended_vocabulary_renders(kind_step: dict[str, Any], expected: str) -> None:
-    rendered = render_polars_steps([source(), kind_step], ["quotes", "rates"])
+    rendered = render_polars_steps([source(), kind_step], ["quotes", "rates"], start="input")
     assert rendered.code.splitlines()[1] == expected
 
 
@@ -917,7 +937,7 @@ def test_window_quantile_renders() -> None:
             },
         ),
     ]
-    assert render_polars_steps(steps, ["quotes"]).code.splitlines()[1] == (
+    assert render_polars_steps(steps, ["quotes"], start="input").code.splitlines()[1] == (
         "df = df.with_columns((pl.col('premium').quantile(0.9, interpolation='linear')"
         ".over(['region'])).alias('p90'))"
     )
@@ -1071,7 +1091,7 @@ def test_window_quantile_renders() -> None:
 )
 def test_extended_vocabulary_rejects(kind_step: dict[str, Any], index: int, fragment: str) -> None:
     with pytest.raises(PolarsStepError) as exc_info:
-        render_polars_steps([source(), kind_step], ["quotes", "rates"])
+        render_polars_steps([source(), kind_step], ["quotes", "rates"], start="input")
     assert exc_info.value.step_index == index
     assert fragment in exc_info.value.message
 
@@ -1510,7 +1530,7 @@ def fn(name: str, operand: dict[str, Any], *args: dict[str, Any]) -> dict[str, A
     ],
 )
 def test_nested_expressions_render(kind_step: dict[str, Any], expected: str) -> None:
-    rendered = render_polars_steps([source(), kind_step], ["quotes"])
+    rendered = render_polars_steps([source(), kind_step], ["quotes"], start="input")
     assert rendered.code.splitlines()[1] == expected
 
 
@@ -1563,7 +1583,7 @@ def _nested(depth: int) -> dict[str, Any]:
 )
 def test_nested_expressions_reject(kind_step: dict[str, Any], fragment: str) -> None:
     with pytest.raises(PolarsStepError) as info:
-        render_polars_steps([source(), kind_step], ["quotes"])
+        render_polars_steps([source(), kind_step], ["quotes"], start="input")
     assert info.value.step_index == 1
     assert fragment in info.value.message
 
@@ -1571,7 +1591,7 @@ def test_nested_expressions_reject(kind_step: dict[str, Any], fragment: str) -> 
 def test_formula_text_annotation_is_kept_but_never_rendered() -> None:
     expr = {**binary(col("a"), "+", col("b")), "text": "(a + b)"}
     rendered = render_polars_steps(
-        [source(), step("x", "with_column", name="v", expr=expr)], ["quotes"]
+        [source(), step("x", "with_column", name="v", expr=expr)], ["quotes"], start="input"
     )
     assert (
         rendered.code.splitlines()[1]
@@ -1579,7 +1599,7 @@ def test_formula_text_annotation_is_kept_but_never_rendered() -> None:
     )
     fn_expr = {**fn("abs", ex(binary(col("a"), "-", col("b")))), "text": "abs((a - b))"}
     rendered = render_polars_steps(
-        [source(), step("x", "with_column", name="v", expr=fn_expr)], ["quotes"]
+        [source(), step("x", "with_column", name="v", expr=fn_expr)], ["quotes"], start="input"
     )
     assert (
         rendered.code.splitlines()[1]
@@ -1587,7 +1607,7 @@ def test_formula_text_annotation_is_kept_but_never_rendered() -> None:
     )
     bare = {"type": "operand", "operand": col("a"), "text": "a"}
     rendered = render_polars_steps(
-        [source(), step("x", "with_column", name="v", expr=bare)], ["quotes"]
+        [source(), step("x", "with_column", name="v", expr=bare)], ["quotes"], start="input"
     )
     assert rendered.code.splitlines()[1] == "df = df.with_columns((pl.col('a')).alias('v'))"
     with pytest.raises(PolarsStepError, match="formula text must be a string"):
@@ -1602,13 +1622,14 @@ def test_formula_text_annotation_is_kept_but_never_rendered() -> None:
                 ),
             ],
             ["quotes"],
+            start="input",
         )
 
 
 def test_nesting_depth_counts_from_the_step_expression() -> None:
     # Depth 11 below the top-level expression is the deepest allowed.
     render_polars_steps(
-        [source(), step("x", "with_column", name="d", expr=_nested(11))], ["quotes"]
+        [source(), step("x", "with_column", name="d", expr=_nested(11))], ["quotes"], start="input"
     )
 
 
@@ -1665,7 +1686,7 @@ def test_nested_formulas_are_bracketed_only_where_evaluation_needs_it(
     expr: dict[str, Any], expected: str
 ) -> None:
     rendered = render_polars_steps(
-        [source(), step("x", "with_column", name="v", expr=expr)], ["quotes"]
+        [source(), step("x", "with_column", name="v", expr=expr)], ["quotes"], start="input"
     )
     assert rendered.code.splitlines()[1] == f"df = df.with_columns(({expected}).alias('v'))"
 
@@ -1848,7 +1869,7 @@ def pivot_column(value: dict[str, Any], name: str) -> dict[str, Any]:
     ],
 )
 def test_reshaping_and_dtype_selectors_render(kind_step: dict[str, Any], expected: str) -> None:
-    rendered = render_polars_steps([source(), kind_step], ["quotes"])
+    rendered = render_polars_steps([source(), kind_step], ["quotes"], start="input")
     assert rendered.code.splitlines()[1] == expected
 
 
@@ -2108,7 +2129,7 @@ def test_reshaping_and_dtype_selectors_render(kind_step: dict[str, Any], expecte
 )
 def test_reshaping_and_dtype_selectors_reject(kind_step: dict[str, Any], fragment: str) -> None:
     with pytest.raises(PolarsStepError) as info:
-        render_polars_steps([source(), kind_step], ["quotes"])
+        render_polars_steps([source(), kind_step], ["quotes"], start="input")
     assert info.value.step_index == 1
     assert fragment in info.value.message
 
@@ -2127,7 +2148,7 @@ def test_pivot_values_are_compared_exactly() -> None:
             agg="sum",
         ),
     ]
-    line = render_polars_steps(steps, ["rows"]).code.splitlines()[1]
+    line = render_polars_steps(steps, ["rows"], start="input").code.splitlines()[1]
     assert f"== {big})" in line and f"== {big + 1})" in line
 
 
@@ -2154,7 +2175,7 @@ def test_pivot_lowering_matches_native_pivot_cell_for_cell(agg: str) -> None:
         source("rows"),
         step("p", "pivot", index=["g"], on="c", columns=columns, values="a", agg=agg),
     ]
-    code = render_polars_steps(steps, ["rows"]).code
+    code = render_polars_steps(steps, ["rows"], start="input").code
     for frame in (_pivot_frame(), _pivot_frame().head(0)):
         namespace: dict[str, object] = {"pl": pl, "rows": frame}
         exec(code, namespace, namespace)  # noqa: S102 - generated step code under test
@@ -2268,7 +2289,7 @@ def test_generated_reshaping_code_stays_inside_the_lineage_model() -> None:
     dtypes = {"rows": {"g": pl.String(), "a": pl.Float64(), "i": pl.Int64(), "c": pl.String()}}
 
     def code(*kind_steps: dict[str, Any]) -> str:
-        return render_polars_steps([source("rows"), *kind_steps], ["rows"]).code
+        return render_polars_steps([source("rows"), *kind_steps], ["rows"], start="input").code
 
     typed_select = code(step("sel", "select", columns=["g"], dtypes=["Float64", "Int64"]))
     proven = analyze_polars_lineage(typed_select, schema, input_dtypes=dtypes)
@@ -2791,7 +2812,7 @@ def test_free_code_executes_between_low_code_steps_and_round_trips(tmp_path: Pat
         step("l", "limit", n=2),
     ]
     graph = PipelineGraph(nodes=[quotes, _stepped("t", steps)], edges=[make_edge("quotes", "t")])
-    expected_code = render_polars_steps(steps, ["quotes"]).code
+    expected_code = render_polars_steps(steps, ["quotes"], start="input").code
     generated = graph_to_code(graph, pipeline_name="main")
     _write_sidecars(tmp_path, graph)
     parsed = parse_pipeline_source(generated, _base_dir=tmp_path)
@@ -2817,7 +2838,7 @@ def test_free_code_round_trip_keeps_helper_returns_and_trailing_comments(tmp_pat
     parsed = parse_pipeline_source(graph_to_code(graph, pipeline_name="main"), _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "t")
     assert node.data.config["steps"] == steps
-    assert node.data.config["code"] == render_polars_steps(steps).code
+    assert node.data.config["code"] == render_polars_steps(steps, start="input").code
 
 
 @pytest.mark.parametrize(
@@ -3167,7 +3188,7 @@ def test_flatten_rewrites_internal_stepped_consumer_and_executes(tmp_path: Path)
 def test_render_endpoint_reports_invalid_step_as_data(client: TestClient) -> None:
     ok = client.post(
         "/api/pipeline/polars-steps/render",
-        json={"steps": GOLDEN_STEPS, "input_names": ["quotes", "rates"]},
+        json={"steps": GOLDEN_STEPS, "input_names": ["quotes", "rates"], "start": "input"},
     )
     assert ok.status_code == 200
     body = ok.json()
@@ -3180,6 +3201,7 @@ def test_render_endpoint_reports_invalid_step_as_data(client: TestClient) -> Non
         json={
             "steps": [source(), step("f", "filter", match="all", conditions=[])],
             "input_names": ["quotes"],
+            "start": "input",
         },
     )
     assert bad.status_code == 200
@@ -3202,15 +3224,1385 @@ def test_render_endpoint_returns_free_code_line_ranges_and_errors(client: TestCl
         step("l", "limit", n=2),
     ]
     response = client.post(
-        "/api/pipeline/polars-steps/render", json={"steps": steps, "input_names": ["quotes"]}
+        "/api/pipeline/polars-steps/render",
+        json={"steps": steps, "input_names": ["quotes"], "start": "input"},
     )
     assert response.status_code == 200
     assert response.json()["ok"] is True
     assert response.json()["step_lines"] == [[1, 1], [2, 4], [5, 5]]
     steps[1]["code"] = "return df"
     invalid = client.post(
-        "/api/pipeline/polars-steps/render", json={"steps": steps, "input_names": ["quotes"]}
+        "/api/pipeline/polars-steps/render",
+        json={"steps": steps, "input_names": ["quotes"], "start": "input"},
     )
     assert invalid.status_code == 200
     assert invalid.json()["ok"] is False
     assert invalid.json()["step_index"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Frame-start surfaces: Data Input
+# ---------------------------------------------------------------------------
+
+
+def _stepped_input(node: GraphNode, steps: list[dict[str, Any]], **extra: Any) -> GraphNode:
+    """A ready Data Input whose post-load code is authored as *steps*."""
+    return node.with_config({**node.data.config, "steps": steps, **extra})
+
+
+def _error_chain(exc: BaseException) -> str:
+    parts: list[str] = []
+    current: BaseException | None = exc
+    while current is not None:
+        parts.append(str(current))
+        current = current.__cause__ or current.__context__
+    return " | ".join(parts)
+
+
+def test_frame_start_renders_without_a_source_step() -> None:
+    assert render_polars_steps([], [], start="frame") == RenderedSteps(code="", step_lines=())
+    rendered = render_polars_steps([step("l", "limit", n=3)], [], start="frame")
+    assert rendered.code == "df = df.head(3)"
+    assert rendered.step_lines == ((1, 1),)
+
+    with pytest.raises(PolarsStepError) as refused:
+        render_polars_steps([step("l", "limit", n=3), source()], [], start="frame")
+    assert refused.value.step_index == 1
+    assert refused.value.message == "This node starts from df; remove the start step."
+
+    join = step(
+        "j", "join", input="rates", how="inner", leftOn=["region"], rightOn=["region"], suffix="_r"
+    )
+    with pytest.raises(PolarsStepError, match="Unknown input 'rates'; connected inputs: none"):
+        render_polars_steps([join], [], start="frame")
+
+    # Every other kind renders byte-identically in both modes.
+    frame = render_polars_steps(GOLDEN_STEPS[1:], ["quotes", "rates"], start="frame")
+    assert frame.code == "\n".join(GOLDEN_CODE.splitlines()[1:])
+    assert frame.step_lines == tuple((i + 1, i + 1) for i in range(len(GOLDEN_STEPS) - 1))
+
+    with pytest.raises(TypeError):
+        render_polars_steps(GOLDEN_STEPS)  # type: ignore[call-arg]
+    with pytest.raises(ValueError, match="Unknown step start"):
+        render_polars_steps(GOLDEN_STEPS, start="nowhere")  # type: ignore[arg-type]
+    with pytest.raises(PolarsStepError, match="Choose the input to start from"):
+        render_polars_steps([], start="input")
+
+
+def test_stepped_surface_table_and_input_eligibility() -> None:
+    assert stepped_surface_for(NodeType.POLARS) == SteppedSurface(start="input", inputs="edges")
+    assert stepped_surface_for(NodeType.DATA_INPUT) == SteppedSurface(start="frame", inputs="none")
+    assert step_input_names(NodeType.POLARS, ["quotes", "rates"]) == ["quotes", "rates"]
+    assert step_input_names(NodeType.DATA_INPUT, ["quotes"]) == []
+    with pytest.raises(ValueError, match="does not author steps"):
+        step_input_names(NodeType.OUTPUT, [])
+    assert is_stepped_config(NodeType.DATA_INPUT, {"steps": []})
+    assert not is_stepped_config(NodeType.DATA_INPUT, {"code": ""})
+    assert not is_stepped_config(NodeType.SCENARIO_EXPANDER, {"steps": 3})
+
+
+def test_node_data_materialises_data_input_steps() -> None:
+    base = make_file_input_config("quotes.parquet")
+
+    def node(steps: object) -> GraphNode:
+        return GraphNode(
+            id="d",
+            data=NodeData(
+                label="d", nodeType="dataInput", config={**base, "steps": steps, "code": "stale"}
+            ),
+        )
+
+    assert node([]).data.config["code"] == ""
+    assert "_steps_error" not in node([]).data.config
+    assert node([step("l", "limit", n=2)]).data.config["code"] == "df = df.head(2)"
+    broken = node([source()])
+    assert broken.data.config["code"] == ""
+    assert (
+        broken.data.config["_steps_error"]
+        == "Step 1: This node starts from df; remove the start step."
+    )
+    with pytest.raises(ValueError, match="must be a list"):
+        node("not-a-list")
+
+    # A Data Input has no eligible input names, so a reference to one is an
+    # error at materialisation, not only at build time.
+    join = step(
+        "j", "join", input="rates", how="inner", leftOn=["region"], rightOn=["region"], suffix="_r"
+    )
+    joined = node([join])
+    assert joined.data.config["code"] == ""
+    assert (
+        joined.data.config["_steps_error"]
+        == "Step 1: Unknown input 'rates'; connected inputs: none."
+    )
+    stacked = node([step("c", "concat", inputs=["rates"], how="vertical")])
+    assert stacked.data.config["code"] == ""
+    assert stacked.data.config["_steps_error"].startswith("Step 1: Unknown input 'rates'")
+
+    # A type outside the surface table keeps a `steps` key untouched; a
+    # stepped type refuses anything but a list (the Scenario Expander's grid
+    # size lives under `stepCount`).
+    other = GraphNode(id="o", data=NodeData(label="o", nodeType="output", config={"steps": 5}))
+    assert other.data.config == {"steps": 5}
+    with pytest.raises(ValueError, match="must be a list"):
+        GraphNode(
+            id="s",
+            data=NodeData(label="s", nodeType="scenarioExpander", config={"steps": 5}),
+        )
+
+
+def test_data_input_sidecar_and_validation_carry_steps() -> None:
+    config = {**make_file_input_config("quotes.parquet"), "steps": [step("l", "limit", n=2)]}
+    assert validate_data_input_config(config)["steps"] == config["steps"]
+    databricks = {
+        "inputType": "databricks",
+        "http_path": "p",
+        "table": "t",
+        "arguments": {},
+        "steps": [],
+    }
+    assert validate_data_input_config(databricks)["steps"] == []
+
+    node = GraphNode(id="d", data=NodeData(label="d", nodeType="dataInput", config=config))
+    assert node_emits_sidecar(node)
+    written = json.loads(
+        collect_node_configs(PipelineGraph(nodes=[node], edges=[]))["config/data_input/d.json"]
+    )
+    assert written["steps"] == config["steps"]
+    assert "code" not in written
+
+
+def test_data_input_steps_execute_and_round_trip(tmp_path: Path) -> None:
+    quotes, _rates = _frames(tmp_path)
+    stepped = _stepped_input(quotes, [step("l", "limit", n=2)])
+    graph = PipelineGraph(nodes=[stepped], edges=[])
+    result = execute_graph(graph)["quotes"]
+    assert result.status == "ok", result.error
+    assert len(result.preview) == 2
+
+    code = graph_to_code(graph, pipeline_name="main")
+    assert "@pipeline.data_input(" in code
+    assert "config/data_input/quotes.json" in code
+    assert "\n    df = df.head(2)\n    return df\n" in code
+    _write_sidecars(tmp_path, graph)
+    sidecar = json.loads(
+        (tmp_path / "config" / "data_input" / "quotes.json").read_text(encoding="utf-8")
+    )
+    assert sidecar["steps"] == [step("l", "limit", n=2)]
+
+    parsed = parse_pipeline_source(code, _base_dir=tmp_path)
+    node = next(n for n in parsed.nodes if n.id == "quotes")
+    assert node.data.config["steps"] == [step("l", "limit", n=2)]
+    assert node.data.config["code"] == "df = df.head(2)"
+    assert "_steps_discarded" not in node.data.config
+    reloaded = execute_graph(parsed)["quotes"]
+    assert reloaded.status == "ok", reloaded.error
+    assert len(reloaded.preview) == 2
+
+
+def test_data_input_incomplete_steps_fail_on_every_path(tmp_path: Path) -> None:
+    quotes, _rates = _frames(tmp_path)
+    join = step(
+        "j", "join", input="rates", how="inner", leftOn=["region"], rightOn=["region"], suffix="_r"
+    )
+    unknown = _stepped_input(quotes, [join])
+    # Materialisation already refuses the reference (no eligible inputs).
+    assert unknown.data.config["code"] == ""
+    assert (
+        unknown.data.config["_steps_error"]
+        == "Step 1: Unknown input 'rates'; connected inputs: none."
+    )
+    graph = PipelineGraph(nodes=[unknown], edges=[])
+
+    # Builder path: the executor names the step.
+    result = execute_graph(graph)["quotes"]
+    assert result.status == "error"
+    assert INCOMPLETE_STEPS_MESSAGE in str(result.error)
+    assert "Step 1: Unknown input 'rates'; connected inputs: none." in str(result.error)
+
+    # Generated module: the placeholder replaces the post-load lines and reloads as kept steps.
+    code = graph_to_code(graph, pipeline_name="main")
+    assert INCOMPLETE_STEPS_MESSAGE in code
+    assert "df.join" not in code
+    _write_sidecars(tmp_path, graph)
+    parsed = parse_pipeline_source(code, _base_dir=tmp_path)
+    node = next(n for n in parsed.nodes if n.id == "quotes")
+    assert node.data.config["steps"] == [join]
+    assert "_steps_discarded" not in node.data.config
+    assert execute_graph(parsed)["quotes"].status == "error"
+
+    broken = _stepped_input(quotes, [step("f", "filter", match="all", conditions=[])])
+    assert broken.data.config["_steps_error"] == "Step 1: Add at least one condition."
+    broken_graph = PipelineGraph(nodes=[broken], edges=[])
+    assert "Step 1: Add at least one condition." in str(execute_graph(broken_graph)["quotes"].error)
+    broken_code = graph_to_code(broken_graph, pipeline_name="main")
+    _write_sidecars(tmp_path, broken_graph)
+    reloaded = next(
+        n for n in parse_pipeline_source(broken_code, _base_dir=tmp_path).nodes if n.id == "quotes"
+    )
+    assert reloaded.data.config["steps"] == broken.data.config["steps"]
+    assert reloaded.data.config["code"] == ""
+    assert reloaded.data.config["_steps_error"] == "Step 1: Add at least one condition."
+
+
+def _bundled_scoring_graph(steps: list[dict[str, Any]]) -> PipelineGraph:
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "src",
+                    "data": {"label": "src", "nodeType": "apiInput", "config": {"path": ""}},
+                },
+                {
+                    "id": "static_ds",
+                    "data": {
+                        "label": "static_ds",
+                        "nodeType": "dataInput",
+                        "config": {
+                            "inputType": "file",
+                            "format": "csv",
+                            "mode": "scan",
+                            "path": "original/factors.csv",
+                            "arguments": {},
+                            "steps": steps,
+                        },
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {
+                            "outputMapping": [
+                                {
+                                    "source_port": "static_ds",
+                                    "source_column": col,
+                                    "output_path": f"$[:].{col}",
+                                    "enabled": True,
+                                }
+                                for col in ("area", "factor")
+                            ],
+                            "outputFormat": "json",
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "src", "target": "static_ds", "sourceHandle": "src"},
+                {"id": "e2", "source": "static_ds", "target": "out"},
+            ],
+        }
+    )
+
+
+def test_data_input_steps_guard_the_deploy_bundled_snapshot_path(tmp_path: Path) -> None:
+    from haute.deploy._scorer import score_graph
+
+    ds_path = tmp_path / "factors.parquet"
+    pl.DataFrame({"area": ["A", "B"], "factor": [1.1, 1.2]}).write_parquet(ds_path)
+    remap = {"static_ds__snapshot.parquet": str(ds_path)}
+    input_df = pl.DataFrame({"x": [1.0]})
+
+    scored = score_graph(
+        graph=_bundled_scoring_graph([step("l", "limit", n=1)]),
+        input_df=input_df,
+        input_node_ids=["src"],
+        output_node_id="out",
+        artifact_paths=remap,
+    )
+    assert isinstance(scored, pl.DataFrame)
+    assert scored["area"].to_list() == ["A"]
+
+    with pytest.raises(Exception, match=r"Step 1: Add at least one condition") as failed:
+        score_graph(
+            graph=_bundled_scoring_graph([step("f", "filter", match="all", conditions=[])]),
+            input_df=input_df,
+            input_node_ids=["src"],
+            output_node_id="out",
+            artifact_paths=remap,
+        )
+    chain = _error_chain(failed.value)
+    assert INCOMPLETE_STEPS_MESSAGE in chain
+    assert "Step 1: Add at least one condition." in chain
+
+
+def test_data_input_hand_edit_discards_steps_without_sidecar_marker(tmp_path: Path) -> None:
+    quotes, _rates = _frames(tmp_path)
+    graph = PipelineGraph(nodes=[_stepped_input(quotes, [step("l", "limit", n=2)])], edges=[])
+    code = graph_to_code(graph, pipeline_name="main")
+    _write_sidecars(tmp_path, graph)
+    edited = code.replace("df = df.head(2)", "df = df.head(3)")
+    assert edited != code
+
+    parsed = parse_pipeline_source(edited, _base_dir=tmp_path)
+    node = next(n for n in parsed.nodes if n.id == "quotes")
+    assert "steps" not in node.data.config
+    assert node.data.config["code"] == "df = df.head(3)"
+    assert node.data.config["_steps_discarded"].startswith("Steps were discarded because")
+    assert "_discarded_sidecar" not in node.data.config
+
+
+def test_data_input_free_code_with_redundant_parentheses_reloads_in_step_mode(
+    tmp_path: Path,
+) -> None:
+    quotes, _rates = _frames(tmp_path)
+    steps = [step("c", "free_code", code="df = (df.head(2))")]
+    graph = PipelineGraph(nodes=[_stepped_input(quotes, steps)], edges=[])
+    code = graph_to_code(graph, pipeline_name="main")
+    assert "\n    df = (df.head(2))\n" in code
+    _write_sidecars(tmp_path, graph)
+
+    parsed = parse_pipeline_source(code, _base_dir=tmp_path)
+    node = next(n for n in parsed.nodes if n.id == "quotes")
+    assert node.data.config["steps"] == steps
+    assert node.data.config["code"] == "df = (df.head(2))"
+    assert "_steps_discarded" not in node.data.config
+    result = execute_graph(parsed)["quotes"]
+    assert result.status == "ok", result.error
+    assert len(result.preview) == 2
+
+
+def test_save_warns_about_incomplete_data_input_steps(project_root: Path) -> None:
+    quotes, rates = _frames(project_root)
+    broken = _stepped_input(quotes, [step("f", "filter", match="all", conditions=[])])
+    warnings = _save(project_root, PipelineGraph(nodes=[broken, rates], edges=[]))
+    assert any(
+        "Data Input node 'quotes' has an incomplete step list (Step 1: Add at least one condition.)"
+        in w
+        for w in warnings
+    ), warnings
+    complete = _stepped_input(quotes, [step("l", "limit", n=1)])
+    assert _save(project_root, PipelineGraph(nodes=[complete, rates], edges=[])) == []
+
+
+def test_render_endpoint_requires_start_and_renders_frame_mode(client: TestClient) -> None:
+    missing = client.post(
+        "/api/pipeline/polars-steps/render", json={"steps": [], "input_names": []}
+    )
+    assert missing.status_code == 422
+
+    empty = client.post(
+        "/api/pipeline/polars-steps/render", json={"steps": [], "input_names": [], "start": "frame"}
+    )
+    assert empty.status_code == 200
+    assert empty.json() == {
+        "ok": True,
+        "code": "",
+        "step_lines": [],
+        "step_index": None,
+        "message": "",
+    }
+
+    limited = client.post(
+        "/api/pipeline/polars-steps/render",
+        json={"steps": [step("l", "limit", n=2)], "input_names": [], "start": "frame"},
+    )
+    assert limited.json() == {
+        "ok": True,
+        "code": "df = df.head(2)",
+        "step_lines": [[1, 1]],
+        "step_index": None,
+        "message": "",
+    }
+
+    refused = client.post(
+        "/api/pipeline/polars-steps/render",
+        json={"steps": [source()], "input_names": [], "start": "frame"},
+    )
+    assert refused.json() == {
+        "ok": False,
+        "code": "",
+        "step_lines": [],
+        "step_index": 0,
+        "message": "This node starts from df; remove the start step.",
+    }
+
+
+def _corpus_translations_without_inputs() -> list[tuple[str, list[dict[str, Any]]]]:
+    fixtures = Path(__file__).parent / "fixtures" / "polars_steps_corpus" / "translations.json"
+    translations = json.loads(fixtures.read_text(encoding="utf-8"))
+    cases: list[tuple[str, list[dict[str, Any]]]] = []
+    for name, translation in translations.items():
+        steps = translation["steps"]
+        if not steps or steps[0]["kind"] != "source":
+            continue
+        rest = steps[1:]
+        if any(s["kind"] in ("join", "concat") for s in rest):
+            continue
+        cases.append((name, rest))
+    assert cases
+    return cases
+
+
+@pytest.mark.parametrize(("name", "steps"), _corpus_translations_without_inputs())
+def test_corpus_translations_reload_unchanged_on_a_data_input(
+    tmp_path: Path, name: str, steps: list[dict[str, Any]]
+) -> None:
+    quotes, _rates = _frames(tmp_path)
+    graph = PipelineGraph(nodes=[_stepped_input(quotes, steps)], edges=[])
+    expected = render_polars_steps(steps, [], start="frame").code
+    code = graph_to_code(graph, pipeline_name="main")
+    _write_sidecars(tmp_path, graph)
+    node = next(
+        n for n in parse_pipeline_source(code, _base_dir=tmp_path).nodes if n.id == "quotes"
+    )
+    assert node.data.config["steps"] == steps, name
+    assert node.data.config["code"] == expected, name
+    assert "_steps_discarded" not in node.data.config, name
+
+
+def test_data_input_free_code_opening_with_a_string_reloads_in_step_mode(tmp_path: Path) -> None:
+    """A rendering that starts with a string statement is not a docstring to the parser."""
+    quotes, _rates = _frames(tmp_path)
+    steps = [step("c", "free_code", code='"""Keep two rows."""\ndf = df.head(2)')]
+    graph = PipelineGraph(nodes=[_stepped_input(quotes, steps)], edges=[])
+    code = graph_to_code(graph, pipeline_name="main")
+    assert '\n    """Keep two rows."""\n    df = df.head(2)\n' in code
+    _write_sidecars(tmp_path, graph)
+
+    node = next(
+        n for n in parse_pipeline_source(code, _base_dir=tmp_path).nodes if n.id == "quotes"
+    )
+    assert node.data.config["steps"] == steps
+    assert node.data.config["code"] == '"""Keep two rows."""\ndf = df.head(2)'
+    assert "_steps_discarded" not in node.data.config
+
+
+def test_data_input_generated_module_runs_standalone(tmp_path: Path) -> None:
+    """The generated function itself applies the steps, and raises for an incomplete list."""
+    quotes, _rates = _frames(tmp_path)
+    # The module resolves its project root by walking up to a haute.toml inside a git repository.
+    (tmp_path / "haute.toml").write_text("", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    module = _write_and_import(
+        PipelineGraph(nodes=[_stepped_input(quotes, [step("l", "limit", n=2)])], edges=[]),
+        tmp_path,
+    )
+    frame = _collect(module.pipeline.run())
+    assert frame.height == 2
+    assert frame["premium"].to_list() == [50.0, 200.0]
+
+    broken = _write_and_import(
+        PipelineGraph(
+            nodes=[_stepped_input(quotes, [step("f", "filter", match="all", conditions=[])])],
+            edges=[],
+        ),
+        tmp_path,
+    )
+    with pytest.raises(NotImplementedError, match=INCOMPLETE_STEPS_MESSAGE.split(".")[0]):
+        _collect(broken.pipeline.run())
+
+
+# ---------------------------------------------------------------------------
+# Frame-start surfaces: External File, Rating Step, Model Score, Scenario Expander
+# ---------------------------------------------------------------------------
+
+
+def _external_file(tmp_path: Path, steps: list[dict[str, Any]], **extra: Any) -> GraphNode:
+    """An External File over a pickled dict, with post-load steps."""
+    obj_path = tmp_path / "factors.pkl"
+    with obj_path.open("wb") as handle:
+        pickle.dump({"factor": 2.0}, handle)
+    config = {"path": str(obj_path), "fileType": "pickle", "steps": steps, **extra}
+    return GraphNode(id="ext", data=NodeData(label="ext", nodeType="externalFile", config=config))
+
+
+def _rating_step(steps: list[dict[str, Any]], **extra: Any) -> GraphNode:
+    config = {
+        "tables": [
+            {
+                "factors": ["region"],
+                "outputColumn": "rate_factor",
+                "defaultValue": "1.0",
+                "entries": [{"region": "north", "value": "1.25"}],
+            }
+        ],
+        "combinedOutputs": [],
+        "steps": steps,
+        **extra,
+    }
+    return GraphNode(id="rated", data=NodeData(label="rated", nodeType="ratingStep", config=config))
+
+
+def _scenario_expander(steps: list[dict[str, Any]]) -> GraphNode:
+    config = {
+        "column_name": "scenario_value",
+        "min_value": 0.0,
+        "max_value": 1.0,
+        "stepCount": 3,
+        "step_column": "scenario_index",
+        "steps": steps,
+    }
+    return GraphNode(
+        id="grid", data=NodeData(label="grid", nodeType="scenarioExpander", config=config)
+    )
+
+
+def _model_score(steps: list[dict[str, Any]]) -> GraphNode:
+    config = {
+        "sourceType": "registered",
+        "registered_model": "catalog.models.pricing",
+        "version": "1",
+        "task": "regression",
+        "output_column": "prediction",
+        "steps": steps,
+    }
+    return GraphNode(
+        id="scored", data=NodeData(label="scored", nodeType="modelScore", config=config)
+    )
+
+
+def _reparsed(tmp_path: Path, graph: PipelineGraph, node_id: str) -> tuple[str, GraphNode]:
+    code = graph_to_code(graph, pipeline_name="main")
+    _write_sidecars(tmp_path, graph)
+    parsed = parse_pipeline_source(code, _base_dir=tmp_path)
+    return code, next(n for n in parsed.nodes if n.id == node_id)
+
+
+def test_external_file_steps_reach_the_other_inputs_and_obj(tmp_path: Path) -> None:
+    quotes, rates = _frames(tmp_path)
+    join = step(
+        "j", "join", input="rates", how="inner", leftOn=["region"], rightOn=["region"], suffix="_r"
+    )
+    steps = [join, step("l", "limit", n=2)]
+    graph = PipelineGraph(
+        nodes=[quotes, rates, _external_file(tmp_path, steps)],
+        edges=[make_edge("quotes", "ext"), make_edge("rates", "ext")],
+    )
+    result = execute_graph(graph, target_node_id="ext", execution_context=_capped_context())["ext"]
+    assert result.status == "ok", result.error
+    assert "rate" in [c.name for c in result.columns]
+    assert len(result.preview) == 2
+
+    code, node = _reparsed(tmp_path, graph, "ext")
+    assert "\n    df = quotes\n    df = df.join(rates" in code
+    assert node.data.config["steps"] == steps
+    assert (
+        node.data.config["code"]
+        == render_polars_steps(steps, ["quotes", "rates"], start="frame").code
+    )
+    assert "_steps_discarded" not in node.data.config
+
+    # Free code reaches the loaded object as `obj`, as the code box always could.
+    reaching = [
+        step("c", "free_code", code='df = df.with_columns(pl.lit(obj["factor"]).alias("factor"))')
+    ]
+    graph = PipelineGraph(
+        nodes=[quotes, _external_file(tmp_path, reaching)], edges=[make_edge("quotes", "ext")]
+    )
+    result = execute_graph(graph, target_node_id="ext", execution_context=_capped_context())["ext"]
+    assert result.status == "ok", result.error
+    assert result.preview[0]["factor"] == 2.0
+
+
+def test_external_file_unknown_input_and_input_mapping_fail_loudly(tmp_path: Path) -> None:
+    quotes, _rates = _frames(tmp_path)
+    join = step(
+        "j",
+        "join",
+        input="policies",
+        how="inner",
+        leftOn=["region"],
+        rightOn=["region"],
+        suffix="_r",
+    )
+    unknown = _external_file(tmp_path, [join])
+    # An edges surface renders without names at construction; the reference
+    # is checked at build time against the connected edges.
+    assert "_steps_error" not in unknown.data.config
+    graph = PipelineGraph(nodes=[quotes, unknown], edges=[make_edge("quotes", "ext")])
+    result = execute_graph(graph, target_node_id="ext", execution_context=_capped_context())["ext"]
+    assert result.status == "error"
+    assert INCOMPLETE_STEPS_MESSAGE in str(result.error)
+    assert "Step 1: Unknown input 'policies'; connected inputs: quotes." in str(result.error)
+
+    code, node = _reparsed(tmp_path, graph, "ext")
+    assert "\n    df = quotes\n    raise NotImplementedError(" in code
+    assert INCOMPLETE_STEPS_MESSAGE in code
+    assert node.data.config["steps"] == [join]
+    assert "_steps_discarded" not in node.data.config
+
+    mapped = _external_file(tmp_path, [step("l", "limit", n=1)], inputMapping={"quotes": "quotes"})
+    graph = PipelineGraph(nodes=[quotes, mapped], edges=[make_edge("quotes", "ext")])
+    with pytest.raises(ConfigError, match="cannot carry inputMapping"):
+        execute_graph(graph, target_node_id="ext", execution_context=_capped_context())
+
+
+def test_instance_of_stepped_external_file_executes_with_mapping(tmp_path: Path) -> None:
+    quotes, rates = _frames(tmp_path)
+    alt_q = tmp_path / "alt_quotes.parquet"
+    alt_r = tmp_path / "alt_rates.parquet"
+    pl.DataFrame({"premium": [100.0], "region": ["north"]}).write_parquet(alt_q)
+    pl.DataFrame({"region": ["north"], "rate": [5.0]}).write_parquet(alt_r)
+    join = step(
+        "j", "join", input="rates", how="inner", leftOn=["region"], rightOn=["region"], suffix="_r"
+    )
+    original = _external_file(tmp_path, [join, step("l", "limit", n=1)])
+    instance = GraphNode(
+        id="ext_inst",
+        data=NodeData(
+            label="ext_inst",
+            nodeType="externalFile",
+            config={
+                "instanceOf": "ext",
+                "inputMapping": {"quotes": "alt_quotes", "rates": "alt_rates"},
+            },
+        ),
+    )
+    graph = PipelineGraph(
+        nodes=[
+            quotes,
+            rates,
+            original,
+            _ready_source("alt_quotes", alt_q),
+            _ready_source("alt_rates", alt_r),
+            instance,
+        ],
+        edges=[
+            make_edge("quotes", "ext"),
+            make_edge("rates", "ext"),
+            make_edge("alt_quotes", "ext_inst"),
+            make_edge("alt_rates", "ext_inst"),
+        ],
+    )
+    results = execute_graph(graph, target_node_id="ext_inst", execution_context=_capped_context())
+    assert results["ext_inst"].status == "ok", results["ext_inst"].error
+    assert len(results["ext_inst"].preview) == 1
+    assert results["ext_inst"].preview[0]["rate"] == 5.0
+
+
+def test_flatten_rewrites_a_stepped_external_file_input() -> None:
+    child = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="output", data=NodeData(label="Internal Output", nodeType="polars", config={})
+            )
+        ],
+        edges=[],
+    )
+    definition = SubmodelDefinition(
+        definition_id="definition_scoring",
+        file="modules/scoring.py",
+        graph=child,
+        input_ports=[],
+        output_ports=[
+            SubmodelOutputPort(name="results", source=SubmodelEndpoint(node_id="output"))
+        ],
+    )
+    instance = GraphNode(
+        id="instance_a",
+        data=NodeData(
+            label="score",
+            nodeType="submodel",
+            config={"definitionId": "definition_scoring", "alias": "score"},
+        ),
+    )
+    join = step("j", "join", input="results", how="inner", leftOn=["k"], rightOn=["k"], suffix="_r")
+    consumer = GraphNode(
+        id="consumer",
+        data=NodeData(
+            label="Consumer",
+            nodeType="externalFile",
+            config={"path": "models/obj.pkl", "fileType": "pickle", "steps": [join]},
+        ),
+    )
+    graph = PipelineGraph(
+        nodes=[instance, consumer],
+        edges=[
+            GraphEdge(
+                id="output", source="instance_a", target="consumer", sourceHandle="out__results"
+            )
+        ],
+        submodels={"definition_scoring": definition},
+    )
+    flat = flatten_graph(graph).node_map["consumer"].data.config
+    assert flat["steps"] == [{**join, "input": "Internal_Output"}]
+    assert "inputMapping" not in flat
+
+
+def test_rating_step_steps_execute_and_round_trip(tmp_path: Path) -> None:
+    quotes, _rates = _frames(tmp_path)
+    steps = [step("l", "limit", n=2)]
+    graph = PipelineGraph(nodes=[quotes, _rating_step(steps)], edges=[make_edge("quotes", "rated")])
+    result = execute_graph(graph, target_node_id="rated", execution_context=_capped_context())[
+        "rated"
+    ]
+    assert result.status == "ok", result.error
+    assert "rate_factor" in [c.name for c in result.columns]
+    assert len(result.preview) == 2
+
+    code, node = _reparsed(tmp_path, graph, "rated")
+    assert "apply_rating_step_from_config(" in code
+    assert "\n    df = df.head(2)\n    return df\n" in code
+    assert node.data.config["steps"] == steps
+    assert node.data.config["code"] == "df = df.head(2)"
+    assert "_steps_discarded" not in node.data.config
+
+    broken = _rating_step([step("f", "filter", match="all", conditions=[])])
+    assert broken.data.config["_steps_error"] == "Step 1: Add at least one condition."
+    graph = PipelineGraph(nodes=[quotes, broken], edges=[make_edge("quotes", "rated")])
+    result = execute_graph(graph, target_node_id="rated", execution_context=_capped_context())[
+        "rated"
+    ]
+    assert result.status == "error"
+    assert INCOMPLETE_STEPS_MESSAGE in str(result.error)
+    code, node = _reparsed(tmp_path, graph, "rated")
+    assert INCOMPLETE_STEPS_MESSAGE in code
+    assert node.data.config["steps"] == broken.data.config["steps"]
+    assert node.data.config["_steps_error"] == "Step 1: Add at least one condition."
+
+
+def test_scenario_expander_steps_execute_and_round_trip(tmp_path: Path) -> None:
+    quotes, _rates = _frames(tmp_path)
+    steps = [step("l", "limit", n=4)]
+    graph = PipelineGraph(
+        nodes=[quotes, _scenario_expander(steps)], edges=[make_edge("quotes", "grid")]
+    )
+    result = execute_graph(graph, target_node_id="grid", execution_context=_capped_context())[
+        "grid"
+    ]
+    assert result.status == "ok", result.error
+    assert "scenario_value" in [c.name for c in result.columns]
+    assert len(result.preview) == 4  # 4 rows x 3 grid values, then the Limit
+
+    code, node = _reparsed(tmp_path, graph, "grid")
+    assert "expand_scenarios_from_config(" in code
+    assert "\n    df = df.head(4)\n    return df\n" in code
+    assert node.data.config["steps"] == steps
+    assert node.data.config["stepCount"] == 3
+    assert "_steps_discarded" not in node.data.config
+
+    broken = _scenario_expander([source()])
+    assert (
+        broken.data.config["_steps_error"]
+        == "Step 1: This node starts from df; remove the start step."
+    )
+    graph = PipelineGraph(nodes=[quotes, broken], edges=[make_edge("quotes", "grid")])
+    assert (
+        execute_graph(graph, target_node_id="grid", execution_context=_capped_context())[
+            "grid"
+        ].status
+        == "error"
+    )
+    code, node = _reparsed(tmp_path, graph, "grid")
+    assert INCOMPLETE_STEPS_MESSAGE in code
+    assert node.data.config["steps"] == [source()]
+
+
+def test_model_score_steps_round_trip_and_fail_before_any_model_loads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute.deploy import _scorer
+    from haute.deploy._scorer import score_graph
+
+    quotes, _rates = _frames(tmp_path)
+    steps = [step("l", "limit", n=2)]
+    graph = PipelineGraph(
+        nodes=[quotes, _model_score(steps)], edges=[make_edge("quotes", "scored")]
+    )
+    code, node = _reparsed(tmp_path, graph, "scored")
+    assert "score_from_config(" in code
+    assert "\n    df = df.head(2)\n    return df\n" in code
+    assert node.data.config["steps"] == steps
+    assert node.data.config["code"] == "df = df.head(2)"
+    assert "_steps_discarded" not in node.data.config
+
+    broken = _model_score([step("f", "filter", match="all", conditions=[])])
+    assert broken.data.config["_steps_error"] == "Step 1: Add at least one condition."
+    graph = PipelineGraph(nodes=[quotes, broken], edges=[make_edge("quotes", "scored")])
+    result = execute_graph(graph, target_node_id="scored", execution_context=_capped_context())[
+        "scored"
+    ]
+    assert result.status == "error"
+    assert INCOMPLETE_STEPS_MESSAGE in str(result.error)
+    code, node = _reparsed(tmp_path, graph, "scored")
+    assert INCOMPLETE_STEPS_MESSAGE in code
+    assert node.data.config["steps"] == broken.data.config["steps"]
+
+    # Deploy: the plan is rejected before any model loading or scoring is attempted.
+    deploy_graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "src",
+                    "data": {"label": "src", "nodeType": "apiInput", "config": {"path": ""}},
+                },
+                {
+                    "id": "scored",
+                    "data": {
+                        "label": "scored",
+                        "nodeType": "modelScore",
+                        "config": broken.data.config,
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {
+                            "outputMapping": [
+                                {
+                                    "source_port": "scored",
+                                    "source_column": "prediction",
+                                    "output_path": "$[:].prediction",
+                                    "enabled": True,
+                                }
+                            ],
+                            "outputFormat": "json",
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "src", "target": "scored", "sourceHandle": "src"},
+                {"id": "e2", "source": "scored", "target": "out"},
+            ],
+        }
+    )
+    # A remapped model WITHOUT a bundled feature contract is exactly the case
+    # whose preparation pass (`_attach_bundled_model_contract_inputs`) loads the
+    # local model, so a guard placed after it would load before rejecting.
+    model_path = tmp_path / "score.cbm"
+    model_path.write_bytes(b"not a real model")
+    loaded: list[str] = []
+    monkeypatch.setattr(_scorer, "_load_local_model_cached", lambda path, task: loaded.append(path))
+    with pytest.raises(ConfigError, match=r"Step 1: Add at least one condition") as failed:
+        score_graph(
+            graph=deploy_graph,
+            input_df=pl.DataFrame({"x": [1.0]}),
+            input_node_ids=["src"],
+            output_node_id="out",
+            artifact_paths={"scored__score.cbm": str(model_path)},
+        )
+    assert INCOMPLETE_STEPS_MESSAGE in str(failed.value)
+    assert loaded == [], "the deploy plan loaded a model before rejecting the incomplete steps"
+
+
+def test_recovery_and_save_report_incomplete_steps_on_every_surface(project_root: Path) -> None:
+    from haute._node_config_recovery import validate_recovery_config
+
+    pl.DataFrame({"premium": [1.0]}).write_parquet(project_root / "quotes.parquet")
+    broken_steps = [step("f", "filter", match="all", conditions=[])]
+    # Raw sidecar-shaped candidates: no derived `_steps_error`, so recovery
+    # must render the steps itself to report the incomplete one.
+    for node in (
+        _rating_step(broken_steps),
+        _scenario_expander(broken_steps),
+        _model_score(broken_steps),
+        _stepped_input(_ready_source("quotes", project_root / "quotes.parquet"), broken_steps),
+    ):
+        raw = {k: v for k, v in node.data.config.items() if not k.startswith("_") and k != "code"}
+        assert "_steps_error" not in raw
+        issues = validate_recovery_config(node.data.nodeType, raw, input_names=None)
+        assert any(issue.path == "steps" and issue.code == "incomplete" for issue in issues), (
+            node.data.nodeType
+        )
+        # A renderable list on the same raw shape reports nothing.
+        ok_raw = {**raw, "steps": [step("l", "limit", n=2)]}
+        assert not [
+            issue
+            for issue in validate_recovery_config(node.data.nodeType, ok_raw, input_names=None)
+            if issue.path == "steps"
+        ], node.data.nodeType
+
+    quotes, rates = _frames(project_root)
+    warnings = _save(
+        project_root,
+        PipelineGraph(
+            nodes=[quotes, rates, _rating_step(broken_steps)], edges=[make_edge("quotes", "rated")]
+        ),
+    )
+    assert any(
+        "Rating Step node 'rated' has an incomplete step list (Step 1: Add at least one condition.)"
+        in w
+        for w in warnings
+    ), warnings
+
+
+def _surface_graph(
+    tmp_path: Path, surface: str, steps: list[dict[str, Any]]
+) -> tuple[PipelineGraph, str]:
+    """A source plus one stepped frame surface, ready to generate and run."""
+    quotes, _rates = _frames(tmp_path)
+    if surface == "dataInput":
+        return PipelineGraph(nodes=[_stepped_input(quotes, steps)], edges=[]), "quotes"
+    node = {
+        "externalFile": lambda: _external_file(tmp_path, steps),
+        "ratingStep": lambda: _rating_step(steps),
+        "scenarioExpander": lambda: _scenario_expander(steps),
+    }[surface]()
+    return (
+        PipelineGraph(nodes=[quotes, node], edges=[make_edge("quotes", node.id)]),
+        node.id,
+    )
+
+
+#: Every frame surface whose generated module runs without an external model.
+_RUNNABLE_FRAME_SURFACES = ("dataInput", "externalFile", "ratingStep", "scenarioExpander")
+
+
+@pytest.mark.parametrize("surface", _RUNNABLE_FRAME_SURFACES)
+def test_frame_surface_generated_module_runs_standalone(tmp_path: Path, surface: str) -> None:
+    """The generated function itself applies the steps, and raises for an incomplete list."""
+    (tmp_path / "haute.toml").write_text("", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+
+    graph, _node_id = _surface_graph(tmp_path, surface, [step("l", "limit", n=2)])
+    module = _write_and_import(graph, tmp_path)
+    frame = _collect(module.pipeline.run())
+    assert frame.height == 2, surface
+
+    broken, _ = _surface_graph(tmp_path, surface, [step("f", "filter", match="all", conditions=[])])
+    broken_module = _write_and_import(broken, tmp_path)
+    with pytest.raises(NotImplementedError, match=INCOMPLETE_STEPS_MESSAGE.split(".")[0]):
+        _collect(broken_module.pipeline.run())
+
+
+@pytest.mark.parametrize("surface", (*_RUNNABLE_FRAME_SURFACES, "modelScore"))
+def test_frame_surface_free_code_with_redundant_parentheses_reloads_in_step_mode(
+    tmp_path: Path, surface: str
+) -> None:
+    """Each surface's extractor normalises its own rendering, so reconcile must not discard it."""
+    steps = [step("c", "free_code", code="df = (df.head(2))")]
+    if surface == "modelScore":
+        quotes, _rates = _frames(tmp_path)
+        graph = PipelineGraph(
+            nodes=[quotes, _model_score(steps)], edges=[make_edge("quotes", "scored")]
+        )
+        node_id = "scored"
+    else:
+        graph, node_id = _surface_graph(tmp_path, surface, steps)
+
+    code = graph_to_code(graph, pipeline_name="main")
+    assert "df = (df.head(2))" in code
+    _write_sidecars(tmp_path, graph)
+    node = next(n for n in parse_pipeline_source(code, _base_dir=tmp_path).nodes if n.id == node_id)
+    assert node.data.config["steps"] == steps, surface
+    assert node.data.config["code"] == "df = (df.head(2))", surface
+    assert "_steps_discarded" not in node.data.config, surface
+
+
+def test_model_score_steps_run_after_scoring(tmp_path: Path) -> None:
+    """A Model Score's steps apply to the scored frame, as its post-processing code does."""
+    from unittest.mock import MagicMock, patch
+
+    import numpy as np
+
+    from haute._mlflow_io import ScoringModel
+
+    raw = MagicMock()
+    raw.feature_names_ = ["premium"]
+    raw.predict.return_value = np.array([1.0, 2.0, 3.0, 4.0])
+    raw.get_cat_feature_indices.return_value = []
+    del raw.predict_proba
+    model = ScoringModel(
+        model=raw, feature_names=["premium"], cat_feature_names=frozenset(), flavor="catboost"
+    )
+
+    quotes, _rates = _frames(tmp_path)
+    scored = _model_score([step("l", "limit", n=2)])
+    graph = PipelineGraph(nodes=[quotes, scored], edges=[make_edge("quotes", "scored")])
+    with patch("haute._mlflow_io.load_mlflow_model", return_value=model):
+        result = execute_graph(graph, target_node_id="scored", execution_context=_capped_context())[
+            "scored"
+        ]
+    assert result.status == "ok", result.error
+    assert "prediction" in [c.name for c in result.columns]
+    assert len(result.preview) == 2
+
+
+def _explore(steps: list[dict[str, Any]], **extra: Any) -> GraphNode:
+    """An Explore node whose analysis frame is authored as steps."""
+    return GraphNode(
+        id="report",
+        data=NodeData(label="report", nodeType="explore", config={"steps": steps, **extra}),
+    )
+
+
+def test_explore_steps_execute_and_round_trip_through_the_decorator(tmp_path: Path) -> None:
+    """Explore has no sidecar: its steps travel in the decorator beside its cards."""
+    quotes, _rates = _frames(tmp_path)
+    steps = [step("l", "limit", n=2)]
+    graph = PipelineGraph(nodes=[quotes, _explore(steps)], edges=[make_edge("quotes", "report")])
+    result = execute_graph(graph, target_node_id="report", execution_context=_capped_context())[
+        "report"
+    ]
+    assert result.status == "ok", result.error
+    assert len(result.preview) == 2
+
+    code = graph_to_code(graph, pipeline_name="main")
+    assert "@pipeline.explore(steps=[" in code
+    assert "\n    df = quotes\n    df = df.head(2)\n    return df\n" in code
+    # No sidecar is written for an Explore node.
+    assert "config/explore" not in code
+    assert not [rel for rel in collect_node_configs(graph) if "report" in rel]
+
+    _write_sidecars(tmp_path, graph)
+    node = next(
+        n for n in parse_pipeline_source(code, _base_dir=tmp_path).nodes if n.id == "report"
+    )
+    assert node.data.config["steps"] == steps
+    assert node.data.config["code"] == "df = df.head(2)"
+    assert "_steps_discarded" not in node.data.config
+
+
+def test_explore_steps_keep_their_cards_and_fail_loudly_when_incomplete(tmp_path: Path) -> None:
+    quotes, _rates = _frames(tmp_path)
+    from tests.test_explore_pivots import _pivot
+
+    pivots = [_pivot()]
+    steps = [step("l", "limit", n=2)]
+    graph = PipelineGraph(
+        nodes=[quotes, _explore(steps, pivots=pivots)], edges=[make_edge("quotes", "report")]
+    )
+    code = graph_to_code(graph, pipeline_name="main")
+    _write_sidecars(tmp_path, graph)
+    node = next(
+        n for n in parse_pipeline_source(code, _base_dir=tmp_path).nodes if n.id == "report"
+    )
+    assert node.data.config["steps"] == steps
+    assert [pivot["id"] for pivot in node.data.config["pivots"]] == [pivots[0]["id"]]
+
+    broken = _explore([step("f", "filter", match="all", conditions=[])])
+    assert broken.data.config["_steps_error"] == "Step 1: Add at least one condition."
+    broken_graph = PipelineGraph(nodes=[quotes, broken], edges=[make_edge("quotes", "report")])
+    result = execute_graph(
+        broken_graph, target_node_id="report", execution_context=_capped_context()
+    )["report"]
+    assert result.status == "error"
+    assert INCOMPLETE_STEPS_MESSAGE in str(result.error)
+
+    broken_code = graph_to_code(broken_graph, pipeline_name="main")
+    assert INCOMPLETE_STEPS_MESSAGE in broken_code
+    _write_sidecars(tmp_path, broken_graph)
+    reloaded = next(
+        n for n in parse_pipeline_source(broken_code, _base_dir=tmp_path).nodes if n.id == "report"
+    )
+    assert reloaded.data.config["steps"] == broken.data.config["steps"]
+    assert reloaded.data.config["code"] == ""
+    assert reloaded.data.config["_steps_error"] == "Step 1: Add at least one condition."
+
+
+def test_explore_hand_edited_body_discards_its_steps(tmp_path: Path) -> None:
+    quotes, _rates = _frames(tmp_path)
+    graph = PipelineGraph(
+        nodes=[quotes, _explore([step("l", "limit", n=2)])], edges=[make_edge("quotes", "report")]
+    )
+    _write_sidecars(tmp_path, graph)
+    edited = graph_to_code(graph, pipeline_name="main").replace("df.head(2)", "df.head(3)")
+    node = next(
+        n for n in parse_pipeline_source(edited, _base_dir=tmp_path).nodes if n.id == "report"
+    )
+    assert "steps" not in node.data.config
+    assert node.data.config["code"] == "df = df.head(3)"
+    assert node.data.config["_steps_discarded"].startswith("Steps were discarded because")
+    # Explore has no sidecar to retire.
+    assert "_discarded_sidecar" not in node.data.config
+
+
+# ---------------------------------------------------------------------------
+# Recovery preserves a hand-edited body over stale steps
+# ---------------------------------------------------------------------------
+
+
+def _recovered_settings(root: Path, authored_id: str) -> tuple[dict[str, Any], list[Any]]:
+    """The raw settings recovery would offer for one node, plus its change notes."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute._recovery_sources import read_raw_node_settings
+
+    document = load_pipeline_editor_document(root / "main.py", project_root=root)
+    target = next(node for node in document.nodes if node.authored_id == authored_id)
+    _node_type, raw, changes, _function, _params, _reference = read_raw_node_settings(
+        root, document, target
+    )
+    return raw, changes
+
+
+@pytest.mark.parametrize("surface", ("explore", "dataInput"))
+def test_recovery_keeps_a_hand_edited_body_over_stale_steps(
+    project_root: Path, surface: str
+) -> None:
+    """Recovery is the ``.py``-is-truth path too: an edited body is never regenerated."""
+    quotes, _rates = _frames(project_root)
+    if surface == "explore":
+        node, node_id = _explore([step("l", "limit", n=2)]), "report"
+    else:
+        node, node_id = _stepped_input(quotes, [step("l", "limit", n=2)]), "quotes"
+    nodes = [node] if surface == "dataInput" else [quotes, node]
+    edges = [] if surface == "dataInput" else [make_edge("quotes", "report")]
+    graph = PipelineGraph(nodes=nodes, edges=edges)
+
+    code = graph_to_code(graph, pipeline_name="main")
+    _write_sidecars(project_root, graph)
+    # The author edited the generated body by hand; the steps are now stale.
+    (project_root / "main.py").write_text(
+        code.replace("df.head(2)", "df.head(3)"), encoding="utf-8"
+    )
+
+    raw, changes = _recovered_settings(project_root, node_id)
+    assert raw["code"] == "df = df.head(3)", surface
+    assert "steps" not in raw, surface
+    assert raw["_steps_discarded"].startswith("Steps were discarded because"), surface
+    assert any(change.path == "/steps" and change.outcome == "removed" for change in changes), (
+        surface
+    )
+
+    # The recovered candidate materialises to the edited body, not the steps.
+    recovered = GraphNode(
+        id=node_id,
+        data=NodeData(label=node_id, nodeType=node.data.nodeType, config=raw),
+    )
+    assert recovered.data.config["code"] == "df = df.head(3)", surface
+
+
+@pytest.mark.parametrize("surface", ("explore", "dataInput"))
+def test_recovery_keeps_steps_when_the_body_still_matches(project_root: Path, surface: str) -> None:
+    quotes, _rates = _frames(project_root)
+    steps = [step("l", "limit", n=2)]
+    if surface == "explore":
+        node, node_id = _explore(steps), "report"
+        graph = PipelineGraph(nodes=[quotes, node], edges=[make_edge("quotes", "report")])
+    else:
+        node, node_id = _stepped_input(quotes, steps), "quotes"
+        graph = PipelineGraph(nodes=[node], edges=[])
+
+    code = graph_to_code(graph, pipeline_name="main")
+    _write_sidecars(project_root, graph)
+    (project_root / "main.py").write_text(code, encoding="utf-8")
+
+    raw, _changes = _recovered_settings(project_root, node_id)
+    assert raw["steps"] == steps, surface
+    assert "_steps_discarded" not in raw, surface
+
+
+def test_recovery_plans_a_malformed_step_container_without_raising(project_root: Path) -> None:
+    """Recovery never raises on a bad field: the unusable list goes, the body stays.
+
+    A `ConfigError` here would escape the recovery route, which handles only
+    `PipelineRepairError` and `OSError`, and the user would get an HTTP 500
+    instead of a plan.
+    """
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute._pipeline_repair import build_recover_unavailable_node_plan
+    from haute.schemas import PipelineRepairRecoverRequest
+
+    quotes, _rates = _frames(project_root)
+    graph = PipelineGraph(nodes=[_stepped_input(quotes, [step("l", "limit", n=2)])], edges=[])
+    (project_root / "main.py").write_text(
+        graph_to_code(graph, pipeline_name="main"), encoding="utf-8"
+    )
+    _write_sidecars(project_root, graph)
+    sidecar = project_root / "config" / "data_input" / "quotes.json"
+    persisted = json.loads(sidecar.read_text(encoding="utf-8"))
+    # A step list that is not a list at all, beside a readable rest of config.
+    sidecar.write_text(json.dumps({**persisted, "steps": {"kind": "limit"}}), encoding="utf-8")
+
+    document = load_pipeline_editor_document(project_root / "main.py", project_root=project_root)
+    target = next(node for node in document.nodes if node.authored_id == "quotes")
+
+    # The raw read degrades instead of raising.
+    raw, changes = _recovered_settings(project_root, "quotes")
+    assert "steps" not in raw
+    assert raw["code"] == "df = df.head(2)"
+    assert any(change.path == "/steps" and change.outcome == "removed" for change in changes)
+
+    # And the route's own plan builder returns a plan rather than an exception.
+    plan = build_recover_unavailable_node_plan(
+        project_root=project_root,
+        request=PipelineRepairRecoverRequest(
+            source_file=document.source_file,
+            source_revision=document.source_revision,
+            target_source_file=target.source_file,
+            target_recovery_id=target.recovery_id,
+            action="recover",
+        ),
+    )
+    assert plan.response.plan_hash
+    # The proposed replacement itself must carry the authored body. Searching the
+    # whole response would pass on `previous_config` alone, even if the
+    # replacement dropped the code.
+    main_edit = next(edit for edit in plan.edits if edit.path.name == "main.py")
+    assert main_edit.after is not None
+    replacement = main_edit.after.decode("utf-8")
+    assert "df = df.head(2)" in replacement
+    sidecar_edit = next((edit for edit in plan.edits if edit.path.name == "quotes.json"), None)
+    if sidecar_edit is not None and sidecar_edit.after is not None:
+        assert "steps" not in json.loads(sidecar_edit.after.decode("utf-8"))
+
+
+@pytest.mark.parametrize("authoring", ["code", "steps"])
+@pytest.mark.parametrize("row_count", [1, 2])
+def test_deploy_injected_data_input_applies_post_load_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    authoring: str,
+    row_count: int,
+) -> None:
+    from haute.deploy._scorer import score_graph
+
+    parquet_file = tmp_path / "source.parquet"
+    raw_frame = pl.DataFrame(
+        {
+            "x": [10, 20][:row_count],
+            "unused": [100, 200][:row_count],
+        }
+    )
+    raw_frame.write_parquet(parquet_file)
+    authored_code = (
+        'df = df.with_columns((pl.col("x") * scale).alias("x"))\n'
+        'df = df.with_columns(pl.col("x").alias("doubled"))'
+    )
+    src_config: dict[str, Any] = {
+        "inputType": "file",
+        "format": "parquet",
+        "mode": "scan",
+        "path": str(parquet_file),
+    }
+    if authoring == "code":
+        src_config["code"] = authored_code
+    else:
+        src_config["steps"] = [step("fc", "free_code", code=authored_code)]
+
+    out_config: dict[str, Any] = {
+        "outputMapping": [
+            {
+                "source_port": "src",
+                "source_column": "doubled",
+                "output_path": "$[:].doubled",
+                "enabled": True,
+            }
+        ],
+        "outputFormat": "json",
+    }
+    graph = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="src",
+                data=NodeData(label="src", nodeType=NodeType.DATA_INPUT, config=src_config),
+            ),
+            GraphNode(
+                id="out",
+                data=NodeData(label="out", nodeType=NodeType.OUTPUT, config=out_config),
+            ),
+        ],
+        edges=[
+            GraphEdge(id="e1", source="src", target="out"),
+        ],
+        preamble="scale = 2",
+    )
+
+    canvas_result = execute_graph(graph)["src"]
+    assert canvas_result.status == "ok", canvas_result.error
+    assert [row["doubled"] for row in canvas_result.preview] == [20, 40][:row_count]
+
+    def _fail_resolve(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError(
+            "resolve_data_input must not be called during live-injected deployment"
+        )
+
+    monkeypatch.setattr("haute._input_providers.resolve_data_input", _fail_resolve)
+
+    scored = score_graph(
+        graph=graph,
+        input_df=raw_frame,
+        input_node_ids=["src"],
+        output_node_id="out",
+        output_fields=["doubled"],
+    )
+    assert isinstance(scored, pl.DataFrame)
+    assert scored["doubled"].to_list() == [20, 40][:row_count]
+    assert scored.columns == ["doubled"]
+
+
+@pytest.mark.parametrize(
+    "authoring_config",
+    [{"code": ""}, {"steps": []}],
+    ids=["code", "steps"],
+)
+def test_empty_model_score_steps_preserve_projection(
+    authoring_config: dict[str, Any],
+) -> None:
+    import haute.projection as projection
+    from haute._contracts import _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY
+
+    src_node = GraphNode(
+        id="src",
+        data=NodeData(
+            label="src",
+            nodeType=NodeType.DATA_INPUT,
+            config={
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "path": "src.parquet",
+            },
+        ),
+    )
+    edge = GraphEdge(id="e1", source="src", target="model")
+
+    model_data = NodeData(
+        label="model",
+        nodeType=NodeType.MODEL_SCORE,
+        config={
+            "sourceType": "registered",
+            "registered_model": "test_model",
+            "output_column": "prediction",
+            _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY: ["x"],
+            **authoring_config,
+        },
+    )
+    plan = projection.compute_prepared_plan(
+        ["src", "model"],
+        {"src": ["model"], "model": []},
+        {"src": src_node, "model": GraphNode(id="model", data=model_data)},
+        {"model": ["prediction"]},
+        relevant_edges=[edge],
+    )
+
+    assert plan.needed_by_node["src"] == frozenset({"x"})
+    assert not plan.opaque_boundaries
+
+
+@pytest.mark.parametrize("preceding_limit", [False, True])
+def test_frame_free_code_rejects_global_df_with_authored_line(preceding_limit: bool) -> None:
+    snippet = "# a comment\nglobal df\ndf = df.head(2)"
+    fc_step = step("fc", "free_code", code=snippet)
+    if preceding_limit:
+        steps = [step("l", "limit", n=2), fc_step]
+        expected_index = 1
+    else:
+        steps = [fc_step]
+        expected_index = 0
+    with pytest.raises(PolarsStepError) as exc_info:
+        render_polars_steps(steps, None, start="frame")
+    assert exc_info.value.step_index == expected_index
+    msg = str(exc_info.value)
+    assert "Invalid Python on line 2" in msg
+    assert (
+        "name 'df' is assigned to before global declaration" in msg
+        or "name 'df' is used prior to global declaration" in msg
+    )
+
+
+def test_frame_scope_validation_preserves_rendered_line_ranges() -> None:
+    code = 'a = 1\ndf = df.with_columns(pl.lit(a).alias("a"))'
+    steps = [step("fc", "free_code", code=code), step("l", "limit", n=2)]
+    rendered = render_polars_steps(steps, None, start="frame")
+    assert rendered.code == f"{code}\ndf = df.head(2)"
+    assert rendered.step_lines == ((1, 2), (3, 3))
+
+
+def test_frame_global_df_saves_as_incomplete_placeholder(tmp_path: Path) -> None:
+    offending_steps = [step("fc", "free_code", code="# a comment\nglobal df\ndf = df.head(2)")]
+    graph, node_id = _surface_graph(tmp_path, "dataInput", offending_steps)
+    validated_node = next(n for n in graph.nodes if n.id == node_id)
+    assert "_steps_error" in validated_node.data.config
+    generated = graph_to_code(graph, pipeline_name="main")
+    assert INCOMPLETE_STEPS_MESSAGE in generated
+    compile(generated, "<generated>", "exec")
+    _write_sidecars(tmp_path, graph)
+    parsed = parse_pipeline_source(generated, _base_dir=tmp_path)
+    parsed_node = next(n for n in parsed.nodes if n.id == node_id)
+    assert parsed_node.data.config["steps"] == offending_steps

@@ -14,8 +14,9 @@ import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 import { apiInputFrameLabels } from "../../utils/apiInputPorts"
 
-const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, explorePivotsConfigProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, submodelPortEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps, fetchExplorePivotMembers, simulatePickerRefetch } = vi.hoisted(() => ({
+const { transformEditorProps, steppedCodePaneProps, edgeJoinEditorProps, exploreCodeEditorProps, explorePivotsConfigProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, submodelPortEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps, fetchExplorePivotMembers, simulatePickerRefetch } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
+  steppedCodePaneProps: [] as Record<string, unknown>[],
   edgeJoinEditorProps: [] as Record<string, unknown>[],
   exploreCodeEditorProps: [] as Record<string, unknown>[],
   explorePivotsConfigProps: [] as Record<string, unknown>[],
@@ -52,6 +53,15 @@ vi.mock("../LazyNodeEditors", async () => {
       <textarea data-testid="code-editor" />
     </div>
   ),
+  SteppedCodePane: (props: Record<string, unknown>) => {
+    steppedCodePaneProps.push(props)
+    return (
+      <div data-testid="SteppedCodePane">
+        <span data-testid="polars-hint">{props.codeHint as React.ReactNode}</span>
+        <textarea data-testid="code-editor" />
+      </div>
+    )
+  },
   TransformEditor: (props: Record<string, unknown>) => {
     transformEditorProps.push(props)
     return (
@@ -872,13 +882,19 @@ describe("NodePanel", () => {
   })
 
   it.each([
-    ["dataInput", "the opened input snapshot"],
-    ["externalFile", "loaded file, assign to"],
-    ["scenarioExpander", "expanded data"],
-    ["ratingStep", "use"],
-    ["modelScore", "Post-processing Code (optional)"],
-  ])("shows the Polars tab and shared code panel for %s nodes", (nodeType, hint) => {
-    renderPanel({ node: makeNode({ data: { label: "Code node", description: "", nodeType, config: {} } }) })
+    ["externalFile", "loaded file, assign to", ["claims"]],
+    ["scenarioExpander", "expanded data", []],
+    ["ratingStep", "use", []],
+    ["modelScore", "Post-processing Code (optional)", []],
+  ])("shows the Polars tab and the stepped pane in frame mode for %s nodes", (nodeType, hint, eligible) => {
+    steppedCodePaneProps.length = 0
+    const claims = makeNode({ id: "claims_src", data: { label: "claims", description: "", nodeType: "polars", config: {} } })
+    const node = makeNode({ data: { label: "Code node", description: "", nodeType, config: { steps: [] } } })
+    renderPanel({
+      node,
+      allNodes: [claims, node],
+      edges: [{ id: "e1", source: "claims_src", target: node.id }],
+    })
 
     expect(screen.getByRole("button", { name: /^config$/i })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /^polars$/i })).toBeInTheDocument()
@@ -886,9 +902,34 @@ describe("NodePanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /^polars$/i }))
 
-    expect(screen.getByTestId("PolarsCodePanel")).toBeInTheDocument()
+    expect(screen.getByTestId("SteppedCodePane")).toBeInTheDocument()
     expect(screen.getByTestId("polars-hint")).toHaveTextContent(hint)
-    expect(screen.getByTestId("code-editor")).toBeInTheDocument()
+    const paneProps = steppedCodePaneProps.at(-1) as Record<string, unknown>
+    expect(paneProps.start).toBe("frame")
+    // Only an External File may reference its inputs; the others see just df.
+    expect(paneProps.inputNames).toEqual(eligible)
+    expect((paneProps.inputSources as Array<{ name: string }>).map((source) => source.name)).toEqual(["claims"])
+  })
+
+  it("mounts the stepped code pane in frame mode on a Data Input's Polars tab", () => {
+    steppedCodePaneProps.length = 0
+    renderPanel({
+      node: makeNode({ data: { label: "In", description: "", nodeType: "dataInput", config: { steps: [] } } }),
+      runError: "boom",
+    })
+    expect(screen.queryByTestId("SteppedCodePane")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: /^polars$/i }))
+
+    expect(screen.getByTestId("SteppedCodePane")).toBeInTheDocument()
+    expect(screen.queryByTestId("PolarsCodePanel")).not.toBeInTheDocument()
+    expect(screen.getByTestId("polars-hint")).toHaveTextContent("the opened input snapshot")
+    const paneProps = steppedCodePaneProps.at(-1) as Record<string, unknown>
+    expect(paneProps.start).toBe("frame")
+    expect(paneProps.inputNames).toEqual([])
+    expect(paneProps.inputSources).toEqual([])
+    expect(paneProps.runError).toBe("boom")
+    expect(typeof paneProps.onReplaceConfig).toBe("function")
+    expect(paneProps.config).toEqual({ steps: [] })
   })
 
   it("returns to Config when switching between Polars-tab nodes", () => {
@@ -898,7 +939,7 @@ describe("NodePanel", () => {
     })
     const { rerender, props } = renderPanel({ node: first })
     fireEvent.click(screen.getByRole("button", { name: /^polars$/i }))
-    expect(screen.getByTestId("PolarsCodePanel")).toBeInTheDocument()
+    expect(screen.getByTestId("SteppedCodePane")).toBeInTheDocument()
 
     const second = makeNode({
       id: "input_2",

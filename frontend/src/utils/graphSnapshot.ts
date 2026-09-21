@@ -13,7 +13,7 @@
  */
 import type { Node } from "@xyflow/react"
 import type { PipelineEdge } from "../types/node"
-import { authoredPolarsConfig } from "./polarsStepInputs"
+import { authoredPolarsConfig, isSteppedConfig } from "./polarsStepInputs"
 
 // ---------------------------------------------------------------------------
 // Field stripping
@@ -57,7 +57,7 @@ function stripNodeUiFields(n: Node, forFingerprint = false): Record<string, unkn
   }
   const data = out.data as Record<string, unknown> | undefined
   const config = data?.config as Record<string, unknown> | undefined
-  if (forFingerprint && data?.nodeType === "polars" && Array.isArray(config?.steps)) {
+  if (forFingerprint && data !== undefined && config !== undefined && isSteppedConfig(String(data.nodeType), config)) {
     // Steps are authored; their generated body and validation result are caches.
     // Keep both in requests/history, but do not count re-materialisation as an edit.
     data.config = authoredPolarsConfig(config)

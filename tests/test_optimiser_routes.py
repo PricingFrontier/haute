@@ -198,7 +198,7 @@ def _make_streaming_auto_range_graph(source_path: str, *, scenario_code: str | N
         "column_name": "premium_multiplier",
         "min_value": 0.9,
         "max_value": 1.1,
-        "steps": 2,
+        "stepCount": 2,
         "step_column": "scenario_index",
     }
     if scenario_code is not None:
@@ -361,7 +361,7 @@ def _make_auto_range_runtime_projectable_graph(left_path: str, right_path: str) 
                             "column_name": "premium_multiplier",
                             "min_value": 1.0,
                             "max_value": 2.0,
-                            "steps": 2,
+                            "stepCount": 2,
                             "code": (
                                 "df = df.with_columns("
                                 "premium=pl.col('premium') * pl.col('premium_multiplier'))"
@@ -2546,7 +2546,7 @@ class TestEstimateRoute:
                                 "column_name": "premium_multiplier",
                                 "min_value": 0.5,
                                 "max_value": 1.5,
-                                "steps": 3,
+                                "stepCount": 3,
                                 "step_column": "scenario_index",
                                 "contract": {
                                     "inputs": ["premium"],
@@ -2725,7 +2725,7 @@ class TestEstimateRoute:
                                 "column_name": "premium_multiplier",
                                 "min_value": 0.5,
                                 "max_value": 1.5,
-                                "steps": 2,
+                                "stepCount": 2,
                                 "step_column": "scenario_index",
                                 "contract": {
                                     "inputs": [],
@@ -2857,7 +2857,7 @@ class TestEstimateRoute:
                                 "column_name": "premium_multiplier",
                                 "min_value": 0.5,
                                 "max_value": 1.5,
-                                "steps": 2,
+                                "stepCount": 2,
                                 "step_column": "scenario_index",
                                 "contract": {
                                     "inputs": [],
@@ -2989,7 +2989,7 @@ class TestEstimateRoute:
                                 "column_name": "premium_multiplier",
                                 "min_value": 0.5,
                                 "max_value": 1.5,
-                                "steps": 2,
+                                "stepCount": 2,
                                 "step_column": "scenario_index",
                                 "contract": {
                                     "inputs": [],
@@ -3121,7 +3121,7 @@ class TestEstimateRoute:
                                 "column_name": "premium_multiplier",
                                 "min_value": 0.9,
                                 "max_value": 1.1,
-                                "steps": 2,
+                                "stepCount": 2,
                                 "step_column": "scenario_index",
                             },
                         },
@@ -3215,7 +3215,7 @@ class TestEstimateRoute:
                                 "column_name": "premium_multiplier",
                                 "min_value": 0.9,
                                 "max_value": 1.1,
-                                "steps": 2,
+                                "stepCount": 2,
                                 "step_column": "scenario_index",
                             },
                         },
@@ -3456,7 +3456,7 @@ class TestEstimateRoute:
                             "config": {
                                 "quote_id": "quote_id",
                                 "column_name": "premium_multiplier",
-                                "steps": 2,
+                                "stepCount": 2,
                                 "code": (
                                     "df = df.with_columns("
                                     "premium=pl.col('premium') * "
@@ -3555,7 +3555,7 @@ class TestEstimateRoute:
                             "config": {
                                 "quote_id": "quote_id",
                                 "column_name": "premium_multiplier",
-                                "steps": 2,
+                                "stepCount": 2,
                                 "contract": {
                                     "inputs": ["premium"],
                                     "outputs": ["premium_multiplier", "scenario_index"],
@@ -3654,7 +3654,7 @@ class TestEstimateRoute:
                             "config": {
                                 "quote_id": "quote_id",
                                 "column_name": "premium_multiplier",
-                                "steps": 2,
+                                "stepCount": 2,
                                 "contract": {
                                     "inputs": ["premium"],
                                     "outputs": ["premium_multiplier", "scenario_index"],
@@ -3745,7 +3745,7 @@ class TestEstimateRoute:
                             "nodeType": "scenarioExpander",
                             "config": {
                                 "column_name": "premium_multiplier",
-                                "steps": 2,
+                                "stepCount": 2,
                                 "contract": {
                                     "inputs": ["premium"],
                                     "outputs": ["premium_multiplier", "scenario_index"],
@@ -3829,7 +3829,7 @@ class TestEstimateRoute:
                             "nodeType": "scenarioExpander",
                             "config": {
                                 "column_name": "premium_multiplier",
-                                "steps": 2,
+                                "stepCount": 2,
                                 "contract": {
                                     "inputs": ["premium"],
                                     "outputs": ["premium_multiplier", "scenario_index"],
@@ -3929,7 +3929,7 @@ class TestEstimateRoute:
                             "nodeType": "scenarioExpander",
                             "config": {
                                 "column_name": "premium_multiplier",
-                                "steps": 2,
+                                "stepCount": 2,
                                 "contract": {
                                     "inputs": ["premium"],
                                     "outputs": ["premium_multiplier", "scenario_index"],
@@ -4028,7 +4028,7 @@ class TestEstimateRoute:
                             "nodeType": "scenarioExpander",
                             "config": {
                                 "column_name": "market_multiplier",
-                                "steps": 2,
+                                "stepCount": 2,
                                 "contract": {
                                     "inputs": [],
                                     "outputs": ["market_multiplier", "scenario_index"],
@@ -4043,7 +4043,7 @@ class TestEstimateRoute:
                             "nodeType": "scenarioExpander",
                             "config": {
                                 "column_name": "premium_multiplier",
-                                "steps": 2,
+                                "stepCount": 2,
                                 "contract": {
                                     "inputs": ["premium"],
                                     "outputs": ["premium_multiplier", "scenario_index"],
@@ -4177,7 +4177,7 @@ class TestEstimateRoute:
                                 "column_name": "premium_multiplier",
                                 "min_value": 1.0,
                                 "max_value": 2.0,
-                                "steps": 2,
+                                "stepCount": 2,
                                 "code": (
                                     "df = df.with_columns("
                                     "premium=pl.col('premium') * "
@@ -5683,7 +5683,7 @@ def _make_expander_graph(data_path: str) -> dict:
                             "column_name": "scenario_value",
                             "min_value": 0.8,
                             "max_value": 1.2,
-                            "steps": 5,
+                            "stepCount": 5,
                             "step_column": "scenario_index",
                         },
                     },

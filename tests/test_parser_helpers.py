@@ -981,14 +981,14 @@ class TestBuildNodeConfigExtended:
                 "quote_id": "qid",
                 "min_value": 0.8,
                 "max_value": 1.2,
-                "steps": 5,
+                "stepCount": 5,
             },
             "",
             [],
         )
         assert config["quote_id"] == "qid"
         assert config["min_value"] == 0.8
-        assert config["steps"] == 5
+        assert config["stepCount"] == 5
 
     def test_scenario_expander_config_extracts_user_code_after_boilerplate(self):
         body = (
@@ -999,7 +999,7 @@ class TestBuildNodeConfigExtended:
         )
         config = _build_node_config(
             NodeType.SCENARIO_EXPANDER,
-            {"scenario_expander": True, "steps": 5},
+            {"scenario_expander": True, "stepCount": 5},
             body,
             ["source"],
         )
@@ -1010,7 +1010,7 @@ class TestBuildNodeConfigExtended:
         body = '    """Expand."""\n    return source'
         config = _build_node_config(
             NodeType.SCENARIO_EXPANDER,
-            {"scenario_expander": True, "steps": 5},
+            {"scenario_expander": True, "stepCount": 5},
             body,
             ["source"],
         )

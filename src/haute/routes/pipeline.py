@@ -260,7 +260,7 @@ async def render_polars_steps_endpoint(
 ) -> PolarsStepsRenderResponse:
     """Render a step list to Polars code without reading or writing project state."""
     try:
-        rendered = render_polars_steps(body.steps, body.input_names)
+        rendered = render_polars_steps(body.steps, body.input_names, start=body.start)
     except PolarsStepError as exc:
         return PolarsStepsRenderResponse(ok=False, step_index=exc.step_index, message=exc.message)
     return PolarsStepsRenderResponse(

@@ -226,6 +226,9 @@ def _examples():
                 "mode": "read",
                 "records": [{"_id": 17, "nested": {"_key": "value"}}],
                 "arguments": {"infer_schema_length": 1},
+                # Post-load steps: the sidecar owns them and codegen renders
+                # them after the load scaffold (`df = df.head(2)`).
+                "steps": [{"id": "l", "kind": "limit", "n": 2}],
             },
         ),
         (
@@ -281,11 +284,75 @@ def _examples():
                 "maintainOrder": "left",
             },
         ),
+        # Frame-mode step lists: the sidecar owns them and codegen renders
+        # them after each surface's scaffold (`df = df.head(2)`).
+        (
+            NodeType.EXTERNAL_FILE,
+            {
+                "path": "models/external.pkl",
+                "fileType": "pickle",
+                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+            },
+        ),
+        (
+            NodeType.RATING_STEP,
+            {
+                "tables": [
+                    {
+                        "factors": ["score_band"],
+                        "outputColumn": "rate_factor",
+                        "defaultValue": "1.0",
+                        "entries": [{"score_band": "low", "value": "1.25"}],
+                    }
+                ],
+                "combinedOutputs": [],
+                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+            },
+        ),
+        (
+            NodeType.MODEL_SCORE,
+            {
+                "sourceType": "run",
+                "run_id": "run-1",
+                "artifact_path": "models/score.cbm",
+                "task": "regression",
+                "output_column": "prediction",
+                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+            },
+        ),
+        (
+            NodeType.SCENARIO_EXPANDER,
+            {
+                "quote_id": "quote_id",
+                "column_name": "scenario_value",
+                "min_value": 0.0,
+                "max_value": 1.0,
+                "stepCount": 3,
+                "step_column": "step_index",
+                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+            },
+        ),
+        # Explore keeps its steps in the decorator beside its cards, so the
+        # round trip has to carry both.
+        (
+            NodeType.EXPLORE,
+            {
+                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                "pivot_formulas": [_formula()],
+                "pivots": [_pivot(formulas=["formula_1"])],
+            },
+        ),
     ]
     for index, (node_type, config) in enumerate(variants):
         variant = graph.model_copy(deep=True)
-        node = next(node for node in variant.nodes if node.data.nodeType == node_type)
-        node.data.config = {**config, "contract": "opaque", **deepcopy(_SHARED_COLUMN_CONFIG)}
+        position = next(
+            i for i, node in enumerate(variant.nodes) if node.data.nodeType == node_type
+        )
+        # Replace through the validated helper so a stepped example carries
+        # its materialised `code` exactly as the parsed graph will.
+        variant.nodes[position] = variant.nodes[position].with_config(
+            {**config, "contract": "opaque", **deepcopy(_SHARED_COLUMN_CONFIG)}
+        )
         yield f"{node_type.value}-variant-{index}", variant
     # A stepped transform persists its steps in the optional polars sidecar and
     # regenerates its body from them; the sidecar must survive save -> parse.
