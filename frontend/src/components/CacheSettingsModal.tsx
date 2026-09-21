@@ -18,10 +18,10 @@
  * Per `specs/frontend-shared/low-level.md` ("Cache usage pane").
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Loader2, RefreshCw, TriangleAlert } from "lucide-react"
+import { Loader2, RefreshCw, TriangleAlert, X } from "lucide-react"
 
 import ModalShell from "./ModalShell"
-import { fetchCacheNodes, fetchCacheUsage } from "../api/client"
+import { clearCacheIdentities, fetchCacheNodes, fetchCacheUsage } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
 import type { CacheBudgetUsage, CacheNodeEntry, CacheNodesResponse, CacheUsageResponse } from "../api/types"
 import { formatByteSize } from "../utils/formatBytes"
@@ -66,6 +66,7 @@ function barColor(fraction: number): string {
   return "var(--accent)"
 }
 
+/** One budget's bar: the figure, the limit, and the variable that sets it. */
 function UsageMeter({
   label,
   used,
@@ -83,15 +84,15 @@ function UsageMeter({
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="text-[11px] font-medium" style={{ color: "var(--text-secondary)" }}>
+        <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
           {label}
         </span>
-        <span className="text-[11px] font-mono" style={{ color: "var(--text-primary)" }}>
-          {format(used)} of {format(limit)}
+        <span className="text-[11px] font-mono tabular-nums" style={{ color: "var(--text-primary)" }}>
+          {format(used)} <span style={{ color: "var(--text-muted)" }}>of {format(limit)}</span>
         </span>
       </div>
       <div
-        className="h-1.5 w-full rounded-full overflow-hidden"
+        className="h-1 w-full rounded-full overflow-hidden"
         style={{ background: "var(--chrome-hover)" }}
         role="meter"
         aria-label={label}
@@ -107,14 +108,14 @@ function UsageMeter({
       </div>
       {/* The variable is the remedy: it is what a user changes to raise this
           limit, and the server reports the name it actually read. */}
-      <span className="text-[10px] font-mono" style={{ color: "var(--text-muted)" }}>
+      <span className="text-[9px] font-mono truncate" style={{ color: "var(--text-muted)" }}>
         {variable}
       </span>
     </div>
   )
 }
 
-function BudgetSection({
+function BudgetCard({
   descriptor,
   usage,
 }: {
@@ -123,18 +124,13 @@ function BudgetSection({
 }) {
   return (
     <section
-      className="flex flex-col gap-2.5 rounded-lg p-3"
+      className="flex flex-col gap-2 rounded-lg p-2.5"
       style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
       data-testid={`cache-budget-${descriptor.key}`}
     >
-      <div className="flex flex-col gap-0.5">
-        <h3 className="text-[12px] font-semibold" style={{ color: "var(--text-primary)" }}>
-          {descriptor.title}
-        </h3>
-        <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-          {descriptor.detail}
-        </p>
-      </div>
+      <h3 className="text-[11px] font-semibold" style={{ color: "var(--text-primary)" }}>
+        {descriptor.title}
+      </h3>
       <UsageMeter
         label="Generations"
         used={usage.generations_used}
@@ -170,33 +166,86 @@ function stateColor(state: CacheNodeEntry["state"]): string {
   return "var(--text-muted)"
 }
 
-function formatRows(rows: number | null): string {
-  return rows === null ? "—" : `${rows.toLocaleString()} rows`
+/** A duration a person reads at a glance: "0.4 s", "9.9 s", "2m 14s". */
+function formatDuration(seconds: number | null): string {
+  if (seconds === null) return "—"
+  if (seconds < 10) return `${seconds.toFixed(1)} s`
+  if (seconds < 60) return `${Math.round(seconds)} s`
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}m ${String(Math.round(seconds - minutes * 60)).padStart(2, "0")}s`
+}
+
+/** When it was cached, short enough for a column: "19 Sep 23:10". */
+function formatCachedAt(seconds: number | null): string {
+  if (seconds === null) return "—"
+  return new Date(seconds * 1000).toLocaleString([], {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  })
+}
+
+/** The one grid the header and every row share, so the columns line up. */
+const ROW_GRID =
+  "grid grid-cols-[minmax(0,1fr)_84px_68px_104px_52px_20px] items-baseline gap-x-2"
+
+function TableHeader() {
+  return (
+    <div
+      className={`${ROW_GRID} px-2.5 pb-1 text-[9px] font-semibold uppercase tracking-wide`}
+      style={{ color: "var(--text-muted)" }}
+    >
+      <span>Node</span>
+      <span>Status</span>
+      <span className="text-right">Size</span>
+      <span className="text-right">Cached</span>
+      <span className="text-right">Time</span>
+      <span aria-hidden="true" />
+    </div>
+  )
+}
+
+function SectionRow({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      className="px-2.5 py-1 mt-1 text-[9px] font-semibold uppercase tracking-wide"
+      style={{ color: "var(--text-muted)", background: "var(--chrome-hover)" }}
+    >
+      {children}
+    </div>
+  )
 }
 
 function CacheRow({
   name,
   detail,
-  state,
-  readsDirectly = false,
-  rows,
+  status,
+  statusColor,
   sizeBytes,
-  generations,
+  cachedAt,
+  buildSeconds,
+  rows,
+  onClear,
+  clearing,
   testId,
 }: {
   name: string
   detail?: string
-  state?: CacheNodeEntry["state"]
-  /** A node reading its file directly holds no cache, whatever its state. */
-  readsDirectly?: boolean
-  rows: number | null
+  status: string
+  statusColor: string
   sizeBytes: number
-  generations: number
+  cachedAt: number | null
+  buildSeconds: number | null
+  rows: number | null
+  /** Absent when the row carries nothing: there is then nothing to clear. */
+  onClear?: () => void
+  clearing?: boolean
   testId?: string
 }) {
   return (
     <div
-      className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-baseline gap-x-3 px-2 py-1 rounded"
+      className={`${ROW_GRID} px-2.5 py-1 rounded hover:bg-[var(--chrome-hover)] group`}
       data-testid={testId}
     >
       <div className="min-w-0">
@@ -204,44 +253,61 @@ function CacheRow({
           {name}
         </span>
         {detail && (
-          <span className="text-[10px] font-mono" style={{ color: "var(--text-muted)" }}>
+          <span
+            className="text-[9px] font-mono truncate block"
+            style={{ color: "var(--text-muted)" }}
+          >
             {detail}
           </span>
         )}
       </div>
-      {state !== undefined ? (
-        <span
-          className="text-[10px] whitespace-nowrap"
-          style={{ color: readsDirectly ? "var(--text-muted)" : stateColor(state) }}
-        >
-          {/* "Cached" would be a lie for a direct read: there is no cache, the
-              file is scanned where it lies. */}
-          {readsDirectly ? "Read directly" : state === null ? "—" : STATE_LABELS[state]}
-        </span>
-      ) : (
-        <span className="text-[10px] whitespace-nowrap" style={{ color: "var(--text-muted)" }}>
-          {generations === 1 ? "1 generation" : `${generations} generations`}
-        </span>
-      )}
+      <span className="text-[10px] truncate" style={{ color: statusColor }}>
+        {status}
+      </span>
       <span
-        className="text-[10px] font-mono text-right whitespace-nowrap tabular-nums"
+        className="text-[10px] font-mono tabular-nums text-right"
         style={{ color: "var(--text-secondary)" }}
-        title={formatRows(rows)}
+        title={rows === null ? undefined : `${rows.toLocaleString()} rows`}
       >
         {sizeBytes > 0 ? formatByteSize(sizeBytes) : "—"}
       </span>
+      <span
+        className="text-[10px] font-mono tabular-nums text-right whitespace-nowrap"
+        style={{ color: "var(--text-muted)" }}
+      >
+        {formatCachedAt(cachedAt)}
+      </span>
+      <span
+        className="text-[10px] font-mono tabular-nums text-right"
+        style={{ color: "var(--text-muted)" }}
+      >
+        {formatDuration(buildSeconds)}
+      </span>
+      {onClear ? (
+        <button
+          data-testid={testId ? `${testId}-clear` : undefined}
+          onClick={onClear}
+          disabled={clearing}
+          /* Always visible, not revealed on hover: a control nobody can see is
+             a control nobody knows they have. It is dimmed until the row is
+             hovered so a long table does not read as a column of red. It shows
+             only on a row that carries bytes, so it always has something to do
+             and always does exactly what the row reports. */
+          className="justify-self-end rounded p-0.5 transition-opacity opacity-50 group-hover:opacity-100 focus-visible:opacity-100 disabled:opacity-30"
+          style={{ color: "var(--danger)" }}
+          aria-label={`Clear the cache for ${name}`}
+          title={`Clear the cache for ${name} — ${formatByteSize(sizeBytes)}`}
+        >
+          {clearing ? (
+            <Loader2 size={12} className="animate-spin" aria-hidden="true" />
+          ) : (
+            <X size={12} aria-hidden="true" />
+          )}
+        </button>
+      ) : (
+        <span aria-hidden="true" />
+      )}
     </div>
-  )
-}
-
-function GroupHeading({ children }: { children: React.ReactNode }) {
-  return (
-    <h3
-      className="text-[10px] font-semibold uppercase tracking-wide px-2 pt-1"
-      style={{ color: "var(--text-muted)" }}
-    >
-      {children}
-    </h3>
   )
 }
 
@@ -250,6 +316,9 @@ export default function CacheSettingsModal({ onClose }: { onClose: () => void })
   const [nodes, setNodes] = useState<CacheNodesResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  // The row being cleared, so its own control shows the work and no other row
+  // is disabled by it.
+  const [clearing, setClearing] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
   const { allNodes } = usePanelGraphContext()
@@ -316,6 +385,28 @@ export default function CacheSettingsModal({ onClose }: { onClose: () => void })
     read(controller)
   }, [read])
 
+  const clearRow = useCallback(
+    (rowKey: string, digests: string[]) => {
+      if (digests.length === 0) return
+      setClearing(rowKey)
+      setError(null)
+      clearCacheIdentities(digests)
+        .then(() => {
+          // Re-read rather than patch the row: clearing frees a generation the
+          // budgets count, so the bars above are stale too.
+          const controller = new AbortController()
+          abortRef.current?.abort()
+          abortRef.current = controller
+          read(controller)
+        })
+        .catch((cause: unknown) => {
+          setError(apiErrorMessage(cause, "Could not clear that cache."))
+        })
+        .finally(() => setClearing(null))
+    },
+    [read],
+  )
+
   useEffect(() => {
     // The opening read sets no state of its own: the pane already starts
     // loading with no error, and only the response changes that.
@@ -328,7 +419,7 @@ export default function CacheSettingsModal({ onClose }: { onClose: () => void })
   }, [read])
 
   return (
-    <ModalShell ariaLabel="Cache usage" onClose={onClose} width="w-[460px]" testId="cache-settings">
+    <ModalShell ariaLabel="Cache usage" onClose={onClose} width="w-[620px]" testId="cache-settings">
       <div className="flex flex-col gap-3 p-4 max-h-[85vh]">
         <div className="flex items-start justify-between gap-3 shrink-0">
           <div className="flex flex-col gap-0.5">
@@ -375,25 +466,30 @@ export default function CacheSettingsModal({ onClose }: { onClose: () => void })
           </p>
         )}
 
-        {usage
-          ? BUDGETS.map((descriptor) => (
-              <BudgetSection key={descriptor.key} descriptor={descriptor} usage={usage[descriptor.key]} />
-            ))
-          : !error && (
-              <p className="text-[11px] py-6 text-center" style={{ color: "var(--text-muted)" }}>
-                Counting the cache…
-              </p>
-            )}
+        {usage ? (
+          <div className="grid grid-cols-2 gap-2">
+            {BUDGETS.map((descriptor) => (
+              <BudgetCard key={descriptor.key} descriptor={descriptor} usage={usage[descriptor.key]} />
+            ))}
+          </div>
+        ) : (
+          !error && (
+            <p className="text-[11px] py-6 text-center" style={{ color: "var(--text-muted)" }}>
+              Counting the cache…
+            </p>
+          )
+        )}
 
         {nodes && (
           <section
-            className="flex flex-col gap-0.5 rounded-lg py-2"
+            className="flex flex-col rounded-lg py-2 overflow-hidden"
             style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
             data-testid="cache-node-list"
           >
-            <GroupHeading>This pipeline · {nodes.source}</GroupHeading>
+            <TableHeader />
+            <SectionRow>This pipeline · {nodes.source}</SectionRow>
             {nodes.nodes.length === 0 && (
-              <p className="text-[11px] px-2 py-1" style={{ color: "var(--text-muted)" }}>
+              <p className="text-[11px] px-2.5 py-1" style={{ color: "var(--text-muted)" }}>
                 This pipeline has no nodes.
               </p>
             )}
@@ -414,34 +510,58 @@ export default function CacheSettingsModal({ onClose }: { onClose: () => void })
                           ? `${node.generations} generations`
                           : undefined)
                 }
-                state={node.state}
-                readsDirectly={node.reads_directly}
+                /* "Cached" would be a lie for a direct read: there is no cache,
+                   the file is scanned where it lies. */
+                status={
+                  node.reads_directly
+                    ? "Read directly"
+                    : node.state === null
+                      ? "—"
+                      : STATE_LABELS[node.state]
+                }
+                statusColor={node.reads_directly ? "var(--text-muted)" : stateColor(node.state)}
                 rows={node.row_count}
                 sizeBytes={node.size_bytes}
-                generations={node.generations}
+                cachedAt={node.newest_created_at}
+                buildSeconds={node.build_seconds}
+                onClear={
+                  node.identity_digests.length > 0
+                    ? () => clearRow(node.node_id, node.identity_digests)
+                    : undefined
+                }
+                clearing={clearing === node.node_id}
               />
             ))}
 
             {nodes.other.length > 0 && (
               <>
-                <GroupHeading>Not in this pipeline</GroupHeading>
+                <SectionRow>Not in this pipeline</SectionRow>
                 {nodes.other.map((owner, index) => (
                   <CacheRow
                     key={`${owner.bucket}:${owner.label}:${owner.source ?? ""}:${index}`}
                     testId={`cache-other-${owner.label}`}
                     name={owner.label}
                     detail={owner.source ?? "input snapshot"}
+                    status={owner.generations === 1 ? "1 generation" : `${owner.generations} generations`}
+                    statusColor="var(--text-muted)"
                     rows={owner.row_count}
                     sizeBytes={owner.size_bytes}
-                    generations={owner.generations}
+                    cachedAt={owner.newest_created_at}
+                    buildSeconds={owner.build_seconds}
+                    onClear={
+                      owner.identity_digests.length > 0
+                        ? () => clearRow(`other:${index}`, owner.identity_digests)
+                        : undefined
+                    }
+                    clearing={clearing === `other:${index}`}
                   />
                 ))}
               </>
             )}
 
-            {(nodes.unattributed_bytes > 0 || nodes.unmarked_identities > 0) && (
+        {(nodes.unattributed_bytes > 0 || nodes.unmarked_identities > 0) && (
               <p
-                className="text-[10px] px-2 pt-1.5 leading-relaxed"
+                className="text-[10px] px-2.5 pt-2 leading-relaxed"
                 style={{ color: "var(--text-muted)" }}
                 data-testid="cache-node-footnotes"
               >

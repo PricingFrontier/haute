@@ -420,13 +420,23 @@ replacing them, because stale usage with a stated error is more use than an
 empty pane. Closing the pane abandons whichever read is in flight — the
 latest, which after a Refresh is not the one the opening effect started.
 
-Beneath the budgets the pane lists **every node of the open pipeline** for the active
-source, from `POST /api/cache/nodes`, which it reads in the same pair of requests as the
+The two budgets sit side by side as compact cards, each a generations bar and a size bar over
+the variable that sets its limit. Beneath them the pane **tabulates every node of the open
+pipeline** for the active source under one column header — node, status, size, when it was
+cached, and how long that took — with numeric columns right-aligned and tabular so they
+compare down the column, from `POST /api/cache/nodes`, which it reads in the same pair of requests as the
 usage and on the same explicit Refresh. It builds the graph payload itself from
 `usePanelGraphContext` and the graph store rather than taking it as a prop, since the
 toolbar has no graph of its own to pass. Each row shows the node's label (its id when the
 canvas has none, which is how a node the store holds but the graph has lost still reads),
-its state, and its size. What a row does *not* show is as deliberate: a node reading an
+its state, its size, and — from the generation's own metadata — when it was cached and the
+seconds it took. An unrecorded duration renders as an em-dash, never as zero: a store
+predating the recording must not claim instant builds. A row that carries bytes also
+carries a red clear control, shown on hover or focus, which clears exactly the identities that
+row reported and then re-reads both endpoints — clearing frees a generation the budgets count,
+so the bars above it are stale too. A row carrying nothing has no control, because it would
+have nothing to act on and a row whose bytes belong to another row must not appear to own
+them. A failed clear renders `apiErrorMessage` and leaves the table as it stands. What a row does *not* show is as deliberate: a node reading an
 upstream point says "reads <that node>", because the point's bytes belong to that node's
 row — it still shows a size of its own when the store holds its captured output, which a
 node in the middle of a lineage often has; a node sharing an input snapshot with an earlier

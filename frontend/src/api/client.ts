@@ -11,6 +11,7 @@
 import type {
   ApplyOptimiserRequest,
   ApplyOptimiserResponse,
+  CacheClearResponse,
   CacheNodesResponse,
   CacheUsageResponse,
   DatabricksCatalogsResponse,
@@ -112,6 +113,7 @@ import type {
 } from "./types"
 import {
   parseApplyOptimiserResponse,
+  parseCacheClearResponse,
   parseCacheNodesResponse,
   parseCacheUsageResponse,
   parseDatabricksCatalogsResponse,
@@ -1203,6 +1205,18 @@ export function fetchCacheUsage(
  * Costs one point resolution per node on top of the store walk, so it is read
  * with the usage on open and on Refresh, never on a timer.
  */
+/**
+ * Clear the identities a report's row named — exactly what that row reported,
+ * and nothing else. A digest the store no longer holds is reported as not
+ * cleared rather than failing.
+ */
+export function clearCacheIdentities(
+  digests: string[],
+  options?: { signal?: AbortSignal },
+): Promise<CacheClearResponse> {
+  return post<unknown>("/api/cache/clear", { digests }, options).then(parseCacheClearResponse)
+}
+
 export function fetchCacheNodes(
   payload: { graph: unknown; source: string },
   options?: { signal?: AbortSignal },

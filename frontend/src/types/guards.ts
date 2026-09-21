@@ -14,6 +14,7 @@ import {
 } from "../generated/api-contracts.execution-strategy-diagnostic.validators.mjs"
 import type {
   CacheBudgetUsage,
+  CacheClearResponse,
   CacheNodeEntry,
   CacheNodesResponse,
   CacheOwnerEntry,
@@ -2060,6 +2061,8 @@ function parseCacheNodeEntry(value: unknown, field: string): CacheNodeEntry {
     generations: expectNonNegativeInteger(p, obj.generations, `${field}.generations`),
     size_bytes: expectNonNegativeInteger(p, obj.size_bytes, `${field}.size_bytes`),
     newest_created_at: expectNullableNumber(p, obj.newest_created_at, `${field}.newest_created_at`),
+    build_seconds: expectNullableNumber(p, obj.build_seconds, `${field}.build_seconds`),
+    identity_digests: parseArray(p, obj.identity_digests, `${field}.identity_digests`, (value, at) => expectNonBlankString(p, value, at)),
     retention: obj.retention === null
       ? null
       : expectStringLiteral(p, obj.retention, `${field}.retention`, CACHE_RETENTIONS),
@@ -2079,6 +2082,18 @@ function parseCacheOwnerEntry(value: unknown, field: string): CacheOwnerEntry {
     row_count: expectNullableNumber(p, obj.row_count, `${field}.row_count`),
     size_bytes: expectNonNegativeInteger(p, obj.size_bytes, `${field}.size_bytes`),
     newest_created_at: expectNullableNumber(p, obj.newest_created_at, `${field}.newest_created_at`),
+    build_seconds: expectNullableNumber(p, obj.build_seconds, `${field}.build_seconds`),
+    identity_digests: parseArray(p, obj.identity_digests, `${field}.identity_digests`, (value, at) => expectNonBlankString(p, value, at)),
+  }
+}
+
+export function parseCacheClearResponse(value: unknown): CacheClearResponse {
+  const p = "parseCacheClearResponse"
+  const obj = expectPlainObject(p, value)
+  return {
+    schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"),
+    cleared: parseArray(p, obj.cleared, "field `cleared`", (v, at) => expectNonBlankString(p, v, at)),
+    freed_bytes: expectNonNegativeInteger(p, obj.freed_bytes, "field `freed_bytes`"),
   }
 }
 

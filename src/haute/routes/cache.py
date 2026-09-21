@@ -31,6 +31,8 @@ from haute.routes.node_data import node_data_service
 from haute.routes.pipeline import _ensure_source_file, _validate_runtime_input_paths
 from haute.schemas import (
     CacheBudgetUsagePayload,
+    CacheClearRequest,
+    CacheClearResponse,
     CacheNodeEntry,
     CacheNodesRequest,
     CacheNodesResponse,
@@ -63,6 +65,8 @@ def _owner_entry(owner: CacheOwnerUsage) -> CacheOwnerEntry:
         row_count=owner.newest_row_count,
         size_bytes=owner.size_bytes,
         newest_created_at=owner.newest_created_at,
+        build_seconds=owner.newest_build_seconds,
+        identity_digests=sorted(owner.identity_digests),
     )
 
 
@@ -93,9 +97,15 @@ def _node_entry(
     directory under it is reported rather than silently dropped.
     """
     generations, size_bytes, newest_created_at = 0, 0, None
+    build_seconds: float | None = None
+    digests: list[str] = []
     if owner is not None and carries:
         generations, size_bytes = owner.generations, owner.size_bytes
         newest_created_at = owner.newest_created_at
+        build_seconds = owner.newest_build_seconds
+        # Only a row that carries the bytes names the identities, because
+        # clearing a row must clear exactly what that row reports.
+        digests = sorted(owner.identity_digests)
 
     if point is None:
         # No point to describe, but the store may still hold this node's data,
@@ -105,6 +115,8 @@ def _node_entry(
             generations=generations,
             size_bytes=size_bytes,
             newest_created_at=newest_created_at,
+            build_seconds=build_seconds,
+            identity_digests=digests,
             shares_snapshot_with=sharers,
             unavailable_reason=reason,
         )
@@ -122,6 +134,8 @@ def _node_entry(
         generations=generations,
         size_bytes=size_bytes,
         newest_created_at=newest_created_at,
+        build_seconds=build_seconds,
+        identity_digests=digests,
         unavailable_reason=reason,
     )
 
@@ -213,3 +227,27 @@ def cache_nodes(body: CacheNodesRequest) -> CacheNodesResponse:
         unattributed_bytes=inventory.unattributed_bytes,
         unmarked_identities=inventory.unmarked_identities,
     )
+
+
+@router.post("/clear", response_model=CacheClearResponse)
+def cache_clear(body: CacheClearRequest) -> CacheClearResponse:
+    """Clear the identities a report's row named.
+
+    The row is the unit the user acts on, and a row names exactly the
+    identities it reports — so this clears what that row showed and nothing
+    else. A digest the store no longer holds is reported as not cleared rather
+    than failing: acting on a report a moment out of date is an ordinary race.
+
+    Cache data is regenerable, which is why this needs no confirmation of its
+    own; what it must not do is surprise a reader mid-scan, and it does not —
+    a generation a reader holds retires when that reader releases it.
+    """
+    store = NodeSnapshotStore(node_data_project_root())
+    cleared: list[str] = []
+    freed = 0
+    for digest in dict.fromkeys(body.digests):
+        held = store.clear_identity(digest)
+        if held or store.inputs_root.joinpath(digest).exists():
+            cleared.append(digest)
+            freed += held
+    return CacheClearResponse(cleared=cleared, freed_bytes=freed)

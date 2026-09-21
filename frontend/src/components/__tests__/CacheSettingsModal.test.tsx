@@ -12,9 +12,12 @@ import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-libra
 const mockFetchCacheUsage = vi.fn()
 const mockFetchCacheNodes = vi.fn()
 
+const mockClearCacheIdentities = vi.fn()
+
 vi.mock("../../api/client", () => ({
   fetchCacheUsage: (...args: unknown[]) => mockFetchCacheUsage(...args),
   fetchCacheNodes: (...args: unknown[]) => mockFetchCacheNodes(...args),
+  clearCacheIdentities: (...args: unknown[]) => mockClearCacheIdentities(...args),
 }))
 
 import CacheSettingsModal from "../CacheSettingsModal"
@@ -58,6 +61,8 @@ function nodeEntry(overrides: Partial<CacheNodesResponse["nodes"][number]> = {})
     generations: 1,
     size_bytes: 890 * 1024 * 1024,
     newest_created_at: 1_700_000_000,
+    build_seconds: 9.9,
+    identity_digests: ["digest-join"],
     retention: "automatic" as const,
     unavailable_reason: null,
     ...overrides,
@@ -68,7 +73,17 @@ function nodes(overrides: Partial<CacheNodesResponse> = {}): CacheNodesResponse 
   return {
     schema_version: 1,
     source: "live",
-    nodes: [nodeEntry(), nodeEntry({ node_id: "source", state: "missing", row_count: null, generations: 0, size_bytes: 0, newest_created_at: null })],
+    nodes: [nodeEntry(), nodeEntry({
+        node_id: "source",
+        state: "missing",
+        row_count: null,
+        generations: 0,
+        size_bytes: 0,
+        newest_created_at: null,
+        build_seconds: null,
+        // A row that carries nothing names no identities, as the server guarantees.
+        identity_digests: [],
+      })],
     other: [],
     unattributed_generations: 0,
     unattributed_bytes: 0,
@@ -83,6 +98,8 @@ describe("CacheSettingsModal", () => {
     mockFetchCacheUsage.mockResolvedValue(usage())
     mockFetchCacheNodes.mockReset()
     mockFetchCacheNodes.mockResolvedValue(nodes())
+    mockClearCacheIdentities.mockReset()
+    mockClearCacheIdentities.mockResolvedValue({ schema_version: 1, cleared: [], freed_bytes: 0 })
     useGraphStore.setState({ nodes: [], edges: [], preamble: "", submodels: {} })
   })
 
@@ -317,6 +334,108 @@ describe("CacheSettingsModal", () => {
     expect(banding).not.toHaveTextContent("MB")
   })
 
+  it("shows when a node was cached and how long it took", async () => {
+    render(<CacheSettingsModal onClose={vi.fn()} />)
+
+    const join = await screen.findByTestId("cache-node-join")
+    expect(join).toHaveTextContent("9.9 s")
+    // The date is locale-formatted, so assert the parts that do not vary.
+    expect(join.textContent).toMatch(/Nov|14/)
+  })
+
+  it("does not claim an instant build when the duration was never recorded", async () => {
+    // A store predating the recording has no duration. Absent is not zero.
+    mockFetchCacheNodes.mockResolvedValue(
+      nodes({ nodes: [nodeEntry({ build_seconds: null, newest_created_at: null })] }),
+    )
+    render(<CacheSettingsModal onClose={vi.fn()} />)
+
+    const join = await screen.findByTestId("cache-node-join")
+    expect(join).not.toHaveTextContent("0.0 s")
+    expect(join.textContent).toContain("—")
+  })
+
+  it("clears exactly the identities the row reported, then re-reads", async () => {
+    // Re-read rather than patch the row: clearing frees a generation the
+    // budgets count, so the bars above are stale too.
+    render(<CacheSettingsModal onClose={vi.fn()} />)
+    await screen.findByTestId("cache-node-join")
+    expect(mockFetchCacheNodes).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByTestId("cache-node-join-clear"))
+
+    await waitFor(() => expect(mockClearCacheIdentities).toHaveBeenCalledWith(["digest-join"]))
+    await waitFor(() => expect(mockFetchCacheUsage).toHaveBeenCalledTimes(2))
+    expect(mockFetchCacheNodes).toHaveBeenCalledTimes(2)
+  })
+
+  it("shows the clear control without needing the row hovered", async () => {
+    // It was hover-only once, which meant nobody knew it was there.
+    render(<CacheSettingsModal onClose={vi.fn()} />)
+
+    const clear = await screen.findByTestId("cache-node-join-clear")
+    expect(clear.className).not.toContain("opacity-0")
+    expect(clear).toBeVisible()
+  })
+
+  it("offers no clear on a row that carries nothing", async () => {
+    // The control would have nothing to act on, and a row whose bytes are on
+    // another row must not appear to own them.
+    render(<CacheSettingsModal onClose={vi.fn()} />)
+    await screen.findByTestId("cache-node-source")
+
+    expect(screen.queryByTestId("cache-node-source-clear")).toBeNull()
+    expect(screen.getByTestId("cache-node-join-clear")).toBeInTheDocument()
+  })
+
+  it("reports a failed clear without dropping what is on screen", async () => {
+    mockClearCacheIdentities.mockRejectedValue(new Error("cache is in use"))
+    render(<CacheSettingsModal onClose={vi.fn()} />)
+    await screen.findByTestId("cache-node-join")
+
+    fireEvent.click(screen.getByTestId("cache-node-join-clear"))
+
+    expect(await screen.findByTestId("cache-usage-error")).toHaveTextContent("cache is in use")
+    expect(screen.getByTestId("cache-node-join")).toHaveTextContent("890 MB")
+  })
+
+  it("can clear a row that belongs to no node of this pipeline", async () => {
+    // The reason this exists: nothing else in the app can reach these.
+    mockFetchCacheNodes.mockResolvedValue(
+      nodes({
+        other: [
+          {
+            bucket: "node_output",
+            label: "old_join_2",
+            node_id: "old_join_2",
+            source: "nb_batch",
+            generations: 2,
+            row_count: 10_000_000,
+            size_bytes: 1.4 * GIB,
+            newest_created_at: 1_700_000_000,
+            build_seconds: 42,
+            identity_digests: ["digest-orphan"],
+          },
+        ],
+      }),
+    )
+    render(<CacheSettingsModal onClose={vi.fn()} />)
+
+    fireEvent.click(await screen.findByTestId("cache-other-old_join_2-clear"))
+
+    await waitFor(() => expect(mockClearCacheIdentities).toHaveBeenCalledWith(["digest-orphan"]))
+  })
+
+  it("labels the columns so a row can be read without a legend", async () => {
+    render(<CacheSettingsModal onClose={vi.fn()} />)
+    await screen.findByTestId("cache-node-join")
+
+    const list = screen.getByTestId("cache-node-list")
+    for (const heading of ["Node", "Status", "Size", "Cached", "Time"]) {
+      expect(list).toHaveTextContent(heading)
+    }
+  })
+
   it("names the other readers of a shared snapshot on both rows", async () => {
     // One identity, one set of bytes: the carrier says what it is shared with,
     // the others say whose row to look at, and only one of them has a size.
@@ -362,6 +481,8 @@ describe("CacheSettingsModal", () => {
             row_count: 10_000_000,
             size_bytes: 1.4 * GIB,
             newest_created_at: 1_700_000_000,
+            build_seconds: 42,
+            identity_digests: ["digest-old-join"],
           },
         ],
       }),

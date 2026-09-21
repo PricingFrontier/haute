@@ -355,6 +355,10 @@ class SourceCacheMetadata:
     # Provider-specific generation facts (node-output column set and
     # dependencies). Absent for input snapshots, whose metadata is unchanged.
     node_output: Mapping[str, object] | None = None
+    # Wall-clock seconds from allocating the staging directory to writing this
+    # metadata: how long caching this actually took. Absent on a generation
+    # published before it was recorded, which reads as unknown rather than zero.
+    build_seconds: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -375,6 +379,8 @@ class SourceCacheMetadata:
         }
         if self.node_output is not None:
             payload["node_output"] = dict(self.node_output)
+        if self.build_seconds is not None:
+            payload["build_seconds"] = self.build_seconds
         return payload
 
 
@@ -659,6 +665,12 @@ class SourceCacheStore:
                 profile=raw["profile"],
                 build_class=raw["build_class"],
                 node_output=raw.get("node_output"),
+                build_seconds=(
+                    float(raw["build_seconds"])
+                    if isinstance(raw.get("build_seconds"), (int, float))
+                    and not isinstance(raw.get("build_seconds"), bool)
+                    else None
+                ),
             )
             part_stats = tuple(path.stat() for path in data_paths)
             if (
@@ -924,6 +936,7 @@ class SourceCacheStore:
             published = False
             try:
                 staging.mkdir()
+                build_started = time.monotonic()
                 context.checkpoint()
                 with context.stage("input_snapshot_read"):
                     output = builder.build(context)
@@ -949,6 +962,7 @@ class SourceCacheStore:
                     time.time(),
                     getattr(context.profile, "value", str(context.profile)),
                     context.build_class,
+                    build_seconds=time.monotonic() - build_started,
                 )
                 metadata_path = staging / "meta.json"
                 atomic_write_text(metadata_path, canonical_json(metadata.to_dict()))

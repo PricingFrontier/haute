@@ -5,6 +5,7 @@ Per `specs/server-api/low-level.md` ("Cache usage").
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -646,3 +647,98 @@ def test_a_generation_whose_metadata_is_unreadable_is_reported_as_unattributed(
     assert payload["unattributed_bytes"] > 0
     assert _entry(payload, "join")["size_bytes"] == 0
     assert _accounted(payload, "node_output") == usage["node_outputs"]["bytes_used"]
+
+
+def test_a_row_reports_when_it_was_cached_and_how_long_it_took(
+    client: TestClient, project: Path
+) -> None:
+    """Both are recorded at publication, from staging the artifact to writing
+    the metadata — which is the span during which the caching happened."""
+    store = NodeSnapshotStore(project)
+    _publish(store, project, "join", "live", rows=5)
+
+    join = _entry(client.post("/api/cache/nodes", json=_body(_graph(project))).json(), "join")
+
+    assert join["newest_created_at"] is not None
+    assert join["build_seconds"] is not None
+    assert join["build_seconds"] >= 0
+
+
+def test_a_generation_from_before_durations_were_recorded_reads_as_unknown(
+    client: TestClient, project: Path
+) -> None:
+    """Absent is not zero: a store predating this must not claim instant builds."""
+    store = NodeSnapshotStore(project)
+    _publish(store, project, "join", "live", rows=5)
+    for identity_dir in (project / ".haute_cache" / "inputs").iterdir():
+        if identity_dir.is_dir() and not identity_dir.name.startswith("."):
+            for generation in (identity_dir / "generations").iterdir():
+                meta = generation / "meta.json"
+                raw = json.loads(meta.read_text(encoding="utf-8"))
+                raw.pop("build_seconds", None)
+                meta.write_text(json.dumps(raw), encoding="utf-8")
+
+    join = _entry(client.post("/api/cache/nodes", json=_body(_graph(project))).json(), "join")
+
+    assert join["build_seconds"] is None
+    assert join["size_bytes"] > 0
+
+
+def test_clearing_a_row_removes_exactly_what_that_row_reported(
+    client: TestClient, project: Path
+) -> None:
+    """The row is the unit the user acts on, so it must clear its own bytes.
+
+    Not the node's other sources, not another row's shared snapshot: exactly
+    the identities the row named, which is why the row carries them.
+    """
+    store = NodeSnapshotStore(project)
+    _publish(store, project, "join", "live", rows=5)
+    _publish(store, project, "join", "backtest", rows=7)
+
+    before = client.post("/api/cache/nodes", json=_body(_graph(project))).json()
+    join = _entry(before, "join")
+    assert join["identity_digests"], "a row that carries bytes names what it carries"
+    other_before = [entry for entry in before["other"] if entry["source"] == "backtest"]
+    assert other_before and other_before[0]["size_bytes"] > 0
+
+    response = client.post("/api/cache/clear", json={"digests": join["identity_digests"]})
+    assert response.status_code == 200
+    cleared = response.json()
+    assert cleared["cleared"] == join["identity_digests"]
+    assert cleared["freed_bytes"] > 0
+
+    after = client.post("/api/cache/nodes", json=_body(_graph(project))).json()
+    assert _entry(after, "join")["size_bytes"] == 0
+    # The same node's data for another source is a different row, untouched.
+    other_after = [entry for entry in after["other"] if entry["source"] == "backtest"]
+    assert other_after and other_after[0]["size_bytes"] == other_before[0]["size_bytes"]
+
+
+def test_clearing_a_row_the_store_no_longer_holds_is_not_an_error(
+    client: TestClient, project: Path
+) -> None:
+    """Acting on a report a moment out of date is a race, not a failure."""
+    response = client.post("/api/cache/clear", json={"digests": ["a" * 64]})
+
+    assert response.status_code == 200
+    assert response.json() == {"schema_version": 1, "cleared": [], "freed_bytes": 0}
+
+
+def test_clearing_an_orphaned_row_reclaims_it(client: TestClient, project: Path) -> None:
+    """The reason the row-level clear exists: nothing else can reach these.
+
+    A node no longer in the graph has no node-data endpoint to clear it, so
+    before this its bytes could only be reclaimed by quota pressure.
+    """
+    store = NodeSnapshotStore(project)
+    _publish(store, project, "deleted_node", "live", rows=6)
+
+    before = client.post("/api/cache/nodes", json=_body(_graph(project))).json()
+    orphan = next(entry for entry in before["other"] if entry["node_id"] == "deleted_node")
+    assert orphan["size_bytes"] > 0
+
+    client.post("/api/cache/clear", json={"digests": orphan["identity_digests"]})
+
+    after = client.post("/api/cache/nodes", json=_body(_graph(project))).json()
+    assert [entry for entry in after["other"] if entry["node_id"] == "deleted_node"] == []

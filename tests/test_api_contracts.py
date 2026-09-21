@@ -187,6 +187,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/CacheNodesResponse"},
         },
     },
+    "/api/cache/clear": {
+        "POST": {
+            "request_ref": "#/components/schemas/CacheClearRequest",
+            "success_schema": {"$ref": "#/components/schemas/CacheClearResponse"},
+        },
+    },
     "/api/git/archive": {
         "POST": {
             "request_ref": "#/components/schemas/GitArchiveRequest",

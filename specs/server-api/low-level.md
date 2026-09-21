@@ -26,7 +26,7 @@
 | `src/haute/routes/io_capabilities.py` | `/api/io-capabilities`, the versioned provider/format/cache capability contract consumed by the input and output editors. |
 | `src/haute/routes/input_cache.py` | `/api/input-cache/*`, the shared build/status/cancel/clear lifecycle for snapshot-backed inputs. |
 | `src/haute/routes/node_data.py` | `/api/node-data/point`, `/run`, `/status/{job_id}`, `/cancel/{job_id}`, and `/clear` for the data a consumer node reads. |
-| `src/haute/routes/cache.py` | `GET /api/cache/usage`, the report of both snapshot-store budgets against their limits, and `POST /api/cache/nodes`, the per-node report of what each node of a graph holds within them. Both answer one explicit request; the first takes no arguments and names the environment variable behind each limit. |
+| `src/haute/routes/cache.py` | `GET /api/cache/usage`, the report of both snapshot-store budgets against their limits; `POST /api/cache/nodes`, the per-node report of what each node of a graph holds within them; and `POST /api/cache/clear`, which clears the identities a report's row named. The reports answer one explicit request; the first takes no arguments and names the environment variable behind each limit. |
 | `src/haute/routes/banding.py` | FastAPI router (`/api/banding`): whole-dataset statistics for the banding factor being edited, delegating to `_banding_stats.py`. |
 | `src/haute/routes/rating.py` | FastAPI router (`/api/rating`): whole-dataset levels for the raw factor columns a Rating Step rates on, delegating to `_rating_levels.py`. |
 | `src/haute/routes/_rating_levels.py` | Reads those levels over the node's shared data point under `run_synchronous_analysis`, keyed by the rating lookup's own key expression. |
@@ -665,11 +665,34 @@ with different arguments is a different identity with the same path.
 The route tracks the identities its rows carry and lists every other owner in `other`, so the
 two halves are exhaustive by construction — a node no longer in the graph, the same node's
 data under another source, an input snapshot nothing reads. `unattributed_*` is what no
-metadata could name. Per budget, the rows plus `other` plus `unattributed_*` therefore equal
+metadata could name. Every row and owner also carries `newest_created_at` and `build_seconds`
+from its newest generation's metadata, so the report says when a thing was cached and how long
+that took; a generation published before durations were recorded reports `null`, which the
+surfaces must show as unknown rather than as an instant build. Per budget, the rows plus `other` plus `unattributed_*` therefore equal
 what `GET /api/cache/usage` reports, which is the invariant
 `tests/test_cache_nodes_routes.py` asserts directly. `unmarked_identities` counts
 identities whose provider marker does not classify: admission charges each to *both* budgets,
 so it is what explains a usage report larger than the sum of the rows.
+
+
+**Clearing a row** (`routes/cache.py`): `POST /api/cache/clear` takes the `identity_digests`
+a report's row carried and clears exactly those, through
+`NodeSnapshotStore.clear_identity`. A row names identities only when it carries their bytes,
+so clearing a row removes what that row reported and nothing else — not the node's data under
+another source, which is a different row, and not a shared snapshot charged to a different
+reader. The identity is reconstructed from a generation's own metadata and **only cleared when
+the reconstruction reproduces the digest that was asked for**, so a hash the caller supplies
+can never name a different identity than the one the store verifies. A digest the store no
+longer holds is reported as not cleared rather than failing the request: acting on a report a
+moment out of date is an ordinary race. The response reports what was cleared and the bytes
+freed, which the caller uses rather than assuming its request succeeded.
+
+This is the only way to reclaim a node the graph no longer has: `/api/node-data/clear`
+resolves a node of the posted graph, so a deleted or renamed node's cache was previously
+reclaimable only under quota pressure. Cache data is regenerable, so the endpoint needs no
+confirmation of its own; what it must not do is surprise a reader mid-scan, and it does not,
+because every clear retires a held generation on release rather than deleting it underneath
+the scan.
 
 ### The data profile
 
@@ -955,7 +978,9 @@ entirely and leave every touched file in whatever state it happened to be in."
   that rows plus `other` plus `unattributed_*` equal the usage report against a stray
   generation and a staging directory on disk, a generation whose metadata is unreadable
   reported as unattributed, a corrupt point reported as a row with `state="corrupt"` and its
-  bytes rather than as an absence, another pipeline's node of the same name kept off this
+  bytes rather than as an absence, clearing a row removing exactly its own identities while
+  another source's row and an unrelated orphan are untouched, clearing a digest the store no
+  longer holds reported rather than failing, clearing an orphaned row reclaiming it, another pipeline's node of the same name kept off this
   one's row, a shared snapshot's carrier not depending on node order, a
   node no longer in the graph and a node's data under another source both reported as `other`,
   an input snapshot reported on its reader's row and nowhere else, a node reading an upstream

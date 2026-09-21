@@ -1421,6 +1421,12 @@ class CacheNodeEntry(BaseModel):
     generations: int = Field(default=0, ge=0)
     size_bytes: int = Field(default=0, ge=0)
     newest_created_at: float | None = None
+    #: How long the newest generation took to cache; absent when the store
+    #: holds a generation published before that was recorded.
+    build_seconds: float | None = None
+    #: The store identities this row is responsible for, and therefore what
+    #: clearing this row clears. Empty when the row carries nothing.
+    identity_digests: list[str] = Field(default_factory=list)
     retention: Literal["pinned", "automatic"] | None = None
     # Why this node has no point at all — unwired Banding, say. Never an
     # internal error: an unreportable node is a row, not a failed request.
@@ -1445,6 +1451,31 @@ class CacheOwnerEntry(BaseModel):
     row_count: int | None = None
     size_bytes: int = Field(ge=0)
     newest_created_at: float | None = None
+    build_seconds: float | None = None
+    identity_digests: list[str] = Field(default_factory=list)
+
+
+class CacheClearRequest(BaseModel):
+    """The identities to clear, as a report's row reported them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    digests: list[str] = Field(min_length=1)
+
+
+class CacheClearResponse(BaseModel):
+    """What the clear actually removed, which is never assumed from the request.
+
+    A digest the store does not hold is reported as not cleared rather than
+    failing the request: a row acted on from a report a moment out of date is
+    an ordinary race, not an error.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    cleared: list[str]
+    freed_bytes: int = Field(ge=0)
 
 
 class CacheNodesResponse(BaseModel):

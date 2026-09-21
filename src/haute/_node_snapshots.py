@@ -170,6 +170,8 @@ class CacheOwnerUsage:
     size_bytes: int
     newest_row_count: int | None
     newest_created_at: float | None
+    #: How long the newest generation took to cache, when it was recorded.
+    newest_build_seconds: float | None
     # The identities this owner covers, so a caller holding one — a node's
     # resolved input snapshot, say — can tell whether this owner is its own.
     identity_digests: frozenset[str]
@@ -222,9 +224,17 @@ class _OwnerAccumulator:
     size_bytes: int = 0
     newest_row_count: int | None = None
     newest_created_at: float | None = None
+    newest_build_seconds: float | None = None
     identity_digests: set[str] = field(default_factory=set)
 
-    def add(self, *, size_bytes: int, row_count: int | None, created_at: float | None) -> None:
+    def add(
+        self,
+        *,
+        size_bytes: int,
+        row_count: int | None,
+        created_at: float | None,
+        build_seconds: float | None,
+    ) -> None:
         self.generations += 1
         self.size_bytes += size_bytes
         if created_at is not None and (
@@ -232,6 +242,7 @@ class _OwnerAccumulator:
         ):
             self.newest_created_at = created_at
             self.newest_row_count = row_count
+            self.newest_build_seconds = build_seconds
 
     def frozen(self) -> CacheOwnerUsage:
         return CacheOwnerUsage(
@@ -244,6 +255,7 @@ class _OwnerAccumulator:
             size_bytes=self.size_bytes,
             newest_row_count=self.newest_row_count,
             newest_created_at=self.newest_created_at,
+            newest_build_seconds=self.newest_build_seconds,
             identity_digests=frozenset(self.identity_digests),
         )
 
@@ -254,8 +266,12 @@ class _GenerationFacts:
 
     provider: str
     descriptor: Mapping[str, object]
+    #: The identity's own schema version, so it can be reconstructed exactly —
+    #: a digest is a hash of the whole payload, version included.
+    schema_version: int
     row_count: int | None
     created_at: float | None
+    build_seconds: float | None
 
 
 def _read_generation_facts(generation_dir: Path) -> _GenerationFacts | None:
@@ -280,13 +296,25 @@ def _read_generation_facts(generation_dir: Path) -> _GenerationFacts | None:
         return None
     row_count = raw.get("row_count")
     created_at = raw.get("created_at")
+    build_seconds = raw.get("build_seconds")
+    schema_version = identity.get("schema_version")
     return _GenerationFacts(
         provider=provider,
         descriptor=descriptor,
+        schema_version=(
+            schema_version
+            if isinstance(schema_version, int) and not isinstance(schema_version, bool)
+            else 1
+        ),
         row_count=row_count
         if isinstance(row_count, int) and not isinstance(row_count, bool)
         else None,
         created_at=float(created_at) if isinstance(created_at, (int, float)) else None,
+        # Absent on a generation published before this was recorded, which
+        # reads as unknown rather than as an instant build.
+        build_seconds=float(build_seconds)
+        if isinstance(build_seconds, (int, float)) and not isinstance(build_seconds, bool)
+        else None,
     )
 
 
@@ -632,6 +660,9 @@ class NodeSnapshotArtifact:
         self.directory = directory
         self._released = False
         self._digests: dict[str, str] = {}
+        # Staging is allocated immediately before the write, so this to
+        # publication is how long caching this node actually took.
+        self.started_at = time.monotonic()
 
     def record_digests(self, digests: Mapping[str, str]) -> None:
         self._digests = dict(digests)
@@ -900,6 +931,45 @@ class NodeSnapshotStore(SourceCacheStore):
             ),
         )
 
+    def clear_identity(self, identity_digest: str) -> int:
+        """Clear one identity by its digest, returning the bytes it held.
+
+        The report names a row's identities, and this is what acting on that
+        row means. The identity itself is reconstructed from a generation's own
+        metadata, because a digest is a hash and cannot be inverted — so an
+        identity holding no readable generation cannot be cleared this way and
+        reports zero rather than guessing at what it was.
+
+        Like every clear, a generation a reader still holds retires when that
+        reader releases it rather than being deleted underneath the scan.
+        """
+        identity_dir = self.inputs_root / identity_digest
+        if not _is_identity_digest(identity_digest) or not identity_dir.is_dir():
+            return 0
+        held = 0
+        identity: SourceCacheIdentity | None = None
+        try:
+            generation_dirs = tuple((identity_dir / "generations").iterdir())
+        except FileNotFoundError:
+            generation_dirs = ()
+        for generation_dir in generation_dirs:
+            if not generation_dir.is_dir() or generation_dir.is_symlink():
+                continue
+            held += generation_bytes(generation_dir)
+            if identity is None:
+                facts = _read_generation_facts(generation_dir)
+                if facts is not None:
+                    identity = SourceCacheIdentity(
+                        provider=facts.provider,
+                        descriptor=dict(facts.descriptor),
+                        schema_version=facts.schema_version,
+                    )
+        if identity is None or identity.digest != identity_digest:
+            return 0
+        held += _staging_bytes(identity_dir)
+        self.clear(identity)
+        return held
+
     def inventory(self) -> CacheInventory:
         """Attribute every generation on disk to the owner its metadata names.
 
@@ -958,6 +1028,7 @@ class NodeSnapshotStore(SourceCacheStore):
                     size_bytes=generation_bytes(generation_dir),
                     row_count=facts.row_count,
                     created_at=facts.created_at,
+                    build_seconds=facts.build_seconds,
                 )
                 identity_owner = owner
 
@@ -1622,6 +1693,7 @@ class NodeSnapshotStore(SourceCacheStore):
             created_at=time.time(),
             profile=ExecutionProfile(profile).value,
             build_class="bounded",
+            build_seconds=time.monotonic() - artifact.started_at,
             node_output={
                 "metadata_version": NODE_SNAPSHOT_METADATA_VERSION,
                 "slot": slot.descriptor,

@@ -555,6 +555,10 @@ export interface CacheNodeEntry {
   generations: number
   size_bytes: number
   newest_created_at: number | null
+  /** How long the newest generation took to cache; null when unrecorded. */
+  build_seconds: number | null
+  /** The store identities this row is responsible for; what clearing it clears. */
+  identity_digests: string[]
   retention: "pinned" | "automatic" | null
   /** Why this node has no data point at all — an unwired Banding, say. */
   unavailable_reason: string | null
@@ -570,6 +574,14 @@ export interface CacheOwnerEntry {
   row_count: number | null
   size_bytes: number
   newest_created_at: number | null
+  build_seconds: number | null
+  identity_digests: string[]
+}
+
+export interface CacheClearResponse {
+  schema_version: 1
+  cleared: string[]
+  freed_bytes: number
 }
 
 export interface CacheNodesResponse {
