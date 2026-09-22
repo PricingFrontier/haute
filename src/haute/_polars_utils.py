@@ -411,6 +411,108 @@ def row_local_python_scan(
     return _register_python_scan(frames, schema=schema, caller_context=caller_context)
 
 
+def fanout_python_scan(
+    input_lf: pl.LazyFrame,
+    expand: Callable[[pl.DataFrame], pl.DataFrame],
+    *,
+    schema: pl.Schema,
+    fanout: int,
+    generated_columns: Collection[str],
+    required_input_columns: Collection[str] | None,
+    input_schema: pl.Schema | None = None,
+    execution_context: ExecutionContext | None = None,
+    node_id: str | None = None,
+) -> pl.LazyFrame:
+    """Expose a fixed fan-out Python expansion to Polars as a scan source.
+
+    Polars pushes no slice below an ``explode``: a ``.head(n)`` above a
+    row-expanding node still expands every input row and keeps the first ``n``
+    of the result, so an interactive preview of a 10M-row frame expanded 11
+    ways builds 110M rows to show 100. A registered IO source is a scan
+    instead, and the optimiser hands it the row limit and projection it could
+    push down — and only where doing so leaves the query result unchanged (a
+    downstream filter, aggregation, window, or join lookup side withholds the
+    limit).
+
+    ``expand`` must turn a batch of input rows into exactly ``fanout`` output
+    rows per input row, in input order, independently of every other row. The
+    first ``ceil(n / fanout)`` input rows are then exactly the source of the
+    first ``n`` output rows, so the limit always caps ``input_lf``.
+    ``schema`` is the expansion's exact output schema and ``generated_columns``
+    the columns it adds or replaces; every other output column is an input
+    column carried through unchanged. ``required_input_columns`` are the input
+    columns ``expand`` reads (``None``: every input column) — a pushed
+    projection narrows the input to the requested carried columns plus these.
+    """
+    if isinstance(fanout, bool) or not isinstance(fanout, int) or fanout < 1:
+        raise ValueError(f"fanout must be a positive integer, got {fanout!r}")
+    context = execution_context or current_execution_context()
+    caller_context = contextvars.copy_context()
+    generated = frozenset(generated_columns)
+    if input_schema is None:
+        input_schema = input_lf.collect_schema()
+    mismatched_carried = sorted(
+        name
+        for name, dtype in schema.items()
+        if name not in generated and input_schema.get(name) != dtype
+    )
+    if mismatched_carried:
+        raise ValueError(
+            f"non-generated scan columns must be input columns of the same dtype: "
+            f"{mismatched_carried}"
+        )
+    unknown_generated = generated - set(schema.names())
+    if unknown_generated:
+        raise ValueError(
+            f"generated columns are absent from the scan schema: {sorted(unknown_generated)}"
+        )
+    input_names = input_schema.names()
+    required = frozenset(input_names if required_input_columns is None else required_input_columns)
+    unknown_required = required - set(input_names)
+    if unknown_required:
+        raise ValueError(
+            f"required input columns are absent from the input: {sorted(unknown_required)}"
+        )
+
+    def frames(
+        with_columns: list[str] | None,
+        predicate: pl.Expr | None,
+        n_rows: int | None,
+        batch_size: int | None,
+    ) -> Iterator[pl.DataFrame]:
+        source_lf = input_lf if n_rows is None else input_lf.head((n_rows + fanout - 1) // fanout)
+        if with_columns is not None:
+            roots = set() if predicate is None else set(predicate.meta.root_names())
+            keep = ((set(with_columns) | roots) - generated) | required
+            source_lf = source_lf.select(projected_or_carrier_columns(input_names, keep))
+        # Every input row becomes ``fanout`` output rows, so read the input in
+        # proportionally smaller batches to keep an expanded batch bounded by
+        # the chunk size the caller asked for.
+        input_chunk = max(1, (batch_size or DEFAULT_STREAMING_CHUNK_SIZE) // fanout)
+        remaining = n_rows
+        for batch in bounded_collect_batches(
+            source_lf,
+            chunk_size=input_chunk,
+            maintain_order=True,
+            execution_context=context,
+            stage_name="fanout_python_scan",
+            node_id=node_id,
+        ):
+            frame = expand(batch)
+            if remaining is not None:
+                frame = frame.head(remaining)
+                remaining -= frame.height
+            if predicate is not None:
+                frame = frame.filter(predicate)
+            if with_columns is not None:
+                frame = frame.select(with_columns)
+            yield frame
+            if remaining is not None and remaining <= 0:
+                return
+
+    return _register_python_scan(frames, schema=schema, caller_context=caller_context)
+
+
 _ScanFrames = Callable[
     [list[str] | None, pl.Expr | None, int | None, int | None],
     Iterator[pl.DataFrame],

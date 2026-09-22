@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import polars as pl
@@ -28,6 +28,7 @@ from haute._polars_utils import (
     bounded_sink,
     cancellable_streaming_collect,
     execution_collect,
+    fanout_python_scan,
     hashed_streaming_sink,
     is_bounded_execution_profile,
     key_prefix_python_scan,
@@ -1650,6 +1651,163 @@ class TestRowLocalPythonScan:
         _polars_utils._reraise_python_scan_failure(pl.exceptions.ComputeError(oldest))
         with pytest.raises(ValueError, match="failure 63"):
             _polars_utils._reraise_python_scan_failure(pl.exceptions.ComputeError(newest))
+
+
+# ---------------------------------------------------------------------------
+# fanout_python_scan
+# ---------------------------------------------------------------------------
+
+
+class TestFanoutPythonScan:
+    """A fixed fan-out expansion stays transparent to Polars pushdown."""
+
+    FANOUT = 3
+
+    @staticmethod
+    def _repeating_scan(
+        frame: pl.DataFrame,
+        seen: list[pl.DataFrame],
+        *,
+        fanout: int = 3,
+    ) -> pl.LazyFrame:
+        """Each input row becomes ``fanout`` rows carrying their grid step."""
+
+        def expand(batch: pl.DataFrame) -> pl.DataFrame:
+            seen.append(batch)
+            return (
+                batch.with_columns(pl.lit(list(range(fanout))).alias("step"))
+                .explode("step")
+                .with_columns(pl.col("step").cast(pl.Int32))
+            )
+
+        return fanout_python_scan(
+            frame.lazy(),
+            expand,
+            schema=pl.Schema({**frame.schema, "step": pl.Int32()}),
+            fanout=fanout,
+            generated_columns=("step",),
+            required_input_columns=(),
+        )
+
+    @staticmethod
+    def _native(frame: pl.DataFrame, *, fanout: int = 3) -> pl.LazyFrame:
+        return (
+            frame.lazy()
+            .with_columns(pl.lit(list(range(fanout))).alias("step"))
+            .explode("step")
+            .with_columns(pl.col("step").cast(pl.Int32))
+        )
+
+    @pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+    @pytest.mark.parametrize("limit", [1, 2, 3, 4, 7, 9, 100])
+    def test_a_pushed_limit_returns_the_rows_the_expression_returns(
+        self, engine: str, limit: int
+    ) -> None:
+        frame = pl.DataFrame({"x": list(range(3)), "key": ["a", "b", "c"]})
+        scan = self._repeating_scan(frame, [])
+
+        assert_frame_equal(
+            scan.head(limit).collect(engine=engine),
+            self._native(frame).head(limit).collect(engine=engine),
+        )
+
+    def test_a_pushed_limit_expands_only_the_input_rows_it_needs(self) -> None:
+        seen: list[pl.DataFrame] = []
+        frame = pl.DataFrame({"x": list(range(1_000)), "key": [str(i) for i in range(1_000)]})
+
+        result = streaming_collect(self._repeating_scan(frame, seen).head(7))
+
+        assert result["x"].to_list() == [0, 0, 0, 1, 1, 1, 2]
+        # ceil(7 / 3) input rows cover the first seven output rows.
+        assert sum(batch.height for batch in seen) == 3
+
+    def test_an_aggregation_below_the_limit_still_expands_every_row(self) -> None:
+        seen: list[pl.DataFrame] = []
+        frame = pl.DataFrame({"x": [1, 2, 3, 4], "key": ["a", "b", "c", "d"]})
+        scan = self._repeating_scan(frame, seen)
+
+        assert streaming_collect(scan.select(pl.len())).item() == 12
+        assert sum(batch.height for batch in seen) == 4
+
+    def test_a_pushed_projection_narrows_the_input_it_reads(self) -> None:
+        seen: list[pl.DataFrame] = []
+        frame = pl.DataFrame({"x": [1, 2], "key": ["a", "b"]})
+
+        result = streaming_collect(self._repeating_scan(frame, seen).select("key", "step"))
+
+        assert result["key"].to_list() == ["a", "a", "a", "b", "b", "b"]
+        assert [batch.columns for batch in seen] == [["key"]]
+
+    @pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+    @pytest.mark.parametrize(
+        "query",
+        [
+            pytest.param(lambda lf: lf.filter(pl.col("x") > 1).head(2), id="filter-head"),
+            pytest.param(lambda lf: lf.head(4).filter(pl.col("x") > 1), id="head-filter"),
+            pytest.param(lambda lf: lf.filter(pl.col("step") > 0).head(3), id="generated-filter"),
+            pytest.param(lambda lf: lf.sort("key", descending=True).head(2), id="sort-head"),
+            pytest.param(
+                lambda lf: lf.group_by("key").agg(pl.col("step").sum()).sort("key"), id="group-by"
+            ),
+        ],
+    )
+    def test_queries_above_the_scan_match_the_expression(
+        self, engine: str, query: Callable[[pl.LazyFrame], pl.LazyFrame]
+    ) -> None:
+        frame = pl.DataFrame({"x": [3, 1, 2], "key": ["c", "a", "b"]})
+        scan = self._repeating_scan(frame, [])
+
+        assert_frame_equal(
+            query(scan).collect(engine=engine),
+            query(self._native(frame)).collect(engine=engine),
+        )
+
+    def test_a_fanout_of_one_carries_every_row_through(self) -> None:
+        frame = pl.DataFrame({"x": [1, 2, 3], "key": ["a", "b", "c"]})
+
+        assert_frame_equal(
+            streaming_collect(self._repeating_scan(frame, [], fanout=1).head(2)),
+            self._native(frame, fanout=1).head(2).collect(engine="streaming"),
+        )
+
+    @pytest.mark.parametrize("fanout", [0, -1, True, 1.5])
+    def test_a_fanout_that_is_not_a_positive_integer_fails_at_construction(
+        self, fanout: object
+    ) -> None:
+        with pytest.raises(ValueError, match="fanout must be a positive integer"):
+            fanout_python_scan(
+                pl.LazyFrame({"x": [1]}),
+                lambda batch: batch,
+                schema=pl.Schema({"x": pl.Int64()}),
+                fanout=cast(int, fanout),
+                generated_columns=(),
+                required_input_columns=None,
+            )
+
+    @pytest.mark.parametrize(
+        ("schema", "generated", "required", "message"),
+        [
+            ({"x": pl.String}, (), None, "same dtype"),
+            ({"x": pl.Int64}, ("step",), None, "absent from the scan schema"),
+            ({"x": pl.Int64}, (), ("missing",), "absent from the input"),
+        ],
+    )
+    def test_declarations_that_disagree_with_the_input_fail_at_construction(
+        self,
+        schema: dict[str, pl.DataType],
+        generated: tuple[str, ...],
+        required: tuple[str, ...] | None,
+        message: str,
+    ) -> None:
+        with pytest.raises(ValueError, match=message):
+            fanout_python_scan(
+                pl.LazyFrame({"x": [1]}),
+                lambda batch: batch,
+                schema=pl.Schema(schema),
+                fanout=2,
+                generated_columns=generated,
+                required_input_columns=required,
+            )
 
 
 def test_hashed_streaming_sink_writes_and_hashes_atomically(tmp_path: Path) -> None:

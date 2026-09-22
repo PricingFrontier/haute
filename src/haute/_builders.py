@@ -51,6 +51,7 @@ from haute._logging import get_logger
 from haute._node_apply import (
     apply_optimiser_apply_from_config,
     assemble_output_from_config,
+    expand_scenarios_bounded,
     expand_scenarios_from_config,
     load_external_object_from_config,
     resolve_api_input_from_config,
@@ -918,6 +919,8 @@ def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool
     code = str(config.get("code") or "").strip()
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
     _config_captured = dict(config)
+    _interactive = bool(ctx.row_limit)
+    _node_id = ctx.node.id
 
     def scenario_expand_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
         if dfs_by_name:
@@ -925,7 +928,12 @@ def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool
         else:
             lf = dfs_positional[0] if dfs_positional else pl.LazyFrame()
         # Shared with expand_scenarios_from_config (generated standalone code)
-        # so the canvas and the saved file cannot drift.
+        # so the canvas and the saved file cannot drift.  An interactive
+        # execution expands through the scan form of the same expansion, so a
+        # preview limit below the expander reads only the rows it shows
+        # instead of expanding the whole upstream frame first.
+        if _interactive:
+            return expand_scenarios_bounded(lf, _config_captured, node_id=_node_id)
         return expand_scenarios_from_config(lf, _config_captured)
 
     if not code:
