@@ -5,6 +5,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import Mock, patch
 
 import polars as pl
@@ -739,6 +740,63 @@ def test_training_admission_keeps_waiting_when_a_preview_takes_the_gap(
         for interloper in interlopers:
             interloper.release_admission()
     assert len(interlopers) == 1
+
+
+def test_training_admission_retries_when_the_preview_releases_after_the_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _execution_admission as admission_mod
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    original_admit = admission_mod._admit_once
+    attempts: list[str] = []
+
+    def refused_by_a_preview_that_then_releases(**kwargs: Any) -> ExecutionContext:
+        attempts.append(kwargs["operation"])
+        if len(attempts) == 1:
+            # The reservation lost to a preview that has released by the time
+            # admission decides whether to keep waiting: no holders remain.
+            raise ExecutionAdmissionError(
+                kwargs["operation"],
+                profile=kwargs["profile"],
+                memory_limit_bytes=kwargs["budget"].memory_limit_bytes,
+                rss_at_admission_bytes=100,
+                reason="in_flight_memory_budget_exceeded",
+                in_flight_operations=(_PREVIEW_HOLDER,),
+            )
+        return original_admit(**kwargs)
+
+    monkeypatch.setattr(admission_mod, "_admit_once", refused_by_a_preview_that_then_releases)
+    training = create_admitted_execution_context(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+        wait_out_holders={_PREVIEW_HOLDER},
+        wait_seconds=10.0,
+    )
+    training.release_admission()
+    assert attempts == ["training_pipeline", "training_pipeline"]
+
+
+def test_training_admission_does_not_wait_for_a_budget_it_can_never_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_MB", str(64 * 1024))
+    started = time.monotonic()
+    with pytest.raises(ExecutionAdmissionError) as exc_info:
+        create_admitted_execution_context(
+            operation="training_pipeline",
+            profile=ExecutionProfile.TRAINING_PREP,
+            memory_sampler=lambda: 100,
+            wait_out_holders={_PREVIEW_HOLDER},
+            wait_seconds=10.0,
+        )
+    assert time.monotonic() - started < 1.0
+    assert exc_info.value.reason == "in_flight_memory_budget_exceeded"
 
 
 def test_training_admission_refuses_at_once_behind_other_work(

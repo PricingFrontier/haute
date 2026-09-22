@@ -566,7 +566,7 @@ def create_admitted_execution_context(
                 not waitable
                 or exc.reason != "in_flight_memory_budget_exceeded"
                 or time.monotonic() >= deadline
-                or not _only_waitable_holders(waitable)
+                or not _refusal_is_transient(budget, waitable)
             ):
                 raise
 
@@ -661,11 +661,18 @@ def _memory_env_candidates(profile: ExecutionProfile) -> tuple[tuple[str, int], 
     )
 
 
-def _only_waitable_holders(waitable: frozenset[str]) -> bool:
-    """Whether in-flight work is held, and held only by *waitable* operations."""
+def _refusal_is_transient(budget: ExecutionBudget, waitable: frozenset[str]) -> bool:
+    """Whether an in-flight refusal can clear by waiting.
+
+    True while every current holder is *waitable*, including when they have all
+    released since the refusal — unless the reservation could not fit even in an
+    empty budget, which no amount of waiting fixes.
+    """
     with _IN_FLIGHT_LOCK:
         holders = list(_IN_FLIGHT_RESERVATIONS.values())
-    return bool(holders) and all(
+    if not holders:
+        return budget.memory_limit_bytes <= _in_flight_limit_bytes(budget)
+    return all(
         f"{held_profile.value}:{held_operation}" in waitable
         for held_profile, _amount, held_operation in holders
     )
@@ -682,8 +689,9 @@ def _wait_out_in_flight_holders(
 ) -> None:
     """Wait while only *waitable* holders keep this reservation out of the budget.
 
-    Returns once the reservation would fit, a non-waitable holder blocks it, or
-    the wait runs out; the reservation itself then admits or refuses as usual.
+    Returns once nothing holds the budget, the reservation would fit, a
+    non-waitable holder blocks it, or the wait runs out; the reservation itself
+    then admits or refuses as usual.
     """
     limit_bytes = _in_flight_limit_bytes(budget)
     with _IN_FLIGHT_LOCK:
@@ -692,7 +700,8 @@ def _wait_out_in_flight_holders(
             reserved = sum(amount for _profile, amount, _operation in holders)
             remaining = deadline - time.monotonic()
             if (
-                reserved + budget.memory_limit_bytes <= limit_bytes
+                not holders
+                or reserved + budget.memory_limit_bytes <= limit_bytes
                 or remaining <= 0
                 or any(
                     f"{held_profile.value}:{held_operation}" not in waitable
