@@ -1514,7 +1514,11 @@ class TrainingJob:
             results = load_evaluation_results(results_path, plan_sha256=plan_digest)
             results_digest = evaluation_file_sha256(results_path)
             aggregate = aggregate_evaluation_results(
-                plan, results, self.metrics, results_sha256=results_digest, fit_count=total
+                plan,
+                results,
+                self.metrics,
+                results_sha256=results_digest,
+                refit_on_development=self.refit_on_development,
             )
             save_evaluation_report(aggregate, report_path)
             created.append(report_path)

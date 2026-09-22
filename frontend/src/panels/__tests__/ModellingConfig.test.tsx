@@ -262,13 +262,58 @@ afterEach(() => {
 
 describe("Training configuration readiness", () => {
   afterEach(cleanup)
-  it("publishes invalid local drafts for the Parameters tab indicator", () => {
-    const onDraftIssuesChange = vi.fn()
-    renderConfig({ activePane: "params", onDraftIssuesChange })
+  it("reports an invalid local draft as a Parameters pane issue", () => {
+    const onPaneIssuesChange = vi.fn()
+    renderConfig({ activePane: "params", onPaneIssuesChange })
+    expect(onPaneIssuesChange).toHaveBeenLastCalledWith("node_1", [])
     fireEvent.change(screen.getByLabelText("CatBoost hyperparameters JSON"), { target: { value: "{" } })
-    expect(onDraftIssuesChange).toHaveBeenLastCalledWith("node_1", [expect.objectContaining({ code: "catboost-params" })])
+    expect(onPaneIssuesChange).toHaveBeenLastCalledWith("node_1", ["params"])
     fireEvent.change(screen.getByLabelText("CatBoost hyperparameters JSON"), { target: { value: "{}" } })
-    expect(onDraftIssuesChange).toHaveBeenLastCalledWith("node_1", [])
+    expect(onPaneIssuesChange).toHaveBeenLastCalledWith("node_1", [])
+  })
+  it("reports saved-config issues against the pane that fixes them", () => {
+    const onPaneIssuesChange = vi.fn()
+    renderConfig({
+      activePane: "train",
+      onPaneIssuesChange,
+      config: { _nodeId: "incomplete", algorithm: "catboost", target: "loss_ratio" },
+    })
+    expect(onPaneIssuesChange).toHaveBeenLastCalledWith("incomplete", ["target"])
+  })
+  it.each([
+    [{ algorithm: "catboost" }, ["target"]],
+    [{ algorithm: "glm", family: "poisson", target: "loss_ratio" }, ["features"]],
+    [
+      {
+        algorithm: "glm",
+        family: "poisson",
+        target: "loss_ratio",
+        terms: { age: { type: "linear" } },
+        regularization: "elastic_net",
+      },
+      ["params"],
+    ],
+  ])("flags the pane that completes %j", (config, panes) => {
+    const onPaneIssuesChange = vi.fn()
+    renderConfig({ activePane: "train", onPaneIssuesChange, config: { _nodeId: "setup", ...config } })
+    expect(onPaneIssuesChange).toHaveBeenLastCalledWith("setup", panes)
+  })
+  it("does not let a hidden fixed-parameter draft block a tuned run", () => {
+    const onPaneIssuesChange = vi.fn()
+    const { rerender, props } = renderConfig({ activePane: "params", onPaneIssuesChange })
+    fireEvent.change(screen.getByLabelText("CatBoost hyperparameters JSON"), { target: { value: "{" } })
+    expect(onPaneIssuesChange).toHaveBeenLastCalledWith("node_1", ["params"])
+
+    fireEvent.click(screen.getByRole("radio", { name: "Tune parameters" }))
+    const tuned = (props.onUpdate as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as Record<string, unknown>
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <ModellingConfig {...props} config={{ ...props.config, ...tuned }} />
+      </GraphProvider>,
+    )
+
+    expect(screen.queryByText(/Parameters JSON/)).toBeNull()
+    expect(onPaneIssuesChange).toHaveBeenLastCalledWith("node_1", [])
   })
   it("shows issues before Train and links to the affected pane", () => {
     renderConfig({ activePane: "train", config: { _nodeId: "readiness", algorithm: "catboost", target: "loss_ratio" } })

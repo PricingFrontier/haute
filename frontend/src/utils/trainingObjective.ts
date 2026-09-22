@@ -37,6 +37,27 @@ export type TrainingConfigurationIssue = {
   message: string
 }
 
+/**
+ * The reported metrics training will use: explicit `metrics`, else the
+ * objective-implied defaults. Mirrors the backend's `effective_metrics`.
+ */
+export function effectiveMetrics(config: Record<string, unknown>): string[] {
+  if (Array.isArray(config.metrics) && config.metrics.length > 0) {
+    return config.metrics.filter((metric): metric is string => typeof metric === "string")
+  }
+  const glm = String(config.algorithm ?? "catboost").toLowerCase() === "glm"
+  const objective = String((glm ? config.family : config.loss_function) ?? "").toLowerCase()
+  if (
+    config.task === "classification"
+    || ["binomial", "quasibinomial", "logloss", "crossentropy"].includes(objective)
+  ) {
+    return ["auc", "logloss"]
+  }
+  if (["poisson", "quasipoisson", "negbinomial"].includes(objective)) return ["gini", "poisson_deviance"]
+  if (objective === "tweedie") return ["gini", "tweedie_deviance"]
+  return ["gini", "rmse"]
+}
+
 export function evaluationConfigurationIssues(rawEvaluation: unknown): TrainingConfigurationIssue[] {
   const issues: TrainingConfigurationIssue[] = []
   const evaluation = (
@@ -198,7 +219,7 @@ export function trainingConfigurationIssues(
         message: "Parameter tuning requires a final refit.",
       })
     }
-    const metrics = Array.isArray(config.metrics) ? config.metrics : []
+    const metrics = effectiveMetrics(config)
     const searchSpace = (
       tuning.search_space !== null
       && typeof tuning.search_space === "object"

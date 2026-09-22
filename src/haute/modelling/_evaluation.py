@@ -1013,8 +1013,15 @@ def aggregate_evaluation_results(
     metrics: Sequence[str],
     *,
     results_sha256: str,
-    fit_count: int | None = None,
+    refit_on_development: bool = True,
 ) -> EvaluationAggregateReport:
+    """Aggregate the selection fits; the fit count includes the final refit when one runs.
+
+    Skipping the refit keeps the single holdout-validation fit as the saved model, so it is
+    only meaningful for ``single`` validation.
+    """
+    if not refit_on_development and plan.config.validation["method"] != "single":
+        raise HauteValidationError("skipping the final refit requires holdout validation")
     expected = hashlib.sha256(canonical_json_bytes(plan.to_plain_data())).hexdigest()
     if (
         results.schema_version != 1
@@ -1065,12 +1072,5 @@ def aggregate_evaluation_results(
                 "validation_rows": sum(weights),
             }
             total = sum(weights)
-    actual_fit_count = plan.fit_count if fit_count is None else fit_count
-    if actual_fit_count not in {plan.fit_count, len(plan.validation_fits)}:
-        raise HauteValidationError("evaluation fit count does not match the plan")
-    if (
-        actual_fit_count == len(plan.validation_fits)
-        and plan.config.validation["method"] != "single"
-    ):
-        raise HauteValidationError("skipping the final refit requires holdout validation")
-    return EvaluationAggregateReport(expected, results_sha256, report, actual_fit_count, total)
+    fit_count = len(plan.validation_fits) + int(refit_on_development)
+    return EvaluationAggregateReport(expected, results_sha256, report, fit_count, total)

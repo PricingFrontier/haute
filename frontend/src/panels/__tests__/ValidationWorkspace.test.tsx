@@ -79,8 +79,33 @@ describe("Validation workspace", () => {
       />,
     )
     fireEvent.click(screen.getByRole("tab", { name: "PDP" }))
-    expect(screen.getByText(/Diagnostics: Development/)).toHaveTextContent("8,000 rows")
-    expect(screen.getByText(/not held-out performance/i)).toBeInTheDocument()
+    expect(screen.getByText(/Diagnostics: Training/)).toHaveTextContent("8,000 rows")
+    expect(screen.getByText("Training diagnostics are in-sample performance.")).toBeInTheDocument()
+  })
+
+  it("attributes a kept validation model's diagnostics to its validation rows", () => {
+    render(
+      <ModellingPreview
+        data={{
+          ...data,
+          result: {
+            ...result,
+            diagnostics_set: "validation",
+            final_test_rows: 0,
+            evaluation: {
+              ...result.evaluation!,
+              refit_on_development: false,
+              fit_count: 1,
+              final_test_rows: 0,
+            },
+          },
+        }}
+        nodeId="model"
+      />,
+    )
+    fireEvent.click(screen.getByRole("tab", { name: "PDP" }))
+    expect(screen.getByText(/Diagnostics: Validation/)).toHaveTextContent("2,000 rows")
+    expect(screen.queryByText(/in-sample performance/)).toBeNull()
   })
 
   it("resets feature selection and search when a new training result replaces the current one", () => {

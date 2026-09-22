@@ -589,6 +589,7 @@ class ModellingConfig(TypedDict, total=False):
     params: dict[str, Any]
     evaluation: dict[str, Any]
     tuning: dict[str, Any]
+    refit_on_development: bool  # absent = True; False keeps the holdout-validation fit
     metrics: list[str]
     mlflow_experiment: str
     output_dir: str

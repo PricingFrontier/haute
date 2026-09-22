@@ -168,6 +168,10 @@ logger = get_logger(component="server.modelling.train")
 _TRAINING_JOB_TYPE: Literal["training"] = "training"
 _DISPERSION_JOB_TYPE: Literal["dispersion_estimate"] = "dispersion_estimate"
 _JOB_TYPE_KEY = "job_type"
+# Long enough for a superseded evaluation preview on ordinary data to release
+# its training-prep reservation. A training run holds its reservation for the
+# whole fit, so the estimate is still refused once this wait runs out.
+_EVALUATION_PREVIEW_ADMISSION_WAIT_SECONDS = 10.0
 
 
 class _TrainingRunningJob(RunningJobFields):
@@ -388,6 +392,11 @@ class TrainService:
             execution_context = create_admitted_execution_context(
                 operation="training_evaluation_preview",
                 profile=ExecutionProfile.TRAINING_PREP,
+                # An edit supersedes the browser's estimate request, but the
+                # server finishes the superseded preview and holds its budget
+                # meanwhile; wait for that release rather than refuse the
+                # replacement.
+                in_flight_wait_seconds=_EVALUATION_PREVIEW_ADMISSION_WAIT_SECONDS,
             )
             preamble_ns = self._compile_preamble(body.graph)
             # The plan reads only the target and the evaluation key, so the

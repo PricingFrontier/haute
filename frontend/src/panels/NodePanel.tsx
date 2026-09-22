@@ -19,7 +19,7 @@ import {
   type LoadAvailability,
 } from "../types/node"
 import type { PipelineDiagnostic } from "../types/pipelineDocument"
-import useUIStore, { type ExplorePane } from "../stores/useUIStore"
+import useUIStore, { type ExplorePane, type ModellingPane } from "../stores/useUIStore"
 import useNodeDataStore, { profileForConsumer } from "../stores/useNodeDataStore"
 import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
@@ -27,7 +27,6 @@ import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDoc
 import { recoverySummaryKey, useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
 import { buildNodeDataCacheIdentity } from "./dataPointIdentity"
 import { modellingPanesFor, resolveModellingPane } from "./modelling/modellingPanes"
-import { trainingConfigurationIssues, trainingIssuePane, type TrainingConfigurationIssue } from "../utils/trainingObjective"
 import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import { useGraph } from "./useGraph"
@@ -1387,9 +1386,10 @@ function NodePanelContent({
   const rememberedExplorePane = useUIStore((s) => s.explorePanes[node.id])
   const setExplorePane = useUIStore((s) => s.setExplorePane)
   const rememberedModellingPane = useUIStore((s) => s.modellingPanes[node.id])
-  const [modellingDraftIssues, setModellingDraftIssues] = useState<{ nodeId: string; issues: TrainingConfigurationIssue[] }>({ nodeId: "", issues: [] })
-  const onModellingDraftIssuesChange = useCallback((nodeId: string, issues: TrainingConfigurationIssue[]) => {
-    setModellingDraftIssues({ nodeId, issues })
+  // The lazily loaded modelling editor owns issue derivation; the panel only badges tabs.
+  const [modellingPaneIssues, setModellingPaneIssues] = useState<{ nodeId: string; panes: readonly ModellingPane[] }>({ nodeId: "", panes: [] })
+  const onModellingPaneIssuesChange = useCallback((nodeId: string, panes: readonly ModellingPane[]) => {
+    setModellingPaneIssues({ nodeId, panes })
   }, [])
   const setModellingPane = useUIStore((s) => s.setModellingPane)
   const hasActiveTrainJob = useNodeResultsStore((s) => Boolean(s.trainJobs[node.id]))
@@ -1556,15 +1556,14 @@ function NodePanelContent({
   const modellingPanes = modellingPanesFor(algorithm)
   const showModellingPanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.MODELLING && modellingPanes.length > 0
   const activeModellingPane = showModellingPanes ? resolveModellingPane(algorithm, rememberedModellingPane) : "target"
-  const modellingIssues = showModellingPanes ? [
-    ...trainingConfigurationIssues(config),
-    ...(modellingDraftIssues.nodeId === node.id ? modellingDraftIssues.issues : []),
-  ] : []
+  const flaggedModellingPanes = showModellingPanes && modellingPaneIssues.nodeId === node.id
+    ? modellingPaneIssues.panes
+    : []
   const modellingTabs = modellingPanes.map((pane) => ({
     ...pane,
     indicator: pane.key === "train" && hasActiveTrainJob
       ? { kind: "active" as const, label: "Training is running" }
-      : modellingIssues.some((issue) => trainingIssuePane(issue) === pane.key)
+      : flaggedModellingPanes.includes(pane.key)
         ? { kind: "warning" as const, label: `${pane.label} needs attention`, compact: true }
         : undefined,
   }))
@@ -1592,7 +1591,7 @@ function NodePanelContent({
       pivotColumns={pivotColumns}
       activeExplorePane={activeExplorePane}
       activeModellingPane={activeModellingPane}
-      onModellingDraftIssuesChange={onModellingDraftIssuesChange}
+      onModellingPaneIssuesChange={onModellingPaneIssuesChange}
       onDeleteEdge={onDeleteEdge}
       onDeleteSubmodelInputPort={
         readOnly || documentReadOnly ? undefined : onDeleteSubmodelInputPort

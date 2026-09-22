@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { trainingConfigurationIssues } from "../trainingObjective"
+import { effectiveMetrics, trainingConfigurationIssues } from "../trainingObjective"
 
 describe("trainingConfigurationIssues", () => {
   const evaluation = {
@@ -229,5 +229,44 @@ describe("trainingConfigurationIssues", () => {
         },
       }).map((issue) => issue.code),
     ).toEqual(["evaluation-config"])
+  })
+})
+
+describe("effectiveMetrics", () => {
+  it.each([
+    [{ algorithm: "catboost", loss_function: "RMSE" }, ["gini", "rmse"]],
+    [{ algorithm: "catboost", loss_function: "Poisson" }, ["gini", "poisson_deviance"]],
+    [{ algorithm: "catboost", loss_function: "Tweedie" }, ["gini", "tweedie_deviance"]],
+    [{ algorithm: "catboost", loss_function: "Logloss", task: "regression" }, ["auc", "logloss"]],
+    [{ algorithm: "catboost", task: "classification" }, ["auc", "logloss"]],
+    [{ algorithm: "glm", family: "negbinomial", loss_function: "RMSE" }, ["gini", "poisson_deviance"]],
+    [{ algorithm: "glm", family: "binomial" }, ["auc", "logloss"]],
+    [{ algorithm: "glm" }, ["gini", "rmse"]],
+    [{ algorithm: "catboost", loss_function: "Poisson", metrics: ["mae"] }, ["mae"]],
+    [{ algorithm: "catboost", loss_function: "Poisson", metrics: [] }, ["gini", "poisson_deviance"]],
+  ])("mirrors the backend objective defaults for %j", (config, metrics) => {
+    expect(effectiveMetrics(config)).toEqual(metrics)
+  })
+
+  it("accepts a tuning metric implied by the objective when metrics are unset", () => {
+    const issues = trainingConfigurationIssues({
+      algorithm: "catboost",
+      target: "y",
+      loss_function: "Poisson",
+      evaluation: {
+        schema_version: 1,
+        strategy: "random",
+        seed: 42,
+        validation: { method: "single", size: 0.2 },
+      },
+      tuning: {
+        schema_version: 1,
+        trial_count: 5,
+        seed: 1,
+        metric: "poisson_deviance",
+        search_space: { depth: [4, 6] },
+      },
+    })
+    expect(issues.map((issue) => issue.code)).not.toContain("tuning-config")
   })
 })

@@ -94,7 +94,7 @@ test.describe("core browser flows", () => {
     ).toBeVisible({ timeout: 120_000 })
     await expect(page.getByText("Model Info")).toBeVisible()
     await expect(
-      page.getByRole("columnheader", { name: "Training rows", exact: true }),
+      page.getByRole("term").filter({ hasText: /^Training rows$/ }),
     ).toBeVisible()
     const modelResultTabs = page.getByRole("tablist", { name: "Model result panes" })
     await expect(modelResultTabs.getByRole("tab", { name: "Summary", exact: true })).toBeVisible()

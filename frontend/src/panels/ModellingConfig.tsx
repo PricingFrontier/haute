@@ -28,6 +28,7 @@ import {
 } from "../utils/executionDiagnostics"
 import { buildGraph } from "../utils/buildGraph"
 import {
+  effectiveMetrics,
   trainingConfigurationIssues,
   trainingIssuePane,
   type TrainingConfigurationIssue,
@@ -64,7 +65,8 @@ type Props = {
   onUpdate: OnUpdateConfig
   upstreamColumns?: { name: string; dtype: string }[]
   activePane?: ModellingPane
-  onDraftIssuesChange?: (nodeId: string, issues: TrainingConfigurationIssue[]) => void
+  /** Reports the panes whose settings block training, for the host's tab badges. */
+  onPaneIssuesChange?: (nodeId: string, panes: readonly ModellingPane[]) => void
 }
 
 const CATBOOST_DEFAULT_PARAMS: Record<string, unknown> = {
@@ -250,7 +252,7 @@ export default function ModellingConfig({
   onUpdate,
   upstreamColumns = [],
   activePane = "target",
-  onDraftIssuesChange,
+  onPaneIssuesChange,
 }: Props) {
   const { allNodes, edges, submodels, preamble } = useGraph()
   const nodeId = String(config._nodeId ?? "")
@@ -288,8 +290,7 @@ export default function ModellingConfig({
   )
     ? config.tuning as Record<string, unknown>
     : null
-  const task = configField(config, "task", "regression")
-  const metrics = configField<string[]>(config, "metrics", task === "regression" ? ["gini", "rmse"] : ["auc", "logloss"])
+  const metrics = effectiveMetrics(config)
   const paramsProjection = formatHyperparameters(
     params,
     CATBOOST_RESERVED_PARAM_KEYS,
@@ -304,8 +305,9 @@ export default function ModellingConfig({
     : {}
   const searchSpaceDraft = searchSpaceDrafts[nodeId]
     ?? formatTuningSearchSpace(tuningSearchSpace as Record<string, unknown>)
+  // Tuning hides the fixed-parameter editor, so only a visible draft can block training.
   let paramDraftIssue: TrainingConfigurationIssue | null = null
-  if (algorithm === "catboost") {
+  if (algorithm === "catboost" && !tuning) {
     try {
       parseHyperparameters(
         paramDraft,
@@ -339,14 +341,14 @@ export default function ModellingConfig({
     ...(searchSpaceDraftIssue ? [searchSpaceDraftIssue] : []),
   ]
   const hasTrainingConfigurationIssues = validationIssues.length > 0
-  const paramDraftMessage = paramDraftIssue?.message
-  const searchDraftMessage = searchSpaceDraftIssue?.message
+  // A string key keeps the host update to real changes in the flagged panes.
+  const panesNeedingAttention = [...new Set(validationIssues.map(trainingIssuePane))].sort().join(",")
   useEffect(() => {
-    onDraftIssuesChange?.(nodeId, [
-      ...(paramDraftMessage ? [{ code: "catboost-params" as const, message: paramDraftMessage }] : []),
-      ...(searchDraftMessage ? [{ code: "tuning-config" as const, message: searchDraftMessage }] : []),
-    ])
-  }, [nodeId, onDraftIssuesChange, paramDraftMessage, searchDraftMessage])
+    onPaneIssuesChange?.(
+      nodeId,
+      panesNeedingAttention ? (panesNeedingAttention.split(",") as ModellingPane[]) : [],
+    )
+  }, [nodeId, onPaneIssuesChange, panesNeedingAttention])
 
   // Export settings do not change the trained model, so the stale check and
   // the RAM estimate follow the config without them.

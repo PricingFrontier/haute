@@ -564,6 +564,19 @@ def _run_gpu_fit_with_metric_polling(
         raise fit_error
 
 
+def _defined_importances(importances: Any) -> np.ndarray:
+    """Score features CatBoost cannot normalise as contributing nothing.
+
+    PredictionValuesChange normalises by the model's total prediction change.
+    A model whose few trees leave that total at zero (e.g. a one-tree refit at
+    the validation-selected iteration) yields 0/0 = NaN for every split
+    feature, although no feature moves the prediction. Infinities are left in
+    place so a genuinely broken result still fails the finite-result check.
+    """
+    values = np.asarray(importances, dtype=float)
+    return np.where(np.isnan(values), 0.0, values)
+
+
 class CatBoostAlgorithm(BaseAlgorithm):
     """CatBoost gradient boosting implementation."""
 
@@ -772,7 +785,7 @@ class CatBoostAlgorithm(BaseAlgorithm):
 
     def feature_importance(self, model: Any) -> list[dict[str, Any]]:
         names = model.feature_names_
-        importances = model.get_feature_importance()
+        importances = _defined_importances(model.get_feature_importance())
         pairs = sorted(
             zip(names, importances),
             key=lambda x: x[1],
@@ -791,7 +804,7 @@ class CatBoostAlgorithm(BaseAlgorithm):
         Supported types: PredictionValuesChange, LossFunctionChange, ShapValues.
         """
         names = model.feature_names_
-        importances = model.get_feature_importance(data=pool, type=type_name)
+        importances = _defined_importances(model.get_feature_importance(data=pool, type=type_name))
         pairs = sorted(
             zip(names, importances),
             key=lambda x: x[1],

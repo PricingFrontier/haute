@@ -3,6 +3,7 @@ import type { OnUpdateConfig } from "../editors"
 import { ApiError } from "../../api/client"
 import type { DispersionParam } from "../../api/types"
 import { configField } from "../../utils/configField"
+import { effectiveMetrics } from "../../utils/trainingObjective"
 import { toggleButtonStyle } from "./styles"
 import { FailoverHelp } from "./FailoverHelp"
 import { OffsetFieldLabel } from "./OffsetFieldLabel"
@@ -74,7 +75,7 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
   const family = configField(config, "family", "")
   const link = configField(config, "link", "")
   const intercept = configField(config, "intercept", true)
-  const metrics = configField<string[]>(config, "metrics", ["gini", "poisson_deviance"])
+  const metrics = effectiveMetrics(config)
   const links: readonly string[] = isGlmFamily(family) ? GLM_FAMILY_LINKS[family] : []
   const canonicalLink = links[0]
   const linkUnavailable = link !== "" && !links.includes(link)

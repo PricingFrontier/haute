@@ -498,7 +498,10 @@ omit it retain the constructor-only internal/test-seam split pipeline described 
 5. **Persist selection results** — `_run_evaluation` writes and strictly reloads
    `{model}.evaluation-results.json`, aggregates only from that reloaded evidence, and
    writes/reloads `{model}.evaluation-report.json`. Every summary metric is weighted by
-   validation rows and linked to the exact plan/results digests. For an ordinary
+   validation rows and linked to the exact plan/results digests. The report's
+   `fit_count` is the selection-fit count plus one final refit, or the selection-fit
+   count alone when `refit_on_development=false` (tuning trials are counted by the
+   tuning report, not here). For an ordinary
    CatBoost run with validation, the reloaded `best_iteration` values determine the
    final iteration count through `validation_weighted_tree_count` (one-based, weighted
    by validation rows, capped by the configured ceiling). Missing best iterations fail
@@ -506,8 +509,11 @@ omit it retain the constructor-only internal/test-seam split pipeline described 
    early-stopping controls; with no validation
    or with GLM, parameters remain unchanged. The completed result carries the derived
    `final_tree_count` through the worker and response contract. On-demand MLflow export
-   projects the recorded fixed parameters with that count; older results without it
-   retain their original parameters.
+   projects the recorded fixed parameters with that count; results without it
+   retain their original parameters. A refit at a small derived count can predict a
+   constant; CatBoost then reports NaN `PredictionValuesChange` importances (a
+   zero total change), which `CatBoostAlgorithm` records as `0.0` because no
+   feature moves the prediction. Infinite importances are not masked.
 6. **Perform the deployable fit** — normally an internal clone uses
    `EvaluationPlan.final_mask`: every development row is training data and final-test
    rows, if any, occupy the internal holdout partition. `_train_model` resolves the
@@ -544,7 +550,9 @@ omit it retain the constructor-only internal/test-seam split pipeline described 
 `TrainingJob`'s own default (so the script stays readable), plus a `__main__` block
 that runs the job and prints its metrics. `_training_job_uses_tweedie_variance_power`
 decides whether `variance_power` needs to be rendered (CatBoost `Tweedie` loss, or GLM
-`family == "tweedie"`). `mlflow_destination` is rendered only when the node stores an
+`family == "tweedie"`). `refit_on_development=False` is rendered whenever the node
+keeps its holdout-validation fit, because that is a different saved model than the
+default refit. `mlflow_destination` is rendered only when the node stores an
 explicit key; an Auto node leaves it unrendered so the exported script resolves the
 destination in the environment it runs in. The exported script keeps standalone
 training's optional logging (a run is logged only when `mlflow_experiment` is set) and
@@ -1645,7 +1653,7 @@ suites prove the same canonical vocabulary and bounded lifecycle end to end.
 - `trainingObjective.ts` shares evaluation issue detection between Split, tab readiness
   and Train. Fraction sums at or above one are invalid for non-temporal single
   validation. CatBoost Tweedie power is a finite number in the open interval (1, 2),
-  mirrored by `_train_config.py`; `_evaluation.py` rejects impossible fraction sums.
+  mirrored by `_train_config.py`; `src/haute/modelling/_evaluation.py` rejects impossible fraction sums.
 - `SplitAndMetricsConfig` starts with a Row limit section, before allocation and split
   settings. `ModellingConfig` passes the persisted `row_limit` and its update callback
   to this control for CatBoost and GLM. The existing immediate numeric updates, empty

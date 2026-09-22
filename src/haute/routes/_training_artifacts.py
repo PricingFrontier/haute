@@ -113,7 +113,7 @@ def _validate_evaluation_artifact_contents(
             results,
             tuple(report.metrics),
             results_sha256=results_sha256,
-            fit_count=response_fit_count if not response_refit_on_development else None,
+            refit_on_development=response_refit_on_development,
         )
         if expected_report.to_plain_data() != report.to_plain_data():
             raise ValueError("evaluation report does not match the persisted plan and results")

@@ -845,6 +845,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
                 "offset",
                 "output_dir",
                 "params",
+                "refit_on_development",
                 "regularization",
                 "robust_standard_errors",
                 "evaluation",

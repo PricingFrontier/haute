@@ -592,3 +592,45 @@ def test_evaluation_results_aggregate_weighted_metrics_from_exact_plan() -> None
     assert report.metrics["rmse"]["mean"] == pytest.approx(expected)
     assert report.metrics["rmse"]["fit_count"] == 3
     assert report.fit_count == 4
+    with pytest.raises(ValueError, match="requires holdout validation"):
+        aggregate_evaluation_results(
+            plan, results, ["rmse"], results_sha256="1" * 64, refit_on_development=False
+        )
+
+
+@pytest.mark.parametrize(("refit_on_development", "fit_count"), [(True, 2), (False, 1)])
+def test_holdout_report_counts_the_final_refit_only_when_it_runs(
+    refit_on_development: bool, fit_count: int
+) -> None:
+    plan = generate_evaluation_plan(
+        random_config(validation={"method": "single", "size": 0.25}),
+        source_sha256="f" * 64,
+        row_count=12,
+        task="regression",
+    )
+    plan_sha256 = hashlib.sha256(canonical_json_bytes(plan.to_plain_data())).hexdigest()
+    (fit,) = plan.validation_fits
+    results = EvaluationResultsArtifact(
+        schema_version=1,
+        plan_sha256=plan_sha256,
+        fits=(
+            EvaluationFitResult(
+                schema_version=1,
+                fit_index=0,
+                train_rows=fit.train_rows,
+                validation_rows=fit.validation_rows,
+                metrics={"rmse": 2.0},
+                best_iteration=4,
+            ),
+        ),
+    )
+
+    report = aggregate_evaluation_results(
+        plan,
+        results,
+        ["rmse"],
+        results_sha256="1" * 64,
+        refit_on_development=refit_on_development,
+    )
+
+    assert report.fit_count == fit_count

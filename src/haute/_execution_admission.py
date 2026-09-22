@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -220,6 +221,8 @@ _IN_FLIGHT_PROFILE_SET = frozenset(
     }
 )
 _IN_FLIGHT_LOCK = threading.RLock()
+# Notified on every release so a bounded admission wait can re-check the budget.
+_IN_FLIGHT_RELEASED = threading.Condition(_IN_FLIGHT_LOCK)
 # A refusal names at most this many distinct holders; the byte totals stay exact.
 _MAX_REPORTED_IN_FLIGHT_OPERATIONS = 8
 _IN_FLIGHT_COUNTER = count(1)
@@ -521,8 +524,14 @@ def create_admitted_execution_context(
     cancellation_token: ExecutionCancellationToken | None = None,
     memory_sampler: Callable[[], int | None] | None = None,
     memory_pressure_callback: Callable[..., None] | None = None,
+    in_flight_wait_seconds: float = 0.0,
 ) -> ExecutionContext:
-    """Construct an ``ExecutionContext`` after a small memory admission check."""
+    """Construct an ``ExecutionContext`` after a small memory admission check.
+
+    ``in_flight_wait_seconds`` lets a short, repeatable operation wait that long
+    for other in-flight reservations to be released before it is refused. Only
+    the in-flight budget waits; the RSS checks still refuse immediately.
+    """
     budget = execution_budget_for_profile(profile)
     sampler = current_rss_bytes if memory_sampler is None else memory_sampler
     rss_at_admission = sampler()
@@ -555,6 +564,7 @@ def create_admitted_execution_context(
         profile=profile,
         budget=budget,
         rss_at_admission_bytes=rss_at_admission,
+        wait_seconds=in_flight_wait_seconds,
     )
     try:
         admission = ExecutionAdmission(
@@ -609,14 +619,23 @@ def _reserve_in_flight_budget(
     profile: ExecutionProfile,
     budget: ExecutionBudget,
     rss_at_admission_bytes: int | None,
+    wait_seconds: float = 0.0,
 ) -> Callable[[], None] | None:
     """Reserve a share of process-wide in-flight memory for heavy work."""
     if profile not in _IN_FLIGHT_PROFILE_SET:
         return None
     limit_bytes = _in_flight_limit_bytes(budget)
     reservation_bytes = budget.memory_limit_bytes
+    deadline = time.monotonic() + max(wait_seconds, 0.0)
     with _IN_FLIGHT_LOCK:
-        reserved = sum(amount for _profile, amount, _operation in _IN_FLIGHT_RESERVATIONS.values())
+        while True:
+            reserved = sum(
+                amount for _profile, amount, _operation in _IN_FLIGHT_RESERVATIONS.values()
+            )
+            remaining = deadline - time.monotonic()
+            if reserved + reservation_bytes <= limit_bytes or remaining <= 0:
+                break
+            _IN_FLIGHT_RELEASED.wait(remaining)
         if reserved + reservation_bytes > limit_bytes:
             holders = tuple(
                 sorted(
@@ -657,6 +676,7 @@ def _reserve_in_flight_budget(
             released = True
         with _IN_FLIGHT_LOCK:
             _IN_FLIGHT_RESERVATIONS.pop(reservation_id, None)
+            _IN_FLIGHT_RELEASED.notify_all()
 
     return release
 
@@ -676,6 +696,7 @@ def _clear_in_flight_reservations_for_tests() -> None:
     """Clear process-local reservations for tests that patch memory policy."""
     with _IN_FLIGHT_LOCK:
         _IN_FLIGHT_RESERVATIONS.clear()
+        _IN_FLIGHT_RELEASED.notify_all()
 
 
 def _process_rss_env_candidates(profile: ExecutionProfile) -> tuple[tuple[str, int], ...]:

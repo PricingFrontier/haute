@@ -657,6 +657,69 @@ def test_heavy_execution_admission_counts_in_flight_budget(
         first.release_admission()
 
 
+def test_in_flight_wait_admits_once_the_holder_releases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _clear_execution_memory_env(monkeypatch)
+    gib = 1024 * 1024 * 1024
+    monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 10 * gib)
+    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 10 * gib)
+    holder = create_admitted_execution_context(
+        operation="superseded_preview",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    releaser = threading.Timer(0.2, holder.release_admission)
+    started = time.monotonic()
+    releaser.start()
+    try:
+        waiter = create_admitted_execution_context(
+            operation="replacement_preview",
+            profile=ExecutionProfile.TRAINING_PREP,
+            memory_sampler=lambda: 100,
+            in_flight_wait_seconds=10.0,
+        )
+    finally:
+        releaser.join()
+        holder.release_admission()
+    waited = time.monotonic() - started
+    waiter.release_admission()
+    # Admitted by the release notification, well before the wait bound.
+    assert 0.15 <= waited < 5.0
+
+
+def test_in_flight_wait_still_refuses_when_the_holder_outlasts_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _clear_execution_memory_env(monkeypatch)
+    gib = 1024 * 1024 * 1024
+    monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 10 * gib)
+    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 10 * gib)
+    holder = create_admitted_execution_context(
+        operation="training_run",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    try:
+        started = time.monotonic()
+        with pytest.raises(ExecutionAdmissionError) as exc_info:
+            create_admitted_execution_context(
+                operation="evaluation_preview",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_sampler=lambda: 100,
+                in_flight_wait_seconds=0.2,
+            )
+        assert time.monotonic() - started >= 0.2
+        assert exc_info.value.reason == "in_flight_memory_budget_exceeded"
+        assert exc_info.value.in_flight_operations == ("training_prep:training_run",)
+    finally:
+        holder.release_admission()
+
+
 def test_heavy_admission_releases_reservation_when_context_construction_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1125,6 +1125,31 @@ describe("NodePanel", () => {
     expect(onUpdateNode).not.toHaveBeenCalled()
   })
 
+  it("badges exactly the modelling panes the editor reports for this node", () => {
+    renderPanel({
+      node: makeNode({
+        id: "model_badges",
+        data: { label: "ML", description: "", nodeType: "modelling", config: { algorithm: "catboost" } },
+      }),
+    })
+    const tablist = screen.getByRole("tablist", { name: "Modelling panes" })
+    const report = modellingConfigProps.at(-1)?.onPaneIssuesChange as
+      (nodeId: string, panes: readonly string[]) => void
+
+    act(() => report("model_badges", ["params", "split"]))
+    expect(within(tablist).getByRole("tab", { name: "Parameters" })).toHaveAccessibleDescription("Parameters needs attention")
+    expect(within(tablist).getByRole("tab", { name: "Split" })).toHaveAccessibleDescription("Split needs attention")
+    expect(within(tablist).getByRole("tab", { name: "Target" })).not.toHaveAccessibleDescription()
+
+    // A report left behind by another node's editor never badges this one.
+    act(() => report("other_node", ["target"]))
+    expect(within(tablist).getByRole("tab", { name: "Target" })).not.toHaveAccessibleDescription()
+    expect(within(tablist).getByRole("tab", { name: "Split" })).not.toHaveAccessibleDescription()
+
+    act(() => report("model_badges", []))
+    expect(within(tablist).getByRole("tab", { name: "Parameters" })).not.toHaveAccessibleDescription()
+  })
+
   it("remembers the active modelling pane by node", () => {
     renderPanel({
       node: makeNode({
@@ -1146,40 +1171,6 @@ describe("NodePanel", () => {
 
     expect(useUIStore.getState().modellingPanes.model_1).toBe("features")
     expect(modellingConfigProps.at(-1)?.activePane).toBe("features")
-  })
-
-  it("marks incomplete setup tabs and leaves complete tabs clear", () => {
-    const cases = [
-      { algorithm: "catboost" },
-      { algorithm: "glm", family: "poisson" },
-      {
-        algorithm: "glm",
-        family: "poisson",
-        terms: { age: { type: "linear" } },
-        regularization: "elastic_net",
-      },
-    ]
-
-    cases.forEach((config, index) => {
-      const rendered = renderPanel({
-        node: makeNode({
-          id: `model_${index}`,
-          data: {
-            label: "ML",
-            description: "",
-            nodeType: "modelling",
-            config: { ...config },
-          },
-        }),
-      })
-      const panes = ["Target", "Features", "Parameters", "Split"]
-      for (const pane of panes) {
-        const tab = screen.getByRole("tab", { name: pane })
-        expect(tab).toHaveAccessibleName(expect.stringContaining(pane))
-      }
-      expect(screen.getAllByText("Needs attention").length).toBeGreaterThan(0)
-      rendered.unmount()
-    })
   })
 
   it("marks Train while this node has an active job", () => {

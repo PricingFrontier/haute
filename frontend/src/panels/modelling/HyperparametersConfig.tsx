@@ -66,12 +66,13 @@ export function HyperparametersConfig({
   let projection: Record<string, unknown> | null = null
   let fixedError: string | null = null
   let searchError: string | null = null
-  try {
-    projection = parseHyperparameters(draft, reservedKeys, reservedKeysHelp)
-  } catch (cause) {
-    fixedError = cause instanceof Error ? cause.message : "Invalid JSON"
-  }
-  if (tuning) {
+  if (!tuning) {
+    try {
+      projection = parseHyperparameters(draft, reservedKeys, reservedKeysHelp)
+    } catch (cause) {
+      fixedError = cause instanceof Error ? cause.message : "Invalid JSON"
+    }
+  } else {
     try {
       parseTuningSearchSpace(searchSpaceDraft)
     } catch (cause) {
@@ -104,6 +105,9 @@ export function HyperparametersConfig({
       return
     }
     const searchSpace = starterTuningSearchSpace()
+    // Tuning hides the fixed-parameter editor: drop an unsaved draft rather
+    // than keep text the user can no longer see or correct.
+    setDraft(stored)
     setSearchSpaceDraft(formatTuningSearchSpace(searchSpace))
     onUpdate({
       refit_on_development: true,

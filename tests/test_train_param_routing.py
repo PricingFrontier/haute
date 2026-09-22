@@ -297,6 +297,7 @@ class TestCatBoostParamRouting:
             "feature_weights": None,
             "categorical_levels": None,
             "tuning": None,
+            "refit_on_development": True,
         }
         staged_output = Path(kwargs["output_dir"])
         assert staged_output.name == "output"
