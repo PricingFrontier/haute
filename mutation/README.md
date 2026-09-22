@@ -119,11 +119,11 @@ uv run python scripts/run_mutation_suite.py \
 Timeouts are target-specific upper bounds for one witness-suite invocation.
 Most targets use 30 seconds. `json-shred` uses 90 seconds for its maintained
 557-test streaming, publication, recovery, and lifecycle command. `executor` also
-uses 90 seconds: its 695-test graph-execution command measures about 20 seconds in
-pytest and 22 to 33 seconds end to end on a Linux workstation (the same on `main`),
-and it exceeded the former 30-second ceiling on the hosted runner.
-`json-cache` uses 60 seconds for its 74-test cold-cache route command, measured
-at 32.2 seconds in pytest and 41.1 seconds end to end on the Windows development
+uses 90 seconds: its expanded 777-test graph-execution command, including
+snapshot-preview lifecycle witnesses, measures 67.0 seconds in pytest and
+72.4 seconds end to end on the Windows development baseline.
+`json-cache` uses 60 seconds for its 75-test cold-cache route command, measured
+at 16.0 seconds in pytest and 19.6 seconds end to end on the Windows development
 baseline. The exact command is measured again during every plan; the extra
 target-specific headroom prevents normal hosted-runner variance from classifying
 a passing baseline as a mutant timeout, while an actual calibration regression

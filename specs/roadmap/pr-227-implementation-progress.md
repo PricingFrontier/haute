@@ -203,3 +203,38 @@ The combined coverage passes the unchanged 100% changed-code gate: 1,663
 statement targets and 623 branch targets. This combines the actual Linux CI
 shards with the new targeted Windows tests; CI must still independently verify
 the final head and mutation results before completion.
+
+The third implementation CI run, `35732048534` at `c1e3d26a`, passed every
+job, including browser, performance, platform checks and the final coverage
+gate. Both Python 3.11 and 3.13 compatibility lanes passed 21,404 tests with
+22 existing skips. Frontend passed 6,698 tests with one expected failure;
+browser E2E passed all 75 tests. The two Linux coverage artifacts alone pass
+all 44 critical-module floors and the 100% changed-code requirement for the
+same 1,663 statements and 623 branch targets. Overall coverage is 92.92%.
+
+Inspection of the mutation artifacts exposed a witness-selection gap: the
+executor command omitted the snapshot-preview lifecycle module, despite that
+module running in ordinary CI. The maintained command now includes it, and
+the JSON-cache command includes the new active-build directory/status witness.
+Four isolated executor mutations were each rejected by test assertions:
+inverting snapshot identity matching, generation matching, post-capture input
+identity matching, and stale-entry eviction. The unmodified probe passed, and
+the isolated source was restored byte-for-byte. These four probes establish
+those specific regression witnesses, not a completed aggregate mutation score.
+
+The expanded executor baseline initially passed all 777 tests but failed while
+removing its temporary directory on Windows: the embedded pytest session still
+held process-owner files open. The session fixture now owns a separate cache
+coordination table, closes its handles at teardown and restores the previous
+table. A regression first reproduced the shared table, then passed with the
+fixture correction; production process-owner lifetimes are unchanged. The
+runner's 12 tests and touched-file Ruff checks pass. The stronger mutation
+command and fixture require a fresh final CI run; no survivor budget or timeout
+has been relaxed.
+
+After the fixture correction, the exact expanded executor command passes
+777 tests (eight existing deselections) in 66.97 seconds of pytest time and
+72.36 seconds end to end, below its unchanged 90-second timeout. This includes
+successful removal of the temporary project and process-owner files.
+The expanded JSON-cache command passes all 75 tests in 15.96 seconds of pytest
+time and 19.61 seconds end to end, below its unchanged 60-second timeout.

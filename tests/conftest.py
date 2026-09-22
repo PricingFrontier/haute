@@ -55,6 +55,8 @@ def _isolate_repository_source_cache(
     Stores opened against the repository root are redirected to a per-session
     directory — the same redirect ``_widen_sandbox_root`` applies to the
     widened root. A store opened against a test's own tmp_path is untouched.
+    The session also owns its coordination table so process-owner files close
+    before an embedded mutation runner removes the temporary directory.
     """
     from haute._source_cache import SourceCacheStore
 
@@ -76,10 +78,21 @@ def _isolate_repository_source_cache(
 
     patch = pytest.MonkeyPatch()
     patch.setattr(SourceCacheStore, "__init__", init_off_the_working_tree)
+    coordination_by_root: dict[Any, Any] = {}
+    patch.setattr(SourceCacheStore, "_coordination_by_root", coordination_by_root)
     try:
         yield
     finally:
-        patch.undo()
+        try:
+            for coordination in coordination_by_root.values():
+                handle = coordination.token_handle
+                if handle is not None:
+                    handle.close()
+                coordination.token = None
+                coordination.token_handle = None
+            coordination_by_root.clear()
+        finally:
+            patch.undo()
 
 
 @pytest.fixture(autouse=True)

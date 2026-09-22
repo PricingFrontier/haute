@@ -382,6 +382,16 @@
   with `# pragma: no mutate`; executable expressions and branch decisions must
   remain in scope and be killed by focused witnesses rather than hidden behind
   a pragma or a relaxed survivor budget.
+- The executor mutation command includes the snapshot-preview lifecycle suite,
+  so leased-generation validation, post-capture input identity and cache-hit
+  refresh races are checked by mutation testing as well as ordinary coverage.
+  The JSON-cache command also includes the active-build directory identity and
+  completed-build cleanup witness.
+- A pytest session owns an isolated source-cache coordination table and closes
+  its process-owner handles at session teardown before restoring any previous
+  table. This lets an embedded mutation run remove its temporary project on
+  Windows after pytest returns, while production owner locks retain their
+  process lifetime.
 - The JSON-shred witness selection includes complete-inference cache isolation,
   concurrent request sharing and revision invalidation, native-filter equivalence
   to the full inference walk, bounded prefix learning, fused-parser error parity,
