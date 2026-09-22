@@ -156,6 +156,8 @@ test.describe("core browser flows", () => {
     await expect(
       page.getByText(/Model trained — results in preview panel below/i),
     ).toBeVisible({ timeout: 120_000 })
+    // GLM fit details are collapsed under the Summary's "Fit details" disclosure.
+    await page.getByText("Fit details", { exact: true }).click()
     await expect(page.getByRole("table", { name: "Smooth terms" })).toBeVisible()
     const resultTabs = page.getByRole("tablist", { name: "Model result panes" })
     await resultTabs.getByRole("tab", { name: "Coefficients", exact: true }).click()

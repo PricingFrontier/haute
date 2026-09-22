@@ -309,7 +309,8 @@ def test_completed_response_supports_no_validation_and_no_final_test() -> None:
     assert parsed.evaluation.selection_fits == []
 
 
-def test_completed_response_supports_saved_holdout_fit_without_refit() -> None:
+def saved_holdout_response() -> dict:
+    """A completed single-holdout run that kept its validation fit (no final refit)."""
     raw = completed_response()
     fit = raw["evaluation"]["selection_fits"][0]
     raw["evaluation"].update(
@@ -346,10 +347,36 @@ def test_completed_response_supports_saved_holdout_fit_without_refit() -> None:
             "diagnostics_set": "validation",
         }
     )
-    parsed = TrainResponse.model_validate(raw)
+    return raw
+
+
+def test_completed_response_supports_saved_holdout_fit_without_refit() -> None:
+    parsed = TrainResponse.model_validate(saved_holdout_response())
     assert parsed.evaluation is not None
     assert parsed.evaluation.refit_on_development is False
     assert parsed.diagnostics_set == "validation"
+
+
+def test_skipped_refit_requires_holdout_validation() -> None:
+    raw = completed_response()
+    assert raw["evaluation"]["validation_method"] == "cross_validation"
+    raw["evaluation"]["refit_on_development"] = False
+    with pytest.raises(ValidationError, match="requires holdout validation"):
+        TrainResponse.model_validate(raw)
+
+
+def test_skipped_refit_counts_only_the_saved_validation_fit() -> None:
+    raw = saved_holdout_response()
+    raw["evaluation"]["fit_count"] = 2
+    with pytest.raises(ValidationError, match="validation_fit_count without refit"):
+        TrainResponse.model_validate(raw)
+
+
+def test_tuned_response_requires_a_final_refit() -> None:
+    raw = saved_holdout_response()
+    raw["tuning"] = tuning_payload()
+    with pytest.raises(ValidationError, match="parameter tuning requires a final refit"):
+        TrainResponse.model_validate(raw)
 
 
 def test_evaluation_response_supports_single_validation_and_strategy_summary() -> None:
