@@ -111,7 +111,7 @@ export default function ModelScoreEditor({
             className="mt-1 text-[10px]"
             style={{ color: "var(--warning-strong)" }}
           >
-            Selection cleared — run and model identifiers are not portable across destinations.
+            Selection cleared - run and model identifiers are not portable across destinations.
           </p>
         )}
       </div>
@@ -132,8 +132,8 @@ export default function ModelScoreEditor({
         </div>
         <p className="mt-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
           {sourceType === "registered"
-            ? "Registered model — a named, versioned model in the registry (recommended)."
-            : "Experiment run — pick one specific training run by experiment."}
+            ? "Registered model - a named, versioned model in the registry (recommended)."
+            : "Experiment run - pick one specific training run by experiment."}
         </p>
       </div>
 

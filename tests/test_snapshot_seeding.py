@@ -523,8 +523,9 @@ def test_narrow_upstream_snapshot_widened_in_same_run(
     assert _latest_columns(store, graph, "X") == ALL
 
 
-def test_quota_full_sampled_join_computed_once(project: Path) -> None:
-    filler = NodeSnapshotStore(project)
+def test_superseded_full_sampled_join_computed_once(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     graph = _graph(
         project,
         [
@@ -542,19 +543,8 @@ def test_quota_full_sampled_join_computed_once(project: Path) -> None:
         ],
         [("src", "S"), ("S", "J"), ("other", "J"), ("J", "T"), ("src", "P1"), ("src", "P2")],
     )
-    for pinned in ("P1", "P2"):
-        identity = _identity(filler, graph, pinned)
-        artifact = filler.stage_node_output(identity)
-        pl.DataFrame({"a": [1]}).write_parquet(artifact.part_path(0))
-        filler.publish_node_output(
-            identity,
-            artifact,
-            columns=ALL,
-            dependencies={},
-            explicit=True,
-            profile=ExecutionProfile.NODE_SNAPSHOT,
-        ).close()
-    full = NodeSnapshotStore(project, node_output_max_generations=2)
+    full = NodeSnapshotStore(project)
+    monkeypatch.setattr(full, "_should_publish_locked", lambda *_args, **_kwargs: False)
 
     with _planned(graph, full, required={"T": ["id", "r", "d"]}) as (_plan, context, execute):
         output, calls = execute()
@@ -567,10 +557,10 @@ def test_quota_full_sampled_join_computed_once(project: Path) -> None:
     assert {
         capture["node_id"]: capture["outcome"] for capture in metrics["shared_snapshot_captures"]
     } == {
-        "S": "quota",
-        "J": "quota",
+        "S": "superseded",
+        "J": "superseded",
     }
-    assert {"code": "snapshot_capture_skipped", "node_id": "J", "reason": "quota"} in metrics[
+    assert {"code": "snapshot_capture_superseded", "node_id": "J", "reason": None} in metrics[
         "warnings"
     ]
     assert full.latest_generation(_identity(full, graph, "J")) is None
@@ -1300,29 +1290,15 @@ def test_model_score_with_its_own_post_processing_sinks_its_final_frame(
     assert_frame_equal(warm.frame, cold.frame)
 
 
-def test_model_score_quota_rejection_keeps_scored_file(
+def test_model_score_superseded_capture_keeps_scored_file(
     project: Path,
     scoring_model: type[_TenTimes],
     engine_sinks: list[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from haute._node_snapshots import NodeSnapshotSlot
-
     graph = _scored_graph(project)
-    full = NodeSnapshotStore(project, node_output_max_generations=1)
-    # One pinned generation of an unrelated slot fills the quota.
-    filler = NodeSnapshotSlot(str(project / "other.py"), "filler", "batch", "bounded").identity(
-        "filler-signature"
-    )
-    artifact = full.stage_node_output(filler)
-    pl.DataFrame({"a": [1]}).write_parquet(artifact.part_path(0))
-    full.publish_node_output(
-        filler,
-        artifact,
-        columns=ALL,
-        dependencies={},
-        explicit=True,
-        profile=ExecutionProfile.NODE_SNAPSHOT,
-    ).close()
+    full = NodeSnapshotStore(project)
+    monkeypatch.setattr(full, "_should_publish_locked", lambda *_args, **_kwargs: False)
 
     with _planned(graph, full, source="batch") as (_plan, context, execute):
         output, _calls = execute()
@@ -1331,7 +1307,7 @@ def test_model_score_quota_rejection_keeps_scored_file(
 
     assert {
         capture["node_id"]: capture["outcome"] for capture in metrics["shared_snapshot_captures"]
-    } == {"M": "quota"}
+    } == {"M": "superseded"}
     assert engine_sinks == []
     assert scoring_model.calls == 1
     assert_frame_equal(first, second)

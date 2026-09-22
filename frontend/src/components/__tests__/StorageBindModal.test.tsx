@@ -63,7 +63,7 @@ const CLAIM = {
     + "Bind a different location, or fork this one to work on a copy.",
 }
 
-describe("StorageBindModal — asynchronous binding", () => {
+describe("StorageBindModal - asynchronous binding", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     useGitStore.setState({ status: status({}), modal: "storage" })

@@ -150,7 +150,7 @@ const baseNode: Node = {
   data: { label: "Disk", nodeType: "polars", config: {} },
 }
 
-describe("useWebSocketSync — WS sync must not corrupt undo history (#8)", () => {
+describe("useWebSocketSync - WS sync must not corrupt undo history (#8)", () => {
   let originalWebSocket: typeof globalThis.WebSocket
 
   beforeEach(() => {

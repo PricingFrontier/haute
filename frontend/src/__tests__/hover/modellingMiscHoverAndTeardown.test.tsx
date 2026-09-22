@@ -426,7 +426,7 @@ describe("modelling subpanels and hoverHandlers teardown", () => {
   //    2. no import from `../utils/hoverHandlers` (relative to that
   //       file's position in the tree)
 
-  describe("A. 8E scope — no .currentTarget.style.* and no hoverHandlers import", () => {
+  describe("A. 8E scope - no .currentTarget.style.* and no hoverHandlers import", () => {
     for (const f of SCOPE_FILES) {
       describe(f.rel, () => {
         it("does not contain any e.currentTarget.style.* mutation (AST walk)", () => {
@@ -459,7 +459,7 @@ describe("modelling subpanels and hoverHandlers teardown", () => {
           )
           const descriptions = offending.map(
             (r) =>
-              `"${r.specifier}" — named: [${r.namedImports.join(", ")}]${
+              `"${r.specifier}" - named: [${r.namedImports.join(", ")}]${
                 r.hasDefault ? ", default" : ""
               }${r.hasNamespace ? ", namespace" : ""}`,
           )
@@ -493,7 +493,7 @@ describe("modelling subpanels and hoverHandlers teardown", () => {
   //  A dev fixing a single failing package (say 8C) usually only cares
   //  about the production side, so (B1) gives them a cleaner signal.
 
-  describe("B. Teardown AST walk — utils/hoverHandlers has no importers", () => {
+  describe("B. Teardown AST walk - utils/hoverHandlers has no importers", () => {
     /**
      * For a given filter, walk every matching `.ts`/`.tsx` file, parse
      * it, and collect imports that resolve to `utils/hoverHandlers`.
@@ -697,7 +697,7 @@ describe("modelling subpanels and hoverHandlers teardown", () => {
       // of 8E, along with the module.
       expect(
         existsSync(HOVER_HANDLERS_TEST_PATH),
-        `Expected ${HOVER_HANDLERS_TEST_PATH} to be deleted — its only subject (hoverHandlers / hoverBg) is gone.`,
+        `Expected ${HOVER_HANDLERS_TEST_PATH} to be deleted - its only subject (hoverHandlers / hoverBg) is gone.`,
       ).toBe(false)
     })
   })
@@ -721,7 +721,7 @@ describe("modelling subpanels and hoverHandlers teardown", () => {
   //      `.style.background` was written).  This is the positive
   //      behavioural proof that the migration was done correctly.
 
-  describe("D. Integration — NodePalette hover is class-driven, not inline-style", () => {
+  describe("D. Integration - NodePalette hover is class-driven, not inline-style", () => {
     beforeEach(() => {
       vi.resetModules()
     })
@@ -745,7 +745,7 @@ describe("modelling subpanels and hoverHandlers teardown", () => {
         const rows = container.querySelectorAll("[draggable='true']")
         expect(
           rows.length,
-          "NodePalette rendered zero draggable rows — component broke",
+          "NodePalette rendered zero draggable rows - component broke",
         ).toBeGreaterThan(0)
 
         // Pick the first row and dispatch a mouseenter.  A
@@ -792,7 +792,7 @@ describe("modelling subpanels and hoverHandlers teardown", () => {
   //  Wave 8.  If a later feature PR resurrects the pattern, this
   //  pin catches it before review.
 
-  it("E. Regression guard — no file under frontend/src/ contains e.currentTarget.style.* mutation", () => {
+  it("E. Regression guard - no file under frontend/src/ contains e.currentTarget.style.* mutation", () => {
     const offenders: Array<{ rel: string; line: number; context: string }> = []
 
     for (const f of walkFrontendSrc()) {

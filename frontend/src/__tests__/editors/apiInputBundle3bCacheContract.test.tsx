@@ -86,7 +86,7 @@ beforeEach(() => {
 
 afterEach(cleanup)
 
-describe("Bundle 3b — cache button positioned above the Tables editor", () => {
+describe("Bundle 3b - cache button positioned above the Tables editor", () => {
   it("renders the cache button before the Tables editor in DOM order", () => {
     const config = {
       path: "rating/data/sample.json",

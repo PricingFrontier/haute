@@ -95,7 +95,7 @@ describe("MlflowExportSection", () => {
     render(<MlflowExportSection {...makeProps()} />)
     expect(logButton()).toBeEnabled()
     expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
-      "Destination: Local folder — C:/proj/mlruns",
+      "Destination: Local folder - C:/proj/mlruns",
     )
     expect(screen.queryByText(/adb\.example\.net/)).toBeNull()
   })
@@ -106,7 +106,7 @@ describe("MlflowExportSection", () => {
     fireEvent.click(logButton())
     expect(mockLogToMlflow).not.toHaveBeenCalled()
     expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
-      "Destination: Local folder — C:/proj/mlruns",
+      "Destination: Local folder - C:/proj/mlruns",
     )
     expect(screen.queryByRole("button", { name: "Configure MLflow" })).toBeNull()
   })
@@ -114,7 +114,7 @@ describe("MlflowExportSection", () => {
   it("names the remote the node chose", () => {
     render(<MlflowExportSection {...makeProps({ config: { mlflow_destination: "databricks" } })} />)
     expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
-      "Destination: Databricks — https://adb.example.net",
+      "Destination: Databricks - https://adb.example.net",
     )
   })
 
@@ -132,7 +132,7 @@ describe("MlflowExportSection", () => {
     render(<MlflowExportSection {...makeProps({ config: { mlflow_destination: "" } })} />)
     expect(logButton()).toBeEnabled()
     expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
-      "Destination: Local folder — C:/proj/mlruns",
+      "Destination: Local folder - C:/proj/mlruns",
     )
   })
 

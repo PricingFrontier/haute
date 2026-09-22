@@ -294,6 +294,7 @@ function resetAllStores(): void {
     explorePreviewPanes: {},
     hoveredNodeId: null,
     nodeSearchOpen: false,
+    calculationMode: "automatic",
   })
   useGitStore.setState({
     status: null,
@@ -560,7 +561,7 @@ const MODAL_TIMEOUT_MS = 10_000
 // it wrong, and these queries otherwise keep the 1s default.
 const PANEL_HYDRATION_TIMEOUT_MS = 10_000
 
-describe("App integration — mounts and renders main chrome", () => {
+describe("App integration - mounts and renders main chrome", () => {
   it("does not open websocket sync while the initial pipeline load is pending", async () => {
     let resolveLoad!: (value: Awaited<ReturnType<typeof api.loadPipeline>>) => void
     vi.mocked(api.loadPipeline).mockImplementationOnce(
@@ -627,7 +628,7 @@ describe("App integration — mounts and renders main chrome", () => {
   })
 })
 
-describe("App integration — degraded execution fence", () => {
+describe("App integration - degraded execution fence", () => {
   it("uses only the server-planned recovery preview for a ready Explore sibling", async () => {
     const source = makeNode("source_1", "Claims source")
     const explore = makeNode("explore_1", "Claims Explore", "explore")
@@ -751,7 +752,7 @@ describe("App integration — degraded execution fence", () => {
   })
 })
 
-describe("App integration — move failure recovery", () => {
+describe("App integration - move failure recovery", () => {
   it("closes the busy move modal when the checkout request rejects", async () => {
     vi.mocked(api.moveToVersion).mockRejectedValueOnce(new Error("checkout failed"))
     render(<App />)
@@ -776,7 +777,7 @@ describe("App integration — move failure recovery", () => {
   })
 })
 
-describe("App integration — empty pipeline state", () => {
+describe("App integration - empty pipeline state", () => {
   it("renders no application nodes when the pipeline is empty", async () => {
     render(<App />)
     await waitForAppReady()
@@ -807,7 +808,7 @@ describe("App integration — empty pipeline state", () => {
   })
 })
 
-describe("App integration — load a pipeline with nodes", () => {
+describe("App integration - load a pipeline with nodes", () => {
   it("renders node labels from a 3-node graph returned by loadPipeline", async () => {
     // Use labels that deliberately do NOT collide with palette names
     // (e.g. "Data Source", "Model Training") so getByText is unambiguous.
@@ -1057,7 +1058,9 @@ describe("App integration — load a pipeline with nodes", () => {
     expect(screen.getByText("11")).toBeInTheDocument()
     expect(screen.getByText(/Showing 2 of 3 rows/)).toBeInTheDocument()
 
-    fireEvent.click(screen.getByTitle("Refresh Explore outputs"))
+    const previewHeader = screen.getByTestId("explore-preview-frame-header")
+    expect(within(screen.getByTestId("node-panel")).queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument()
+    fireEvent.click(within(previewHeader).getByTitle("Refresh Explore outputs"))
 
     await waitFor(() => expect(vi.mocked(api.previewNode)).toHaveBeenCalledTimes(3))
     expect(vi.mocked(api.previewNode)).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -1067,6 +1070,57 @@ describe("App integration — load a pipeline with nodes", () => {
     }))
     expect(await screen.findByText("31")).toBeInTheDocument()
     expect(screen.getByText(/Showing 2 of 4 rows/)).toBeInTheDocument()
+  })
+
+  it("in manual calculation, clicking a node runs nothing and Ctrl+Enter calculates it", async () => {
+    const sourceNode = makeNode("source_0", "Claims Source", "dataInput")
+    // Direct Parquet, so the snapshot-ensure stage skips this source.
+    sourceNode.data.config = {
+      inputType: "file",
+      format: "parquet",
+      mode: "scan",
+      path: "data/claims.parquet",
+      arguments: {},
+    }
+    sourceNode.data._columns = [{ name: "premium", dtype: "i64" }]
+    sourceNode.data._availableColumns = [{ name: "premium", dtype: "i64" }]
+    sourceNode.data._columnsSource = "live"
+    // A Polars node, not the Data Input itself: its editor needs no IO
+    // capability request, which this file does not mock.
+    const polarsNode = makeNode("polars_1", "Premium Calc", "polars")
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [sourceNode, polarsNode],
+      edges: [{ id: "e1", source: "source_0", target: "polars_1" }],
+      preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
+    }))
+    vi.mocked(api.previewNode).mockResolvedValue({
+      node_id: "polars_1",
+      status: "ok",
+      columns: [{ name: "premium", dtype: "i64" }],
+      preview_columns: ["premium"],
+      preview: [{ premium: 10 }],
+      preview_row_count: 1,
+      row_count: 1,
+      column_count: 1,
+    })
+    useUIStore.setState({ calculationMode: "manual" })
+
+    render(<App />)
+    await waitForAppReady()
+    fireEvent.click(await screen.findByText("Premium Calc"))
+
+    expect(await screen.findByText("Refresh to preview this node.")).toBeInTheDocument()
+    expect(vi.mocked(api.previewNode)).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(window, { key: "Enter", ctrlKey: true })
+
+    await waitFor(() => expect(vi.mocked(api.previewNode)).toHaveBeenCalledWith(
+      expect.objectContaining({ nodeId: "polars_1" }),
+    ))
+    // Let the calculation land so no request outlives the test.
+    expect(await screen.findByText("1 rows · 1 cols")).toBeInTheDocument()
   })
 
   it("hydrates Pivot field actions from the shared data profile on cold load", async () => {
@@ -1114,7 +1168,7 @@ describe("App integration — load a pipeline with nodes", () => {
   })
 })
 
-describe("App integration — add a node via drag-and-drop from the palette", () => {
+describe("App integration - add a node via drag-and-drop from the palette", () => {
   // Note: there is no dedicated 'Add Node' button in the current Toolbar —
   // the canonical add-node flow is dragging a palette item onto the canvas.
   // This test exercises that flow end-to-end: simulate a drop on the
@@ -1226,7 +1280,7 @@ describe("App integration — add a node via drag-and-drop from the palette", ()
   })
 })
 
-describe("App integration — save pipeline", () => {
+describe("App integration - save pipeline", () => {
   it("clicking Save calls savePipeline with the current graph serialized", async () => {
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [makeNode("polars_0", "Transform A")],
@@ -1413,7 +1467,7 @@ describe("App integration — save pipeline", () => {
   })
 })
 
-describe("App integration — error handling", () => {
+describe("App integration - error handling", () => {
   it("shows an error toast when loadPipeline rejects, without crashing", async () => {
     vi.mocked(api.loadPipeline).mockRejectedValueOnce(new Error("Backend offline"))
 
@@ -1447,7 +1501,7 @@ describe("App integration — error handling", () => {
   })
 })
 
-describe("App integration — apiInput emit-port edge reconciliation (Defect 1)", () => {
+describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", () => {
   // A multi-port apiInput (2 emit tables) with a downstream edge bound
   // to the 'drivers' port. Toggling that table's emit off in the editor
   // must prune the now-orphaned edge from the store AND surface a
@@ -1761,7 +1815,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     })
   })
 
-  it("W1.3: renaming a CONNECTED port keeps its edge — rebound to the new handle in ONE undo entry", async () => {
+  it("W1.3: renaming a CONNECTED port keeps its edge - rebound to the new handle in ONE undo entry", async () => {
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline(makeApiInputGraph()))
     // Determinism: the default previewNode mock resolves `columns: []`
     // (truthy), and usePipelineAPI stashes `_columns` via history-aware
@@ -2167,7 +2221,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     expect(useGraphStore.getState().submodels).toEqual(submodelsBefore)
   })
 
-  it("W1.4: blanking a port label in the editor never reaches the graph — no synthesized port, edge intact", async () => {
+  it("W1.4: blanking a port label in the editor never reaches the graph - no synthesized port, edge intact", async () => {
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline(makeApiInputGraph()))
     // Same determinism guard as the W1.3 test above: keep previews
     // pending so no async `_columns` stash mutates nodes mid-test.
@@ -2311,7 +2365,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
 
 })
 
-describe("App integration — read-only submodel instance", () => {
+describe("App integration - read-only submodel instance", () => {
   it("keeps the shared definition inspectable while disabling every exposed edit surface", async () => {
     const owner = makeNode("inputs", "inputs", "submodel")
     owner.data.config = {
@@ -2387,7 +2441,7 @@ describe("App integration — read-only submodel instance", () => {
   })
 })
 
-describe("App integration — panel open/close", () => {
+describe("App integration - panel open/close", () => {
   it("clicking Utility opens the UtilityPanel; close button dismisses it", async () => {
     render(<App />)
     await waitForAppReady()

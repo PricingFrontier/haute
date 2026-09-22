@@ -902,7 +902,7 @@ function typeSequence(values: string[]) {
   }
 }
 
-describe("ApiInputEditor — W1.5 path inputs (focus retention, commit discipline)", () => {
+describe("ApiInputEditor - W1.5 path inputs (focus retention, commit discipline)", () => {
   it("table path input keeps focus and accumulates keystrokes without remounting", () => {
     const onUpdateSpy = vi.fn()
     render(<StatefulHarness initialConfig={ONE_TABLE_ONE_COL} onUpdateSpy={onUpdateSpy} />)
@@ -1107,7 +1107,7 @@ const TWO_EMIT_TABLES = {
   ],
 }
 
-describe("ApiInputEditor — W1.3 port-label commits are atomic", () => {
+describe("ApiInputEditor - W1.3 port-label commits are atomic", () => {
   it("typing in a label input does not commit per keystroke; blur commits exactly once with the final value", () => {
     const onUpdateSpy = vi.fn()
     render(<StatefulHarness initialConfig={TWO_EMIT_TABLES} onUpdateSpy={onUpdateSpy} />)
@@ -1165,7 +1165,7 @@ describe("ApiInputEditor — W1.3 port-label commits are atomic", () => {
   })
 })
 
-describe("ApiInputEditor — W1.4 label validation (blank / duplicate / sanitised collision)", () => {
+describe("ApiInputEditor - W1.4 label validation (blank / duplicate / sanitised collision)", () => {
   it("a blanked label shows validation on blur and commits NOTHING (no port_<idx> ever reaches config)", () => {
     const onUpdateSpy = vi.fn()
     render(<StatefulHarness initialConfig={TWO_EMIT_TABLES} onUpdateSpy={onUpdateSpy} />)
@@ -1294,7 +1294,7 @@ describe("ApiInputEditor — W1.4 label validation (blank / duplicate / sanitise
   })
 })
 
-describe("ApiInputEditor — blank paths are refused, never silently destructive", () => {
+describe("ApiInputEditor - blank paths are refused, never silently destructive", () => {
   // Folded W1.5 follow-up: PathInput committed "" on a deliberate
   // clear+blur, and `readV2` then silently dropped the whole table (or
   // column) from config. Invalid editor state must surface as
@@ -1385,7 +1385,7 @@ const TWO_COLS_AND_SECOND_TABLE = {
   ],
 }
 
-describe("ApiInputEditor — W1.9 column-name validation (blank / duplicate)", () => {
+describe("ApiInputEditor - W1.9 column-name validation (blank / duplicate)", () => {
   it("backspacing a name to empty never deletes the column: commit refused, row survives, error shown", () => {
     const onUpdateSpy = vi.fn()
     render(<StatefulHarness initialConfig={ONE_TABLE_ONE_COL} onUpdateSpy={onUpdateSpy} />)
@@ -1497,7 +1497,7 @@ describe("ApiInputEditor — W1.9 column-name validation (blank / duplicate)", (
 // persisted config can still contain one. These tests pin that every
 // persisted entry remains visible with inline validation and is never
 // silently dropped during the 1:1 JSON↔UI render pass.
-describe("ApiInputEditor — disk-arriving blank entries surface (render-gate)", () => {
+describe("ApiInputEditor - disk-arriving blank entries surface (render-gate)", () => {
   it("a blank-NAME column from disk renders its row with a visible name error", () => {
     const config = {
       tables: [
@@ -1597,7 +1597,7 @@ describe("ApiInputEditor — disk-arriving blank entries surface (render-gate)",
 // persistence (toEqual) assertion itself rather than an incidental
 // element-not-found. (Toggling a *column* checkbox would vanish pre-fix
 // when the blank row above it is dropped and the indices collapse.)
-describe("ApiInputEditor — blank entry is not lost when an unrelated field is edited", () => {
+describe("ApiInputEditor - blank entry is not lost when an unrelated field is edited", () => {
   it("a blank-NAME column survives an unrelated edit (persisted config, exact shape)", () => {
     const config = {
       tables: [

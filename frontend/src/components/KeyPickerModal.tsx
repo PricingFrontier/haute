@@ -210,7 +210,7 @@ export default function KeyPickerModal({
                 value={manualType}
                 onChange={(e) => setManualType(e.target.value as ColumnType | "")}
                 disabled={exists}
-                title={exists ? "Field already exists — its name and type are kept" : undefined}
+                title={exists ? "Field already exists - its name and type are kept" : undefined}
                 className="text-[11px] px-1 py-1 rounded disabled:opacity-50 disabled:cursor-not-allowed"
                 style={{
                   background: "var(--bg-input)",
@@ -271,8 +271,8 @@ export default function KeyPickerModal({
                 style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
               >
                 {existingKeyPaths?.has(trimmed)
-                  ? "This field is already added as a key on this frame — Add re-confirms it and keeps its name and type."
-                  : "Field already exists on this frame — Add makes it a key (moved into the keys at the top), keeping its name and type."}
+                  ? "This field is already added as a key on this frame - Add re-confirms it and keeps its name and type."
+                  : "Field already exists on this frame - Add makes it a key (moved into the keys at the top), keeping its name and type."}
               </div>
             )}
           </div>

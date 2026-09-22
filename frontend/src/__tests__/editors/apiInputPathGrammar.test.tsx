@@ -85,7 +85,7 @@ function commit(testId: string, value: string) {
   fireEvent.blur(input)
 }
 
-describe("ApiInputEditor — INPUT path grammar is wired in-editor (not a save-time 422)", () => {
+describe("ApiInputEditor - INPUT path grammar is wired in-editor (not a save-time 422)", () => {
   it("refuses an ungrammatical TABLE path with a visible error (e.g. an index selector)", () => {
     render(<Harness initialConfig={ONE_TABLE_ONE_COL} />)
     commit("api-input-table-0-path", "$[:].drivers[0]")

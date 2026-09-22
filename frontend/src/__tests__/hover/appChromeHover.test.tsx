@@ -125,7 +125,7 @@ describe("chrome hover is className-driven (AST)", () => {
 
       expect(
         FORBIDDEN.test(stripped),
-        `Expected ${rel} to have no '.currentTarget.style.<prop>' mutations — ` +
+        `Expected ${rel} to have no '.currentTarget.style.<prop>' mutations - ` +
           `replace with className-driven hover (e.g. '.hover-chrome' or a ` +
           `tailwind 'hover:*' class).`,
       ).toBe(false)
@@ -193,7 +193,7 @@ import BreadcrumbBar, {
 
 afterEach(cleanup)
 
-describe("BreadcrumbBar — hover is className-driven (behavioural)", () => {
+describe("BreadcrumbBar - hover is className-driven (behavioural)", () => {
   const twoLevels: ViewLevel[] = [
     { type: "pipeline", name: "Main", file: "main.py" },
     { type: "submodel", name: "Child", file: "child.py", instanceId: "Child", definitionId: "definition_child", readOnly: false },
@@ -254,7 +254,7 @@ import BreakdownDropdown, {
   type BreakdownItem,
 } from "../../components/BreakdownDropdown"
 
-describe("BreakdownDropdown — state-dependent hover (behavioural)", () => {
+describe("BreakdownDropdown - state-dependent hover (behavioural)", () => {
   const MockIcon = ({ size }: { size: number }) => (
     <span data-testid="icon">{size}</span>
   )
@@ -264,7 +264,7 @@ describe("BreakdownDropdown — state-dependent hover (behavioural)", () => {
     { node_id: "b", label: "Beta", value: 30 },
   ]
 
-  it("(closed, hasData) — mouseEnter does not imperatively mutate inline style", () => {
+  it("(closed, hasData) - mouseEnter does not imperatively mutate inline style", () => {
     render(
       <BreakdownDropdown
         icon={MockIcon}
@@ -277,12 +277,12 @@ describe("BreakdownDropdown — state-dependent hover (behavioural)", () => {
     const delta = mutatedInlineStyleOnEnter(button)
     expect(
       delta,
-      `BreakdownDropdown button (closed, hasData) must not mutate inline style on mouseEnter — ` +
+      `BreakdownDropdown button (closed, hasData) must not mutate inline style on mouseEnter - ` +
         `use a className or :hover selector instead. Got ${JSON.stringify(delta)}`,
     ).toEqual({})
   })
 
-  it("(closed, !hasData) — mouseEnter does not imperatively mutate inline style", () => {
+  it("(closed, !hasData) - mouseEnter does not imperatively mutate inline style", () => {
     // Empty items → the guard `if (!open && hasData)` would skip the
     // handler body in the pre-migration code too, so this one already
     // passes.  Pin it anyway to prevent a migration from *introducing*
@@ -300,7 +300,7 @@ describe("BreakdownDropdown — state-dependent hover (behavioural)", () => {
     expect(delta).toEqual({})
   })
 
-  it("(open, hasData) — mouseEnter does not imperatively mutate inline style", () => {
+  it("(open, hasData) - mouseEnter does not imperatively mutate inline style", () => {
     render(
       <BreakdownDropdown
         icon={MockIcon}
@@ -357,7 +357,7 @@ describe("BreakdownDropdown — state-dependent hover (behavioural)", () => {
 
 import ContextMenu from "../../components/ContextMenu"
 
-describe("ContextMenu — hover per-item is className-driven (behavioural)", () => {
+describe("ContextMenu - hover per-item is className-driven (behavioural)", () => {
   const baseProps = {
     x: 0,
     y: 0,
@@ -369,14 +369,14 @@ describe("ContextMenu — hover per-item is className-driven (behavioural)", () 
     onRename: vi.fn(),
   }
 
-  it("non-danger menu item (Rename) — mouseEnter does not imperatively mutate inline style", () => {
+  it("non-danger menu item (Rename) - mouseEnter does not imperatively mutate inline style", () => {
     render(<ContextMenu {...baseProps} />)
     const rename = screen.getByRole("menuitem", { name: /Rename/ })
     const delta = mutatedInlineStyleOnEnter(rename)
     expect(delta).toEqual({})
   })
 
-  it("danger menu item (Delete) — mouseEnter does not imperatively mutate inline style", () => {
+  it("danger menu item (Delete) - mouseEnter does not imperatively mutate inline style", () => {
     render(<ContextMenu {...baseProps} />)
     const del = screen.getByRole("menuitem", { name: /Delete/ })
     const delta = mutatedInlineStyleOnEnter(del)
@@ -400,8 +400,8 @@ describe("ContextMenu — hover per-item is className-driven (behavioural)", () 
 import ToastContainer from "../../components/Toast"
 import useToastStore from "../../stores/useToastStore"
 
-describe("Toast — dismiss button hover is className-driven (behavioural)", () => {
-  it("dismiss button — mouseEnter does not imperatively mutate inline style", () => {
+describe("Toast - dismiss button hover is className-driven (behavioural)", () => {
+  it("dismiss button - mouseEnter does not imperatively mutate inline style", () => {
     // Seed the store with a toast so the container actually renders.
     useToastStore.setState({
       toasts: [{ id: "t1", type: "info", text: "Hello" }],
@@ -428,13 +428,13 @@ describe("Toast — dismiss button hover is className-driven (behavioural)", () 
 
 import ColumnTable from "../../components/ColumnTable"
 
-describe("ColumnTable — interactive-row hover is className-driven (behavioural)", () => {
+describe("ColumnTable - interactive-row hover is className-driven (behavioural)", () => {
   const COLUMNS = [
     { name: "premium", dtype: "Float64" },
     { name: "area", dtype: "String" },
   ]
 
-  it("interactiveRows=true — row mouseEnter does not imperatively mutate inline style", () => {
+  it("interactiveRows=true - row mouseEnter does not imperatively mutate inline style", () => {
     const { container } = render(
       <ColumnTable
         columns={COLUMNS}
@@ -452,7 +452,7 @@ describe("ColumnTable — interactive-row hover is className-driven (behavioural
     ).toEqual({})
   })
 
-  it("interactiveRows=false — row mouseEnter is a no-op (no hover affordance at all)", () => {
+  it("interactiveRows=false - row mouseEnter is a no-op (no hover affordance at all)", () => {
     // Sanity: the opt-in shape must survive migration.  A table that
     // wasn't interactive before shouldn't suddenly gain hover styling.
     const { container } = render(<ColumnTable columns={COLUMNS} />)
@@ -482,7 +482,7 @@ describe("ColumnTable — interactive-row hover is className-driven (behavioural
 //  Rationale for this approach is documented in-line so a future reader
 //  understands why there's no `render(<App />)` here.
 
-describe("App.tsx palette toggle — hover is className-driven (AST-only contract)", () => {
+describe("App.tsx palette toggle - hover is className-driven (AST-only contract)", () => {
   it("App.tsx source has no .currentTarget.style. mutation (covered by AST walk)", () => {
     // This test is a pointer from the behavioural suite to the AST pin
     // above.  Testing the actual <App /> palette button here would

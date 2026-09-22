@@ -48,7 +48,6 @@ from haute._source_cache import (
     SourceCacheBuildError,
     SourceCacheGeneration,
     SourceCacheIdentity,
-    SourceCacheQuotaExceededError,
     SourceCacheStatus,
     SourceCacheStore,
     new_staging_token,
@@ -315,13 +314,6 @@ class _AdmittedEagerWorkerError(Exception):
         self.fields = fields or {}
 
 
-def _is_quota_failure(exc: BaseException) -> bool:
-    """Whether a worker failure is the store's quota rejection."""
-    if isinstance(exc, SourceCacheQuotaExceededError):
-        return True
-    return getattr(exc, "remote_type", None) == "SourceCacheQuotaExceededError"
-
-
 def _admitted_eager_failure(
     exc: BaseException,
     *,
@@ -347,13 +339,6 @@ def _admitted_eager_failure(
                     memory_limit_bytes=budget.memory_limit_bytes,
                 ),
             },
-        )
-    if _is_quota_failure(exc):
-        return _AdmittedEagerWorkerError(
-            terminal="error",
-            message="Input snapshot exceeds the configured cache quota.",
-            error_code="cache_quota_exceeded",
-            phase="failed",
         )
     reason = token.terminal_reason if token.cancelled else getattr(exc, "terminal_reason", None)
     if reason in {"cancelled", "superseded", "timed_out"}:
@@ -421,7 +406,6 @@ def _supervise_admitted_eager_build(
         refresh=refresh,
         generation_id=generation_id,
         staging_token=staging_token,
-        retained_generation_ids=tuple(sorted(store.leased_generation_ids(identity))),
     )
     try:
         outcome = run_isolated_worker(
@@ -576,27 +560,6 @@ def _run_build(
                         exclude={"elapsed_seconds"}
                     ),
                     "phase": failure.phase,
-                },
-            },
-            elapsed_seconds=time.monotonic() - started_at,
-        )
-    except SourceCacheQuotaExceededError as exc:
-        logger.warning(
-            "input_cache_quota_rejected",
-            job_id=job_id,
-            error_type=type(exc).__name__,
-        )
-        lifecycle.transition(
-            job_id,
-            to="error",
-            message="Input snapshot exceeds the configured cache quota.",
-            fields={
-                "error_code": "cache_quota_exceeded",
-                "progress": {
-                    **_progress_payload(store.require_job(job_id)).model_dump(
-                        exclude={"elapsed_seconds"}
-                    ),
-                    "phase": "failed",
                 },
             },
             elapsed_seconds=time.monotonic() - started_at,

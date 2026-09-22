@@ -233,8 +233,8 @@ export function CommonFeatureConfig({ config, onUpdate, columns }: Props) {
                 style={excluded ? EXCLUDE_BUTTON_STYLE : INCLUDE_BUTTON_STYLE}
                 title={
                   excluded
-                    ? "Excluded — click to include"
-                    : "Included — click to exclude"
+                    ? "Excluded - click to include"
+                    : "Included - click to exclude"
                 }
                 onClick={() =>
                   requestExclusionUpdate(
@@ -311,7 +311,7 @@ export function CommonFeatureConfig({ config, onUpdate, columns }: Props) {
             }}
           >
             <span className="min-w-0 flex-1 truncate">
-              {name} — not found
+              {name} - not found
             </span>
             <button
               type="button"

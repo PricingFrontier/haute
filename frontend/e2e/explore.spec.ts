@@ -18,7 +18,7 @@ async function openApp(page: Page): Promise<void> {
  * how a user now asks for the full dataset to be cached.
  */
 async function refreshNode(page: Page): Promise<void> {
-  await page.getByTestId("node-panel").getByRole("button", { name: "Refresh", exact: true }).click()
+  await page.getByTestId("explore-preview-frame-header").getByRole("button", { name: "Refresh", exact: true }).click()
 }
 
 async function connect(page: Page, source: Locator, target: Locator): Promise<void> {
@@ -161,22 +161,22 @@ test.describe("Explore cached field pivot journey", () => {
 
       const formatting = page.getByTestId("pivot-formatting-section")
       await formatting.getByRole("combobox", {
-        name: "Number format for Column 1 — derived_value",
+        name: "Number format for Column 1 - derived_value",
       }).selectOption("number")
       await formatting.getByRole("combobox", {
-        name: "Decimal places for Column 1 — derived_value",
+        name: "Decimal places for Column 1 - derived_value",
       }).selectOption("2")
       await formatting.getByRole("combobox", {
-        name: "Number format for Row 1 — id",
+        name: "Number format for Row 1 - id",
       }).selectOption("percent")
       await formatting.getByRole("combobox", {
-        name: "Decimal places for Row 1 — id",
+        name: "Decimal places for Row 1 - id",
       }).selectOption("0")
       await formatting.getByRole("combobox", {
-        name: "Number format for Value 1 — value",
+        name: "Number format for Value 1 - value",
       }).selectOption("currency_gbp")
       await formatting.getByRole("combobox", {
-        name: "Decimal places for Value 1 — value",
+        name: "Decimal places for Value 1 - value",
       }).selectOption("2")
 
       await save(page)

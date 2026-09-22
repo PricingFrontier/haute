@@ -146,7 +146,7 @@ describe("apiInputFrameLabels", () => {
   // labels (`validate_v2_schema`). A synthesized `port_<idx>` handle could
   // therefore never resolve at runtime (executor KeyError). Blank-label
   // tables get NO handle; the editor shows the validation error instead.
-  it("renders no port for a missing / blank label — never synthesizes port_<idx>", () => {
+  it("renders no port for a missing / blank label - never synthesizes port_<idx>", () => {
     const labels = apiInputFrameLabels({
       tables: [
         { path: "$[:]", emit: true, columns: [{ name: "c", selected: true }] },
@@ -192,7 +192,7 @@ describe("apiInputFrameLabels", () => {
   // W1.4 — duplicate labels are rejected by the backend on save, and the
   // runtime keys ports by raw label, so a synthesized `dup__1` handle
   // could never exist server-side. Only the first occurrence is a port.
-  it("gives duplicate labels a single port (first occurrence) — never synthesizes __<idx>", () => {
+  it("gives duplicate labels a single port (first occurrence) - never synthesizes __<idx>", () => {
     const labels = apiInputFrameLabels({
       tables: [table("dup", true), table("dup", true)],
     })

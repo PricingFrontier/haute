@@ -201,7 +201,7 @@ export interface SharedSnapshotCapture {
   node_id: string
   identity_digest: string
   kind: "structural" | "materialising" | "model_score" | "consumed"
-  outcome: "published" | "superseded" | "quota"
+  outcome: "published" | "superseded"
   generation_id: string | null
   columns: "all" | string[]
   write_strategy?: "chunked_join" | "sliced" | "input_sliced" | "native" | "prewritten" | null
@@ -509,34 +509,13 @@ export interface IoCapabilitiesResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Cache-usage contracts (/api/cache)
+// Cache-inventory contracts (/api/cache)
 // ---------------------------------------------------------------------------
-
-/** One budget's usage against its limits, and the variables that set them. */
-export interface CacheBudgetUsage {
-  generations_used: number
-  generations_limit: number
-  generations_limit_variable: string
-  bytes_used: number
-  bytes_limit: number
-  bytes_limit_variable: string
-}
-
-/**
- * Both budgets in one response. They are independent — node outputs and input
- * snapshots neither consume nor evict one another — so there is no combined
- * total here and none should be rendered.
- */
-export interface CacheUsageResponse {
-  schema_version: 1
-  node_outputs: CacheBudgetUsage
-  input_snapshots: CacheBudgetUsage
-}
 
 /**
  * One node of the graph. `state`/`row_count` describe the generation this node
  * would read for its own columns; `generations`/`size_bytes` are every
- * signature the store still holds for it, which is what it costs the budget.
+ * signature the store still holds for it, including data retained for active readers.
  */
 export interface CacheNodeEntry {
   node_id: string
@@ -591,11 +570,7 @@ export interface CacheNodesResponse {
   other: CacheOwnerEntry[]
   unattributed_generations: number
   unattributed_bytes: number
-  /**
-   * Identities whose provider marker does not classify. Admission charges each
-   * to BOTH budgets, so this is what explains a usage report larger than the
-   * sum of the entries above.
-   */
+  /** Identities whose provider marker is missing or unrecognised. */
   unmarked_identities: number
 }
 

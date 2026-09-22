@@ -17,7 +17,7 @@ from polars.testing import assert_frame_equal
 from haute._data_points import DataPointResolver
 from haute._execute_lazy import EagerResult, _execute_eager_core
 from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
-from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotSlot, NodeSnapshotStore
+from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._seed_plans import SeedPlan, SeedPlanRequest, open_seed_plan
 from haute._source_cache import SourceCacheIdentity
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
@@ -552,30 +552,18 @@ def test_limit_boundary_filter_and_sum_over_a_seed(project: Path, store: NodeSna
     assert summed.rows("S")["x"].to_list() == [4950]
 
 
-def test_eager_quota_rejected_capture_continues_from_own_artifact(
-    project: Path, sources_gone_after_capture: list[str]
+def test_eager_superseded_capture_continues_from_own_artifact(
+    project: Path, sources_gone_after_capture: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     graph = _join_graph(project)
     identity = _identity(NodeSnapshotStore(project), graph, "join")
-    full = NodeSnapshotStore(project, node_output_max_generations=1)
-    filler = NodeSnapshotSlot(str(project / "other.py"), "filler", "live", "bounded").identity(
-        "filler-signature"
-    )
-    artifact = full.stage_node_output(filler)
-    pl.DataFrame({"a": [1]}).write_parquet(artifact.part_path(0))
-    full.publish_node_output(
-        filler,
-        artifact,
-        columns=ALL,
-        dependencies={},
-        explicit=True,
-        profile=ExecutionProfile.NODE_SNAPSHOT,
-    ).close()
+    full = NodeSnapshotStore(project)
+    monkeypatch.setattr(full, "_should_publish_locked", lambda *_args, **_kwargs: False)
 
     preview = _preview(graph, full, "banding")
 
-    assert preview.captures["join"]["outcome"] == "quota"
-    assert {"code": "snapshot_capture_skipped", "node_id": "join", "reason": "quota"} in (
+    assert preview.captures["join"]["outcome"] == "superseded"
+    assert {"code": "snapshot_capture_superseded", "node_id": "join", "reason": None} in (
         preview.metrics["warnings"]
     )
     # With both sources gone, these rows can only have come from the artifact.
@@ -1148,9 +1136,8 @@ def test_stale_join_is_not_seeded_and_is_recaptured(project: Path, api: Any) -> 
     assert _rows(body)["band"].to_list() == [10, 12]
 
 
-@pytest.mark.parametrize("removal", ["clear", "evict"])
-def test_capture_then_clear_or_evict_never_serves_the_cached_response(
-    project: Path, api: Any, store: NodeSnapshotStore, builds: Counter[str], removal: str
+def test_capture_then_clear_never_serves_the_cached_response(
+    project: Path, api: Any, store: NodeSnapshotStore, builds: Counter[str]
 ) -> None:
     graph = _join_graph(project)
     j1 = _post_preview(api, graph, "banding")["seed_plan"][0]["generation_id"]
@@ -1160,24 +1147,7 @@ def test_capture_then_clear_or_evict_never_serves_the_cached_response(
     assert [entry["generation_id"] for entry in repeat["seed_plan"]] == [j1]
 
     identity = _identity(store, graph, "join")
-    if removal == "clear":
-        store.clear(identity)
-    else:
-        full = NodeSnapshotStore(project, node_output_max_generations=1)
-        filler = NodeSnapshotSlot(str(project / "other.py"), "filler", "live", "bounded").identity(
-            "filler-signature"
-        )
-        artifact = full.stage_node_output(filler)
-        pl.DataFrame({"a": [1]}).write_parquet(artifact.part_path(0))
-        full.publish_node_output(
-            filler,
-            artifact,
-            columns=ALL,
-            dependencies={},
-            explicit=True,
-            profile=ExecutionProfile.NODE_SNAPSHOT,
-        ).close()
-        assert store.latest_generation(identity) is None
+    store.clear(identity)
     builds.clear()
 
     after = _post_preview(api, graph, "banding")
@@ -1443,22 +1413,10 @@ def test_partial_hit_under_captures_executes_as_a_miss(
     import haute._seed_plans as seed_plans_module
     from haute.executor import _preview_cache
 
-    # Every capture is refused for quota, so each preview plans the capture
+    # Every capture is superseded, so each preview plans the capture
     # again and stores under the key it computed before executing.
-    full = NodeSnapshotStore(project, node_output_max_generations=1)
-    filler = NodeSnapshotSlot(str(project / "other.py"), "filler", "live", "bounded").identity(
-        "filler-signature"
-    )
-    artifact = full.stage_node_output(filler)
-    pl.DataFrame({"a": [1]}).write_parquet(artifact.part_path(0))
-    full.publish_node_output(
-        filler,
-        artifact,
-        columns=ALL,
-        dependencies={},
-        explicit=True,
-        profile=ExecutionProfile.NODE_SNAPSHOT,
-    ).close()
+    full = NodeSnapshotStore(project)
+    monkeypatch.setattr(full, "_should_publish_locked", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(seed_plans_module, "_project_store", lambda: full)
     graph = _join_graph(project)
     first = _post_preview(api, graph, "banding")

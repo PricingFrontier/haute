@@ -197,7 +197,7 @@ export default function PivotFormattingSection({
         ) : (
           <div className="mt-2 flex flex-col gap-2">
             {entries.map((entry) => {
-            const accessibleLabel = `${entry.positionLabel} — ${entry.displayLabel}`
+            const accessibleLabel = `${entry.positionLabel} - ${entry.displayLabel}`
             const numberFormat = effectivePivotNumberFormat(entry.placement)
             const sourceField = "field" in entry.placement &&
               typeof entry.placement.field === "string"

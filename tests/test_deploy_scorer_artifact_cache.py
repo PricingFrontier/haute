@@ -333,43 +333,19 @@ class TestStatGateInvalidation:
 
 
 class TestDeployArtifactPathFingerprints:
-    def test_batch_cache_request_uses_stat_gated_artifact_fingerprint(self, tmp_path: Path) -> None:
+    def test_artifact_identity_fingerprint_uses_stat_gated_fingerprint(
+        self, tmp_path: Path
+    ) -> None:
+        """``artifact_identity_fingerprint`` still stat-gates artifact paths for the
+
+        model-artifact ``StatGatedCache`` key, independent of graph execution —
+        deployed scoring itself never builds a dataframe execution cache request.
+        """
         import haute.execution as execution_mod
-        from haute._execution_context import ExecutionContext, ExecutionProfile
-        from haute.deploy import _scorer
+        from haute.deploy._scorer import artifact_identity_fingerprint
 
         artifact_path = tmp_path / "artifact.parquet"
         artifact_path.write_bytes(b"stable artifact bytes")
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "src",
-                        "data": {
-                            "label": "src",
-                            "nodeType": "apiInput",
-                            "config": {"path": ""},
-                        },
-                    },
-                    {
-                        "id": "out",
-                        "data": {
-                            "label": "out",
-                            "nodeType": "output",
-                            "config": make_output_config(["x"]),
-                        },
-                    },
-                ],
-                "edges": [
-                    {
-                        "id": "e1",
-                        "source": "src",
-                        "target": "out",
-                        "sourceHandle": "src",
-                    }
-                ],
-            }
-        )
         real_content_hash = execution_mod.content_hash
         hash_calls: list[Path] = []
 
@@ -377,33 +353,12 @@ class TestDeployArtifactPathFingerprints:
             hash_calls.append(Path(path))
             return real_content_hash(path)
 
-        with (
-            patch.object(execution_mod, "content_hash", side_effect=counting_content_hash),
-            patch.object(
-                _scorer,
-                "execute_lazy_graph",
-                return_value=(
-                    {"out": pl.DataFrame({"x": [1.0, 2.0]}).lazy()},
-                    ["src", "out"],
-                    {},
-                    {},
-                ),
-            ),
-        ):
+        with patch.object(execution_mod, "content_hash", side_effect=counting_content_hash):
             for _ in range(2):
-                plan = _scorer.score_graph_lazy(
-                    graph=graph,
-                    input_df=pl.DataFrame({"x": [1.0, 2.0]}),
-                    input_node_ids=["src"],
-                    output_node_id="out",
-                    artifact_paths={"artifact": str(artifact_path)},
-                    execution_context=ExecutionContext(
-                        operation="deploy_score_graph",
-                        profile=ExecutionProfile.DEPLOY_BATCH,
-                    ),
-                )
-                plan.cleanup(preserve_primary_error=False)
+                artifact_identity_fingerprint({"artifact": str(artifact_path)})
 
+        # The stat-gated fingerprint caches on unchanged (mtime_ns, size), so a
+        # second call with the same stat never re-hashes the file's bytes.
         assert hash_calls == [artifact_path.resolve()]
 
 

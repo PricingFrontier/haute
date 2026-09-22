@@ -2366,7 +2366,6 @@ class _PlannedCaptures:
         from haute._node_snapshots import (
             NodeSnapshotColumns,
             NodeSnapshotMultiFrameUnsupportedError,
-            NodeSnapshotQuotaRejectedError,
         )
 
         plan = self.plan
@@ -2462,10 +2461,6 @@ class _PlannedCaptures:
                 profile=plan.decision.profile,
                 unshaped_columns=unshaped_columns,
             )
-        except NodeSnapshotQuotaRejectedError as exc:
-            plan.register_artifact(exc.artifact)
-            self._record(capture, "quota", None, columns, written)
-            return exc.artifact.lazy_frame()
         except SourceCacheCorruptError as exc:
             # The publication rule reports corruption rather than repairing it,
             # deliberately — only an explicit build replaces a corrupt
@@ -2505,7 +2500,7 @@ class _PlannedCaptures:
     def _record(
         self,
         capture: CaptureDecision,
-        outcome: Literal["published", "superseded", "quota"],
+        outcome: Literal["published", "superseded"],
         generation_id: str | None,
         columns: NodeSnapshotColumns,
         written: ChunkedWrite | None,
@@ -2545,11 +2540,7 @@ class _PlannedCaptures:
                 write_blocking_operator=written.blocking_operator if written is not None else None,
             )
         )
-        if outcome == "quota":
-            context.record_execution_warning(
-                "snapshot_capture_skipped", node_id=capture.node_id, reason="quota"
-            )
-        elif outcome == "superseded":
+        if outcome == "superseded":
             context.record_execution_warning("snapshot_capture_superseded", node_id=capture.node_id)
 
 

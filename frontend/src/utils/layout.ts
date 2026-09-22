@@ -1,16 +1,18 @@
-import type { Node, Edge } from "@xyflow/react"
+import type { Node, Edge, InternalNode } from "@xyflow/react"
+import type { ElkNode } from "elkjs/lib/elk-api"
 
 const DEFAULT_NODE_WIDTH = 240
 const DEFAULT_NODE_HEIGHT = 70
 const LAYOUT_COLLISION_GAP = 60
 
-type ElkLayout = {
-  children?: Array<{ id: string; x?: number; y?: number }>
+type ElkEngine = {
+  layout: (graph: ElkNode) => Promise<ElkNode>
 }
 
-type ElkEngine = {
-  layout: (graph: unknown) => Promise<ElkLayout>
-}
+type NodeLookup = (id: string) => InternalNode | undefined
+type SizedElkNode = ElkNode & { width: number; height: number }
+
+const PORT_SIDES = { left: "WEST", right: "EAST", top: "NORTH", bottom: "SOUTH" }
 
 let elkPromise: Promise<ElkEngine> | null = null
 
@@ -23,45 +25,61 @@ async function getElk(): Promise<ElkEngine> {
   return elkPromise
 }
 
-/**
- * Cluster nearby coordinate values and snap each cluster to its median.
- * E.g. y-values [100, 103, 108, 250, 253] with threshold 20
- * → two clusters: [100,103,108]→103, [250,253]→250
- */
-function clusterSnap(values: number[], threshold: number): Map<number, number> {
-  const sorted = [...new Set(values)].sort((a, b) => a - b)
-  const snap = new Map<number, number>()
+function buildLayoutGraph(
+  nodes: Node[], edges: Edge[], getInternalNode?: NodeLookup,
+): Omit<ElkNode, "children"> & { children: SizedElkNode[] } {
+  // Snapshot geometry before awaiting ELK; never add internal fields to saved nodes.
+  const internalNodes = new Map(nodes.map(node => [node.id, getInternalNode?.(node.id)]))
+  const children = new Map<string, SizedElkNode>(nodes.map(node => [node.id, {
+    id: node.id,
+    ...nodeDimensions(internalNodes.get(node.id) ?? node),
+  }]))
+  const usedIds = new Set(["root", ...nodes.map(node => node.id), ...edges.map(edge => edge.id)])
+  const portIds = new Map<string, string>()
+  let portCounter = 0
 
-  let i = 0
-  while (i < sorted.length) {
-    let j = i
-    while (j < sorted.length && sorted[j] - sorted[i] <= threshold) {
-      j++
+  function endpoint(nodeId: string, type: "source" | "target", handleId?: string | null): string {
+    const child = children.get(nodeId)
+    if (!child) throw new Error(`Layout edge references missing node "${nodeId}"`)
+    const bounds = internalNodes.get(nodeId)?.internals.handleBounds
+    // Initial submodel layout runs before its nodes mount and have handle bounds.
+    if (!bounds) return nodeId
+    const handles = bounds[type] ?? []
+    const handle = handleId == null ? handles[0] : handles.find(handle => handle.id === handleId)
+    if (!handle) {
+      throw new Error(`Layout could not find ${type} handle "${handleId ?? "default"}" on node "${nodeId}"`)
     }
-    const cluster = sorted.slice(i, j)
-    const median = cluster[Math.floor(cluster.length / 2)]
-    for (const v of cluster) {
-      snap.set(v, median)
+    const x = handle.x + handle.width / 2
+    const y = handle.y + handle.height / 2
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      throw new Error(`Layout received invalid handle geometry for node "${nodeId}"`)
     }
-    i = j
+    // Hidden submodel input aliases occupy the same socket. Model one shared port
+    // so ELK optimizes the connections the user sees rather than separate anchors.
+    const key = JSON.stringify([nodeId, type, handle.position, x, y])
+    const existing = portIds.get(key)
+    if (existing) return existing
+    let id: string
+    do {
+      id = `__layout_port_${portCounter++}`
+    } while (usedIds.has(id))
+    usedIds.add(id)
+    portIds.set(key, id)
+    child.layoutOptions = { "elk.portConstraints": "FIXED_POS" }
+    child.ports ??= []
+    child.ports.push({
+      id, x, y, width: 0, height: 0,
+      layoutOptions: { "elk.port.side": PORT_SIDES[handle.position] },
+    })
+    return id
   }
-  return snap
-}
 
-/** Snap positions so nodes at nearly-the-same x or y align exactly. */
-function alignPositions(posMap: Map<string, { x: number; y: number }>, threshold = 20): void {
-  const positions = [...posMap.values()]
-  const xSnap = clusterSnap(positions.map((p) => p.x), threshold)
-  const ySnap = clusterSnap(positions.map((p) => p.y), threshold)
-
-  for (const pos of posMap.values()) {
-    pos.x = xSnap.get(pos.x) ?? pos.x
-    pos.y = ySnap.get(pos.y) ?? pos.y
-  }
-}
-
-export async function getLayoutedElements(nodes: Node[], edges: Edge[]): Promise<Node[]> {
-  const elkGraph = {
+  const layoutEdges = edges.map(edge => ({
+    id: edge.id,
+    sources: [endpoint(edge.source, "source", edge.sourceHandle)],
+    targets: [endpoint(edge.target, "target", edge.targetHandle)],
+  }))
+  return {
     id: "root",
     layoutOptions: {
       "elk.algorithm": "layered",
@@ -69,32 +87,37 @@ export async function getLayoutedElements(nodes: Node[], edges: Edge[]): Promise
       "elk.spacing.nodeNode": "60",
       "elk.layered.spacing.nodeNodeBetweenLayers": "120",
       "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
+      "elk.layered.thoroughness": "30",
+      "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
+      "elk.layered.nodePlacement.favorStraightEdges": "true",
     },
-    children: nodes.map((n) => ({
-      id: n.id,
-      width: 240,
-      height: 70,
-    })),
-    edges: edges.map((e) => ({
-      id: e.id,
-      sources: [e.source],
-      targets: [e.target],
-    })),
+    children: [...children.values()],
+    edges: layoutEdges,
   }
+}
 
+export async function getLayoutedElements(
+  nodes: Node[], edges: Edge[], getInternalNode?: NodeLookup,
+): Promise<Node[]> {
+  if (nodes.length === 0 && edges.length === 0) return []
+  const elkGraph = buildLayoutGraph(nodes, edges, getInternalNode)
   const elk = await getElk()
   const layout = await elk.layout(elkGraph)
-  const posMap = new Map<string, { x: number; y: number }>()
-  for (const child of layout.children || []) {
-    posMap.set(child.id, { x: child.x ?? 0, y: child.y ?? 0 })
-  }
+  const positions = new Map(layout.children?.map(child => [child.id, child]))
+  const dimensions = new Map(elkGraph.children.map(child => [child.id, child]))
 
-  alignPositions(posMap)
-
-  return nodes.map((n) => ({
-    ...n,
-    position: posMap.get(n.id) || n.position,
-  }))
+  return nodes.map(node => {
+    const child = positions.get(node.id)
+    if (child?.x == null || child.y == null || !Number.isFinite(child.x) || !Number.isFinite(child.y)) {
+      throw new Error(`Layout did not return a finite position for node "${node.id}"`)
+    }
+    const { width, height } = dimensions.get(node.id)!
+    const [originX, originY] = node.origin ?? [0, 0]
+    return {
+      ...node,
+      position: { x: child.x + originX * width, y: child.y + originY * height },
+    }
+  })
 }
 
 function hasFinitePosition(node: Node): boolean {

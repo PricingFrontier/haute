@@ -221,7 +221,7 @@ export default function useSubmodelNavigation({
           resolved.submodels,
           nextPreamble,
         )
-        addToast("success", `Submodel "${name}" created — save to apply`)
+        addToast("success", `Submodel "${name}" created - save to apply`)
         setTimeout(() => fitView({ padding: 0.8 }), 100)
       }
     } catch (err: unknown) {
@@ -455,7 +455,7 @@ export default function useSubmodelNavigation({
           resolved.submodels,
           nextPreamble,
         )
-        addToast("success", `Submodel "${displayName}" dissolved — save to apply`)
+        addToast("success", `Submodel "${displayName}" dissolved - save to apply`)
         setTimeout(() => fitView({ padding: 0.8 }), 100)
       }
     } catch (err: unknown) {

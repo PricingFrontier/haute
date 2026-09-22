@@ -39,7 +39,7 @@ function makeParams() {
   }
 }
 
-describe("useNodeHandlers — cache cleanup deferred on delete (#32)", () => {
+describe("useNodeHandlers - cache cleanup deferred on delete (#32)", () => {
   beforeEach(() => {
     vi.useRealTimers()
     useNodeResultsStore.setState({

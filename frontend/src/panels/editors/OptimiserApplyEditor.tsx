@@ -181,7 +181,7 @@ export default function OptimiserApplyEditor({
               className="mt-1 text-[10px]"
               style={{ color: "var(--warning-strong)" }}
             >
-              Selection cleared — run and model identifiers are not portable across destinations.
+              Selection cleared - run and model identifiers are not portable across destinations.
             </p>
           )}
         </div>
@@ -332,15 +332,15 @@ function ArtifactMetaPanel({ meta, accentColor }: { meta: ArtifactMeta; accentCo
         <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{meta.mode}</span>
 
         <span style={{ color: 'var(--text-muted)' }}>Version</span>
-        <span style={{ color: 'var(--text-primary)' }}>{meta.version || "\u2014"}</span>
+        <span style={{ color: 'var(--text-primary)' }}>{meta.version || "-"}</span>
 
         <span style={{ color: 'var(--text-muted)' }}>Created</span>
         <span style={{ color: 'var(--text-primary)' }}>
-          {meta.created_at ? new Date(meta.created_at).toLocaleDateString() : "\u2014"}
+          {meta.created_at ? new Date(meta.created_at).toLocaleDateString() : "-"}
         </span>
 
         <span style={{ color: 'var(--text-muted)' }}>Objective</span>
-        <span style={{ color: 'var(--text-primary)' }}>{meta.objective || "\u2014"}</span>
+        <span style={{ color: 'var(--text-primary)' }}>{meta.objective || "-"}</span>
       </div>
 
       {/* Lambdas (online mode) */}

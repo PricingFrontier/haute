@@ -450,8 +450,8 @@ export default function useTracing({
           setStoredTraceResult(null)
           setStoredTracedCell(null)
           const message = apiErrorCode(err) === "preview_seed_plan_expired"
-            ? "The cached data this preview read has changed. The preview is being refreshed — select the row again when it is ready."
-            : "This row changed before it could be traced. The preview is being refreshed — select the intended row again when it is ready."
+            ? "The cached data this preview read has changed. The preview is being refreshed - select the row again when it is ready."
+            : "This row changed before it could be traced. The preview is being refreshed - select the intended row again when it is ready."
           setStoredSemanticContextToken(recoveryContextToken)
           setStoredTraceState({ status: "error", message, detail: errorDetail(err), retryable: false })
           return

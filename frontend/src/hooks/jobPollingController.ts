@@ -124,7 +124,7 @@ export class JobPollingController<TJob, TStatus> {
     const job = this.config.jobs[nodeId]
     this.retire(nodeId, state)
     this.config.onFail(nodeId, "Job timed out after 24 hours")
-    this.config.addToast("error", `${this.config.failLabel}: ${this.config.labelFn(job)} — Job timed out after 24 hours`)
+    this.config.addToast("error", `${this.config.failLabel}: ${this.config.labelFn(job)} - Job timed out after 24 hours`)
   }
 
   private poll(nodeId: string, state: JobPollerState<TStatus>): void {
@@ -168,7 +168,7 @@ export class JobPollingController<TJob, TStatus> {
       } else {
         const message = this.config.getErrorMessage(status) || "Unknown error"
         this.config.onFail(nodeId, message, status)
-        this.config.addToast("error", `${this.config.failLabel}: ${this.config.labelFn(job)} — ${message}`)
+        this.config.addToast("error", `${this.config.failLabel}: ${this.config.labelFn(job)} - ${message}`)
       }
       return
     }
@@ -184,7 +184,7 @@ export class JobPollingController<TJob, TStatus> {
     if (terminalMessage) {
       this.retire(nodeId, state)
       this.config.onFail(nodeId, terminalMessage)
-      this.config.addToast("error", `${this.config.failLabel}: ${this.config.labelFn(job)} — ${terminalMessage}`)
+      this.config.addToast("error", `${this.config.failLabel}: ${this.config.labelFn(job)} - ${terminalMessage}`)
       return
     }
     state.consecutiveErrors += 1
@@ -193,7 +193,7 @@ export class JobPollingController<TJob, TStatus> {
     console.warn(`${this.config.failLabel} poll failed (attempt ${state.consecutiveErrors}, will retry):`, error)
     if (state.consecutiveErrors >= CONSECUTIVE_FAILURES_FOR_TOAST && !state.toastedWarning) {
       state.toastedWarning = true
-      this.config.addToast("warning", `Polling is struggling for ${this.config.labelFn(job)} — ${state.consecutiveErrors} consecutive errors`)
+      this.config.addToast("warning", `Polling is struggling for ${this.config.labelFn(job)} - ${state.consecutiveErrors} consecutive errors`)
     }
     state.intervalMs = Math.min(state.intervalMs * 2, MAX_INTERVAL_MS)
     this.schedulePoll(nodeId, state)

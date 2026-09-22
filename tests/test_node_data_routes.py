@@ -19,7 +19,6 @@ from haute._data_points import DataPoint, DataPointResolver
 from haute._hashing import content_hash
 from haute._node_snapshots import (
     NodeSnapshotColumns,
-    NodeSnapshotQuotaRejectedError,
     NodeSnapshotStore,
 )
 from haute._polars_utils import current_streaming_chunk_size, temporary_streaming_chunk_size
@@ -1485,37 +1484,6 @@ def test_explicit_build_of_a_join_is_chunked_and_equals_native(
         .sort("policy_id")
     )
     assert_frame_equal(gen_df.select(expected.columns), expected)
-
-
-def test_explicit_build_refused_by_quota_names_the_node_in_its_warnings(
-    client: TestClient,
-    project: Path,
-    in_process_worker: None,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A build the user asked for says which node the cache refused.
-
-    An automatic capture refused by quota records ``snapshot_capture_skipped``
-    and the preview pane names the node and both remedies from it. Without the
-    same warning here, an explicit build's refusal reached the user as the
-    store's own text with no node in it.
-    """
-
-    def refuse(self: NodeSnapshotStore, identity: Any, artifact: Any, **kwargs: Any) -> Any:
-        raise NodeSnapshotQuotaRejectedError("Node-output cache is full after eviction.", artifact)
-
-    monkeypatch.setattr(NodeSnapshotStore, "publish_node_output", refuse)
-
-    graph_dict = _graph(project)
-    run = client.post("/api/node-data/run", json=_body(graph_dict, "explore")).json()
-    job = _poll(client, run["job_id"])
-
-    assert job["status"] != "completed"
-    warnings = (job.get("execution_metrics") or {}).get("warnings") or []
-    refusals = [w for w in warnings if w.get("code") == "snapshot_capture_skipped"]
-    assert refusals, f"no refusal warning in {warnings}"
-    assert refusals[0]["node_id"] == "join"
-    assert refusals[0]["reason"] == "quota"
 
 
 def test_explicit_build_publishes_with_write_time_digests(

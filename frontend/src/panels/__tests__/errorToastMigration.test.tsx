@@ -164,7 +164,7 @@ function hasWhyComment(call: FoundCall): boolean {
 //  Structural tests
 // ═══════════════════════════════════════════════════════════════════
 
-describe("Phase 2 Package 3D — console.* usage is disciplined (#83)", () => {
+describe("Phase 2 Package 3D - console.* usage is disciplined (#83)", () => {
   it("enumerates at least one console.warn/error site (smoke)", () => {
     // Sanity: if the walker finds zero sites the rest of the suite is
     // silently passing.  The current codebase has several legitimate
@@ -217,7 +217,7 @@ describe("Phase 2 Package 3D — console.* usage is disciplined (#83)", () => {
         .map((o) => `  ${o.file}:${o.line}  ${o.text}`)
         .join("\n")
       throw new Error(
-        `Found ${doubled.length} line(s) where console.warn and addToast fire on the same statement — the console is redundant and should be removed:\n${summary}`,
+        `Found ${doubled.length} line(s) where console.warn and addToast fire on the same statement - the console is redundant and should be removed:\n${summary}`,
       )
     }
     expect(doubled).toEqual([])
@@ -243,7 +243,7 @@ describe("Phase 2 Package 3D — console.* usage is disciplined (#83)", () => {
       const src = readFileSync(abs, "utf8")
       expect(
         src.includes(anchor),
-        `${file} should route user-facing errors through ${anchor}(...) — the reference is missing entirely.`,
+        `${file} should route user-facing errors through ${anchor}(...) - the reference is missing entirely.`,
       ).toBe(true)
     }
   })

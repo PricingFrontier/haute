@@ -13,12 +13,10 @@ import {
   validateExecutionStrategyDiagnostic,
 } from "../generated/api-contracts.execution-strategy-diagnostic.validators.mjs"
 import type {
-  CacheBudgetUsage,
   CacheClearResponse,
   CacheNodeEntry,
   CacheNodesResponse,
   CacheOwnerEntry,
-  CacheUsageResponse,
   DatabricksCatalogsResponse,
   DatabricksSchemasResponse,
   DatabricksTablesResponse,
@@ -746,7 +744,6 @@ function parseSharedSnapshotCapture(
     outcome: expectStringLiteral(parser, obj.outcome, `${field}.outcome`, [
       "published",
       "superseded",
-      "quota",
     ]),
     generation_id: optionalNullableString(parser, obj, "generation_id"),
     columns: parseSnapshotColumns(parser, obj.columns, `${field}.columns`),
@@ -2008,29 +2005,6 @@ function parseInputCacheGeneration(value: unknown, field: string): InputCacheGen
 export function parseInputCacheBuildResponse(value: unknown): InputCacheBuildResponse { const p = "parseInputCacheBuildResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), status: expectStringLiteral(p, obj.status, "field `status`", ["running"]), joined: expectBoolean(p, obj.joined, "field `joined`") } }
 export function parseInputCacheSnapshotResponse(value: unknown): InputCacheSnapshotResponse { const p = "parseInputCacheSnapshotResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), state: expectStringLiteral(p, obj.state, "field `state`", INPUT_CACHE_SNAPSHOT_STATES), freshness: expectStringLiteral(p, obj.freshness, "field `freshness`", INPUT_CACHE_FRESHNESS), generation: obj.generation === null ? null : parseInputCacheGeneration(obj.generation, "field `generation`") } }
 export function parseInputCacheJobStatusResponse(value: unknown): InputCacheJobStatusResponse { const p = "parseInputCacheJobStatusResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), status: expectStringLiteral(p, obj.status, "field `status`", JOB_STATUS_VALUES), terminal_reason: expectNullableString(p, obj.terminal_reason, "field `terminal_reason`"), message: expectString(p, obj.message, "field `message`"), refresh: expectBoolean(p, obj.refresh, "field `refresh`"), build_class: expectStringLiteral(p, obj.build_class, "field `build_class`", BUILD_CLASSES), progress: parseInputCacheProgress(obj.progress, "field `progress`"), snapshot: obj.snapshot === null ? null : parseInputCacheSnapshotResponse(obj.snapshot), error_code: expectNullableString(p, obj.error_code, "field `error_code`") } }
-function parseCacheBudgetUsage(value: unknown, field: string): CacheBudgetUsage {
-  const p = "parseCacheUsageResponse"
-  const obj = expectPlainObject(p, value, field)
-  return {
-    generations_used: expectNonNegativeInteger(p, obj.generations_used, `${field}.generations_used`),
-    generations_limit: expectPositiveInteger(p, obj.generations_limit, `${field}.generations_limit`),
-    generations_limit_variable: expectNonBlankString(p, obj.generations_limit_variable, `${field}.generations_limit_variable`),
-    bytes_used: expectNonNegativeInteger(p, obj.bytes_used, `${field}.bytes_used`),
-    bytes_limit: expectPositiveInteger(p, obj.bytes_limit, `${field}.bytes_limit`),
-    bytes_limit_variable: expectNonBlankString(p, obj.bytes_limit_variable, `${field}.bytes_limit_variable`),
-  }
-}
-
-export function parseCacheUsageResponse(value: unknown): CacheUsageResponse {
-  const p = "parseCacheUsageResponse"
-  const obj = expectPlainObject(p, value)
-  return {
-    schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"),
-    node_outputs: parseCacheBudgetUsage(obj.node_outputs, "field `node_outputs`"),
-    input_snapshots: parseCacheBudgetUsage(obj.input_snapshots, "field `input_snapshots`"),
-  }
-}
-
 const CACHE_POINT_KINDS = ["data_input", "api_input_table", "node_output"] as const
 const CACHE_POINT_STATES = [
   "current",

@@ -222,7 +222,7 @@ describe("formatBandingTransform", () => {
   })
 
   it("renders the trace missing-value marker", () => {
-    expect(formatBandingTransform({ key: "k" })).toBe("\u2014 -> \u2014")
+    expect(formatBandingTransform({ key: "k" })).toBe("- -> -")
   })
 })
 

@@ -318,7 +318,12 @@ candidate, with the error toast.
   remains deletable — removing a binding is an ordinary edit.
   Auto-layout runs ELK asynchronously, guards against
   overlapping runs from repeated clicks, and re-fits the view once positions
-  land. Node-cache cleanup for an ordinary deleted node is deferred one task
+  land. It arranges the graph left-to-right with crossing reduction and straight
+  branch continuations, accounting for measured card sizes and visible connection
+  points (including named frame outputs and join inputs). It changes positions
+  only. Layout before nodes mount uses estimated dimensions and unconstrained
+  connection points; invalid layout output fails without applying partial positions.
+  Node-cache cleanup for an ordinary deleted node is deferred one task
   tick past the graph mutation so no component reads a torn state in the same
   render.
 - **Connecting nodes.** Dragging from a handle and releasing on a compatible
@@ -419,6 +424,14 @@ candidate, with the error toast.
   fence and are disabled unless the corresponding server capability is present. Selection,
   panning, zooming, diagnostic navigation, and raw source/config inspection remain available
   in recovery states; frontend affordances never replace server-side admission checks.
+- **Manual calculation.** The session's calculation mode (Pipeline settings,
+  session-only, starting Automatic) decides whether selecting a node
+  calculates it. In Manual, selecting shows the node's stored preview for the
+  current source and row limit — or the empty "Refresh to preview" state —
+  and sends nothing; a moved node-data epoch does not refetch it; the header
+  marks a shown result "Out of date" once the structural version or epoch has
+  moved past it. Refresh, or Ctrl/Cmd+Enter outside a text field, calculates
+  in either mode.
 - **Preview fetching.** Selecting or refreshing a node debounces, then
   fetches its preview; a cache hit for the same structural version, source,
   and row limit paints instantly and skips the network call, otherwise

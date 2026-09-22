@@ -685,7 +685,7 @@ describe("8. Self-referencing edge", () => {
 // ══════════════════════════════════════════════════════════════════
 
 describe("9. Orphan edges", () => {
-  it("normalizeEdges does not validate node existence — passes through orphan edges", () => {
+  it("normalizeEdges does not validate node existence - passes through orphan edges", () => {
     const orphanEdges = [
       makeEdge("nonexistent_1", "nonexistent_2", { id: "orphan1" }),
       makeEdge("real_node", "ghost_node", { id: "orphan2" }),

@@ -88,7 +88,7 @@ function resetStore() {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("useUIStore — derived dirty flag (item #99)", () => {
+describe("useUIStore - derived dirty flag (item #99)", () => {
   beforeEach(resetStore)
 
   // -----------------------------------------------------------------------

@@ -21,7 +21,7 @@ function reset() {
   })
 }
 
-describe("useToastStore — dedup within a short window (#40)", () => {
+describe("useToastStore - dedup within a short window (#40)", () => {
   beforeEach(() => {
     reset()
     vi.useFakeTimers()

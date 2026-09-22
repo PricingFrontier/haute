@@ -1,18 +1,8 @@
-"""Reports about the shared snapshot store.
+"""Inventory and explicit clearing for the shared snapshot store.
 
-Two endpoints, both explicit requests rather than subscriptions: the budgets
-the store admits against, and what every node of a graph holds within them.
-The accounting behind both walks every identity, generation and staging entry,
-which is what an admission already pays, so a surface that wants to poll needs
-an incremental count in the store first.
-
-Both report read: they take no lock and change no generation. Neither request
-is free of writes, though, because constructing the store creates
-``.haute_cache/inputs`` when it is absent and, once per process per root,
-sweeps retired directories — the same construction every other store-backed
-route performs, not something these endpoints add.
-
-Per `specs/server-api/low-level.md` ("Cache usage").
+Listing walks every identity, generation and staging entry, so it is requested
+explicitly rather than polled. The report takes no lock and changes no data;
+store construction may create the cache root and sweep retired directories.
 """
 
 from __future__ import annotations
@@ -20,7 +10,6 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from haute._node_snapshots import (
-    CacheBudgetUsage,
     CacheOwnerUsage,
     NodeSnapshotStore,
     pipeline_source_file_key,
@@ -30,29 +19,16 @@ from haute.routes._node_data_service import node_data_project_root
 from haute.routes.node_data import node_data_service
 from haute.routes.pipeline import _ensure_source_file, _validate_runtime_input_paths
 from haute.schemas import (
-    CacheBudgetUsagePayload,
     CacheClearRequest,
     CacheClearResponse,
     CacheNodeEntry,
     CacheNodesRequest,
     CacheNodesResponse,
     CacheOwnerEntry,
-    CacheUsageResponse,
     NodeDataPointResponse,
 )
 
 router = APIRouter(prefix="/api/cache", tags=["cache"])
-
-
-def _budget_payload(usage: CacheBudgetUsage) -> CacheBudgetUsagePayload:
-    return CacheBudgetUsagePayload(
-        generations_used=usage.generations_used,
-        generations_limit=usage.generations_limit,
-        generations_limit_variable=usage.generations_limit_variable,
-        bytes_used=usage.bytes_used,
-        bytes_limit=usage.bytes_limit,
-        bytes_limit_variable=usage.bytes_limit_variable,
-    )
 
 
 def _owner_entry(owner: CacheOwnerUsage) -> CacheOwnerEntry:
@@ -140,16 +116,6 @@ def _node_entry(
     )
 
 
-@router.get("/usage", response_model=CacheUsageResponse)
-def cache_usage() -> CacheUsageResponse:
-    """Report both cache budgets' generations and bytes against their limits."""
-    report = NodeSnapshotStore(node_data_project_root()).usage_report()
-    return CacheUsageResponse(
-        node_outputs=_budget_payload(report.node_outputs),
-        input_snapshots=_budget_payload(report.input_snapshots),
-    )
-
-
 @router.post("/nodes", response_model=CacheNodesResponse)
 def cache_nodes(body: CacheNodesRequest) -> CacheNodesResponse:
     """Report every node of the graph, and everything else the store holds.
@@ -215,7 +181,7 @@ def cache_nodes(body: CacheNodesRequest) -> CacheNodesResponse:
 
     # What no row carries is listed here. The two halves are exhaustive by
     # construction: an owner is either accounted for on a row or in `other`, so
-    # the rows, `other` and `unattributed_*` add up to what the budgets say.
+    # the rows, `other` and `unattributed_*` account for the stored data.
     other = [
         _owner_entry(owner) for owner in inventory.owners if not (owner.identity_digests & carried)
     ]

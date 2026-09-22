@@ -22,9 +22,9 @@ In scope:
 - the format and argument registry for canonical `dataInput` and `dataOutput` nodes;
 - API-input flat-file adapters and common Polars collect/sink helpers;
 - provider dispatch for file, lakehouse, inline, database, and Databricks inputs;
-- source-cache identity, build, publication, lease, quota, clear, and status behaviour;
+- source-cache identity, build, publication, lease, clear, and status behaviour;
 - node-output snapshots in the same store: signatures, slots, column widening, retention and
-  eviction, and cross-process publication and leases;
+  replacement, and cross-process publication and leases;
 - bounded SQLite snapshot acquisition.
 
 The [Databricks IO component](../databricks-io/high-level.md) owns Databricks credential
@@ -34,6 +34,15 @@ and owns execution/dataframe/JSON cache behaviour. HTTP job admission and respon
 to [server API](../server-api/high-level.md).
 
 ## Behaviour
+
+**User-managed cache storage.** Input snapshots and node outputs have no
+cache-specific byte or entry-count limit. The former 20/40 GiB defaults and
+the environment settings for cache bytes and generation counts are removed.
+Publishing a dataset never evicts another current dataset to meet a budget.
+Users inspect the project cache inventory and clear entries explicitly.
+Refresh still replaces previous data, and replacement or clearing preserves
+active readers until their leases end. Actual filesystem errors, disk-headroom
+checks and execution-memory limits remain enforced.
 
 `dataInput` configurations select exactly one provider. There is no stored cache-mode
 field: `data_input_is_direct` derives the execution mode, so a file-backed Parquet scan
@@ -59,9 +68,9 @@ format/mode, and source arguments that can affect returned rows or schema. Datab
 direct-versus-snapshot execution mode is not part of the config at all.
 
 A snapshot build writes a unique staging directory, validates the Parquet artifact and
-metadata, admits it against byte/count quotas, atomically publishes an immutable generation,
+metadata, atomically publishes an immutable generation,
 and then replaces the current pointer. Cancellation, timeout, connector failure, schema
-failure, or quota rejection leaves the previous current generation readable.
+failure leaves the previous current generation readable.
 
 Automatic preparation is that same build, scheduled by execution. Before an execution
 plans its strategy it checks every snapshot-backed Data Input in the executed lineage
@@ -117,23 +126,22 @@ on a server thread; bounded explicit builds keep their streaming thread path.
 Snapshot readers acquire an explicit generation lease. Within an execution request the
 lease lasts until execution cleanup. Outside an execution request the returned scan owns a
 lease token that is retained by every derived LazyFrame and released only after the scan
-plan is no longer reachable. Refresh and clear never delete a locally leased generation.
-Leases are process-local. A superseded generation is retired only after
+plan is no longer reachable. Refresh and clear never delete a live leased generation,
+including one held by another process. A superseded input generation is normally retired after
 `HAUTE_INPUT_CACHE_RETIRE_GRACE_SECONDS` (default 1800) have elapsed since the current
-generation was published, so a reader in another process finishes its scan; an explicit
-clear and quota pressure reclaim immediately, the latter logged.
+generation was published. Explicit clear bypasses this grace period while preserving live leases.
 
-Node outputs live in the same store as a `node_output` provider with their own budget. A
+Node outputs live in the same store as a `node_output` provider. A
 node-output identity is a slot — pipeline source file, node, source, and execution
 semantics class — plus the node's
-checked data signature, so every signature of a node keeps its own generation and a
-reverted edit finds its earlier snapshot again. A per-slot index lists a slot's identities:
+checked data signature. Each slot keeps one current dataset: publishing a new signature
+replaces the previous one, so reverting an edit requires recomputation. A per-slot index lists a slot's identities:
 for a requested signature the slot is `current` when that identity has a fresh generation,
 `stale` when its own generation is stale or only other identities have generations, and
 `missing` otherwise. Each generation records the column set it holds (`all` or an explicit
 list) and the transitive closure of snapshot generations its rows derive from. A
 generation is fresh when no recorded dependency identity now has a different current
-generation; a cleared or evicted dependency does not make it stale. A writer always
+generation; a cleared dependency does not make it stale. A writer always
 continues from its own completed artifact. Under the identity's publication lock it
 publishes only when every dependency it recorded is still current or cleared, its columns
 contain the latest generation's columns, and there is no fresh latest generation, it widens
@@ -145,11 +153,8 @@ descendant recorded against the previous one stale.
 A node-output generation is `pinned` when its slot's pin names its identity and `automatic`
 otherwise; an explicit build pins, and a pin passes to the slot's newest publication. Its
 last-used time is its metadata file's modification time, refreshed on lease at most once a
-minute. Quota pressure on a node-output publication retires unleased automatic
-generations — superseded ones first, then least recently used — and logs each; when even
-that cannot make room nothing is evicted and the publication raises the quota error while
-handing its completed staged artifact to the caller intact. Input-snapshot quota behaviour
-is unchanged. Node-output publication, eviction, clear, and leases are coordinated across
+minute. Both explicit and automatic datasets remain until clear or replacement;
+publication does not evict another slot's dataset. Node-output publication, clear, and leases are coordinated across
 processes: a per-identity publication lock is held from a writer's re-check to its first
 lease, and a store-wide lease lock, always taken after it, makes lease acquisition,
 publication through the publisher's first lease, and retirement atomic. Every lease is also
@@ -164,9 +169,8 @@ leased.
 
 Store startup never deletes a published generation. It may reclaim a staging directory only when the
 newest filesystem activity beneath that directory is older than the configured stale-build
-threshold; recent or unreadable staging state is preserved. Unreclaimed staging bytes count
-against the store byte quota. Publication and leases are coordinated within one process,
-while published immutable generations may be read by another process.
+threshold; recent or unreadable staging state is preserved. Retained staging bytes are
+included in the inventory, and physical disk-headroom checks remain enforced.
 
 Registry input capabilities advertise `scan` whenever a format has a scanner;
 reader-only formats advertise `read`, and declare the derived execution mode
@@ -222,12 +226,12 @@ Footer, schema, row count, and metadata checks still run on every open.
 
 Configuration and credential-safety errors are loud `ValueError` subclasses before I/O.
 Unsupported bounded-memory operations fail rather than falling back to eager collection.
-Connector, cancellation, deadline, quota, and schema failures abort staging and preserve the
+Connector, cancellation, deadline, and schema failures abort staging and preserve the
 previous pointer.
 
 Automatic preparation surfaces its outcome as `InputPreparationError` with a stable reason
-code (`cap_unavailable`, `build_failed`, `memory_limited`, `cancelled`, `timed_out`,
-`quota_exceeded`) and the node's identity digest; a host that cannot install the required
+code (`cap_unavailable`, `build_failed`, `memory_limited`, `cancelled`, `timed_out`)
+and the node's identity digest; a host that cannot install the required
 native cap is refused typed rather than built without one. It is a public contract error:
 synchronous routes answer HTTP 422 with its payload, and background jobs record the
 `memory_limited` terminal state for `memory_limited` and the contract-error fields

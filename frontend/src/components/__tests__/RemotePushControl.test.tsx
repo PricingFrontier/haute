@@ -227,7 +227,7 @@ describe("RemotePushControl", () => {
     await waitFor(() => expect(screen.getByTestId("git-push-aheadbehind")).toHaveTextContent("synced"))
   })
 
-  it("distinguishes 'never pushed' (—) from 'couldn't read' (?) — F2 honesty", async () => {
+  it("distinguishes 'never pushed' (-) from 'couldn't read' (?) - F2 honesty", async () => {
     mockGetGitRemotes.mockResolvedValue({
       remotes: [
         remote({ working: { status: "unknown", ahead: null, behind: null } }),
@@ -238,7 +238,7 @@ describe("RemotePushControl", () => {
     await waitFor(() => expect(screen.getByTestId("git-push-aheadbehind")).toHaveTextContent("?"))
   })
 
-  it("surfaces a behind ledger — newer saves on the remote (the two-machine signal)", async () => {
+  it("surfaces a behind ledger - newer saves on the remote (the two-machine signal)", async () => {
     mockGetGitRemotes.mockResolvedValue({
       remotes: [
         remote({
@@ -254,7 +254,7 @@ describe("RemotePushControl", () => {
     )
   })
 
-  it("surfaces a forked ledger — diverged save history", async () => {
+  it("surfaces a forked ledger - diverged save history", async () => {
     mockGetGitRemotes.mockResolvedValue({
       remotes: [
         remote({
@@ -270,7 +270,7 @@ describe("RemotePushControl", () => {
     )
   })
 
-  it("shows the honest fork modal on a 409 rejection — never a dead-end (M7)", async () => {
+  it("shows the honest fork modal on a 409 rejection - never a dead-end (M7)", async () => {
     mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
     const rejection = {
       status: "rejected_diverged",
@@ -279,7 +279,7 @@ describe("RemotePushControl", () => {
       ledger: { status: "ahead", ahead: 1, behind: 0 },
       message:
         "The working branch on 'origin' changed since you last synced. " +
-        "haute never force-pushes — your local work is safe.",
+        "haute never force-pushes - your local work is safe.",
     }
     mockGitPush.mockRejectedValue(
       new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),
@@ -347,7 +347,7 @@ describe("RemotePushControl", () => {
       remote: "origin",
       working: { status: "behind", ahead: 0, behind: 2 },
       ledger: { status: "behind", ahead: 0, behind: 2 },
-      message: "behind 'origin' — never force-pushes.",
+      message: "behind 'origin' - never force-pushes.",
     }
     mockGitPush.mockRejectedValue(
       new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),
@@ -367,7 +367,7 @@ describe("RemotePushControl", () => {
       remote: "origin",
       working: { status: "diverged", ahead: 1, behind: 2 },
       ledger: { status: "diverged", ahead: 1, behind: 2 },
-      message: "forked 'origin' — never force-pushes.",
+      message: "forked 'origin' - never force-pushes.",
     }
     mockGitPush.mockRejectedValue(
       new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),
@@ -388,7 +388,7 @@ describe("RemotePushControl", () => {
       remote: "origin",
       working: { status: "diverged", ahead: 1, behind: 1 },
       ledger: { status: "diverged", ahead: 1, behind: 1 },
-      message: "history was rewritten — a person needs to reconcile.",
+      message: "history was rewritten - a person needs to reconcile.",
       is_rewrite: true,
     }
     mockGitPush.mockRejectedValue(

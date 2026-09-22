@@ -79,7 +79,7 @@ import { swapEdgeJoinInputs, type EdgeJoinSwapInputsFailureReason } from "./util
 import { validatePipelineConnection, type ConnectionValidationResult } from "./utils/connectionValidation"
 import { shouldUseLiteGraphEffects } from "./utils/graphPerformance"
 import type { DrilledOccurrenceIdentity } from "./utils/submodelRuntimeTarget"
-import { isSubmodelInstanceConfig, nodeData } from "./types/node"
+import { effectiveNodeType, isSubmodelInstanceConfig, nodeData } from "./types/node"
 import type { HauteNodeData } from "./types/node"
 import { useScopedNodeSave } from "./hooks/useScopedNodeSave"
 import { useActiveNodeReveal } from "./hooks/useActiveNodeReveal"
@@ -172,6 +172,7 @@ type ActiveNodePreviewProps = {
   onCellClick: (rowIndex: number, column: string, rowValues?: Record<string, unknown>) => void
   tracedCell: { rowIndex: number; column: string } | null
   previewNodeFrame: (nodeId: string, portLabel: string) => unknown
+  onRefresh: () => void
 }
 
 function ActiveNodePreview({
@@ -188,7 +189,15 @@ function ActiveNodePreview({
   onCellClick,
   tracedCell,
   previewNodeFrame,
+  onRefresh,
 }: ActiveNodePreviewProps) {
+  const activeNodeType = activeNode ? effectiveNodeType(activeNode) : undefined
+  const canRefresh = activeNode
+    && activeNodeType !== NODE_TYPES.SUBMODEL
+    && activeNodeType !== NODE_TYPES.SUBMODEL_PORT
+    && nodeData(activeNode)._loadAvailability !== "unavailable"
+    && nodeData(activeNode)._loadAvailability !== "blocked"
+  const refreshAction = canRefresh ? onRefresh : undefined
   if (
     documentCanExecute
     && activeNode
@@ -202,6 +211,7 @@ function ActiveNodePreview({
         submodels={submodels}
         preamble={preamble}
         previewData={previewData}
+        onRefresh={refreshAction}
         onCellClick={onCellClick}
         tracedCell={tracedCell}
       />
@@ -212,7 +222,7 @@ function ActiveNodePreview({
   if (documentCanExecute && modellingPreview) {
     return (
       <Suspense fallback={null}>
-        <ModellingPreview data={modellingPreview} nodeId={activeNodeId!} />
+        <ModellingPreview data={modellingPreview} nodeId={activeNodeId!} onRefresh={refreshAction} />
       </Suspense>
     )
   }
@@ -222,6 +232,7 @@ function ActiveNodePreview({
       <Suspense fallback={null}>
         <OptimiserPreview
           data={optimiserPreview}
+          onRefresh={refreshAction}
           nodeId={activeNodeId!}
           allNodes={panelNodes}
           edges={panelEdges}
@@ -240,13 +251,16 @@ function ActiveNodePreview({
       <OptimiserDataPreview
         data={previewData}
         config={nodeData(activeNode).config ?? {}}
+        onRefresh={refreshAction}
       />
     )
   }
   return (
     <DataPreview
       data={previewData}
-      nodeType={activeNode ? nodeData(activeNode).nodeType : undefined}
+      nodeLabel={canRefresh ? String(nodeData(activeNode).label) : undefined}
+      nodeType={activeNodeType}
+      onRefresh={refreshAction}
       onCellClick={documentCanExecute ? onCellClick : undefined}
       tracedCell={tracedCell}
       onSelectFrame={
@@ -599,7 +613,7 @@ function FlowEditor() {
     onNodesChange, onEdgesChange,
     undo, redo, canUndo, canRedo, pushSnapshot,
   } = useGraphCanvasState([], [], graphRefreshingRef)
-  const { screenToFlowPosition, fitView, zoomIn, zoomOut } = useReactFlow()
+  const { screenToFlowPosition, fitView, zoomIn, zoomOut, getInternalNode } = useReactFlow()
 
   // UI state from Zustand store (leaf-subscribed values live in their own components)
   // Settings store
@@ -814,7 +828,7 @@ function FlowEditor() {
     if (justMoved !== null) sessionStorage.removeItem(JUST_MOVED_KEY)
     void loadGitReadiness().then((st) => {
       if (justMoved !== null) {
-        addToast("info", `Moved to ${justMoved} — save to start a new version line here.`)
+        addToast("info", `Moved to ${justMoved} - save to start a new version line here.`)
         return
       }
       if (!st || st.state === "ready" || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "detached") return
@@ -1082,15 +1096,15 @@ function FlowEditor() {
     const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
     if (st === null) {
       const detail = useGitStore.getState().statusError
-      addToast("error", detail ? `Git unavailable: ${detail}` : "Git readiness is unavailable — commit is disabled.")
+      addToast("error", detail ? `Git unavailable: ${detail}` : "Git readiness is unavailable - commit is disabled.")
       return
     }
     if (st.state === "no-repository") {
-      addToast("error", "No git repository — commit is unavailable.")
+      addToast("error", "No git repository - commit is unavailable.")
       return
     }
     if (st.state === "git-unavailable") {
-      addToast("error", "Git is not available in this environment — commit is unavailable.")
+      addToast("error", "Git is not available in this environment - commit is unavailable.")
       return
     }
     if (st.state === "ready") {
@@ -1117,7 +1131,7 @@ function FlowEditor() {
       if (!target) return
       try {
         if (saveFirst && !await saveWithPendingCommits()) {
-          addToast("error", "Save failed — staying on the current version.")
+          addToast("error", "Save failed - staying on the current version.")
           useGitStore.getState().closeMove()
           return
         }
@@ -1155,7 +1169,7 @@ function FlowEditor() {
     graphRef, nodeIdCounter, lastSelectedNodeRef,
     setNodes, setNodesAndEdges, setSelectedNode,
     setLastSelectedId,
-    setPreviewData, fitView,
+    setPreviewData, fitView, getInternalNode,
     submodels,
     resolveNodeIdentities,
     commitSharedNodeDeletion,
@@ -1389,6 +1403,21 @@ function FlowEditor() {
     refreshNodeDataCache(activePanelNodeId)
   }, [activePanelNodeId, refreshPreview])
 
+  // Ctrl/Cmd+Enter presses the open panel's Refresh — the way to calculate
+  // when clicking a node no longer does (manual calculation).
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key !== "Enter") return
+      const el = e.target as HTMLElement | null
+      const tag = el?.tagName
+      if (tag === "INPUT" || tag === "TEXTAREA" || el?.closest?.(".cm-editor")) return
+      e.preventDefault()
+      handlePanelPreviewRefresh()
+    }
+    window.addEventListener("keydown", handler)
+    return () => window.removeEventListener("keydown", handler)
+  }, [handlePanelPreviewRefresh])
+
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
@@ -1422,6 +1451,7 @@ function FlowEditor() {
       onCellClick={handleCellClick}
       tracedCell={tracedCell}
       previewNodeFrame={previewNodeFrame}
+      onRefresh={handlePanelPreviewRefresh}
     />
   )
   return (
@@ -1480,7 +1510,7 @@ function FlowEditor() {
           </main>
           {/* The sidepane is ALWAYS present in compare mode so the canvases never
               resize as you click around. It shows the read-only config inspector
-              while a node is selected, otherwise the version-control panel — which
+              while a node is selected, otherwise the version-control panel - which
               anchors the whole compare experience. Clicking blank canvas (or the
               inspector ×) deselects → the VC panel returns. The toolbar commit
               indicator force-opens the VC panel (gitOpen wins), S11. */}

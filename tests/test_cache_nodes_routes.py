@@ -158,17 +158,25 @@ def _graph_of(project: Path, nodes: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _accounted(payload: dict[str, Any], bucket: str) -> int:
-    """Every byte the report attributes, for one budget.
+    """Every byte the report attributes, for one dataset kind.
 
     The invariant the whole report rests on: what the rows carry, plus what is
     listed as belonging to no row, plus what could not be attributed at all,
-    is exactly what the budget says the store holds. Anything else means the
+    is exactly what the store holds on disk. Anything else means the
     report counted a byte twice or lost one.
     """
     kinds = {"node_output": {"node_output"}, "input": {"data_input", "api_input_table"}}[bucket]
     rows = sum(node["size_bytes"] for node in payload["nodes"] if node["kind"] in kinds)
     other = sum(entry["size_bytes"] for entry in payload["other"] if entry["bucket"] == bucket)
     return rows + other + payload["unattributed_bytes"]
+
+
+def _stored_bytes(project: Path) -> int:
+    """Independent physical accounting for these Parquet-only fixtures."""
+    return sum(
+        path.stat().st_size
+        for path in (project / ".haute_cache" / "inputs").rglob("part-*.parquet")
+    )
 
 
 def test_reports_every_node_of_the_graph(client: TestClient, project: Path) -> None:
@@ -418,7 +426,6 @@ def test_two_nodes_reading_one_snapshot_report_its_bytes_once(
     graph = _graph_of(
         project, [_data_input_node("quotes_a", config), _data_input_node("quotes_b", config)]
     )
-    usage = client.get("/api/cache/usage").json()
     payload = client.post("/api/cache/nodes", json=_body(graph)).json()
 
     rows = {node["node_id"]: node for node in payload["nodes"]}
@@ -429,7 +436,7 @@ def test_two_nodes_reading_one_snapshot_report_its_bytes_once(
     # Both sides name the other, so either row tells the whole story.
     assert rows["quotes_a"]["shares_snapshot_with"] == ["quotes_b"]
     assert rows["quotes_b"]["shares_snapshot_with"] == ["quotes_a"]
-    assert _accounted(payload, "input") == usage["input_snapshots"]["bytes_used"]
+    assert _accounted(payload, "input") == _stored_bytes(project)
 
 
 def test_the_carrier_of_a_shared_snapshot_does_not_depend_on_node_order(
@@ -475,12 +482,11 @@ def test_a_second_identity_under_the_same_path_is_still_accounted_for(
     )
 
     graph = _graph_of(project, [_data_input_node("quotes", read_config)])
-    usage = client.get("/api/cache/usage").json()
     payload = client.post("/api/cache/nodes", json=_body(graph)).json()
 
-    assert usage["input_snapshots"]["generations_used"] == 2
+    assert sum(owner.generations for owner in store.inventory().owners) == 2
     assert [entry["bucket"] for entry in payload["other"]] == ["input"]
-    assert _accounted(payload, "input") == usage["input_snapshots"]["bytes_used"]
+    assert _accounted(payload, "input") == _stored_bytes(project)
 
 
 def test_one_misconfigured_data_input_does_not_fail_the_whole_report(
@@ -547,10 +553,9 @@ def test_every_node_output_byte_is_accounted_for_exactly_once(
     staging.mkdir(parents=True)
     (staging / "part-00000.parquet").write_bytes(b"y" * 1024)
 
-    usage = client.get("/api/cache/usage").json()
     payload = client.post("/api/cache/nodes", json=_body(_graph(project))).json()
 
-    assert _accounted(payload, "node_output") == usage["node_outputs"]["bytes_used"]
+    assert _accounted(payload, "node_output") == _stored_bytes(project)
 
 
 def test_another_pipelines_node_of_the_same_name_is_not_this_ones(
@@ -640,13 +645,12 @@ def test_a_generation_whose_metadata_is_unreadable_is_reported_as_unattributed(
     generation = project / next((identity_dir / "generations").iterdir()).relative_to(project)
     (generation / "meta.json").write_text("{ this is not json", encoding="utf-8")
 
-    usage = client.get("/api/cache/usage").json()
     payload = client.post("/api/cache/nodes", json=_body(_graph(project))).json()
 
     assert payload["unattributed_generations"] == 1
     assert payload["unattributed_bytes"] > 0
     assert _entry(payload, "join")["size_bytes"] == 0
-    assert _accounted(payload, "node_output") == usage["node_outputs"]["bytes_used"]
+    assert _accounted(payload, "node_output") == _stored_bytes(project)
 
 
 def test_a_row_reports_when_it_was_cached_and_how_long_it_took(

@@ -110,87 +110,15 @@ describe("ExecutionDiagnosticsIndicator", () => {
     ).toHaveAttribute("title", "Preview memory pressure")
   })
 
-  it("renders when the only warning is a quota refusal, naming the node and remedies", () => {
+  it("renders nothing for a capture warning without another diagnostic", () => {
     const metrics = makeExecutionMetricsFixture({
       memory_pressure_events: [],
       execution_strategy: null,
       warnings: [
-        {
-          code: "snapshot_capture_skipped",
-          node_id: "score",
-          reason: "quota",
-        },
-      ],
-    })
-    render(<ExecutionDiagnosticsIndicator metrics={metrics} />)
-
-    expect(screen.getByLabelText("Preview execution warning details")).toBeInTheDocument()
-    const status = screen.getByRole("status")
-    expect(status).toHaveTextContent("score")
-    expect(status).toHaveTextContent(/clear a cached node's data that is no longer needed/i)
-    expect(status).toHaveTextContent(/raise the node-output cache quota/i)
-    expect(status).toHaveTextContent("HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS")
-    expect(status).toHaveTextContent("HAUTE_NODE_SNAPSHOT_MAX_BYTES")
-  })
-
-  it("names both nodes when two captures were refused", () => {
-    const metrics = makeExecutionMetricsFixture({
-      memory_pressure_events: [],
-      execution_strategy: null,
-      warnings: [
-        {
-          code: "snapshot_capture_skipped",
-          node_id: "first_node",
-          reason: "quota",
-        },
-        {
-          code: "snapshot_capture_skipped",
-          node_id: "second_node",
-          reason: "quota",
-        },
-      ],
-    })
-    render(<ExecutionDiagnosticsIndicator metrics={metrics} />)
-
-    const status = screen.getByRole("status")
-    // Arrival order, not just presence: a reversed list would pass on
-    // presence alone.
-    expect(status).toHaveTextContent("'first_node' and 'second_node'")
-  })
-
-  it("describes only the refused node when mixed with a superseded warning", () => {
-    const metrics = makeExecutionMetricsFixture({
-      memory_pressure_events: [],
-      execution_strategy: null,
-      warnings: [
-        {
-          code: "snapshot_capture_skipped",
-          node_id: "refused_node",
-          reason: "quota",
-        },
         {
           code: "snapshot_capture_superseded",
-          node_id: "superseded_node",
-          reason: null,
-        },
-      ],
-    })
-    render(<ExecutionDiagnosticsIndicator metrics={metrics} />)
-
-    const status = screen.getByRole("status")
-    expect(status).toHaveTextContent("refused_node")
-    expect(status).not.toHaveTextContent("superseded_node")
-  })
-
-  it("renders nothing when a snapshot_capture_skipped warning has a reason other than quota", () => {
-    const metrics = makeExecutionMetricsFixture({
-      memory_pressure_events: [],
-      execution_strategy: null,
-      warnings: [
-        {
-          code: "snapshot_capture_skipped",
           node_id: "some_node",
-          reason: "superseded",
+          reason: null,
         },
       ],
     })
@@ -229,18 +157,8 @@ describe("ExecutionDiagnosticsIndicator", () => {
       expectedSeverity: "warning" as const,
       expectedRemediation: "Constrain the projected columns.",
     },
-  ])("coexists with $name while preserving title, severity, and remediation", ({ metrics, expectedTitle, expectedSeverity, expectedRemediation }) => {
-    const withRefusal = {
-      ...metrics,
-      warnings: [
-        {
-          code: "snapshot_capture_skipped",
-          node_id: "refused_node",
-          reason: "quota",
-        },
-      ],
-    }
-    render(<ExecutionDiagnosticsIndicator metrics={withRefusal} />)
+  ])("preserves $name title, severity, and remediation", ({ metrics, expectedTitle, expectedSeverity, expectedRemediation }) => {
+    render(<ExecutionDiagnosticsIndicator metrics={metrics} />)
 
     expect(screen.getByText(expectedTitle)).toBeInTheDocument()
     const ariaLabel = expectedSeverity === "error"
@@ -250,10 +168,5 @@ describe("ExecutionDiagnosticsIndicator", () => {
 
     const status = screen.getByRole("status")
     expect(status).toHaveTextContent(expectedRemediation)
-    expect(status).toHaveTextContent("refused_node")
-    expect(status).toHaveTextContent(/clear a cached node's data that is no longer needed/i)
-    expect(status).toHaveTextContent(/raise the node-output cache quota/i)
-    expect(status).toHaveTextContent("HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS")
-    expect(status).toHaveTextContent("HAUTE_NODE_SNAPSHOT_MAX_BYTES")
   })
 })

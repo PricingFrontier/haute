@@ -1,9 +1,13 @@
 import { useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react"
-import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp } from "lucide-react"
+import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, RefreshCw } from "lucide-react"
 
 import NodeTypeIcon from "../components/NodeTypeIcon"
 import { useDragResize } from "../hooks/useDragResize"
-import { PREVIEW_PANEL_DIMENSIONS, PREVIEW_PANEL_HEADER_HEIGHT_CLASS } from "./previewPanelLayout"
+import {
+  PREVIEW_PANEL_ACTION_BUTTON_CLASS,
+  PREVIEW_PANEL_DIMENSIONS,
+  PREVIEW_PANEL_HEADER_HEIGHT_CLASS,
+} from "./previewPanelLayout"
 
 const FRAME_ICON_SIZE = 14
 
@@ -14,6 +18,8 @@ type PreviewPanelFrameProps = {
   subtitle?: ReactNode
   collapsedMeta?: ReactNode
   nodeType?: string | null
+  onRefresh?: () => void
+  refreshTitle?: string
   "data-testid"?: string
 }
 
@@ -24,6 +30,8 @@ export default function PreviewPanelFrame({
   subtitle,
   collapsedMeta,
   nodeType,
+  onRefresh,
+  refreshTitle = "Refresh preview",
   "data-testid": testId,
 }: PreviewPanelFrameProps) {
   const [collapsed, setCollapsed] = useState(false)
@@ -34,6 +42,18 @@ export default function PreviewPanelFrame({
   const topButtonTitle = expandedToTop ? "Restore preview panel height" : "Expand preview panel to top"
   const TopButtonIcon = expandedToTop ? ChevronDown : collapsed ? ChevronsUp : ChevronUp
   const CollapseButtonIcon = expandedToTop ? ChevronsDown : ChevronDown
+  const refreshButton = onRefresh && (
+    <button
+      type="button"
+      onClick={onRefresh}
+      className={`${PREVIEW_PANEL_ACTION_BUTTON_CLASS} shrink-0 transition-opacity hover:opacity-[0.85]`}
+      style={{ background: "var(--accent)", color: "var(--text-on-accent)" }}
+      title={refreshTitle}
+    >
+      <RefreshCw size={11} aria-hidden="true" />
+      Refresh
+    </button>
+  )
 
   const handleToggleTop = () => {
     if (expandedToTop) {
@@ -81,24 +101,27 @@ export default function PreviewPanelFrame({
             {collapsedMeta}
           </span>
         )}
-        <button
-          type="button"
-          onClick={() => setCollapsed(false)}
-          className="ml-auto p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
-          style={{ color: "var(--text-muted)" }}
-          aria-label="Expand preview panel"
-        >
-          <ChevronUp size={14} className="shrink-0" />
-        </button>
-        <button
-          type="button"
-          onClick={handleToggleTop}
-          className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
-          style={{ color: "var(--text-muted)" }}
-          aria-label={topButtonTitle}
-        >
-          <TopButtonIcon size={14} className="shrink-0" />
-        </button>
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {refreshButton}
+          <button
+            type="button"
+            onClick={() => setCollapsed(false)}
+            className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
+            style={{ color: "var(--text-muted)" }}
+            aria-label="Expand preview panel"
+          >
+            <ChevronUp size={14} className="shrink-0" />
+          </button>
+          <button
+            type="button"
+            onClick={handleToggleTop}
+            className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]"
+            style={{ color: "var(--text-muted)" }}
+            aria-label={topButtonTitle}
+          >
+            <TopButtonIcon size={14} className="shrink-0" />
+          </button>
+        </div>
       </div>
     )
   }
@@ -133,6 +156,7 @@ export default function PreviewPanelFrame({
         </div>
         <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1.5">
           {actions}
+          {refreshButton}
           <button
             type="button"
             onClick={handleCollapse}

@@ -300,7 +300,7 @@ describe("WaterfallErrorAlert component contract", () => {
   })
 
   it("surfaces long error messages in full (no truncation collapse)", () => {
-    const longMessage = "A".repeat(200) + " — waterfall aborted mid-step"
+    const longMessage = "A".repeat(200) + " - waterfall aborted mid-step"
     render(<WaterfallErrorAlert error={longMessage} />)
     const alert = screen.getByRole("alert")
     // We search within the alert to avoid matching truncation ellipses

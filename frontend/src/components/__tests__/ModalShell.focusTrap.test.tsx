@@ -35,7 +35,7 @@ function renderShell(overrides: Partial<Parameters<typeof ModalShell>[0]> = {}) 
   return { ...render(<ModalShell {...props} />), props }
 }
 
-describe("ModalShell — focus trap never leaks focus outside (#41)", () => {
+describe("ModalShell - focus trap never leaks focus outside (#41)", () => {
   it("Tab from an element OUTSIDE the modal redirects focus back inside", () => {
     // Render a background button that lives outside the modal.
     // Then focus that outside element and press Tab — focus must land

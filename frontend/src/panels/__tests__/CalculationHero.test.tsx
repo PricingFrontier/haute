@@ -481,7 +481,7 @@ describe("CalculationHero \u2014 Value Formatting", () => {
         })}
       />,
     )
-    const nullEls = screen.getAllByText("\u2014")
+    const nullEls = screen.getAllByText("-")
     expect(nullEls.length).toBeGreaterThanOrEqual(1)
     // Should have muted styling on at least one element
     const hasMuted = nullEls.some(el => {

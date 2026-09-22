@@ -214,7 +214,7 @@ export function trainingConfigurationIssues(
         code: "glm-family",
         message:
           "Choose a GLM distribution family (e.g. Poisson for claim counts, " +
-          "Gamma for severity) — an unset family would silently train a " +
+          "Gamma for severity) - an unset family would silently train a " +
           "gaussian model.",
       })
     } else {
@@ -227,7 +227,7 @@ export function trainingConfigurationIssues(
         issues.push({
           code: "glm-tweedie-variance-power",
           message:
-            "Set the Tweedie variance power (1=Poisson, 2=Gamma) — an unset " +
+            "Set the Tweedie variance power (1=Poisson, 2=Gamma) - an unset " +
             "value would silently fit at power 1.5.",
         })
       }
@@ -240,7 +240,7 @@ export function trainingConfigurationIssues(
           code: "glm-negbin-theta",
           message:
             "Set the Negative Binomial dispersion (theta), or estimate it from " +
-            "the data — RustyStats refuses to fit without it.",
+            "the data - RustyStats refuses to fit without it.",
         })
       }
     }
@@ -266,7 +266,7 @@ export function trainingConfigurationIssues(
       issues.push({
         code: "glm-elastic-net-l1-ratio",
         message:
-          "Set the elastic-net L1 ratio (0 fits Ridge, 1 fits LASSO) — an " +
+          "Set the elastic-net L1 ratio (0 fits Ridge, 1 fits LASSO) - an " +
           "unset value would silently fit pure Ridge.",
       })
     }
@@ -326,7 +326,7 @@ export function trainingConfigurationIssues(
       code: "catboost-loss-function",
       message:
         "Choose a training loss (e.g. Poisson for claim counts, RMSE for a " +
-        "squared-error regression) — an unset loss would silently train " +
+        "squared-error regression) - an unset loss would silently train " +
         "under the library default.",
     })
   } else if (
@@ -336,7 +336,7 @@ export function trainingConfigurationIssues(
     issues.push({
       code: "catboost-tweedie-variance-power",
       message:
-        "Set the Tweedie variance power (1=Poisson, 2=Gamma) — an unset " +
+        "Set the Tweedie variance power (1=Poisson, 2=Gamma) - an unset " +
         "value would silently train at power 1.5.",
     })
   }

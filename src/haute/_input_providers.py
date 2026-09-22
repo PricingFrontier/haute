@@ -277,7 +277,6 @@ def build_input_snapshot(
     staging_token: str | None = None,
     allow_admitted_eager: bool = False,
     defer_retirement: bool = False,
-    retained_generation_ids: frozenset[str] = frozenset(),
 ) -> SourceCacheGeneration:
     """Explicitly build or refresh one shared input snapshot.
 
@@ -305,7 +304,6 @@ def build_input_snapshot(
         generation_id=generation_id,
         staging_token=staging_token,
         defer_retirement=defer_retirement,
-        retained_generation_ids=retained_generation_ids,
     )
     return store.build(
         identity,

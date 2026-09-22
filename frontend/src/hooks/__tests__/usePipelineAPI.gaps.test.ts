@@ -95,7 +95,7 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
   }
 }
 
-describe("usePipelineAPI — gap tests", () => {
+describe("usePipelineAPI - gap tests", () => {
   beforeEach(() => {
     vi.useRealTimers()
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live"] })

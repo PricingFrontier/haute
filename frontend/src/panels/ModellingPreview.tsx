@@ -34,6 +34,7 @@ export type ModellingPreviewData = {
 interface ModellingPreviewProps {
   data: ModellingPreviewData
   nodeId: string
+  onRefresh?: () => void
 }
 
 const TAB_KEYS = ["summary", "coefficients", "relativities", "loss", "lift", "residuals", "features", "ave", "pdp"] as const
@@ -62,7 +63,7 @@ const VIEW_INTRODUCTIONS: Record<Exclude<TabKey, "summary">, { title: string; de
   pdp: { title: "Partial dependence", description: "Explore how model predictions change as one feature varies." },
 }
 
-export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
+export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewProps) {
   const { result } = data
   const [tab, setTab] = useState<TabKey>("summary")
 
@@ -125,6 +126,7 @@ export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
     <PreviewPanelFrame
       nodeLabel={data.nodeLabel}
       nodeType={NODE_TYPES.MODELLING}
+      onRefresh={onRefresh}
       collapsedMeta={result.status === "error" ? "Error" : metricsSummary}
       data-testid="modelling-preview-frame"
     >

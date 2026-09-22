@@ -250,7 +250,7 @@ export function BreakpointGrid({
                     {showMatches && (
                       <td className={MATCH_CELL_CLASS}>
                         <span className="text-[11px] font-mono" style={{ color: "var(--text-secondary)" }}>
-                          {matchCounts[i] ?? "—"}
+                          {matchCounts[i] ?? "-"}
                         </span>
                       </td>
                     )}

@@ -24,7 +24,7 @@ const reset = () =>
 
 beforeEach(reset)
 
-describe("addSource — blessed identity", () => {
+describe("addSource - blessed identity", () => {
   it("mints the key with the blessed sanitizer, preserving case", () => {
     expect(useSettingsStore.getState().addSource("My Src")).toEqual({ ok: true, key: "My_Src" })
     expect(useSettingsStore.getState().sources).toEqual(["live", "My_Src"])
@@ -70,7 +70,7 @@ describe("addSource — blessed identity", () => {
   })
 })
 
-describe("addSource — discriminated reject reason", () => {
+describe("addSource - discriminated reject reason", () => {
   // The reason is what lets the toolbar word the right feedback instead of
   // closing the form silently (the residual UX sibling of the mint fix).
 

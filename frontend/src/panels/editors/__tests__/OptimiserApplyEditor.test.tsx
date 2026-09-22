@@ -339,7 +339,7 @@ describe("OptimiserApplyEditor", () => {
     props.config = { sourceType: "registered", registered_model: "opt-model" }
     render(<OptimiserApplyEditor {...props} />)
     expect(screen.getByText("Version")).toBeInTheDocument()
-    expect(screen.getByText(/v2 — READY \(stable\)/)).toBeInTheDocument()
+    expect(screen.getByText(/v2 - READY \(stable\)/)).toBeInTheDocument()
   })
 
   // 13. Run mode: shows experiment/run dropdowns
@@ -473,7 +473,7 @@ describe("OptimiserApplyEditor", () => {
       optimiser_mode: "",
     })
     expect(screen.getByTestId("mlflow-selection-cleared")).toHaveTextContent(
-      "Selection cleared — run and model identifiers are not portable across destinations.",
+      "Selection cleared - run and model identifiers are not portable across destinations.",
     )
   })
 

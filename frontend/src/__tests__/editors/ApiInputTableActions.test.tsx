@@ -103,7 +103,7 @@ const lastConfig = (spy: ReturnType<typeof vi.fn>) =>
     tables: { columns: { name: string; path: string; type: string; selected: boolean }[] }[]
   }
 
-describe("ApiInputEditor — wired FrameTableActions", () => {
+describe("ApiInputEditor - wired FrameTableActions", () => {
   beforeEach(() => installClipboard())
 
   it("per-table Copy emits the columns as tab-separated text", async () => {

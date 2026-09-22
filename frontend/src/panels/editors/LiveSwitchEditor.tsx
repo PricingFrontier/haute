@@ -98,7 +98,7 @@ export default function LiveSwitchEditor({
                     color: 'var(--text-primary)',
                   }}
                 >
-                  <option value="">—</option>
+                  <option value="">-</option>
                   {sources.map((s) => (
                     <option key={s} value={s}>{s}</option>
                   ))}

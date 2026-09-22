@@ -750,9 +750,9 @@ join-feeder points, nodes calling materialising frame operations, batch Model Sc
 and the producer the caller consumes — is captured into the shared store through the bounded
 sink, and execution continues from what it wrote: never from a generation another execution
 published while it was computing. A capture never replaces a fresh generation unless widening
-it and never narrows an identity's columns; a capture rejected for quota, or not published
-under the publication rule, continues from its own staged artifact as a request-owned file
-without recomputing the node and is reported as `snapshot_capture_skipped`, while any other
+it and never narrows an identity's columns; a capture not published under the publication
+rule continues from its own staged artifact as a request-owned file without recomputing
+the node and is reported as `snapshot_capture_superseded`, while any other
 store failure fails the execution. Worker processes capture directly through the store's
 cross-process locks. There is no temporary checkpoint directory and no private
 dataframe-cache namespace. Deploy scoring neither seeds nor captures; a refresh disables

@@ -296,7 +296,7 @@ export default function ScenarioExpanderEditor({
                 style={{ ...INPUT_STYLE, opacity: 0.7 }}
                 data-testid="step-size"
               >
-                {steps && Number(steps) > 1 && parsedMin !== null && parsedMax !== null ? +((parsedMax - parsedMin) / Math.max(Number(steps) - 1, 1)).toFixed(4) : "—"}
+                {steps && Number(steps) > 1 && parsedMin !== null && parsedMax !== null ? +((parsedMax - parsedMin) / Math.max(Number(steps) - 1, 1)).toFixed(4) : "-"}
               </div>
             </div>
           </div>

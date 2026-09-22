@@ -173,7 +173,7 @@ export function MlflowExportSection({
         style={{ color: "var(--text-muted)" }}
       >
         {availability.available ? (
-          `Destination: ${availability.label} — ${availability.destination}`
+          `Destination: ${availability.label} - ${availability.destination}`
         ) : (
           <>
             {`${availability.reason} `}

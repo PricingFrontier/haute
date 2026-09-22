@@ -37,7 +37,6 @@ from haute._source_cache import (
     SourceCacheBuildError,
     SourceCacheCorruptError,
     SourceCacheGeneration,
-    SourceCacheQuotaExceededError,
     SourceCacheStore,
     new_staging_token,
 )
@@ -61,13 +60,9 @@ _REMEDIATION = (
     "Build this Data Input's snapshot from the Data Input panel, or give the "
     "execution more memory headroom, and try again."
 )
-# One remediation per reason code: a quota refusal, a host without a native
-# memory cap, and a cancelled build need different actions from the operator.
+# A host without a native memory cap and a cancelled build need different
+# actions from the operator.
 _REMEDIATION_BY_REASON: Mapping[str, str] = {
-    "quota_exceeded": (
-        "The input snapshot cache is full. Clear an unused Data Input snapshot "
-        "or raise the cache quota, and try again."
-    ),
     "cap_unavailable": (
         "This host cannot install the native memory cap an automatic snapshot "
         "build requires. Build this Data Input's snapshot explicitly from the "
@@ -166,10 +161,6 @@ class InputPreparationRequest:
     refresh: bool
     generation_id: str
     staging_token: str
-    # Generations the supervising parent leases: the child defers retirement and
-    # has no lease table of its own, so its quota projection must treat these as
-    # retained rather than reclaimable.
-    retained_generation_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +196,6 @@ def build_input_snapshot_worker(
             staging_token=request.staging_token,
             allow_admitted_eager=True,
             defer_retirement=True,
-            retained_generation_ids=frozenset(request.retained_generation_ids),
         )
         return InputPreparationOutcome(
             generation_id=generation.generation_id,
@@ -531,8 +521,6 @@ def _classify_local_failure(
     deadline: float,
     cancelled: bool,
 ) -> str:
-    if isinstance(exc, SourceCacheQuotaExceededError):
-        return "quota_exceeded"
     if isinstance(exc, ExecutionCancelledError):
         return "cancelled"
     if isinstance(exc, MemoryError):
@@ -550,10 +538,6 @@ def _classify_worker_failure(exc: BaseException) -> str:
     # child's exception type name, so classify on that name before falling back
     # to the generic memory heuristic.
     remote_type = exc.remote_type if isinstance(exc, IsolatedWorkerRemoteError) else None
-    if isinstance(exc, SourceCacheQuotaExceededError) or (
-        remote_type == "SourceCacheQuotaExceededError"
-    ):
-        return "quota_exceeded"
     if remote_type in ("NativeMemoryLimitUnsupportedError", "NativeMemoryLimitCleanupError"):
         return "cap_unavailable"
     if isolated_worker_failure_is_memory(exc):
@@ -707,7 +691,6 @@ def _run_build(
         refresh=refresh,
         generation_id=generation_id,
         staging_token=staging_token,
-        retained_generation_ids=tuple(sorted(store.leased_generation_ids(identity))),
     )
     try:
         outcome = spawn(

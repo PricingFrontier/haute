@@ -139,7 +139,7 @@ describe("BranchIndicator", () => {
     expect(useUIStore.getState().gitOpen).toBe(true)
   })
 
-  it("stays branch-only while comparing — the version is named by the comparison breadcrumb (S11)", () => {
+  it("stays branch-only while comparing - the version is named by the comparison breadcrumb (S11)", () => {
     useGitStore.setState({
       status: status({}),
       comparison: { sha: "feedbeef0000aaaa", label: "v9" },

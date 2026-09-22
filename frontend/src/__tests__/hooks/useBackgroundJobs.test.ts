@@ -203,7 +203,7 @@ describe("useBackgroundJobs", () => {
       expect(useToastStore.getState().toasts).toContainEqual(
         expect.objectContaining({
           type: "error",
-          text: "Optimisation failed: Solve Node — Job 'sj-missing' not found",
+          text: "Optimisation failed: Solve Node - Job 'sj-missing' not found",
         }),
       )
 
@@ -434,7 +434,7 @@ describe("useBackgroundJobs", () => {
       expect(useToastStore.getState().toasts).toContainEqual(
         expect.objectContaining({
           type: "error",
-          text: "Training failed: Train Node — Job 'tj-missing' not found",
+          text: "Training failed: Train Node - Job 'tj-missing' not found",
         }),
       )
 

@@ -82,7 +82,7 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
   }
 }
 
-describe("usePipelineAPI — aborted preview clears stale data (#31)", () => {
+describe("usePipelineAPI - aborted preview clears stale data (#31)", () => {
   beforeEach(() => {
     vi.useRealTimers()
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live"] })

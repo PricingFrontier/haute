@@ -188,7 +188,7 @@ describe("ModelScoreEditor", () => {
   it("shows an empty-state hint when no registered models exist", () => {
     render(<ModelScoreEditor {...defaultProps()} />)
     expect(
-      screen.getByText(/No registered models yet — haute logs training runs; your promotion process/i),
+      screen.getByText(/No registered models yet - haute logs training runs; your promotion process/i),
     ).toBeInTheDocument()
   })
 
@@ -263,8 +263,8 @@ describe("ModelScoreEditor", () => {
     render(<ModelScoreEditor {...props} />)
     expect(screen.getByText("Version")).toBeInTheDocument()
     expect(screen.getByText("latest")).toBeInTheDocument()
-    expect(screen.getByText(/v1 — READY \(first\)/)).toBeInTheDocument()
-    expect(screen.getByText(/v2 — READY/)).toBeInTheDocument()
+    expect(screen.getByText(/v1 - READY \(first\)/)).toBeInTheDocument()
+    expect(screen.getByText(/v2 - READY/)).toBeInTheDocument()
   })
 
   // 6. Registered mode: version change calls onUpdate
@@ -489,7 +489,7 @@ describe("ModelScoreEditor", () => {
       version: "latest",
     })
     expect(screen.getByTestId("mlflow-selection-cleared")).toHaveTextContent(
-      "Selection cleared — run and model identifiers are not portable across destinations.",
+      "Selection cleared - run and model identifiers are not portable across destinations.",
     )
   })
 
@@ -616,9 +616,9 @@ describe("ModelScoreEditor", () => {
       const props = defaultProps()
       props.config = { registered_model: "freq", version: "2" }
       render(<ModelScoreEditor {...props} />)
-      fireEvent.change(screen.getByDisplayValue("v2 — READY"), { target: { value: "1" } })
+      fireEvent.change(screen.getByDisplayValue("v2 - READY"), { target: { value: "1" } })
       expect(props.onUpdate).toHaveBeenCalledWith({ version: "1", task: "classification" })
-      fireEvent.change(screen.getByDisplayValue("v2 — READY"), { target: { value: "latest" } })
+      fireEvent.change(screen.getByDisplayValue("v2 - READY"), { target: { value: "latest" } })
       expect(props.onUpdate).toHaveBeenCalledWith({ version: "latest", task: "regression" })
     })
 

@@ -20,6 +20,13 @@ Modelling and optimiser result presentation belongs to
 
 ## Behaviour
 
+- The node's Refresh action lives in the preview header immediately before the
+  minimise/expand controls, including in the collapsed bar, rather than beside
+  Close in the node editor. Data, Explore, modelling and optimiser previews use
+  the same control. It refreshes the active node's preview and shared data cache
+  as before, and remains available before results arrive. Submodels and their
+  boundary ports do not offer Refresh; the schema-warning banner retains its
+  separate Refresh and check action.
 - Data previews render loading, error and successful data, support column search, selected-frame
   switching, trace-cell clicks, and virtualise large row/column grids. Row limits, column
   limits, and the table's rendering do not depend on where the rows came from.
@@ -43,7 +50,7 @@ Modelling and optimiser result presentation belongs to
   joins the running job rather than starting a second one, and one narrow generation can be
   current for Banding while it is only partial for Explore's wider column demand. The state
   survives a browser or backend restart, because it is the point's state and not the browser's.
-- The header shows the shared data-cache state and nothing to act on: red `Not cached` when the
+- The header's shared data-cache indicator reports state without a separate build action: red `Not cached` when the
   point has no data, green `Cached` when the whole demand is cached, yellow `Cache out of date`
   or `Cached for some columns` when the data is stale or covers only some of the columns this
   consumer reads, and — while a build runs — progress with Cancel. Caching is what the node's own
@@ -119,15 +126,9 @@ Modelling and optimiser result presentation belongs to
   A failed autosave or flush preserves the dirty draft and blocks file switching until a later
   save succeeds. Shared preview chrome supports resizing, collapse and keyboard-accessible
   roving tabs.
-- Preview places actionable projection-boundary, rejected-strategy, memory
-  pressure, or cache quota refusal detail behind an accessible status icon beside
-  the row/column summary. A capture the cache refused under quota
-  (`snapshot_capture_skipped` with reason `quota`, excluding superseded captures)
-  reports as a warning naming every refused node in arrival order; its remediation
-  names both remedies: clear unneeded cached node data, or raise the node-output cache quota
-  via `HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS` and `HAUTE_NODE_SNAPSHOT_MAX_BYTES`.
-  The refusal renders alone when no other diagnostic exists, or appends in one sentence
-  to coexisting diagnostic content, which keeps its own severity, title and remediation.
+- Preview places actionable projection-boundary, rejected-strategy, or memory
+  pressure detail behind an accessible status icon beside the row/column summary.
+  There are no cache quota refusals or quota-remediation messages.
   A successfully admitted materialisation boundary is informational and
   stays silent only when the same plan has no unprojected boundary and its execution
   metrics report no memory pressure. Mixed plans keep the real projection issue

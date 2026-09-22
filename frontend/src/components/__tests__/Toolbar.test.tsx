@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, act } from "@testing-library/react"
 
 vi.mock("../MlflowSettingsModal", () => ({
   default: () => <div data-testid="mlflow-modal-stub" />,
 }))
 
 // Stubbed like the MLflow modal: what the toolbar owns is opening it. What the
-// pane shows has its own test in CacheSettingsModal.test.tsx.
-vi.mock("../CacheSettingsModal", () => ({
-  default: () => <div data-testid="cache-modal-stub" />,
+// pane shows has its own test in PipelineSettingsModal.test.tsx.
+vi.mock("../PipelineSettingsModal", () => ({
+  default: () => <div data-testid="pipeline-settings-stub" />,
 }))
 
 import Toolbar from "../Toolbar"
@@ -142,7 +142,7 @@ describe("Toolbar", () => {
     expect(commitBtn).toHaveClass("flex-1")
   })
 
-  it("renders Assistant next to the branch name and Documentation underneath with equal width", () => {
+  it("renders Assistant next to the branch name and Help underneath with equal width", () => {
     useGitStore.setState({
       status: {
         state: "ready",
@@ -156,20 +156,19 @@ describe("Toolbar", () => {
     })
     render(<Toolbar {...makeProps()} />)
     const assistantBtn = screen.getByTestId("toolbar-assistant")
-    const docBtn = screen.getByTestId("toolbar-documentation")
+    const helpBtn = screen.getByTestId("toolbar-help")
     const branchIndicator = screen.getByTestId("toolbar-branch-indicator")
 
-    expect(docBtn).toHaveAttribute("href", "https://pricingfrontier.github.io/haute/")
-    expect(docBtn).toHaveAttribute("target", "_blank")
-    expect(docBtn).toHaveAttribute("rel", "noopener noreferrer")
-    expect(docBtn).toHaveTextContent(/documentation/i)
+    expect(helpBtn).toHaveTextContent("Help")
+    expect(helpBtn).toHaveAttribute("aria-haspopup", "menu")
+    expect(helpBtn).toHaveAttribute("aria-expanded", "false")
 
     const assistantColumn = assistantBtn.parentElement
     expect(assistantColumn).toBeInTheDocument()
     expect(assistantColumn).toHaveClass("flex-col")
-    expect(assistantColumn).toContainElement(docBtn)
+    expect(assistantColumn).toContainElement(helpBtn)
     expect(assistantBtn).toHaveClass("w-full")
-    expect(docBtn).toHaveClass("w-full")
+    expect(helpBtn).toHaveClass("w-full")
 
     expect(assistantColumn).not.toBeNull()
     expect(assistantColumn!.compareDocumentPosition(branchIndicator) & 4).toBeTruthy()
@@ -295,7 +294,21 @@ describe("Toolbar", () => {
     expect(screen.getByText("1.50 s")).toBeInTheDocument()
   })
 
-  it("renders Undo on top of Redo with text labels leading the right-hand action bar", () => {
+  it("places the Undo through Imports columns between Source/Pipeline and Timing/Memory", () => {
+    render(<Toolbar {...makeProps()} />)
+    const sourcePipeline = screen.getByTestId("toolbar-source-pipeline")
+    const canvasActions = screen.getByTestId("toolbar-canvas-actions")
+    const breakdowns = screen.getByTestId("toolbar-breakdowns")
+
+    expect(sourcePipeline.compareDocumentPosition(canvasActions) & 4).toBeTruthy()
+    expect(canvasActions.compareDocumentPosition(breakdowns) & 4).toBeTruthy()
+    for (const id of ["toolbar-undo", "toolbar-zoom-in", "toolbar-centre", "toolbar-submodel", "toolbar-imports"]) {
+      expect(canvasActions).toContainElement(screen.getByTestId(id))
+    }
+    expect(canvasActions).not.toContainElement(screen.getByTestId("toolbar-assistant"))
+  })
+
+  it("renders Undo on top of Redo with text labels leading the canvas action group", () => {
     render(<Toolbar {...makeProps()} />)
     const undoRedoContainer = screen.getByTestId("toolbar-undo-redo")
     expect(undoRedoContainer).toHaveClass("flex-col")
@@ -316,22 +329,6 @@ describe("Toolbar", () => {
 
     const zoomColumn = zoomInBtn.parentElement
     expect(undoRedoContainer.compareDocumentPosition(zoomColumn!) & 4).toBeTruthy()
-  })
-
-  it("renders Preview Rows on top of Chunk Rows in a stacked column to the left of Timing/Memory", () => {
-    render(<Toolbar {...makeProps()} />)
-    const rowsChunkContainer = screen.getByTestId("toolbar-rows-chunk")
-    expect(rowsChunkContainer).toHaveClass("flex-col")
-
-    const rowsInput = screen.getByLabelText(/preview rows/i)
-    const chunkInput = screen.getByLabelText(/chunk rows/i)
-
-    expect(rowsChunkContainer).toContainElement(rowsInput)
-    expect(rowsChunkContainer).toContainElement(chunkInput)
-    expect(rowsInput.compareDocumentPosition(chunkInput) & 4).toBeTruthy()
-
-    const breakdownsContainer = screen.getByTestId("toolbar-breakdowns")
-    expect(rowsChunkContainer.compareDocumentPosition(breakdownsContainer) & 4).toBeTruthy()
   })
 
   it("Layout button is disabled when nodeCount is 0", () => {
@@ -520,103 +517,6 @@ describe("Toolbar", () => {
     expect(dotsContainer).not.toHaveClass("self-end")
   })
 
-  function getRowLimitInput(): HTMLInputElement {
-    return screen.getByLabelText(/preview rows/i) as HTMLInputElement
-  }
-
-  function getChunkInput(): HTMLInputElement {
-    return screen.getByLabelText(/chunk rows/i) as HTMLInputElement
-  }
-
-  it("row limit input changes the store value", () => {
-    render(<Toolbar {...makeProps()} />)
-    fireEvent.change(getRowLimitInput(), { target: { value: "500" } })
-    expect(useSettingsStore.getState().rowLimit).toBe(500)
-  })
-
-  it("row limit clamps negative values to 0", () => {
-    render(<Toolbar {...makeProps()} />)
-    fireEvent.change(getRowLimitInput(), { target: { value: "-50" } })
-    expect(useSettingsStore.getState().rowLimit).toBe(0)
-  })
-
-  it("row limit treats NaN input as 0", () => {
-    render(<Toolbar {...makeProps()} />)
-    fireEvent.change(getRowLimitInput(), { target: { value: "abc" } })
-    expect(useSettingsStore.getState().rowLimit).toBe(0)
-  })
-
-  it("row limit input shows current store value", () => {
-    useSettingsStore.setState({ rowLimit: 2000 })
-    render(<Toolbar {...makeProps()} />)
-    expect(getRowLimitInput().value).toBe("2000")
-  })
-
-  it("chunk input renders with the current streaming chunk size", () => {
-    useSettingsStore.setState({ streamingChunkSize: 250_000 })
-    render(<Toolbar {...makeProps()} />)
-    expect(getChunkInput().value).toBe("250000")
-  })
-
-  it("chunk input updates the streaming chunk size in the store", () => {
-    render(<Toolbar {...makeProps()} />)
-    fireEvent.change(getChunkInput(), { target: { value: "100000" } })
-    expect(useSettingsStore.getState().streamingChunkSize).toBe(100_000)
-  })
-
-  it("chunk input clamps sub-1000 values up to 1000", () => {
-    render(<Toolbar {...makeProps()} />)
-    fireEvent.change(getChunkInput(), { target: { value: "5" } })
-    expect(useSettingsStore.getState().streamingChunkSize).toBe(1000)
-  })
-
-  it("chunk input ignores non-numeric input (no setter call, value preserved)", () => {
-    useSettingsStore.setState({ streamingChunkSize: 250_000 })
-    render(<Toolbar {...makeProps()} />)
-    fireEvent.change(getChunkInput(), { target: { value: "abc" } })
-    expect(useSettingsStore.getState().streamingChunkSize).toBe(250_000)
-  })
-
-  it("chunk input accepts scientific notation (5e5 -> 500000)", () => {
-    render(<Toolbar {...makeProps()} />)
-    fireEvent.change(getChunkInput(), { target: { value: "5e5" } })
-    expect(useSettingsStore.getState().streamingChunkSize).toBe(500_000)
-  })
-
-  it("chunk input clamps over-max values to the backend bound (10_000_000)", () => {
-    render(<Toolbar {...makeProps()} />)
-    fireEvent.change(getChunkInput(), { target: { value: "15000000" } })
-    expect(useSettingsStore.getState().streamingChunkSize).toBe(10_000_000)
-  })
-
-  it("chunk input has max attribute matching the backend bound", () => {
-    render(<Toolbar {...makeProps()} />)
-    expect(getChunkInput()).toHaveAttribute("max", "10000000")
-  })
-
-  it("sizes numeric fields with synchronized width for complete configured values and valid maximum", () => {
-    useSettingsStore.setState({ rowLimit: 125_000, streamingChunkSize: 10_000_000 })
-    render(<Toolbar {...makeProps()} />)
-
-    expect(getRowLimitInput()).toHaveStyle({ width: "calc(8ch + 16px)" })
-    expect(getChunkInput()).toHaveStyle({ width: "calc(8ch + 16px)" })
-  })
-
-  it("expands both numeric fields together when either value exceeds 8 digits", () => {
-    useSettingsStore.setState({ rowLimit: 125_000_000, streamingChunkSize: 500_000 })
-    const { unmount } = render(<Toolbar {...makeProps()} />)
-
-    expect(getRowLimitInput()).toHaveStyle({ width: "calc(9ch + 16px)" })
-    expect(getChunkInput()).toHaveStyle({ width: "calc(9ch + 16px)" })
-    unmount()
-
-    useSettingsStore.setState({ rowLimit: 1_000, streamingChunkSize: 100_000_000 })
-    render(<Toolbar {...makeProps()} />)
-
-    expect(getRowLimitInput()).toHaveStyle({ width: "calc(9ch + 16px)" })
-    expect(getChunkInput()).toHaveStyle({ width: "calc(9ch + 16px)" })
-  })
-
   it("zoom in button calls onZoomIn", () => {
     const props = makeProps()
     render(<Toolbar {...props} />)
@@ -667,7 +567,7 @@ describe("Toolbar", () => {
 
   it("shows websocket disconnected status dot", () => {
     render(<Toolbar {...makeProps({ wsStatus: "disconnected" })} />)
-    const dot = screen.getByTitle("Server unreachable \u2014 restart haute serve")
+    const dot = screen.getByTitle("Server unreachable - restart haute serve")
     expect(dot).toBeInTheDocument()
   })
 
@@ -694,37 +594,136 @@ describe("Toolbar", () => {
     expect(brand.nextElementSibling).toBe(sourceContainer)
   })
 
-  it("stacks the Source selector over a Cache control in one grid column", () => {
+  it("stacks the Source selector over a Pipeline control in one grid column", () => {
     render(<Toolbar {...makeProps()} />)
-    const column = screen.getByTestId("toolbar-source-cache")
+    const column = screen.getByTestId("toolbar-source-pipeline")
     const source = screen.getByTestId("source-selector")
-    const cache = screen.getByTestId("toolbar-cache")
+    const cache = screen.getByTestId("toolbar-pipeline-settings")
 
     expect(column).toContainElement(source)
     expect(column).toContainElement(cache)
-    expect(screen.getByText("Cache:")).toBeInTheDocument()
+    expect(screen.getByText("Pipeline:")).toBeInTheDocument()
+    expect(cache).toHaveTextContent("Calculating")
+    // The Source selector shares the toolbar button surface and type.
+    expect(source).toHaveClass("toolbar-btn", "text-[12px]", "font-medium")
+    expect(source).not.toHaveClass("font-mono")
+    // Same type and horizontal padding on both, so the two texts line up.
+    for (const cls of ["text-[12px]", "font-medium", "px-2.5"]) {
+      expect(source).toHaveClass(cls)
+      expect(cache).toHaveClass(cls)
+    }
 
-    // Source on the top row, Cache underneath it.
+    // Source on the top row, Pipeline underneath it.
     expect(source.compareDocumentPosition(cache) & 4).toBeTruthy()
 
     // Both controls stretch to fill the same grid column, which is what makes
-    // the Cache button exactly as wide as the Source selector above it.
+    // the Pipeline button exactly as wide as the Source selector above it.
     expect(column.className).toContain("grid-cols-[auto_auto]")
     expect(source).toHaveClass("w-full")
     expect(cache).toHaveClass("w-full")
 
-    // The cache control opens the usage pane.
+    // The Pipeline control opens the pipeline settings pane.
     expect(cache).toHaveAttribute("aria-haspopup", "dialog")
     expect(cache).not.toHaveAttribute("aria-disabled")
   })
 
-  it("the Cache button opens the cache usage pane", async () => {
+  it("the Pipeline button opens the pipeline settings pane", async () => {
     render(<Toolbar {...makeProps()} />)
-    expect(screen.queryByTestId("cache-modal-stub")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("pipeline-settings-stub")).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByTestId("toolbar-cache"))
+    fireEvent.click(screen.getByTestId("toolbar-pipeline-settings"))
 
-    expect(await screen.findByTestId("cache-modal-stub")).toBeInTheDocument()
+    expect(await screen.findByTestId("pipeline-settings-stub")).toBeInTheDocument()
+  })
+
+  it("Help opens a menu of Documentation, Hotkeys and Report a bug", () => {
+    render(<Toolbar {...makeProps()} />)
+    expect(screen.queryByRole("menu", { name: "Help" })).toBeNull()
+
+    fireEvent.click(screen.getByTestId("toolbar-help"))
+
+    const menu = screen.getByRole("menu", { name: "Help" })
+    const items = screen.getAllByRole("menuitem")
+    expect(items.map((item) => item.textContent)).toEqual(["Documentation", "Hotkeys", "Report a bug"])
+    expect(menu).toContainElement(items[0])
+    expect(screen.getByTestId("toolbar-help")).toHaveAttribute("aria-expanded", "true")
+
+    const docs = screen.getByTestId("toolbar-documentation")
+    expect(docs).toHaveAttribute("href", "https://pricingfrontier.github.io/haute/")
+    expect(docs).toHaveAttribute("target", "_blank")
+    expect(docs).toHaveAttribute("rel", "noopener noreferrer")
+    const bug = screen.getByTestId("toolbar-report-bug")
+    expect(bug).toHaveAttribute("href", "https://github.com/PricingFrontier/haute/issues/new")
+    expect(bug).toHaveAttribute("target", "_blank")
+    expect(bug).toHaveAttribute("rel", "noopener noreferrer")
+  })
+
+  it("focuses the first Help item on open and moves with the arrow keys", () => {
+    render(<Toolbar {...makeProps()} />)
+    fireEvent.click(screen.getByTestId("toolbar-help"))
+    const [docs, hotkeys, bug] = screen.getAllByRole("menuitem")
+    expect(docs).toHaveFocus()
+    fireEvent.keyDown(docs, { key: "ArrowDown" })
+    expect(hotkeys).toHaveFocus()
+    fireEvent.keyDown(hotkeys, { key: "ArrowDown" })
+    expect(bug).toHaveFocus()
+    fireEvent.keyDown(bug, { key: "ArrowDown" })
+    expect(docs).toHaveFocus()
+    fireEvent.keyDown(docs, { key: "ArrowUp" })
+    expect(bug).toHaveFocus()
+    fireEvent.keyDown(bug, { key: "Escape" })
+    expect(screen.getByTestId("toolbar-help")).toHaveFocus()
+  })
+
+  it("Hotkeys opens the keyboard shortcuts and closes the menu", () => {
+    useUIStore.setState({ shortcutsOpen: false })
+    render(<Toolbar {...makeProps()} />)
+    fireEvent.click(screen.getByTestId("toolbar-help"))
+    fireEvent.click(screen.getByTestId("toolbar-hotkeys"))
+
+    expect(useUIStore.getState().shortcutsOpen).toBe(true)
+    expect(screen.queryByRole("menu", { name: "Help" })).toBeNull()
+    useUIStore.setState({ shortcutsOpen: false })
+  })
+
+  it("Escape and a second click close the Help menu", () => {
+    render(<Toolbar {...makeProps()} />)
+    const help = screen.getByTestId("toolbar-help")
+    fireEvent.click(help)
+    fireEvent.keyDown(screen.getByTestId("toolbar-hotkeys"), { key: "Escape" })
+    expect(screen.queryByRole("menu", { name: "Help" })).toBeNull()
+
+    fireEvent.click(help)
+    fireEvent.click(help)
+    expect(screen.queryByRole("menu", { name: "Help" })).toBeNull()
+  })
+
+  it("renders dropdown text in the primary (white) text colour", () => {
+    useSettingsStore.setState({ sources: ["live", "test_scenario"], activeSource: "live" })
+    render(<Toolbar {...makeProps()} />)
+    fireEvent.click(screen.getByTitle("Data source"))
+    expect(screen.getByText("test_scenario").closest("button")).toHaveStyle({ color: "var(--text-primary)" })
+    expect(screen.getByText("Add source").closest("button")).toHaveStyle({ color: "var(--text-primary)" })
+
+    fireEvent.click(screen.getByTestId("toolbar-help"))
+    expect(screen.getByRole("menu", { name: "Help" })).toHaveStyle({ color: "var(--text-primary)" })
+  })
+
+  it("the Pipeline button names the calculation mode", () => {
+    useUIStore.setState({ calculationMode: "automatic" })
+    render(<Toolbar {...makeProps()} />)
+    const button = screen.getByTestId("toolbar-pipeline-settings")
+    expect(button).toHaveTextContent("Calculating")
+
+    act(() => useUIStore.setState({ calculationMode: "manual" }))
+    expect(button).toHaveTextContent("Manual")
+    useUIStore.setState({ calculationMode: "automatic" })
+  })
+
+  it("keeps the preview and chunk row settings out of the toolbar", () => {
+    render(<Toolbar {...makeProps()} />)
+    expect(screen.queryByLabelText(/preview rows/i)).toBeNull()
+    expect(screen.queryByLabelText(/chunk rows/i)).toBeNull()
   })
 
   it("source selector shows all sources when opened", () => {

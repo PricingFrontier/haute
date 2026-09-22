@@ -300,7 +300,7 @@ export function BandingRulesGrid({
                       aria-label={`Rule ${i + 1} lower operator`}
                       className={BOXED_SELECT_CLASS}
                       style={BOXED_CELL_STYLE}>
-                      <option value="">—</option>
+                      <option value="">-</option>
                       {OPS.map((o) => <option key={o} value={o}>{o}</option>)}
                     </select>
                   </td>
@@ -317,7 +317,7 @@ export function BandingRulesGrid({
                       aria-label={`Rule ${i + 1} upper operator`}
                       className={BOXED_SELECT_CLASS}
                       style={BOXED_CELL_STYLE}>
-                      <option value="">—</option>
+                      <option value="">-</option>
                       {OPS.map((o) => <option key={o} value={o}>{o}</option>)}
                     </select>
                   </td>

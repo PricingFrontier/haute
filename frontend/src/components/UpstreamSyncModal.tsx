@@ -82,7 +82,7 @@ export default function UpstreamSyncModal({ onClose }: UpstreamSyncModalProps) {
           The project this one was forked from
         </h2>
         <p className="text-[12px] mt-0.5" style={{ color: "var(--text-muted)" }}>
-          Changes travel one way — from the parent into this copy. Your own work is never
+          Changes travel one way - from the parent into this copy. Your own work is never
           published back to it.
         </p>
       </div>

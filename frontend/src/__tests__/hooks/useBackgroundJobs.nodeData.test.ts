@@ -42,7 +42,7 @@ function status(overrides: Partial<NodeDataStatusResponse> = {}): NodeDataStatus
   return { status: "running", progress: 0.5, message: "Caching data", ...overrides }
 }
 
-describe("useBackgroundJobs — shared node-data builds", () => {
+describe("useBackgroundJobs - shared node-data builds", () => {
   beforeEach(() => {
     vi.useFakeTimers()
     useNodeDataStore.getState().reset()

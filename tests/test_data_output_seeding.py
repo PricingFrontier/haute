@@ -673,30 +673,15 @@ def test_request_cancelled_while_preparation_succeeds_starts_no_worker(
     assert _staging(project) == []
 
 
-def test_quota_rejected_captures_serve_the_write(
+def test_superseded_captures_serve_the_write(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A capture the quota refuses is read from the run's own staging through the write."""
+    """A superseded capture is read from the run's own staging through the write."""
     import haute._seed_plans as seed_plans
-    from haute._execution_context import ExecutionProfile
-    from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotSlot
     from haute.executor import write_data_output
 
-    full = NodeSnapshotStore(project, node_output_max_generations=1)
-    # One pinned generation of an unrelated slot fills the quota.
-    filler = NodeSnapshotSlot(str(project / "other.py"), "filler", "batch", "bounded").identity(
-        "filler-signature"
-    )
-    artifact = full.stage_node_output(filler)
-    pl.DataFrame({"a": [1]}).write_parquet(artifact.part_path(0))
-    full.publish_node_output(
-        filler,
-        artifact,
-        columns=NodeSnapshotColumns.all(),
-        dependencies={},
-        explicit=True,
-        profile=ExecutionProfile.NODE_SNAPSHOT,
-    ).close()
+    full = NodeSnapshotStore(project)
+    monkeypatch.setattr(full, "_should_publish_locked", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(seed_plans, "NodeSnapshotStore", lambda _root: full)
 
     response = write_data_output(
@@ -710,7 +695,7 @@ def test_quota_rejected_captures_serve_the_write(
     assert {
         capture.node_id: capture.outcome
         for capture in response.execution_metrics.shared_snapshot_captures
-    } == {"J": "quota", "B": "quota"}
+    } == {"J": "superseded", "B": "superseded"}
     expected = (
         pl.read_parquet(project / "quotes.parquet")
         .join(pl.read_parquet(project / "claims.parquet"), on="id")
