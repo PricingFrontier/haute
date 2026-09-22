@@ -2,8 +2,8 @@
  * Manual "Log run to MLflow" action + result display.
  *
  * Logging is deliberately manual — training never logs automatically — so
- * this section states where a log would go (the node's own
- * `mlflow_destination`, or the local folder when it names none), stays visible
+ * this section uses the node's `mlflow_destination` (or the local folder
+ * when it names none) without repeating the selected location, and stays visible
  * (disabled, with the reason and a Configure MLflow link) when *that*
  * destination cannot accept a log — never because some other remote is
  * unconfigured. A successful log shows only the run ID, plus the run link when
@@ -167,28 +167,24 @@ export function MlflowExportSection({
           </div>
         </div>
       )}
-      <p
-        data-testid="mlflow-export-destination"
-        className="text-[10px]"
-        style={{ color: "var(--text-muted)" }}
-      >
-        {availability.available ? (
-          `Destination: ${availability.label} — ${availability.destination}`
-        ) : (
-          <>
-            {`${availability.reason} `}
-            {inventory.status !== "loading" && (
-              <button
-                onClick={() => setMlflowSettingsOpen(true)}
-                className="underline"
-                style={{ color: "var(--text-accent)" }}
-              >
-                Configure MLflow
-              </button>
-            )}
-          </>
-        )}
-      </p>
+      {!availability.available && (
+        <p
+          data-testid="mlflow-export-destination"
+          className="text-[10px]"
+          style={{ color: "var(--text-muted)" }}
+        >
+          {`${availability.reason} `}
+          {inventory.status !== "loading" && (
+            <button
+              onClick={() => setMlflowSettingsOpen(true)}
+              className="underline"
+              style={{ color: "var(--text-accent)" }}
+            >
+              Configure MLflow
+            </button>
+          )}
+        </p>
+      )}
       {mlflowResult && mlflowResult.status === "ok" && (
         <div
           data-testid="mlflow-log-success"

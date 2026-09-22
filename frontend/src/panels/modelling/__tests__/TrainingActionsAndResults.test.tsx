@@ -213,6 +213,17 @@ describe("TrainingActionsAndResults", () => {
     render(<TrainingActionsAndResults {...makeProps({
       ramEstimateError: "Connection failed",
     })} />)
-    expect(screen.getByText(/RAM estimate unavailable/)).toBeInTheDocument()
+    expect(screen.getByText(/Memory estimate unavailable/)).toBeInTheDocument()
+    expect(screen.getByText("Connection failed")).toBeInTheDocument()
+    expect(screen.queryByText(/training will still work/)).toBeNull()
+  })
+
+  it("distinguishes an evaluation failure from an unavailable memory estimate", () => {
+    render(<TrainingActionsAndResults {...makeProps({
+      ramEstimateError: "Evaluation preview failed: validation partition is empty",
+    })} />)
+    expect(screen.getByText("Evaluation preview failed")).toBeInTheDocument()
+    expect(screen.getByText("validation partition is empty")).toBeInTheDocument()
+    expect(screen.queryByText("Memory estimate unavailable")).toBeNull()
   })
 })

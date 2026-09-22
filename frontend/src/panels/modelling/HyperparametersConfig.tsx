@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef } from "react"
-
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
-import { NODE_GROUP_COLORS } from "../../theme/colors"
-import { safeParseInt } from "../../utils/configField"
+import { MODEL_COLORS } from "../../theme/colors"
 import type { OnUpdateConfig } from "../editors"
+import { NumberField } from "./NumberField"
+import { MODELLING_INPUT_STYLE } from "./styles"
+import { trainingFitBudget } from "./trainingFitBudget"
 import {
   formatHyperparameters,
   formatTuningSearchSpace,
@@ -15,7 +16,6 @@ import {
 type Props = {
   algorithmLabel: string
   params: Record<string, unknown>
-  defaultParams?: Record<string, unknown>
   reservedKeys?: readonly string[]
   reservedKeysHelp?: string
   onUpdate: OnUpdateConfig
@@ -26,6 +26,7 @@ type Props = {
   metrics: string[]
   searchSpaceDraft: string
   setSearchSpaceDraft: (draft: string) => void
+  onReviewSplit?: () => void
 }
 
 function starterTuningSearchSpace(): Record<string, unknown> {
@@ -39,7 +40,6 @@ function starterTuningSearchSpace(): Record<string, unknown> {
 export function HyperparametersConfig({
   algorithmLabel,
   params,
-  defaultParams = {},
   reservedKeys = [],
   reservedKeysHelp = "",
   onUpdate,
@@ -50,257 +50,245 @@ export function HyperparametersConfig({
   metrics,
   searchSpaceDraft,
   setSearchSpaceDraft,
+  onReviewSplit,
 }: Props) {
   const stored = useMemo(
-    () => formatHyperparameters(params, defaultParams, reservedKeys),
-    [defaultParams, params, reservedKeys],
+    () => formatHyperparameters(params, reservedKeys),
+    [params, reservedKeys],
   )
   const previousStored = useRef(stored)
-
   useEffect(() => {
     if (stored === previousStored.current) return
-    if (draft === previousStored.current) {
-      setDraft(stored)
-    }
+    if (draft === previousStored.current) setDraft(stored)
     previousStored.current = stored
   }, [draft, setDraft, stored])
 
-  const validation = (
-    evaluation.validation !== null
-    && typeof evaluation.validation === "object"
-    && !Array.isArray(evaluation.validation)
-  )
-    ? evaluation.validation as Record<string, unknown>
-    : {}
-  const trialCount = typeof tuning?.trial_count === "number"
-    ? tuning.trial_count
-    : 20
-
+  let projection: Record<string, unknown> | null = null
+  let fixedError: string | null = null
+  let searchError: string | null = null
+  try {
+    projection = parseHyperparameters(draft, reservedKeys, reservedKeysHelp)
+  } catch (cause) {
+    fixedError = cause instanceof Error ? cause.message : "Invalid JSON"
+  }
+  if (tuning) {
+    try {
+      parseTuningSearchSpace(searchSpaceDraft)
+    } catch (cause) {
+      searchError = cause instanceof Error ? cause.message : "Invalid JSON"
+    }
+  }
+  const budget = trainingFitBudget(evaluation, tuning)
   const updateFixedDraft = (nextDraft: string) => {
     setDraft(nextDraft)
     try {
-      const projection = parseHyperparameters(
-        nextDraft,
-        reservedKeys,
-        reservedKeysHelp,
+      onUpdate(
+        "params",
+        mergeReservedKeys(
+          params,
+          parseHyperparameters(nextDraft, reservedKeys, reservedKeysHelp),
+          reservedKeys,
+        ),
       )
-      const merged = mergeReservedKeys(params, projection, reservedKeys)
-      onUpdate("params", merged)
     } catch {
-      // Keep incomplete or invalid JSON local. The Train action validates this
-      // same draft and surfaces the problem without submitting a request.
+      /* An invalid draft remains editable and is shown below. */
     }
   }
-
-  const formatFixedDraft = () => {
-    try {
-      const projection = parseHyperparameters(
-        draft,
-        reservedKeys,
-        reservedKeysHelp,
-      )
-      setDraft(formatHyperparameters(
-        mergeReservedKeys(params, projection, reservedKeys),
-        defaultParams,
-        reservedKeys,
-      ))
-    } catch {
-      // Preserve invalid text so the user can finish editing it.
-    }
-  }
-
   const updateTuning = (fields: Record<string, unknown>) => {
-    if (!tuning) return
-    onUpdate("tuning", { ...tuning, ...fields })
+    if (tuning) onUpdate("tuning", { ...tuning, ...fields })
   }
-
-  const setParameterStrategy = (strategy: "fixed" | "tune") => {
-    const enabled = strategy === "tune"
-    if (enabled === (tuning !== null)) return
-    if (!enabled) {
+  const setStrategy = (strategy: "fixed" | "tune") => {
+    if ((strategy === "tune") === Boolean(tuning)) return
+    if (strategy === "fixed") {
       onUpdate("tuning", null)
       return
     }
     const searchSpace = starterTuningSearchSpace()
-    const nextTuning = {
-      schema_version: 1,
-      trial_count: 20,
-      seed: 42,
-      metric: metrics[0] ?? "",
-      search_space: searchSpace,
-    }
-    const hasTest = evaluation.test !== undefined
-    const nextEvaluation = hasTest || validation.method === "none"
-      ? evaluation
-      : {
-          ...evaluation,
-          test: evaluation.strategy === "temporal"
-            ? { start: "" }
-            : { size: 0.2 },
-        }
     setSearchSpaceDraft(formatTuningSearchSpace(searchSpace))
-    onUpdate({ tuning: nextTuning, evaluation: nextEvaluation })
+    onUpdate({
+      refit_on_development: true,
+      tuning: {
+        schema_version: 1,
+        trial_count: 20,
+        seed: 42,
+        metric: metrics[0] ?? "",
+        search_space: searchSpace,
+      },
+    })
   }
-
-  const updateSearchSpaceDraft = (nextDraft: string) => {
-    setSearchSpaceDraft(nextDraft)
-    try {
-      updateTuning({ search_space: parseTuningSearchSpace(nextDraft) })
-    } catch {
-      // Keep incomplete or invalid JSON local. The Train action validates this
-      // same draft and surfaces the problem without submitting a request.
-    }
-  }
-
-  const formatSearchSpaceDraft = () => {
-    try {
-      setSearchSpaceDraft(
-        formatTuningSearchSpace(parseTuningSearchSpace(searchSpaceDraft)),
-      )
-    } catch {
-      // Preserve invalid text so the user can finish editing it.
-    }
-  }
-
+  const inputClass = "mt-1 w-full rounded-lg px-3 py-2 font-mono text-[13px]"
   return (
-    <section className="space-y-2.5">
-      <div>
-        <h3
-          className="text-[11px] font-bold uppercase tracking-[0.08em]"
-          style={{ color: "var(--text-muted)" }}
-        >
-          Hyperparameters
-        </h3>
-      </div>
-
+    <section className="space-y-5">
       <div>
         <p
           id="parameter-strategy-label"
-          className="text-[11px]"
+          className="mb-2 text-[13px]"
           style={{ color: "var(--text-secondary)" }}
         >
           Parameter strategy
         </p>
-        <div className="mt-1">
-          <ToggleButtonGroup<"fixed" | "tune">
-            value={tuning ? "tune" : "fixed"}
-            onChange={setParameterStrategy}
-            options={[
-              { key: "fixed", label: "Fixed parameters" },
-              { key: "tune", label: "Tune parameters" },
-            ]}
-            accentColor={NODE_GROUP_COLORS.model}
-            ariaLabelledBy="parameter-strategy-label"
-          />
-        </div>
+        <ToggleButtonGroup<"fixed" | "tune">
+          value={tuning ? "tune" : "fixed"}
+          onChange={setStrategy}
+          options={[
+            { key: "fixed", label: "Fixed parameters" },
+            { key: "tune", label: "Tune parameters" },
+          ]}
+          accentColor={MODEL_COLORS.accent}
+          ariaLabelledBy="parameter-strategy-label"
+        />
       </div>
-
       {!tuning ? (
         <label
-          className="block text-[11px]"
+          className="block text-[13px]"
           style={{ color: "var(--text-secondary)" }}
         >
           Parameters JSON
           <textarea
             aria-label={`${algorithmLabel} hyperparameters JSON`}
+            aria-invalid={Boolean(fixedError)}
             value={draft}
             onChange={(event) => updateFixedDraft(event.target.value)}
-            onBlur={formatFixedDraft}
-            spellCheck={false}
-            rows={Math.min(24, Math.max(10, draft.split("\n").length + 1))}
-            className="mt-1.5 w-full rounded-lg px-2.5 py-2 font-mono text-xs leading-5"
-            style={{
-              background: "var(--bg-input)",
-              border: "1px solid var(--border)",
-              color: "var(--text-primary)",
-              resize: "vertical",
+            onBlur={() => {
+              if (projection) setDraft(formatHyperparameters(projection))
             }}
+            spellCheck={false}
+            rows={Math.min(24, Math.max(6, draft.split("\n").length + 1))}
+            className={`${inputClass} leading-5`}
+            style={{ ...MODELLING_INPUT_STYLE, resize: "vertical" }}
           />
         </label>
       ) : (
         <>
-          <div className="grid grid-cols-3 gap-2">
-            <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+          <div
+            className="rounded-lg border p-3 text-xs leading-5"
+            style={{
+              borderColor: "var(--border)",
+              background: "var(--bg-input)",
+            }}
+          >
+            <p>
+              {evaluation.test == null
+                ? "No test set is reserved. Reserve one in Split for an independent evaluation."
+                : "The test set stays held out during hyperparameter tuning."}
+            </p>
+            {onReviewSplit && (
+              <button
+                type="button"
+                onClick={onReviewSplit}
+                className="mt-1 font-medium"
+                style={{ color: MODEL_COLORS.accent }}
+              >
+                Review split →
+              </button>
+            )}
+            {budget && (
+              <p className="mt-2 font-medium">
+                {budget.total} total fits: {budget.trials} trials ×{" "}
+                {budget.folds} validation fits + 1 final fit.
+              </p>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="text-[13px]">
               Trial count
-              <input
-                aria-label="Tuning trial count"
-                type="number"
+              <NumberField
+                label="Tuning trial count"
+                value={
+                  typeof tuning.trial_count === "number"
+                    ? tuning.trial_count
+                    : undefined
+                }
                 min={5}
                 max={50}
-                value={trialCount}
-                onChange={(event) => updateTuning({
-                  trial_count: Math.max(
-                    5,
-                    Math.min(50, safeParseInt(event.target.value, 20)),
-                  ),
-                })}
-                className="mt-0.5 w-full rounded px-2 py-1 font-mono text-xs"
-                style={{
-                  background: "var(--bg-input)",
-                  border: "1px solid var(--border)",
-                  color: "var(--text-primary)",
-                }}
+                integer
+                required
+                step={1}
+                className={inputClass}
+                onCommit={(value) => updateTuning({ trial_count: value })}
               />
             </label>
-            <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+            <label className="text-[13px]">
               Seed
-              <input
-                aria-label="Tuning seed"
-                type="number"
-                value={typeof tuning.seed === "number" ? tuning.seed : 42}
-                onChange={(event) => updateTuning({
-                  seed: safeParseInt(event.target.value, 42),
-                })}
-                className="mt-0.5 w-full rounded px-2 py-1 font-mono text-xs"
-                style={{
-                  background: "var(--bg-input)",
-                  border: "1px solid var(--border)",
-                  color: "var(--text-primary)",
-                }}
+              <NumberField
+                label="Tuning seed"
+                value={
+                  typeof tuning.seed === "number" ? tuning.seed : undefined
+                }
+                min={Number.MIN_SAFE_INTEGER}
+                max={Number.MAX_SAFE_INTEGER}
+                integer
+                required
+                step={1}
+                className={inputClass}
+                onCommit={(value) => updateTuning({ seed: value })}
               />
             </label>
-            <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+            <label className="col-span-2 text-[13px]">
               Selection metric
               <select
                 aria-label="Tuning selection metric"
                 value={typeof tuning.metric === "string" ? tuning.metric : ""}
-                onChange={(event) => updateTuning({ metric: event.target.value })}
-                className="mt-0.5 w-full rounded px-2 py-1 font-mono text-xs"
-                style={{
-                  background: "var(--bg-input)",
-                  border: "1px solid var(--border)",
-                  color: "var(--text-primary)",
-                }}
+                onChange={(event) =>
+                  updateTuning({ metric: event.target.value })
+                }
+                className={inputClass}
+                style={MODELLING_INPUT_STYLE}
               >
+                <option value="">Choose a metric</option>
                 {metrics.map((metric) => (
-                  <option key={metric} value={metric}>{metric}</option>
+                  <option key={metric} value={metric}>
+                    {metric}
+                  </option>
                 ))}
               </select>
             </label>
           </div>
-
-          <label className="block text-[11px]" style={{ color: "var(--text-secondary)" }}>
+          <label className="block text-[13px]">
             Search space JSON
             <textarea
               aria-label="CatBoost search space JSON"
+              aria-invalid={Boolean(searchError)}
               value={searchSpaceDraft}
-              onChange={(event) => updateSearchSpaceDraft(event.target.value)}
-              onBlur={formatSearchSpaceDraft}
+              onChange={(event) => {
+                setSearchSpaceDraft(event.target.value)
+                try {
+                  updateTuning({
+                    search_space: parseTuningSearchSpace(event.target.value),
+                  })
+                } catch {
+                  /* Preserve invalid drafts; the error is shown below. */
+                }
+              }}
+              onBlur={() => {
+                if (!searchError)
+                  setSearchSpaceDraft(
+                    formatTuningSearchSpace(
+                      parseTuningSearchSpace(searchSpaceDraft),
+                    ),
+                  )
+              }}
               spellCheck={false}
               rows={Math.min(
                 20,
                 Math.max(6, searchSpaceDraft.split("\n").length + 1),
               )}
-              className="mt-1.5 w-full rounded-lg px-2.5 py-2 font-mono text-xs leading-5"
-              style={{
-                background: "var(--bg-input)",
-                border: "1px solid var(--border)",
-                color: "var(--text-primary)",
-                resize: "vertical",
-              }}
+              className={`${inputClass} leading-5`}
+              style={{ ...MODELLING_INPUT_STYLE, resize: "vertical" }}
             />
           </label>
         </>
+      )}
+      {(fixedError || searchError) && (
+        <p
+          role="alert"
+          className="text-xs leading-5"
+          style={{ color: "var(--danger)" }}
+        >
+          {fixedError
+            ? `Parameters JSON: ${fixedError}`
+            : `Search space JSON: ${searchError}`}
+        </p>
       )}
     </section>
   )

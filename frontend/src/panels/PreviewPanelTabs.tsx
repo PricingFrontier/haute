@@ -9,7 +9,7 @@ export type PreviewPanelTab<T extends string> = {
   key: T
   label: string
   disabled?: boolean
-  indicator?: { kind: "warning" | "active"; label: string }
+  indicator?: { kind: "warning" | "active"; label: string; compact?: boolean }
 }
 
 type PreviewPanelTabsProps<T extends string> = {
@@ -136,7 +136,7 @@ export default function PreviewPanelTabs<T extends string>({
                   <span>
                     {tab.indicator.kind === "warning" ? "!" : "●"}
                   </span>
-                  <span>
+                  <span className={tab.indicator.compact ? "sr-only" : undefined}>
                     {tab.indicator.kind === "warning"
                       ? "Needs attention"
                       : "Running"}

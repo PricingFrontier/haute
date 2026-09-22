@@ -25,6 +25,7 @@ from haute.modelling._training_job import (
     _PreparedData,
     evaluation_artifact_filenames,
 )
+from haute.modelling._tuning import validation_weighted_tree_count
 
 
 def evaluation(
@@ -207,38 +208,207 @@ def test_no_validation_runs_only_one_final_fit_and_reports_no_selection_metrics(
         data=str(source),
         target="y",
         metrics=["rmse"],
+        params={"iterations": 25, "depth": 2},
         output_dir=str(tmp_path),
         evaluation=evaluation(validation={"method": "none"}),
     )
     prepared = _PreparedData(str(source), False, ["feature"], [], 6)
     monkeypatch.setattr(job, "_prepare_data", lambda *_args, **_kwargs: prepared)
-    calls: list[int | None] = []
+    calls: list[tuple[int | None, dict[str, Any]]] = []
 
     class FakeFinal:
-        def __init__(self, fit_index: int | None, plan: EvaluationPlan) -> None:
+        def __init__(
+            self, fit_index: int | None, plan: EvaluationPlan, params: dict[str, Any]
+        ) -> None:
             self.fit_index = fit_index
             self.plan = plan
+            self.params = params
 
         def run_evaluation_fit(self, **_kwargs: Any) -> EvaluationFitResult:
             raise AssertionError("no selection fit is allowed")
 
         def run(self, **_kwargs: Any) -> TrainResult:
-            calls.append(self.fit_index)
+            calls.append((self.fit_index, self.params))
             return final_result(tmp_path, development=6, final_test=0)
 
     monkeypatch.setattr(
         job,
         "_new_evaluation_job",
-        lambda **kwargs: FakeFinal(kwargs["fit_index"], kwargs["plan"]),
+        lambda **kwargs: FakeFinal(kwargs["fit_index"], kwargs["plan"], dict(kwargs["params"])),
     )
     result = job.run()
-    assert calls == [None]
+    assert calls == [(None, {"iterations": 25, "depth": 2})]
     assert result.evaluation is not None
     assert result.evaluation["fit_count"] == 1
     assert result.evaluation["selection_fits"] == []
     assert result.evaluation["selection_metrics"] == {}
     assert result.final_test_metrics == {}
     assert result.diagnostics_set == "development"
+    assert result.final_tree_count is None
+
+
+@pytest.mark.parametrize(
+    ("validation", "best_iterations", "expected_trees", "iteration_key"),
+    [
+        ({"method": "single", "size": 0.2}, [6], 7, "iterations"),
+        ({"method": "cross_validation", "fold_count": 3}, [1, 7, 9], 8, "iterations"),
+        ({"method": "single", "size": 0.2}, [6], 7, "n_estimators"),
+        ({"method": "single", "size": 0.2}, [None], None, "iterations"),
+    ],
+)
+def test_fixed_catboost_refit_uses_validation_best_iterations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    validation: dict[str, object],
+    best_iterations: list[int | None],
+    expected_trees: int | None,
+    iteration_key: str,
+) -> None:
+    source = tmp_path / "source.parquet"
+    pl.DataFrame({"y": list(range(30)), "feature": list(range(30))}).write_parquet(source)
+    params = {iteration_key: 20, "depth": 3, "early_stopping_rounds": 5, "use_best_model": True}
+    job = TrainingJob(
+        name="model",
+        data=str(source),
+        target="y",
+        metrics=["rmse"],
+        params=params,
+        output_dir=str(tmp_path),
+        evaluation=evaluation(validation=validation),
+        mlflow_experiment="/test",
+    )
+    monkeypatch.setattr(
+        job,
+        "_prepare_data",
+        lambda *_args, **_kwargs: _PreparedData(str(source), False, ["feature"], [], 30),
+    )
+    passed_params: list[tuple[int | None, dict[str, Any]]] = []
+    logged_params: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        job,
+        "_log_to_mlflow",
+        lambda _result, **kwargs: logged_params.append(dict(kwargs["final_params"])),
+    )
+
+    class FakeJob:
+        def __init__(self, fit_index: int | None, plan: EvaluationPlan) -> None:
+            self.fit_index = fit_index
+            self.plan = plan
+
+        def run_evaluation_fit(self, **_kwargs: Any) -> EvaluationFitResult:
+            assert self.fit_index is not None
+            fit = self.plan.validation_fits[self.fit_index]
+            return EvaluationFitResult(
+                schema_version=1,
+                fit_index=self.fit_index,
+                train_rows=fit.train_rows,
+                validation_rows=fit.validation_rows,
+                metrics={"rmse": 1.0},
+                best_iteration=best_iterations[self.fit_index],
+            )
+
+        def run(self, **_kwargs: Any) -> TrainResult:
+            return final_result(tmp_path, development=30, final_test=0)
+
+    def new_job(**kwargs: Any) -> FakeJob:
+        passed_params.append((kwargs["fit_index"], dict(kwargs["params"])))
+        return FakeJob(kwargs["fit_index"], kwargs["plan"])
+
+    monkeypatch.setattr(job, "_new_evaluation_job", new_job)
+    if expected_trees is None:
+        with pytest.raises(ValueError, match="did not report best_iteration"):
+            job.run()
+        assert len(passed_params) == len(best_iterations)
+        assert logged_params == []
+        return
+    result = job.run()
+
+    for _, selection_params in passed_params[:-1]:
+        assert selection_params == params
+    final_index, final_params = passed_params[-1]
+    assert final_index is None
+    assert final_params == {"iterations": expected_trees, "depth": 3}
+    assert result.final_tree_count == expected_trees
+    assert logged_params == [final_params]
+    assert job.params == params
+
+
+def test_holdout_can_publish_validation_fit_without_refit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.parquet"
+    pl.DataFrame({"y": list(range(30)), "feature": list(range(30))}).write_parquet(source)
+    job = TrainingJob(
+        name="model",
+        data=str(source),
+        target="y",
+        metrics=["rmse"],
+        params={"iterations": 20},
+        output_dir=str(tmp_path),
+        evaluation=evaluation(validation={"method": "single", "size": 0.2}),
+        refit_on_development=False,
+        mlflow_experiment="/test",
+    )
+    monkeypatch.setattr(
+        job,
+        "_prepare_data",
+        lambda *_args, **_kwargs: _PreparedData(str(source), False, ["feature"], [], 30),
+    )
+    calls: list[tuple[int | None, str]] = []
+    logged_params: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        job,
+        "_log_to_mlflow",
+        lambda _result, **kwargs: logged_params.append(dict(kwargs["final_params"])),
+    )
+
+    class FakeJob:
+        def __init__(self, fit_index: int | None, plan: EvaluationPlan) -> None:
+            self.fit_index = fit_index
+            self.plan = plan
+
+        def run_evaluation_fit(self, **_kwargs: Any) -> EvaluationFitResult:
+            raise AssertionError("selection fit should be saved in the same run")
+
+        def run(self, **_kwargs: Any) -> TrainResult:
+            calls.append((self.fit_index, "run"))
+            assert self.fit_index == 0
+            fit = self.plan.validation_fits[0]
+            result = final_result(tmp_path, development=30, final_test=0)
+            result.train_rows = fit.train_rows
+            result.validation_rows = fit.validation_rows
+            result.best_iteration = 6
+            result.final_tree_count = 7
+            return result
+
+    monkeypatch.setattr(
+        job,
+        "_new_evaluation_job",
+        lambda **kwargs: FakeJob(kwargs["fit_index"], kwargs["plan"]),
+    )
+    result = job.run()
+    assert calls == [(0, "run")]
+    assert result.evaluation is not None
+    assert result.evaluation["fit_count"] == 1
+    assert result.evaluation["refit_on_development"] is False
+    assert result.evaluation["selection_fits"][0]["best_iteration"] == 6
+    assert result.diagnostics_set == "validation"
+    assert result.final_tree_count == 7
+    assert logged_params == [{"iterations": 20}]
+
+
+@pytest.mark.parametrize(
+    "validation", [{"method": "none"}, {"method": "cross_validation", "fold_count": 3}]
+)
+def test_no_refit_requires_holdout_validation(validation: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match="holdout validation"):
+        TrainingJob(
+            name="model",
+            data=pl.DataFrame({"y": [0, 1], "feature": [1, 2]}),
+            target="y",
+            evaluation=evaluation(validation=validation),
+            refit_on_development=False,
+        )
 
 
 def test_temporal_cross_validation_runs_through_strict_plan_reload(
@@ -390,6 +560,13 @@ def test_real_selection_fits_report_iterations_without_mixing_final_loss_history
         on_iteration=lambda iteration, *_: final_iterations.append(iteration),
     )
     fit_count = result.evaluation["fit_count"]
+    selection_fits = result.evaluation["selection_fits"]
+    expected_final_iterations = validation_weighted_tree_count(
+        best_iterations=[fit["best_iteration"] for fit in selection_fits],
+        validation_rows=[fit["validation_rows"] for fit in selection_fits],
+        iteration_ceiling=6,
+    )
+    assert result.final_tree_count == expected_final_iterations
     for fit in range(1, fit_count):
         prefix = f"Fit {fit} of {fit_count} (validation): Iteration "
         updates = [
@@ -399,10 +576,63 @@ def test_real_selection_fits_report_iterations_without_mixing_final_loss_history
         assert [message for message, _ in updates] == [f"{prefix}{i} of 6" for i in range(1, 7)]
         assert all((fit - 1) / fit_count <= fraction <= fit / fit_count for _, fraction in updates)
         assert updates[-1][1] > updates[0][1]
-    assert len(final_iterations) == 6, (
+    assert len(final_iterations) == expected_final_iterations, (
         "Validation losses must not enter the final model's loss chart"
     )
-    assert final_iterations == list(range(1, 7))
+    assert final_iterations == list(range(1, expected_final_iterations + 1))
     fractions = [fraction for _, fraction in events]
     assert fractions == sorted(fractions)
     assert fractions[-1] == 1.0
+
+
+@pytest.mark.parametrize("test_fraction", [None, {"size": 0.2}])
+def test_real_holdout_fit_can_be_saved_without_refit(
+    tmp_path: Path, test_fraction: dict[str, float] | None
+) -> None:
+    from catboost import CatBoostRegressor
+
+    from haute.routes._training_artifacts import _validate_evaluation_artifact_contents
+    from haute.routes._training_worker import _training_response_payload
+
+    job = TrainingJob(
+        name="single_fit",
+        data=pl.DataFrame({"y": range(50), "feature": range(50)}),
+        target="y",
+        output_dir=str(tmp_path),
+        metrics=["rmse"],
+        params={"iterations": 12, "depth": 2, "thread_count": 1, "random_seed": 9},
+        evaluation=evaluation(validation={"method": "single", "size": 0.2}, test=test_fraction),
+        refit_on_development=False,
+    )
+    result = job.run()
+    assert result.evaluation is not None
+    fit = result.evaluation["selection_fits"][0]
+    assert result.evaluation["fit_count"] == 1
+    assert result.evaluation["refit_on_development"] is False
+    assert result.train_rows == fit["train_rows"]
+    assert result.validation_rows == fit["validation_rows"]
+    assert result.best_iteration == fit["best_iteration"]
+    assert result.final_tree_count == CatBoostRegressor().load_model(result.model_path).tree_count_
+    assert result.final_tree_count is not None
+    assert result.final_tree_count <= 12
+    assert result.diagnostics_set == ("final_test" if test_fraction else "validation")
+    assert bool(result.final_test_metrics) == bool(test_fraction)
+    response = _training_response_payload(
+        result,
+        job_id="single-fit",
+        model_path=result.model_path,
+        evaluation=result.evaluation,
+        tuning=None,
+    )
+    assert response["evaluation"]["fit_count"] == 1
+    assert response["diagnostics_set"] == result.diagnostics_set
+    validated = _validate_evaluation_artifact_contents(
+        {
+            "evaluation_plan": Path(result.evaluation["plan_path"]),
+            "evaluation_results": Path(result.evaluation["results_path"]),
+            "evaluation_report": Path(result.evaluation["report_path"]),
+        },
+        response_fit_count=1,
+        response_refit_on_development=False,
+    )
+    assert validated["fit_count"] == 1

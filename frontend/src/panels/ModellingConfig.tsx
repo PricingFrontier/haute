@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { cancelTrain, estimateTrainingRam, trainModel } from "../api/client"
 import { runDispersionEstimate } from "../api/dispersion"
 import {
@@ -18,7 +18,7 @@ import {
 } from "../stores/useDocumentStatusStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
-import { type ModellingPane } from "../stores/useUIStore"
+import useUIStore, { type ModellingPane } from "../stores/useUIStore"
 import { configField } from "../utils/configField"
 import {
   executionErrorDetailMessage,
@@ -29,6 +29,7 @@ import {
 import { buildGraph } from "../utils/buildGraph"
 import {
   trainingConfigurationIssues,
+  trainingIssuePane,
   type TrainingConfigurationIssue,
 } from "../utils/trainingObjective"
 import type { OnUpdateConfig } from "./editors"
@@ -53,7 +54,7 @@ import { trainingIdentityConfig } from "../utils/modellingExportConfig"
 import { trainingLineage } from "../utils/trainedJobHandles"
 import { useTrainedJobRestore } from "./modelling/useTrainedJobRestore"
 import { SplitAndMetricsConfig } from "./modelling/SplitAndMetricsConfig"
-import { MODELLING_INPUT_STYLE } from "./modelling/styles"
+import { TrainingRunSummary } from "./modelling/TrainingRunSummary"
 import { TargetAndTaskConfig } from "./modelling/TargetAndTaskConfig"
 import { TrainingActionsAndResults } from "./modelling/TrainingActionsAndResults"
 import type { ReactElement } from "react"
@@ -63,6 +64,7 @@ type Props = {
   onUpdate: OnUpdateConfig
   upstreamColumns?: { name: string; dtype: string }[]
   activePane?: ModellingPane
+  onDraftIssuesChange?: (nodeId: string, issues: TrainingConfigurationIssue[]) => void
 }
 
 const CATBOOST_DEFAULT_PARAMS: Record<string, unknown> = {
@@ -123,13 +125,14 @@ function AlgorithmGateway({ onUpdate }: { onUpdate: OnUpdateConfig }) {
 
   return (
     <div className="px-4 py-3 space-y-3">
-      <label className="text-[11px] font-bold uppercase tracking-[0.08em]">Select Algorithm</label>
+      <label className="text-sm font-semibold">Select algorithm</label>
       {algorithms.map((option) => (
         <button
           key={option.id}
           type="button"
           onClick={() => onUpdate({
             algorithm: option.id,
+            ...(option.id === "catboost" ? { params: { ...CATBOOST_DEFAULT_PARAMS } } : {}),
             evaluation: DEFAULT_EVALUATION,
           })}
           className="w-full rounded-lg px-3 py-3 text-left algorithm-gateway-btn"
@@ -152,7 +155,9 @@ type TrainPaneProps = {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   params: Record<string, unknown>
-  validationMessages: readonly string[]
+  validationIssues: readonly TrainingConfigurationIssue[]
+  columns: { name: string; dtype: string }[]
+  onReviewPane: (pane: ModellingPane) => void
   trainJob: ReturnType<typeof useNodeResultsStore.getState>["trainJobs"][string] | undefined
   cachedResult: ReturnType<typeof useNodeResultsStore.getState>["trainResults"][string] | undefined
   estimate: UseStaleConfigEstimateResult<TrainEstimate>
@@ -168,7 +173,9 @@ function TrainPane({
   config,
   onUpdate,
   params,
-  validationMessages,
+  validationIssues,
+  columns,
+  onReviewPane,
   trainJob,
   cachedResult,
   estimate,
@@ -179,22 +186,20 @@ function TrainPane({
   tuningEnabled,
 }: TrainPaneProps) {
   const rowLimit = typeof config.row_limit === "number" ? config.row_limit : null
-  const [validationRevealed, setValidationRevealed] = useState(false)
+  const validationMessages = validationIssues.map((issue) => issue.message)
 
   const toggleGpu = (enabled: boolean) => {
     const { task_type: _taskType, ...nonGpuParams } = params
     onUpdate("params", enabled ? { ...nonGpuParams, task_type: "GPU" } : nonGpuParams)
   }
   const requestTrain = () => {
-    if (validationMessages.length > 0) {
-      setValidationRevealed(true)
-      return
-    }
+    if (validationMessages.length > 0) return
     onTrain()
   }
 
   return (
     <>
+      <TrainingRunSummary config={config} columns={columns} preview={estimate.estimate?.evaluation_preview ?? null} />
       {algorithm === "catboost" && (
         <label className="flex cursor-pointer select-none items-center gap-2">
           <input
@@ -211,36 +216,13 @@ function TrainPane({
           </span>
         </label>
       )}
-      <div className="flex items-center gap-2">
-        <label
-          htmlFor="model-row-limit"
-          className="text-[11px]"
-          style={{ color: "var(--text-muted)" }}
-        >
-          Row limit
-        </label>
-        <input
-          id="model-row-limit"
-          aria-label="Row limit"
-          type="number"
-          min={0}
-          step={100000}
-          value={rowLimit ?? ""}
-          onChange={(event) => {
-            onUpdate("row_limit", event.target.value === "" ? null : Math.max(0, Number(event.target.value)))
-          }}
-          placeholder="All rows"
-          className="w-32 rounded px-2 py-1 text-xs font-mono"
-          style={MODELLING_INPUT_STYLE}
-        />
-        {rowLimit !== null && rowLimit > 0 && (
-          <span className="text-[10px] font-mono" style={{ color: "var(--text-muted)" }}>
-            {rowLimit.toLocaleString()} rows
-          </span>
-        )}
-      </div>
       <TrainingActionsAndResults
-        validationMessages={validationRevealed ? validationMessages : []}
+        validationMessages={validationMessages}
+        onValidationMessageClick={(index) => onReviewPane(trainingIssuePane(validationIssues[index]))}
+        validationDestinations={validationIssues.map((issue) => {
+          const pane = trainingIssuePane(issue)
+          return pane === "params" ? "Parameters" : pane.charAt(0).toUpperCase() + pane.slice(1)
+        })}
         training={Boolean(trainJob)}
         trainProgress={trainJob?.progress ?? null}
         estimatedRemainingSeconds={trainJob?.estimatedRemainingSeconds ?? null}
@@ -268,9 +250,12 @@ export default function ModellingConfig({
   onUpdate,
   upstreamColumns = [],
   activePane = "target",
+  onDraftIssuesChange,
 }: Props) {
   const { allNodes, edges, submodels, preamble } = useGraph()
   const nodeId = String(config._nodeId ?? "")
+  const setModellingPane = useUIStore((state) => state.setModellingPane)
+  const reviewPane = (pane: ModellingPane) => setModellingPane(nodeId, pane)
   const trainJob = useNodeResultsStore((state) => state.trainJobs[nodeId])
   const cachedResult = useNodeResultsStore((state) => state.trainResults[nodeId])
   const startTrainJob = useNodeResultsStore((state) => state.startTrainJob)
@@ -307,7 +292,6 @@ export default function ModellingConfig({
   const metrics = configField<string[]>(config, "metrics", task === "regression" ? ["gini", "rmse"] : ["auc", "logloss"])
   const paramsProjection = formatHyperparameters(
     params,
-    CATBOOST_DEFAULT_PARAMS,
     CATBOOST_RESERVED_PARAM_KEYS,
   )
   const paramDraft = paramDrafts[nodeId] ?? paramsProjection
@@ -321,7 +305,7 @@ export default function ModellingConfig({
   const searchSpaceDraft = searchSpaceDrafts[nodeId]
     ?? formatTuningSearchSpace(tuningSearchSpace as Record<string, unknown>)
   let paramDraftIssue: TrainingConfigurationIssue | null = null
-  if (algorithm === "catboost" && !tuning) {
+  if (algorithm === "catboost") {
     try {
       parseHyperparameters(
         paramDraft,
@@ -355,7 +339,14 @@ export default function ModellingConfig({
     ...(searchSpaceDraftIssue ? [searchSpaceDraftIssue] : []),
   ]
   const hasTrainingConfigurationIssues = validationIssues.length > 0
-  const validationMessages = validationIssues.map((issue) => issue.message)
+  const paramDraftMessage = paramDraftIssue?.message
+  const searchDraftMessage = searchSpaceDraftIssue?.message
+  useEffect(() => {
+    onDraftIssuesChange?.(nodeId, [
+      ...(paramDraftMessage ? [{ code: "catboost-params" as const, message: paramDraftMessage }] : []),
+      ...(searchDraftMessage ? [{ code: "tuning-config" as const, message: searchDraftMessage }] : []),
+    ])
+  }, [nodeId, onDraftIssuesChange, paramDraftMessage, searchDraftMessage])
 
   // Export settings do not change the trained model, so the stale check and
   // the RAM estimate follow the config without them.
@@ -376,16 +367,21 @@ export default function ModellingConfig({
     cachedResult,
     estimateEndpoint,
     { source: activeSource, structuralVersion },
-    { toastLabel: "RAM estimate failed" },
+    { toastLabel: "Training estimate failed" },
   )
   // A completed result is remembered per document so a browser reload can put
   // it back from the server; a result the server no longer holds is reported.
   const trainedResultExpired = useTrainedJobRestore(nodeId, cachedResult, Boolean(trainJob), graph)
   const onEvaluationChange = useCallback(
-    (nextEvaluation: Record<string, unknown>) => (
-      onUpdate("evaluation", nextEvaluation)
-    ),
-    [onUpdate],
+    (nextEvaluation: Record<string, unknown>) => {
+      const method = (nextEvaluation.validation as Record<string, unknown> | undefined)?.method
+      if (config.refit_on_development === false && method !== "single") {
+        onUpdate({ evaluation: nextEvaluation, refit_on_development: true })
+      } else {
+        onUpdate("evaluation", nextEvaluation)
+      }
+    },
+    [config.refit_on_development, onUpdate],
   )
   const onEstimateDispersion = useCallback(
     (param: DispersionParam) => runDispersionEstimate({
@@ -499,9 +495,15 @@ export default function ModellingConfig({
   const splitPane = (
     <SplitAndMetricsConfig
       columns={upstreamColumns}
+      rowLimit={typeof config.row_limit === "number" ? config.row_limit : null}
+      onRowLimitChange={(value) => onUpdate("row_limit", value)}
       evaluation={evaluation}
       onEvaluationChange={onEvaluationChange}
+      refitOnDevelopment={config.refit_on_development !== false}
+      onRefitOnDevelopmentChange={(value) => onUpdate("refit_on_development", value)}
+      tuningEnabled={Boolean(tuning)}
       preview={estimate.estimate?.evaluation_preview ?? null}
+      previewError={estimate.error?.startsWith("Evaluation preview failed:") ? estimate.error : null}
     />
   )
   const trainPane = (
@@ -511,7 +513,9 @@ export default function ModellingConfig({
       config={config}
       onUpdate={onUpdate}
       params={params}
-      validationMessages={validationMessages}
+      validationIssues={validationIssues}
+      columns={upstreamColumns}
+      onReviewPane={reviewPane}
       trainJob={trainJob}
       cachedResult={cachedResult}
       estimate={estimate}
@@ -556,9 +560,9 @@ export default function ModellingConfig({
     } else if (pane === "params") {
       paneBody = (
         <HyperparametersConfig
+          onReviewSplit={() => reviewPane("split")}
           algorithmLabel="CatBoost"
           params={params}
-          defaultParams={CATBOOST_DEFAULT_PARAMS}
           reservedKeys={CATBOOST_RESERVED_PARAM_KEYS}
           reservedKeysHelp={CATBOOST_RESERVED_PARAM_HELP}
           onUpdate={onUpdate}
@@ -578,9 +582,10 @@ export default function ModellingConfig({
     paneBody = (
       <>
         <GLMTargetConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} onEstimateDispersion={onEstimateDispersion} />
-        <GLMRegularizationConfig config={config} onUpdate={onUpdate} />
       </>
     )
+  } else if (algorithm === "glm" && pane === "params") {
+    paneBody = <GLMRegularizationConfig config={config} onUpdate={onUpdate} />
   } else if (algorithm === "glm" && pane === "features") {
     paneBody = (
       <>
@@ -591,7 +596,10 @@ export default function ModellingConfig({
   }
 
   return (
-    <div id={`modelling-${pane}-pane`} role="tabpanel" aria-labelledby={`modelling-${pane}-tab`} className="px-4 py-3 space-y-4">
+    <div key={nodeId} id={`modelling-${pane}-pane`} role="tabpanel" aria-labelledby={`modelling-${pane}-tab`} className="px-4 py-3 space-y-4">
+      {pane !== "train" && pane !== "split" && validationIssues.filter((issue) => trainingIssuePane(issue) === pane && issue.code !== "glm-elastic-net-l1-ratio" && issue !== paramDraftIssue && issue !== searchSpaceDraftIssue).map((issue) => (
+        <p key={issue.code} role="alert" className="rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: "var(--warning-border)", color: "var(--warning-strong)", background: "var(--warning-soft-subtle)" }}>{issue.message}</p>
+      ))}
       {paneBody}
     </div>
   )

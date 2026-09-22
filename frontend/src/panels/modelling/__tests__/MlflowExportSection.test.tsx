@@ -91,31 +91,25 @@ describe("MlflowExportSection", () => {
 
   // ── Destination line ───────────────────────────────────────────
 
-  it("renders the log action with the local folder beneath it when the node names no destination", () => {
+  it("renders the local log action without repeating the destination", () => {
     render(<MlflowExportSection {...makeProps()} />)
     expect(logButton()).toBeEnabled()
-    expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
-      "Destination: Local folder — C:/proj/mlruns",
-    )
+    expect(screen.queryByTestId("mlflow-export-destination")).toBeNull()
     expect(screen.queryByText(/adb\.example\.net/)).toBeNull()
   })
 
-  it("disables the action without an exportable job while still naming the destination", () => {
+  it("disables the action without an exportable job and omits the destination", () => {
     render(<MlflowExportSection {...makeProps({ trainJobId: null })} />)
     expect(logButton()).toBeDisabled()
     fireEvent.click(logButton())
     expect(mockLogToMlflow).not.toHaveBeenCalled()
-    expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
-      "Destination: Local folder — C:/proj/mlruns",
-    )
+    expect(screen.queryByTestId("mlflow-export-destination")).toBeNull()
     expect(screen.queryByRole("button", { name: "Configure MLflow" })).toBeNull()
   })
 
-  it("names the remote the node chose", () => {
+  it("omits repeated remote destination details", () => {
     render(<MlflowExportSection {...makeProps({ config: { mlflow_destination: "databricks" } })} />)
-    expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
-      "Destination: Databricks — https://adb.example.net",
-    )
+    expect(screen.queryByTestId("mlflow-export-destination")).toBeNull()
   })
 
   it("disables with the reason when the node's own destination is unconfigured", () => {
@@ -131,9 +125,7 @@ describe("MlflowExportSection", () => {
   it("stays enabled on the local folder when a remote is unconfigured", () => {
     render(<MlflowExportSection {...makeProps({ config: { mlflow_destination: "" } })} />)
     expect(logButton()).toBeEnabled()
-    expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
-      "Destination: Local folder — C:/proj/mlruns",
-    )
+    expect(screen.queryByTestId("mlflow-export-destination")).toBeNull()
   })
 
   it("disables the action with the reason and a Configure link when the package is missing", () => {

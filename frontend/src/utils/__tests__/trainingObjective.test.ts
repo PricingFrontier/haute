@@ -22,6 +22,18 @@ describe("trainingConfigurationIssues", () => {
     ])
   })
 
+  it.each([1, 2, 0, NaN, Infinity, "1.5"])("rejects invalid CatBoost Tweedie power %s", (variance_power) => {
+    expect(trainingConfigurationIssues({ algorithm: "catboost", target: "y", loss_function: "Tweedie", variance_power, evaluation }))
+      .toEqual([expect.objectContaining({ code: "catboost-tweedie-variance-power" })])
+  })
+
+  it.each([0.5, 0.8])("rejects validation plus final test consuming all rows (%s)", (size) => {
+    const issues = trainingConfigurationIssues({ algorithm: "catboost", target: "y", loss_function: "RMSE",
+      evaluation: { ...evaluation, validation: { method: "single", size }, test: { size: 0.5 } },
+    })
+    expect(issues).toEqual([expect.objectContaining({ code: "evaluation-config", message: expect.stringMatching(/below 100%/) })])
+  })
+
   it("reports conditional CatBoost Tweedie configuration", () => {
     expect(
       trainingConfigurationIssues({
@@ -86,10 +98,10 @@ describe("trainingConfigurationIssues", () => {
   })
 
   it.each([
-    [{}, ["folds", "selection rule", "seed"]],
-    [{ alpha: 0, cv_folds: 5, cv_selection: "min" }, ["seed"]],
-  ])("requires every cross-validation setting when the penalty is cross-validated %#", (settings, missing) => {
-    expect(trainingConfigurationIssues({
+    [{}, ["folds", "selection rule"]],
+    [{ alpha: 0, cv_folds: 5, cv_selection: "min" }, []],
+  ])("requires editable cross-validation settings while defaulting the hidden seed %#", (settings, missing) => {
+    const issues = trainingConfigurationIssues({
       algorithm: "glm",
       target: "loss",
       family: "poisson",
@@ -97,10 +109,11 @@ describe("trainingConfigurationIssues", () => {
       regularization: "ridge",
       evaluation,
       ...settings,
-    })).toEqual([{
+    })
+    expect(issues).toEqual(missing.length ? [{
       code: "glm-cross-validation",
       message: `Set the cross-validation ${missing.join(", ")} so the selected penalty is reproducible.`,
-    }])
+    }] : [])
   })
 
   it("refuses regularization with automatic splines and robust standard errors with invalid inference", () => {

@@ -1895,7 +1895,14 @@ class TestMlflowLogSuccess:
 
     @staticmethod
     @contextmanager
-    def _published(job_id: str, root: Path, tmp_path: Path, **result_overrides: object):
+    def _published(
+        job_id: str,
+        root: Path,
+        tmp_path: Path,
+        *,
+        config: dict[str, object] | None = None,
+        **result_overrides: object,
+    ):
         from haute.routes.modelling import _store
 
         model_path = _write_trained_model(tmp_path / job_id)
@@ -1907,7 +1914,7 @@ class TestMlflowLogSuccess:
             result=_completed_train_response(
                 job_id=job_id, model_path=str(model_path), **result_overrides
             ),
-            config={"algorithm": "catboost", "task": "regression", "target": "y"},
+            config=config or {"algorithm": "catboost", "task": "regression", "target": "y"},
             node_label="my_model",
         )
         try:
@@ -1950,6 +1957,39 @@ class TestMlflowLogSuccess:
         assert candidate.metrics["final_test_gini"] == 0.85
         assert candidate.tags["haute.job_id"] == "test_log"
         assert candidate.artifacts.model.parent.parent.parent == training_artifact_root
+
+    def test_fixed_catboost_logs_the_recorded_final_tree_count(
+        self, client, tmp_path, training_artifact_root
+    ):
+        log_result = SimpleNamespace(
+            backend="local",
+            experiment_name="my_model",
+            run_id="trees",
+            run_url=None,
+            tracking_uri="file:///tmp/mlruns",
+        )
+        with (
+            self._published(
+                "test_trees",
+                training_artifact_root,
+                tmp_path,
+                config={
+                    "algorithm": "catboost",
+                    "task": "regression",
+                    "target": "y",
+                    "params": {"n_estimators": 20, "depth": 3, "early_stopping_rounds": 5},
+                },
+                final_tree_count=7,
+            ),
+            patch("haute.modelling._mlflow_log.log_experiment", return_value=log_result) as m_log,
+        ):
+            resp = client.post("/api/modelling/mlflow/log", json={"job_id": "test_trees"})
+        assert resp.status_code == 200
+        candidate = m_log.call_args.kwargs["candidate"]
+        assert candidate.params["param_iterations"] == 7
+        assert candidate.params["param_depth"] == 3
+        assert "param_n_estimators" not in candidate.params
+        assert "param_early_stopping_rounds" not in candidate.params
 
     def test_mlflow_log_exception_returns_500(self, client, tmp_path, training_artifact_root):
         """If log_experiment raises, should return 500."""

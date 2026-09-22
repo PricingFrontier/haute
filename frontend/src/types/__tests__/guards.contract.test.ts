@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
+import { makeTrainResult } from "../../test-utils/factories"
 import {
   parseApplyOptimiserResponse,
   parsePreviewInputsResponse,
@@ -1642,6 +1643,27 @@ describe("API response guards", () => {
     expect(parsed.evaluation?.strategy).toBe("random")
     expect(() => parseTrainResponse({ ...fixture, metrics: { rmse: 1 } })).toThrow(/legacy/i)
     expect(() => parseTrainResponse({ ...fixture, cross_validation: {} })).toThrow(/legacy/i)
+  })
+
+  it("accepts a saved holdout validation fit without a final refit", () => {
+    const base = makeTrainResult()
+    const evaluation = base.evaluation!
+    const response = makeTrainResult({
+      final_test_rows: 0,
+      final_test_metrics: {},
+      diagnostic_metrics: { gini: 0.45, rmse: 0.12 },
+      diagnostics_set: "validation",
+      evaluation: {
+        ...evaluation,
+        refit_on_development: false,
+        fit_count: 1,
+        final_test_rows: 0,
+        summary: { ...evaluation.summary, test_rows: 0 },
+      },
+    })
+    const parsed = parseTrainResponse(response)
+    expect(parsed.evaluation?.fit_count).toBe(1)
+    expect(parsed.diagnostics_set).toBe("validation")
   })
 
   it("parses canonical tuning reports with weighted validation evidence", () => {

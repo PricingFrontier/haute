@@ -1057,15 +1057,16 @@ describe("NodePanel", () => {
     const rendered = renderPanel({ node: supported })
     const tablist = screen.getByRole("tablist", { name: "Modelling panes" })
 
-    expect(within(tablist).getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
-      "Target",
-      "Features",
-      "Params",
-      "Split",
-      "Train",
-      "Export",
+    expect(within(tablist).getAllByRole("tab").map((tab) => tab.id.replace("modelling-", "").replace("-tab", ""))).toEqual([
+      "target",
+      "features",
+      "params",
+      "split",
+      "train",
+      "export",
     ])
     expect(modellingConfigProps.at(-1)?.activePane).toBe("target")
+    expect(within(tablist).getByRole("tab", { name: /Parameters/ })).toBeInTheDocument()
 
     rendered.unmount()
     renderPanel({
@@ -1096,7 +1097,7 @@ describe("NodePanel", () => {
     expect(screen.queryByRole("tablist", { name: "Modelling panes" })).toBeNull()
   })
 
-  it.each([undefined, "params"] as const)("shows five GLM modelling panes and maps remembered %s to Target", (rememberedPane) => {
+  it.each([undefined, "params"] as const)("shows six GLM modelling panes and restores remembered %s", (rememberedPane) => {
     useUIStore.setState({
       modellingPanes: rememberedPane === undefined ? {} : { model_glm: rememberedPane },
     })
@@ -1115,11 +1116,12 @@ describe("NodePanel", () => {
     })
 
     const tablist = screen.getByRole("tablist", { name: "Modelling panes" })
-    expect(within(tablist).getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
-      "Target", "Features", "Split", "Train", "Export",
+    expect(within(tablist).getAllByRole("tab").map((tab) => tab.id.replace("modelling-", "").replace("-tab", ""))).toEqual([
+      "target", "features", "params", "split", "train", "export",
     ])
-    expect(within(tablist).getByRole("tab", { name: "Target" })).toHaveAttribute("aria-selected", "true")
-    expect(modellingConfigProps.at(-1)?.activePane).toBe("target")
+    expect(within(tablist).getByRole("tab", { name: /Parameters/ })).toBeInTheDocument()
+    expect(within(tablist).getByRole("tab", { name: rememberedPane === "params" ? /Parameters/ : "Target" })).toHaveAttribute("aria-selected", "true")
+    expect(modellingConfigProps.at(-1)?.activePane).toBe(rememberedPane ?? "target")
     expect(onUpdateNode).not.toHaveBeenCalled()
   })
 
@@ -1146,7 +1148,7 @@ describe("NodePanel", () => {
     expect(modellingConfigProps.at(-1)?.activePane).toBe("features")
   })
 
-  it("keeps every setup tab plain regardless of configuration completeness", () => {
+  it("marks incomplete setup tabs and leaves complete tabs clear", () => {
     const cases = [
       { algorithm: "catboost" },
       { algorithm: "glm", family: "poisson" },
@@ -1170,14 +1172,12 @@ describe("NodePanel", () => {
           },
         }),
       })
-      const panes = config.algorithm === "catboost"
-        ? ["Target", "Features", "Params", "Split"]
-        : ["Target", "Features", "Split"]
+      const panes = ["Target", "Features", "Parameters", "Split"]
       for (const pane of panes) {
-        expect(screen.getByRole("tab", { name: pane })).not.toHaveAccessibleDescription()
+        const tab = screen.getByRole("tab", { name: pane })
+        expect(tab).toHaveAccessibleName(expect.stringContaining(pane))
       }
-      expect(screen.queryByText("Needs attention")).not.toBeInTheDocument()
-      expect(modellingConfigProps.at(-1)).not.toHaveProperty("objectiveIssue")
+      expect(screen.getAllByText("Needs attention").length).toBeGreaterThan(0)
       rendered.unmount()
     })
   })

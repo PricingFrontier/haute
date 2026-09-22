@@ -19,6 +19,15 @@ afterEach(() => {
 })
 
 describe("useStaleConfigEstimate", () => {
+  it("preserves an actionable estimate failure detail", async () => {
+    const endpoint = vi.fn().mockRejectedValue(Object.assign(new Error("HTTP 422"), {
+      detail: "Evaluation preview failed: validation partition is empty",
+    }))
+    const { result } = renderHook(() => useStaleConfigEstimate<FakeEstimate>(
+      "node_1", configA, null, endpoint, { source: "live", structuralVersion: 1 },
+    ))
+    await waitFor(() => expect(result.current.error).toBe("Evaluation preview failed: validation partition is empty"))
+  })
   it("loads the estimate on mount and derives configHash and staleness", async () => {
     const endpoint = vi.fn().mockResolvedValue(sampleEstimate)
 

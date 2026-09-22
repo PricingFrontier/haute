@@ -366,6 +366,13 @@ describe("GLMRegularizationConfig", () => {
     expect(screen.getByRole("button", { name: "Elastic Net" })).toBeTruthy()
   })
 
+  it("uses the selected button without repeating the regularization type beside the heading", () => {
+    render(<GLMRegularizationConfig config={{ regularization: "ridge", cv_folds: 5, cv_selection: "min", cv_seed: 42 }} onUpdate={onUpdate} />)
+    expect(screen.getByRole("heading", { name: "Regularization" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Ridge" })).toHaveAttribute("aria-pressed", "true")
+    expect(screen.getByRole("button", { name: "Lasso" })).toHaveAttribute("aria-pressed", "false")
+  })
+
   it("choosing a regularization type writes visible cross-validation defaults only when absent", () => {
     const { unmount } = render(<GLMRegularizationConfig config={{}} onUpdate={onUpdate} />)
     fireEvent.click(screen.getByRole("button", { name: "Ridge" }))
@@ -376,13 +383,24 @@ describe("GLMRegularizationConfig", () => {
     expect(onUpdate).toHaveBeenLastCalledWith({ regularization: "lasso" })
   })
 
+  it("choosing Elastic Net stores a midpoint L1 ratio only when it is absent", () => {
+    const { unmount } = render(<GLMRegularizationConfig config={{}} onUpdate={onUpdate} />)
+    fireEvent.click(screen.getByRole("button", { name: "Elastic Net" }))
+    expect(onUpdate).toHaveBeenCalledWith({ regularization: "elastic_net", cv_folds: 5, cv_selection: "min", cv_seed: 42, l1_ratio: 0.5 })
+    unmount()
+
+    render(<GLMRegularizationConfig config={{ regularization: "ridge", l1_ratio: 0.3, cv_folds: 5, cv_selection: "min", cv_seed: 42 }} onUpdate={onUpdate} />)
+    fireEvent.click(screen.getByRole("button", { name: "Elastic Net" }))
+    expect(onUpdate).toHaveBeenLastCalledWith({ regularization: "elastic_net" })
+  })
+
   it("clicking None clears regularization", () => {
     render(<GLMRegularizationConfig config={{ regularization: "ridge" }} onUpdate={onUpdate} />)
     fireEvent.click(screen.getByRole("button", { name: "None" }))
     expect(onUpdate).toHaveBeenCalledWith("regularization", null)
   })
 
-  it("cross-validated mode edits folds, selection rule, and seed", () => {
+  it("cross-validated mode edits folds and selection rule while keeping seed hidden", () => {
     render(<GLMRegularizationConfig config={{ regularization: "ridge", cv_folds: 5, cv_selection: "min", cv_seed: 42 }} onUpdate={onUpdate} />)
     expect(screen.getByRole("button", { name: "Cross-validated" })).toHaveAttribute("aria-pressed", "true")
     expect(screen.queryByRole("spinbutton", { name: "Regularization alpha" })).toBeNull()
@@ -397,10 +415,8 @@ describe("GLMRegularizationConfig", () => {
     expect(onUpdate).toHaveBeenCalledWith("cv_folds", 10)
     fireEvent.change(screen.getByRole("combobox", { name: "Cross-validation selection rule" }), { target: { value: "1se" } })
     expect(onUpdate).toHaveBeenCalledWith("cv_selection", "1se")
-    const seed = screen.getByRole("spinbutton", { name: "Cross-validation seed" })
-    fireEvent.change(seed, { target: { value: "7" } })
-    fireEvent.blur(seed)
-    expect(onUpdate).toHaveBeenCalledWith("cv_seed", 7)
+    expect(screen.queryByRole("spinbutton", { name: "Cross-validation seed" })).toBeNull()
+    expect(screen.queryByText("Seed")).toBeNull()
     fireEvent.click(screen.getByRole("button", { name: "Fixed" }))
     expect(onUpdate).toHaveBeenCalledWith("alpha", 1)
   })
@@ -477,32 +493,25 @@ describe("GLMRegularizationConfig", () => {
     expect(screen.getAllByText(/L1 ratio/).length).toBeGreaterThan(0)
   })
 
-  it("elastic_net gates the L1 ratio until it is set explicitly", () => {
+  it("shows the L1 ratio slider directly for an older Elastic Net config with no ratio", () => {
     render(<GLMRegularizationConfig config={{ regularization: "elastic_net" }} onUpdate={onUpdate} />)
-    // Unset: the mix must be chosen — a prompt and both collapse shortcuts.
-    expect(screen.getByRole("button", { name: /Set L1 ratio mix/ })).toBeTruthy()
-    expect(screen.getByRole("button", { name: /Fit Ridge \(0\)/ })).toBeTruthy()
-    expect(screen.getByRole("button", { name: /Fit LASSO \(1\)/ })).toBeTruthy()
+    const slider = screen.getByRole("slider", { name: "L1 ratio" })
+    expect(slider).toHaveValue("0.5")
+    expect(screen.getByText("Not set")).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /Set L1 ratio|Fit Ridge|Fit LASSO/ })).toBeNull()
+    fireEvent.change(slider, { target: { value: "0.35" } })
+    expect(onUpdate).toHaveBeenCalledWith("l1_ratio", 0.35)
   })
 
-  it("Fit Ridge / Fit LASSO shortcuts set an explicit L1 ratio", () => {
-    render(<GLMRegularizationConfig config={{ regularization: "elastic_net" }} onUpdate={onUpdate} />)
-    fireEvent.click(screen.getByRole("button", { name: /Fit Ridge \(0\)/ }))
-    expect(onUpdate).toHaveBeenCalledWith("l1_ratio", 0)
-    fireEvent.click(screen.getByRole("button", { name: /Fit LASSO \(1\)/ }))
-    expect(onUpdate).toHaveBeenCalledWith("l1_ratio", 1)
-  })
-
-  it("a set L1 ratio shows the mix slider, not the prompt", () => {
+  it("a set L1 ratio shows only the labeled slider and value", () => {
     render(<GLMRegularizationConfig config={{ regularization: "elastic_net", l1_ratio: 0.3 }} onUpdate={onUpdate} />)
     expect(screen.queryByRole("button", { name: /Set L1 ratio mix/ })).toBeNull()
+    expect(screen.getByRole("slider", { name: "L1 ratio" })).toHaveValue("0.3")
     expect(screen.getByText("0.30")).toBeTruthy()
+    expect(screen.queryByText(/Penalty-selection CV chooses/)).toBeNull()
+    expect(screen.queryByText(/L1 ratio \(0=Ridge/)).toBeNull()
   })
 
-  it("shows active badge when regularization is set", () => {
-    render(<GLMRegularizationConfig config={{ regularization: "lasso" }} onUpdate={onUpdate} />)
-    expect(screen.getByText("lasso")).toBeTruthy()
-  })
 })
 
 // ═════════════════════════════════════════════════════════════════
@@ -842,7 +851,7 @@ describe("ModellingConfig (GLM routing)", () => {
     }
   })
 
-  it("GLM config routes Rustystats target settings and regularization to the Target pane", () => {
+  it("GLM config separates target, parameters and feature settings", () => {
     const config = {
       _nodeId: "n1",
       algorithm: "glm",
@@ -861,8 +870,14 @@ describe("ModellingConfig (GLM routing)", () => {
       </GraphProvider>,
     )
     expect(screen.getByLabelText("Selected algorithm")).toHaveTextContent(/^Algorithm Rustystats$/)
-    expect(screen.getByText("Target & Weight")).toBeTruthy()
+    expect(screen.getByText("Target and objective")).toBeTruthy()
     expect(screen.getByText("Family")).toBeTruthy()
+    expect(screen.queryByText("Regularization")).toBeNull()
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <ModellingConfig config={config} onUpdate={vi.fn()} upstreamColumns={defaultColumns} activePane="params" />
+      </GraphProvider>,
+    )
     expect(screen.getByText("Regularization")).toBeTruthy()
     expect(screen.getByRole("button", { name: "Ridge" })).toBeVisible()
     expect(screen.queryByText("Fit all with defaults")).toBeNull()
@@ -906,7 +921,7 @@ describe("ModellingConfig (GLM routing)", () => {
         />
       </GraphProvider>,
     )
-    expect(screen.getByText("How is the data structured?")).toBeTruthy()
+    expect(screen.getByText("Split strategy")).toBeTruthy()
     expect(screen.queryByRole("button", { name: /Train Model/ })).toBeNull()
 
     rerender(

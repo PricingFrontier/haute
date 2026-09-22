@@ -9,6 +9,8 @@
  * never reads or writes node config itself, and it never rewrites an
  * unconfigured or unrecognised stored value — the only store mutations it
  * makes are the inventory's own `fetchMlflow`/`invalidateMlflow`.
+ * Callers may hide a successful resolved location when the surrounding UI
+ * already provides that context; unavailable details stay visible.
  *
  * Per `specs/frontend-shared/low-level.md` ("MLflow destination selector").
  */
@@ -36,6 +38,8 @@ export interface MlflowDestinationSelectorProps {
   disabled?: boolean
   /** Radio-group `name`, so two mounted selectors stay independent. */
   idPrefix?: string
+  /** Hide a successful resolved location when the caller already shows it. */
+  showDestinationDetails?: boolean
 }
 
 /** Light colours come from theme tokens only — never a literal. */
@@ -73,6 +77,7 @@ export default function MlflowDestinationSelector({
   onChange,
   disabled = false,
   idPrefix = "mlflow-destination",
+  showDestinationDetails = true,
 }: MlflowDestinationSelectorProps) {
   const state = useMlflowDestinations()
   const fetchMlflow = useSettingsStore((s) => s.fetchMlflow)
@@ -170,14 +175,18 @@ export default function MlflowDestinationSelector({
         })}
       </div>
 
-      <div className="flex flex-wrap items-center gap-1.5">
-        <p
-          data-testid="mlflow-destination-resolved"
-          className="min-w-0 flex-1 break-all text-[10px]"
-          style={{ color: "var(--text-muted)" }}
-        >
-          {resolved}
-        </p>
+      <div
+        className={`flex flex-wrap items-center gap-1.5${showDestinationDetails || !availability.available ? "" : " justify-end"}`}
+      >
+        {(showDestinationDetails || !availability.available) && (
+          <p
+            data-testid="mlflow-destination-resolved"
+            className="min-w-0 flex-1 break-all text-[10px]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            {resolved}
+          </p>
+        )}
         <button
           type="button"
           aria-label="Re-check MLflow connections"

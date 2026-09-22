@@ -136,6 +136,7 @@ from haute.routes._training_preparation import (
     _training_required_columns_by_node,
     _training_sink_exclusions,
     create_training_parquet_path,
+    estimate_training_memory,
     preparation_failure_outcome,
     prepare_training_data_worker,
     resolve_training_input_schema,
@@ -1321,21 +1322,15 @@ class TrainService:
 
         Returns (ram_warning, row_limit, total_source_rows, probe_columns).
         """
-        from haute.executor import _build_node_fn
-
         ram_warning: str | None = None
         total_source_rows: int | None = None
         probe_columns: int = 0
 
         try:
-            from haute._ram_estimate import estimate_safe_training_rows
-
             self._store.update_job(job_id, message="Estimating memory requirements")
-            ram_est = estimate_safe_training_rows(
+            ram_est = estimate_training_memory(
                 graph,
                 node_id,
-                _build_node_fn,
-                preamble_ns=preamble_ns,
                 source=source,
             )
             row_limit = ram_est.safe_row_limit

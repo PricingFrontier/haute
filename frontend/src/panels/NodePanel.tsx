@@ -27,6 +27,7 @@ import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDoc
 import { recoverySummaryKey, useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
 import { buildNodeDataCacheIdentity } from "./dataPointIdentity"
 import { modellingPanesFor, resolveModellingPane } from "./modelling/modellingPanes"
+import { trainingConfigurationIssues, trainingIssuePane, type TrainingConfigurationIssue } from "../utils/trainingObjective"
 import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import { useGraph } from "./useGraph"
@@ -1386,6 +1387,10 @@ function NodePanelContent({
   const rememberedExplorePane = useUIStore((s) => s.explorePanes[node.id])
   const setExplorePane = useUIStore((s) => s.setExplorePane)
   const rememberedModellingPane = useUIStore((s) => s.modellingPanes[node.id])
+  const [modellingDraftIssues, setModellingDraftIssues] = useState<{ nodeId: string; issues: TrainingConfigurationIssue[] }>({ nodeId: "", issues: [] })
+  const onModellingDraftIssuesChange = useCallback((nodeId: string, issues: TrainingConfigurationIssue[]) => {
+    setModellingDraftIssues({ nodeId, issues })
+  }, [])
   const setModellingPane = useUIStore((s) => s.setModellingPane)
   const hasActiveTrainJob = useNodeResultsStore((s) => Boolean(s.trainJobs[node.id]))
   const activeSource = useSettingsStore((s) => s.activeSource)
@@ -1551,11 +1556,17 @@ function NodePanelContent({
   const modellingPanes = modellingPanesFor(algorithm)
   const showModellingPanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.MODELLING && modellingPanes.length > 0
   const activeModellingPane = showModellingPanes ? resolveModellingPane(algorithm, rememberedModellingPane) : "target"
+  const modellingIssues = showModellingPanes ? [
+    ...trainingConfigurationIssues(config),
+    ...(modellingDraftIssues.nodeId === node.id ? modellingDraftIssues.issues : []),
+  ] : []
   const modellingTabs = modellingPanes.map((pane) => ({
     ...pane,
     indicator: pane.key === "train" && hasActiveTrainJob
       ? { kind: "active" as const, label: "Training is running" }
-      : undefined,
+      : modellingIssues.some((issue) => trainingIssuePane(issue) === pane.key)
+        ? { kind: "warning" as const, label: `${pane.label} needs attention`, compact: true }
+        : undefined,
   }))
 
   const accentColor = NODE_TYPE_META[nodeType as NodeTypeValue]?.color ?? "var(--accent)"
@@ -1581,6 +1592,7 @@ function NodePanelContent({
       pivotColumns={pivotColumns}
       activeExplorePane={activeExplorePane}
       activeModellingPane={activeModellingPane}
+      onModellingDraftIssuesChange={onModellingDraftIssuesChange}
       onDeleteEdge={onDeleteEdge}
       onDeleteSubmodelInputPort={
         readOnly || documentReadOnly ? undefined : onDeleteSubmodelInputPort

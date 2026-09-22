@@ -27,6 +27,7 @@ import {
 } from "./LazyNodeEditors"
 import type { LoadPivotFilterMembers } from "./editors/ExplorePivotsConfig"
 import type { InputSource, OnReplaceConfig, OnUpdateConfig, SimpleNode } from "./editors"
+import type { TrainingConfigurationIssue } from "../utils/trainingObjective"
 
 type Column = { name: string; dtype: string }
 
@@ -50,6 +51,7 @@ export type NodeConfigEditorProps = {
   pivotColumns: Column[]
   activeExplorePane: ExplorePane
   activeModellingPane: ModellingPane
+  onModellingDraftIssuesChange?: (nodeId: string, issues: TrainingConfigurationIssue[]) => void
   onDeleteEdge?: (edgeId: string) => void
   onDeleteSubmodelInputPort?: (portName: string) => void
   onSwapEdgeJoinInputs?: (nodeId: string) => void
@@ -77,6 +79,7 @@ export function NodeConfigEditor({
   pivotColumns,
   activeExplorePane,
   activeModellingPane,
+  onModellingDraftIssuesChange,
   onDeleteEdge,
   onDeleteSubmodelInputPort,
   onSwapEdgeJoinInputs,
@@ -150,7 +153,7 @@ export function NodeConfigEditor({
       return <ModelScoreEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} accentColor={accentColor} />
 
     case NODE_TYPES.MODELLING:
-      return <ModellingConfig config={configWithNodeId} onUpdate={onUpdateConfig} upstreamColumns={effectiveColumns} activePane={activeModellingPane} />
+      return <ModellingConfig config={configWithNodeId} onUpdate={onUpdateConfig} upstreamColumns={effectiveColumns} activePane={activeModellingPane} onDraftIssuesChange={onModellingDraftIssuesChange} />
 
     case NODE_TYPES.OPTIMISER:
       return <OptimiserConfig config={configWithNodeId} onUpdate={onUpdateConfig} upstreamColumns={effectiveColumns} accentColor={accentColor} deferColumnFetch={selectedPreviewLoading} />

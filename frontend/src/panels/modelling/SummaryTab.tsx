@@ -168,7 +168,7 @@ function MetricsList({
 
 function validationLabel(method: "none" | "single" | "cross_validation", count: number): string {
   if (method === "none") return "No validation"
-  if (method === "single") return "Single validation"
+  if (method === "single") return "Holdout validation"
   return `${count}-fold cross-validation`
 }
 
@@ -224,7 +224,9 @@ function SelectionMetricsTable({ metrics }: { metrics: Record<string, Evaluation
 export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: SummaryTabProps) {
   const featuresCount = result.features?.length ?? result.feature_importance.length
   const catFeaturesCount = result.cat_features?.length ?? 0
-  const diagnosticsLabel = result.diagnostics_set === "final_test" ? "Final test" : "Development"
+  const diagnosticsLabel = result.diagnostics_set === "final_test"
+    ? "Test"
+    : result.diagnostics_set === "validation" ? "Validation" : "Training"
   const diagnosticsErrors = result.diagnostics_errors ?? []
   const evaluation = result.evaluation
   const tuning = result.tuning
@@ -308,15 +310,15 @@ export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: Summ
 
       {result.final_test_rows === 0 && (
         <p className="text-[12px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
-          No final test was reserved for this run.
+          No test set was reserved for this run.
         </p>
       )}
 
       <div className="grid gap-3" style={CARD_GRID_STYLE}>
         <MetricsList
-          label="Final-test metrics"
+          label="Test metrics"
           metrics={result.final_test_metrics}
-          description="Performance on the untouched final test."
+          description="Performance on the untouched test set."
           icon={Target}
         />
         <MetricsList
@@ -324,8 +326,10 @@ export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: Summ
           metrics={result.diagnostic_metrics}
           description={
             result.diagnostics_set === "final_test"
-              ? "Diagnostic measures evaluated on the final test."
-              : "Diagnostics on development data, not held-out performance."
+              ? "Diagnostic measures evaluated on the test set."
+              : result.diagnostics_set === "validation"
+                ? "Diagnostic measures evaluated on the validation set."
+              : "Diagnostics on the fitted training data; these are in-sample metrics."
           }
           icon={Activity}
         />
@@ -339,9 +343,13 @@ export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: Summ
           >
             {(
               [
-                ["Development rows", result.development_rows.toLocaleString()],
+                ["Training rows", (
+                  evaluation?.refit_on_development === false
+                    ? evaluation.selection_fits[0].train_rows
+                    : result.development_rows
+                ).toLocaleString()],
                 ...(result.final_test_rows > 0
-                  ? [["Final test rows", result.final_test_rows.toLocaleString()]]
+                  ? [["Test rows", result.final_test_rows.toLocaleString()]]
                   : []),
                 ["Features", String(featuresCount)],
                 ["Categorical features", String(catFeaturesCount)],
@@ -352,11 +360,11 @@ export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: Summ
                 ...(evaluation
                   ? [
                       [
-                        "Data structure",
+                        "Split strategy",
                         {
-                          random: "Random rows",
-                          group: "Keep entities together",
-                          temporal: "Respect time order",
+                          random: "Random split",
+                          group: "Group split",
+                          temporal: "Time-based split",
                         }[evaluation.strategy],
                       ],
                       [
@@ -470,7 +478,7 @@ export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: Summ
               title="Candidate selection"
               ariaLabel="Candidate selection results"
               icon={ChartNoAxesCombined}
-              description="Validation results used to select the model, separate from final-test performance."
+              description="Validation results used to select the model, separate from test performance."
             >
               <p className="text-xs" style={{ color: "var(--text-primary)" }}>
                 {validationLabel(evaluation.validation_method, evaluation.validation_fit_count)} ·{" "}
@@ -485,7 +493,7 @@ export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: Summ
                   <thead>
                     <tr style={{ color: "var(--text-muted)" }}>
                       <th className="py-1 pr-3 text-left font-medium">Fit</th>
-                      <th className="px-2 py-1 text-right font-medium">Development rows</th>
+                      <th className="px-2 py-1 text-right font-medium">Training rows</th>
                       <th className="px-2 py-1 text-right font-medium">Validation rows</th>
                       {selectionMetricNames.map((name) => (
                         <th key={name} className="pl-2 py-1 text-right font-medium">

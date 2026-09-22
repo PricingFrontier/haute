@@ -57,7 +57,9 @@ from haute.modelling._train_config import (
     validate_glm_params,
 )
 from haute.modelling._tuning import (
+    CATBOOST_ITERATION_PARAM_KEYS,
     TUNING_SCHEMA_VERSION,
+    VALIDATION_ONLY_CATBOOST_PARAMS,
     TuningConfig,
     TuningPlanArtifact,
     TuningTrialResult,
@@ -307,6 +309,7 @@ class TrainResult:
     final_test_metrics: dict[str, float] = field(default_factory=dict)
     evaluation: dict[str, Any] | None = None
     tuning: dict[str, Any] | None = None
+    final_tree_count: int | None = None
 
 
 @dataclass
@@ -450,6 +453,7 @@ class TrainingJob:
         categorical_levels: Mapping[str, Iterable[str | None]] | None = None,
         evaluation: Mapping[str, Any] | EvaluationConfig | None = None,
         tuning: Mapping[str, Any] | TuningConfig | None = None,
+        refit_on_development: bool = True,
         evaluation_plan: EvaluationPlan | None = None,
         fit_index: int | None = None,
         plan_source_sha256: str | None = None,
@@ -508,6 +512,13 @@ class TrainingJob:
             self.evaluation = evaluation
         else:
             self.evaluation = EvaluationConfig.from_plain_data(evaluation)
+        if not isinstance(refit_on_development, bool):
+            raise HauteValidationError("refit_on_development must be a boolean")
+        if not refit_on_development and (
+            self.evaluation is None or self.evaluation.validation["method"] != "single"
+        ):
+            raise HauteValidationError("Skipping the final refit requires holdout validation")
+        self.refit_on_development = refit_on_development
         if mlflow_experiment and self.evaluation is None:
             raise HauteValidationError(
                 "mlflow_experiment requires an explicit evaluation contract: MLflow "
@@ -527,6 +538,8 @@ class TrainingJob:
                 evaluation=self.evaluation,
                 configured_metrics=self.metrics,
             )
+        if self.tuning is not None and not self.refit_on_development:
+            raise HauteValidationError("Parameter tuning requires a final refit")
         if evaluation_plan is not None and self.evaluation is None:
             raise HauteValidationError("evaluation_plan requires an explicit evaluation contract")
         if evaluation_plan is None and fit_index is not None:
@@ -727,6 +740,10 @@ class TrainingJob:
                 glm_regularization=metrics_result.glm_regularization,
                 diagnostics_errors=metrics_result.diagnostics_errors,
             )
+            if self.algorithm == "catboost":
+                tree_count = getattr(train_result.model, "tree_count_", None)
+                if isinstance(tree_count, int) and tree_count > 0:
+                    result.final_tree_count = tree_count
 
             # An internal final evaluation fit must attach the persisted
             # evaluation/tuning report before the one MLflow handoff.
@@ -841,6 +858,7 @@ class TrainingJob:
             categorical_levels=self._declared_categorical_levels,
             evaluation=self.evaluation,
             tuning=self.tuning,
+            refit_on_development=self.refit_on_development,
             evaluation_plan=plan,
             fit_index=fit_index,
             plan_source_sha256=source_sha256,
@@ -1272,13 +1290,7 @@ class TrainingJob:
             iteration_ceiling=iteration_ceiling,
         )
         final_params = copy.deepcopy(dict(winner.resolved_params))
-        for key in (
-            "early_stopping_rounds",
-            "od_pval",
-            "od_type",
-            "od_wait",
-            "use_best_model",
-        ):
+        for key in VALIDATION_ONLY_CATBOOST_PARAMS:
             final_params.pop(key, None)
         final_params["iterations"] = final_tree_count
         tuning_report = build_tuning_report(
@@ -1405,7 +1417,8 @@ class TrainingJob:
                 completed_before_final = self.tuning.trial_fit_count
             else:
                 ordinary_fits: list[EvaluationFitResult] = []
-                total = selection_fit_count + 1
+                selected_result: TrainResult | None = None
+                total = selection_fit_count + int(self.refit_on_development)
                 completed_before_final = selection_fit_count
                 with tempfile.TemporaryDirectory(prefix="haute_evaluation_fits_") as root:
                     for fit_index in range(selection_fit_count):
@@ -1414,9 +1427,13 @@ class TrainingJob:
                             fit_index / total,
                         )
                         child = self._new_evaluation_job(
-                            name=f"{self.name}.evaluation-{fit_index}",
+                            name=(
+                                f"{self.name}.evaluation-{fit_index}"
+                                if self.refit_on_development
+                                else self.name
+                            ),
                             data=prepared.data_path,
-                            output_dir=root,
+                            output_dir=root if self.refit_on_development else self.output_dir,
                             plan=plan,
                             fit_index=fit_index,
                             mlflow_experiment=None,
@@ -1432,78 +1449,139 @@ class TrainingJob:
                                 (fit_index + fraction) / total,
                             )
 
-                        ordinary_fits.append(
-                            child.run_evaluation_fit(
+                        if self.refit_on_development:
+                            ordinary_fits.append(
+                                child.run_evaluation_fit(
+                                    progress=fit_progress,
+                                    check_cancelled=check_cancelled,
+                                    execution_context=execution_context,
+                                )
+                            )
+                        else:
+                            selected_result = child.run(
                                 progress=fit_progress,
+                                on_iteration=on_iteration,
                                 check_cancelled=check_cancelled,
                                 execution_context=execution_context,
                             )
-                        )
+                            if (
+                                self.algorithm == "catboost"
+                                and selected_result.final_tree_count is None
+                            ):
+                                raise HauteValidationError(
+                                    "CatBoost validation fit did not report its trained tree count"
+                                )
+                            ordinary_fits.append(
+                                EvaluationFitResult(
+                                    1,
+                                    fit_index,
+                                    selected_result.train_rows,
+                                    selected_result.validation_rows,
+                                    selected_result.metrics,
+                                    selected_result.best_iteration,
+                                )
+                            )
                 fits = tuple(ordinary_fits)
                 final_params = copy.deepcopy(self.params)
+                if self.algorithm == "catboost" and fits and self.refit_on_development:
+                    if any(fit.best_iteration is None for fit in fits):
+                        raise HauteValidationError(
+                            "CatBoost validation fits did not report best_iteration"
+                        )
+                    iteration_ceiling = next(
+                        (
+                            self.params[key]
+                            for key in CATBOOST_ITERATION_PARAM_KEYS
+                            if key in self.params
+                        ),
+                        1000,
+                    )
+                    final_tree_count = validation_weighted_tree_count(
+                        best_iterations=[
+                            fit.best_iteration for fit in fits if fit.best_iteration is not None
+                        ],
+                        validation_rows=[fit.validation_rows for fit in fits],
+                        iteration_ceiling=iteration_ceiling,
+                    )
+                    for key in CATBOOST_ITERATION_PARAM_KEYS:
+                        final_params.pop(key, None)
+                    final_params["iterations"] = final_tree_count
+                    for key in VALIDATION_ONLY_CATBOOST_PARAMS:
+                        final_params.pop(key, None)
             artifact = EvaluationResultsArtifact(1, plan_digest, tuple(fits))
             save_evaluation_results(artifact, results_path)
             created.append(results_path)
             results = load_evaluation_results(results_path, plan_sha256=plan_digest)
             results_digest = evaluation_file_sha256(results_path)
             aggregate = aggregate_evaluation_results(
-                plan, results, self.metrics, results_sha256=results_digest
+                plan, results, self.metrics, results_sha256=results_digest, fit_count=total
             )
             save_evaluation_report(aggregate, report_path)
             created.append(report_path)
             aggregate = load_evaluation_report(report_path)
-            final_source_digest = evaluation_file_sha256(prepared.data_path)
-            if final_source_digest != plan.source_sha256:
-                raise HauteValidationError("evaluation source changed before final fit")
-            report("Evaluation: final fit", completed_before_final / total)
-            if self.tuning is not None and on_tuning_progress is not None:
-                on_tuning_progress(
-                    {
-                        "phase": "final_fit",
-                        "trial_index": None,
-                        "trial_count": self.tuning.trial_count,
-                        "fold_index": None,
-                        "fold_count": self.tuning.validation_fit_count,
-                        "completed_fits": completed_before_final,
-                        "total_fits": total,
-                        "best_objective": (
-                            tuning_response["winner_objective"]
-                            if tuning_response is not None
-                            else None
-                        ),
-                    }
+            if self.refit_on_development:
+                final_source_digest = evaluation_file_sha256(prepared.data_path)
+                if final_source_digest != plan.source_sha256:
+                    raise HauteValidationError("evaluation source changed before final fit")
+                report("Evaluation: final fit", completed_before_final / total)
+                if self.tuning is not None and on_tuning_progress is not None:
+                    on_tuning_progress(
+                        {
+                            "phase": "final_fit",
+                            "trial_index": None,
+                            "trial_count": self.tuning.trial_count,
+                            "fold_index": None,
+                            "fold_count": self.tuning.validation_fit_count,
+                            "completed_fits": completed_before_final,
+                            "total_fits": total,
+                            "best_objective": (
+                                tuning_response["winner_objective"]
+                                if tuning_response is not None
+                                else None
+                            ),
+                        }
+                    )
+                final = self._new_evaluation_job(
+                    name=self.name,
+                    data=prepared.data_path,
+                    output_dir=self.output_dir,
+                    plan=plan,
+                    fit_index=None,
+                    # The outer orchestration logs exactly once after attaching
+                    # evaluation/tuning reports and canonical final-test labels.
+                    mlflow_experiment=None,
+                    params=final_params,
+                    source_sha256=final_source_digest,
                 )
-            final = self._new_evaluation_job(
-                name=self.name,
-                data=prepared.data_path,
-                output_dir=self.output_dir,
-                plan=plan,
-                fit_index=None,
-                # The outer orchestration logs exactly once after attaching
-                # evaluation/tuning reports and canonical final-test labels.
-                mlflow_experiment=None,
-                params=final_params,
-                source_sha256=final_source_digest,
-            )
-            result = final.run(
-                progress=lambda message, fraction: report(
-                    f"Evaluation: final fit: {message}",
-                    (completed_before_final + fraction) / total,
-                ),
-                on_iteration=on_iteration,
-                check_cancelled=check_cancelled,
-                execution_context=execution_context,
-            )
+                result = final.run(
+                    progress=lambda message, fraction: report(
+                        f"Evaluation: final fit: {message}",
+                        (completed_before_final + fraction) / total,
+                    ),
+                    on_iteration=on_iteration,
+                    check_cancelled=check_cancelled,
+                    execution_context=execution_context,
+                )
+            else:
+                assert selected_result is not None
+                result = selected_result
             result.development_rows = len(plan.development_positions)
             result.final_test_rows = len(plan.test_positions)
             result.final_test_metrics = dict(result.holdout_metrics) if plan.test_positions else {}
-            result.diagnostics_set = "final_test" if plan.test_positions else "development"
+            result.diagnostics_set = (
+                "final_test"
+                if plan.test_positions
+                else "development"
+                if self.refit_on_development
+                else "validation"
+            )
             result.evaluation = {
                 "schema_version": 1,
                 "strategy": self.evaluation.strategy,
                 "validation_method": self.evaluation.validation["method"],
                 "validation_fit_count": selection_fit_count,
                 "fit_count": total,
+                "refit_on_development": self.refit_on_development,
                 "development_rows": len(plan.development_positions),
                 "final_test_rows": len(plan.test_positions),
                 "selection_fits": [fit.to_plain_data() for fit in results.fits],
@@ -1518,6 +1596,8 @@ class TrainingJob:
                 "summary": dict(plan.summary),
             }
             result.tuning = tuning_response
+            if self.algorithm == "catboost" and selection_fit_count and self.refit_on_development:
+                result.final_tree_count = final_params["iterations"]
             if self.tuning is not None and on_tuning_progress is not None:
                 on_tuning_progress(
                     {
@@ -1543,6 +1623,7 @@ class TrainingJob:
                 ):
                     self._log_to_mlflow(
                         result,
+                        final_params=final_params,
                         check_cancelled=lambda: checkpoint("evaluation_mlflow_checkpoint"),
                     )
             report("Done", 1.0)
@@ -1796,7 +1877,12 @@ class TrainingJob:
                 mask = pl.Series("_partition", self.evaluation_plan.final_mask())
             else:
                 mask = pl.Series(
-                    "_partition", self.evaluation_plan.selection_mask(self.evaluation_fit_index)
+                    "_partition",
+                    (
+                        self.evaluation_plan.selection_mask(self.evaluation_fit_index)
+                        if self.refit_on_development
+                        else self.evaluation_plan.saved_selection_mask(self.evaluation_fit_index)
+                    ),
                 )
         else:
             # Compute mask -- for temporal/group we need a small scan
@@ -2688,6 +2774,7 @@ class TrainingJob:
         self,
         result: TrainResult,
         *,
+        final_params: Mapping[str, Any] | None = None,
         check_cancelled: Callable[[], None] | None = None,
     ) -> None:
         """Log this scripted run to MLflow as a contracted candidate run."""
@@ -2746,9 +2833,12 @@ class TrainingJob:
                     "tuning_report": Path(result.tuning["report_path"]),
                 }
             )
-        final_params = (
-            dict(result.tuning["final_params"]) if result.tuning is not None else self.params
-        )
+        if final_params is not None:
+            logged_final_params = dict(final_params)
+        elif result.tuning is not None:
+            logged_final_params = dict(result.tuning["final_params"])
+        else:
+            logged_final_params = self.params
         assert self.evaluation is not None  # result.evaluation implies the contract
         candidate = build_candidate_run(
             provenance=capture_provenance(
@@ -2763,9 +2853,9 @@ class TrainingJob:
             validation_method=self.evaluation.validation["method"],
             evaluation_config=self.evaluation.to_plain_data(),
             evaluation_plan_sha256=str(result.evaluation["plan_sha256"]),
-            final_params=final_params,
+            final_params=logged_final_params,
             final_test_metrics=result.final_test_metrics,
-            development_metrics={} if result.final_test_metrics else result.metrics,
+            development_metrics=(result.metrics if result.diagnostics_set == "development" else {}),
             diagnostics=diagnostics,
             development_rows=result.development_rows,
             final_test_rows=result.final_test_rows,

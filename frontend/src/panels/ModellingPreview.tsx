@@ -275,16 +275,18 @@ export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
           style={{ borderColor: "var(--border)", color: "var(--text-secondary)" }}
         >
           <span>
-            Diagnostics: {result.diagnostics_set === "final_test" ? "Final test" : "Development"} ·{" "}
+            Diagnostics: {result.diagnostics_set === "final_test" ? "Test" : result.diagnostics_set === "validation" ? "Validation" : "Training"} ·{" "}
             {(result.diagnostics_set === "final_test"
               ? result.final_test_rows
+              : result.diagnostics_set === "validation"
+                ? result.evaluation!.selection_fits[0].validation_rows
               : result.development_rows
             ).toLocaleString()}{" "}
             rows
           </span>
           {result.diagnostics_set === "development" && (
             <span style={{ color: "var(--warning)" }}>
-              Development diagnostics are not held-out performance.
+              Training diagnostics are in-sample performance.
             </span>
           )}
         </div>

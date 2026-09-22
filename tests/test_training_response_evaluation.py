@@ -107,6 +107,17 @@ def test_completed_response_uses_only_canonical_result_labels() -> None:
         assert legacy not in dumped
 
 
+def test_completed_response_preserves_final_tree_count() -> None:
+    raw = completed_response()
+    raw["final_tree_count"] = 7
+    response = TrainResponse.model_validate(raw)
+    assert response.model_dump(mode="json", exclude_none=True)["final_tree_count"] == 7
+
+    for invalid in (0, 2.5):
+        with pytest.raises(ValidationError, match="final_tree_count"):
+            TrainResponse.model_validate({**raw, "final_tree_count": invalid})
+
+
 def test_evaluation_report_recomputes_weighted_metrics_and_rejects_drift() -> None:
     bad = completed_response()
     bad["evaluation"]["selection_metrics"]["gini"]["mean"] = 0.1
@@ -296,6 +307,49 @@ def test_completed_response_supports_no_validation_and_no_final_test() -> None:
     assert parsed.diagnostics_set == "development"
     assert parsed.evaluation is not None
     assert parsed.evaluation.selection_fits == []
+
+
+def test_completed_response_supports_saved_holdout_fit_without_refit() -> None:
+    raw = completed_response()
+    fit = raw["evaluation"]["selection_fits"][0]
+    raw["evaluation"].update(
+        {
+            "validation_method": "single",
+            "validation_fit_count": 1,
+            "fit_count": 1,
+            "refit_on_development": False,
+            "selection_fits": [fit],
+            "selection_metrics": {
+                name: {
+                    "mean": value,
+                    "stddev": 0.0,
+                    "min": value,
+                    "max": value,
+                    "fit_count": 1,
+                    "validation_rows": fit["validation_rows"],
+                }
+                for name, value in fit["metrics"].items()
+            },
+            "final_test_rows": 0,
+            "summary": {
+                "development_rows": 8,
+                "test_rows": 0,
+                "validation_fit_count": 1,
+            },
+        }
+    )
+    raw.update(
+        {
+            "diagnostic_metrics": fit["metrics"],
+            "final_test_metrics": {},
+            "final_test_rows": 0,
+            "diagnostics_set": "validation",
+        }
+    )
+    parsed = TrainResponse.model_validate(raw)
+    assert parsed.evaluation is not None
+    assert parsed.evaluation.refit_on_development is False
+    assert parsed.diagnostics_set == "validation"
 
 
 def test_evaluation_response_supports_single_validation_and_strategy_summary() -> None:

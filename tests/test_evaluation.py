@@ -26,6 +26,20 @@ from haute.modelling._evaluation import (
 )
 
 
+@pytest.mark.parametrize("size", [0.5, 0.8])
+def test_split_fractions_must_leave_training_rows(size: float) -> None:
+    with pytest.raises(ValueError, match="below 1"):
+        EvaluationConfig.from_plain_data(
+            {
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "validation": {"method": "single", "size": size},
+                "test": {"size": 0.5},
+            }
+        )
+
+
 def random_config(
     *,
     validation: dict[str, object] | None = None,

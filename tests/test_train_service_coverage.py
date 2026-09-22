@@ -130,7 +130,7 @@ def _patch_execute_env():
 
 class TestEstimateRamFailure:
     def test_estimate_failure_raises_http_422(self):
-        """When estimate_safe_training_rows raises, _estimate_ram fails loudly.
+        """When memory estimation raises, _estimate_ram fails loudly.
 
         nick-dev replaced the old swallow-and-fall-back-to-no-row-limit policy
         with a typed HTTP 422 so a broken memory probe surfaces to the API layer
@@ -145,7 +145,7 @@ class TestEstimateRamFailure:
         graph = make_graph({"nodes": [], "edges": []})
 
         with patch(
-            "haute._ram_estimate.estimate_safe_training_rows",
+            "haute.routes._training_lifecycle.estimate_training_memory",
             side_effect=RuntimeError("probe blew up"),
         ):
             with pytest.raises(HTTPException) as exc_info:

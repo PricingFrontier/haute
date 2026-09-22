@@ -2237,6 +2237,7 @@ class EvaluationReportPayload(_StrictPublicTrainingPayload):
     validation_method: Literal["none", "single", "cross_validation"]
     validation_fit_count: int = Field(strict=True, ge=0, le=10)
     fit_count: int = Field(strict=True, ge=1, le=201)
+    refit_on_development: bool = Field(default=True, strict=True)
     development_rows: int = Field(strict=True, ge=1)
     final_test_rows: int = Field(strict=True, ge=0)
     selection_fits: list[EvaluationFitPayload] = Field(max_length=10)
@@ -2267,6 +2268,8 @@ class EvaluationReportPayload(_StrictPublicTrainingPayload):
             raise ValueError("validation_fit_count must equal the number of selection_fits")
         if [fit.fit_index for fit in self.selection_fits] != list(range(self.validation_fit_count)):
             raise ValueError("selection fit indices must be contiguous and ascending")
+        if not self.refit_on_development and self.validation_method != "single":
+            raise ValueError("Skipping the final refit requires holdout validation")
         if self.summary.development_rows != self.development_rows:
             raise ValueError("summary development_rows must equal report development_rows")
         if self.summary.test_rows != self.final_test_rows:
@@ -2555,11 +2558,12 @@ class TrainResponse(BaseModel):
     model_path: str = ""
     development_rows: int = Field(default=0, strict=True, ge=0)
     final_test_rows: int = Field(default=0, strict=True, ge=0)
-    diagnostics_set: Literal["development", "final_test"] = "development"
+    diagnostics_set: Literal["development", "validation", "final_test"] = "development"
     features: list[str] = Field(default_factory=list)
     cat_features: list[str] = Field(default_factory=list)
     error: str | None = None
     best_iteration: int | None = None
+    final_tree_count: int | None = Field(default=None, strict=True, ge=1)
     loss_history: list[dict[str, float]] = Field(default_factory=list)
     loss_history_truncated: bool = False
     double_lift: list[dict[str, Any]] = Field(default_factory=list)
@@ -2627,14 +2631,29 @@ class TrainResponse(BaseModel):
         else:
             if self.final_test_metrics:
                 raise ValueError("final_test_metrics must be empty without a final test")
-            if self.diagnostics_set != "development":
+            expected_diagnostics = (
+                "development" if self.evaluation.refit_on_development else "validation"
+            )
+            if self.diagnostics_set != expected_diagnostics:
                 raise ValueError(
-                    "completed training diagnostics_set must be development without a test"
+                    f"completed training diagnostics_set must be "
+                    f"{expected_diagnostics} without a test"
                 )
         if self.tuning is None:
-            if self.evaluation.fit_count != self.evaluation.validation_fit_count + 1:
-                raise ValueError("evaluation fit_count must equal validation_fit_count + final fit")
+            expected_fits = self.evaluation.validation_fit_count + int(
+                self.evaluation.refit_on_development
+            )
+            if self.evaluation.fit_count != expected_fits:
+                if self.evaluation.refit_on_development:
+                    raise ValueError(
+                        "evaluation fit_count must equal validation_fit_count + final fit"
+                    )
+                raise ValueError(
+                    "evaluation fit_count must equal validation_fit_count without refit"
+                )
         else:
+            if not self.evaluation.refit_on_development:
+                raise ValueError("parameter tuning requires a final refit")
             if self.evaluation.fit_count != self.tuning.total_fit_count:
                 raise ValueError("evaluation fit_count must equal tuning total_fit_count")
             if self.tuning.evaluation_plan_sha256 != self.evaluation.plan_sha256:

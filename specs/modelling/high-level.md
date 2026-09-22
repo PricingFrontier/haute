@@ -160,7 +160,13 @@ compatibility facade and route own no duplicate state or worker implementation.
   running job requests preparation/child termination and atomically transitions to
   `timed_out`.
 - `POST /api/modelling/estimate` returns a RAM/row-limit and (for GPU CatBoost) VRAM
-  estimate without starting a job. Once the relevant modelling and evaluation fields
+  estimate without starting a job. Both this estimate and the pre-training RAM check
+  use fresh shared node snapshots that cover the training column demand: cached
+  outputs supply measured row counts and schema even when their original computation
+  cannot be analysed statically. Estimating RAM alone never builds missing snapshots
+  or runs upstream code; without usable cache evidence, the existing analytical
+  estimate (including its unavailable outcome) applies.
+  Once the relevant modelling and evaluation fields
   are valid, it also returns a bounded preview of the exact evaluation plan: effective
   development/final-test rows, validation-fit count and row bounds, plus group counts
   or date ranges when applicable. A failure raised while that bounded preview executes
@@ -337,6 +343,25 @@ emits deployable-model loss history and expensive diagnostics. The final fit eva
 the final test once when present; otherwise diagnostics are explicitly labelled as
 development/training diagnostics.
 
+For fixed CatBoost parameters with validation, the final fit uses the validation-row-
+weighted median of each fit's best iteration plus one (one fit simply uses its best
+iteration plus one), capped by the configured iteration ceiling. Validation-only
+early-stopping controls are removed from the final fit, which trains on all development
+rows without an evaluation set. Supported CatBoost iteration aliases are replaced by
+the selected `iterations` value. With no validation, it retains the configured iteration
+count. The selected final tree count is carried in the completed training result so
+later MLflow export logs the parameters used for that model; older results without the
+field retain their existing logging behavior.
+
+Holdout validation offers a checked-by-default `Refit on training + validation`
+option. Unchecking it publishes the one model trained on the training partition
+with validation used for selection and, for CatBoost, early stopping. The
+validation model is saved with its diagnostics and optional final-test metrics;
+there is no second fit. The run reports one total fit and labels diagnostics as
+validation when there is no final test. This option is unavailable for
+cross-validation, no-validation, and parameter tuning, which require their
+existing final fit. Older configurations default to refitting.
+
 The completed response exposes one `evaluation` report containing selection metrics
 and ordered validation fits, final-test metrics when present, development/test counts,
 the exact fit count, plan digest/path, result/report artifact paths, and group/date
@@ -402,10 +427,11 @@ model instead. Both are permanently closed off by making the builder the only pa
 
 "Loud, actionable failure over silent fallback" is applied deliberately to the training
 objective: an unset Tweedie variance power, Negative Binomial `theta`, GLM terms,
-elastic-net L1 ratio, or cross-validation seed would otherwise fall through to a library
-default (variance power 1.5, theta 1.0, an intercept-only design, pure ridge, unseeded
-folds) that produces a real, trainable, plausible-looking model — just not the one the
-user intended, or not the same one twice.
+or elastic-net L1 ratio would otherwise fall through to a library default (variance power
+1.5, theta 1.0, an intercept-only design, pure ridge) that produces a real, trainable,
+plausible-looking model — just not the one the user intended. Cross-validation uses a
+fixed seed of 42 when older configurations have none, avoiding unseeded folds without
+requiring a user-facing seed control.
 `training_objective_issue` gates this identically at config-build time and at the
 route's upfront validation, so the two paths cannot drift apart on what counts as
 "complete."
@@ -476,6 +502,69 @@ records the source matrix and copy byte counts, and trains the same seeded model
 both pools to establish result equivalence. The durable decision follows the
 20%-and-no-extra-allocation gate above; local timing evidence is diagnostic rather
 than a machine-specific production switch.
+
+### Training configuration experience
+
+Training configuration uses Target, Features, Parameters, Split, Train and Export
+panes for both algorithms. GLM regularization and solver controls belong in
+Parameters; distribution, link and dispersion remain in Target. Configuration pane
+tabs use the shared node-tab typography, spacing, equal-width layout and node accent.
+Target and Split content uses open sections with consistent headings and field
+spacing. Split settings and allocation sections do not use enclosing
+cards; separation comes from whitespace. Field borders and validation feedback retain
+their normal styling.
+Field labels use sentence
+case, readable field/help text and the modelling accent consistently. Target, weight
+and offset selectors are searchable and show column types. Feature selection uses
+compact table rows with inclusion checkboxes, coloured dtype labels using the shared
+type palette, All/Included/Excluded filters, and numeric-only ↓ / − / ↑ monotonicity
+buttons. The buttons retain their decreasing/neutral/increasing colours and selected
+states; target/weight/offset roles remain excluded from predictors.
+
+The row-limit control appears first in Split for both algorithms, above allocation.
+An empty value uses all rows; editing it preserves the existing `row_limit` setting
+and training-memory estimate behavior. Train no longer contains the control.
+The Split pane uses declarative section headings: Split strategy, Validation strategy
+and Test set. User-facing split names are Training set, Validation set and Test set;
+the single-split method is Holdout validation. Strategy choices are Random split,
+Group split and Time-based split. Its reproducibility seed is an internal setting,
+not an editable control. Random and group splits always show Test set (%), defaulting
+to 0 when no test set is configured; 0 removes the test set. Existing configured
+percentages are preserved. Time-based splits use an optional Test starts date, with
+an empty date meaning no test set. There is no test-set checkbox.
+The pane displays source-relative percentages. Holdout
+validation at 20% with a 20% test set shows 60% training, 20% validation and 20% test.
+Allocation appears once, at the top, without a separate exact-evaluation section or
+instructional paragraphs about model selection and refitting. Exact row counts
+supersede target proportions when available. Cross-validation depicts rotating
+training folds, or expanding temporal windows, rather than a permanent validation
+holdout; concise per-fit row ranges appear alongside the allocation. Temporal
+allocation uses exact counts once available. No-validation runs do
+not suggest that a selection fit occurs. Combined validation/test fractions must leave
+positive training data and are rejected before training in both frontend and backend.
+Train, tuning notices and result displays use the same vocabulary. Results distinguish
+held-out test metrics from training diagnostics on the data used for the final refit.
+API fields, stored split configuration, allocation logic and evaluation behavior keep
+their existing contracts; this vocabulary change is presentational.
+
+Displayed CatBoost parameters represent persisted configuration. New CatBoost nodes
+explicitly store the recommended defaults when the algorithm is selected; existing
+empty or partial parameter maps keep omitted values library-managed. Fixed parameters
+use one always-visible JSON editor, preserving arbitrary parameter keys and the Train
+pane's GPU setting. Invalid JSON remains editable and is reported in
+Parameters as well as Train. CatBoost Tweedie power must be finite and strictly between
+1 and 2; its controls and backend validation enforce those bounds.
+
+Tuning must not silently add or alter a final-test partition. The Parameters pane
+explains whether one is reserved and links to Split, and displays the number of
+selection fits plus the final fit. Config issues appear in the relevant pane and on
+its tab; Train provides links to resolve them and a summary of target, feature count,
+evaluation, compute settings and fit budget before submission. With fixed parameters, the
+fit budget labels holdout/CV runs as validation fits and the development refit as the final
+fit; tuning labels its trial runs as tuning fits. With no validation, it shows only the
+final fit. Evaluation preview
+failures retain their actionable detail and are distinguished from unavailable memory
+estimates; neither state promises that training will succeed.
 
 The MOD-M09 product decision keeps monotonicity because both supported algorithms
 already have deterministic named-feature semantics and it is meaningful in pricing

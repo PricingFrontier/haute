@@ -49,6 +49,7 @@ from haute.routes._training_artifacts import (
     hold_training_artifacts,
     require_training_artifacts,
 )
+from haute.routes._training_preparation import estimate_training_memory
 from haute.routes.pipeline import _prepare_runtime_graph
 from haute.schemas import (
     DispersionEstimateRequest,
@@ -241,18 +242,17 @@ def cancel_dispersion(job_id: str) -> DispersionEstimateStatusResponse:
 def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
     """Estimate RAM and row requirements for training a modelling node.
 
-    Reads ancestor metadata for the analytical RAM/VRAM estimate and, once
-    the evaluation configuration is complete, materialises only the bounded
-    target/evaluation-key projection needed for an exact partition preview.
+    Reads reusable snapshot/ancestor metadata for the analytical RAM/VRAM
+    estimate and, once the evaluation configuration is complete, materialises
+    only the bounded target/evaluation-key projection needed for an exact
+    partition preview.
     """
     graph = _prepare_runtime_graph(body.graph)
     body = body.model_copy(update={"graph": graph})
     node = _find_modelling_node(body.graph, body.node_id)
 
-    from haute._ram_estimate import estimate_safe_training_rows
-
     try:
-        ram_est = estimate_safe_training_rows(
+        ram_est = estimate_training_memory(
             body.graph,
             body.node_id,
             source=body.source,
@@ -342,6 +342,10 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
         resolve_tracking_backend,
     )
     from haute.modelling._result_types import ModelDiagnostics
+    from haute.modelling._tuning import (
+        CATBOOST_ITERATION_PARAM_KEYS,
+        VALIDATION_ONLY_CATBOOST_PARAMS,
+    )
 
     require_mlflow_installed()
     recorded = mlflow_receipt_for_operation(
@@ -410,11 +414,21 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
                 glm_smooth_terms=result.glm_smooth_terms,
                 glm_regularization=result.glm_regularization,
             )
-            final_params = (
-                result.tuning.final_params
-                if result.tuning is not None
-                else config.get("params", {})
-            )
+            if result.tuning is not None:
+                final_params = result.tuning.final_params
+            elif (
+                result.final_tree_count is not None
+                and result.evaluation.refit_on_development
+                and str(config.get("algorithm", "catboost")).lower() == "catboost"
+            ):
+                final_params = dict(config.get("params") or {})
+                for key in CATBOOST_ITERATION_PARAM_KEYS:
+                    final_params.pop(key, None)
+                for key in VALIDATION_ONLY_CATBOOST_PARAMS:
+                    final_params.pop(key, None)
+                final_params["iterations"] = result.final_tree_count
+            else:
+                final_params = config.get("params", {})
             candidate = build_candidate_run(
                 provenance=CandidateProvenance.from_plain_data(job["provenance"]),
                 algorithm=str(config.get("algorithm", "catboost")),
