@@ -1104,7 +1104,7 @@ array-only payload or omitted-edge compatibility branch is supported.
   flushed to the `nodeMap` this filter reads yet — so the filter re-checks
   `_columnsSource` directly rather than assuming the effect has already
   stripped every stale stash.
-- **Auto-layout models the canvas geometry in `layout.ts`.** The toolbar passes
+- **Auto-layout models the canvas geometry in `frontend/src/utils/layout.ts`.** The toolbar passes
   React Flow's `getInternalNode` lookup through `useNodeHandlers` to
   `getLayoutedElements`. Dimensions use positive finite explicit/measured values,
   with the existing 240x70 estimate only before measurement. Mounted nodes expose
