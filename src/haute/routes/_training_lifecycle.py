@@ -168,10 +168,11 @@ logger = get_logger(component="server.modelling.train")
 _TRAINING_JOB_TYPE: Literal["training"] = "training"
 _DISPERSION_JOB_TYPE: Literal["dispersion_estimate"] = "dispersion_estimate"
 _JOB_TYPE_KEY = "job_type"
-# Long enough for a superseded evaluation preview on ordinary data to release
-# its training-prep reservation. A training run holds its reservation for the
-# whole fit, so the estimate is still refused once this wait runs out.
-_EVALUATION_PREVIEW_ADMISSION_WAIT_SECONDS = 10.0
+# An estimate's evaluation preview is short and superseded by every edit, and the
+# server finishes a preview the browser has abandoned. A user's training work
+# waits these out rather than being refused because the estimate was refreshing.
+_EVALUATION_PREVIEW_HOLDERS = frozenset({"training_prep:training_evaluation_preview"})
+_EVALUATION_PREVIEW_WAIT_SECONDS = 30.0
 
 
 class _TrainingRunningJob(RunningJobFields):
@@ -392,11 +393,6 @@ class TrainService:
             execution_context = create_admitted_execution_context(
                 operation="training_evaluation_preview",
                 profile=ExecutionProfile.TRAINING_PREP,
-                # An edit supersedes the browser's estimate request, but the
-                # server finishes the superseded preview and holds its budget
-                # meanwhile; wait for that release rather than refuse the
-                # replacement.
-                in_flight_wait_seconds=_EVALUATION_PREVIEW_ADMISSION_WAIT_SECONDS,
             )
             preamble_ns = self._compile_preamble(body.graph)
             # The plan reads only the target and the evaluation key, so the
@@ -567,6 +563,8 @@ class TrainService:
                 profile=ExecutionProfile.TRAINING_PREP,
                 job_id=job_id,
                 cancellation_token=cancellation_token,
+                wait_out_holders=_EVALUATION_PREVIEW_HOLDERS,
+                wait_seconds=_EVALUATION_PREVIEW_WAIT_SECONDS,
             )
             bind_running_execution_metrics_publisher(self._store, job_id, execution_context)
             execution_context.checkpoint(label="training_preparation")
@@ -736,6 +734,8 @@ class TrainService:
                 operation="dispersion_estimate",
                 profile=ExecutionProfile.TRAINING_PREP,
                 job_id=job_id,
+                wait_out_holders=_EVALUATION_PREVIEW_HOLDERS,
+                wait_seconds=_EVALUATION_PREVIEW_WAIT_SECONDS,
             )
             bind_running_execution_metrics_publisher(self._store, job_id, execution_context)
             train_body = TrainRequest(
@@ -1242,6 +1242,8 @@ class TrainService:
             execution_context = create_admitted_execution_context(
                 operation="training_glm_schema",
                 profile=ExecutionProfile.TRAINING_PREP,
+                wait_out_holders=_EVALUATION_PREVIEW_HOLDERS,
+                wait_seconds=_EVALUATION_PREVIEW_WAIT_SECONDS,
             )
             preamble_ns = self._compile_preamble(body.graph)
             schema = resolve_training_input_schema(

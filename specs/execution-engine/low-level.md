@@ -827,11 +827,7 @@ Admission then samples current RSS; refuses
 configured process-RSS cap. For profiles in `_IN_FLIGHT_PROFILE_SET` (the "heavy"
 batch-shaped profiles), `_reserve_in_flight_budget()` adds this run's
 `memory_limit_bytes` to a process-global running total under `_IN_FLIGHT_LOCK` and
-refuses if the total would exceed `available - os_reserve`. A caller may pass
-`in_flight_wait_seconds` to wait up to that long on `_IN_FLIGHT_RELEASED` (every
-release notifies it) before refusing; only the modelling estimate's evaluation preview
-does, because the server keeps running a preview the browser superseded, and the
-replacement should queue behind it. The returned
+refuses if the total would exceed `available - os_reserve`; the returned
 `admission_release` callable (also wired to `weakref.finalize` on the context) removes
 the reservation exactly once.
 

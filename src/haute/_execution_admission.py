@@ -6,7 +6,7 @@ import os
 import threading
 import time
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from itertools import count
 
@@ -221,8 +221,10 @@ _IN_FLIGHT_PROFILE_SET = frozenset(
     }
 )
 _IN_FLIGHT_LOCK = threading.RLock()
-# Notified on every release so a bounded admission wait can re-check the budget.
+# Notified on every release so an admission can wait out short-lived holders.
 _IN_FLIGHT_RELEASED = threading.Condition(_IN_FLIGHT_LOCK)
+# A waiting admission re-checks cancellation at least this often.
+_IN_FLIGHT_WAIT_SLICE_SECONDS = 0.25
 # A refusal names at most this many distinct holders; the byte totals stay exact.
 _MAX_REPORTED_IN_FLIGHT_OPERATIONS = 8
 _IN_FLIGHT_COUNTER = count(1)
@@ -524,15 +526,26 @@ def create_admitted_execution_context(
     cancellation_token: ExecutionCancellationToken | None = None,
     memory_sampler: Callable[[], int | None] | None = None,
     memory_pressure_callback: Callable[..., None] | None = None,
-    in_flight_wait_seconds: float = 0.0,
+    wait_out_holders: Collection[str] = (),
+    wait_seconds: float = 0.0,
 ) -> ExecutionContext:
     """Construct an ``ExecutionContext`` after a small memory admission check.
 
-    ``in_flight_wait_seconds`` lets a short, repeatable operation wait that long
-    for other in-flight reservations to be released before it is refused. Only
-    the in-flight budget waits; the RSS checks still refuse immediately.
+    ``wait_out_holders`` names in-flight holders (``"profile:operation"``) that
+    are short-lived and not worth refusing for: while every holder blocking the
+    reservation is one of them, admission waits up to ``wait_seconds`` for them
+    to release. Any other holder refuses at once, as without a wait.
     """
     budget = execution_budget_for_profile(profile)
+    if wait_out_holders and profile in _IN_FLIGHT_PROFILE_SET:
+        _wait_out_in_flight_holders(
+            budget,
+            frozenset(wait_out_holders),
+            wait_seconds,
+            cancellation_token=cancellation_token,
+            operation=operation,
+            job_id=job_id,
+        )
     sampler = current_rss_bytes if memory_sampler is None else memory_sampler
     rss_at_admission = sampler()
     if rss_at_admission is None:
@@ -564,7 +577,6 @@ def create_admitted_execution_context(
         profile=profile,
         budget=budget,
         rss_at_admission_bytes=rss_at_admission,
-        wait_seconds=in_flight_wait_seconds,
     )
     try:
         admission = ExecutionAdmission(
@@ -613,29 +625,55 @@ def _memory_env_candidates(profile: ExecutionProfile) -> tuple[tuple[str, int], 
     )
 
 
+def _wait_out_in_flight_holders(
+    budget: ExecutionBudget,
+    waitable: frozenset[str],
+    wait_seconds: float,
+    *,
+    cancellation_token: ExecutionCancellationToken | None,
+    operation: str,
+    job_id: str | None,
+) -> None:
+    """Wait while only *waitable* holders keep this reservation out of the budget.
+
+    Returns once the reservation would fit, a non-waitable holder blocks it, or
+    the wait runs out; the reservation itself then admits or refuses as usual.
+    """
+    limit_bytes = _in_flight_limit_bytes(budget)
+    deadline = time.monotonic() + max(wait_seconds, 0.0)
+    with _IN_FLIGHT_LOCK:
+        while True:
+            holders = list(_IN_FLIGHT_RESERVATIONS.values())
+            reserved = sum(amount for _profile, amount, _operation in holders)
+            remaining = deadline - time.monotonic()
+            if (
+                reserved + budget.memory_limit_bytes <= limit_bytes
+                or remaining <= 0
+                or any(
+                    f"{held_profile.value}:{held_operation}" not in waitable
+                    for held_profile, _amount, held_operation in holders
+                )
+            ):
+                return
+            _IN_FLIGHT_RELEASED.wait(min(remaining, _IN_FLIGHT_WAIT_SLICE_SECONDS))
+            if cancellation_token is not None:
+                cancellation_token.throw_if_cancelled(operation, job_id=job_id)
+
+
 def _reserve_in_flight_budget(
     *,
     operation: str,
     profile: ExecutionProfile,
     budget: ExecutionBudget,
     rss_at_admission_bytes: int | None,
-    wait_seconds: float = 0.0,
 ) -> Callable[[], None] | None:
     """Reserve a share of process-wide in-flight memory for heavy work."""
     if profile not in _IN_FLIGHT_PROFILE_SET:
         return None
     limit_bytes = _in_flight_limit_bytes(budget)
     reservation_bytes = budget.memory_limit_bytes
-    deadline = time.monotonic() + max(wait_seconds, 0.0)
     with _IN_FLIGHT_LOCK:
-        while True:
-            reserved = sum(
-                amount for _profile, amount, _operation in _IN_FLIGHT_RESERVATIONS.values()
-            )
-            remaining = deadline - time.monotonic()
-            if reserved + reservation_bytes <= limit_bytes or remaining <= 0:
-                break
-            _IN_FLIGHT_RELEASED.wait(remaining)
+        reserved = sum(amount for _profile, amount, _operation in _IN_FLIGHT_RESERVATIONS.values())
         if reserved + reservation_bytes > limit_bytes:
             holders = tuple(
                 sorted(

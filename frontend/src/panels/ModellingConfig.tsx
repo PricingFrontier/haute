@@ -56,6 +56,7 @@ import { trainingLineage } from "../utils/trainedJobHandles"
 import { useTrainedJobRestore } from "./modelling/useTrainedJobRestore"
 import { SplitAndMetricsConfig } from "./modelling/SplitAndMetricsConfig"
 import { TrainingRunSummary } from "./modelling/TrainingRunSummary"
+import { estimateAfterSupersededPreviews } from "./modelling/trainingEstimate"
 import { TargetAndTaskConfig } from "./modelling/TargetAndTaskConfig"
 import { TrainingActionsAndResults } from "./modelling/TrainingActionsAndResults"
 import type { ReactElement } from "react"
@@ -358,8 +359,9 @@ export default function ModellingConfig({
     [allNodes, edges, submodels, preamble],
   )
   const estimateEndpoint = useCallback(
-    (_payload: void, context: { signal: AbortSignal }) => (
-      estimateTrainingRam({ graph: graph(), node_id: nodeId, source: activeSource }, context)
+    (_payload: void, context: { signal: AbortSignal }) => estimateAfterSupersededPreviews(
+      () => estimateTrainingRam({ graph: graph(), node_id: nodeId, source: activeSource }, context),
+      context.signal,
     ),
     [activeSource, graph, nodeId],
   )

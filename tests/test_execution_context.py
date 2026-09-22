@@ -657,50 +657,55 @@ def test_heavy_execution_admission_counts_in_flight_budget(
         first.release_admission()
 
 
-def test_in_flight_wait_admits_once_the_holder_releases(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from haute._execution_admission import create_admitted_execution_context
+_PREVIEW_HOLDER = "training_prep:training_evaluation_preview"
 
+
+def _pin_ten_gib_host(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_execution_memory_env(monkeypatch)
     gib = 1024 * 1024 * 1024
     monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 10 * gib)
     monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 10 * gib)
-    holder = create_admitted_execution_context(
-        operation="superseded_preview",
+
+
+def test_training_admission_waits_out_an_evaluation_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    preview = create_admitted_execution_context(
+        operation="training_evaluation_preview",
         profile=ExecutionProfile.TRAINING_PREP,
         memory_sampler=lambda: 100,
     )
-    releaser = threading.Timer(0.2, holder.release_admission)
+    releaser = threading.Timer(0.2, preview.release_admission)
     started = time.monotonic()
     releaser.start()
     try:
-        waiter = create_admitted_execution_context(
-            operation="replacement_preview",
+        training = create_admitted_execution_context(
+            operation="training_pipeline",
             profile=ExecutionProfile.TRAINING_PREP,
             memory_sampler=lambda: 100,
-            in_flight_wait_seconds=10.0,
+            wait_out_holders={_PREVIEW_HOLDER},
+            wait_seconds=10.0,
         )
     finally:
         releaser.join()
-        holder.release_admission()
+        preview.release_admission()
     waited = time.monotonic() - started
-    waiter.release_admission()
+    training.release_admission()
     # Admitted by the release notification, well before the wait bound.
     assert 0.15 <= waited < 5.0
 
 
-def test_in_flight_wait_still_refuses_when_the_holder_outlasts_it(
+def test_training_admission_refuses_at_once_behind_other_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from haute._execution_admission import create_admitted_execution_context
 
-    _clear_execution_memory_env(monkeypatch)
-    gib = 1024 * 1024 * 1024
-    monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 10 * gib)
-    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 10 * gib)
-    holder = create_admitted_execution_context(
-        operation="training_run",
+    _pin_ten_gib_host(monkeypatch)
+    running = create_admitted_execution_context(
+        operation="training_pipeline",
         profile=ExecutionProfile.TRAINING_PREP,
         memory_sampler=lambda: 100,
     )
@@ -708,16 +713,75 @@ def test_in_flight_wait_still_refuses_when_the_holder_outlasts_it(
         started = time.monotonic()
         with pytest.raises(ExecutionAdmissionError) as exc_info:
             create_admitted_execution_context(
-                operation="evaluation_preview",
+                operation="training_pipeline",
                 profile=ExecutionProfile.TRAINING_PREP,
                 memory_sampler=lambda: 100,
-                in_flight_wait_seconds=0.2,
+                wait_out_holders={_PREVIEW_HOLDER},
+                wait_seconds=10.0,
             )
-        assert time.monotonic() - started >= 0.2
+        assert time.monotonic() - started < 1.0
         assert exc_info.value.reason == "in_flight_memory_budget_exceeded"
-        assert exc_info.value.in_flight_operations == ("training_prep:training_run",)
+        assert exc_info.value.in_flight_operations == ("training_prep:training_pipeline",)
     finally:
-        holder.release_admission()
+        running.release_admission()
+
+
+def test_training_admission_refuses_when_a_preview_outlasts_the_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    preview = create_admitted_execution_context(
+        operation="training_evaluation_preview",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    try:
+        started = time.monotonic()
+        with pytest.raises(ExecutionAdmissionError) as exc_info:
+            create_admitted_execution_context(
+                operation="training_pipeline",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_sampler=lambda: 100,
+                wait_out_holders={_PREVIEW_HOLDER},
+                wait_seconds=0.3,
+            )
+        assert time.monotonic() - started >= 0.3
+        assert exc_info.value.in_flight_operations == (_PREVIEW_HOLDER,)
+    finally:
+        preview.release_admission()
+
+
+def test_waiting_training_admission_honours_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    preview = create_admitted_execution_context(
+        operation="training_evaluation_preview",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    token = ExecutionCancellationToken()
+    canceller = threading.Timer(0.2, token.cancel)
+    canceller.start()
+    try:
+        started = time.monotonic()
+        with pytest.raises(ExecutionCancelledError):
+            create_admitted_execution_context(
+                operation="training_pipeline",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_sampler=lambda: 100,
+                cancellation_token=token,
+                wait_out_holders={_PREVIEW_HOLDER},
+                wait_seconds=10.0,
+            )
+        assert time.monotonic() - started < 2.0
+    finally:
+        canceller.join()
+        preview.release_admission()
 
 
 def test_heavy_admission_releases_reservation_when_context_construction_fails(
