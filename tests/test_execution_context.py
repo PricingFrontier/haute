@@ -698,6 +698,49 @@ def test_training_admission_waits_out_an_evaluation_preview(
     assert 0.15 <= waited < 5.0
 
 
+def test_training_admission_keeps_waiting_when_a_preview_takes_the_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _execution_admission as admission_mod
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    original_wait = admission_mod._wait_out_in_flight_holders
+    interlopers: list[ExecutionContext] = []
+    releasers: list[threading.Timer] = []
+
+    def wait_then_lose_the_race(*args: object, **kwargs: object) -> None:
+        original_wait(*args, **kwargs)  # type: ignore[arg-type]
+        if not interlopers:
+            # Another preview reserves between the wait and the reservation.
+            interloper = create_admitted_execution_context(
+                operation="training_evaluation_preview",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_sampler=lambda: 100,
+            )
+            interlopers.append(interloper)
+            releaser = threading.Timer(0.2, interloper.release_admission)
+            releasers.append(releaser)
+            releaser.start()
+
+    monkeypatch.setattr(admission_mod, "_wait_out_in_flight_holders", wait_then_lose_the_race)
+    try:
+        training = create_admitted_execution_context(
+            operation="training_pipeline",
+            profile=ExecutionProfile.TRAINING_PREP,
+            memory_sampler=lambda: 100,
+            wait_out_holders={_PREVIEW_HOLDER},
+            wait_seconds=10.0,
+        )
+        training.release_admission()
+    finally:
+        for releaser in releasers:
+            releaser.join()
+        for interloper in interlopers:
+            interloper.release_admission()
+    assert len(interlopers) == 1
+
+
 def test_training_admission_refuses_at_once_behind_other_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
