@@ -2547,7 +2547,8 @@ class TestResolveBatchScenario:
 class TestPreviewCachePartialHit:
     """Verify the cache-extend (partial-hit) path in execute_graph."""
 
-    def test_partial_hit_extends_cache(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("fresh_error", [False, True])
+    def test_partial_hit_extends_cache(self, tmp_path, monkeypatch, fresh_error):
         """When a cached graph fingerprint exists but the target node is
         not yet materialized, execute_graph should re-execute for the new
         target and merge the results.
@@ -2602,6 +2603,19 @@ class TestPreviewCachePartialHit:
         assert results1["mid"].status == "ok"
         assert "leaf" not in results1
 
+        if fresh_error:
+            real_eager = executor_mod._eager_execute
+
+            def eager_with_partial_error(*args, **kwargs):
+                result = list(real_eager(*args, **kwargs))
+                # A producer can return usable frame evidence alongside a node error.
+                # Cache extension must preserve that error instead of reviving an old success.
+                result[2] = {**result[2], "mid": "partial result rejected"}
+                result[5] = {**result[5], "mid": 7}
+                return tuple(result)
+
+            monkeypatch.setattr(executor_mod, "_eager_execute", eager_with_partial_error)
+
         # Second call: same graph, but now requesting "leaf" — partial hit
         results2 = execute_graph(graph, target_node_id="leaf")
         assert "leaf" in results2
@@ -2609,7 +2623,12 @@ class TestPreviewCachePartialHit:
         assert results2["leaf"].row_count == 3
         # The merged cache should also still contain "mid" and "src"
         assert "mid" in results2
-        assert results2["mid"].status == "ok"
+        if fresh_error:
+            assert results2["mid"].status == "error"
+            assert results2["mid"].error == "partial result rejected"
+            assert _preview_cache.get("partial-hit-regression")["error_lines"]["mid"] == 7
+        else:
+            assert results2["mid"].status == "ok"
         assert plan_calls == 2, "a partial extension must plan against the current request"
 
         _preview_cache.clear()

@@ -622,7 +622,10 @@ to a caller that writes a node in full, and `unshaped_frames=...` hands it, for 
 that shapes its columns, its frame before that step. Beside edge joins, the lazy engine builds
 write recipes for single-input `NodeType.POLARS` nodes by classifying their code with
 `classify_chunk_local_polars_code` (with bound source frame names and preamble selector aliases)
-and composing the node's column shaping step as finish; an ineligible node carries the decision's
+using the prepared boundary's source nodes directly. Missing source nodes are invalid prepared
+state and must fail, never silently omit a recipe input name. A legacy single-frame API builder
+with a null handle still follows the shared builder's existing unnamed-input behavior.
+The recipe composes the node's column shaping step as finish; an ineligible node carries the decision's
 reason and blocking operator without a function, and `write_recipes` hands them to callers that
 write a node in full (`_PlannedCaptures.capture` composing its own column step, and
 `_build_node_snapshot`). For pass-through nodes (`PASS_THROUGH_NODE_TYPES`), the engine composes
@@ -630,6 +633,10 @@ a pass-through's recipe forward from its parent's (`parent_recipe.then(project).
 across the selected edge (`pass_through_selected_edge`), gated by frame identity or the equivalence
 check (`check_recipe_equivalence`); a rejected parent recipe rejects the child with the parent's
 reason and blocking operator.
+
+The recomputation classifier appends diagnostic calls only in report mode.
+Its internal report collector requires an active report; invoking it without
+one is an invariant failure, rather than a silently discarded diagnostic.
 
 **Batch collection (`_polars_utils.py`).** `bounded_collect_batches(lf, *, chunk_size,
 maintain_order=False, execution_context=None, stage_name="collect_batches", node_id=None)`

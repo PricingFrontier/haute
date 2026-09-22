@@ -1889,15 +1889,15 @@ def _execute_lazy(
                 built_join_recipes[nid] = recipe
             write_names: list[str] = []
             for edge in boundary.incoming_edges:
-                if edge.source in node_map:
-                    source_node = node_map[edge.source]
-                    try:
-                        write_names.append(
-                            edge_input_name(edge, source_node, submodels=graph.submodels)
-                        )
-                    except ValueError:
-                        # API-input null handle only; _build_funcs raises first for every other.
-                        pass
+                # Prepared boundaries must name existing source nodes.
+                source_node = node_map[edge.source]
+                try:
+                    write_names.append(
+                        edge_input_name(edge, source_node, submodels=graph.submodels)
+                    )
+                except ValueError:
+                    # API-input null handle only; _build_funcs raises first for every other.
+                    pass
             orig_names = resolve_orig_source_names(
                 node,
                 original_node_map,

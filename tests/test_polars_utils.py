@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
@@ -11,6 +12,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
+import haute._polars_utils as polars_utils
 from haute._execution_context import (
     ExecutionCancelledError,
     ExecutionContext,
@@ -20,6 +22,7 @@ from haute._execution_context import (
 from haute._hashing import content_hash
 from haute._polars_utils import (
     BOUNDED_MEMORY_EXEMPT_PROFILES,
+    DEFAULT_STREAMING_CHUNK_SIZE,
     _malloc_trim,
     _streaming_sink_to_path,
     atomic_write,
@@ -27,6 +30,7 @@ from haute._polars_utils import (
     bounded_hashed_sink,
     bounded_sink,
     cancellable_streaming_collect,
+    current_streaming_chunk_size,
     execution_collect,
     fanout_python_scan,
     hashed_streaming_sink,
@@ -55,6 +59,41 @@ def test_bounded_profile_policy_has_one_shared_classification() -> None:
     assert not is_bounded_execution_profile(ExecutionProfile.PREVIEW_EAGER)
     assert not is_bounded_execution_profile(ExecutionProfile.DEPLOY_LIVE)
     assert not is_bounded_execution_profile(None)
+
+
+@pytest.mark.parametrize("raw", ["not-an-integer", object()])
+def test_current_streaming_chunk_size_uses_default_for_invalid_truthy_config(raw: object) -> None:
+    with patch.object(
+        pl.Config,
+        "state",
+        return_value={"POLARS_STREAMING_CHUNK_SIZE": raw},
+    ):
+        assert current_streaming_chunk_size() == DEFAULT_STREAMING_CHUNK_SIZE
+
+
+def test_bounded_sink_headroom_stops_at_filesystem_root_before_writer() -> None:
+    root = Path(Path.cwd().anchor)
+    target = root / "missing-parent" / "out.parquet"
+    writer_called = False
+
+    def writer() -> None:
+        nonlocal writer_called
+        writer_called = True
+
+    with (
+        patch.object(Path, "exists", return_value=False),
+        patch.object(
+            polars_utils,
+            "ensure_disk_headroom",
+            side_effect=OSError(errno.ENODEV, "no device"),
+        ) as headroom,
+        pytest.raises(OSError) as exc_info,
+    ):
+        polars_utils._bounded_sink_execute(target, None, writer)
+
+    assert exc_info.value.errno == errno.ENODEV
+    headroom.assert_called_once_with(root)
+    assert not writer_called
 
 
 def test_streaming_collect_uses_polars_streaming_engine() -> None:

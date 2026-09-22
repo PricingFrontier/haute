@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,108 @@ from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 
 ALL = NodeSnapshotColumns.all()
 _ROWS = 100
+
+
+@pytest.mark.parametrize("kind", ["parse", "config"])
+def test_preview_inputs_invalid_flattening_is_advisory(
+    project: Path, api: Any, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    import haute.routes.pipeline as pipeline
+    from haute.errors import ConfigError, ParseError
+
+    def invalid_graph(_graph: Any) -> Any:
+        raise (ParseError if kind == "parse" else ConfigError)("invalid authored graph")
+
+    monkeypatch.setattr(pipeline, "flatten_graph", invalid_graph)
+    response = api.post(
+        "/api/pipeline/preview/inputs",
+        json={"graph": _join_graph(project).model_dump(mode="json"), "node_id": "banding"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"input_node_ids": []}
+
+
+@pytest.mark.parametrize(("empty", "status"), [(True, 400), (False, 404)])
+def test_preview_inputs_rejects_absent_target(
+    project: Path, api: Any, empty: bool, status: int
+) -> None:
+    graph = _join_graph(project)
+    if empty:
+        graph = graph.model_copy(update={"nodes": [], "edges": []})
+    response = api.post(
+        "/api/pipeline/preview/inputs",
+        json={"graph": graph.model_dump(mode="json"), "node_id": "absent"},
+    )
+    assert response.status_code == status
+    assert response.json()["detail"] == ("Empty graph" if empty else "Node 'absent' not found")
+
+
+@pytest.mark.parametrize("kind", ["projection", "parse", "timeout", "http", "public", "unexpected"])
+def test_preview_inputs_preserves_error_contracts(
+    project: Path, api: Any, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    from fastapi import HTTPException
+
+    import haute.routes.pipeline as pipeline
+    from haute.errors import ParseError, PreambleError
+    from haute.executor import PreviewProjectionError
+
+    error = {
+        "projection": PreviewProjectionError("unknown requested column"),
+        "parse": ParseError("invalid source"),
+        "timeout": TimeoutError("private worker detail"),
+        "http": HTTPException(status_code=409, detail="source changed"),
+        "public": PreambleError("preamble failed", source_line=2),
+        "unexpected": RuntimeError("private worker detail"),
+    }[kind]
+
+    async def fail_resolution(*_args: Any, **_kwargs: Any) -> Any:
+        raise error
+
+    monkeypatch.setattr(pipeline, "run_blocking_with_response_timeout", fail_resolution)
+    response = api.post(
+        "/api/pipeline/preview/inputs",
+        json={"graph": _join_graph(project).model_dump(mode="json"), "node_id": "banding"},
+    )
+    expected_status = {
+        "projection": 400,
+        "parse": 200,
+        "timeout": 504,
+        "http": 409,
+        "public": 422,
+        "unexpected": 500,
+    }[kind]
+    assert response.status_code == expected_status
+    if kind == "parse":
+        assert response.json() == {"input_node_ids": []}
+    elif kind == "projection":
+        assert response.json()["detail"] == "unknown requested column"
+    elif kind == "http":
+        assert response.json()["detail"] == "source changed"
+    elif kind == "public":
+        assert response.json()["detail"] == error.to_payload()
+    elif kind == "timeout":
+        assert "Preview input resolution timed out" in response.json()["detail"]
+    else:
+        assert response.json()["detail"] == pipeline._INTERNAL_ERROR_DETAIL
+    assert "private worker detail" not in response.text
+
+
+def test_preview_staging_cleanup_failure_does_not_mask_worker_result(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute.routes.pipeline as pipeline
+
+    seen = []
+
+    def unavailable(_self: NodeSnapshotStore, token: str) -> None:
+        seen.append(token)
+        raise OSError("filesystem unavailable")
+
+    monkeypatch.setattr(pipeline, "_get_project_root", lambda: project)
+    monkeypatch.setattr(NodeSnapshotStore, "discard_node_output_staging", unavailable)
+    pipeline._discard_preview_staging("owned-staging-token")
+    assert seen == ["owned-staging-token"]
 
 
 def _node(node_id: str, node_type: NodeType, config: dict[str, Any]) -> GraphNode:
@@ -1268,6 +1370,41 @@ def test_input_change_after_the_recheck_keys_by_the_executed_identity(
     assert pl.DataFrame(second["preview"])["x"].unique().to_list() == [2]
 
 
+def test_post_capture_runtime_input_change_does_not_publish_a_preview_cache_entry(
+    project: Path, api: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute.execution as execution_facade
+    import haute.executor as executor
+
+    graph = _join_graph(project)
+    executor._preview_cache.clear()
+    identity = execution_facade.lineage_runtime_input_identity
+    calls = 0
+
+    def rewrite_before_post_capture_identity(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            pl.DataFrame({"id": list(range(_ROWS)), "a": [99] * _ROWS}).write_parquet(
+                project / "policies.parquet"
+            )
+        return identity(*args, **kwargs)
+
+    monkeypatch.setattr(
+        execution_facade,
+        "lineage_runtime_input_identity",
+        rewrite_before_post_capture_identity,
+    )
+
+    body = _post_preview(api, graph, "banding")
+
+    # Execution read the original source; the later identity recheck observed
+    # the rewrite and must refuse to key that completed result.
+    assert sorted(pl.DataFrame(body["preview"])["a"].to_list()) == list(range(_ROWS))
+    assert calls >= 2
+    assert len(executor._preview_cache) == 0
+
+
 def test_post_capture_plan_naming_an_unread_generation_stores_nothing(
     project: Path, api: Any, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1584,6 +1721,63 @@ def test_a_cached_entry_listing_a_cleared_generation_is_not_current(
     with open_seed_plan(request, store=store, execution_context=_context()) as plan:
         assert not _preview_entry_is_current({"seed_plan": (listed,)}, plan, graph, source="live")
         assert _preview_entry_is_current({"seed_plan": ()}, plan, graph, source="live")
+
+
+def test_preview_entry_rejects_identity_changes_and_refreshed_or_cleared_leases(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    from haute._seed_plans import ReadGeneration
+    from haute.executor import _preview_entry_is_current
+
+    graph = _join_graph(project)
+    first_data = pl.DataFrame({"id": [1], "a": [1], "d": [0.1]})
+    first = _publish(store, graph, "join", first_data)
+    identity = _identity(store, graph, "join")
+    listed = ReadGeneration("join", identity, first, ALL, 0.0, "captured")
+    request = SeedPlanRequest(graph, "banding", "live", ExecutionProfile.PREVIEW_EAGER)
+    with open_seed_plan(request, store=store, execution_context=_context()) as plan:
+        assert _preview_entry_is_current({"seed_plan": (listed,)}, plan, graph, source="live")
+
+    changed = graph.model_copy(deep=True)
+    changed_node = next(node for node in changed.nodes if node.id == "join")
+    changed_node.data.config["code"] = "df = policies.join(claims, on='id', how='inner')"
+    changed_request = SeedPlanRequest(changed, "banding", "live", ExecutionProfile.PREVIEW_EAGER)
+    with open_seed_plan(changed_request, store=store, execution_context=_context()) as plan:
+        assert not _preview_entry_is_current({"seed_plan": (listed,)}, plan, changed, source="live")
+
+    with store.lease_generation(identity, first) as leased:
+        assert leased.lazy_frame.collect().equals(first_data)
+        artifact = store.stage_node_output(identity)
+        pl.DataFrame({"id": [1], "a": [9], "d": [0.9]}).write_parquet(artifact.part_path(0))
+        with store.publish_node_output(
+            identity,
+            artifact,
+            columns=ALL,
+            dependencies={},
+            explicit=True,
+            profile=ExecutionProfile.NODE_SNAPSHOT,
+            refresh=True,
+        ) as publication:
+            assert publication.generation is not None
+            latest = publication.generation.generation_id
+        assert latest != first
+        with open_seed_plan(request, store=store, execution_context=_context()) as plan:
+            assert not _preview_entry_is_current(
+                {"seed_plan": (listed,)}, plan, graph, source="live"
+            )
+
+    with store.lease_generation(identity, latest) as leased:
+        latest_listed = replace(listed, generation_id=latest)
+        with open_seed_plan(request, store=store, execution_context=_context()) as plan:
+            assert _preview_entry_is_current(
+                {"seed_plan": (latest_listed,)}, plan, graph, source="live"
+            )
+        store.clear(identity)
+        assert leased.lazy_frame.collect()["a"].to_list() == [9]
+        with open_seed_plan(request, store=store, execution_context=_context()) as plan:
+            assert not _preview_entry_is_current(
+                {"seed_plan": (latest_listed,)}, plan, graph, source="live"
+            )
 
 
 def test_a_preview_seeded_below_unadmittable_work_is_still_admitted(
@@ -1920,6 +2114,70 @@ def test_a_repeat_preview_announces_its_generations_as_seeded(
     cached_entry = _preview_cache.get(key)
     assert cached_entry is not None
     assert [g.kind for g in cached_entry["seed_plan"]] == ["captured"]
+
+
+def test_preview_cache_hit_refresh_race_evicts_stale_generation_and_reexecutes(
+    project: Path,
+    api: Any,
+    builds: Counter[str],
+    store: NodeSnapshotStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute.executor as executor
+
+    graph = _join_graph(project)
+    executor._preview_cache.clear()
+    first = _post_preview(api, graph, "banding")
+    old_generation = first["seed_plan"][0]["generation_id"]
+    identity = _identity(store, graph, "join")
+    cache_type = type(executor._preview_cache)
+    real_get = cache_type.get
+    real_evict = cache_type.evict_where
+    evicted: list[Any] = []
+    refreshed = False
+
+    def record_eviction(cache: Any, predicate: Any) -> Any:
+        removed = real_evict(cache, predicate)
+        if cache is executor._preview_cache:
+            evicted.extend(removed)
+        return removed
+
+    def refresh_after_hit_lookup(cache: Any, key: str) -> Any:
+        nonlocal refreshed
+        entry = real_get(cache, key)
+        if cache is executor._preview_cache and entry is not None and not refreshed:
+            refreshed = True
+            artifact = store.stage_node_output(identity)
+            pl.DataFrame({"id": [1], "a": [9], "d": [0.9]}).write_parquet(artifact.part_path(0))
+            with store.publish_node_output(
+                identity,
+                artifact,
+                columns=ALL,
+                dependencies={},
+                explicit=True,
+                profile=ExecutionProfile.NODE_SNAPSHOT,
+                refresh=True,
+            ) as publication:
+                assert publication.generation is not None
+                assert publication.generation.generation_id != old_generation
+        return entry
+
+    monkeypatch.setattr(cache_type, "get", refresh_after_hit_lookup)
+    monkeypatch.setattr(cache_type, "evict_where", record_eviction)
+    builds.clear()
+    second = _post_preview(api, graph, "banding")
+
+    assert refreshed
+    assert builds == Counter({"banding": 1})
+    assert len(evicted) == 1
+    # This already-started request uses its held generation consistently;
+    # the next request must resolve and read the replacement.
+    assert second["seed_plan"][0]["generation_id"] == old_generation
+    assert_frame_equal(_rows(second), _rows(first))
+    assert len(executor._preview_cache) == 1
+    third = _post_preview(api, graph, "banding")
+    assert third["seed_plan"][0]["generation_id"] != old_generation
+    assert pl.DataFrame(third["preview"])["band"].to_list() == [18]
 
 
 def test_an_extended_cache_hit_reports_the_current_plans_generations(

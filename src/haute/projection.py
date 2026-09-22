@@ -1880,18 +1880,18 @@ def _materialising_calls_in_source_order(
         entries: tuple[PolarsOperation, ...],
         positional_arguments: int,
     ) -> None:
-        if report is not None:
-            report.append(
-                ReportedCall(
-                    evaluation_index=len(report),
-                    lineno=getattr(call_node, "lineno", _MAX_TOPOLOGICAL_RANK),
-                    col_offset=getattr(call_node, "col_offset", _MAX_TOPOLOGICAL_RANK),
-                    category=category,
-                    name=name,
-                    entries=entries,
-                    positional_arguments=positional_arguments,
-                )
+        assert report is not None
+        report.append(
+            ReportedCall(
+                evaluation_index=len(report),
+                lineno=getattr(call_node, "lineno", _MAX_TOPOLOGICAL_RANK),
+                col_offset=getattr(call_node, "col_offset", _MAX_TOPOLOGICAL_RANK),
+                category=category,
+                name=name,
+                entries=entries,
+                positional_arguments=positional_arguments,
             )
+        )
 
     def name_fact(name: str) -> _BindingFact:
         return facts_by_name.get(name, "unknown")

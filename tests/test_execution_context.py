@@ -5673,3 +5673,33 @@ def test_worker_metrics_carry_the_parents_evidence_ahead_of_their_own() -> None:
     # carry both processes' evidence.
     assert parent.worker_evidence()["shared_snapshot_seeds"] == merged["shared_snapshot_seeds"]
     ExecutionMetricsPayload.model_validate(merged)
+
+
+def test_adopted_worker_input_preparation_is_copied_into_parent_evidence() -> None:
+    from haute._input_preparation import InputPreparationRecord
+
+    parent = ExecutionContext(operation="parent", profile=ExecutionProfile.TRAINING_PREP)
+    worker = ExecutionContext(operation="worker", profile=ExecutionProfile.TRAINING_PREP)
+    worker.record_input_preparation(
+        InputPreparationRecord(
+            node_id="source",
+            identity_digest="a" * 64,
+            action="built",
+            build_class="bounded",
+            execution="in_process",
+            memory_limit_bytes=None,
+            elapsed_seconds=0.1,
+            row_count=4,
+            size_bytes=16,
+            generation_id="8f0d4a2c-1c3b-4f5a-9c2d-0e1f2a3b4c5d",
+            warning_code=None,
+        )
+    )
+    payload = worker.metrics_payload()
+
+    parent.adopt_worker_evidence(payload)
+    payload["input_preparation"][0]["node_id"] = "mutated"  # type: ignore[index]
+
+    evidence = parent.worker_evidence()
+    assert evidence["input_preparation"][0]["node_id"] == "source"
+    assert parent.metrics_payload()["input_preparation"][0]["node_id"] == "source"

@@ -35,6 +35,40 @@ ALL = NodeSnapshotColumns.all()
 _ROWS = 200
 
 
+def test_recipe_builders_refuse_non_frame_inputs() -> None:
+    def joined(*args: Any) -> None:
+        raise AssertionError("recipe inspection must not execute the builder")
+
+    joined.edge_join_roles = (0, 1)
+    joined.edge_join_config = {"how": "left", "on": "id"}
+    node = _node("join", NodeType.EDGE_JOIN, {})
+    assert (
+        execute_lazy_module._edge_join_recipe(joined, node, [pl.DataFrame({"id": [1]}), object()])
+        is None
+    )
+    assert (
+        execute_lazy_module._write_recipe(
+            joined, _node("transform", NodeType.POLARS, {"code": "df = df"}), [object()]
+        )
+        is None
+    )
+
+
+def test_single_frame_api_builder_preserves_legacy_null_handle_input() -> None:
+    graph = PipelineGraph(
+        nodes=[_node("api", NodeType.API_INPUT, {}), _node("T", NodeType.POLARS, {})],
+        edges=[GraphEdge(id="edge", source="api", target="T")],
+    )
+
+    def build(node: GraphNode, **kwargs: Any) -> Any:
+        if node.id == "api":
+            return node.id, lambda: pl.LazyFrame({"x": [1, 2]}), True
+        return node.id, lambda frame: frame.with_columns(y=pl.col("x") + 1), False
+
+    outputs, *_ = execute_lazy_graph(graph, build, enforce_contracts=False)
+    assert outputs["T"].collect().to_dict(as_series=False) == {"x": [1, 2], "y": [2, 3]}
+
+
 def _node(node_id: str, node_type: NodeType, config: dict[str, Any]) -> GraphNode:
     return GraphNode(id=node_id, data=NodeData(label=node_id, nodeType=node_type, config=config))
 
@@ -345,6 +379,58 @@ def test_seeded_rerun_builds_nothing_upstream(project: Path, store: NodeSnapshot
     assert second.calls["src"] == 0 and second.calls["other"] == 0
     assert second.calls["B"] == 1
     assert_frame_equal(second.frame, first.frame)
+
+
+@pytest.mark.parametrize("prewritten", [False, True])
+def test_capture_without_metrics_publishes_eager_or_precomputed_data(
+    project: Path, store: NodeSnapshotStore, prewritten: bool
+) -> None:
+    from haute._chunked_writes import part_name
+
+    graph = _join_graph(project)
+    expected = pl.DataFrame({"id": [1], "a": [2], "d": [0.1]})
+    with _planned(graph, store) as (plan, _, _):
+        captures = execute_lazy_module._PlannedCaptures(
+            plan, graph, execution_context=None, incoming_edges_by_target={}
+        )
+        identity = plan.decision.captures["J"].identity
+        artifact = None
+        if prewritten:
+            artifact = store.stage_node_output(identity, staging_token=plan.staging_token)
+            expected.write_parquet(artifact.directory / part_name(0))
+        result = captures.capture("J", expected, {}, artifact=artifact, prewritten=prewritten)
+        assert_frame_equal(result.collect(), expected)
+        latest = store.latest_generation(identity)
+        assert latest is not None
+        assert_frame_equal(latest.lazy_frame.collect(), expected)
+        if prewritten:
+            part = latest.generation.metadata.parts[0]
+            assert part.digest == content_hash(latest.generation.directory / part.name)
+    assert _staging_dirs(store) == []
+
+
+@pytest.mark.parametrize("invalid", ["multiframe", "schema"])
+def test_invalid_capture_leaves_no_staging_or_publication(
+    project: Path, store: NodeSnapshotStore, invalid: str
+) -> None:
+    from haute._node_snapshots import NodeSnapshotMultiFrameUnsupportedError
+
+    graph = _join_graph(project)
+    with _planned(graph, store) as (plan, context, _):
+        captures = execute_lazy_module._PlannedCaptures(
+            plan, graph, execution_context=context, incoming_edges_by_target={}
+        )
+        identity = plan.decision.captures["J"].identity
+        if invalid == "multiframe":
+            frame = {"one": pl.LazyFrame({"id": [1]})}
+            error = NodeSnapshotMultiFrameUnsupportedError
+        else:
+            frame = pl.LazyFrame({"id": [1]}).select("absent")
+            error = pl.exceptions.ColumnNotFoundError
+        with pytest.raises(error):
+            captures.capture("J", frame, {})
+        assert store.latest_generation(identity) is None
+        assert _staging_dirs(store) == []
 
 
 def test_a_bounded_run_publishes_its_capture_without_rehashing_it(
@@ -804,6 +890,124 @@ def test_a_source_capture_waits_for_the_input_check(
     assert not _staging_dirs(store)
 
 
+def test_verified_source_capture_is_reused_by_its_consumer(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    graph = _captured_source_graph(project)
+    first = _run(graph, store, required={"T": ["a1"]})
+    second = _run(graph, store, required={"T": ["a1"]})
+    assert first.captures["src"]["outcome"] == "published"
+    assert set(second.seeds) == {"src"}
+    assert first.frame["a1"].to_list() == list(range(1, _ROWS + 1))
+    assert_frame_equal(second.frame, first.frame)
+
+
+def test_planned_eager_orphan_transform_reports_missing_input_without_prebinding(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    graph = _graph(project, [("T", NodeType.POLARS, _code("df = pl.LazyFrame({'x': [7]})"))], [])
+    calls: list[str] = []
+
+    def build(node: GraphNode, **kwargs: Any) -> Any:
+        def run() -> pl.LazyFrame:
+            calls.append(node.id)
+            return pl.LazyFrame({"x": [7]})
+
+        return node.id, run, False
+
+    with _planned(graph, store, profile=ExecutionProfile.PREVIEW_EAGER) as (plan, context, _):
+        result = execute_lazy_module._execute_eager_core(
+            graph,
+            build,
+            target_node_id="T",
+            execution_context=context,
+            snapshot_plan=plan,
+            enforce_contracts=False,
+            swallow_errors=True,
+        )
+        assert result.outputs["T"] is None
+        assert result.errors == {"T": "No input data available for node 'T'"}
+    assert calls == []
+
+
+def test_equivalent_cloned_passthrough_frame_retains_its_write_recipe(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute._chunked_writes import WriteRecipe
+    from haute.executor import _compile_preamble, _pipeline_dir
+
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("A", NodeType.POLARS, _code("df = src.with_columns((pl.col('a') + 1).alias('next'))")),
+            ("T", NodeType.MODELLING, {}),
+        ],
+        [("src", "A"), ("A", "T")],
+    )
+    real_select = execute_lazy_module.select_edge_source_output
+    clones: list[pl.LazyFrame] = []
+
+    def cloned(frame: Any, edge: GraphEdge) -> Any:
+        selected = real_select(frame, edge)
+        if edge.target == "T":
+            selected = selected.clone()
+            clones.append(selected)
+        return selected
+
+    monkeypatch.setattr(execute_lazy_module, "select_edge_source_output", cloned)
+    recipes: dict[str, WriteRecipe] = {}
+    with _planned(graph, store) as (plan, context, _):
+        outputs, *_ = execute_lazy_graph(
+            graph,
+            _counting_build(Counter()),
+            target_node_id="T",
+            preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph)),
+            execution_context=context,
+            prepare_inputs=False,
+            snapshot_plan=plan,
+            write_recipes=recipes,
+        )
+        assert clones
+        assert "T" in recipes and recipes["T"].fn is not None
+        assert_frame_equal(recipes["T"].native().collect(), outputs["T"].collect())
+        assert outputs["T"].collect()["next"].to_list() == list(range(1, _ROWS + 1))
+
+
+@pytest.mark.parametrize("eager", [False, True])
+def test_seeded_execution_does_not_require_a_metrics_context(
+    project: Path, store: NodeSnapshotStore, eager: bool
+) -> None:
+    from haute.executor import _compile_preamble, _pipeline_dir
+
+    graph = _join_graph(project)
+    expected = _run(graph, store).frame
+    profile = ExecutionProfile.PREVIEW_EAGER if eager else ExecutionProfile.LAZY_SINK
+    request = _request(graph, "T", required=None, profile=profile)
+    calls: Counter[str] = Counter()
+    with open_seed_plan(request, store=store) as plan:
+        kwargs = {
+            "target_node_id": "T",
+            "preamble_ns": _compile_preamble(
+                graph.preamble or "", pipeline_dir=_pipeline_dir(graph)
+            ),
+            "snapshot_plan": plan,
+        }
+        if eager:
+            result = execute_lazy_module._execute_eager_core(
+                graph, _counting_build(calls), **kwargs
+            )
+            actual = result.outputs["T"]
+        else:
+            outputs, *_ = execute_lazy_graph(
+                graph, _counting_build(calls), prepare_inputs=False, **kwargs
+            )
+            actual = outputs["T"].collect()
+        assert set(plan.decision.seeds) == {"J"}
+        assert calls["src"] == 0 and calls["other"] == 0
+        assert_frame_equal(actual, expected)
+
+
 def test_a_source_capture_whose_input_changes_before_publishing_stops_the_run(
     project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -998,6 +1202,24 @@ def test_model_score_capture_is_the_scored_file(
     latest = store.latest_generation(_identity(store, graph, "M", "batch"))
     assert latest is not None
     assert_frame_equal(latest.lazy_frame.collect(), run.frame)
+
+
+def test_failed_model_score_cleans_its_staged_capture(
+    project: Path,
+    store: NodeSnapshotStore,
+    scoring_model: type[_TenTimes],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _scored_graph(project)
+
+    def fail_prediction(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("prediction failed")
+
+    monkeypatch.setattr(scoring_model, "predict", fail_prediction)
+    with pytest.raises(RuntimeError, match="prediction failed"):
+        _run(graph, store, source="batch")
+    assert _staging_dirs(store) == []
+    assert store.latest_generation(_identity(store, graph, "M", "batch")) is None
 
 
 def test_a_scored_capture_publishes_the_scorer_s_own_digest(
@@ -1424,7 +1646,10 @@ def test_lazy_run_join_capture_is_chunked_into_parts(
     )
 
 
-def test_metrics_list_skipped_capture_points(project: Path, store: NodeSnapshotStore) -> None:
+@pytest.mark.parametrize("eager", [False, True])
+def test_metrics_list_skipped_capture_points(
+    project: Path, store: NodeSnapshotStore, eager: bool
+) -> None:
     graph = _graph(
         project,
         [
@@ -1446,8 +1671,25 @@ def test_metrics_list_skipped_capture_points(project: Path, store: NodeSnapshotS
             ("D2", "T"),
         ],
     )
-    context = _context(ExecutionProfile.TRAINING_PREP)
-    run = _run(graph, store, context=context)
+    profile = ExecutionProfile.TRAINING_PREP
+    context = _context(profile)
+    if eager:
+        from haute.executor import _compile_preamble, _pipeline_dir
+
+        with _planned(graph, store, context=context, profile=profile) as (plan, _, _):
+            result = execute_lazy_module._execute_eager_core(
+                graph,
+                _counting_build(Counter()),
+                target_node_id="T",
+                preamble_ns=_compile_preamble(
+                    graph.preamble or "", pipeline_dir=_pipeline_dir(graph)
+                ),
+                execution_context=context,
+                snapshot_plan=plan,
+            )
+            run = RunResult(result.outputs["T"], context.metrics_payload(status="completed"))
+    else:
+        run = _run(graph, store, context=context)
 
     assert run.metrics["shared_snapshot_capture_skips"] == [
         {"node_id": "A", "reason": "cheap_segment"},

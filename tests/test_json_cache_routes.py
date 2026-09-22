@@ -26,6 +26,26 @@ from httpx import Response
 from haute.routes._isolated_worker_async import WorkerCancellationGate
 
 
+def test_build_running_matches_the_working_directory_and_finished_builds_disappear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute.routes.json_cache as routes
+    from haute._json_flatten import _json_cache_dir
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(routes, "_build_progress", {})
+    source = str(tmp_path / "rows.json")
+    working = _json_cache_dir(source, "working")
+    assert routes.json_cache_build_running(working) is False
+    # Only a live build for this data file makes its working cache busy.
+    routes._build_progress[source] = {"active_count": 1}
+    assert routes.json_cache_build_running(working) is True
+    assert routes.json_cache_build_running(_json_cache_dir(source, "committed")) is False
+    assert routes.json_cache_build_running(_json_cache_dir("other.json", "working")) is False
+    routes._finish_build_progress(source)
+    assert routes.json_cache_build_running(working) is False
+
+
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """TestClient with cwd set to a temp directory."""

@@ -173,3 +173,33 @@ reports through its existing explicit allowlist. Browser follow-up repairs use
 the shared stale-status text and the visually inspected narrow Banding artifact.
 These repairs require a subsequent CI run; this paragraph does not mark the
 failed run as passing.
+
+The second implementation CI run, `35727641335` at `626c9a98`, passed both
+backend compatibility lanes (Python 3.13: 21,307 passed, 22 skipped), both
+coverage test shards, frontend, static/typing, performance and all smoke lanes.
+The remaining browser failure was the narrow Rating screenshot: the reviewed
+actual has identical content with a four-pixel shorter capture. The journey's
+functional save/reload checks passed. Its Linux baseline is updated from that
+artifact, with no tolerance increase.
+
+That run also exposed missing coverage in the PR's execution-critical changes.
+Focused tests now cover parser/import/callback classifications, malformed worker
+envelopes, UTC timestamps, route error adaptation, capture cleanup and digest
+verification, preview input/generation races, and partial-cache error retention.
+The obsolete critical-coverage entries for retired Explore modules are replaced
+by their current source-store, node-snapshot, analysis-result, node-data-service
+and frame-profile owners at the same thresholds. The 100% changed-code
+requirement is unchanged. A redundant missing-source guard in lazy recipe
+construction is removed: the prepared boundary must contain its source, as
+already required by builder construction and input routing.
+
+An independent targeted batch passed 924 tests; coverage-checker and documentation
+tests passed 82 tests. Ruff is clean on the changed files and mypy reports no
+issues in 288 source files. Combining the downloaded CI coverage with genuine
+targeted test execution passes all 44 critical-module thresholds. The final
+affected-module batch passes 439 tests; after making the diagnostic collector's
+existing report-mode invariant explicit, its 103 classifier tests also pass.
+The combined coverage passes the unchanged 100% changed-code gate: 1,663
+statement targets and 623 branch targets. This combines the actual Linux CI
+shards with the new targeted Windows tests; CI must still independently verify
+the final head and mutation results before completion.

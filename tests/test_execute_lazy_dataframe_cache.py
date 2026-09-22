@@ -162,7 +162,13 @@ def _chain_build_fn(calls: list[str]):
 
 def test_execute_lazy_dataframe_cache_materializes_requested_node_on_first_run(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import haute._execute_lazy as lazy_module
+
+    trims: list[None] = []
+    monkeypatch.setattr(lazy_module, "_GC_BATCH_INTERVAL", 1)
+    monkeypatch.setattr(lazy_module, "_malloc_trim", lambda: trims.append(None))
     graph = _graph()
     cache = execution.DataFrameExecutionCache(
         root=tmp_path,
@@ -185,6 +191,7 @@ def test_execute_lazy_dataframe_cache_materializes_requested_node_on_first_run(
     assert entry.path.exists()
     assert entry.row_count == 3
     assert calls == ["source", "target"]
+    assert trims == [None]
     assert outputs["target"].collect().to_dict(as_series=False) == {
         "x": [1, 2, 3],
         "y": [2, 4, 6],

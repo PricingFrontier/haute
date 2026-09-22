@@ -20,6 +20,16 @@ if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
 
+@pytest.mark.parametrize("value", [float("inf"), float("-inf")])
+def test_infinite_pivot_dimension_has_a_public_remediation(value: float) -> None:
+    from haute.routes._pivot_service import PivotContractError, _member_key
+
+    with pytest.raises(PivotContractError) as caught:
+        _member_key(value)
+    assert caught.value.failure.reason_code == "invalid_pivot_member"
+    assert "infinite" in caught.value.failure.remediation
+
+
 _TERMINAL = {
     "completed",
     "error",

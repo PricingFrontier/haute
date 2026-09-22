@@ -58,6 +58,203 @@ def _pinned_admission_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HAUTE_EXPLORE_MEMORY_LIMIT_MB", "1024")
 
 
+def _valid_profile() -> Any:
+    from haute.schemas import NodeDataProfile
+
+    return NodeDataProfile(row_count=1, column_count=0, data_version="v", generated_at=1.0)
+
+
+@pytest.mark.parametrize(
+    ("outcome", "message"),
+    [
+        (object(), "invalid result envelope"),
+        (service_mod._ProfileWorkerOutcome(), "omitted its profile"),
+        (
+            service_mod._ProfileWorkerOutcome(
+                failure_kind="contract", detail="bad", profile=object()
+            ),
+            "mixed success",
+        ),
+        (service_mod._ProfileWorkerOutcome(failure_kind="contract"), "omitted its detail"),
+        (
+            service_mod._ProfileWorkerOutcome(failure_kind="public_contract", detail="bad"),
+            "invalid contract payload",
+        ),
+        (
+            service_mod._ProfileWorkerOutcome(
+                failure_kind="public_contract", detail="bad", payload={}, terminal_reason="bad"
+            ),
+            "invalid contract payload",
+        ),
+        (
+            service_mod._ProfileWorkerOutcome(failure_kind="memory", detail="bad"),
+            "invalid memory payload",
+        ),
+        (
+            service_mod._ProfileWorkerOutcome(failure_kind="contract", detail=""),
+            "omitted its detail",
+        ),
+        (
+            service_mod._ProfileWorkerOutcome(
+                failure_kind="memory", detail="bad", payload={"error_code": "wrong"}
+            ),
+            "invalid memory payload",
+        ),
+    ],
+)
+def test_validated_profile_rejects_invalid_envelopes(outcome: object, message: str) -> None:
+    with pytest.raises(RuntimeError, match=message) as caught:
+        service_mod._validated_profile_success(outcome)
+    assert type(caught.value) is RuntimeError
+
+
+@pytest.mark.parametrize(
+    ("outcome", "message"),
+    [
+        (object(), "invalid result envelope"),
+        (service_mod._NodeSnapshotWorkerOutcome(), "omitted its publication outcome"),
+        (
+            service_mod._NodeSnapshotWorkerOutcome(outcome="published"),
+            "outcome and generation disagree",
+        ),
+        (
+            service_mod._NodeSnapshotWorkerOutcome(outcome="superseded", generation_id="g"),
+            "outcome and generation disagree",
+        ),
+        (
+            service_mod._NodeSnapshotWorkerOutcome(generation_id="g"),
+            "omitted its publication outcome",
+        ),
+        (
+            service_mod._NodeSnapshotWorkerOutcome(
+                outcome="published", generation_id="g", worker_evidence=[]
+            ),
+            "invalid evidence",
+        ),
+        (
+            service_mod._NodeSnapshotWorkerOutcome(
+                failure_kind="contract", detail="bad", outcome="published"
+            ),
+            "mixed success",
+        ),
+        (service_mod._NodeSnapshotWorkerOutcome(failure_kind="contract"), "omitted its detail"),
+        (
+            service_mod._NodeSnapshotWorkerOutcome(failure_kind="contract", detail=""),
+            "omitted its detail",
+        ),
+        (
+            service_mod._NodeSnapshotWorkerOutcome(failure_kind="public_contract", detail="bad"),
+            "invalid contract payload",
+        ),
+        (
+            service_mod._NodeSnapshotWorkerOutcome(
+                failure_kind="public_contract", detail="bad", payload={}
+            ),
+            "invalid contract payload",
+        ),
+        (
+            service_mod._NodeSnapshotWorkerOutcome(
+                failure_kind="public_contract", detail="bad", payload={"error_code": "x"}
+            ),
+            "invalid contract payload",
+        ),
+        (
+            service_mod._NodeSnapshotWorkerOutcome(
+                failure_kind="public_contract",
+                detail="bad",
+                payload={"error_code": "x", "error_detail": {}},
+                terminal_reason="bad",
+            ),
+            "invalid contract payload",
+        ),
+        (
+            service_mod._NodeSnapshotWorkerOutcome(failure_kind="memory", detail="bad"),
+            "invalid memory payload",
+        ),
+        (
+            service_mod._NodeSnapshotWorkerOutcome(
+                failure_kind="memory", detail="bad", payload={"error_code": "wrong"}
+            ),
+            "invalid memory payload",
+        ),
+        (
+            service_mod._NodeSnapshotWorkerOutcome(
+                failure_kind="contract", detail="bad", payload={}
+            ),
+            "unexpected payload",
+        ),
+    ],
+)
+def test_validated_snapshot_rejects_invalid_envelopes(outcome: object, message: str) -> None:
+    with pytest.raises(RuntimeError, match=message) as caught:
+        service_mod._validated_worker_success(outcome)
+    assert type(caught.value) is RuntimeError
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        service_mod._ProfileWorkerOutcome(failure_kind="contract", detail="bad"),
+        service_mod._ProfileWorkerOutcome(
+            failure_kind="memory", detail="bad", payload={"error_code": "memory_limit"}
+        ),
+        service_mod._ProfileWorkerOutcome(
+            failure_kind="public_contract",
+            detail="bad",
+            payload={"error_code": "x", "error_detail": {}},
+            terminal_reason="contract_error",
+        ),
+        service_mod._ProfileWorkerOutcome(
+            failure_kind="public_contract",
+            detail="bad",
+            payload={"error_code": "x", "error_detail": {}},
+            terminal_reason="memory_limited",
+        ),
+    ],
+)
+def test_validated_profile_preserves_worker_errors(outcome: object) -> None:
+    with pytest.raises(service_mod._WorkerReportedError) as caught:
+        service_mod._validated_profile_success(outcome)
+    assert caught.value.kind == outcome.failure_kind and caught.value.detail == "bad"
+    assert caught.value.payload is outcome.payload
+    assert caught.value.terminal_reason == outcome.terminal_reason
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        service_mod._NodeSnapshotWorkerOutcome(failure_kind="contract", detail="bad"),
+        service_mod._NodeSnapshotWorkerOutcome(
+            failure_kind="memory", detail="bad", payload={"error_code": "memory_limit"}
+        ),
+        service_mod._NodeSnapshotWorkerOutcome(
+            failure_kind="public_contract",
+            detail="bad",
+            payload={"error_code": "x", "error_detail": {}},
+            terminal_reason="contract_error",
+            worker_evidence={"captures": 1},
+        ),
+    ],
+)
+def test_validated_snapshot_preserves_worker_errors(outcome: object) -> None:
+    with pytest.raises(service_mod._WorkerReportedError) as caught:
+        service_mod._validated_worker_success(outcome)
+    assert caught.value.kind == outcome.failure_kind and caught.value.detail == "bad"
+    assert caught.value.payload is outcome.payload
+    assert caught.value.terminal_reason == outcome.terminal_reason
+    assert caught.value.worker_evidence is outcome.worker_evidence
+
+
+def test_validated_success_returns_same_success_envelope() -> None:
+    profile = service_mod._ProfileWorkerOutcome(profile=_valid_profile())
+    assert service_mod._validated_profile_success(profile) is profile.profile
+    for outcome in (
+        service_mod._NodeSnapshotWorkerOutcome(outcome="published", generation_id="g"),
+        service_mod._NodeSnapshotWorkerOutcome(outcome="superseded"),
+    ):
+        assert service_mod._validated_worker_success(outcome) is outcome
+
+
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(haute_scratch)

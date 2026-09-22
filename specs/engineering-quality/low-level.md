@@ -235,6 +235,12 @@
    preceding main revision for a push). The coverage-gate checkout contains the
    required history; an unreadable base revision is a gate failure rather than an
    empty-diff pass.
+   Critical coverage follows the implementation owners when a module is retired.
+   The former Explore cache's 84% statement/70% branch floors apply to the shared
+   source store, node snapshots and analysis results. The former Explore service's
+   94%/86% floors apply to node-data orchestration and frame profiling. This
+   preserves the existing floors while checking the modules that now execute
+   those responsibilities; deleted files cannot satisfy a coverage gate.
 4. Compatibility, optional-dependency, platform, package, init, and mutation
    configuration smoke lanes run their named commands. The 3.14 probe is
    explicitly allowed to fail without blocking the workflow result.

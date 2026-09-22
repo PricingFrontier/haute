@@ -21,11 +21,26 @@ from haute.schemas import (
     OptimiserFrontierRequest,
     OptimiserSolveRequest,
     PreviewNodeRequest,
+    PreviewSeedPlanEntry,
     SavePipelineRequest,
     TraceRequest,
     TrainRequest,
     WriteOutputRequest,
 )
+
+
+@pytest.mark.parametrize("created_at", ["2026-09-22T12:00:00", "2026-09-22T12:00:00+01:00"])
+def test_preview_seed_plan_rejects_timestamps_without_utc_offset(created_at: str) -> None:
+    with pytest.raises(ValidationError, match="created_at must include a UTC offset"):
+        PreviewSeedPlanEntry(
+            node_id="join",
+            node_label="Join",
+            identity_digest="a" * 64,
+            generation_id="generation",
+            columns=None,
+            created_at=created_at,
+            kind="seeded",
+        )
 
 
 def test_execution_cache_proof_rejects_an_incoherent_miss_total() -> None:

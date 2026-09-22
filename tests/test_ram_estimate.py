@@ -23,6 +23,7 @@ from haute._ram_estimate import (
     _data_input_parquet_artifact,
     _dedupe_resolved_columns,
     _detailed_ancestor_source_metadata,
+    _detailed_parquet_metadata,
     _detailed_source_metadata_for_node,
     _DetailedSourceMetadata,
     _edge_join_key_columns_on_path,
@@ -70,6 +71,12 @@ def test_decoded_frame_row_width_empty_and_invalid_inputs_fail_clearly() -> None
     assert decoded_frame_row_width_bytes(pl.DataFrame(schema={"a": pl.String})) == 8
     with pytest.raises(TypeError, match="Polars DataFrame"):
         decoded_frame_row_width_bytes(object())  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("path", [[], "missing-*.parquet"])
+def test_detailed_parquet_metadata_refuses_empty_file_sets(path: object) -> None:
+    with pytest.raises(FileNotFoundError, match="no parquet files match"):
+        _detailed_parquet_metadata(path)  # type: ignore[arg-type]
 
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
