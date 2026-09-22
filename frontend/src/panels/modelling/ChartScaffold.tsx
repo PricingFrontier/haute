@@ -1,14 +1,54 @@
-import type { CSSProperties, ReactNode, SVGProps } from "react"
+import {
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+  type SVGProps,
+} from "react"
 
-export const MODELLING_CHART_GRID_COLOR = "rgba(255,255,255,.06)"
+export const MODELLING_CHART_GRID_COLOR = "var(--border)"
 export const MODELLING_CHART_AXIS_TEXT_COLOR = "var(--text-muted)"
-export const MODELLING_CHART_AXIS_FONT_SIZE = 10
+export const MODELLING_CHART_AXIS_FONT_SIZE = 12
 
 const CHART_SURFACE_STYLE = {
-  background: "var(--bg-input)",
-  borderRadius: 6,
-  border: "1px solid var(--border)",
+  display: "block",
+  overflow: "visible",
 } satisfies CSSProperties
+
+/** Pixel geometry follows the container; labels never shrink with a viewBox. */
+export function ResponsiveChart({
+  children,
+  width,
+  className,
+}: {
+  children: (width: number) => ReactNode
+  width?: number
+  className?: string
+}) {
+  const container = useRef<HTMLDivElement>(null)
+  // Initial geometry is replaced during layout, before browser paint. Zero-sized
+  // hidden panes retain that geometry until their first positive measurement.
+  const [measuredWidth, setMeasuredWidth] = useState(640)
+  useLayoutEffect(() => {
+    if (width !== undefined) return
+    const element = container.current!
+    const measure = (nextWidth: number) => {
+      if (nextWidth > 0) setMeasuredWidth(Math.floor(nextWidth))
+    }
+    measure(element.getBoundingClientRect().width)
+    // jsdom and static renderers have no layout observer.
+    if (typeof ResizeObserver === "undefined") return
+    const observer = new ResizeObserver(([entry]) => measure(entry.contentRect.width))
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [width])
+  return (
+    <div ref={container} className={`min-w-0 w-full ${className ?? ""}`}>
+      {children(width ?? measuredWidth)}
+    </div>
+  )
+}
 
 type ChartSvgProps = Omit<SVGProps<SVGSVGElement>, "children" | "height" | "width"> & {
   width: number
@@ -69,7 +109,9 @@ type ChartLegendProps = {
 }
 
 export function ChartLegend({ items, compact = false }: ChartLegendProps) {
-  const className = compact ? "flex gap-3 mt-1 text-[10px]" : "flex gap-4 mt-1.5 text-[11px]"
+  const className = compact
+    ? "flex flex-wrap gap-x-3 gap-y-1 mt-1 text-xs"
+    : "flex flex-wrap gap-x-4 gap-y-1 mt-1.5 text-xs"
   return (
     <div className={className} style={{ color: MODELLING_CHART_AXIS_TEXT_COLOR }}>
       {items.map((item, index) => {
@@ -84,7 +126,7 @@ export function ChartLegend({ items, compact = false }: ChartLegendProps) {
               }
               data-testid="chart-legend-swatch"
               style={{
-                background: item.color,
+                background: isDashed ? undefined : item.color,
                 borderTop: isDashed ? `1px dashed ${item.color}` : undefined,
                 opacity: item.opacity,
               }}

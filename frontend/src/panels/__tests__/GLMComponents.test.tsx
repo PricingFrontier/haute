@@ -553,10 +553,25 @@ describe("GLMCoefficientsTab", () => {
     const result = makeTrainResult({ glm_coefficients: makeGlmCoefficients() })
     render(<GLMCoefficientsTab result={result} />)
     // Default sort: by p_value asc. Click "Term" to sort by name
-    fireEvent.click(screen.getByText("Term"))
+    fireEvent.click(screen.getByRole("button", { name: "Term" }))
     const rows = document.querySelectorAll("tbody tr")
     const firstCell = rows[0].querySelector("td")!.textContent
     expect(firstCell).toBe("(Intercept)")
+  })
+
+  it("searches terms and shows a Wald interval only when inference is valid", () => {
+    const result = makeTrainResult({ glm_coefficients: [{ feature: "age adjustment", coefficient: 1, std_error: 0.2, z_value: 5, p_value: 0.01, significance: "*" }] })
+    render(<GLMCoefficientsTab result={result} />)
+    fireEvent.change(screen.getByLabelText("Search coefficient terms"), { target: { value: "age" } })
+    fireEvent.click(screen.getByRole("button", { name: "Intervals" }))
+    expect(screen.getByRole("region", { name: "95% Wald intervals" })).toHaveTextContent("1.000 [0.608, 1.392]")
+  })
+
+  it("explains when no coefficient term matches a search", () => {
+    const result = makeTrainResult({ glm_coefficients: makeGlmCoefficients() })
+    render(<GLMCoefficientsTab result={result} />)
+    fireEvent.change(screen.getByLabelText("Search coefficient terms"), { target: { value: "absent" } })
+    expect(screen.getByRole("status")).toHaveTextContent("No coefficient terms match your search.")
   })
 
   it("clicking same column header reverses sort direction", () => {
@@ -587,6 +602,7 @@ describe("GLMCoefficientsTab", () => {
     render(<GLMCoefficientsTab result={result} />)
     expect(screen.getByRole("note")).toHaveTextContent(reason)
     expect(screen.queryByText("Signif. codes:")).toBeNull()
+    expect(screen.queryByRole("button", { name: "Intervals" })).toBeNull()
     const rows = Array.from(document.querySelectorAll("tbody tr"))
     expect(rows.map((row) => row.querySelector("td")!.textContent)).toEqual(["(Intercept)", "age", "region_B", "region_C"])
     expect(Array.from(rows[0].querySelectorAll("td")).slice(2).map((cell) => cell.textContent)).toEqual(["–", "–", "–", "–"])

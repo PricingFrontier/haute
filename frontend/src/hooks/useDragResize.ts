@@ -5,7 +5,8 @@ import { useState, useRef, useCallback, useEffect } from "react"
  * that cannot shrink (banners). A flex-growing sibling such as the canvas yields all of its height.
  */
 function availablePanelHeight(panel: HTMLElement | null): number {
-  const column = panel?.parentElement
+  let column = panel?.parentElement
+  while (column && getComputedStyle(column).display === "contents") column = column.parentElement
   const columnHeight = column?.getBoundingClientRect().height ?? 0
   if (panel && column && columnHeight > 0) {
     const reserved = Array.from(column.children).reduce((sum, sibling) => (

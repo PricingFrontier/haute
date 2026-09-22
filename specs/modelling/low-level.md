@@ -1,5 +1,45 @@
 # Modelling — Low-Level Specification
 
+## Validation workspace presentation
+
+`ModellingPreview` owns the active result pane, Focus view and a shared AvE/PDP
+feature selection/search. Node/result changes reset these selections. It passes
+controlled feature state into both diagnostic panes. The feature picker uses the
+union of AvE/PDP feature names in result order, preserving feature names verbatim
+(including commas), and explicitly distinguishes unavailable diagnostics.
+
+`PreviewPanelFrame` accepts opt-in initial height, height-change callback and
+focused/fill-height presentation. `useUIStore` remembers only the modelling docked
+height (initially 420px) for the session. Existing generic preview defaults remain
+256px. Focus view reuses `ModalShell` in an optionally inactive/docked state so the
+same React subtree remains mounted through focus transitions. The modal manages
+Escape, keyboard focus containment and restoration. Collapse and drag controls
+are omitted while focused; returning restores the docked height.
+Global graph shortcuts ignore events inside an active modal, so Escape only exits
+Focus view. Focus navigation includes disclosure summaries and excludes closed
+disclosure contents.
+
+`PreviewPanelTabs` has an opt-in result-workspace appearance: content-sized,
+sentence-case tabs with readable labels and an underline. Existing tab keyboard
+navigation and other callers' appearance remain unchanged. The result content
+uses container queries, so layout responds to the actual pane rather than the
+browser width.
+
+`ChartScaffold` provides a `ResponsiveChart` render-prop wrapper that measures its
+container through ResizeObserver and supplies the current pixel width; no SVG
+viewBox scaling is used to shrink chart labels. Existing explicit width/height
+chart props remain usable. Axis text is 12px, legends wrap, reference/grid colours
+use theme tokens, and charts provide accessible names. Shared numeric-domain and
+tick helpers account for zero/constant ranges and reserve margins for labels.
+AvE and PDP reuse this scaffold with one controlled feature browser and an
+accessible value disclosure. Rendering never changes the underlying result data.
+
+Targeted frontend verification covers focus entry/exit and retained selection,
+session height memory, resizing, shared AvE/PDP state and unavailable features,
+categorical vs numeric AvE marks, missing/single-valued PDP data, Lorenz-only
+results, residual ticks, signed feature importance/filtering, coefficient search/
+keyboard sorting and invalid inference, and disclosed Summary evidence.
+
 ## Module map
 
 | File | Responsibility |

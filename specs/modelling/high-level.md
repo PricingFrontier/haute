@@ -19,6 +19,52 @@ regulatory-friendly" ends of the insurance pricing spectrum. Frequency/severity/
 premium modelling conventions — exposure weights, offset columns, Tweedie/Poisson/Gamma
 losses — are first-class throughout.
 
+## Model validation workspace
+
+Completed training results use a dedicated, readable validation workspace within
+the existing preview shell. It opens at a 420px docked height, remembers the user's
+resized height during the application session, and offers a labelled Focus view
+that fills the viewport. Entering or leaving Focus view preserves the active pane
+and its selections; Escape returns to the docked workspace and restores focus.
+Other preview types retain their existing sizing and controls.
+
+The navigation uses sentence-case, content-sized tabs. Every pane keeps the
+diagnostics partition (final test or development) and its row count visible;
+development diagnostics are explicitly described as not held-out performance.
+Charts measure their available width instead of forcing horizontal scrolling,
+use readable labels, and expose full values without relying on tiny or truncated
+axis text. Numeric formatting and actual/expected colours are consistent across
+the workspace. Related charts stack when their container is narrow.
+
+- Summary leads with final-test performance when available. Diagnostic metrics
+  retain their partition labels. Model/evaluation facts stay visible; fit details,
+  candidate-selection evidence and tuning details are disclosed on demand. No
+  metric or diagnostic failure is silently removed or relabelled as held-out.
+- Coefficients offer searchable terms, keyboard-operable sorting, a sticky header,
+  and an optional estimate/95% Wald interval view only when inference is valid.
+  Unavailable inference retains its explicit explanation and missing statistics.
+- Lift uses a chart-first layout with the raw table under a disclosure. Lift and
+  Lorenz may be compared together when the workspace is wide; a narrow workspace
+  has a labelled view switch. A result containing only Lorenz data still renders.
+  Deciles identify their prediction ordering, and full values/counts are available.
+- Residual distribution and actual/predicted scatter use aligned responsive
+  layouts, numeric residual ticks and explicit reference lines. Existing weighting,
+  sampling disclosure and diagnostic statistics are preserved.
+- Feature importance offers search and Top 20/All controls, explains each available
+  importance method, and distinguishes signed values spatially around zero.
+- AvE and PDP share the selected feature and feature search while switching panes.
+  A selection unavailable in a pane shows a clear unavailable message rather than
+  silently selecting another feature. A new node or training result resets this
+  state. The feature picker moves above the chart in narrow containers.
+- AvE displays actual and expected together with a separate, aligned exposure
+  strip. Unordered categories use unconnected marks; numeric bins retain their
+  ordered lines. Full bin labels, values and exposure are available in a hover/
+  focus detail and a disclosed table.
+- PDP uses the feature name on its axis, numeric curves and horizontal categorical
+  displays with readable category labels. Missing levels and per-feature errors
+  retain their explicit existing representations. No uncertainty or exposure is
+  invented when the result does not provide it.
+
 ## Scope
 
 In scope:

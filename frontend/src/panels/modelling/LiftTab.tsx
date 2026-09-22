@@ -1,235 +1,304 @@
-/**
- * Lift tab for the ModellingPreview panel.
- *
- * Two sub-views toggled by a mini switch:
- * 1. Double Lift Chart — SVG bar chart (actual vs predicted by decile) + raw table
- * 2. Lorenz Curve — SVG line chart with Gini annotation
- */
 import { useState } from "react"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
-import { CHART_COLORS } from "../../theme/colors"
+import { CHART_COLORS, MODEL_COLORS } from "../../theme/colors"
 import {
   ChartEmptyState,
   ChartLegend,
   ChartSvg,
-  MODELLING_CHART_AXIS_FONT_SIZE as AXIS_FONT_SIZE,
-  MODELLING_CHART_AXIS_TEXT_COLOR as AXIS_TEXT_COLOR,
-  MODELLING_CHART_GRID_COLOR as GRID_COLOR,
+  MODELLING_CHART_AXIS_FONT_SIZE as axisFontSize,
+  MODELLING_CHART_AXIS_TEXT_COLOR as axisTextColor,
+  MODELLING_CHART_GRID_COLOR as gridColor,
+  ResponsiveChart,
 } from "./ChartScaffold"
+import { chartLabelIndices, chartTicks, formatChartNumber } from "./chartGeometry"
 
 interface LiftTabProps {
   result: TrainResult
   width?: number
   height?: number
 }
+type LiftPoint = { decile: number; actual: number; predicted: number; count: number }
+type LorenzPoint = { cum_weight_frac: number; cum_actual_frac: number }
+const actualColor = CHART_COLORS.actual
+const predictedColor = CHART_COLORS.predicted
+const referenceColor = "var(--text-muted)"
 
-const ACTUAL_COLOR = CHART_COLORS.actual
-const PREDICTED_COLOR = CHART_COLORS.predicted
-
-export function LiftTab({ result, width = 700, height = 260 }: LiftTabProps) {
+export function LiftTab({ result, width, height = 280 }: LiftTabProps) {
   const [view, setView] = useState<"lift" | "lorenz">("lift")
-
-  const hasLift = result.double_lift && result.double_lift.length > 0
-  const hasLorenz = result.lorenz_curve && result.lorenz_curve.length > 0
-
-  if (!hasLift && !hasLorenz) {
-    return <ChartEmptyState>No lift data available</ChartEmptyState>
-  }
+  const hasLift = Boolean(result.double_lift?.length)
+  const hasLorenz = Boolean(result.lorenz_curve?.length)
+  if (!hasLift && !hasLorenz) return <ChartEmptyState>No lift data available</ChartEmptyState>
 
   return (
-    <div className="space-y-2">
-      {/* View toggle */}
-      {hasLift && hasLorenz && (
-        <div className="flex gap-1">
-          <button
-            onClick={() => setView("lift")}
-            className="px-2 py-0.5 rounded text-[10px] font-medium"
-            style={{
-              background: view === "lift" ? "var(--accent-soft)" : "var(--chrome-hover)",
-              color: view === "lift" ? "var(--accent)" : "var(--text-muted)",
-            }}
-          >
-            Double Lift
-          </button>
-          <button
-            onClick={() => setView("lorenz")}
-            className="px-2 py-0.5 rounded text-[10px] font-medium"
-            style={{
-              background: view === "lorenz" ? "var(--accent-soft)" : "var(--chrome-hover)",
-              color: view === "lorenz" ? "var(--accent)" : "var(--text-muted)",
-            }}
-          >
-            Lorenz Curve
-          </button>
-        </div>
-      )}
+    <ResponsiveChart width={width}>
+      {(containerWidth) => {
+        const showBoth = containerWidth >= 900 && hasLift && hasLorenz
+        const selectedView = hasLift && hasLorenz ? view : hasLift ? "lift" : "lorenz"
+        const chartWidth = showBoth ? Math.max(260, (containerWidth - 24) / 2) : containerWidth
+        return (
+          <section className="space-y-3" aria-label="Lift validation charts">
+            {!showBoth && hasLift && hasLorenz && (
+              <ViewSwitch view={selectedView} onChange={setView} />
+            )}
+            <div className={showBoth ? "grid grid-cols-2 gap-6" : ""}>
+              {hasLift && (showBoth || selectedView === "lift") && (
+                <LiftPanel data={result.double_lift!} width={chartWidth} height={height} />
+              )}
+              {hasLorenz && (showBoth || selectedView === "lorenz") && (
+                <LorenzPanel
+                  curve={result.lorenz_curve!}
+                  perfectCurve={result.lorenz_curve_perfect}
+                  width={chartWidth}
+                  height={height}
+                />
+              )}
+            </div>
+          </section>
+        )
+      }}
+    </ResponsiveChart>
+  )
+}
 
-      {view === "lift" && hasLift && <DoubleLiftChart data={result.double_lift!} width={width} height={height} />}
-      {view === "lorenz" && hasLorenz && (
-        <LorenzChart
-          curve={result.lorenz_curve!}
-          perfectCurve={result.lorenz_curve_perfect}
-          width={width}
-          height={height}
-        />
-      )}
+function ViewSwitch({
+  view,
+  onChange,
+}: {
+  view: "lift" | "lorenz"
+  onChange: (view: "lift" | "lorenz") => void
+}) {
+  const buttonStyle = (active: boolean) => ({
+    background: active ? MODEL_COLORS.accentSoft : "var(--chrome-hover)",
+    color: active ? MODEL_COLORS.accent : "var(--text-muted)",
+  })
+  return (
+    <div className="flex gap-1" role="group" aria-label="Lift chart view">
+      <button
+        type="button"
+        aria-pressed={view === "lift"}
+        onClick={() => onChange("lift")}
+        className="rounded px-2 py-0.5 text-[12px] font-medium"
+        style={buttonStyle(view === "lift")}
+      >
+        Double lift
+      </button>
+      <button
+        type="button"
+        aria-pressed={view === "lorenz"}
+        onClick={() => onChange("lorenz")}
+        className="rounded px-2 py-0.5 text-[12px] font-medium"
+        style={buttonStyle(view === "lorenz")}
+      >
+        Lorenz curve
+      </button>
     </div>
   )
 }
 
-// ─── Double Lift Chart ────────────────────────────────────────────
+function LiftPanel({ data, width, height }: { data: LiftPoint[]; width: number; height: number }) {
+  return (
+    <div>
+      <h4 className="text-[15px] font-medium" style={{ color: "var(--text-primary)" }}>
+        Double lift
+      </h4>
+      <DoubleLiftChart data={data} width={width} height={height} />
+      <details className="mt-3">
+        <summary className="cursor-pointer text-[12px]" style={{ color: "var(--text-secondary)" }}>
+          View lift values
+        </summary>
+        <table className="mt-2 w-full text-[12px]" style={{ color: "var(--text-secondary)" }}>
+          <thead>
+            <tr style={{ borderBottom: "1px solid var(--border)" }}>
+              <th scope="col" className="py-1 text-left font-medium">
+                Decile
+              </th>
+              <th scope="col" className="py-1 text-right font-medium">
+                Actual
+              </th>
+              <th scope="col" className="py-1 text-right font-medium">
+                Predicted
+              </th>
+              <th scope="col" className="py-1 text-right font-medium">
+                Count
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.map((row) => (
+              <tr key={row.decile}>
+                <th scope="row" className="py-1 text-left font-normal">
+                  {row.decile}
+                </th>
+                <td className="py-1 text-right tabular-nums">{row.actual.toFixed(4)}</td>
+                <td className="py-1 text-right tabular-nums" style={{ color: predictedColor }}>
+                  {row.predicted.toFixed(4)}
+                </td>
+                <td className="py-1 text-right tabular-nums">{row.count.toLocaleString()}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </details>
+    </div>
+  )
+}
 
 function DoubleLiftChart({
   data,
   width,
   height,
 }: {
-  data: { decile: number; actual: number; predicted: number; count: number }[]
+  data: LiftPoint[]
   width: number
   height: number
 }) {
-  const marginLeft = 60
-  const marginRight = 16
-  const marginTop = 16
-  const marginBottom = 40
-  const chartW = width - marginLeft - marginRight
-  const chartH = height - marginTop - marginBottom
-
-  const allVals = data.flatMap(d => [d.actual, d.predicted])
-  const yMax = allVals.reduce((a, b) => Math.max(a, b), -Infinity) * 1.1
-  const yMin = Math.min(0, allVals.reduce((a, b) => Math.min(a, b), Infinity) * 1.1)
-  const ySpan = yMax - yMin || 1
-
-  const nDeciles = data.length
-  const groupW = chartW / nDeciles
-  const barW = groupW * 0.35
-  const gap = groupW * 0.05
-
-  const yScale = (v: number) => marginTop + chartH - ((v - yMin) / ySpan) * chartH
-  const zeroY = yScale(0)
-
-  // Grid lines
-  const nGridY = 4
-  const gridYValues = Array.from({ length: nGridY + 1 }, (_, i) => yMin + (i / nGridY) * ySpan)
-
+  const marginLeft = 68,
+    marginRight = 24,
+    marginTop = 16,
+    marginBottom = 46
+  const plotWidth = Math.max(1, width - marginLeft - marginRight),
+    plotHeight = Math.max(1, height - marginTop - marginBottom)
+  const values = data.flatMap((point) => [point.actual, point.predicted])
+  const rawMin = Math.min(0, ...values),
+    rawMax = Math.max(0, ...values)
+  const yMin = rawMin === rawMax ? rawMin - 1 : rawMin * 1.1
+  const yMax = rawMin === rawMax ? rawMax + 1 : rawMax * 1.1
+  const ySpan = yMax - yMin
+  const yScale = (value: number) => marginTop + plotHeight - ((value - yMin) / ySpan) * plotHeight
+  const groupWidth = plotWidth / data.length,
+    barWidth = groupWidth * 0.35,
+    gap = groupWidth * 0.05
+  const labelIndices = chartLabelIndices(data.length, plotWidth, 32)
   return (
-    <div>
-      <ChartSvg width={width} height={height}>
-        {/* Horizontal grid lines + y-axis labels */}
-        {gridYValues.map((v, i) => {
-          const y = yScale(v)
-          return (
-            <g key={`gy-${i}`}>
-              <line x1={marginLeft} y1={y} x2={marginLeft + chartW} y2={y} stroke={GRID_COLOR} strokeWidth={1} />
-              <text x={marginLeft - 6} y={y + 3} textAnchor="end" fontSize={AXIS_FONT_SIZE} fill={AXIS_TEXT_COLOR}>
-                {v.toPrecision(3)}
-              </text>
-            </g>
-          )
-        })}
-
-        {/* Zero line */}
+    <>
+      <ChartSvg width={width} height={height} ariaLabel="Double lift chart">
+        <title>Double lift: actual and predicted values by prediction decile</title>
+        {chartTicks(yMin, yMax, 5).map((value) => (
+          <g key={value}>
+            <line
+              x1={marginLeft}
+              y1={yScale(value)}
+              x2={marginLeft + plotWidth}
+              y2={yScale(value)}
+              stroke={gridColor}
+            />
+            <text
+              x={marginLeft - 6}
+              y={yScale(value) + 4}
+              textAnchor="end"
+              fontSize={axisFontSize}
+              fill={axisTextColor}
+            >
+              {formatChartNumber(value)}
+            </text>
+          </g>
+        ))}
         {yMin < 0 && (
-          <line x1={marginLeft} y1={zeroY} x2={marginLeft + chartW} y2={zeroY} stroke="rgba(255,255,255,.15)" strokeWidth={1} />
+          <line
+            x1={marginLeft}
+            y1={yScale(0)}
+            x2={marginLeft + plotWidth}
+            y2={yScale(0)}
+            stroke={referenceColor}
+          />
         )}
-
-        {/* Bars */}
-        {data.map((d, i) => {
-          const groupX = marginLeft + i * groupW
-          const barCenter = groupX + groupW / 2
-
-          const actualH = Math.abs(d.actual - 0) / ySpan * chartH
-          const actualY = d.actual >= 0 ? yScale(d.actual) : zeroY
-          const predictedH = Math.abs(d.predicted - 0) / ySpan * chartH
-          const predictedY = d.predicted >= 0 ? yScale(d.predicted) : zeroY
-
+        {data.map((point, index) => {
+          const center = marginLeft + (index + 0.5) * groupWidth
+          const actualY = point.actual >= 0 ? yScale(point.actual) : yScale(0)
+          const predictedY = point.predicted >= 0 ? yScale(point.predicted) : yScale(0)
           return (
-            <g key={d.decile}>
-              {/* Actual bar */}
+            <g key={point.decile}>
+              <title>
+                Decile {point.decile}: actual {point.actual}, predicted {point.predicted}, count{" "}
+                {point.count}
+              </title>
               <rect
-                x={barCenter - barW - gap / 2}
+                x={center - barWidth - gap / 2}
                 y={actualY}
-                width={barW}
-                height={actualH}
-                fill={ACTUAL_COLOR}
+                width={barWidth}
+                height={Math.abs(point.actual / ySpan) * plotHeight}
+                fill={actualColor}
                 opacity={0.7}
                 rx={1}
               />
-              {/* Predicted bar */}
               <rect
-                x={barCenter + gap / 2}
+                x={center + gap / 2}
                 y={predictedY}
-                width={barW}
-                height={predictedH}
-                fill={PREDICTED_COLOR}
+                width={barWidth}
+                height={Math.abs(point.predicted / ySpan) * plotHeight}
+                fill={predictedColor}
                 opacity={0.7}
                 rx={1}
               />
-              {/* Decile label */}
-              <text x={barCenter} y={marginTop + chartH + 14} textAnchor="middle" fontSize={AXIS_FONT_SIZE} fill={AXIS_TEXT_COLOR}>
-                {d.decile}
-              </text>
-              {/* Count label */}
-              <text x={barCenter} y={marginTop + chartH + 26} textAnchor="middle" fontSize={8} fill={AXIS_TEXT_COLOR} opacity={0.6}>
-                n={d.count}
-              </text>
             </g>
           )
         })}
-
-        {/* X-axis label */}
-        <text x={marginLeft + chartW / 2} y={height - 2} textAnchor="middle" fontSize={AXIS_FONT_SIZE} fill={AXIS_TEXT_COLOR}>
-          Decile
+        {data.map(
+          (point, index) =>
+            labelIndices.has(index) && (
+              <text
+                key={point.decile}
+                x={marginLeft + (index + 0.5) * groupWidth}
+                y={marginTop + plotHeight + 15}
+                textAnchor={index === 0 ? "start" : index === data.length - 1 ? "end" : "middle"}
+                fontSize={axisFontSize}
+                fill={axisTextColor}
+              >
+                {point.decile}
+              </text>
+            ),
+        )}
+        <text
+          x={marginLeft + plotWidth / 2}
+          y={height - 4}
+          textAnchor="middle"
+          fontSize={axisFontSize}
+          fill={axisTextColor}
+        >
+          Prediction decile (low to high)
         </text>
-
-        {/* Y-axis label */}
         <text
           x={12}
-          y={marginTop + chartH / 2}
+          y={marginTop + plotHeight / 2}
           textAnchor="middle"
-          fontSize={AXIS_FONT_SIZE}
-          fill={AXIS_TEXT_COLOR}
-          transform={`rotate(-90,12,${marginTop + chartH / 2})`}
+          fontSize={axisFontSize}
+          fill={axisTextColor}
+          transform={`rotate(-90,12,${marginTop + plotHeight / 2})`}
         >
           Average value
         </text>
       </ChartSvg>
-
-      {/* Legend */}
       <ChartLegend
         items={[
-          { label: "Actual", color: ACTUAL_COLOR, swatch: "bar", opacity: 0.7 },
-          { label: "Predicted", color: PREDICTED_COLOR, swatch: "bar", opacity: 0.7 },
+          { label: "Actual", color: actualColor, swatch: "bar", opacity: 0.7 },
+          { label: "Predicted", color: predictedColor, swatch: "bar", opacity: 0.7 },
+          ...(yMin < 0 ? [{ label: "Zero", color: referenceColor }] : []),
         ]}
       />
-
-      {/* Raw table */}
-      <div className="mt-3">
-        <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
-          Lift Table
-        </label>
-        <div className="mt-1 text-[11px] font-mono" style={{ color: "var(--text-secondary)" }}>
-          <div className="grid grid-cols-4 gap-1 pb-0.5 mb-0.5" style={{ borderBottom: "1px solid var(--border)" }}>
-            <span style={{ color: "var(--text-muted)" }}>Decile</span>
-            <span style={{ color: "var(--text-muted)" }}>Actual</span>
-            <span style={{ color: "var(--text-muted)" }}>Predicted</span>
-            <span style={{ color: "var(--text-muted)" }}>Count</span>
-          </div>
-          {data.map(row => (
-            <div key={row.decile} className="grid grid-cols-4 gap-1">
-              <span>{row.decile}</span>
-              <span style={{ color: "var(--text-primary)" }}>{row.actual.toFixed(4)}</span>
-              <span style={{ color: PREDICTED_COLOR }}>{row.predicted.toFixed(4)}</span>
-              <span>{row.count.toLocaleString()}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
+    </>
   )
 }
 
-// ─── Lorenz Curve ─────────────────────────────────────────────────
+function LorenzPanel({
+  curve,
+  perfectCurve,
+  width,
+  height,
+}: {
+  curve: LorenzPoint[]
+  perfectCurve?: LorenzPoint[]
+  width: number
+  height: number
+}) {
+  return (
+    <div>
+      <h4 className="text-[15px] font-medium" style={{ color: "var(--text-primary)" }}>
+        Lorenz curve
+      </h4>
+      <LorenzChart curve={curve} perfectCurve={perfectCurve} width={width} height={height} />
+    </div>
+  )
+}
 
 function LorenzChart({
   curve,
@@ -237,134 +306,142 @@ function LorenzChart({
   width,
   height,
 }: {
-  curve: { cum_weight_frac: number; cum_actual_frac: number }[]
-  perfectCurve?: { cum_weight_frac: number; cum_actual_frac: number }[]
+  curve: LorenzPoint[]
+  perfectCurve?: LorenzPoint[]
   width: number
   height: number
 }) {
-  const marginLeft = 55
-  const marginRight = 16
-  const marginTop = 16
-  const marginBottom = 36
-  const chartW = width - marginLeft - marginRight
-  const chartH = height - marginTop - marginBottom
-
-  const xScale = (v: number) => marginLeft + v * chartW
-  const yScale = (v: number) => marginTop + chartH - v * chartH
-
-  // Compute Gini coefficient (2 * area between diagonal and curve)
-  const gini = computeGini(curve, perfectCurve)
-
-  // Build SVG paths
-  const modelPath = curve
-    .map((p, i) => `${i === 0 ? "M" : "L"}${xScale(p.cum_weight_frac).toFixed(1)},${yScale(p.cum_actual_frac).toFixed(1)}`)
-    .join(" ")
-
-  const perfectPath = perfectCurve
-    ? perfectCurve
-        .map((p, i) => `${i === 0 ? "M" : "L"}${xScale(p.cum_weight_frac).toFixed(1)},${yScale(p.cum_actual_frac).toFixed(1)}`)
-        .join(" ")
-    : null
-
-  // Shaded area between diagonal and model curve
-  const shadedPath = [
-    `M${xScale(0).toFixed(1)},${yScale(0).toFixed(1)}`,
-    ...curve.map(p => `L${xScale(p.cum_weight_frac).toFixed(1)},${yScale(p.cum_actual_frac).toFixed(1)}`),
-    `L${xScale(1).toFixed(1)},${yScale(1).toFixed(1)}`,
-    "Z",
-  ].join(" ")
-
-  // Grid lines
-  const gridValues = [0, 0.25, 0.5, 0.75, 1.0]
-
+  const marginLeft = 68,
+    marginRight = 24,
+    marginTop = 16,
+    marginBottom = 40
+  const plotWidth = Math.max(1, width - marginLeft - marginRight),
+    plotHeight = Math.max(1, height - marginTop - marginBottom)
+  const xScale = (value: number) => marginLeft + value * plotWidth,
+    yScale = (value: number) => marginTop + plotHeight - value * plotHeight
+  const makePath = (points: LorenzPoint[]) =>
+    points
+      .map(
+        (point, index) =>
+          `${index ? "L" : "M"}${xScale(point.cum_weight_frac).toFixed(1)},${yScale(point.cum_actual_frac).toFixed(1)}`,
+      )
+      .join(" ")
+  const gini = computeGini(curve, perfectCurve),
+    perfectPath = perfectCurve?.length ? makePath(perfectCurve) : null
   return (
-    <div>
-      <ChartSvg width={width} height={height}>
-        {/* Grid lines */}
-        {gridValues.map(v => (
-          <g key={`grid-${v}`}>
-            <line x1={marginLeft} y1={yScale(v)} x2={marginLeft + chartW} y2={yScale(v)} stroke={GRID_COLOR} strokeWidth={1} />
-            <line x1={xScale(v)} y1={marginTop} x2={xScale(v)} y2={marginTop + chartH} stroke={GRID_COLOR} strokeWidth={1} />
-            <text x={marginLeft - 6} y={yScale(v) + 3} textAnchor="end" fontSize={AXIS_FONT_SIZE} fill={AXIS_TEXT_COLOR}>
-              {v.toFixed(2)}
+    <>
+      <ChartSvg width={width} height={height} ariaLabel="Lorenz curve">
+        <title>Lorenz curve with Gini coefficient {gini.toFixed(4)}</title>
+        {chartTicks(0, 1, 5).map((value) => (
+          <g key={value}>
+            <line
+              x1={marginLeft}
+              y1={yScale(value)}
+              x2={marginLeft + plotWidth}
+              y2={yScale(value)}
+              stroke={gridColor}
+            />
+            <line
+              x1={xScale(value)}
+              y1={marginTop}
+              x2={xScale(value)}
+              y2={marginTop + plotHeight}
+              stroke={gridColor}
+            />
+            <text
+              x={marginLeft - 6}
+              y={yScale(value) + 4}
+              textAnchor="end"
+              fontSize={axisFontSize}
+              fill={axisTextColor}
+            >
+              {formatChartNumber(value)}
             </text>
-            <text x={xScale(v)} y={marginTop + chartH + 14} textAnchor="middle" fontSize={AXIS_FONT_SIZE} fill={AXIS_TEXT_COLOR}>
-              {v.toFixed(2)}
+            <text
+              x={xScale(value)}
+              y={marginTop + plotHeight + 15}
+              textAnchor={value === 0 ? "start" : value === 1 ? "end" : "middle"}
+              fontSize={axisFontSize}
+              fill={axisTextColor}
+            >
+              {formatChartNumber(value)}
             </text>
           </g>
         ))}
-
-        {/* Shaded area */}
-        <path d={shadedPath} fill={PREDICTED_COLOR} opacity={0.08} />
-
-        {/* Diagonal (random model) */}
-        <line
-          x1={xScale(0)} y1={yScale(0)} x2={xScale(1)} y2={yScale(1)}
-          stroke="rgba(255,255,255,.25)" strokeWidth={1} strokeDasharray="4,3"
+        <path
+          d={`M${xScale(0)},${yScale(0)} ${curve.map((point) => `L${xScale(point.cum_weight_frac)},${yScale(point.cum_actual_frac)}`).join(" ")} L${xScale(1)},${yScale(1)} Z`}
+          fill={predictedColor}
+          opacity={0.08}
         />
-
-        {/* Perfect model curve */}
+        <line
+          x1={xScale(0)}
+          y1={yScale(0)}
+          x2={xScale(1)}
+          y2={yScale(1)}
+          stroke={referenceColor}
+          strokeDasharray="4,3"
+        />
         {perfectPath && (
-          <path d={perfectPath} fill="none" stroke={ACTUAL_COLOR} strokeWidth={1.5} opacity={0.6} />
+          <path d={perfectPath} fill="none" stroke={actualColor} strokeWidth={1.5} opacity={0.6} />
         )}
-
-        {/* Model curve */}
-        <path d={modelPath} fill="none" stroke={PREDICTED_COLOR} strokeWidth={1.5} />
-
-        {/* Gini annotation */}
-        <text x={marginLeft + 8} y={marginTop + 16} fontSize={11} fontWeight="bold" fill={PREDICTED_COLOR}>
+        <path d={makePath(curve)} fill="none" stroke={predictedColor} strokeWidth={1.5} />
+        <text
+          x={marginLeft + 8}
+          y={marginTop + 16}
+          fontSize={12}
+          fontWeight="bold"
+          fill={predictedColor}
+        >
           Gini = {gini.toFixed(4)}
         </text>
-
-        {/* Axis labels */}
-        <text x={marginLeft + chartW / 2} y={height - 4} textAnchor="middle" fontSize={AXIS_FONT_SIZE} fill={AXIS_TEXT_COLOR}>
+        <text
+          x={marginLeft + plotWidth / 2}
+          y={height - 4}
+          textAnchor="middle"
+          fontSize={axisFontSize}
+          fill={axisTextColor}
+        >
           Cumulative weight fraction
         </text>
         <text
-          x={10}
-          y={marginTop + chartH / 2}
+          x={12}
+          y={marginTop + plotHeight / 2}
           textAnchor="middle"
-          fontSize={AXIS_FONT_SIZE}
-          fill={AXIS_TEXT_COLOR}
-          transform={`rotate(-90,10,${marginTop + chartH / 2})`}
+          fontSize={axisFontSize}
+          fill={axisTextColor}
+          transform={`rotate(-90,12,${marginTop + plotHeight / 2})`}
         >
           Cumulative actual fraction
         </text>
       </ChartSvg>
-
-      {/* Legend */}
       <ChartLegend
         items={[
-          { label: "Model", color: PREDICTED_COLOR },
-          ...(perfectPath ? [{ label: "Perfect model", color: ACTUAL_COLOR, opacity: 0.6 }] : []),
-          { label: "Random", color: "rgba(255,255,255,.25)", swatch: "dashed" },
+          { label: "Model", color: predictedColor },
+          ...(perfectPath ? [{ label: "Perfect model", color: actualColor, opacity: 0.6 }] : []),
+          { label: "Random", color: referenceColor, swatch: "dashed" },
         ]}
       />
-    </div>
+    </>
   )
 }
 
-/** Compute normalized Gini coefficient using trapezoidal rule. */
-function computeGini(
-  curve: { cum_weight_frac: number; cum_actual_frac: number }[],
-  perfectCurve?: { cum_weight_frac: number; cum_actual_frac: number }[],
-): number {
+function computeGini(curve: LorenzPoint[], perfectCurve?: LorenzPoint[]) {
   if (curve.length < 2) return 0
-
-  const trapArea = (pts: { cum_weight_frac: number; cum_actual_frac: number }[]) => {
-    let area = 0
-    for (let i = 1; i < pts.length; i++) {
-      const dx = pts[i].cum_weight_frac - pts[i - 1].cum_weight_frac
-      const avgY = (pts[i].cum_actual_frac + pts[i - 1].cum_actual_frac) / 2
-      area += dx * avgY
-    }
-    return area
-  }
-
-  const rawGini = 2 * trapArea(curve) - 1
-  if (perfectCurve && perfectCurve.length >= 2) {
-    const perfectGini = 2 * trapArea(perfectCurve) - 1
-    return perfectGini !== 0 ? rawGini / perfectGini : 0
-  }
-  return rawGini
+  const area = (points: LorenzPoint[]) =>
+    points
+      .slice(1)
+      .reduce(
+        (total, point, index) =>
+          total +
+          ((point.cum_weight_frac - points[index].cum_weight_frac) *
+            (point.cum_actual_frac + points[index].cum_actual_frac)) /
+            2,
+        0,
+      )
+  const rawGini = 2 * area(curve) - 1
+  if (!perfectCurve || perfectCurve.length < 2) return Number.isFinite(rawGini) ? rawGini : 0
+  const perfectGini = 2 * area(perfectCurve) - 1
+  return Number.isFinite(perfectGini) && perfectGini !== 0 && Number.isFinite(rawGini)
+    ? rawGini / perfectGini
+    : 0
 }

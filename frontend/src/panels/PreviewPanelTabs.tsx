@@ -19,6 +19,7 @@ type PreviewPanelTabsProps<T extends string> = {
   ariaLabel: string
   accentColor?: string
   equalWidth?: boolean
+  appearance?: "default" | "results"
   idPrefix?: string
 }
 
@@ -29,6 +30,7 @@ export default function PreviewPanelTabs<T extends string>({
   ariaLabel,
   accentColor = "var(--accent)",
   equalWidth = false,
+  appearance = "default",
   idPrefix,
 }: PreviewPanelTabsProps<T>) {
   const tabRefs = useRef(new Map<T, HTMLButtonElement>())
@@ -107,7 +109,7 @@ export default function PreviewPanelTabs<T extends string>({
             }}
             onClick={() => onChange(tab.key)}
             onKeyDown={(event) => handleKeyDown(event, tab)}
-            className={`min-w-0 truncate px-2 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] transition-colors ${
+            className={`min-w-0 px-3 transition-colors ${appearance === "results" ? "py-2.5 text-[13px] font-medium whitespace-nowrap" : "truncate py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em]"} ${
               equalWidth ? "" : "shrink-0"
             } ${isActive ? "" : "hover:bg-[var(--bg-hover)]"}`}
             style={{
@@ -115,7 +117,7 @@ export default function PreviewPanelTabs<T extends string>({
               borderBottom: `2px solid ${
                 isActive ? accentColor : "transparent"
               }`,
-              background: isActive ? "var(--accent-soft)" : "transparent",
+              background: isActive && appearance !== "results" ? "var(--accent-soft)" : "transparent",
             }}
           >
             <span>{tab.label}</span>

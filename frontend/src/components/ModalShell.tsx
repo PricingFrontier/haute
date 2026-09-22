@@ -1,6 +1,8 @@
 import { useEffect, useRef, type ReactNode } from "react"
 
 export interface ModalShellProps {
+  /** Keep the same subtree mounted inline while the modal is inactive. */
+  active?: boolean
   /** Accessible label for the dialog */
   ariaLabel: string
   /** Called when the user clicks the backdrop or presses Escape */
@@ -15,7 +17,20 @@ export interface ModalShellProps {
 }
 
 const FOCUSABLE_SELECTOR =
-  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex="-1"])'
+
+function isAvailableForFocus(element: HTMLElement): boolean {
+  if (element.closest("[hidden], [inert]")) return false
+  // Closed disclosures leave their children in the DOM, but only their summary
+  // participates in keyboard navigation. Check every ancestor for nested details.
+  for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+    if (parent instanceof HTMLDetailsElement && !parent.open) {
+      const summary = parent.querySelector(":scope > summary")
+      if (!summary?.contains(element)) return false
+    }
+  }
+  return true
+}
 
 /**
  * Shared modal shell: full-screen overlay with backdrop click,
@@ -24,6 +39,7 @@ const FOCUSABLE_SELECTOR =
  * Used by SubmodelDialog, RenameDialog, and KeyboardShortcuts.
  */
 export default function ModalShell({
+  active = true,
   ariaLabel,
   onClose,
   extraCloseKeys,
@@ -42,16 +58,14 @@ export default function ModalShell({
   }, [onClose, extraCloseKeys])
 
   useEffect(() => {
+    if (!active) return
     // Save the previously focused element and focus the dialog container
     previousFocusRef.current = document.activeElement
     containerRef.current?.focus()
 
     const handler = (e: KeyboardEvent) => {
       const currentExtraCloseKeys = extraCloseKeysRef.current
-      if (
-        e.key === "Escape"
-        || (currentExtraCloseKeys && currentExtraCloseKeys.includes(e.key))
-      ) {
+      if (e.key === "Escape" || (currentExtraCloseKeys && currentExtraCloseKeys.includes(e.key))) {
         e.preventDefault()
         onCloseRef.current()
         return
@@ -62,7 +76,9 @@ export default function ModalShell({
       // outside — e.g. a background button that retained focus before the
       // modal mounted).
       if (e.key === "Tab" && containerRef.current) {
-        const focusable = containerRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
+        const focusable = Array.from(
+          containerRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+        ).filter(isAvailableForFocus)
         if (focusable.length === 0) {
           // Nothing focusable inside — keep focus on the modal container
           // so Tab cannot escape.  This branch also guards against the
@@ -78,7 +94,7 @@ export default function ModalShell({
         // If focus is currently OUTSIDE the modal, redirect it back in.
         // Without this, a background element that held focus before the
         // modal opened can Tab out freely, violating the trap.
-        if (!containerRef.current.contains(active)) {
+        if (active === containerRef.current || !containerRef.current.contains(active)) {
           e.preventDefault()
           if (e.shiftKey) {
             last.focus()
@@ -109,25 +125,29 @@ export default function ModalShell({
         previousFocusRef.current.focus()
       }
     }
-  }, [])
+  }, [active])
 
   return (
     <div
       ref={containerRef}
       data-testid={testId}
-      className="fixed inset-0 z-50 flex items-center justify-center"
-      role="dialog"
-      aria-modal="true"
-      aria-label={ariaLabel}
-      tabIndex={-1}
-      style={{ background: "rgba(0,0,0,.5)" }}
+      className={active ? "fixed inset-0 z-50 flex items-center justify-center" : "contents"}
+      role={active ? "dialog" : undefined}
+      aria-modal={active ? true : undefined}
+      aria-label={active ? ariaLabel : undefined}
+      tabIndex={active ? -1 : undefined}
+      style={active ? { background: "rgba(0,0,0,.5)" } : undefined}
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose()
+        if (active && e.target === e.currentTarget) onClose()
       }}
     >
       <div
-        className={`${width} flex flex-col rounded-xl overflow-hidden shadow-2xl`}
-        style={{ background: "var(--bg-panel)", border: "1px solid var(--border)" }}
+        className={
+          active ? `${width} flex flex-col rounded-xl overflow-hidden shadow-2xl` : "contents"
+        }
+        style={
+          active ? { background: "var(--bg-panel)", border: "1px solid var(--border)" } : undefined
+        }
       >
         {children}
       </div>
