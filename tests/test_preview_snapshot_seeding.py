@@ -168,22 +168,6 @@ def _previewing(
     from haute.executor import _compile_preamble, _pipeline_dir
 
     context = _context()
-    if preplanned:
-        from haute._native_memory_limit import native_memory_backend_scope
-
-        # The preview route plans its public strategy for the caller's demand
-        # before executing, as execute_graph does, inside a capped worker.
-        with native_memory_backend_scope("rlimit"):
-            execution_facade.plan_execution_strategy(
-                execution_facade.ProjectionRequest(
-                    graph=graph,
-                    target_node_id=target,
-                    profile=context.profile,
-                    required_columns_by_node=required,
-                    source=source,
-                ),
-                execution_context=context,
-            )
     request = SeedPlanRequest(
         graph=graph,
         target_node_id=target,
@@ -192,6 +176,26 @@ def _previewing(
         required_columns_by_node=required,
     )
     with open_seed_plan(request, store=store, execution_context=context) as plan:
+        if preplanned:
+            from haute._native_memory_limit import native_memory_backend_scope
+
+            # The preview route plans its public strategy for the caller's
+            # demand before executing, as execute_graph does, inside a capped
+            # worker: under a plan only what it builds is admitted and
+            # estimated.
+            with native_memory_backend_scope("rlimit"):
+                execution_facade.plan_execution_strategy(
+                    execution_facade.ProjectionRequest(
+                        graph=graph,
+                        target_node_id=target,
+                        profile=context.profile,
+                        required_columns_by_node=required,
+                        source=source,
+                    ),
+                    execution_context=context,
+                    materialising_node_ids=plan.decision.executed_node_ids,
+                    estimation_graph=plan.estimation_graph(graph),
+                )
         built: Counter[str] = Counter()
         called: Counter[str] = Counter()
         result = _execute_eager_core(
@@ -273,6 +277,109 @@ def test_eager_seeded_node_reads_its_generation_and_builds_nothing_above(
     assert set(preview.built) == {"banding"}
     assert preview.result.order == ["join", "banding"]
     assert preview.captures == {}
+
+
+def test_a_seeded_preview_reports_no_boundary_above_its_seeds(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    """A node the execution never reads is not a projection boundary it hit.
+
+    Before execution the planner cannot route a fan-in join's demand to a
+    parent whose schema is only known once built, so ``policies`` and
+    ``claims`` plan as unprojected boundaries.  A preview seeded at ``join``
+    reads neither of them, so neither may reach the caller's diagnostic.
+    """
+    graph = _join_graph(project)
+    seeded = pl.DataFrame({"id": [1, 2, 3], "a": [7, 8, 9], "d": [0.1, 0.2, 0.3]})
+    _publish(store, graph, "join", seeded)
+
+    preview = _preview(graph, store, "banding", required={"banding": ["band"]}, preplanned=True)
+
+    assert set(preview.built) == {"banding"}
+    strategy = preview.metrics["execution_strategy"]
+    boundaries = {item["node_id"] for item in strategy["boundaries"]["items"]}
+    assert boundaries == set(), strategy
+    assert strategy.get("blocking_node_id") is None
+    assert strategy["status"] != "boundary"
+
+
+def test_a_seeded_sibling_carries_no_demand_to_a_parent_the_preview_reads(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    """A seed's own edge is not read, so it demands nothing of its parent.
+
+    ``policies`` feeds the seeded ``sel`` and the executed ``other``.  ``sel``
+    reaches its parent through an unsupported call, so had its edge stayed in
+    the plan ``policies`` would read as full width — but this execution opens
+    ``policies`` only for ``other``, whose demand is provable.
+    """
+    graph = _graph(
+        project,
+        [
+            ("policies", NodeType.DATA_INPUT, _parquet(project / "policies.parquet")),
+            # An unsupported call: the seed's own demand on ``policies`` is unprovable.
+            ("sel", NodeType.POLARS, _code("df = policies.pipe(lambda frame: frame)")),
+            (
+                "other",
+                NodeType.POLARS,
+                _code("df = policies.select('id').with_columns(pl.lit(1).alias('o'))"),
+            ),
+            ("t", NodeType.POLARS, _code("df = sel.join(other, on='id', how='left')")),
+        ],
+        [("policies", "sel"), ("policies", "other"), ("sel", "t"), ("other", "t")],
+    )
+    _publish(store, graph, "sel", pl.DataFrame({"id": [1, 2, 3], "a": [7, 8, 9]}))
+
+    preview = _preview(graph, store, "t", required={"t": ["a", "o"]}, preplanned=True)
+
+    assert preview.seeds.keys() == {"sel"}
+    assert set(preview.built) == {"policies", "other", "t"}
+    assert preview.result.errors == {}
+    strategy = preview.metrics["execution_strategy"]
+    boundaries = {
+        item["node_id"]: item["boundary_kind"] for item in strategy["boundaries"]["items"]
+    }
+    # ``policies`` was read for ``other`` only; ``sel``'s unprovable demand on
+    # it was never carried.
+    assert boundaries == {"t": "materialisation-boundary"}, strategy
+    assert strategy["blocking_node_id"] == "t"
+
+
+def test_a_seeded_preview_still_reports_a_boundary_it_does_read(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    """Scoping the diagnostic to the seeds must not silence what runs below them."""
+    graph = _graph(
+        project,
+        [
+            ("policies", NodeType.DATA_INPUT, _parquet(project / "policies.parquet")),
+            ("claims", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("join", NodeType.POLARS, _code("df = policies.join(claims, on='id', how='left')")),
+            ("agg", NodeType.POLARS, _code("df = join.group_by('a').agg(pl.col('d').sum())")),
+        ],
+        [("policies", "join"), ("claims", "join"), ("join", "agg")],
+    )
+    _publish(
+        store,
+        graph,
+        "join",
+        pl.DataFrame({"id": [1, 2, 3], "a": [7, 8, 9], "d": [0.1, 0.2, 0.3]}),
+    )
+
+    preview = _preview(graph, store, "agg", required={"agg": ["a", "d"]}, preplanned=True)
+
+    assert preview.seeds.keys() == {"join"}
+    strategy = preview.metrics["execution_strategy"]
+    boundaries = {item["node_id"] for item in strategy["boundaries"]["items"]}
+    # The group-by the preview runs is still its admitted boundary, and the
+    # seed nothing proved a projection on is still its own; only the sources
+    # above the seed, which nothing opened, are gone.
+    assert {"agg", "join"} <= boundaries, strategy
+    assert boundaries.isdisjoint({"policies", "claims"}), strategy
+    # Named explicitly: a lost admission passthrough would still satisfy the
+    # subset above, but not the strategy the group-by was admitted under.
+    assert strategy["strategy"] == "materialisation-boundary"
+    assert strategy["blocking_node_id"] == "agg"
 
 
 @pytest.fixture()

@@ -779,7 +779,6 @@ def _replanned_target_preview_strategy(
     executed: projection_planner.ExecutionStrategyResult,
     *,
     order: list[str],
-    children_of: Mapping[str, Iterable[str]],
     node_map: Mapping[str, GraphNode],
     required_columns_by_node: Mapping[str, Iterable[str] | projection_planner.AllExceptColumns],
     relevant_edges: list[GraphEdge],
@@ -788,23 +787,56 @@ def _replanned_target_preview_strategy(
     runtime_edge_demands: Mapping[projection_planner.ProjectionEdgeKey, frozenset[str]],
     runtime_resolved_parent_ids: Iterable[str],
     profile: ExecutionProfile,
+    seeded_node_ids: frozenset[str],
 ) -> projection_planner.ExecutionStrategyResult:
     """Re-plan a target-only preview's diagnostic from the frames it built.
 
     Before execution an Edge Join cannot route demand to a parent whose schema
     is only known once built, so every node above it reads as unprojected even
     though the join's runtime demand is pushed through the lazy plan.
+
+    *order* is the execution's own order, so under a seed plan it already stops
+    at the seeds: a node above one is not planned here because this execution
+    never reads it, and a seed's own incoming edges are dropped, because the
+    frame came from its generation and those edges were never read.
+
+    *executed* must have been planned for this same execution: admission and
+    materialisation estimation see only the plan's executed nodes, so its
+    materialisation boundaries are already the ones this run reaches, and a
+    seed's own operator is never among them.
     """
+    scope = frozenset(order)
+    scoped_edges = [
+        edge
+        for edge in relevant_edges
+        if edge.source in scope and edge.target in scope and edge.target not in seeded_node_ids
+    ]
+    # ``compute_prepared_plan`` takes adjacency from ``relevant_edges``; these
+    # rank the plan. One rule, applied once, keeps the two from disagreeing.
+    scoped_children: dict[str, list[str]] = {node_id: [] for node_id in order}
+    for edge in scoped_edges:
+        scoped_children[edge.source].append(edge.target)
+    scoped_required_columns = {
+        node_id: columns
+        for node_id, columns in required_columns_by_node.items()
+        if node_id in scope
+    }
     replanned = projection_planner.compute_prepared_plan(
         order,
-        children_of,
+        scoped_children,
         node_map,
-        required_columns_by_node,
-        relevant_edges=relevant_edges,
+        scoped_required_columns,
+        relevant_edges=scoped_edges,
         submodels=graph.submodels,
         selector_aliases=preamble_selector_aliases(graph.preamble or ""),
         known_output_columns=known_output_columns,
     )
+    unreached = executed.projection_plan.materialisation_boundaries - (scope - seeded_node_ids)
+    if unreached:
+        raise RuntimeError(
+            "execution strategy re-plan received materialisation boundaries this "
+            f"execution never reached: {sorted(unreached)}"
+        )
     replanned = projection_planner.with_materialisation_boundaries(
         replanned,
         executed.projection_plan.materialisation_boundaries,
@@ -814,17 +846,17 @@ def _replanned_target_preview_strategy(
             replanned,
             demands_by_edge=runtime_edge_demands,
             resolved_parent_ids=runtime_resolved_parent_ids,
-            relevant_edges=relevant_edges,
+            relevant_edges=scoped_edges,
         )
     diagnostic = executed.diagnostic
     return projection_planner.build_execution_strategy_result(
         replanned,
         profile=profile,
         order=order,
-        children_of=children_of,
+        children_of=scoped_children,
         node_map=node_map,
-        has_projection_seed=bool(required_columns_by_node),
-        required_columns_by_node=required_columns_by_node,
+        has_projection_seed=bool(scoped_required_columns),
+        required_columns_by_node=scoped_required_columns,
         estimated_peak_bytes=diagnostic.estimated_peak_bytes,
         raw_estimated_peak_bytes=diagnostic.raw_estimated_peak_bytes,
         estimate_calibration_factor_basis_points=(
@@ -836,7 +868,7 @@ def _replanned_target_preview_strategy(
         boundary_operators=projection_planner.materialising_operators_by_node(
             order,
             node_map,
-            relevant_edges=relevant_edges,
+            relevant_edges=scoped_edges,
             submodels=graph.submodels,
         ),
         **_admitted_strategy_passthrough(diagnostic),
@@ -3641,8 +3673,7 @@ def _execute_eager_core(
             replan_required_columns[target_node_id] = set(target_output.columns)
         execution_context.projection_plan = _replanned_target_preview_strategy(
             executed_strategy,
-            order=order,
-            children_of=children_of,
+            order=run_order,
             node_map=node_map,
             required_columns_by_node=replan_required_columns,
             relevant_edges=relevant_edges,
@@ -3653,6 +3684,7 @@ def _execute_eager_core(
             runtime_edge_demands=recorded_runtime_edge_demands,
             runtime_resolved_parent_ids=recorded_runtime_resolved_parents,
             profile=execution_context.profile,
+            seeded_node_ids=seeded_ids,
         )
 
     plans: dict[str, pl.LazyFrame | dict[str, pl.LazyFrame]] = {}

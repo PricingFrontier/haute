@@ -2836,14 +2836,9 @@ def test_target_preview_replan_preserves_the_executed_materialisation_diagnostic
             ),
         )
         prepared = prepare_graph(graph, "out")
-        children_of: dict[str, list[str]] = {node_id: [] for node_id in prepared.order}
-        for child_id, parent_ids in prepared.parents_of.items():
-            for parent_id in parent_ids:
-                children_of[parent_id].append(child_id)
         replanned = _replanned_target_preview_strategy(
             executed,
             order=prepared.order,
-            children_of=children_of,
             node_map=prepared.node_map,
             required_columns_by_node={},
             relevant_edges=prepared.relevant_edges,
@@ -2855,6 +2850,7 @@ def test_target_preview_replan_preserves_the_executed_materialisation_diagnostic
             runtime_edge_demands={},
             runtime_resolved_parent_ids=(),
             profile=profile,
+            seeded_node_ids=frozenset(),
         )
 
     before, after = executed.diagnostic, replanned.diagnostic
@@ -2879,3 +2875,40 @@ def test_target_preview_replan_preserves_the_executed_materialisation_diagnostic
         assert getattr(after, name) == getattr(before, name), name
     assert tuple(after.assumptions) == tuple(before.assumptions)
     assert replanned.projection_plan.materialisation_boundaries == frozenset({"agg"})
+
+
+def test_target_preview_replan_refuses_a_boundary_the_execution_never_reached() -> None:
+    """Admission scopes boundaries to what runs; a violation must not pass silently.
+
+    Were one to slip through, the carried-over strategy would still name a node
+    the re-plan had dropped, and the diagnostic would blame whichever boundary
+    happened to rank first.
+    """
+    from haute._execute_lazy import _replanned_target_preview_strategy
+    from haute.projection import prepare_graph
+
+    profile = ExecutionProfile.PREVIEW_EAGER
+    graph = _group_by_graph()
+    executed = _plan_group_by(
+        profile,
+        context=_context(profile),
+        estimate=MaterialisationEstimate.available(10),
+    )
+    assert executed.projection_plan.materialisation_boundaries == frozenset({"agg"})
+    prepared = prepare_graph(graph, "out")
+
+    with pytest.raises(RuntimeError, match=r"never reached: \['agg'\]"):
+        _replanned_target_preview_strategy(
+            executed,
+            order=prepared.order,
+            node_map=prepared.node_map,
+            required_columns_by_node={},
+            relevant_edges=prepared.relevant_edges,
+            graph=graph,
+            known_output_columns={},
+            runtime_edge_demands={},
+            runtime_resolved_parent_ids=(),
+            profile=profile,
+            # ``agg`` materialised nothing if its frame came from a generation.
+            seeded_node_ids=frozenset({"agg"}),
+        )

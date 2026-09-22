@@ -1320,6 +1320,29 @@ present a structural or schema result as execution evidence.
   keeps its full-width boundary and diagnostic, as does any node that failed to build. Full
   materialisation, trace, and non-preview profiles keep the pre-execution plan because their
   collections, checkpoints, and chunking consume it.
+- **The re-planned diagnostic describes the nodes the execution read.** It is planned over
+  the execution's own order, so under a seed plan it stops at the seeds: a node above one is
+  absent from the plan, its boundaries and demands, because this execution never opened it,
+  and a seed is planned as a source, its own incoming edges dropped — the frame came from
+  its generation, so those edges demanded nothing of its parents here. That matters when a
+  seed's parent is built for a sibling branch: the parent then carries only the demand the
+  branch that read it proved, where retaining the seed's unprovable edge would have reported
+  it full width. A seed's own operator is never a materialisation boundary in the first
+  place, because admission and estimation see only the plan's executed nodes (above), so the
+  re-plan carries the executed diagnostic's boundaries through unchanged and raises if one
+  falls outside what this execution ran. A seed whose consumers cannot prove what they read
+  from it is still its own unprojected boundary: nothing then applies a projection Haute can
+  prove to its generation. Without a seed plan that order is the whole lineage and nothing is
+  scoped away. This is what stops a preview answered entirely from a seeded generation from
+  warning that projection was limited at a source it never scanned: the pre-execution plan
+  reports that boundary because an Edge Join's ownership is unprovable until its parents are
+  built, and with nothing built there is no runtime demand to retire it. A boundary at a node
+  the execution does read — including a materialisation it runs below a seed — is reported as
+  it always was. The *executing* plan is still the whole lineage, edges into seeds included,
+  so a shared parent can be reported narrower here than it was planned: that is what a lazy
+  scan physically reads, pushdown coming from the only consumer evaluated, but an eagerly
+  loaded source — an API-input port, a Data Input outside `scan` mode — still loads the
+  executing plan's union demand.
 - **Per-edge input names, not per-source names.** `_build_funcs` derives each
   node's `source_names` per incoming edge via `edge_input_name(edge, source_node)`
   (`_graph_utils.py`) — an apiInput edge contributes its frame label, every other
@@ -2220,7 +2243,10 @@ present a structural or schema result as execution evidence.
   generation to the negotiated columns while the target — below it, or the captured node
   itself — collects only its own demand, also when every node is collected without a limit;
   and an API-input port loads the negotiated demand even when the caller's strategy was
-  planned narrower. Through the preview route it covers the acceptance scenarios: a first
+  planned narrower. Three cover the diagnostic's scope: a preview seeded at a fan-in join
+  reports no boundary at the sources above it, a seed's unprovable edge carries no demand to
+  a parent a sibling branch does read, and a materialisation the preview runs below a seed is
+  still reported. Through the preview route it covers the acceptance scenarios: a first
   preview capturing the join and returning an unadmitted preview's rows, a second preview
   below it seeding and building no source, a join target, a training run seeding the
   preview's capture, a refreshed join missing the cache, a stale join recaptured, a clear
