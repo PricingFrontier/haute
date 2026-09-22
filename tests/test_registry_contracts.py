@@ -92,6 +92,7 @@ def test_registry_module_starts_unready_in_fresh_interpreter() -> None:
 
 def test_registry_entry_uses_slots() -> None:
     entry = registry.NodeRegistryEntry()
+    assert entry.slice_transparent is True
 
     entry_repr = repr(registry.NodeRegistryEntry(column_contract=_column_contract))
     assert "column_contract" not in entry_repr
@@ -141,8 +142,15 @@ def test_register_exec_stores_builder_and_column_contract(
     assert registered is _exec_builder
     assert entry.exec is _exec_builder
     assert registry.get_exec(NodeType.DATA_INPUT) is _exec_builder
+    assert entry.slice_transparent is True
     assert entry.column_contract is _column_contract
     assert entry.column_contract(config) == ("contract", config)
+
+
+def test_register_exec_preserves_explicit_slice_barrier(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(registry, "NODE_REGISTRY", {})
+    registry.register_exec(NodeType.SCENARIO_EXPANDER, slice_transparent=False)(_exec_builder)
+    assert registry.NODE_REGISTRY[NodeType.SCENARIO_EXPANDER].slice_transparent is False
 
 
 def test_register_exec_then_codegen_preserves_single_entry(

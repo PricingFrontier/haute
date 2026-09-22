@@ -38,7 +38,29 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from haute._file_ops import Writer, atomic_copy_files, atomic_write_bytes, atomic_write_text
+from haute._file_ops import (
+    Writer,
+    atomic_copy_files,
+    atomic_write_bytes,
+    atomic_write_text,
+    ensure_disk_headroom,
+)
+
+
+def test_ensure_disk_headroom_accepts_exact_boundary_and_refuses_one_byte_less(
+    tmp_path, monkeypatch
+) -> None:
+    import shutil
+
+    actual = shutil.disk_usage(tmp_path)
+    required = 123 + 64 * 1024
+    monkeypatch.setattr(shutil, "disk_usage", lambda _path: actual._replace(free=required))
+    ensure_disk_headroom(tmp_path, 123)
+    monkeypatch.setattr(shutil, "disk_usage", lambda _path: actual._replace(free=required - 1))
+    with pytest.raises(OSError) as exc_info:
+        ensure_disk_headroom(tmp_path, 123)
+    assert exc_info.value.errno == 28
+
 
 # ---------------------------------------------------------------------------
 # F2: atomic_write_bytes

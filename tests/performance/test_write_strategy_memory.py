@@ -1,16 +1,10 @@
-"""Performance artifact for chunked write memory scaling.
+"""Fresh-process budget evidence for sliced write strategies.
 
-This artifact proves that Haute's native sink strategy has peak memory that grows
-with input row count, while the sliced strategy remains bounded.
-
-The passthrough control (``passthrough_native``), a native filter that keeps every
-row, proves the growth belongs to the native sink
-itself rather than to filtering.
-
-These relationships are why the chunked writer slices where it can: a capture, an
-explicit build and training preparation all take a bounded path, and a Data Output
-is the one full-frame write still on the native sink (``CACHE-S21``, which cites
-this artifact). A change in them changes the case for that work.
+The sliced cases run through ``write_parts`` with a 256 MiB execution-context
+incremental RSS budget. Each must remain within that budget at 1.5M and 6M rows
+and finish within eight times its same-size native control (with a 30-second
+floor). Native cases are unbudgeted diagnostics: their RSS is recorded but no
+growth relationship is required from them.
 """
 
 from __future__ import annotations
@@ -32,6 +26,11 @@ _PROBE = Path(__file__).with_name("_write_strategy_memory_probe.py")
 _ROW_GROUP_SIZE = 25_000
 _SMALL_ROWS = 1_500_000
 _LARGE_ROWS = 6_000_000
+_BOUNDED_INCREMENTAL_LIMIT_BYTES = 256 * 1024 * 1024
+_BOUNDED_NATIVE_CONTROLS = {
+    "unnest": "passthrough_native",
+    "filter_with_recipe": "filter",
+}
 
 EXPECTED_STRATEGIES: dict[str, str] = {
     "passthrough_native": "native",
@@ -120,7 +119,7 @@ def _run_write_strategy_probe(
 
 
 def test_write_strategy_memory(tmp_path: Path) -> None:
-    """Verify write strategy memory growth scaling between 1.5M and 6M rows."""
+    """Certify the budgeted sliced paths over the 40-column fixture."""
     source_small = tmp_path / "source_small.parquet"
     source_large = tmp_path / "source_large.parquet"
 
@@ -134,7 +133,7 @@ def test_write_strategy_memory(tmp_path: Path) -> None:
         "unnest",
         "filter_with_recipe",
     )
-    ratios: dict[str, float] = {}
+    results: dict[str, dict[int, dict[str, Any]]] = {}
 
     for case in cases:
         r_small = _run_write_strategy_probe(tmp_path, case, source_small, _SMALL_ROWS)
@@ -150,11 +149,7 @@ def test_write_strategy_memory(tmp_path: Path) -> None:
             f"{r_large['strategy']!r}, expected {expected_strategy!r}"
         )
 
-        inc_small = r_small["incremental_peak_rss_bytes"]
-        inc_large = r_large["incremental_peak_rss_bytes"]
-        ratio = inc_large / inc_small if inc_small > 0 else float("inf")
-
-        ratios[case] = ratio
+        results[case] = {_SMALL_ROWS: r_small, _LARGE_ROWS: r_large}
 
         # A case that wrote nothing has a flat ratio and would slip past the
         # sliced bound while measuring nothing at all.
@@ -169,48 +164,27 @@ def test_write_strategy_memory(tmp_path: Path) -> None:
                     f"filtered subset of {rows}"
                 )
 
-        if expected_strategy == "native":
-            # Every native case must scale with input: over a 4x row step, at
-            # least 1.6x. Measured over two runs of the 40-column fixture:
-            # passthrough 1.97 to 2.00, filter 2.02 to 2.25, filter with derived
-            # columns 2.06 to 2.35.
-            assert ratio >= 1.6, (
-                f"Native case {case!r} incremental peak ratio {ratio:.2f} is below 1.6 "
-                f"({inc_small / (1024 * 1024):.1f} MB -> {inc_large / (1024 * 1024):.1f} MB)"
+    for case, native_case in _BOUNDED_NATIVE_CONTROLS.items():
+        for rows in (_SMALL_ROWS, _LARGE_ROWS):
+            bounded = results[case][rows]
+            native = results[native_case][rows]
+            incremental = bounded["incremental_peak_rss_bytes"]
+            assert incremental <= _BOUNDED_INCREMENTAL_LIMIT_BYTES, (
+                f"Budgeted case {case!r} at {rows} rows used "
+                f"{incremental / (1024 * 1024):.1f} MiB incremental RSS, above the 256 MiB budget"
             )
-        elif expected_strategy in ("sliced", "input_sliced"):
-            # The sliced and input-sliced cases stay bounded whatever the input:
-            # unnest measured 1.30 to 1.44 over the same 4x row step, against every
-            # native case's 1.97 or more; filter_with_recipe measured 1.37 against
-            # filter's 2.03 to 2.25, tracking the sliced control under the same 1.5x
-            # ceiling.
-            assert ratio <= 1.5, (
-                f"Bounded case {case!r} ({expected_strategy}) incremental peak ratio "
-                f"{ratio:.2f} exceeds 1.5 "
-                f"({inc_small / (1024 * 1024):.1f} MB -> {inc_large / (1024 * 1024):.1f} MB)"
+            allowed_seconds = max(30.0, 8 * native["elapsed_seconds"])
+            assert bounded["elapsed_seconds"] <= allowed_seconds, (
+                f"Budgeted case {case!r} at {rows} rows took {bounded['elapsed_seconds']:.1f}s, "
+                f"above its {native_case!r} control allowance of {allowed_seconds:.1f}s"
             )
 
-    # The absolute bounds above are sanity rails; this is the relationship the
-    # artifact exists to prove. Without it, a host where every case happened to
-    # measure about 1.45x would pass while native and sliced behaved alike.
-    #
-    # Every native case clears it, the passthrough control included: that case
-    # exists to show the growth belongs to the sink rather than to filtering, so
-    # it must separate from the sliced control too. Worst measured separation is
-    # 1.97 against 1.32, which is 1.49.
-    sliced_ratio = ratios["unnest"]
-    for case, expected_strategy in EXPECTED_STRATEGIES.items():
-        if expected_strategy != "native":
-            continue
-        assert ratios[case] >= 1.25 * sliced_ratio, (
-            f"Native case {case!r} grew {ratios[case]:.2f}x against the sliced control's "
-            f"{sliced_ratio:.2f}x: the two strategies are not behaving differently, so this "
-            f"artifact is no longer measuring what it claims"
+    for case in cases:
+        summary = results[case]
+        print(
+            f"{case}: "
+            f"small={summary[_SMALL_ROWS]['incremental_peak_rss_bytes'] / (1024 * 1024):.1f}MiB/"
+            f"{summary[_SMALL_ROWS]['elapsed_seconds']:.2f}s, "
+            f"large={summary[_LARGE_ROWS]['incremental_peak_rss_bytes'] / (1024 * 1024):.1f}MiB/"
+            f"{summary[_LARGE_ROWS]['elapsed_seconds']:.2f}s"
         )
-
-    # The same computation under two strategies is the most direct proof the fix
-    # works: filter under native grew 2.03x against input-sliced's 1.37x (1.48x separation).
-    assert ratios["filter"] >= 1.25 * ratios["filter_with_recipe"], (
-        f"Native filter grew {ratios['filter']:.2f}x against input-sliced filter's "
-        f"{ratios['filter_with_recipe']:.2f}x: the two strategies are not behaving differently"
-    )

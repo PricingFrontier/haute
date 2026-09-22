@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -417,6 +419,87 @@ def test_failed_refresh_preserves_previous_current_generation(tmp_path: Path) ->
     current = store.open_generation(identity)
     assert current.generation_id == first.generation_id
     assert current.lazy_frame.collect()["id"].to_list() == [1]
+    assert not any(store.identity_path(identity).glob(".staging-*"))
+
+
+def test_low_disk_refresh_refuses_before_builder_and_preserves_current_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="data/input.parquet", format="parquet")
+    first = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+
+    class _MustNotBuild:
+        calls = 0
+
+        def build(self, context: SourceCacheBuildContext) -> pl.LazyFrame:
+            self.calls += 1
+            return pl.DataFrame({"id": [2]}).lazy()
+
+    builder = _MustNotBuild()
+    actual_usage = shutil.disk_usage(tmp_path)
+    monkeypatch.setattr(
+        "haute._file_ops.shutil.disk_usage",
+        lambda _directory: actual_usage._replace(free=65_535),
+    )
+
+    with pytest.raises(OSError) as exc_info:
+        store.build(identity, builder, context=_context(), refresh=True)
+
+    assert exc_info.value.errno == errno.ENOSPC
+    assert builder.calls == 0
+    current = store.open_generation(identity)
+    assert current.generation_id == first.generation_id
+    assert current.lazy_frame.collect()["id"].to_list() == [1]
+    assert not any(store.identity_path(identity).glob(".staging-*"))
+
+
+def test_low_disk_second_arrow_batch_removes_staging_and_preserves_current_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="data/batches.parquet", format="parquet")
+    first = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+    yielded = 0
+
+    def batches() -> Iterator[pa.Table]:
+        nonlocal yielded
+        for value in (2, 3):
+            yielded += 1
+            yield pa.table({"id": [value]})
+
+    class _IteratorBuilder:
+        def build(self, context: SourceCacheBuildContext) -> Iterator[pa.Table]:
+            return batches()
+
+    actual_usage = shutil.disk_usage(tmp_path)
+    checks = 0
+
+    def disk_usage(_directory: Path):
+        nonlocal checks
+        checks += 1
+        free = actual_usage.free if checks < 3 else 65_535
+        return actual_usage._replace(free=free)
+
+    monkeypatch.setattr("haute._file_ops.shutil.disk_usage", disk_usage)
+
+    with pytest.raises(OSError) as exc_info:
+        store.build(identity, _IteratorBuilder(), context=_context(), refresh=True)
+
+    assert exc_info.value.errno == errno.ENOSPC
+    assert checks == 3
+    assert yielded == 2
+    assert store.open_generation(identity).generation_id == first.generation_id
     assert not any(store.identity_path(identity).glob(".staging-*"))
 
 

@@ -30,6 +30,15 @@ export interface RatingLevelsState {
   error: string | null
 }
 
+interface Tagged<T> {
+  identity: string
+  value: T
+}
+
+interface RatingLevelsRequest {
+  controller: AbortController | null
+}
+
 export interface UseRatingLevelsInput {
   node: SimpleNode | null
   allNodes: SimpleNode[]
@@ -65,10 +74,10 @@ export default function useRatingLevels({
 }: UseRatingLevelsInput): RatingLevelsState {
   const activeSource = useSettingsStore((s) => s.activeSource)
   const cache = useNodeDataCache({ node, allNodes, edges, submodels, preamble })
-  const [answer, setAnswer] = useState<RatingLevelsResponse | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const inFlight = useRef<AbortController | null>(null)
+  const [answer, setAnswer] = useState<Tagged<RatingLevelsResponse | null> | null>(null)
+  const [loading, setLoading] = useState<Tagged<boolean> | null>(null)
+  const [error, setError] = useState<Tagged<string | null> | null>(null)
+  const inFlight = useRef<RatingLevelsRequest | null>(null)
   const nodeId = node?.id ?? null
 
   // What the request is about: the columns, once each, in a stable order, so
@@ -79,23 +88,20 @@ export default function useRatingLevels({
   }, [columns])
   const available = cache.availability
   const dataVersion = cache.dataVersion
+  const requestIdentity = JSON.stringify({ nodeId, askedFor, activeSource, available, dataVersion })
 
   useEffect(() => {
     if (!nodeId || !askedFor || available !== "current") {
-      // Nothing to ask about, or nothing current to ask. Any answer in flight
-      // is abandoned; what is on screen is not offered as this data, because
-      // the reading below requires a current point.
-      inFlight.current?.abort()
-      inFlight.current = null
       return
     }
     const asked = JSON.parse(askedFor) as string[]
     const fence = captureDocumentExecutionFence()
+    const request: RatingLevelsRequest = { controller: null }
     const timer = setTimeout(() => {
-      inFlight.current?.abort()
       const controller = new AbortController()
-      inFlight.current = controller
-      setLoading(true)
+      request.controller = controller
+      inFlight.current = request
+      setLoading({ identity: requestIdentity, value: true })
       getRatingLevels({
         graph: buildGraph(allNodes, edges, submodels, preamble),
         node_id: nodeId,
@@ -104,53 +110,68 @@ export default function useRatingLevels({
         signal: controller.signal,
       })
         .then((response) => {
-          if (controller.signal.aborted || !isDocumentExecutionFenceCurrent(fence)) return
-          setAnswer(response)
-          setError(null)
+          if (
+            controller.signal.aborted ||
+            inFlight.current !== request ||
+            !isDocumentExecutionFenceCurrent(fence)
+          ) return
+          setAnswer({ identity: requestIdentity, value: response })
+          setError({ identity: requestIdentity, value: null })
         })
         .catch((err: unknown) => {
-          if (controller.signal.aborted || !isDocumentExecutionFenceCurrent(fence)) return
+          if (
+            controller.signal.aborted ||
+            inFlight.current !== request ||
+            !isDocumentExecutionFenceCurrent(fence)
+          ) return
           // The editor keeps working from preview levels, and says why it had
           // to: the server's own message rather than the bare "HTTP 422" the
           // client builds as the error's message.
-          setAnswer(null)
-          setError(apiErrorMessage(err, "the levels could not be read"))
+          setAnswer({ identity: requestIdentity, value: null })
+          setError({ identity: requestIdentity, value: apiErrorMessage(err, "the levels could not be read") })
         })
         .finally(() => {
-          if (inFlight.current === controller) inFlight.current = null
-          // A superseded request leaves the flag to its successor, which is
-          // still running; the last one standing clears it.
-          if (inFlight.current === null) setLoading(false)
+          if (inFlight.current !== request) return
+          inFlight.current = null
+          setLoading({ identity: requestIdentity, value: false })
         })
     }, RATING_LEVELS_DEBOUNCE_MS)
-    return () => clearTimeout(timer)
+    return () => {
+      clearTimeout(timer)
+      request.controller?.abort()
+      if (inFlight.current === request) {
+        inFlight.current = null
+        setLoading({ identity: requestIdentity, value: false })
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodeId, askedFor, available, dataVersion, activeSource])
-
-  useEffect(() => () => inFlight.current?.abort(), [])
 
   // Whole-dataset levels are offered only while the point they came from is
   // the one this node reads *now*: a stale point falls back to the preview,
   // however recently its levels arrived.
+  const matchingAnswer = answer?.identity === requestIdentity ? answer.value : null
   const current =
-    available === "current" && answer?.status === "ok" && answer.data_version === dataVersion
+    available === "current" &&
+    matchingAnswer?.status === "ok" &&
+    matchingAnswer.data_version === dataVersion
   const levels = useMemo(() => {
-    if (!current || !answer) return NO_LEVELS
+    if (!current || !matchingAnswer) return NO_LEVELS
     const byColumn: Record<string, string[]> = {}
-    for (const column of answer.columns) {
+    for (const column of matchingAnswer.columns) {
       if (column.values.length > 0) {
         byColumn[column.column] = column.values.map((value) => value.value)
       }
     }
     return byColumn
-  }, [current, answer])
+  }, [current, matchingAnswer])
 
   return {
     cache,
     levels,
-    totalRows: current && answer ? answer.total_rows : 0,
-    loading,
-    error,
+    totalRows: current && matchingAnswer ? matchingAnswer.total_rows : 0,
+    loading: loading?.identity === requestIdentity ? loading.value : false,
+    error: error?.identity === requestIdentity ? error.value : null,
     basis: current ? "all" : available === "stale" ? "stale" : "sample",
   }
 }

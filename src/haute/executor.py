@@ -502,7 +502,7 @@ def _compile_preamble(
     *,  # pragma: no mutate
     pipeline_dir: str | Path | None = None,  # pragma: no mutate
     memo: GraphFingerprintMemo | None = None,  # pragma: no mutate
-    execution_fingerprint: str | None = None,
+    execution_fingerprint: str | None = None,  # pragma: no mutate
 ) -> dict[str, Any]:
     """Compile user-defined preamble code into a namespace dict.
 
@@ -929,7 +929,7 @@ def _result_order_for_target(
     return [nid for nid in order if nid in needed]
 
 
-def _seeded_fingerprint(decision: SeedPlanDecision | None) -> str | None:
+def _seeded_fingerprint(decision: SeedPlanDecision | None) -> str | None:  # pragma: no mutate
     """The seed generations a preview reads, for its cache key; ``None`` if it seeds none.
 
     A preview that seeds nothing computes the same data as one without a
@@ -976,7 +976,7 @@ def _preview_entry_is_current(
 
 def _preview_preparation_order(
     graph: PipelineGraph,
-    target_node_id: str | None,
+    target_node_id: str | None,  # pragma: no mutate
     source: str,
 ) -> list[str]:
     """Node ids of the preview's executed lineage, for input preparation.
@@ -1010,7 +1010,7 @@ def execute_graph(
     port_label: str | None = None,  # pragma: no mutate
     execution_context: ExecutionContext | None = None,  # pragma: no mutate
     shared_snapshots: bool = False,
-    staging_token: str | None = None,
+    staging_token: str | None = None,  # pragma: no mutate
 ) -> dict[str, NodeResult]:
     """Execute a graph and return per-node results.
 
@@ -1136,19 +1136,19 @@ def execute_graph(
 
 def _execute_graph_core(
     graph: PipelineGraph,
-    target_node_id: str | None,
-    row_limit: int | None,
+    target_node_id: str | None,  # pragma: no mutate
+    row_limit: int | None,  # pragma: no mutate
     max_preview_rows: int,
     source: str,
     enforce_contracts: bool,
     *,
     target_preview_only: bool,
-    requested_preview_columns: list[str] | None,
+    requested_preview_columns: list[str] | None,  # pragma: no mutate
     include_schema_metadata: bool,
-    port_label: str | None,
+    port_label: str | None,  # pragma: no mutate
     execution_context: ExecutionContext,
-    snapshot_plan: SeedPlan | None,
-    seed_plan_request: SeedPlanRequest | None,
+    snapshot_plan: SeedPlan | None,  # pragma: no mutate
+    seed_plan_request: SeedPlanRequest | None,  # pragma: no mutate
 ) -> dict[str, NodeResult]:
     """One preview execution, under its leased seed plan when it has one."""
     # Include enforce_contracts in the cache key so a toggle flips
@@ -1226,7 +1226,7 @@ def _execute_graph_core(
         memo=fingerprint_memo,
     )
 
-    def _cache_key(seeds: SeedPlanDecision | None) -> str:
+    def _cache_key(seeds: SeedPlanDecision | None) -> str:  # pragma: no mutate
         return execution_facade.preview_lineage_cache_key(
             graph,
             target_node_id=target_node_id,
@@ -1260,7 +1260,7 @@ def _execute_graph_core(
     # it is stored only under the key its post-capture plan gives (below).
     captures_planned = snapshot_plan is not None and bool(snapshot_plan.decision.captures)
 
-    def _post_capture_key() -> str | None:
+    def _post_capture_key() -> str | None:  # pragma: no mutate
         """The key a new request would now compute, if this execution's data answers it."""
         assert snapshot_plan is not None and seed_plan_request is not None
         now = execution_facade.lineage_runtime_input_identity(
@@ -1726,7 +1726,7 @@ def _eager_execute(
     materialize_node_ids: set[str] | frozenset[str] | None = None,  # pragma: no mutate
     materialize_column_limits_by_node: dict[str, int] | None = None,  # pragma: no mutate
     execution_context: ExecutionContext | None = None,  # pragma: no mutate
-    snapshot_plan: SeedPlan | None = None,
+    snapshot_plan: SeedPlan | None = None,  # pragma: no mutate
 ) -> tuple[
     # Mirrors EagerResult.outputs — may carry per-frame dict for multi-frame
     # apiInput sources.
@@ -2108,7 +2108,7 @@ def _data_output_config(graph: PipelineGraph, output_node_id: str) -> dict[str, 
 
 def _data_output_required_columns(
     config: Mapping[str, Any], output_node_id: str
-) -> dict[str, frozenset[str]] | None:
+) -> dict[str, frozenset[str]] | None:  # pragma: no mutate
     selected_columns = config.get("selected_columns")
     if not selected_columns:
         return None

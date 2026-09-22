@@ -1009,7 +1009,7 @@ tests = [
   "frontend/e2e/explore.spec.ts::uses cached Explore schema and formats a Pivot before its ordinary preview resolves",
   "frontend/e2e/explore.spec.ts::a chart bound to a pivot renders from real pivot results and goes stale with its pivot",
   "frontend/e2e/explore.spec.ts::a failed re-cache keeps the previous data visible as stale and reports the failure",
-  "frontend/src/panels/__tests__/ExplorePreview.test.tsx::renders the shared cache button state of the data it reads",
+  "frontend/src/panels/__tests__/ExplorePreview.test.tsx::renders the shared cache state of the data it reads",
   "frontend/src/panels/__tests__/ExplorePreview.test.tsx::cancels the running profile job, whichever consumer started it",
   "frontend/src/panels/__tests__/ExplorePreview.test.tsx::offers a retry after a failed profile instead of empty panes",
   "frontend/src/panels/__tests__/ExplorePreview.test.tsx::stops showing a profile once the point moves to another data version",

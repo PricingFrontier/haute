@@ -9,6 +9,7 @@ API-input tables keep their existing build routes, which ``run`` delegates to.
 from __future__ import annotations
 
 import contextlib
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -412,6 +413,7 @@ class _ProfileWorkerRequest:
     source: str
     project_root: str
     resolution: PointResolution
+    scratch_directory: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -472,7 +474,14 @@ def _profile_point(
     ) as leased:
         schema = leased.scan.collect_schema()
         with execution_context.stage("node_data_profile"):
-            stats = _build_frame_stats(leased.scan, schema, execution_context=execution_context)
+            stats = _build_frame_stats(
+                leased.scan,
+                schema,
+                execution_context=execution_context,
+                scratch_directory=Path(request.scratch_directory)
+                if request.scratch_directory
+                else None,
+            )
         if request.resolution.kind == "data_input" and request.resolution.input_identity is None:
             # A direct file is not pinned by the lease: prove it was not rewritten
             # while its statistics were read.
@@ -1043,12 +1052,17 @@ class NodeDataService:
             bind_running_execution_metrics_publisher(self._store, job_id, execution_context)
             # The parent holds the lease for the whole job, so the worker reads
             # exactly this generation even if the point is refreshed or cleared.
-            with resolver.lease_resolved(request.resolution, exact=True):
+            # Parent ownership also covers a worker killed while its native sink
+            # is still running: cleanup starts only after the process is joined.
+            with (
+                resolver.lease_resolved(request.resolution, exact=True),
+                tempfile.TemporaryDirectory(prefix="haute-profile-") as scratch_directory,
+            ):
                 budget = isolated_execution_budget(execution_context)
                 profile = _validated_profile_success(
                     run_isolated_worker(
                         _run_profile_worker,
-                        request,
+                        replace(request, scratch_directory=scratch_directory),
                         budget,
                         config=worker_config_for_memory_policy(
                             memory_limit_bytes=budget.memory_limit_bytes,

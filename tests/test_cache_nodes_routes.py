@@ -533,7 +533,7 @@ def test_every_node_output_byte_is_accounted_for_exactly_once(
     ]
     # A second generation the store did not retire, and staging mid-write:
     # both count against the budget, so both must be reported somewhere.
-    stray = identity_dirs[0] / "generations" / "stray-generation"
+    stray = project / identity_dirs[0].relative_to(project) / "generations" / "stray-generation"
     stray.mkdir(parents=True)
     (stray / "meta.json").write_text(
         (identity_dirs[0] / "generations")
@@ -543,7 +543,7 @@ def test_every_node_output_byte_is_accounted_for_exactly_once(
         encoding="utf-8",
     )
     (stray / part_name(0)).write_bytes(b"x" * 2048)
-    staging = identity_dirs[1] / ".staging-abcdef012345"
+    staging = project / identity_dirs[1].relative_to(project) / ".staging-abcdef012345"
     staging.mkdir(parents=True)
     (staging / "part-00000.parquet").write_bytes(b"y" * 1024)
 
@@ -637,7 +637,7 @@ def test_a_generation_whose_metadata_is_unreadable_is_reported_as_unattributed(
         for path in (project / ".haute_cache" / "inputs").iterdir()
         if path.is_dir() and not path.name.startswith(".")
     )
-    generation = next((identity_dir / "generations").iterdir())
+    generation = project / next((identity_dir / "generations").iterdir()).relative_to(project)
     (generation / "meta.json").write_text("{ this is not json", encoding="utf-8")
 
     usage = client.get("/api/cache/usage").json()

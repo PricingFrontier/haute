@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, runtime_checkable
 
 import polars as pl
 
@@ -23,8 +23,13 @@ from haute._cache import CacheConsumer, canonical_json, checked_cache_inputs
 from haute._chunked_writes import is_part_name, part_name, part_paths, scan_parts, write_parts
 from haute._credential_security import is_credential_name, validate_credential_free_uri
 from haute._env import float_env, int_env
-from haute._file_ops import atomic_write_text
+from haute._file_lock import _acquire_file_lock, _release_file_lock
+from haute._file_ops import atomic_write_text, ensure_disk_headroom
 from haute._hashing import content_hash
+from haute._json_shred._publication import (
+    _assert_cache_path_ancestors_plain,
+    _open_cache_lock_file,
+)
 from haute._logging import get_logger
 
 if TYPE_CHECKING:
@@ -59,6 +64,8 @@ IdentityClassification = Literal["node_output", "input", "unknown"]
 INPUT_CACHE_MAX_BYTES_VARIABLE = "HAUTE_INPUT_CACHE_MAX_BYTES"
 INPUT_CACHE_MAX_GENERATIONS_VARIABLE = "HAUTE_INPUT_CACHE_MAX_GENERATIONS"
 KNOWN_INPUT_PROVIDERS = frozenset({"file", "lakehouse", "database", "databricks", "inline"})
+_LEASE_PREFIX = ".lease-"
+_TOKEN_LENGTH = 12
 
 logger = get_logger(component="source_cache")
 
@@ -407,14 +414,69 @@ class SourceCacheStatus:
     generation: SourceCacheGeneration | None = None
 
 
+class _StoreFileLock:
+    """Thread-reentrant, cross-process exclusive lock on one plain lock file."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._thread_lock = threading.RLock()
+        self._depth = 0
+        self._handle: Any | None = None
+
+    def __enter__(self) -> _StoreFileLock:
+        self._thread_lock.acquire()
+        if self._depth:
+            self._depth += 1
+            return self
+        handle: Any | None = None
+        try:
+            _assert_cache_path_ancestors_plain(self._path)
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            handle = _open_cache_lock_file(self._path)
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            _acquire_file_lock(handle)
+            self._handle = handle
+            self._depth = 1
+            return self
+        except BaseException:
+            if handle is not None:
+                handle.close()
+            self._thread_lock.release()
+            raise
+
+    def __exit__(self, *exc_info: object) -> None:
+        try:
+            self._depth -= 1
+            if self._depth:
+                return
+            handle, self._handle = self._handle, None
+            if handle is None:
+                raise RuntimeError("source-cache lock lost its file handle")
+            try:
+                _release_file_lock(handle)
+            finally:
+                handle.close()
+        finally:
+            self._thread_lock.release()
+
+
 @dataclass(slots=True)
 class _SourceCacheCoordination:
     """Process-local locks and leases shared by every handle to one cache root."""
 
+    lease_lock: _StoreFileLock
     lock: threading.RLock = field(default_factory=threading.RLock)
     identity_locks: dict[str, threading.RLock] = field(default_factory=dict)
     leases: dict[tuple[str, str], int] = field(default_factory=dict)
     verified_generations: set[_VerifiedGeneration] = field(default_factory=set)
+    guard: threading.Lock = field(default_factory=threading.Lock)
+    publication_locks: dict[str, _StoreFileLock] = field(default_factory=dict)
+    token: str | None = None
+    token_handle: Any | None = None
+    retired_cleaned: bool = False
 
 
 def _verification_key(
@@ -503,7 +565,7 @@ class SourceCacheStore:
 
     _coordination_lock = threading.Lock()
     _staging_cleanup_lock = threading.Lock()
-    _coordination_by_root: dict[Path, _SourceCacheCoordination] = {}
+    _coordination_by_root: dict[tuple[Path, int], _SourceCacheCoordination] = {}
 
     def __init__(
         self,
@@ -545,19 +607,27 @@ class SourceCacheStore:
             )
         if not isinstance(retire_grace_seconds, (int, float)) or retire_grace_seconds < 0:
             raise ValueError("source-cache retire_grace_seconds must be zero or positive")
-        # Leases are process-local, so a superseded generation another process
-        # is still scanning must survive long enough for that read to finish.
+        # Keep the existing handoff grace in addition to cross-process leases:
+        # readers already holding a marker remain protected beyond this delay.
         self.retire_grace_seconds = float(retire_grace_seconds)
         self.staging_max_age_seconds = float_env(
             "HAUTE_INPUT_CACHE_STAGING_MAX_AGE_SECONDS",
             _DEFAULT_STAGING_MAX_AGE_SECONDS,
         )
-        coordination_key = self.inputs_root.resolve()
+        self._locks_dir = self.inputs_root / ".locks"
+        self._processes_dir = self.inputs_root / ".processes"
+        # A fork inherits Python memory but not a safe process-token handle.
+        # Keying local coordination by PID gives the child a fresh token/count table.
+        coordination_key = (self.inputs_root.resolve(), os.getpid())
         with self._coordination_lock:
-            coordination = self._coordination_by_root.setdefault(
-                coordination_key,
-                _SourceCacheCoordination(),
-            )
+            coordination = self._coordination_by_root.get(coordination_key)
+            if coordination is None:
+                coordination = _SourceCacheCoordination(
+                    lease_lock=_StoreFileLock(self._locks_dir / "leases.lock")
+                )
+                self._coordination_by_root[coordination_key] = coordination
+        self._coordination = coordination
+        self._lease_lock = coordination.lease_lock
         self._lock = coordination.lock
         self._identity_locks = coordination.identity_locks
         self._leases = coordination.leases
@@ -603,6 +673,83 @@ class SourceCacheStore:
     def _identity_lock(self, identity: SourceCacheIdentity) -> threading.RLock:
         with self._lock:
             return self._identity_locks.setdefault(identity.digest, threading.RLock())
+
+    def _own_token(self) -> str:
+        coordination = self._coordination
+        with coordination.guard:
+            if coordination.token is None:
+                token = uuid.uuid4().hex[:_TOKEN_LENGTH]
+                path = self._processes_dir / f"{token}.lock"
+                _assert_cache_path_ancestors_plain(path)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                handle = _open_cache_lock_file(path)
+                try:
+                    handle.write(b"\0")
+                    handle.flush()
+                    if not _acquire_file_lock(handle, blocking=False):
+                        raise RuntimeError("a fresh lease-owner token file is already locked")
+                except BaseException:
+                    handle.close()
+                    raise
+                coordination.token = token
+                coordination.token_handle = handle
+            return coordination.token
+
+    def _token_alive(self, token: str) -> bool:
+        if token == self._coordination.token:
+            return True
+        if len(token) != _TOKEN_LENGTH or any(
+            character not in "0123456789abcdef" for character in token
+        ):
+            return False
+        path = self._processes_dir / f"{token}.lock"
+        if not path.exists():
+            return False
+        handle = _open_cache_lock_file(path)
+        try:
+            if not _acquire_file_lock(handle, blocking=False):
+                return True
+            _release_file_lock(handle)
+        finally:
+            handle.close()
+        with contextlib.suppress(OSError):
+            path.unlink()
+        return False
+
+    def _in_process_lease_count(self, identity_digest: str, generation_id: str) -> int:
+        with self._lock:
+            return self._leases.get((identity_digest, generation_id), 0)
+
+    def _has_live_holders_locked(self, generation_dir: Path) -> bool:
+        """Whether any live process leases *generation_dir*. Caller holds the lease lock."""
+        try:
+            markers = tuple(
+                entry for entry in generation_dir.iterdir() if entry.name.startswith(_LEASE_PREFIX)
+            )
+        except FileNotFoundError:
+            return False
+        identity_digest = generation_dir.parent.parent.name
+        generation_id = generation_dir.name
+        live = False
+        own = self._coordination.token
+        for marker in markers:
+            token = marker.name.removeprefix(_LEASE_PREFIX)
+            if token == own:
+                if self._in_process_lease_count(identity_digest, generation_id) > 0:
+                    live = True
+                else:
+                    marker.unlink(missing_ok=True)
+                continue
+            if self._token_alive(token):
+                live = True
+                continue
+            marker.unlink(missing_ok=True)
+            logger.info(
+                "source_cache_dead_lease_marker_removed",
+                identity_digest=identity_digest,
+                generation_id=generation_id,
+            )
+        return live
 
     def _pointer_path(self, identity: SourceCacheIdentity) -> Path:
         return self.identity_path(identity) / "current.json"
@@ -775,6 +922,7 @@ class SourceCacheStore:
                     )
                 if writer is None:
                     writer = pq.ParquetWriter(path, table.schema)
+                ensure_disk_headroom(directory, table.nbytes)
                 writer.write_table(table)
                 context.advance(table.num_rows)
             if writer is None:
@@ -878,9 +1026,9 @@ class SourceCacheStore:
                 current_id = self._read_pointer(identity)
                 current_dir = self.identity_path(identity) / "generations" / current_id
                 if (
-                    self._leases.get((identity.digest, current_id), 0) == 0
-                    and current_id not in retained_generation_ids
+                    current_id not in retained_generation_ids
                     and current_dir.is_dir()
+                    and not self._has_live_holders_locked(current_dir)
                 ):
                     reclaimable = generation_bytes(current_dir)
                     reclaimable_count = 1
@@ -926,6 +1074,7 @@ class SourceCacheStore:
             _ensure_identity_marker(identity_dir, identity.provider)
             generations_dir = identity_dir / "generations"
             generations_dir.mkdir(parents=True, exist_ok=True)
+            ensure_disk_headroom(identity_dir)
             # Keep the staging sibling deliberately short: ``atomic_write_text``
             # appends its own unique suffix, and Windows' traditional path limit can
             # otherwise be exceeded beneath pytest's long temporary roots.
@@ -968,9 +1117,9 @@ class SourceCacheStore:
                 atomic_write_text(metadata_path, canonical_json(metadata.to_dict()))
                 context.checkpoint()
                 # Self-validate the staged directory using the same strict validator after rename.
-                with self._lock:
+                with self._lease_lock:
                     if not context.defer_retirement:
-                        self._retire_unleased(identity)
+                        self._retire_unleased_locked(identity)
                     try:
                         self._admit_publication_within_quota(
                             identity,
@@ -981,7 +1130,7 @@ class SourceCacheStore:
                     except SourceCacheQuotaExceededError:
                         # Quota pressure outranks the reader grace: reclaim the
                         # graced generations once and admit again, or fail.
-                        self._retire_unleased(identity, force=True)
+                        self._retire_unleased_locked(identity, force=True)
                         logger.warning(
                             "source_cache_grace_reclaimed_under_quota_pressure",
                             identity_digest=identity.digest,
@@ -994,14 +1143,15 @@ class SourceCacheStore:
                         )
                     final_dir = generations_dir / generation_id
                     staging.replace(final_dir)
-                    self._verified_generations.add(
-                        _verification_key(
-                            identity.digest,
-                            generation_id,
-                            parts,
-                            tuple((final_dir / part.name).stat() for part in parts),
+                    with self._lock:
+                        self._verified_generations.add(
+                            _verification_key(
+                                identity.digest,
+                                generation_id,
+                                parts,
+                                tuple((final_dir / part.name).stat() for part in parts),
+                            )
                         )
-                    )
                     generation = self._metadata_from_path(identity, generation_id)
                     context.checkpoint()
                     atomic_write_text(
@@ -1012,31 +1162,34 @@ class SourceCacheStore:
                     )
                     published = True
                 if not context.defer_retirement:
-                    self._retire_unleased(identity)
+                    self.retire_unleased(identity)
                 return generation
             except BaseException:
                 shutil.rmtree(staging, ignore_errors=True)
                 if final_dir is not None and not published:
-                    self._forget_verified(identity.digest, generation_id)
-                    shutil.rmtree(final_dir, ignore_errors=True)
+                    with self._lease_lock:
+                        if not self._has_live_holders_locked(final_dir):
+                            self._forget_verified(identity.digest, generation_id)
+                            shutil.rmtree(final_dir, ignore_errors=True)
                 raise
 
     @contextlib.contextmanager
     def lease(self, identity: SourceCacheIdentity) -> Iterator[SourceCacheGeneration]:
         with self._identity_lock(identity):
-            generation = self.open_generation(identity)
-            key = (identity.digest, generation.generation_id)
-            with self._lock:
-                self._leases[key] = self._leases.get(key, 0) + 1
+            while True:
+                generation_id = self._read_pointer(identity)
+                if self._acquire_input_lease(identity, generation_id, require_current=True):
+                    break
+            try:
+                generation = self._metadata_from_path(identity, generation_id)
+            except BaseException:
+                self._release_input_lease(identity, generation_id)
+                raise
         try:
             yield generation
         finally:
             with self._identity_lock(identity):
-                with self._lock:
-                    self._leases[key] -= 1
-                    if self._leases[key] == 0:
-                        del self._leases[key]
-                self._retire_unleased(identity)
+                self._release_input_lease(identity, generation_id)
 
     @contextlib.contextmanager
     def lease_generation(
@@ -1050,19 +1203,17 @@ class SourceCacheStore:
         :class:`SourceCacheGenerationMissingError`.
         """
         with self._identity_lock(identity):
-            generation = self._metadata_from_path(identity, generation_id)
-            key = (identity.digest, generation.generation_id)
-            with self._lock:
-                self._leases[key] = self._leases.get(key, 0) + 1
+            self._acquire_input_lease(identity, generation_id, require_current=False)
+            try:
+                generation = self._metadata_from_path(identity, generation_id)
+            except BaseException:
+                self._release_input_lease(identity, generation_id)
+                raise
         try:
             yield generation
         finally:
             with self._identity_lock(identity):
-                with self._lock:
-                    self._leases[key] -= 1
-                    if self._leases[key] == 0:
-                        del self._leases[key]
-                self._retire_unleased(identity)
+                self._release_input_lease(identity, generation_id)
 
     def leased_generation_ids(self, identity: SourceCacheIdentity) -> frozenset[str]:
         """Return the generations of *identity* this process currently leases.
@@ -1079,6 +1230,46 @@ class SourceCacheStore:
                     if digest == identity.digest and count > 0
                 )
 
+    def _acquire_input_lease(
+        self, identity: SourceCacheIdentity, generation_id: str, *, require_current: bool
+    ) -> bool:
+        """Record an input lease before validating it, under the store-wide lock."""
+        _validate_generation_id(generation_id)
+        with self._lease_lock:
+            if require_current and self._read_pointer(identity) != generation_id:
+                return False
+            generation_dir = self.identity_path(identity) / "generations" / generation_id
+            if not generation_dir.is_dir():
+                self._forget_verified(identity.digest, generation_id)
+                raise SourceCacheGenerationMissingError("source-cache generation does not exist")
+            key = (identity.digest, generation_id)
+            with self._lock:
+                previous = self._leases.get(key, 0)
+                self._leases[key] = previous + 1
+            if previous == 0:
+                try:
+                    (generation_dir / f"{_LEASE_PREFIX}{self._own_token()}").touch()
+                except BaseException:
+                    with self._lock:
+                        del self._leases[key]
+                    raise
+            return True
+
+    def _release_input_lease(self, identity: SourceCacheIdentity, generation_id: str) -> None:
+        with self._lease_lock:
+            key = (identity.digest, generation_id)
+            with self._lock:
+                remaining = self._leases[key] - 1
+                if remaining:
+                    self._leases[key] = remaining
+                    return
+                del self._leases[key]
+            generation_dir = self.identity_path(identity) / "generations" / generation_id
+            token = self._coordination.token
+            if token is not None:
+                (generation_dir / f"{_LEASE_PREFIX}{token}").unlink(missing_ok=True)
+            self._retire_unleased_locked(identity)
+
     def retire_unleased(self, identity: SourceCacheIdentity) -> None:
         """Delete every generation of *identity* that is neither current nor leased.
 
@@ -1087,7 +1278,8 @@ class SourceCacheStore:
         generations its own executions still lease.
         """
         with self._identity_lock(identity):
-            self._retire_unleased(identity)
+            with self._lease_lock:
+                self._retire_unleased_locked(identity)
 
     def _retire_grace_elapsed(self, identity: SourceCacheIdentity) -> bool:
         """Whether the current generation has been published long enough.
@@ -1103,7 +1295,10 @@ class SourceCacheStore:
             return True
         return time.time() - published_at >= self.retire_grace_seconds
 
-    def _retire_unleased(self, identity: SourceCacheIdentity, *, force: bool = False) -> None:
+    def _retire_unleased_locked(
+        self, identity: SourceCacheIdentity, *, force: bool = False
+    ) -> None:
+        """Retire unpointed, unheld generations. Caller holds the lease lock."""
         generations_dir = self.identity_path(identity) / "generations"
         if not generations_dir.exists():
             return
@@ -1115,9 +1310,7 @@ class SourceCacheStore:
         for candidate in generations_dir.iterdir():
             if not candidate.is_dir() or candidate.name == current:
                 continue
-            with self._lock:
-                leased = self._leases.get((identity.digest, candidate.name), 0)
-            if not leased and grace_elapsed:
+            if grace_elapsed and not self._has_live_holders_locked(candidate):
                 self._forget_verified(identity.digest, candidate.name)
                 shutil.rmtree(candidate)
 
@@ -1155,39 +1348,38 @@ class SourceCacheStore:
         _validate_staging_token(staging_token)
         identity_dir = self.identity_path(identity)
         with self._identity_lock(identity):
-            try:
-                if self._read_pointer(identity) == generation_id:
-                    return "published"
-            except (FileNotFoundError, SourceCacheCorruptError):
-                pass
-            removed_generation = False
-            generation_dir = identity_dir / "generations" / generation_id
-            if generation_dir.is_dir():
-                with self._lock:
-                    leased = self._leases.get((identity.digest, generation_id), 0)
-                if not leased:
+            with self._lease_lock:
+                try:
+                    if self._read_pointer(identity) == generation_id:
+                        return "published"
+                except (FileNotFoundError, SourceCacheCorruptError):
+                    pass
+                removed_generation = False
+                generation_dir = identity_dir / "generations" / generation_id
+                if generation_dir.is_dir() and not self._has_live_holders_locked(generation_dir):
                     self._forget_verified(identity.digest, generation_id)
                     shutil.rmtree(generation_dir, ignore_errors=True)
                     if generation_dir.exists():
                         return self._unremovable(generation_dir, identity)
                     removed_generation = True
-            removed_staging = False
-            staging = identity_dir / f".staging-{staging_token}"
-            if staging.is_dir() and not staging.is_symlink():
-                shutil.rmtree(staging, ignore_errors=True)
-                if staging.exists():
-                    return self._unremovable(staging, identity)
-                removed_staging = True
-            if removed_generation:
-                return "discarded_generation"
-            if removed_staging:
-                return "discarded_staging"
-            return "absent"
+                removed_staging = False
+                staging = identity_dir / f".staging-{staging_token}"
+                if staging.is_dir() and not staging.is_symlink():
+                    shutil.rmtree(staging, ignore_errors=True)
+                    if staging.exists():
+                        return self._unremovable(staging, identity)
+                    removed_staging = True
+                if removed_generation:
+                    return "discarded_generation"
+                if removed_staging:
+                    return "discarded_staging"
+                return "absent"
 
     def clear(self, identity: SourceCacheIdentity) -> None:
         with self._identity_lock(identity):
-            self._pointer_path(identity).unlink(missing_ok=True)
-            self._retire_unleased(identity, force=True)
+            with self._lease_lock:
+                self._pointer_path(identity).unlink(missing_ok=True)
+                self._retire_unleased_locked(identity, force=True)
 
     def status(
         self, identity: SourceCacheIdentity, *, source_signature: str | None = None

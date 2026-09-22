@@ -23,6 +23,7 @@ from haute._execution_context import (
     ExecutionProfile,
     current_execution_context,
 )
+from haute._file_ops import ensure_disk_headroom
 from haute._hashing import HashingWriter
 from haute._logging import get_logger
 
@@ -178,7 +179,7 @@ def bounded_collect_batches(
     execution_context: ExecutionContext | None = None,
     stage_name: str = "collect_batches",
     node_id: str | None = None,
-) -> Iterator[pl.DataFrame]:
+) -> Generator[pl.DataFrame, None, None]:
     """Yield batches of at most ``chunk_size`` rows, never more than one ahead.
 
     Polars applies no backpressure to ``sink_batches``, ``collect_batches``,
@@ -189,8 +190,6 @@ def bounded_collect_batches(
     - sliced — ``lf`` can be sliced at its input (``haute._chunked_writes.
       sliceable``): each batch is ``lf.slice(offset, chunk_size)``. A failure
       in batch k raises after batches 0..k-1; closing early reads no more.
-    - in-memory — every input is a frame the caller already holds: ``lf`` is
-      collected once and sliced.
     - staged — otherwise ``lf`` is written once, by the chunked writer, into
       a private temporary directory, and its parts are sliced. A failure
       raises before any batch; the directory is removed on exhaustion, close,
@@ -201,8 +200,8 @@ def bounded_collect_batches(
     the end of the stream.
     """
     from haute._chunked_writes import (
+        _budgeted_rows,
         part_paths,
-        reads_only_memory,
         scan_parts,
         sliceable,
         write_parts,
@@ -218,11 +217,9 @@ def bounded_collect_batches(
     try:
         if metrics_context is not None:
             metrics_context.checkpoint(label="before_collect_batches", node_id=node_id)
-        source: pl.LazyFrame | pl.DataFrame
+        source: pl.LazyFrame
         if sliceable(lf):
             source = lf
-        elif reads_only_memory(lf):
-            source = execution_collect(lf, execution_context=metrics_context)
         else:
             staging = Path(tempfile.mkdtemp(prefix="haute-batches-"))
             write_parts(
@@ -234,16 +231,16 @@ def bounded_collect_batches(
                 node_id=node_id,
             )
             source = scan_parts(part_paths(staging))
-        if isinstance(source, pl.DataFrame):
-            total = source.height
-        else:
-            total = int(
-                execution_collect(source.select(pl.len()), execution_context=metrics_context).item()
-            )
+        chunk_size, _, _ = _budgeted_rows(
+            chunk_size,
+            (source,),
+            execution_context=metrics_context,
+        )
+        total = int(
+            execution_collect(source.select(pl.len()), execution_context=metrics_context).item()
+        )
         for offset in range(0, total, chunk_size):
-            if isinstance(source, pl.DataFrame):
-                batch = source.slice(offset, chunk_size)
-            elif metrics_context is not None:
+            if metrics_context is not None:
                 with metrics_context.stage(stage_name, node_id=node_id):
                     batch = execution_collect(
                         source.slice(offset, chunk_size), execution_context=metrics_context
@@ -741,6 +738,13 @@ def _bounded_sink_execute(
     streaming_chunk_size: int | None,
     writer: Callable[[], _T],
 ) -> _T:
+    directory = path.parent
+    while not directory.exists():
+        parent = directory.parent
+        if parent == directory:
+            break
+        directory = parent
+    ensure_disk_headroom(directory)
     metrics_context = current_execution_context()
     if metrics_context is not None:
         metrics_context.fault_point("sink_before_native")

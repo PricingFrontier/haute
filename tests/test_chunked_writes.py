@@ -21,12 +21,14 @@ from haute._chunked_writes import (
     RecipeEquivalenceError,
     WriteRecipe,
     is_part_name,
+    part_name,
     part_paths,
     scan_parts,
     sliceable,
     write_file,
     write_parts,
 )
+from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._hashing import content_hash
 from haute._polars_utils import (
     bounded_sink,
@@ -262,6 +264,72 @@ def test_empty_result_writes_one_schema_part(tmp_path: Path) -> None:
     assert got_b.schema == recipe.native().collect_schema()
 
 
+@pytest.mark.parametrize(
+    ("index", "expected"),
+    [
+        (0, "part-00000.parquet"),
+        (99_999, "part-99999.parquet"),
+        (100_000, "part-100000.parquet"),
+    ],
+)
+def test_part_names_are_canonical_and_unbounded(index: int, expected: str) -> None:
+    assert part_name(index) == expected
+    assert is_part_name(expected)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [-1, True, False, 1.0, "1"],
+)
+def test_part_name_rejects_non_canonical_indices(value: object) -> None:
+    with pytest.raises(ValueError, match="part index"):
+        part_name(value)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "part-0000.parquet",
+        "part-000000.parquet",
+        "part-+0001.parquet",
+        "part--0001.parquet",
+        "part-１２３４５.parquet",
+        "part-0000a.parquet",
+    ],
+)
+def test_part_name_rejects_non_canonical_spellings(name: str) -> None:
+    assert not is_part_name(name)
+
+
+def test_part_paths_filters_invalid_names_and_orders_by_numeric_index(tmp_path: Path) -> None:
+    for name in [
+        "part-100001.parquet",
+        "part-99999.parquet",
+        "part-100000.parquet",
+        "part-99998.parquet",
+        "part-000000.parquet",
+        "part-１２３４５.parquet",
+    ]:
+        (tmp_path / name).touch()
+
+    assert [path.name for path in part_paths(tmp_path)] == [
+        "part-99998.parquet",
+        "part-99999.parquet",
+        "part-100000.parquet",
+        "part-100001.parquet",
+    ]
+
+
+@pytest.mark.parametrize("name", ["part-99999.parquet", "part-100000.parquet"])
+def test_source_cache_part_accepts_unbounded_canonical_part_names(name: str) -> None:
+    from haute._source_cache import SourceCachePart
+
+    part = SourceCachePart.from_dict(
+        {"name": name, "size_bytes": 0, "digest": "0" * 16, "row_count": 0}
+    )
+    assert part.name == name
+
+
 def test_chunked_join_equals_native_join(tmp_path: Path) -> None:
     base, join = _make_join_frames()
     key_cases = [
@@ -310,6 +378,239 @@ def test_chunked_join_equals_native_join(tmp_path: Path) -> None:
                     assert got_sorted.equals(expected_sorted), (
                         f"Row mismatch for {cfg} chunk={chunk_rows}"
                     )
+
+
+@pytest.mark.parametrize(
+    ("base_extra", "lookup_extra"),
+    [
+        (["__haute_chunk_matches"], []),
+        (["__haute_chunk_matches", "__haute_chunk_matches_0"], ["__haute_chunk_matches"]),
+    ],
+)
+def test_chunked_join_match_count_name_avoids_both_input_schemas(
+    tmp_path: Path, base_extra: list[str], lookup_extra: list[str]
+) -> None:
+    base_data: dict[str, list[object]] = {"base_key": ["a", "b"], "left": [1, 2]}
+    lookup_data: dict[str, list[object]] = {
+        "lookup_key": ["a", "a", "b"],
+        "right": [10, 11, 12],
+    }
+    for name in base_extra:
+        base_data[name] = [f"base-{name}", f"base-{name}"]
+    for name in lookup_extra:
+        lookup_data[name] = [f"lookup-{name}"] * 3
+
+    recipe = JoinRecipe(
+        pl.DataFrame(base_data).lazy(),
+        pl.DataFrame(lookup_data).lazy(),
+        {"how": "inner", "leftOn": "base_key", "rightOn": "lookup_key"},
+    )
+    target = tmp_path / "count_name"
+    target.mkdir()
+
+    write_parts(target, recipe.native(), join=recipe, chunk_rows=2)
+    actual = scan_parts(part_paths(target)).collect()
+    expected = recipe.native().collect()
+    assert actual.sort(actual.columns).equals(expected.sort(expected.columns))
+
+
+def test_chunked_join_heavy_split_uses_collision_free_match_count_name(tmp_path: Path) -> None:
+    recipe = JoinRecipe(
+        pl.DataFrame(
+            {
+                "base_key": ["a"],
+                "__haute_chunk_matches": ["base"],
+                "__haute_chunk_matches_0": ["base-0"],
+            }
+        ).lazy(),
+        pl.DataFrame(
+            {
+                "lookup_key": ["a"] * 5,
+                "__haute_chunk_matches": ["lookup"] * 5,
+                "value": list(range(5)),
+            }
+        ).lazy(),
+        {"how": "inner", "leftOn": "base_key", "rightOn": "lookup_key"},
+    )
+    target = tmp_path / "heavy_count_name"
+    target.mkdir()
+
+    write_parts(target, recipe.native(), join=recipe, chunk_rows=2)
+    actual = scan_parts(part_paths(target)).collect()
+    expected = recipe.native().collect()
+    assert actual.sort(actual.columns).equals(expected.sort(expected.columns))
+
+
+def test_chunked_validation_accepts_match_count_named_key_when_unique(tmp_path: Path) -> None:
+    recipe = JoinRecipe(
+        pl.DataFrame({"__haute_chunk_matches": ["a", "b"], "left": [1, 2]}).lazy(),
+        pl.DataFrame({"__haute_chunk_matches": ["a", "b"], "right": [3, 4]}).lazy(),
+        {"how": "inner", "on": "__haute_chunk_matches", "validate": "1:1"},
+    )
+    target = tmp_path / "validation_success"
+    target.mkdir()
+
+    write_parts(target, recipe.native(), join=recipe, chunk_rows=1)
+    actual = scan_parts(part_paths(target)).collect()
+    expected = recipe.native().collect()
+    assert actual.equals(expected)
+
+
+def test_chunked_validation_failure_matches_native_for_match_count_named_key(
+    tmp_path: Path,
+) -> None:
+    recipe = JoinRecipe(
+        pl.DataFrame({"__haute_chunk_matches": ["a", "a"], "left": [1, 2]}).lazy(),
+        pl.DataFrame({"__haute_chunk_matches": ["a"], "right": [3]}).lazy(),
+        {"how": "inner", "on": "__haute_chunk_matches", "validate": "1:m"},
+    )
+    target = tmp_path / "validation_failure"
+    target.mkdir()
+
+    with pytest.raises(pl.exceptions.ComputeError) as native_error:
+        recipe.native().collect()
+    with pytest.raises(pl.exceptions.ComputeError) as chunked_error:
+        write_parts(target, recipe.native(), join=recipe, chunk_rows=1)
+    assert str(chunked_error.value) == str(native_error.value)
+
+
+def test_budgeted_validated_join_uses_one_native_sink_when_it_fits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipe = JoinRecipe(
+        pl.DataFrame({"k": ["a", "a"], "left": [1, 2]}).lazy(),
+        pl.DataFrame({"k": ["a"], "right": [3]}).lazy(),
+        {"how": "inner", "on": "k", "validate": "m:1"},
+    )
+    context = ExecutionContext(
+        operation="budgeted-join",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_limit_bytes=512 * 1024 * 1024,
+        memory_sampler=lambda: 0,
+    )
+    sinks: list[pl.LazyFrame] = []
+    original_sink = haute._chunked_writes._Parts.sink
+
+    def track_sink(self: Any, frame: pl.LazyFrame, **kwargs: Any) -> None:
+        sinks.append(frame)
+        original_sink(self, frame, **kwargs)
+
+    monkeypatch.setattr(haute._chunked_writes._Parts, "sink", track_sink)
+    target = tmp_path / "native_join"
+    target.mkdir()
+
+    result = write_parts(
+        target, recipe.native(), join=recipe, chunk_rows=4, execution_context=context
+    )
+
+    assert result.strategy == "native"
+    assert result.native_reason == "join_within_memory_budget"
+    assert result.chunk_rows is None
+    assert len(sinks) == 1
+    assert scan_parts(part_paths(target)).collect().equals(recipe.native().collect())
+
+
+def test_budgeted_join_stays_chunked_when_native_allowance_is_insufficient(tmp_path: Path) -> None:
+    base_path = tmp_path / "base.parquet"
+    join_path = tmp_path / "join.parquet"
+    pl.DataFrame({"k": ["a", "a"], "left": [1, 2]}).write_parquet(base_path)
+    pl.DataFrame({"k": ["a"], "right": [3]}).write_parquet(join_path)
+    recipe = JoinRecipe(
+        pl.scan_parquet(base_path),
+        pl.scan_parquet(join_path),
+        {"how": "inner", "on": "k", "validate": "m:1"},
+    )
+    context = ExecutionContext(
+        operation="small-budget-join",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_limit_bytes=100,
+        memory_sampler=lambda: 0,
+    )
+    target = tmp_path / "chunked_join"
+    target.mkdir()
+
+    result = write_parts(
+        target, recipe.native(), join=recipe, chunk_rows=4, execution_context=context
+    )
+
+    assert result.strategy == "chunked_join"
+    assert result.chunk_rows == 1
+
+
+def test_budgeted_row_local_recipe_counts_its_wide_output_for_parts_and_file(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "input.parquet"
+    pl.DataFrame({"i0": list(range(20_000))}).write_parquet(source_path)
+    source = pl.scan_parquet(source_path)
+    recipe = WriteRecipe(
+        input=source,
+        fn=lambda frame: frame.with_columns(wide=pl.lit("x" * 4096)),
+    )
+    frame = recipe.native()
+    context = ExecutionContext(
+        operation="wide-recipe",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_limit_bytes=8 * 1024 * 1024,
+        memory_sampler=lambda: 0,
+    )
+    parts_target = tmp_path / "parts"
+    parts_target.mkdir()
+    file_target = tmp_path / "single.parquet"
+
+    parts = write_parts(
+        parts_target,
+        frame,
+        recipe=recipe,
+        chunk_rows=20_000,
+        execution_context=context,
+    )
+    single = write_file(
+        file_target,
+        frame,
+        recipe=recipe,
+        chunk_rows=20_000,
+        execution_context=context,
+    )
+
+    assert 1 <= parts.chunk_rows < 20_000
+    assert single.chunk_rows == parts.chunk_rows
+    assert scan_parts(part_paths(parts_target)).collect().equals(frame.collect())
+    assert pl.read_parquet(file_target).equals(frame.collect())
+
+
+def test_unvalidated_custom_and_ordered_joins_stay_on_the_chunked_path(tmp_path: Path) -> None:
+    context = ExecutionContext(
+        operation="excluded-joins",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_limit_bytes=512 * 1024 * 1024,
+        memory_sampler=lambda: 0,
+    )
+    recipes = [
+        JoinRecipe(
+            pl.DataFrame({"k": ["a"], "left": [1]}).lazy(),
+            pl.DataFrame({"k": ["a"], "right": [2]}).lazy(),
+            {"how": "inner", "on": "k"},
+        ),
+        JoinRecipe(
+            pl.DataFrame({"k": ["a"], "left": [1]}).lazy(),
+            pl.DataFrame({"k": ["a"], "right": [2]}).lazy(),
+            {"how": "inner", "on": "k", "validate": "1:1", "maintainOrder": "left"},
+        ),
+        JoinRecipe(
+            pl.DataFrame({"k": ["a"], "left": [1]}).lazy(),
+            pl.DataFrame({"k": ["a"], "right": [2]}).lazy(),
+            {"how": "inner", "on": "k", "validate": "1:1"},
+            finish=lambda frame: frame.select(pl.all()),
+        ),
+    ]
+    for index, recipe in enumerate(recipes):
+        target = tmp_path / f"excluded_{index}"
+        target.mkdir()
+        result = write_parts(
+            target, recipe.native(), join=recipe, chunk_rows=4, execution_context=context
+        )
+        assert result.strategy == "chunked_join"
 
 
 def test_validate_rejections_match_polars(tmp_path: Path) -> None:
@@ -696,6 +997,42 @@ def test_cross_join_chunks_by_lookup_size(tmp_path: Path) -> None:
     got = scan_parts(parts).collect()
     native = recipe.native().collect()
     assert got.sort(got.columns).equals(native.sort(got.columns))
+
+
+@pytest.mark.parametrize("order", ["left", "left_right", "right", "right_left", "none"])
+@pytest.mark.parametrize("sizes", [(2, 23), (23, 2), (0, 23), (23, 0)])
+def test_cross_join_bounds_both_inputs_and_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, order: str, sizes: tuple[int, int]
+) -> None:
+    from polars.testing import assert_frame_equal
+
+    recipe = JoinRecipe(
+        pl.DataFrame({"x": range(sizes[0])}).lazy(),
+        pl.DataFrame({"x": range(sizes[1])}).lazy(),
+        {"how": "cross", "maintainOrder": order, "suffix": "_lookup"},
+    )
+    expected = recipe.native().collect(engine="in-memory")
+    heights: list[int] = []
+    collect = haute._chunked_writes.execution_collect
+
+    def bounded_collect(*args, **kwargs):
+        result = collect(*args, **kwargs)
+        heights.append(result.height)
+        return result
+
+    monkeypatch.setattr(haute._chunked_writes, "execution_collect", bounded_collect)
+    target = tmp_path / "bounded_cross"
+    target.mkdir()
+    written = write_parts(target, recipe.native(), join=recipe, chunk_rows=7)
+    assert written.strategy == "chunked_join"
+    assert written.chunk_rows == 7
+    assert max(heights, default=0) <= 7
+    paths = part_paths(target)
+    assert all(pq.ParquetFile(path).metadata.num_rows <= 7 for path in paths)
+    actual = scan_parts(paths).collect()
+    if order == "none":
+        actual, expected = actual.sort(actual.columns), expected.sort(expected.columns)
+    assert_frame_equal(actual, expected)
 
 
 class Cancelled(Exception):  # noqa: N818
@@ -1103,7 +1440,7 @@ def test_a_write_reports_the_rows_per_part_it_chunked_at(tmp_path: Path) -> None
             cross_target, cross_recipe.native(), join=cross_recipe, chunk_rows=5
         )
         assert cross_write.strategy == "chunked_join"
-        assert cross_write.chunk_rows is None
+        assert cross_write.chunk_rows == 5
 
         # 5. Caller passes no chunk_rows -> equals current_streaming_chunk_size()
         default_target = tmp_path / "default_chunk_rows"

@@ -541,3 +541,19 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
   the published snapshot without executing the graph, and a file rewritten either before or
   during the calculation ends the job `cache_required` instead of publishing a matrix labelled
   with the version that is gone — the same for a members lookup.
+## Exact profile duplicate counting scratch
+
+Whole-row distinct counting uses at most 250,000 estimated rows per hash
+partition, reduced by decoded row width when the execution budget requires it.
+Small inputs retain the direct scalar aggregation. Large inputs are written
+once with Polars' partitioned Parquet sink, then each partition is counted
+exactly and the scalar counts are summed. Hashes only route rows; collisions
+cannot change the answer. Temporary routing columns never enter the files.
+Column quantiles/distinct counts retain their existing sequential batches and
+exact semantics. Skew and sampling error remain subject to the existing worker
+memory and timeout limits; the partition size is not a hard memory guarantee.
+
+The parent profile job owns the scratch directory and removes it only after
+the isolated worker has exited, including cancellation, failure and forced
+termination. Large direct calls must supply a scratch owner. Disk headroom is
+checked before the partition write, and written bytes enter execution metrics.

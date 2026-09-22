@@ -2,9 +2,10 @@
 
 Polars' streaming engine does not bound the memory of one long query over a
 large input: its peak grows with the rows read, and a join's lookup side costs
-its whole hash table whatever the other side holds. What stays bounded is a
-driver loop that issues one small query per chunk. This module writes a node's
-output that way, as ordered part files:
+its whole hash table whatever the other side holds. The driver loop bounds
+input slices and output parts only for strategies it can prove; complex
+operators still execute under their execution-context runtime limits. This
+module writes a node's output as ordered part files:
 
 - a frame whose rows can be sliced at its source is written one slice at a
   time;
@@ -27,12 +28,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import IO, TYPE_CHECKING, Any, Literal, cast
+from typing import IO, Any, Literal, cast
 
 import polars as pl
 import pyarrow.parquet as pq
 
 from haute._edge_join import build_edge_join_kwargs
+from haute._execution_context import ExecutionContext, current_execution_context
+from haute._file_ops import ensure_disk_headroom
 from haute._hashing import HashingWriter
 from haute._logging import get_logger
 from haute._polars_utils import (
@@ -42,9 +45,7 @@ from haute._polars_utils import (
     current_streaming_chunk_size,
     execution_collect,
 )
-
-if TYPE_CHECKING:
-    from haute._execution_context import ExecutionContext
+from haute._ram_estimate import decoded_frame_row_width_bytes
 
 logger = get_logger(component="chunked_writes")
 
@@ -70,27 +71,38 @@ class RecipeEquivalenceError(ValueError):
 
 def part_name(index: int) -> str:
     """Name of the ``index``-th part file of a chunked output."""
-    if index < 0:
-        raise ValueError("part index must be non-negative")
+    if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+        raise ValueError("part index must be a non-negative integer")
     return f"{PART_PREFIX}{index:05d}{PART_SUFFIX}"
 
 
 def is_part_name(name: str) -> bool:
+    if (
+        not isinstance(name, str)
+        or not name.startswith(PART_PREFIX)
+        or not name.endswith(PART_SUFFIX)
+    ):
+        return False
     stem = name[len(PART_PREFIX) : -len(PART_SUFFIX)]
-    return (
-        name.startswith(PART_PREFIX)
-        and name.endswith(PART_SUFFIX)
-        and len(stem) == 5
-        and stem.isdigit()
-    )
+    return len(stem) >= 5 and stem.isascii() and stem.isdecimal() and stem == f"{int(stem):05d}"
 
 
 def part_paths(directory: Path) -> list[Path]:
     """The part files a chunked write left in ``directory``, in write order."""
     return sorted(
         (path for path in directory.iterdir() if path.is_file() and is_part_name(path.name)),
-        key=lambda path: path.name,
+        key=lambda path: int(path.name[len(PART_PREFIX) : -len(PART_SUFFIX)]),
     )
+
+
+def _resolve_generated_name(preferred: str, names: set[str]) -> str:
+    """A deterministic generated name absent from ``names``."""
+    resolved = preferred
+    suffix = 0
+    while resolved in names:
+        resolved = f"{preferred}_{suffix}"
+        suffix += 1
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +286,7 @@ def _join_shape(recipe: JoinRecipe) -> tuple[_JoinShape | None, str | None]:
     else:
         base_keys = _keys(kwargs.get("left_on"))
         join_keys = _keys(kwargs.get("right_on"))
-    base_drives = how != "right"
+    base_drives = how != "right" and not (how == "cross" and order in {"right", "right_left"})
     if how == "full" and order is not None:
         return None, "full_join_ordered"
     if order is not None:
@@ -349,6 +361,9 @@ class _Parts:
                 [pl.col(name).cast(dtype, strict=True) for name, dtype in self.schema.items()]
             )
         name = part_name(len(self.names))
+        ensure_disk_headroom(
+            self.directory, (self.directory / self.names[-1]).stat().st_size if self.names else 0
+        )
         digest = bounded_hashed_sink(
             lf, self.directory / name, fast_checkpoint=self.fast_checkpoint
         )
@@ -375,6 +390,7 @@ class _Parts:
             self.execution_context.checkpoint(label="chunked_write", node_id=self.node_id)
         name = part_name(len(self.names))
         path = self.directory / name
+        ensure_disk_headroom(self.directory, int(frame.estimated_size()))
         with atomic_write(path) as tmp:
             with HashingWriter(open(tmp, "wb")) as writer:
                 frame.write_parquet(
@@ -407,6 +423,137 @@ def _chunk_rows(chunk_rows: int | None) -> int:
     return rows
 
 
+def _budgeted_rows(
+    requested_rows: int,
+    inputs: Sequence[pl.LazyFrame],
+    *,
+    execution_context: ExecutionContext | None,
+) -> tuple[int, int | None, tuple[float, ...] | None]:
+    """Return the bounded row count and working allowance for proven-sliceable inputs."""
+    if not isinstance(execution_context, ExecutionContext):
+        return requested_rows, None, None
+    remaining = execution_context.remaining_memory_bytes()
+    if remaining is None:
+        return requested_rows, None, None
+    sample_rows = min(512, requested_rows)
+    widths = tuple(
+        decoded_frame_row_width_bytes(
+            execution_collect(frame.slice(0, sample_rows), execution_context=execution_context)
+        )
+        for frame in inputs
+    )
+    working_allowance = remaining // 2
+    width = sum(widths)
+    if width <= 0:
+        return requested_rows, working_allowance, widths
+    rows = min(requested_rows, max(1, math.floor(working_allowance / (4 * width))))
+    return rows, working_allowance, widths
+
+
+def _budgeted_recipe_rows(
+    requested_rows: int,
+    recipe: WriteRecipe,
+    *,
+    execution_context: ExecutionContext | None,
+) -> int:
+    """Size a row-local recipe from one bounded input and output sample."""
+    if not isinstance(execution_context, ExecutionContext):
+        return requested_rows
+    remaining = execution_context.remaining_memory_bytes()
+    if remaining is None:
+        return requested_rows
+    sample = execution_collect(
+        recipe.input.slice(0, min(512, requested_rows)), execution_context=execution_context
+    )
+    output = execution_collect(recipe.apply(sample.lazy()), execution_context=execution_context)
+    width = decoded_frame_row_width_bytes(sample) + decoded_frame_row_width_bytes(output)
+    if width <= 0:
+        return requested_rows
+    return min(requested_rows, max(1, math.floor((remaining // 2) / (4 * width))))
+
+
+def _native_join_output_upper_bound(
+    shape: _JoinShape, base_rows: int, join_rows: int
+) -> int | None:
+    """The largest output admitted by the join's validation contract."""
+    if shape.how in {"semi", "anti"}:
+        return base_rows
+    validate = shape.validate
+    if validate not in {"1:1", "m:1", "1:m"}:
+        return None
+    if validate == "1:1":
+        if shape.how == "inner":
+            return min(base_rows, join_rows)
+        if shape.how == "left":
+            return base_rows
+        if shape.how == "right":
+            return join_rows
+        if shape.how == "full":
+            return base_rows + join_rows
+    if validate == "m:1":
+        if shape.how in {"inner", "left"}:
+            return base_rows
+        if shape.how in {"right", "full"}:
+            return base_rows + join_rows
+    if validate == "1:m":
+        if shape.how in {"inner", "right"}:
+            return join_rows
+        if shape.how in {"left", "full"}:
+            return base_rows + join_rows
+    return None
+
+
+def _join_within_memory_budget(
+    recipe: JoinRecipe,
+    shape: _JoinShape,
+    *,
+    requested_rows: int,
+    execution_context: ExecutionContext | None,
+) -> bool:
+    if (
+        not isinstance(execution_context, ExecutionContext)
+        or recipe.finish is not _identity
+        or shape.how == "cross"
+        or shape.kwargs.get("maintain_order") not in (None, "none")
+        or not sliceable(recipe.base)
+        or not sliceable(recipe.join)
+    ):
+        return False
+    output_rows = _native_join_output_upper_bound(shape, 0, 0)
+    if output_rows is None:
+        return False
+    remaining = execution_context.remaining_memory_bytes()
+    if remaining is None:
+        return False
+    base_rows = row_count(recipe.base, execution_context=execution_context)
+    join_rows = row_count(recipe.join, execution_context=execution_context)
+    output_rows = _native_join_output_upper_bound(shape, base_rows, join_rows)
+    assert output_rows is not None
+    sample_rows = min(512, requested_rows)
+    widths = tuple(
+        decoded_frame_row_width_bytes(
+            execution_collect(
+                input_frame.slice(0, sample_rows), execution_context=execution_context
+            )
+        )
+        for input_frame in (recipe.base, recipe.join)
+    )
+    working_allowance = remaining // 2
+    base_width, join_width = widths
+    required = (
+        int(
+            3
+            * (
+                base_rows * base_width
+                + join_rows * join_width
+                + output_rows * (base_width + join_width)
+            )
+        )
+        + 64 * 1024 * 1024
+    )
+    return required <= working_allowance
+
+
 def write_parts(
     directory: Path,
     frame: pl.LazyFrame,
@@ -428,6 +575,7 @@ def write_parts(
     kept in a private subdirectory and removed before returning.
     """
     rows = _chunk_rows(chunk_rows)
+    execution_context = execution_context or current_execution_context()
     if part_paths(directory):
         raise ValueError("chunked write target already holds parts")
     # A join's own schema resolution runs first: Polars rejects some
@@ -444,6 +592,27 @@ def write_parts(
     if join is not None:
         shape, native_reason = _join_shape(join)
         if shape is not None:
+            if _join_within_memory_budget(
+                join,
+                shape,
+                requested_rows=rows,
+                execution_context=execution_context,
+            ):
+                parts.sink(frame, conform=False)
+                return _report(
+                    "native",
+                    parts=parts.names,
+                    digests=parts.digests,
+                    chunk_rows=None,
+                    native_reason="join_within_memory_budget",
+                    node_id=node_id,
+                )
+            if sliceable(join.base) and sliceable(join.join):
+                rows, _, _ = _budgeted_rows(
+                    rows,
+                    (join.base, join.join),
+                    execution_context=execution_context,
+                )
             staging = directory / ".chunk-inputs"
             try:
                 staged = _write_chunked_join(
@@ -461,7 +630,7 @@ def write_parts(
                 "chunked_join",
                 parts=parts.names,
                 digests=parts.digests,
-                chunk_rows=None if shape.how == "cross" else rows,
+                chunk_rows=rows,
                 staged_inputs=staged,
                 node_id=node_id,
             )
@@ -476,6 +645,7 @@ def write_parts(
         )
 
     if sliceable(frame):
+        rows, _, _ = _budgeted_rows(rows, (frame,), execution_context=execution_context)
         total = row_count(frame, execution_context=execution_context)
         for offset in range(0, total, rows):
             parts.sink(frame.slice(offset, rows))
@@ -500,6 +670,7 @@ def write_parts(
                 native_reason="input_not_sliceable",
                 node_id=node_id,
             )
+        rows = _budgeted_recipe_rows(rows, recipe, execution_context=execution_context)
         total = row_count(recipe.input, execution_context=execution_context)
         for offset in range(0, total, rows):
             parts.sink(recipe.apply(recipe.input.slice(offset, rows)))
@@ -630,7 +801,9 @@ def _sink_slices(
                 conformed = slice_df.select(
                     [pl.col(name).cast(dtype, strict=True) for name, dtype in schema.items()]
                 )
-                writer.write_table(conformed.to_arrow(), row_group_size=SINGLE_FILE_ROW_GROUP_SIZE)
+                table = conformed.to_arrow()
+                ensure_disk_headroom(target.parent, table.nbytes)
+                writer.write_table(table, row_group_size=SINGLE_FILE_ROW_GROUP_SIZE)
                 if execution_context is not None:
                     execution_context.record_chunk()
     # An empty input drives no slice, but it still wrote one file's worth of output.
@@ -662,7 +835,9 @@ def write_file(
     """
     dest = Path(destination)
     rows = _chunk_rows(chunk_rows)
+    execution_context = execution_context or current_execution_context()
     if sliceable(frame):
+        rows, _, _ = _budgeted_rows(rows, (frame,), execution_context=execution_context)
         _sink_slices(
             dest,
             source=frame,
@@ -685,6 +860,7 @@ def write_file(
                 native_reason="input_not_sliceable",
                 node_id=node_id,
             )
+        rows = _budgeted_recipe_rows(rows, recipe, execution_context=execution_context)
         applied_slices = _sink_slices(
             dest,
             source=recipe.input,
@@ -794,16 +970,37 @@ def _write_chunked_join(
     keep_lookup_order = kwargs.get("maintain_order") not in (None, "none")
 
     if shape.how == "cross":
-        lookup_df = execution_collect(join, execution_context=execution_context)
-        per_chunk = max(1, rows // max(1, lookup_df.height))
-        total = row_count(base, execution_context=execution_context)
+        driving, lookup = (base, join) if shape.base_drives else (join, base)
+        lookup_total = row_count(lookup, execution_context=execution_context)
+        total = row_count(driving, execution_context=execution_context)
+        if not total or not lookup_total:
+            return counter[0]
+        # A small lookup can be reused within the same row ceiling. Otherwise
+        # one driving row visits bounded lookup slices in its requested order.
+        lookup_chunk_rows = min(rows, lookup_total)
+        per_chunk = max(1, rows // lookup_chunk_rows)
+        small_lookup = (
+            execution_collect(lookup.slice(0, lookup_total), execution_context=execution_context)
+            if lookup_total <= rows
+            else None
+        )
         for offset in range(0, total, per_chunk):
             chunk = execution_collect(
-                base.slice(offset, per_chunk), execution_context=execution_context
+                driving.slice(offset, per_chunk), execution_context=execution_context
             )
-            parts.write_join_part(
-                finish(chunk.lazy().join(lookup_df.lazy(), **kwargs)), ordered=keep_lookup_order
-            )
+            for lookup_offset in range(0, lookup_total, lookup_chunk_rows):
+                lookup_chunk = (
+                    small_lookup
+                    if small_lookup is not None
+                    else execution_collect(
+                        lookup.slice(lookup_offset, lookup_chunk_rows),
+                        execution_context=execution_context,
+                    )
+                )
+                left, right = (chunk, lookup_chunk) if shape.base_drives else (lookup_chunk, chunk)
+                parts.write_join_part(
+                    finish(left.lazy().join(right.lazy(), **kwargs)), ordered=keep_lookup_order
+                )
         return counter[0]
 
     driving, lookup = (base, join) if shape.base_drives else (join, base)
@@ -888,6 +1085,7 @@ class _ChunkJoin:
         self.finish = finish
         self.execution_context = execution_context
         self._index: tuple[str, pl.LazyFrame] | None = None
+        self._matches_column: str | None = None
 
     def _collect(self, lf: pl.LazyFrame) -> pl.DataFrame:
         # These queries scan the whole lookup side for a chunk's keys: the
@@ -902,6 +1100,13 @@ class _ChunkJoin:
             frame_keys=self.driving_keys,
             keep_order=self.keep_lookup_order,
         )
+
+    def _resolve_matches_column(self, frame: pl.DataFrame) -> str:
+        if self._matches_column is None:
+            names = set(frame.columns)
+            names.update(self.lookup.collect_schema().names())
+            self._matches_column = _resolve_generated_name(_MATCHES_COLUMN, names)
+        return self._matches_column
 
     def _sink(self, frame: pl.DataFrame, matched: pl.LazyFrame) -> None:
         if self.shape.base_drives:
@@ -925,7 +1130,8 @@ class _ChunkJoin:
                 # holds at most the chunk's rows.
                 self._sink(chunk, probe.lazy())
                 return
-            counts = probe.group_by(self.lookup_keys).len(name=_MATCHES_COLUMN)
+            matches_column = self._resolve_matches_column(chunk)
+            counts = probe.group_by(self.lookup_keys).len(name=matches_column)
             if self._expected_rows(chunk, counts).sum() <= self.rows:
                 self._sink(chunk, probe.lazy())
                 return
@@ -934,7 +1140,7 @@ class _ChunkJoin:
         counts = self._collect(
             self._matches(chunk, self.lookup.select(self.lookup_keys))
             .group_by(self.lookup_keys)
-            .len(name=_MATCHES_COLUMN)
+            .len(name=self._resolve_matches_column(chunk))
         )
         self._write_split(chunk, counts, matched=None)
 
@@ -949,7 +1155,7 @@ class _ChunkJoin:
                 how="left",
                 maintain_order="left",
             )
-            .get_column(_MATCHES_COLUMN)
+            .get_column(self._resolve_matches_column(frame))
             .fill_null(0)
         )
         if self.shape.how == "inner":
@@ -994,11 +1200,7 @@ class _ChunkJoin:
     def _resolve_index(self) -> tuple[str, pl.LazyFrame]:
         if self._index is None:
             names = set(self.lookup.collect_schema().names())
-            index = _INDEX_COLUMN
-            suffix = 0
-            while index in names:
-                index = f"{_INDEX_COLUMN}_{suffix}"
-                suffix += 1
+            index = _resolve_generated_name(_INDEX_COLUMN, names)
             self._index = (index, self.lookup.with_row_index(index))
         return self._index
 
@@ -1036,6 +1238,7 @@ def _unique_key_violation(
 ) -> bool:
     """Whether any non-null key occurs twice on ``side``, a bounded pass at a time."""
     key_rows = side.select(keys).drop_nulls()
+    matches_column = _resolve_generated_name(_MATCHES_COLUMN, set(keys))
     total = row_count(key_rows, execution_context=execution_context)
     partitions = max(1, math.ceil(total / rows))
     bucket = pl.struct(keys).hash(seed=0) % partitions
@@ -1043,8 +1246,8 @@ def _unique_key_violation(
         subset = key_rows if partitions == 1 else key_rows.filter(bucket == index)
         duplicates = execution_collect(
             subset.group_by(keys)
-            .len(name=_MATCHES_COLUMN)
-            .filter(pl.col(_MATCHES_COLUMN) > 1)
+            .len(name=matches_column)
+            .filter(pl.col(matches_column) > 1)
             .head(1),
             execution_context=execution_context,
         )

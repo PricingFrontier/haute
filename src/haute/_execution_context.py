@@ -1027,6 +1027,17 @@ class ExecutionContext:
             self._observe_rss(rss_bytes, label=label, node_id=node_id)
         self._check_memory_budget(rss_bytes=rss_bytes)
 
+    def remaining_memory_bytes(self) -> int | None:
+        """Return current RSS headroom after enforcing this context's limit."""
+        effective_limit = self._effective_rss_limit_bytes()
+        if effective_limit is None:
+            return None
+        sampled = self.memory_sampler()
+        self._observe_rss(sampled)
+        self._check_memory_budget(rss_bytes=sampled)
+        assert sampled is not None
+        return max(0, effective_limit - sampled)
+
     @contextlib.contextmanager
     def stage(
         self,

@@ -68,13 +68,14 @@ export default function useNodeDataProfile({
   const startProfileJob = useNodeDataStore((s) => s.startProfileJob)
   const reportProfileFailure = useNodeDataStore((s) => s.reportProfileFailure)
   const clearProfileFailure = useNodeDataStore((s) => s.clearProfileFailure)
+  const epoch = useNodeDataStore((s) => s.epoch)
   const slotKey = cache.point?.slot_key ?? null
   const entry = useNodeDataStore((s) => (slotKey ? s.profiles[slotKey] : undefined))
   const job = useNodeDataStore((s) => (slotKey ? s.profileJobs[slotKey] : undefined))
   const recordedFailure = useNodeDataStore((s) => (slotKey ? s.profileFailures[slotKey] : undefined))
   const dataVersion = cache.dataVersion
-  // What this consumer has already asked for, so one mount asks once per data
-  // version. It never affects a render, so it is a ref rather than state.
+  // The request currently owned by this consumer. Store resets retain the data
+  // version but advance the epoch, so they deliberately create a new identity.
   const asked = useRef<string | null>(null)
   const profile = entry && entry.dataVersion === dataVersion ? entry.profile : null
   // A failure describes one attempt on one data version; rebuilt data is asked
@@ -83,14 +84,18 @@ export default function useNodeDataProfile({
     recordedFailure && recordedFailure.dataVersion === dataVersion ? recordedFailure.message : null
 
   const ask = useCallback(
-    async (askedVersion: string, fence = captureDocumentExecutionFence()) => {
+    async (
+      askedVersion: string,
+      askedEpoch: number,
+      fence = captureDocumentExecutionFence(),
+    ) => {
       if (!nodeId || !slotKey) return
       const response = await getNodeDataProfile({
         graph: buildGraph(allNodes, edges, submodels, preamble),
         node_id: nodeId,
         source: activeSource,
       })
-      if (!isDocumentExecutionFenceCurrent(fence)) return
+      if (!isDocumentExecutionFenceCurrent(fence) || askedEpoch !== useNodeDataStore.getState().epoch) return
       if (response.status === "completed" && response.result) {
         observeProfile(slotKey, response.result)
         return
@@ -125,29 +130,38 @@ export default function useNodeDataProfile({
     // The profile describes the whole dataset, so it is asked for only once the
     // point is current, and once per data version.
     if (!enabled || !slotKey || !dataVersion || cache.availability !== "current") return
-    if (profile || job || failure || asked.current === `${slotKey}:${dataVersion}`) return
+    const requestKey = `${slotKey}:${dataVersion}:${epoch}`
+    if (profile || job || failure || asked.current === requestKey) return
     const fence = captureDocumentExecutionFence()
     if (!isDocumentExecutionFenceCurrent(fence)) return
-    asked.current = `${slotKey}:${dataVersion}`
-    void ask(dataVersion, fence).catch((err: unknown) => {
-      if (!isDocumentExecutionFenceCurrent(fence)) return
+    asked.current = requestKey
+    void ask(dataVersion, epoch, fence).catch((err: unknown) => {
+      if (!isDocumentExecutionFenceCurrent(fence) || epoch !== useNodeDataStore.getState().epoch) return
       const message = err instanceof Error ? err.message : String(err)
       // Recorded as well as announced: the failure is what the retry action is
       // offered from, so a failed request is never a silent dead end.
       reportProfileFailure(slotKey, dataVersion, message)
       addToast("error", `Reading the data profile failed: ${message}`)
+    }).finally(() => {
+      if (asked.current === requestKey) asked.current = null
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addToast, cache.availability, dataVersion, enabled, failure, job, profile, slotKey])
+  }, [addToast, cache.availability, dataVersion, enabled, epoch, failure, job, profile, slotKey])
 
   const refresh = useCallback(async () => {
-    asked.current = null
     if (!dataVersion) return
     if (slotKey) clearProfileFailure(slotKey)
-    await ask(dataVersion).catch((err: unknown) => {
+    const fence = captureDocumentExecutionFence()
+    const requestEpoch = useNodeDataStore.getState().epoch
+    const requestKey = slotKey ? `${slotKey}:${dataVersion}:${requestEpoch}` : null
+    asked.current = requestKey
+    await ask(dataVersion, requestEpoch, fence).catch((err: unknown) => {
+      if (!isDocumentExecutionFenceCurrent(fence) || requestEpoch !== useNodeDataStore.getState().epoch) return
       const message = err instanceof Error ? err.message : String(err)
       if (slotKey) reportProfileFailure(slotKey, dataVersion, message)
       addToast("error", `Reading the data profile failed: ${message}`)
+    }).finally(() => {
+      if (asked.current === requestKey) asked.current = null
     })
   }, [addToast, ask, clearProfileFailure, dataVersion, reportProfileFailure, slotKey])
 

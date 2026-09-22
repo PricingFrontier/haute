@@ -67,8 +67,20 @@ __all__ = [
     "estimate_gpu_vram_bytes",
     "estimate_materialisation_boundaries",
     "estimate_safe_training_rows",
+    "decoded_frame_row_width_bytes",
     "RamEstimate",
 ]
+
+
+def decoded_frame_row_width_bytes(frame: pl.DataFrame) -> float:
+    """Estimate one decoded row from a bounded materialised sample."""
+    if not isinstance(frame, pl.DataFrame):
+        raise TypeError("frame must be a Polars DataFrame")
+    if frame.height == 0:
+        return float(8 * frame.width)
+    return sum(
+        max(8, frame.get_column(column).estimated_size() / frame.height) for column in frame.columns
+    )
 
 
 class MaterialisationEstimateState(StrEnum):
@@ -2262,3 +2274,23 @@ def _estimate_materialisation_boundary_from_index(
         basis=basis,
         depends_on_many_to_many_join=cardinality.depends_on_many_to_many_join,
     )
+
+
+def estimate_optimiser_grid_peak_bytes(
+    *,
+    row_count: int,
+    constraint_count: int,
+    quote_id_width_bytes: float,
+    input_row_width_bytes: float,
+    chunk_rows: int,
+) -> int:
+    """Conservative grid + build overlap, including one decoded reader batch.
+
+    The solver stores Float32 objective/scenario/constraint vectors. Until its
+    layout validator has run, allow one quote ID and its String/offset metadata
+    per input row. Two copies allow vector growth and sorting/conversion overlap.
+    """
+    numeric_width = 4 * (constraint_count + 2)
+    resident = row_count * (numeric_width + 32 + max(8, quote_id_width_bytes))
+    reader = min(row_count, chunk_rows) * input_row_width_bytes
+    return math.ceil(2 * resident + 2 * reader + 64 * 1024 * 1024)

@@ -419,6 +419,25 @@ def test_bounded_collect_batches_records_only_real_batch_stages() -> None:
     assert context.metrics_summary().n_collects == 3
 
 
+def test_bounded_collect_batches_shrinks_a_sliceable_wide_source_under_budget(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "wide.parquet"
+    pl.DataFrame({"x": list(range(3_000))}).write_parquet(path)
+    frame = pl.scan_parquet(path).with_columns(wide=pl.lit("x" * 4096))
+    context = ExecutionContext(
+        operation="wide-batches",
+        profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
+        memory_limit_bytes=8 * 1024 * 1024,
+        memory_sampler=lambda: 0,
+    )
+
+    batches = list(bounded_collect_batches(frame, chunk_size=3_000, execution_context=context))
+
+    assert max(batch.height for batch in batches) < 3_000
+    assert pl.concat(batches).equals(frame.collect())
+
+
 def test_bounded_collect_batches_raises_the_engine_error() -> None:
     query = pl.LazyFrame({"x": ["1", "not a number"]}).select(pl.col("x").str.to_integer())
 
@@ -527,10 +546,10 @@ def test_sliced_batches_stop_reading_when_closed_early(
     assert heights == [1, 1]
 
 
-# -- in-memory: every input is already held, so it is collected once --
+# -- derived in-memory plans are staged too: their output can expand --
 
 
-def test_in_memory_batches_collect_once_without_staging(
+def test_derived_in_memory_batches_stage_without_collecting_the_full_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     heights = _counting_collects(monkeypatch)
@@ -544,9 +563,24 @@ def test_in_memory_batches_collect_once_without_staging(
 
     batches = list(bounded_collect_batches(frame, chunk_size=2))
 
-    assert heights == [3]
-    assert staged == []
+    assert max(heights) <= 2
+    assert len(staged) == 1
+    assert not staged[0].exists()
     assert pl.concat(batches).to_dict(as_series=False) == {"k": [1, 2, 3], "v": [6, 3, 1]}
+
+
+def test_resident_cross_join_batches_never_collect_the_expanded_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    heights = _counting_collects(monkeypatch)
+    staged = _staging_dirs(monkeypatch, tmp_path)
+    frame = pl.LazyFrame({"a": range(20)}).join(pl.LazyFrame({"b": range(30)}), how="cross")
+    batches = bounded_collect_batches(frame, chunk_size=10)
+    assert next(batches).height == 10
+    batches.close()
+    assert max(heights) <= 10
+    assert len(staged) == 1
+    assert not staged[0].exists()
 
 
 # -- staged: anything else is written once, then sliced --

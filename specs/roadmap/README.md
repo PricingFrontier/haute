@@ -24,6 +24,28 @@ or maintenance issue; `P3` opportunistic work.
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P11` |
 | [Pipeline config](pipeline-config.md) | Repair, save validation, and the error a rejected config reports | `PCFG-R01` |
 
+## PR #227 review — 22 September 2026
+
+The [cache and pipeline review](pr-227-review.md) records reproduced defects,
+targeted verification, CI evidence and the merge recommendation for head
+`97f3e99`. The [focused implementation plan](pipeline-cache-memory-design.md)
+is the current plan for the existing Polars/Parquet pipeline and store, narrowed
+at the user's request. Supporting probes, inventories and benchmark results are
+linked from the review. The Fable report and its [reconciliation](pr-227-fable-reconciliation.md)
+are review history; use the current plan for implementation scope. These are
+dated review artifacts; component specifications remain the behavior authority.
+
+The subsequent [independent Fable 5.1 review](pr-227-fable-5.1-review.md)
+challenges the proposed architecture and validates the findings against source.
+Read the [parent reconciliation](pr-227-fable-reconciliation.md) for accepted
+simplifications, corrected assumptions and the refined next steps. Its
+[runtime provenance](pr-227-fable-5.1-provenance.json) verifies the exact model;
+the Fable report is preserved verbatim.
+
+The [implementation evidence](pr-227-implementation-progress.md) records the
+subsequent fixes, reproducible before/after memory and runtime measurements,
+targeted tests, and remaining CI verification for the focused plan.
+
 ## Working protocol
 
 1. Pick one package from its owning component.

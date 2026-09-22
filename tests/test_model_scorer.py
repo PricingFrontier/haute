@@ -1341,7 +1341,7 @@ class TestRunScorePipeline:
         with pytest.raises(RuntimeError, match="predict failed"):
             _run_score_pipeline(
                 sm,
-                pl.DataFrame({"a": [1.0]}).lazy(),
+                pl.DataFrame({"a": [1.0]}).lazy().filter(pl.col("a") > 0),
                 task="regression",
                 output_col="prediction",
                 source="batch",

@@ -615,6 +615,88 @@ describe("ExplorePreview", () => {
     expect(await screen.findByText("4,321")).toBeInTheDocument()
   })
 
+  it("re-asks for a cached profile after the shared node-data store resets", async () => {
+    const { profile } = seedCachedExplore({ report: makeReport({ row_count: 4321 }) })
+    useNodeDataStore.setState({ profiles: {} })
+    renderExplore(null, exploreNodeWithConfig({ overview: { dataset_snapshot: true } }))
+    await waitFor(() => expect(mockGetNodeDataProfile).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      useNodeDataStore.getState().reset()
+    })
+
+    await waitFor(() => expect(mockGetNodeDataProfile).toHaveBeenCalledTimes(2))
+    expect(useNodeDataStore.getState().profiles[SLOT_KEY]?.profile).toEqual(profile)
+  })
+
+  it("discards an old completed profile after reset while the successor request owns the slot", async () => {
+    const { profile } = seedCachedExplore({ report: makeReport({ row_count: 4321 }) })
+    useNodeDataStore.setState({ profiles: {} })
+    let resolveOld!: (value: unknown) => void
+    let resolveNew!: (value: unknown) => void
+    mockGetNodeDataProfile
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveNew = resolve }))
+    const view = renderExplore(null, exploreNodeWithConfig({ overview: { dataset_snapshot: true } }))
+    await waitFor(() => expect(mockGetNodeDataProfile).toHaveBeenCalledTimes(1))
+    view.rerender(
+      <ExplorePreview node={exploreNodeWithConfig({ overview: { dataset_snapshot: true } })} allNodes={[sourceNode, exploreNode]} edges={edges} submodels={{}} preamble="import polars as pl" previewData={null} />,
+    )
+    expect(mockGetNodeDataProfile).toHaveBeenCalledTimes(1)
+
+    act(() => { useNodeDataStore.getState().reset() })
+    await waitFor(() => expect(mockGetNodeDataProfile).toHaveBeenCalledTimes(2))
+    await act(async () => {
+      resolveOld({ status: "completed", message: "old", result: profile, point: point("current", DATA_VERSION) })
+      await Promise.resolve()
+    })
+    expect(useNodeDataStore.getState().profiles[SLOT_KEY]).toBeUndefined()
+    await act(async () => {
+      resolveNew({ status: "completed", message: "new", result: profile, point: point("current", DATA_VERSION) })
+      await Promise.resolve()
+    })
+    expect(useNodeDataStore.getState().profiles[SLOT_KEY]?.profile).toEqual(profile)
+  })
+
+  it("does not publish an old profile job or failure after reset", async () => {
+    seedCachedExplore({ report: makeReport({ row_count: 4321 }) })
+    useNodeDataStore.setState({ profiles: {} })
+    let resolveOld!: (value: unknown) => void
+    let resolveNew!: (value: unknown) => void
+    mockGetNodeDataProfile
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveNew = resolve }))
+    renderExplore(null, exploreNodeWithConfig({ overview: { dataset_snapshot: true } }))
+    await waitFor(() => expect(mockGetNodeDataProfile).toHaveBeenCalledTimes(1))
+    act(() => { useNodeDataStore.getState().reset() })
+    await waitFor(() => expect(mockGetNodeDataProfile).toHaveBeenCalledTimes(2))
+    await act(async () => {
+      resolveOld({ status: "started", job_id: "old-job", message: "old", point: point("current", DATA_VERSION) })
+      await Promise.resolve()
+    })
+    expect(useNodeDataStore.getState().profileJobs[SLOT_KEY]).toBeUndefined()
+    await act(async () => {
+      resolveNew({ status: "started", job_id: "new-job", message: "new", point: point("current", DATA_VERSION) })
+      await Promise.resolve()
+    })
+    expect(useNodeDataStore.getState().profileJobs[SLOT_KEY]?.jobId).toBe("new-job")
+  })
+
+  it("does not record an old profile request error after reset", async () => {
+    seedCachedExplore({ report: makeReport({ row_count: 4321 }) })
+    useNodeDataStore.setState({ profiles: {} })
+    let rejectOld!: (reason: Error) => void
+    mockGetNodeDataProfile
+      .mockImplementationOnce(() => new Promise((_, reject) => { rejectOld = reject }))
+      .mockImplementationOnce(() => new Promise(() => {}))
+    renderExplore(null, exploreNodeWithConfig({ overview: { dataset_snapshot: true } }))
+    await waitFor(() => expect(mockGetNodeDataProfile).toHaveBeenCalledTimes(1))
+    act(() => { useNodeDataStore.getState().reset() })
+    await waitFor(() => expect(mockGetNodeDataProfile).toHaveBeenCalledTimes(2))
+    await act(async () => { rejectOld(new Error("old request failed")); await Promise.resolve() })
+    expect(useNodeDataStore.getState().profileFailures[SLOT_KEY]).toBeUndefined()
+  })
+
   it("asks for the profile of a cached point that has none yet, and renders it when the job finishes", async () => {
     const currentPoint = point("current", DATA_VERSION)
     mockGetNodeDataPoint.mockResolvedValue(currentPoint)

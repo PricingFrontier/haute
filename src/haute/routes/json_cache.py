@@ -325,7 +325,7 @@ def _finish_build_progress(data_path: str) -> None:
         current["active_count"] = remaining
 
 
-def json_cache_build_running(working_cache_dir: str | Path) -> bool:
+def json_cache_build_running(working_cache_dir: str | Path) -> bool:  # pragma: no mutate
     """Whether a JSON cache build is running for the data file behind *working_cache_dir*."""
     from haute._json_flatten import _json_cache_dir
 

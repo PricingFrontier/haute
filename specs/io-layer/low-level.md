@@ -404,10 +404,11 @@ and mutates nothing.
   the identity's publication lock applies the publication rule. `explicit` marks an explicit
   cache build: only it may `refresh`, pin the slot, or replace a corrupt latest generation;
   an automatic capture raises the corruption. A superseded outcome returns the artifact.
-  Otherwise, under the lease lock, it admits quota, renames staging to the generation, seeds
-  the verified memo, creates the publisher's marker and in-process count, writes the pointer,
-  records the identity in the slot index (moving the pin to it when `explicit` or when the
-  slot is already pinned), and retires the superseded generation when no live marker holds
+  Otherwise, under the lease lock, it admits quota, records the candidate identity and
+  retention in the slot index, renames staging to the generation, seeds the verified memo,
+  creates the publisher's marker and in-process count, then commits the pointer. Indexing
+  before exposure keeps interrupted candidates discoverable; an existing slot pin protects
+  the previous current data until commit. It retires the superseded generation when no live marker holds
   it. **One dataset per slot.** It then retires every *other* signature the slot index
   lists, by `clear_slot`'s mechanics — drop the pointer so nothing selects that signature
   again, then retire its generations — and drops each from the index. A node therefore holds
@@ -889,3 +890,64 @@ failure sections above are the maintained answers.
   otherwise; and every input provider drawing on one input budget, where a publication past
   that budget is refused rather than evicting another identity's current generation
   (`test_input_providers_share_one_budget`).
+# Publication and part naming corrective contracts (PR #227)
+
+Ordered generation parts follow the numeric, unbounded-index naming contract in
+the execution-engine specification, including indices above 99,999.
+
+Every node-output identity is recorded in its existing slot index before a new
+generation or current pointer becomes visible. A failure before pointer commit
+preserves the old pointer and pin; an indexed identity without a pointer is a legal,
+discoverable recovery state. Publication commits retention together with the
+pointer under the existing lease lock: a failure while preparing retention must
+not replace the old pointer. After pointer commit, cleanup failure must leave the
+new generation indexed and retain its intended pin; Clear must discover both old
+and new identities and readers must retain valid data. No additional metadata
+store or journal is introduced.
+
+The existing non-null `pinned_identity` denotes retention of the slot's current
+data, including any older current pointer left during interrupted publication.
+The candidate and intended pin are indexed before rename/pointer replacement;
+pre-commit exceptions restore the previous pin. If storage also refuses that
+rollback, the original error includes the rollback failure and the conservative
+pin remains until Clear or another publication. Process death at this boundary
+can likewise retain extra data, but cannot weaken the previous slot pin.
+
+Replacement admission credits all unleased generations of older signatures in the
+same slot that the successful publication will retire, as well as an unleased
+previous generation of the same signature. Credited generations cannot also be
+eviction candidates and stay usable until commit. Live readers prevent credit;
+pins on other slots remain protected. Byte and generation-count quotas apply to
+the resulting retained state; staging and retained readers still count.
+### Input leases shared between processes (PR #227 correction)
+
+Input snapshots use the same store-wide lease lock, process-owner token and
+generation markers as node outputs. Both `SourceCacheStore` and
+`NodeSnapshotStore` handles participate. Acquisition records the marker before
+metadata/content validation, and nested local readers retain it until the last
+reader releases. Clear, replacement, quota reclamation and reconciliation check
+live holders under the shared lock before deleting or crediting a generation.
+Dead owner markers can be reclaimed; age alone never overrides a live marker.
+
+Keep the input retirement grace as an additional retention policy and preserve
+the supervised parent's retained-generation handoff. A held superseded generation
+can survive beyond grace or explicit Clear and stays readable until release;
+once unpointed, the last release permits retirement. Input build publication and
+quota checks take the shared lease lock before the in-process count lock. Do not
+hold the global lease lock while building or validating a leased input. The
+existing file-lock implementation and token directory are shared, not duplicated.
+## Scratch filesystem headroom
+
+Snapshot staging and bounded sinks check the destination filesystem before
+starting a write. Known in-memory Arrow/DataFrame batches additionally check
+their decoded byte size before appending. Reserve 64 KiB beyond the proposed
+write for a footer and ownership metadata. Multipart sinks use the preceding
+part's actual size as the next-part estimate when a decoded batch is unavailable.
+
+These are local headroom checks, not reservations or predictions of total query
+output. Concurrent filesystem users and variable compression can still cause
+an OS write failure. Fail with `OSError(ENOSPC)` naming required/available bytes;
+the existing staging owner removes the partial artifact on failure/cancellation.
+Disk checks use actual free space: old generations and already-written staging
+remain charged until deleted, even if quota admission credits their eventual
+retirement. No old generation is removed to make a speculative write fit.

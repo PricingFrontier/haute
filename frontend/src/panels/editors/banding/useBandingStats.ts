@@ -29,6 +29,15 @@ export interface BandingStatsState {
   error: string | null
 }
 
+interface Tagged<T> {
+  identity: string
+  value: T
+}
+
+interface BandingStatsRequest {
+  controller: AbortController | null
+}
+
 export interface UseBandingStatsInput {
   node: SimpleNode | null
   allNodes: SimpleNode[]
@@ -61,10 +70,10 @@ export default function useBandingStats({
 }: UseBandingStatsInput): BandingStatsState {
   const activeSource = useSettingsStore((s) => s.activeSource)
   const cache = useNodeDataCache({ node, allNodes, edges, submodels, preamble })
-  const [stats, setStats] = useState<BandingStatsResponse | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const inFlight = useRef<AbortController | null>(null)
+  const [stats, setStats] = useState<Tagged<BandingStatsResponse | null> | null>(null)
+  const [loading, setLoading] = useState<Tagged<boolean> | null>(null)
+  const [error, setError] = useState<Tagged<string | null> | null>(null)
+  const inFlight = useRef<BandingStatsRequest | null>(null)
   const nodeId = node?.id ?? null
 
   // What the request is about. A factor edit that cannot change the numbers —
@@ -84,14 +93,10 @@ export default function useBandingStats({
   )
   const available = cache.availability
   const dataVersion = cache.dataVersion
+  const requestIdentity = JSON.stringify({ nodeId, askedFor, activeSource, available, dataVersion })
 
   useEffect(() => {
     if (!nodeId || !askedFor || available !== "current") {
-      // Nothing to ask about, or nothing current to ask. Any answer in flight
-      // is abandoned; what is on screen is not shown as this data, because the
-      // reading below requires a current point.
-      inFlight.current?.abort()
-      inFlight.current = null
       return
     }
     const asked = JSON.parse(askedFor) as {
@@ -102,11 +107,12 @@ export default function useBandingStats({
       bins: number | null
     }
     const fence = captureDocumentExecutionFence()
+    const request: BandingStatsRequest = { controller: null }
     const timer = setTimeout(() => {
-      inFlight.current?.abort()
       const controller = new AbortController()
-      inFlight.current = controller
-      setLoading(true)
+      request.controller = controller
+      inFlight.current = request
+      setLoading({ identity: requestIdentity, value: true })
       getBandingStats({
         graph: buildGraph(allNodes, edges, submodels, preamble),
         node_id: nodeId,
@@ -122,41 +128,56 @@ export default function useBandingStats({
         signal: controller.signal,
       })
         .then((response) => {
-          if (controller.signal.aborted || !isDocumentExecutionFenceCurrent(fence)) return
-          setStats(response)
-          setError(null)
+          if (
+            controller.signal.aborted ||
+            inFlight.current !== request ||
+            !isDocumentExecutionFenceCurrent(fence)
+          ) return
+          setStats({ identity: requestIdentity, value: response })
+          setError({ identity: requestIdentity, value: null })
         })
         .catch((err: unknown) => {
-          if (controller.signal.aborted || !isDocumentExecutionFenceCurrent(fence)) return
+          if (
+            controller.signal.aborted ||
+            inFlight.current !== request ||
+            !isDocumentExecutionFenceCurrent(fence)
+          ) return
           // The editor keeps working from preview rows, and says why it had to:
           // the server's own message — which for bad rules is execution's —
           // rather than the bare "HTTP 422" the client builds as the message.
-          setStats(null)
-          setError(apiErrorMessage(err, "the data could not be counted"))
+          setStats({ identity: requestIdentity, value: null })
+          setError({ identity: requestIdentity, value: apiErrorMessage(err, "the data could not be counted") })
         })
         .finally(() => {
-          if (inFlight.current === controller) inFlight.current = null
-          // A superseded request leaves the flag to its successor, which is
-          // still running; the last one standing clears it.
-          if (inFlight.current === null) setLoading(false)
+          if (inFlight.current !== request) return
+          inFlight.current = null
+          setLoading({ identity: requestIdentity, value: false })
         })
     }, BANDING_STATS_DEBOUNCE_MS)
-    return () => clearTimeout(timer)
+    return () => {
+      clearTimeout(timer)
+      request.controller?.abort()
+      if (inFlight.current === request) {
+        inFlight.current = null
+        setLoading({ identity: requestIdentity, value: false })
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodeId, askedFor, available, dataVersion, activeSource])
-
-  useEffect(() => () => inFlight.current?.abort(), [])
 
   // Full-data numbers are shown only while the point they describe is the one
   // this node reads *now*: a stale point shows the sample instead, however
   // recently its statistics arrived.
+  const matchingStats = stats?.identity === requestIdentity ? stats.value : null
   const current =
-    available === "current" && stats?.status === "ok" && stats.data_version === dataVersion
+    available === "current" &&
+    matchingStats?.status === "ok" &&
+    matchingStats.data_version === dataVersion
   return {
     cache,
-    stats: current ? stats : null,
-    loading,
-    error,
+    stats: current ? matchingStats : null,
+    loading: loading?.identity === requestIdentity ? loading.value : false,
+    error: error?.identity === requestIdentity ? error.value : null,
     basis: current ? "all" : available === "stale" ? "stale" : "sample",
   }
 }

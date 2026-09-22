@@ -904,3 +904,28 @@ The required behaviour is defined in
 - The missing/malformed/range-order failure model remains strict and names the exact constraint.
 - Backend fixtures that exercise frontier computation use per-constraint ranges; historical
   scalar-field fixtures are deleted.
+## Decoded input widths for setup chunking
+
+Automatic optimiser-grid and ratebook-factor chunk sizing uses the larger of
+the existing Parquet page-size estimate and a bounded decoded sample (at most
+512 rows). Each sampled column has an eight-byte minimum, and strings/binary
+use their decoded resident width. Repeated dictionary values must not make a
+large decoded batch look like a tiny encoded page. Explicit positive row
+overrides retain their current meaning. The existing setup execution limits
+remain authoritative: chunked input still builds a resident solver grid.
+## Reuse and admit the resident grid input
+
+Grid setup reuses a single local Parquet scan when its optimised plan is only
+the scan/projection, without predicates, slices, virtual columns, schema
+overrides, hive partitions, column mapping or deletion files. Its physical
+column dtypes must agree with the projected frame. No-op casts are omitted.
+The current caller keeps its input lease alive; borrowed input is never removed
+by grid cleanup. Multipart or transformed input retains one projected adapter
+file because the installed solver interface accepts one file.
+
+Before constructing the resident grid, estimate numeric vectors, quote IDs,
+sorting/conversion overlap and one reader batch from row count and decoded
+sample widths. Refuse an estimate exceeding the current execution context's
+remaining allowance with the existing typed admission error. The estimate is
+conservative and does not replace runtime limits. The existing solver/frontier
+work keeps sharing its prepared grid; this change adds no parallel grid copies.

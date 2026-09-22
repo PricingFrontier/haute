@@ -10,7 +10,7 @@ import contextvars
 import os
 import threading
 from collections.abc import Hashable, Iterable, Iterator, Mapping
-from contextlib import contextmanager, suppress
+from contextlib import AbstractContextManager, closing, contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
@@ -19,11 +19,14 @@ import numpy as np
 import polars as pl
 
 from haute._cache import CacheConsumer, checked_cache_input_values
+from haute._chunked_writes import sliceable
+from haute._file_ops import ensure_disk_headroom
 from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute._model_flavors import _SUPPORTED_FLAVORS as _SUPPORTED_MODEL_FLAVORS
 from haute._model_flavors import ModelFlavor as _ModelFlavor
+from haute._polars_utils import bounded_collect_batches
 from haute._types import _Frame
 from haute.errors import ConfigError
 from haute.errors import FeatureMismatchError as FeatureMismatchError
@@ -1113,7 +1116,23 @@ def _score_batched_unified(
         write_projection,
         offset_column=offset_column,
     )
-    input_path = _sink_to_temp(lf, columns=sink_columns)
+    if sink_columns is None:
+        projected_lf = lf
+    else:
+        projected_lf = lf.select(
+            _ordered_required_columns(
+                lf.collect_schema().names(),
+                sink_columns,
+                context="model-score input projection",
+            )
+        )
+    input_path: str | pl.LazyFrame
+    owned_input_path: str | None = None
+    if sliceable(projected_lf):
+        input_path = projected_lf
+    else:
+        owned_input_path = _sink_to_temp(lf, columns=sink_columns)
+        input_path = owned_input_path
     destination = _claim_score_output_destination()
     scored_to_destination = destination is not None
     try:
@@ -1128,8 +1147,9 @@ def _score_batched_unified(
             destination=destination,
         )
     finally:
-        with suppress(FileNotFoundError):
-            os.unlink(input_path)
+        if owned_input_path is not None:
+            with suppress(FileNotFoundError):
+                os.unlink(owned_input_path)
     if not scored_to_destination:
         _register_temp_cleanup(scored_path)
         scoped_temp_paths = (
@@ -1856,7 +1876,7 @@ def _resolve_score_dtypes(
 
 def _batch_score_to_parquet(
     scoring_model: Any,
-    input_path: str,
+    input_path: str | pl.LazyFrame,
     features: list[str],
     output_col: str,
     task: str,
@@ -1916,62 +1936,71 @@ def _batch_score_to_parquet(
             sink = HashingWriter(open(out_path, "wb"))
         # Closed in ``finally``: an open reader keeps the input file locked on
         # Windows, and the caller's cleanup would then mask a scoring refusal.
-        pf = reader = pq.ParquetFile(input_path)
-        input_schema_names = list(pf.schema_arrow.names)
+        if isinstance(input_path, str):
+            pf = reader = pq.ParquetFile(input_path)
+            input_schema = pl.read_parquet_schema(input_path)
+            batches: Iterator[pl.DataFrame | pl.Series] = (
+                pl.from_arrow(batch) for batch in pf.iter_batches(batch_size=_SCORE_BATCH_SIZE)
+            )
+            batch_context: AbstractContextManager[Iterator[pl.DataFrame | pl.Series]] = nullcontext(
+                batches
+            )
+        else:
+            input_schema = input_path.collect_schema()
+            batch_context = closing(
+                bounded_collect_batches(input_path, chunk_size=_SCORE_BATCH_SIZE)
+            )
+        input_schema_names = list(input_schema)
         _require_offset_column(input_schema_names, offset_column)
-        for batch in pf.iter_batches(
-            batch_size=_SCORE_BATCH_SIZE,
-        ):
-            chunk_raw = pl.from_arrow(batch)
-            if isinstance(chunk_raw, pl.Series):
-                chunk = chunk_raw.to_frame()
-            else:
-                chunk = chunk_raw
-            feature_chunk = chunk.select(features)
-            _validate_runtime_categorical_values(feature_chunk, normalised_levels)
-            if scoring_model.flavor == "rustystats":
-                _require_positive_log_link_offset(chunk, offset_column, offset_link)
-            x_data = _prepare_predict_frame(
-                chunk.select(predict_features),
-                predict_features,
-                cat_feature_names=scoring_model.cat_feature_names,
-                flavor=scoring_model.flavor,
-            )
-            if offset_column and scoring_model.flavor == "catboost":
-                x_data = _catboost_baseline_pool(
-                    x_data,
+        with batch_context as input_batches:
+            for chunk_raw in input_batches:
+                chunk = chunk_raw.to_frame() if isinstance(chunk_raw, pl.Series) else chunk_raw
+                feature_chunk = chunk.select(features)
+                _validate_runtime_categorical_values(feature_chunk, normalised_levels)
+                if scoring_model.flavor == "rustystats":
+                    _require_positive_log_link_offset(chunk, offset_column, offset_link)
+                x_data = _prepare_predict_frame(
+                    chunk.select(predict_features),
+                    predict_features,
+                    cat_feature_names=scoring_model.cat_feature_names,
+                    flavor=scoring_model.flavor,
+                )
+                if offset_column and scoring_model.flavor == "catboost":
+                    x_data = _catboost_baseline_pool(
+                        x_data,
+                        chunk,
+                        features,
+                        scoring_model.cat_feature_names,
+                        offset_column,
+                        offset_link=offset_link,
+                    )
+                preds = pl.Series(output_col, scoring_model.predict(x_data))
+                if not want_proba:
+                    preds = preds.cast(pl.Float64)
+                chunk = chunk.with_columns(preds)
+                if want_proba:
+                    chunk = _append_classification_proba(
+                        chunk,
+                        scoring_model,
+                        x_data,
+                        output_col,
+                    )
+                chunk = _apply_score_write_projection(
                     chunk,
-                    features,
-                    scoring_model.cat_feature_names,
-                    offset_column,
-                    offset_link=offset_link,
+                    write_projection=write_projection,
+                    output_col=output_col,
+                    can_predict_proba=can_predict_proba,
                 )
-            preds = pl.Series(output_col, scoring_model.predict(x_data))
-            if not want_proba:
-                preds = preds.cast(pl.Float64)
-            chunk = chunk.with_columns(preds)
-            if want_proba:
-                chunk = _append_classification_proba(
-                    chunk,
-                    scoring_model,
-                    x_data,
-                    output_col,
-                )
-            chunk = _apply_score_write_projection(
-                chunk,
-                write_projection=write_projection,
-                output_col=output_col,
-                can_predict_proba=can_predict_proba,
-            )
-            table = chunk.to_arrow()
-            if writer is None:
-                writer = pq.ParquetWriter(
-                    sink if sink is not None else out_path,
-                    table.schema,
-                )
-            writer.write_table(table)
-            wrote_any = True
-            del chunk, x_data, table
+                table = chunk.to_arrow()
+                if writer is None:
+                    writer = pq.ParquetWriter(
+                        sink if sink is not None else out_path,
+                        table.schema,
+                    )
+                ensure_disk_headroom(Path(out_path).parent, table.nbytes)
+                writer.write_table(table)
+                wrote_any = True
+                del chunk, x_data, table
         if writer is not None:
             active_writer = writer
             writer = None
@@ -1989,7 +2018,6 @@ def _batch_score_to_parquet(
             # not a valid input for categorical models.  Metadata-free model
             # flavors still use a schema-shaped probe so their output dtype is
             # learned rather than guessed.
-            input_schema = pl.read_parquet_schema(input_path)
             prediction_dtype, proba_dtype = _resolve_score_dtypes(
                 scoring_model,
                 task=task,

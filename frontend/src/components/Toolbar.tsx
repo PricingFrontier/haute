@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useCallback } from "react"
+import { Suspense, lazy, useState, useMemo, useRef, useCallback } from "react"
 import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, Bot, Loader2, Group, Link2, BookOpen } from "lucide-react"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import type { NodeTiming, NodeMemory } from "../api/types"
@@ -8,7 +8,8 @@ import useSettingsStore, { MAX_STREAMING_CHUNK_SIZE, MIN_STREAMING_CHUNK_SIZE } 
 import useUIStore from "../stores/useUIStore"
 import useClickOutside from "../hooks/useClickOutside"
 import MlflowSettingsModal from "./MlflowSettingsModal"
-import CacheSettingsModal from "./CacheSettingsModal"
+
+const CacheSettingsModal = lazy(() => import("./CacheSettingsModal"))
 
 declare const __APP_VERSION__: string
 
@@ -544,7 +545,11 @@ export default function Toolbar({
         </BranchIndicator>
       </div>
       {mlflowSettingsOpen && <MlflowSettingsModal onClose={closeMlflowSettings} />}
-      {cacheSettingsOpen && <CacheSettingsModal onClose={closeCacheSettings} />}
+      {cacheSettingsOpen && (
+        <Suspense fallback={null}>
+          <CacheSettingsModal onClose={closeCacheSettings} />
+        </Suspense>
+      )}
     </header>
   )
 }

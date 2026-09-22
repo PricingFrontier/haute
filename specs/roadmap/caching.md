@@ -1,5 +1,14 @@
 # Caching roadmap
 
+Review update, 22 September 2026: the [PR #227 assessment](pr-227-review.md)
+supersedes the earlier review conclusions below for head `97f3e99`. The
+[focused implementation plan](pipeline-cache-memory-design.md) records the
+current scope for the existing Polars/Parquet pipeline and filesystem store,
+with no replacement-engine or catalog work. It records input-lease,
+publication, replacement and consumer-identity defects, and finds that
+ordinary chunked joins also rescan their lookup; the existing package
+descriptions below have not yet been rewritten or implemented to that plan.
+
 ## Scope
 
 The aim is one cache system for Haute: full data at any pipeline point is

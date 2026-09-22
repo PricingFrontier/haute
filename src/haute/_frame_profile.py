@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import polars as pl
@@ -29,6 +31,7 @@ _VALUE_DISPLAY_TRUNCATION_MARKER = "…"
 _SUMMARY_NAME_LIMIT = 3
 _CATEGORICAL_VALUE_COUNT_LIMIT = 50
 _PROFILE_COLUMN_BATCH_SIZE = 8
+_PROFILE_DISTINCT_PARTITION_ROWS = 250_000
 _CATEGORICAL_VALUE_FIELD = "__haute_categorical_value"
 _TEXT_DTYPE_BASES = (pl.String, pl.Categorical, pl.Enum, pl.Binary)
 _LEXICAL_MIN_MAX_DTYPE_BASES = (pl.String, pl.Categorical, pl.Enum)
@@ -510,11 +513,80 @@ def _build_overview_summary(
     )
 
 
+def _count_unique_rows(
+    lf: pl.LazyFrame,
+    column_names: list[str],
+    row_count: int,
+    *,
+    execution_context: ExecutionContext,
+    scratch_directory: Path | None,
+) -> int:
+    """Count exact rows; hashes route large inputs, never approximate equality."""
+    expression = pl.struct(column_names).n_unique().alias("unique_rows")
+    partition_rows = _PROFILE_DISTINCT_PARTITION_ROWS
+    if row_count <= partition_rows:
+        return int(
+            cancellable_streaming_collect(
+                lf.select(expression),
+                execution_context=execution_context,
+            ).item()
+        )
+
+    from haute._file_ops import ensure_disk_headroom
+    from haute._ram_estimate import decoded_frame_row_width_bytes
+
+    if scratch_directory is None:
+        raise ValueError("Large profile duplicate counting requires a job-owned scratch directory")
+    sample = cancellable_streaming_collect(lf.head(512), execution_context=execution_context)
+    width = decoded_frame_row_width_bytes(sample)
+    del sample
+    remaining = execution_context.remaining_memory_bytes()
+    if remaining is not None:
+        # Leave room for the reader, hash table and retained scalar-stat buffers.
+        partition_rows = min(partition_rows, max(1, int(remaining / (8 * max(1, width)))))
+    partition_count = math.ceil(row_count / partition_rows)
+    routing_name = "__haute_profile_bucket"
+    while routing_name in column_names:
+        routing_name += "_"
+    parts = scratch_directory / "distinct-rows"
+    parts.mkdir(parents=True)
+    ensure_disk_headroom(parts)
+    sink = lf.sink_parquet(
+        pl.PartitionBy(
+            parts,
+            key={routing_name: pl.struct(column_names).hash(seed=227).mod(partition_count)},
+            include_key=False,
+            approximate_bytes_per_file=16 * 1024 * 1024,
+        ),
+        row_group_size=25_000,
+        lazy=True,
+        engine="streaming",
+    )
+    cancellable_streaming_collect(sink, execution_context=execution_context)
+    files = sorted(parts.rglob("*.parquet"))
+    if not files:
+        raise RuntimeError("Profile partition write produced no data files")
+    execution_context.record_bytes_written(sum(path.stat().st_size for path in files))
+    buckets: dict[Path, list[Path]] = {}
+    for path in files:
+        buckets.setdefault(path.parent, []).append(path)
+    unique_rows = 0
+    for bucket_files in buckets.values():
+        unique_rows += int(
+            cancellable_streaming_collect(
+                pl.scan_parquet(bucket_files, hive_partitioning=False).select(expression),
+                execution_context=execution_context,
+            ).item()
+        )
+    return unique_rows
+
+
 def _build_frame_stats(
     lf: pl.LazyFrame,
     schema: pl.Schema,
     *,
     execution_context: ExecutionContext,
+    scratch_directory: Path | None = None,
 ) -> ExploreFrameStats:
     """Compute row count and per-column schema stats for an Explore frame.
 
@@ -596,10 +668,13 @@ def _build_frame_stats(
         elif len(column_names) == 1:
             duplicate_row_count = row_count - int(aggregate_row[f"unique::{column_names[0]}"])
         else:
-            unique_rows = cancellable_streaming_collect(
-                lf.select(pl.struct(column_names).n_unique().alias("unique_rows")),
+            unique_rows = _count_unique_rows(
+                lf,
+                column_names,
+                row_count,
                 execution_context=execution_context,
-            ).item()
+                scratch_directory=scratch_directory,
+            )
             duplicate_row_count = row_count - int(unique_rows)
     stats: list[ExploreColumnStat] = []
     categorical_values_by_column: dict[str, list[ExploreDistinctValueCount]] = {}

@@ -2309,12 +2309,14 @@ present a structural or schema result as execution evidence.
 - `tests/performance/test_polars_scale_scenario.py` — bounded Polars join/training projection scale generation, modelling-menu demand propagation, and CI-small execution-profile smoke contracts.
 - `tests/performance/test_execution_engine_certification.py` — isolated projected-versus-full wide-Parquet RSS comparison, per-port API-input and direct-JSONL checkpoint evidence, a fresh-interpreter restart certificate for cache-proof reuse, telemetry privacy, and snapshot-owner cleanup, and `test_global_operation_memory_policies_match_the_registry`, which measures every global operation's incremental peak RSS in a fresh process through `tests/performance/_operation_memory_probe.py` and `bounded_sink` and certifies it against the policy read from `haute._polars_operations::operation` at runtime. Its 1.5M-row fact fixture and 375k-row dimension table are written with 25,000-row row groups — 60 row groups, more than any host's thread count — so parallel Parquet decoding cannot hold the whole file resident and the control measures streaming rather than the reader. Four controls are measured in the same run: `scan` (full-width passthrough sink), `scan_head` (a 1000-row sink), `scan_narrow` (a dense two-column sink) and `scan_gaps` (the same two columns where one is nullable and carries the gap runs). A control matches the operation's input columns *and* their nullability: a dense two-column scan under-represents the validity-bitmap and gap-handling cost of the same read, so measuring a nullable-column operator against it charges the operator for a read cost the control never paid. That is a correctness requirement for the comparison, not an allowance -- `interpolate` reads the nullable gap column and is therefore floored by `scan_gaps`, while a dense narrow plan keeps `scan_narrow`. Every `streaming` or `row_local` policy is bound by its matched passthrough control -- incremental peak <= 1.3x -- because a streaming pipeline can never need more than the passthrough pipeline over the same input (decode buffers plus output buffers, and a reducing operator's output buffers are smaller); a wide plan is bound by `scan` however few rows it emits, since its output size does not change what it must read. This is the safety-critical direction, since an operator wrongly recorded as streaming is one the planner never admits. `scan_head` is used only as the matched floor for a reducing boundary operator's witness. A `materialisation_boundary` policy is certified against the planner instead of a ratio: the same fixture is planned as a `dataInput` -> `polars` graph through `plan_execution_strategy` under an ample admission, and the admission estimate must bound the observed peak. The join graph declares `validate='m:1'` because that is the practice the product asks of an analyst and because it keeps the bound this join propagates downstream realistic; the join's own estimate is sized from its input ports and does not depend on the declaration. The join probe executes that same `validate='m:1'` code, so the measurement and the estimate describe one plan rather than two. Because a *declared* join estimate is sized from its largest operand, the lane also measures `join_fanout` -- `fact.join(multi, on='key', how='inner')` against an `operation-multi.parquet` fixture holding three rows per dimension key, so the output is three times the fact rows -- as a variant of `join` against the `scan` control. That measurement is what falsified input sizing for undeclared joins (about 1.57x the input-sized figure), so `join_fanout` is certified through the planner's policy rather than against a number: planned under `native_memory_backend_scope("rlimit")` it must be `warned`/`full-width-conservative` with `proof_gap=op:join_cardinality_many_to_many`, and planned without a cap it must raise `materialisation_estimate_unavailable` naming that detail. Only the rows check and those two policy checks are asserted; the evidence payload still records its `rows_out` against the expected 3x, the incremental peak, and `exceeds_declared_join_estimate` -- whether the observed fan-out peak is above the declared `join` case's estimate. Being a variant rather than a registry name, it carries no does-not-stream witness. A fan-in Polars node also carries the declared per-parent contract production requires. `explode` is certified as the typed unavailable-estimate rejection instead, its expansion being unbounded. `sort`, `unique`, `join`, and `explode` additionally carry a does-not-stream witness at 1.25x their matched floor. Two boundaries cannot be witnessed by their own wide-frame measurement and each names the variant that does show its state: `over` is dominated by the passthrough's own buffers on a 12-column frame, so the `over_narrow` probe must reach 1.5x `scan_narrow`, where its partition state dominates; and `join_asof` buffers its right (lookup) port and streams its left, so the wide-left case sits near the floor and the `join_asof_big_right` probe (`dim.join_asof(fact, ...)`, the large frame in the buffered position) must reach 1.25x `scan_head` — the wide case still certifies the estimate and the operator factor. `group_by`, `top_k`, `bottom_k`, and `reverse` are boundaries by construction or conservatism and carry no witness. The lane is registry-complete rather than a hand-kept list: for each receiver it asserts that every name `measured_operation_names` returns has a plan in the probe (modulo the registered spelling aliases `groupby` and `melt`), so a new measured entry without a measurement fails here. Probe names are receiver-qualified where a name exists on both receivers: `shift` is the frame probe (`fact.shift(1)`), while `shift_expr`, `diff_expr`, and `pct_change_expr` add a lag, difference, or percentage-change column of `v1` to the full-width fact (`with_columns(...alias(...))`) and certify the expression entries, so a frame measurement can never stand in for an expression one. `test_neighbouring_row_boundaries_grow_with_their_input` witnesses those boundaries and frame `shift` by growth: it writes the fact fixture at the lane's 1.5M rows and at four times that, measures each probe against `scan` at both sizes as paired means, requires the planner's estimate to bound the observed peak at both sizes, so the whole-frame estimate is shown to scale with the input as the operators do, and requires every probe to show it does not stream: either its paired-mean ratio at the lane's rows exceeds the 1.3x streaming ceiling (the CI runner measured 1.39x to 1.53x for the shift and difference probes and about 2.0x for `pct_change`) or its extra memory over the control at the larger size is at least 1.5x the extra at the smaller (a constant buffer stays near 1.0). The evidence payload records the ratio, the growth, and which of the two held. `interpolate`'s probe reads a dedicated `v1_gaps` column — a straight line with 50-row null runs punched across the row-group boundaries — so the measurement cannot be of a passthrough over a column with nothing to fill, and the test verifies that the sunk output has no interior nulls left and that the filled values equal the linear interpolation of their neighbours. That verification runs in the *parent*, lazily over the retained sink after `run_smoke` has returned, precisely so it cannot contaminate the measurement: every child does nothing but build its plan, sink it, and exit, because anything else a child does lands in the lifetime peak the parent attributes to the operator. The `join_asof` fixtures are written pre-sorted for the same reason: a leading `sort` would make the chained boundary take sort's larger factor and certify the wrong operator. The cross join is certified through the planner alone — the graph plans `how='cross'` and must report the unavailable estimate — since there is no measurement to compare it against. Every ratio in the lane is a paired mean rather than a single reading: each operation is run alternately with its control, three of each -- five for `interpolate`, whose narrow-frame ratio sits at about 1.24 against the 1.30 ceiling, close enough that three pairs let batch drift decide the result -- and the ratio is the mean operation peak over the mean control peak. The per-operation sample count is recorded in the evidence payload. A control is re-run inside the pairs that use it and never sampled once and shared, because a single fresh-process sample drifted by about 20% between batches on the development host -- enough for a single-sample ratio to straddle a threshold and for a quoted figure to be noise rather than measurement. Pairing cancels that drift. The mean rather than the median is deliberate: peak RSS is bimodal, with samples clustering around two values about 35 MiB apart -- the granularity of a streaming chunk buffer, not continuous noise -- so a median of three snaps to whichever mode won two of the three samples and jumps between modes instead of settling, while the mean is the stable estimator of average cost over a discrete allocation pattern. Medians are still recorded for information. No threshold is widened to absorb the variance and no max-of-controls bias is applied. The residual is stated rather than hidden: a run can still fail when all three operation samples land in the high mode while all three control samples land in the low one, roughly a 1-in-64 event per operation, which is the accepted noise floor of an opt-in perf lane. The lane must be run through pytest, one fresh process per run: repeating the test inside a single interpreter reuses a warm page cache for the fixture and flatters every ratio, so an in-process repeat is not a valid measurement of this lane. This roughly triples the lane's runtime, to about 70 seconds, which is affordable for an opt-in perf marker. Polars version, thread count, row-group size, fixture rows, and every operation's rows out, all six paired samples, both means, both medians, the control it was paired against, the ratio, the estimate, and each check's outcome are recorded in the test's evidence payload, so the registry cannot claim a policy the measurements contradict.
 - `tests/performance/test_write_strategy_memory.py` with
-  `_write_strategy_memory_probe.py` — fresh-process peak-RSS evidence that the native write
-  strategy's memory grows with its input while the sliced and input-sliced (`filter_with_recipe`)
-  strategies stay bounded, growing about 1.3 to 1.4 times over a fourfold input rather than in
-  step with it, measured over a 40-column fixture at 1.5M and 6M rows through `write_parts`,
-  with a native passthrough as the control that attributes the growth to the sink. It asserts
-  ratios, never absolute bytes, because peaks vary by host.
+  `_write_strategy_memory_probe.py` — fresh-process evidence for the shipped budgeted sliced
+  and input-sliced (`filter_with_recipe`) writer paths. Each runs the 40-column, 25,000-row-group
+  fixture at 1.5M and 6M rows under an `ExecutionContext` with a pre-sink baseline and a 256 MiB
+  incremental RSS limit, two Polars threads, and 5 ms parent RSS samples. Both cases must stay at
+  or below the 256 MiB incremental peak and finish within `max(30 seconds, 8 * same-size native
+  control time)`; row counts and reported strategies remain assertions. Native cases are retained
+  as unbudgeted diagnostic measurements, with their RSS recorded but no required growth ratio.
+  This is a workload-specific budget certificate, not a universal bounded-memory guarantee.
 - `tests/performance/_execution_resilience_probe.py` plus
   `test_execution_engine_certification.py` — fresh-interpreter worker-pool soak with
   real crash replacement and RSS/descriptor-or-handle plateau evidence; five-phase
@@ -2592,3 +2594,68 @@ tests that construct real admitted contexts. The direct suite asserts complete
 coverage of `_ADAPTIVE_MEMORY_POLICY`, `_PROFILE_MEMORY_ENV`, and
 `_PROFILE_PROCESS_RSS_ENV` for every `ExecutionProfile`, and exercises adaptive,
 fixed, strict-server, explicit-override, process-RSS, and in-flight-reservation paths.
+# Chunked writer corrective contracts (PR #227)
+
+Internal match counts use a temporary name absent from both join-key sets; user
+columns named `__haute_chunk_matches` or its numbered variants remain valid.
+Uniqueness validation follows the same rule. Duplicate-key multiplicity, native
+join validation failures, schema and ordering are unchanged.
+
+Part indices are non-negative integers, excluding booleans. Canonical filenames
+use ASCII decimal digits padded to at least five places, with no redundant leading
+zeros beyond that padding: `part-99999.parquet` precedes `part-100000.parquet`.
+Discovery sorts by numeric index, and metadata validation accepts these same names.
+Malformed names, signs, Unicode digits and noncanonical padding are rejected.
+
+### Bounded cross joins and derived resident inputs
+
+Cross-join writes slice both inputs and cap each produced part at `chunk_rows`.
+For requested left or right ordering, the corresponding side drives the loop;
+when the other side exceeds the row ceiling, process one driving row at a time
+against successive lookup slices. Preserve native suffix/coalesce/schema and
+empty-input behavior, and report the actual row bound for cross joins too.
+
+`bounded_collect_batches` may collect slices directly only when source slicing
+is proved safe. A plan with resident inputs can expand arbitrarily (cross joins,
+explode); it receives no exemption from staging merely because its inputs are
+in memory. Every other plan uses the existing temporary Parquet writer and yields
+slices from that artifact, with existing context cancellation/memory checks and
+cleanup on exhaustion, close and failure. This bounds returned/resident output
+batches; the original operator still runs under its execution memory limits.
+
+### Memory-aware write sizing and admitted native joins
+
+When an execution context has a memory limit, size chunks from its remaining
+RSS allowance and a bounded decoded sample of sliceable input, retaining the
+requested row ceiling. Reserve half the remaining allowance for other live
+state; allow four decoded buffers for input/output, conversion and encoding.
+Use the greater of eight bytes per column or observed decoded bytes per value,
+including variable-width values. The sample is an estimate, not a hard proof;
+existing checkpoints and isolated worker limits remain authoritative.
+
+A direct join recipe with sliceable inputs may run once natively when a
+conservative estimate fits that working allowance. Initially admit only joins
+whose output cardinality is bounded by the native validation contract (`1:1`,
+`m:1`, `1:m`) or semi/anti semantics. Bound left/right/full unmatched rows too;
+unknown many-to-many multiplicity continues through the current chunked path.
+Keep custom finish recipes on that path until their expansion is established.
+Estimate three times the sum of decoded inputs and maximum decoded output, with a
+64 MiB allowance for native reader/hash/allocator setup; this deliberately
+exceeds the observed fixed-width test peaks. No context/budget means no such
+fast-path admission. Native execution retains Polars validation and reports
+`native_reason="join_within_memory_budget"`, with no claimed per-part row bound.
+
+The existing execution context exposes its remaining allowance by sampling RSS
+and enforcing its current memory limit; a missing sampler under an active limit
+raises the same typed memory-limit error as a checkpoint. This is reuse of the
+current admission policy, not another resource manager.
+### Apply writer sizing consistently
+
+Single-file training/adapter writes and bounded batch readers use the same
+decoded-width sizing rule as multipart writes, under the explicit or current
+execution context. The configured row count remains a ceiling. A row-local
+recipe's bounded sample includes both input and produced widths so newly
+created wide columns affect chunk sizing.
+
+The independent-size join measurements support the native admission estimate
+above; runtime memory enforcement remains required.

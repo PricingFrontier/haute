@@ -37,6 +37,7 @@ mkdir that masks configuration bugs.
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import time
@@ -47,6 +48,27 @@ from types import TracebackType
 
 _WINDOWS_REPLACE_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1)
 _IS_WINDOWS = os.name == "nt"
+_DISK_HEADROOM_BYTES = 64 * 1024
+
+
+def ensure_disk_headroom(directory: Path, additional_bytes: int = 0) -> None:
+    """Fail before a write when its destination filesystem lacks headroom."""
+    if (
+        isinstance(additional_bytes, bool)
+        or not isinstance(additional_bytes, int)
+        or additional_bytes < 0
+    ):
+        raise ValueError("additional_bytes must be a non-negative integer")
+    if not directory.is_dir():
+        raise FileNotFoundError(directory)
+    required = additional_bytes + _DISK_HEADROOM_BYTES
+    available = shutil.disk_usage(directory).free
+    if available < required:
+        raise OSError(
+            errno.ENOSPC,
+            f"insufficient disk space: required {required} bytes, available {available} bytes",
+            str(directory),
+        )
 
 
 def _temp_path_for(target: Path) -> Path:

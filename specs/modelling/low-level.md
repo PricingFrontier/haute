@@ -1554,3 +1554,34 @@ Focused evidence lives in `tests/test_evaluation.py`,
 `tests/test_training_worker_protocol.py`, `tests/test_modelling_routes.py`, and
 `tests/test_modelling_export.py`. Frontend guard, config, preview, summary and progress
 suites prove the same canonical vocabulary and bounded lifecycle end to end.
+### Training allocation ordering (cache implementation correction)
+
+CatBoost constructs its training Pool and releases the raw training frame,
+feature frame, labels, weights and baseline conversion references before loading
+the validation partition. Validation loading retains the existing projection,
+partition selection, feature names/dtypes and offset semantics; it remains
+cancellable and measured through the existing execution context. No-validation
+training performs no validation read. The GLM adapter continues to receive its
+training and validation frames together, as required by its current interface.
+Test the lifetime boundary with weak references rather than relying on garbage
+collector or allocator RSS behavior in a unit test. Record real allocation peaks
+separately in a fresh-process measurement.
+
+When both validation and final-test partitions exist, validation metrics are
+computed and their frame/prediction allocations released before final-test
+diagnostics are materialised; returned primary metrics remain validation metrics.
+# Batch scoring from existing snapshot scans
+
+When the scoring input is proven sliceable by the existing Polars classifier,
+batch scoring consumes projected slices of that LazyFrame directly. It keeps
+the caller's frame and lease ownership alive until scoring finishes and never
+unlinks source parts. This includes a leased multipart Parquet scan. Input
+projection retains model features, offsets and requested passthrough columns
+in their original order; empty input retains the same output schema.
+
+The existing `_batch_score_to_parquet` adapter accepts a LazyFrame as well as
+its current single-file input. Complex inputs retain the existing owned
+temporary-file path so an upstream computation is executed only once. Both
+paths write through the current output destination, cancellation and cleanup
+contracts. This removes a complete input rewrite for reusable scans without
+introducing a dataset interface or changing scoring semantics.

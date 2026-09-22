@@ -477,7 +477,7 @@ def test_batched_score_frame_projects_temp_sink_to_features_and_required_passthr
             required_output_columns=frozenset({"quote_id", "prediction"}),
         ).collect()
 
-    assert captured_sink_columns == [["quote_id", "feature_a", "feature_b"]]
+    assert captured_sink_columns == []
     assert result.columns == ["quote_id", "prediction"]
     assert result["quote_id"].to_list() == ["q1", "q2", "q3"]
     assert result["prediction"].to_list() == [0.0, 1.0, 2.0]
@@ -699,7 +699,7 @@ def test_lazy_batch_model_score_uses_downstream_required_output_projection(tmp_p
 
     result = outputs["output"].collect()
 
-    assert captured_sink_columns == [["quote_id", "feature_a", "feature_b"]]
+    assert captured_sink_columns == []
     assert result.columns == ["quote_id", "prediction"]
     assert result["quote_id"].to_list() == ["q1", "q2", "q3"]
     assert result["prediction"].to_list() == [0.0, 1.0, 2.0]
@@ -833,16 +833,7 @@ def test_lazy_batch_model_score_uses_declared_transform_contract_for_projection(
 
     result = outputs["online_optimiser"].collect()
 
-    assert captured_sink_columns == [
-        [
-            "quote_id",
-            "scenario_index",
-            "premium_multiplier",
-            "premium",
-            "burn_cost",
-            "difference_to_market",
-        ]
-    ]
+    assert captured_sink_columns == []
     assert "unused" not in result.columns
     assert "difference_to_market" not in result.columns
     assert result["expected_margin"].to_list() == [0.0, 60.0, 180.0]
@@ -940,5 +931,5 @@ def test_lazy_batch_model_score_applies_stale_selected_columns_after_scoring(
 
     result = outputs["output"].collect()
 
-    assert captured_sink_columns == [["quote_id", "feature_a", "feature_b", "unused"]]
+    assert captured_sink_columns == []
     assert result.columns == ["quote_id", "prediction"]

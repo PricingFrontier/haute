@@ -18,9 +18,14 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 
+# This must be set before importing Polars: the child inherits no thread-pool
+# state from pytest, so its memory measurement would otherwise vary by host.
+os.environ["POLARS_MAX_THREADS"] = "2"
+
 import polars as pl
 
 from haute._chunked_writes import WriteRecipe, write_parts
+from haute._execution_context import ExecutionContext, ExecutionProfile
 from scripts.memory_smoke import StdlibMemorySampler
 
 CASES: tuple[str, ...] = (
@@ -81,15 +86,36 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     sampler = StdlibMemorySampler()
-    gc.collect()
-    rss_before = sampler.process_rss_bytes(os.getpid())
-
     frame, recipe = build_frame_and_recipe(args.case, args.source)
+    gc.collect()
+    # The context budget starts at the actual pre-sink RSS, after importing and
+    # constructing this case's plan, which is the budget write_parts enforces.
+    rss_before = sampler.process_rss_bytes(os.getpid())
+    if rss_before is None:
+        raise RuntimeError("could not sample pre-sink RSS")
+    bounded_case = args.case in {"unnest", "filter_with_recipe"}
+    context = (
+        ExecutionContext(
+            operation="write_strategy_memory_probe",
+            profile=ExecutionProfile.LAZY_SINK,
+            memory_baseline_bytes=rss_before,
+            memory_limit_bytes=256 * 1024 * 1024,
+            memory_sampler=lambda: sampler.process_rss_bytes(os.getpid()),
+        )
+        if bounded_case
+        else None
+    )
     with tempfile.TemporaryDirectory(dir=args.output.parent) as tmp_dir:
         parts_dir = Path(tmp_dir) / "parts"
         parts_dir.mkdir(parents=True, exist_ok=True)
         started = time.perf_counter()
-        report = write_parts(parts_dir, frame, recipe=recipe, fast_checkpoint=True)
+        report = write_parts(
+            parts_dir,
+            frame,
+            recipe=recipe,
+            fast_checkpoint=True,
+            execution_context=context,
+        )
         elapsed_seconds = time.perf_counter() - started
         sunk_rows = int(pl.scan_parquet(parts_dir / "*.parquet").select(pl.len()).collect().item())
         rss_after = sampler.process_rss_bytes(os.getpid())
@@ -102,6 +128,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "part_count": report.chunks,
         "chunk_rows": report.chunk_rows,
         "native_reason": report.native_reason,
+        "memory_limit_bytes": context.memory_limit_bytes if context is not None else None,
         "elapsed_seconds": elapsed_seconds,
         "rss_before_bytes": rss_before,
         "rss_after_bytes": rss_after,

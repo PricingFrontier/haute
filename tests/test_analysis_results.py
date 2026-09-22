@@ -1085,3 +1085,31 @@ def test_a_profile_keeps_the_schema_column_order(
     columns = _profiled_columns(client, project, pl.DataFrame({"c": [1], "a": [2], "b": [3]}), "o")
 
     assert [column["name"] for column in columns] == ["c", "a", "b"]
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_profile_parent_cleans_worker_scratch_after_return(client, project, monkeypatch, failure):
+    observed = []
+
+    def worker(function, request, budget, **_kwargs):
+        directory = Path(request.scratch_directory)
+        assert directory.is_dir()
+        (directory / "partial.parquet").write_bytes(b"partial")
+        observed.append(directory)
+        if failure:
+            raise RuntimeError("worker terminated")
+        return function(request, budget)
+
+    monkeypatch.setattr(service_mod, "run_isolated_worker", worker)
+    response = client.post(
+        "/api/node-data/profile", json=_body(_graph(project), "band_source")
+    ).json()
+    assert response["status"] == "started"
+    status = _poll(client, response["job_id"])
+    assert status["status"] == ("error" if failure else "completed")
+    from haute.routes.node_data import _node_data_service
+
+    for thread in list(_node_data_service._threads.values()):
+        thread.join(10)
+    assert len(observed) == 1
+    assert not observed[0].exists()

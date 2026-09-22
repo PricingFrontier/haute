@@ -864,3 +864,14 @@ Component tests pin unavailable-only visibility, capability gating, dry-run
 before apply, touched-file/diff presentation, default config retention,
 replanning for explicit config deletion, stale-plan errors, duplicate-submit
 suppression, and successful document adoption. There is no migration UI.
+# Analysis request identity (PR #227 corrective contract)
+
+Banding statistics and Rating Step levels belong to the complete analysis request:
+node id, active source, current input data version, and canonical factor/rules/bins
+or requested columns. A changed question immediately stops presenting its previous
+answer, error or loading state as current, even during the debounce interval and
+when the input data version is unchanged. Superseded requests are aborted when
+their effect is cleaned up, not when the next debounce expires. Success, failure
+and completion callbacks may update only their own request's state, and continue
+to respect the document execution fence. Equivalent canonical column sets or
+changes to a factor's output name alone do not require a new statistics request.

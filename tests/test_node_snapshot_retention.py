@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +36,7 @@ from haute._source_cache import (
     SourceCacheBuildContext,
     SourceCacheGenerationMissingError,
     SourceCacheIdentity,
+    SourceCacheStore,
     classify_identity_marker,
     generation_bytes,
 )
@@ -128,6 +131,25 @@ def test_write_and_read_class_mappings() -> None:
     assert snapshot_write_class(ExecutionProfile.PREVIEW_EAGER, preview_admitted=True) == "bounded"
     assert snapshot_write_class(ExecutionProfile.PREVIEW_EAGER) is None
     assert snapshot_read_classes(ExecutionProfile.PREVIEW_EAGER) == frozenset({"bounded"})
+
+
+def test_low_disk_refuses_node_staging_before_creating_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = NodeSnapshotStore(tmp_path)
+    identity = _slot(tmp_path).identity("low-disk")
+    actual_usage = shutil.disk_usage(tmp_path)
+    monkeypatch.setattr(
+        "haute._file_ops.shutil.disk_usage",
+        lambda _directory: actual_usage._replace(free=65_535),
+    )
+
+    with pytest.raises(OSError) as exc_info:
+        store.stage_node_output(identity)
+
+    assert exc_info.value.errno == errno.ENOSPC
+    assert not any(store.identity_path(identity).glob(".staging-*"))
 
 
 def test_publishing_a_signature_replaces_the_slots_previous_one(tmp_path: Path) -> None:
@@ -332,7 +354,7 @@ def test_retired_directories_are_swept_once_per_process(
         real_cleanup(self)
 
     monkeypatch.setattr(module.NodeSnapshotStore, "_cleanup_retired", counting_cleanup)
-    module._COORDINATION.clear()
+    SourceCacheStore._coordination_by_root.clear()
 
     first = module.NodeSnapshotStore(tmp_path)
     module.NodeSnapshotStore(tmp_path)
@@ -650,6 +672,9 @@ def test_a_failed_publication_handoff_releases_the_publisher_lease(
 
     monkeypatch.undo()
     generation_id = store._current_generation_id(identity.digest)
+    if failure == "slot_index":
+        assert generation_id is None
+        return
     assert generation_id is not None
     assert store._in_process_lease_count(identity.digest, generation_id) == 0
     generation_dir = store._generation_dir(identity.digest, generation_id)
@@ -1220,3 +1245,184 @@ def test_a_holder_that_dies_leaves_nothing_clear_slot_cannot_remove(
     store.clear_slot(slot)
     assert _identity_bytes(store, first) == 0
     assert all(owner.generations <= 1 for owner in store.inventory().owners)
+
+
+@pytest.mark.parametrize("failure_write", [1, 2])
+@pytest.mark.parametrize("previous", [False, True])
+def test_publication_index_failure_remains_discoverable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_write: int, previous: bool
+) -> None:
+    store = NodeSnapshotStore(tmp_path)
+    slot = _slot(tmp_path)
+    first, second = slot.identity("first"), slot.identity("second")
+    if previous:
+        with _publish(store, first, pl.DataFrame({"a": [1]}), explicit=True):
+            pass
+    write_index = store._write_slot_index_locked
+    calls = 0
+
+    def fail_index(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == failure_write:
+            raise OSError("index unavailable")
+        return write_index(*args, **kwargs)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(store, "_write_slot_index_locked", fail_index)
+        with pytest.raises(OSError, match="index unavailable"):
+            _publish(store, second, pl.DataFrame({"a": [2]}), explicit=True)
+
+    if failure_write == 1:
+        assert store._current_generation_id(second.digest) is None
+        if previous:
+            with store.lease(first) as generation:
+                assert generation.lazy_frame.collect()["a"].to_list() == [1]
+            assert store.latest_generation(first).retention == "pinned"
+    else:
+        with store.lease(second) as generation:
+            assert generation.lazy_frame.collect()["a"].to_list() == [2]
+        assert store.latest_generation(second).retention == "pinned"
+    store.clear_slot(slot)
+    assert _slot_generation_bytes(store, tmp_path) == 0
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize("same_signature", [False, True])
+def test_failed_pointer_preserves_previous_data_and_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit: bool, same_signature: bool
+) -> None:
+    store = NodeSnapshotStore(tmp_path)
+    slot = _slot(tmp_path)
+    first = slot.identity("first")
+    second = first if same_signature else slot.identity("second")
+    with _publish(store, first, pl.DataFrame({"a": [1]}), explicit=explicit):
+        pass
+    old_index = store._read_slot_index(slot)
+
+    def fail_pointer(*args, **kwargs):
+        raise OSError("pointer unavailable")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(store, "_write_pointer_locked", fail_pointer)
+        with pytest.raises(OSError, match="pointer unavailable"):
+            _publish(store, second, pl.DataFrame({"a": [2]}), explicit=True, refresh=True)
+    with store.lease(first) as generation:
+        assert generation.lazy_frame.collect()["a"].to_list() == [1]
+    assert store._read_slot_index(slot)["pinned_identity"] == old_index["pinned_identity"]
+    assert store.latest_generation(first).retention == ("pinned" if explicit else "automatic")
+    store.clear_slot(slot)
+    assert _slot_generation_bytes(store, tmp_path) == 0
+
+
+@pytest.mark.parametrize("limit", ["bytes", "generations"])
+@pytest.mark.parametrize("pinned", [False, True])
+def test_replacement_credits_older_slot_signature_at_exact_quota(
+    tmp_path: Path, limit: str, pinned: bool
+) -> None:
+    store = NodeSnapshotStore(tmp_path)
+    slot = _slot(tmp_path)
+    first, second = slot.identity("first"), slot.identity("second")
+    frame = pl.DataFrame({"a": [1, 2, 3]})
+    with _publish(store, first, frame, explicit=pinned):
+        pass
+    if limit == "bytes":
+        store.node_output_max_bytes = _identity_bytes(store, first)
+    else:
+        store.node_output_max_generations = 1
+    with store.lease(first) as leased:
+        with pytest.raises(NodeSnapshotQuotaRejectedError) as error:
+            _publish(store, second, frame, explicit=pinned)
+        error.value.artifact.close()
+        assert_frame_equal(leased.lazy_frame.collect(), frame)
+    with _publish(store, second, frame, explicit=pinned) as publication:
+        assert publication.outcome == "published"
+    assert _identity_bytes(store, first) == 0
+    assert store.latest_generation(second).retention == ("pinned" if pinned else "automatic")
+
+
+def test_replacement_credit_is_not_counted_again_as_eviction(tmp_path: Path) -> None:
+    store = NodeSnapshotStore(tmp_path)
+    slot = _slot(tmp_path)
+    first = slot.identity("first")
+    old = pl.DataFrame({"a": [1]})
+    with _publish(store, first, old):
+        pass
+    store.node_output_max_bytes = _identity_bytes(store, first)
+    with pytest.raises(NodeSnapshotQuotaRejectedError) as error:
+        _publish(store, slot.identity("second"), pl.DataFrame({"a": range(100_000)}))
+    error.value.artifact.close()
+    with store.lease(first) as generation:
+        assert_frame_equal(generation.lazy_frame.collect(), old)
+
+
+def _crash_before_publication_pointer(project_root: str) -> None:
+    root = Path(project_root)
+    store = NodeSnapshotStore(root)
+
+    def terminate(*_args, **_kwargs):
+        os._exit(29)
+
+    store._write_pointer_locked = terminate
+    _publish(store, _slot(root).identity("interrupted"), pl.DataFrame({"a": [2]}), explicit=True)
+
+
+def test_interrupted_publication_remains_indexed_and_clearable(tmp_path):
+    import multiprocessing
+
+    store = NodeSnapshotStore(tmp_path)
+    slot = _slot(tmp_path)
+    first = slot.identity("first")
+    with _publish(store, first, pl.DataFrame({"a": [1]}), explicit=True):
+        pass
+    process = multiprocessing.get_context("spawn").Process(
+        target=_crash_before_publication_pointer,
+        args=(str(tmp_path),),
+    )
+    process.start()
+    process.join(30)
+    if process.is_alive():
+        process.kill()
+        process.join(10)
+        pytest.fail("publication process did not reach the interruption point")
+    assert process.exitcode == 29
+    interrupted = slot.identity("interrupted")
+    assert interrupted.digest in store._read_slot_index(slot)["identities"]
+    assert _identity_bytes(store, interrupted) > 0
+    with store.lease(first) as generation:
+        assert generation.lazy_frame.collect()["a"].to_list() == [1]
+    assert store.latest_generation(first).retention == "pinned"
+    store.clear_slot(slot)
+    assert _slot_generation_bytes(store, tmp_path) == 0
+
+
+def test_pointer_and_retention_rollback_failure_preserve_existing_generation(tmp_path, monkeypatch):
+    store = NodeSnapshotStore(tmp_path)
+    slot = _slot(tmp_path)
+    first = slot.identity("first")
+    with _publish(store, first, pl.DataFrame({"a": [1]}), explicit=True):
+        pass
+    real_write = store._write_slot_index_locked
+    calls = 0
+
+    def write_index(*args):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("rollback failed")
+        return real_write(*args)
+
+    def fail_pointer(*_args):
+        raise OSError("pointer failed")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(store, "_write_slot_index_locked", write_index)
+        patcher.setattr(store, "_write_pointer_locked", fail_pointer)
+        with pytest.raises(OSError, match="pointer failed") as error:
+            _publish(store, slot.identity("second"), pl.DataFrame({"a": [2]}), explicit=True)
+    assert any("rollback failed" in note for note in error.value.__notes__)
+    with store.lease(first) as generation:
+        assert generation.lazy_frame.collect()["a"].to_list() == [1]
+    assert store.latest_generation(first).retention == "pinned"
+    store.clear_slot(slot)
+    assert _slot_generation_bytes(store, tmp_path) == 0

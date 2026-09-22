@@ -1056,3 +1056,66 @@ def test_build_frame_stats_returns_row_count_with_column_stats(
 
     assert stats.row_count == 4
     assert [s.name for s in stats.columns] == ["value"]
+
+
+@pytest.mark.parametrize("dtype", [pl.Float64, pl.Categorical, pl.List(pl.Int64)])
+def test_partitioned_whole_row_distinct_is_exact(
+    tmp_path, monkeypatch, explore_execution_context, dtype
+):
+    from haute import _frame_profile as module
+
+    if dtype == pl.Float64:
+        values = [0.0, -0.0, float("nan"), float("nan"), None, None, 1.0, 1.0]
+    elif dtype == pl.Categorical:
+        values = ["a", "a", "b", "b", None, None, "c", "c"]
+    else:
+        values = [[1], [1], [2, 3], [2, 3], None, None, [], []]
+    frame = pl.DataFrame(
+        {
+            "value": pl.Series(values, dtype=dtype),
+            "__haute_profile_bucket": [1, 1, 2, 2, 3, 3, 4, 4],
+        }
+    )
+    monkeypatch.setattr(module, "_PROFILE_DISTINCT_PARTITION_ROWS", 2, raising=False)
+    result = module._build_frame_stats(
+        frame.lazy(),
+        frame.schema,
+        execution_context=explore_execution_context,
+        scratch_directory=tmp_path,
+    )
+    assert (
+        result.overview_summary.data_quality.duplicate_row_count == frame.height - frame.n_unique()
+    )
+    parts = list(tmp_path.rglob("*.parquet"))
+    assert parts
+    for path in parts:
+        assert pl.read_parquet_schema(path) == frame.schema
+
+
+def test_partitioned_distinct_all_identical_and_disk_failure(
+    tmp_path, monkeypatch, explore_execution_context
+):
+    from haute import _frame_profile as module
+
+    monkeypatch.setattr(module, "_PROFILE_DISTINCT_PARTITION_ROWS", 2, raising=False)
+    frame = pl.DataFrame({"a": [1] * 20, "b": ["x"] * 20})
+    result = module._build_frame_stats(
+        frame.lazy(),
+        frame.schema,
+        execution_context=explore_execution_context,
+        scratch_directory=tmp_path / "success",
+    )
+    assert result.overview_summary.data_quality.duplicate_row_count == 19
+    from haute import _file_ops
+
+    def no_space(*_args, **_kwargs):
+        raise OSError("no disk space")
+
+    monkeypatch.setattr(_file_ops, "ensure_disk_headroom", no_space)
+    with pytest.raises(OSError, match="no disk space"):
+        module._build_frame_stats(
+            frame.lazy(),
+            frame.schema,
+            execution_context=explore_execution_context,
+            scratch_directory=tmp_path / "failure",
+        )

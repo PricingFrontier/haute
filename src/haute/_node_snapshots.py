@@ -31,7 +31,6 @@ import hashlib
 import json
 import os
 import shutil
-import threading
 import time
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
@@ -52,14 +51,10 @@ from haute._cache import (
 from haute._chunked_writes import part_name, part_paths, scan_parts
 from haute._env import int_env
 from haute._execution_context import ExecutionProfile
-from haute._file_lock import _acquire_file_lock, _release_file_lock
-from haute._file_ops import atomic_write_text, remove_tree
-from haute._json_shred._publication import (
-    _assert_cache_path_ancestors_plain,
-    _open_cache_lock_file,
-)
+from haute._file_ops import atomic_write_text, ensure_disk_headroom, remove_tree
 from haute._logging import get_logger
 from haute._source_cache import (
+    _LEASE_PREFIX,
     INPUT_CACHE_MAX_BYTES_VARIABLE,
     INPUT_CACHE_MAX_GENERATIONS_VARIABLE,
     NODE_OUTPUT_PROVIDER,
@@ -74,6 +69,7 @@ from haute._source_cache import (
     SourceCacheQuotaExceededError,
     SourceCacheStore,
     _ensure_identity_marker,
+    _StoreFileLock,
     _validate_generation_id,
     _validate_staging_token,
     _verification_key,
@@ -97,11 +93,6 @@ NODE_SNAPSHOT_MAX_BYTES_VARIABLE = "HAUTE_NODE_SNAPSHOT_MAX_BYTES"
 NODE_SNAPSHOT_MAX_GENERATIONS_VARIABLE = "HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS"
 _SLOT_INDEX_SCHEMA_VERSION = 1
 _LAST_USED_UPDATE_INTERVAL_SECONDS = 60.0
-# Lease markers sit directly in the generation directory under short names:
-# identity digest, generation id, and marker together must stay inside the
-# traditional Windows path limit beneath long temporary roots.
-_LEASE_PREFIX = ".lease-"
-_TOKEN_LENGTH = 12
 _RETIRED_PREFIX = ".retired-"
 
 Retention = Literal["pinned", "automatic"]
@@ -758,80 +749,6 @@ class NodeSnapshotPublication:
         self.close()
 
 
-class _StoreFileLock:
-    """Thread-reentrant, cross-process exclusive lock on one plain lock file."""
-
-    def __init__(self, path: Path) -> None:
-        self._path = path
-        self._thread_lock = threading.RLock()
-        self._depth = 0
-        self._handle: Any | None = None
-
-    def __enter__(self) -> _StoreFileLock:
-        self._thread_lock.acquire()
-        if self._depth:
-            self._depth += 1
-            return self
-        handle: Any | None = None
-        try:
-            _assert_cache_path_ancestors_plain(self._path)
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            handle = _open_cache_lock_file(self._path)
-            handle.seek(0, os.SEEK_END)
-            if handle.tell() == 0:
-                handle.write(b"\0")
-                handle.flush()
-            _acquire_file_lock(handle)
-            self._handle = handle
-            self._depth = 1
-            return self
-        except BaseException:
-            if handle is not None:
-                handle.close()
-            self._thread_lock.release()
-            raise
-
-    def __exit__(self, *exc_info: object) -> None:
-        try:
-            self._depth -= 1
-            if self._depth:
-                return
-            handle, self._handle = self._handle, None
-            if handle is None:
-                raise RuntimeError("node snapshot lock lost its file handle")
-            try:
-                _release_file_lock(handle)
-            finally:
-                handle.close()
-        finally:
-            self._thread_lock.release()
-
-
-@dataclass(slots=True)
-class _NodeSnapshotCoordination:
-    """Cross-process locks and this process's lease-owner token for one store root."""
-
-    lease_lock: _StoreFileLock
-    guard: threading.Lock = field(default_factory=threading.Lock)
-    publication_locks: dict[str, _StoreFileLock] = field(default_factory=dict)
-    token: str | None = None
-    token_handle: Any | None = None
-    # Retired directories are swept once per process per root, not on every
-    # store construction: the sweep globs the whole store, and a preview builds
-    # several stores while nothing between them can retire anything.
-    retired_cleaned: bool = False
-
-
-_COORDINATION_GUARD = threading.Lock()
-_COORDINATION: dict[tuple[Path, int], _NodeSnapshotCoordination] = {}
-
-
-def _is_token(value: str) -> bool:
-    return len(value) == _TOKEN_LENGTH and all(
-        character in "0123456789abcdef" for character in value
-    )
-
-
 def _is_identity_digest(value: str) -> bool:
     return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
@@ -880,21 +797,10 @@ class NodeSnapshotStore(SourceCacheStore):
         ):
             raise ValueError("source-cache node_output_max_generations must be a positive integer")
         self.node_output_max_generations = node_output_max_generations
-        self._locks_dir = self.inputs_root / ".locks"
-        self._processes_dir = self.inputs_root / ".processes"
         self._slots_dir = self.inputs_root / ".node-slots"
-        key = (self.inputs_root.resolve(), os.getpid())
-        with _COORDINATION_GUARD:
-            coordination = _COORDINATION.get(key)
-            if coordination is None:
-                coordination = _NodeSnapshotCoordination(
-                    lease_lock=_StoreFileLock(self._locks_dir / "leases.lock")
-                )
-                _COORDINATION[key] = coordination
-        self._coordination = coordination
-        with coordination.guard:
-            already_cleaned = coordination.retired_cleaned
-            coordination.retired_cleaned = True
+        with self._coordination.guard:
+            already_cleaned = self._coordination.retired_cleaned
+            self._coordination.retired_cleaned = True
         if not already_cleaned:
             self._cleanup_retired()
 
@@ -1081,84 +987,6 @@ class NodeSnapshotStore(SourceCacheStore):
             if retired.is_dir() and not retired.is_symlink():
                 shutil.rmtree(retired, ignore_errors=True)
 
-    # --------------------------------------------------------- process tokens
-
-    def _own_token(self) -> str:
-        coordination = self._coordination
-        with coordination.guard:
-            if coordination.token is None:
-                token = uuid.uuid4().hex[:_TOKEN_LENGTH]
-                path = self._processes_dir / f"{token}.lock"
-                _assert_cache_path_ancestors_plain(path)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                handle = _open_cache_lock_file(path)
-                try:
-                    handle.write(b"\0")
-                    handle.flush()
-                    if not _acquire_file_lock(handle, blocking=False):
-                        raise RuntimeError("a fresh lease-owner token file is already locked")
-                except BaseException:
-                    handle.close()
-                    raise
-                # The handle stays open, and its lock held, for the life of the process.
-                coordination.token = token
-                coordination.token_handle = handle
-            return coordination.token
-
-    def _token_alive(self, token: str) -> bool:
-        if token == self._coordination.token:
-            return True
-        if not _is_token(token):
-            return False
-        path = self._processes_dir / f"{token}.lock"
-        if not path.exists():
-            return False
-        handle = _open_cache_lock_file(path)
-        try:
-            if not _acquire_file_lock(handle, blocking=False):
-                return True
-            _release_file_lock(handle)
-        finally:
-            handle.close()
-        with contextlib.suppress(OSError):
-            path.unlink()
-        return False
-
-    def _in_process_lease_count(self, identity_digest: str, generation_id: str) -> int:
-        with self._lock:
-            return self._leases.get((identity_digest, generation_id), 0)
-
-    def _has_live_holders_locked(self, generation_dir: Path) -> bool:
-        """Whether any live process leases *generation_dir*. Caller holds the lease lock."""
-        try:
-            markers = tuple(
-                entry for entry in generation_dir.iterdir() if entry.name.startswith(_LEASE_PREFIX)
-            )
-        except FileNotFoundError:
-            return False
-        identity_digest = generation_dir.parent.parent.name
-        generation_id = generation_dir.name
-        live = False
-        own = self._coordination.token
-        for marker in markers:
-            token = marker.name.removeprefix(_LEASE_PREFIX)
-            if token == own:
-                if self._in_process_lease_count(identity_digest, generation_id) > 0:
-                    live = True
-                else:
-                    marker.unlink(missing_ok=True)
-                continue
-            if self._token_alive(token):
-                live = True
-                continue
-            marker.unlink(missing_ok=True)
-            logger.info(
-                "node_snapshot_dead_lease_marker_removed",
-                identity_digest=identity_digest,
-                generation_id=generation_id,
-            )
-        return live
-
     # ------------------------------------------------------------- pointers
 
     def _current_generation_id(self, identity_digest: str) -> str | None:
@@ -1309,7 +1137,7 @@ class NodeSnapshotStore(SourceCacheStore):
         current = self._current_generation_id(identity.digest)
         retention: Retention = (
             "pinned"
-            if pinned_identity == identity.digest and current == generation.generation_id
+            if pinned_identity is not None and current == generation.generation_id
             else "automatic"
         )
         return NodeSnapshotGeneration(
@@ -1644,6 +1472,7 @@ class NodeSnapshotStore(SourceCacheStore):
         identity_dir.mkdir(parents=True, exist_ok=True)
         _ensure_identity_marker(identity_dir, identity.provider)
         staging = identity_dir / f".staging-{token}"
+        ensure_disk_headroom(identity_dir)
         staging.mkdir()
         return NodeSnapshotArtifact(identity, staging)
 
@@ -1803,11 +1632,22 @@ class NodeSnapshotStore(SourceCacheStore):
                         )
                     )
                     final_dir = self._generation_dir(identity.digest, generation_id)
-                    final_dir.parent.mkdir(parents=True, exist_ok=True)
-                    artifact.directory.replace(final_dir)
-                    artifact._mark_published()
+                    slot, _signature = NodeSnapshotSlot.from_identity(identity)
+                    index = self._read_slot_index(slot)
+                    previous_pin = index["pinned_identity"]
+                    index["identities"][identity.digest] = dict(identity.descriptor)
+                    if explicit or previous_pin is not None:
+                        index["pinned_identity"] = identity.digest
+                    # Register the candidate and its retention before exposing
+                    # any generation. A crash may leave it indexed/unpointed;
+                    # Clear can still find it, and the slot's pin protects the
+                    # previous current data until the pointer commits.
+                    self._write_slot_index_locked(slot, index)
                     key = (identity.digest, generation_id)
                     try:
+                        final_dir.parent.mkdir(parents=True, exist_ok=True)
+                        artifact.directory.replace(final_dir)
+                        artifact._mark_published()
                         published_stats = tuple(
                             (final_dir / part.name).stat() for part in metadata.parts
                         )
@@ -1826,20 +1666,22 @@ class NodeSnapshotStore(SourceCacheStore):
                         with self._lock:
                             self._leases[key] = self._leases.get(key, 0) + 1
                         self._write_pointer_locked(identity, generation_id)
-                    except BaseException:
+                    except BaseException as exc:
                         with self._lock:
                             if self._leases.get(key):
                                 del self._leases[key]
                         self._forget_verified(identity.digest, generation_id)
                         shutil.rmtree(final_dir, ignore_errors=True)
+                        index["pinned_identity"] = previous_pin
+                        try:
+                            self._write_slot_index_locked(slot, index)
+                        except OSError as rollback_error:
+                            # Keep the candidate indexed even if restoring the
+                            # pin fails. Retaining too much is safe; stranding
+                            # files or weakening an existing pin is not.
+                            exc.add_note(f"slot retention rollback failed: {rollback_error}")
                         raise
                     try:
-                        slot, _signature = NodeSnapshotSlot.from_identity(identity)
-                        index = self._read_slot_index(slot)
-                        index["identities"][identity.digest] = dict(identity.descriptor)
-                        if explicit or index["pinned_identity"] is not None:
-                            # A pin belongs to the slot and passes to its newest publication.
-                            index["pinned_identity"] = identity.digest
                         retired.extend(self._retire_superseded_signatures_locked(index, identity))
                         self._write_slot_index_locked(slot, index)
                         if superseded_id is not None and superseded_id != generation_id:
@@ -1892,13 +1734,30 @@ class NodeSnapshotStore(SourceCacheStore):
         without evicting anything when even full eviction cannot make room.
         """
         count, size = self._bucket_usage("node_output", exclude=artifact.directory)
-        if superseded_id is not None and classify_identity_marker(self.identity_path(identity)) in {
-            "node_output",
-            "unknown",
-        }:
-            superseded_dir = self._generation_dir(identity.digest, superseded_id)
-            if superseded_dir.is_dir() and not self._has_live_holders_locked(superseded_dir):
-                size -= generation_bytes(superseded_dir)
+        replacements: set[tuple[str, str]] = set()
+        slot, _signature = NodeSnapshotSlot.from_identity(identity)
+        digests = set(self._read_slot_index(slot)["identities"]) | {identity.digest}
+        for digest in digests:
+            identity_dir = self.inputs_root / digest
+            if classify_identity_marker(identity_dir) not in {"node_output", "unknown"}:
+                continue
+            try:
+                generations = tuple((identity_dir / "generations").iterdir())
+            except FileNotFoundError:
+                continue
+            for generation_dir in generations:
+                if digest == identity.digest and generation_dir.name != superseded_id:
+                    continue
+                if (
+                    generation_dir.is_symlink()
+                    or not generation_dir.is_dir()
+                    or self._has_live_holders_locked(generation_dir)
+                ):
+                    continue
+                # These generations retire only after the new pointer commits.
+                # Never evict them early or count their bytes twice.
+                replacements.add((digest, generation_dir.name))
+                size -= generation_bytes(generation_dir)
                 count -= 1
         projected_size = size + new_size_bytes
         projected_count = count + 1
@@ -1908,7 +1767,13 @@ class NodeSnapshotStore(SourceCacheStore):
         ):
             return []
 
-        candidates = self._eviction_candidates_locked(exclude=(identity.digest, superseded_id))
+        candidates = [
+            candidate
+            for candidate in self._eviction_candidates_locked(
+                exclude=(identity.digest, superseded_id)
+            )
+            if (candidate[0], candidate[1]) not in replacements
+        ]
         reclaimable_size = sum(candidate[2] for candidate in candidates)
         if (
             projected_size - reclaimable_size > self.node_output_max_bytes
@@ -2010,7 +1875,7 @@ class NodeSnapshotStore(SourceCacheStore):
                         pinned_by_slot[slot_digest] = self._pinned_identity_by_slot_digest(
                             slot_digest
                         )
-                    if pinned_by_slot[slot_digest] == identity_dir.name:
+                    if pinned_by_slot[slot_digest] is not None:
                         continue
                 if self._in_process_lease_count(identity_dir.name, generation_dir.name):
                     continue

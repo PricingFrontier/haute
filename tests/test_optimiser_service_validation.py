@@ -20,6 +20,7 @@ import contextlib
 import json
 import math
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -732,3 +733,132 @@ def test_online_solver_value_error_is_wrapped_as_solver_execution_error() -> Non
             quote_grid=SimpleNamespace(),
             config={"objective": "expected_income", "constraints": {}},
         )
+
+
+def test_setup_chunk_size_uses_decoded_dictionary_width(tmp_path, monkeypatch) -> None:
+    from haute.routes import _optimiser_service as service
+
+    path = tmp_path / "dictionary.parquet"
+    pl.DataFrame({"label": ["x" * 4096] * 2000}).write_parquet(path)
+    monkeypatch.setattr(service, "_optimiser_setup_target_chunk_bytes", lambda: 64 * 1024)
+    decision = service._chunk_size_decision_for_parquet({}, path, source="ratebook_factors")
+    assert decision.chunk_size <= 16
+    assert decision.provenance["estimated_row_bytes"] >= 4096
+
+
+def test_grid_reuses_plain_projected_parquet_without_removing_it(tmp_path, monkeypatch) -> None:
+    import price_contour
+
+    from haute.routes import _optimiser_service as service_module
+    from haute.routes._job_store import JobStore
+
+    path = tmp_path / "prepared.parquet"
+    pl.DataFrame(
+        {
+            "quote_id": [1, 2],
+            "scenario_index": [0, 0],
+            "scenario_value": [1.0, 1.0],
+            "income": [10.0, 20.0],
+            "unused": [3, 4],
+        }
+    ).write_parquet(path)
+    frame = pl.scan_parquet(path).select("quote_id", "scenario_index", "scenario_value", "income")
+    store = JobStore()
+    job = store.create_job({"status": "running"})
+    service = service_module.OptimiserSolveService(store)
+    observed = []
+    monkeypatch.setattr(
+        service_module, "bounded_sink", lambda *_a, **_k: pytest.fail("rewrote borrowed input")
+    )
+    monkeypatch.setattr(
+        price_contour,
+        "build_grid_from_parquet_chunked",
+        lambda path, *_a, **_k: observed.append(Path(path)) or "grid",
+    )
+    assert (
+        service._build_grid(frame, [], {"objective": "income", "chunk_size": 2}, "opt", job)
+        == "grid"
+    )
+    assert observed == [path]
+    assert path.exists()
+
+
+@pytest.mark.parametrize("allowance, accepted", [(32 * 1024**2, False), (128 * 1024**2, True)])
+def test_grid_admission_precedes_library_and_keeps_borrowed_input(
+    tmp_path, monkeypatch, allowance, accepted
+):
+    import price_contour
+
+    from haute._execution_admission import ExecutionAdmissionError
+    from haute._execution_context import ExecutionContext, ExecutionProfile
+
+    path = tmp_path / "prepared.parquet"
+    pl.DataFrame(
+        {
+            "quote_id": [1, 2],
+            "scenario_index": [0, 0],
+            "scenario_value": [1.0, 1.0],
+            "income": [10.0, 20.0],
+        }
+    ).write_parquet(path)
+    store = JobStore()
+    job = store.create_job({"status": "running"})
+    service = OptimiserSolveService(store)
+    called = []
+    monkeypatch.setattr(
+        price_contour,
+        "build_grid_from_parquet_chunked",
+        lambda *_a, **_k: called.append(True) or "grid",
+    )
+    context = ExecutionContext(
+        operation="grid_test",
+        profile=ExecutionProfile.OPTIMISER_SETUP,
+        memory_limit_bytes=allowance,
+        memory_baseline_bytes=100,
+        memory_sampler=lambda: 100,
+    )
+    if accepted:
+        assert (
+            service._build_grid(
+                pl.scan_parquet(path),
+                [],
+                {"objective": "income", "chunk_size": 2},
+                "opt",
+                job,
+                execution_context=context,
+            )
+            == "grid"
+        )
+        assert called == [True]
+    else:
+        with pytest.raises(ExecutionAdmissionError, match="resident optimiser grid"):
+            service._build_grid(
+                pl.scan_parquet(path),
+                [],
+                {"objective": "income", "chunk_size": 2},
+                "opt",
+                job,
+                execution_context=context,
+            )
+        assert called == []
+    assert path.is_file()
+
+
+@pytest.mark.parametrize("change", ["filter", "slice", "derived", "row_index", "multipart"])
+def test_grid_borrows_only_unmodified_single_parquet(tmp_path, change):
+    from haute.routes._optimiser_service import _projected_parquet_input_path
+
+    path = tmp_path / "part.parquet"
+    pl.DataFrame({"a": [1, 2], "b": [3, 4]}).write_parquet(path)
+    frame = pl.scan_parquet(path)
+    if change == "filter":
+        frame = frame.filter(pl.col("a") == 1)
+    elif change == "slice":
+        frame = frame.head(1)
+    elif change == "derived":
+        frame = frame.with_columns((pl.col("a") + 1).alias("a"))
+    elif change == "row_index":
+        frame = pl.scan_parquet(path, row_index_name="idx")
+    else:
+        frame = pl.scan_parquet([path, path])
+    assert _projected_parquet_input_path(frame) is None

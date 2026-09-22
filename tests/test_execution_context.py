@@ -64,6 +64,39 @@ def _clear_execution_memory_env(monkeypatch: pytest.MonkeyPatch) -> None:
     admission_mod._clear_in_flight_reservations_for_tests()
 
 
+def test_remaining_memory_bytes_samples_once_and_enforces_the_budget() -> None:
+    samples = Mock(return_value=75)
+    context = ExecutionContext(
+        operation="remaining",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_limit_bytes=100,
+        memory_sampler=samples,
+    )
+
+    assert context.remaining_memory_bytes() == 25
+    samples.assert_called_once_with()
+
+
+def test_remaining_memory_bytes_preserves_memory_sampler_failures() -> None:
+    unavailable = ExecutionContext(
+        operation="remaining-unavailable",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_limit_bytes=100,
+        memory_sampler=lambda: None,
+    )
+    over_budget = ExecutionContext(
+        operation="remaining-over-budget",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_limit_bytes=100,
+        memory_sampler=lambda: 101,
+    )
+
+    with pytest.raises(ExecutionMemoryLimitExceededError, match="sampler became unavailable"):
+        unavailable.remaining_memory_bytes()
+    with pytest.raises(ExecutionMemoryLimitExceededError, match="exceeded its memory budget"):
+        over_budget.remaining_memory_bytes()
+
+
 def test_windows_current_rss_bytes_returns_none_when_windll_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -622,10 +622,102 @@ class _ChunkSizeDecision:
     provenance: dict[str, int | str | None]
 
 
+def _projected_parquet_input_path(frame: Any) -> Path | None:
+    """Borrow only an unchanged single-file scan under the caller's input lease."""
+    import json
+
+    import polars as pl
+
+    from haute._chunked_writes import _SUPPORTED_IR_MAJOR
+
+    if not isinstance(frame, pl.LazyFrame):
+        return None
+    try:
+        traverser = frame._ldf.visit()
+        if traverser.version()[0] != _SUPPORTED_IR_MAJOR:
+            return None
+        node = traverser.view_current_node()
+        if type(node).__name__ != "Scan" or node.scan_type[0] != "parquet":
+            return None
+        options = node.file_options
+        if (
+            len(node.paths) != 1
+            or node.predicate is not None
+            or node.hive_parts is not None
+            or options.n_rows is not None
+            or options.row_index is not None
+            or options.include_file_paths is not None
+            or options.column_mapping is not None
+            or options.deletion_files is not None
+            or json.loads(node.scan_type[1]).get("schema") is not None
+        ):
+            return None
+        path = Path(node.paths[0])
+        if not path.is_file():
+            return None
+        physical_schema = pl.read_parquet_schema(path)
+        if any(
+            physical_schema.get(name) != dtype for name, dtype in frame.collect_schema().items()
+        ):
+            return None
+        return path
+    except (AttributeError, NotImplementedError):
+        # A changed optimiser IR loses this optional reuse path. Actual data
+        # or filesystem errors still propagate through the ordinary setup path.
+        return None
+
+
 def _positive_int(value: object, *, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{field} must be a positive integer.")
     return int(value)
+
+
+def _admit_resident_grid(
+    path: Path,
+    columns: list[str],
+    quote_id: str,
+    constraint_count: int,
+    chunk_rows: int,
+    execution_context: ExecutionContext | None,
+) -> None:
+    if execution_context is None or execution_context.remaining_memory_bytes() is None:
+        return
+    import polars as pl
+
+    from haute._polars_utils import cancellable_streaming_collect
+    from haute._ram_estimate import (
+        decoded_frame_row_width_bytes,
+        estimate_optimiser_grid_peak_bytes,
+    )
+
+    row_count = int(read_parquet_metadata(path)["row_count"])
+    sample = cancellable_streaming_collect(
+        pl.scan_parquet(path).select(list(dict.fromkeys(columns))).head(512),
+        execution_context=execution_context,
+    )
+    peak_bytes = estimate_optimiser_grid_peak_bytes(
+        row_count=row_count,
+        constraint_count=constraint_count,
+        quote_id_width_bytes=decoded_frame_row_width_bytes(
+            sample.select(pl.col(quote_id).cast(pl.String))
+        ),
+        input_row_width_bytes=decoded_frame_row_width_bytes(sample),
+        chunk_rows=chunk_rows,
+    )
+    del sample
+    remaining = execution_context.remaining_memory_bytes()
+    assert remaining is not None
+    if peak_bytes > remaining:
+        raise ExecutionAdmissionError(
+            execution_context.operation,
+            profile=execution_context.profile,
+            memory_limit_bytes=execution_context.memory_limit_bytes or remaining,
+            rss_at_admission_bytes=execution_context.memory_sampler(),
+            rss_limit_bytes=execution_context.rss_limit_bytes,
+            reason=f"resident optimiser grid needs an estimated {peak_bytes} bytes; "
+            f"{remaining} bytes remain in the execution allowance",
+        )
 
 
 def _optional_positive_int(value: object, *, field: str) -> int | None:
@@ -664,6 +756,10 @@ def _chunk_size_decision_for_parquet(
     *,
     source: str,
 ) -> _ChunkSizeDecision:
+    import polars as pl
+
+    from haute._ram_estimate import decoded_frame_row_width_bytes
+
     explicit_chunk_size = _explicit_chunk_size_from_config(config)
     if explicit_chunk_size is not None:
         return _ChunkSizeDecision(
@@ -685,7 +781,12 @@ def _chunk_size_decision_for_parquet(
     row_bytes_basis = int(metadata.get("uncompressed_size_bytes") or metadata["size_bytes"])
     row_bytes_basis = _positive_int(row_bytes_basis, field="parquet byte size")
     target_chunk_bytes = _optimiser_setup_target_chunk_bytes()
-    estimated_row_bytes = max(1, math.ceil(row_bytes_basis / row_count))
+    sample = streaming_collect(pl.scan_parquet(parquet_path).head(512))
+    estimated_row_bytes = max(
+        1,
+        math.ceil(row_bytes_basis / row_count),
+        math.ceil(decoded_frame_row_width_bytes(sample)),
+    )
     chunk_size = max(1, target_chunk_bytes // estimated_row_bytes)
     return _ChunkSizeDecision(
         chunk_size=chunk_size,
@@ -4905,7 +5006,7 @@ class OptimiserSolveService:
             }
             for c in constraint_cols:
                 cast_map[c] = pl.Float32()
-            cast_exprs = [pl.col(c).cast(t) for c, t in cast_map.items()]
+            cast_exprs = [pl.col(c).cast(t) for c, t in cast_map.items() if schema[c] != t]
             if qid_dtype == pl.String:
                 cast_exprs.append(pl.col(qid_col).cast(pl.Categorical))
 
@@ -5186,19 +5287,26 @@ class OptimiserSolveService:
         mult_col = config.get("scenario_value", "scenario_value")
         step_col = config.get("scenario_index", "scenario_index")
 
-        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".parquet")
-        os.close(tmp_fd)
+        borrowed_path: Path | None = None
+        tmp_path: str | None = None
         try:
+            borrowed_path = _projected_parquet_input_path(scored_lf)
+            if borrowed_path is None:
+                tmp_fd, tmp_path = tempfile.mkstemp(suffix=".parquet")
+                os.close(tmp_fd)
+            else:
+                tmp_path = str(borrowed_path)
             with _execution_stage(
                 execution_context,
                 "optimiser_build_grid",
                 node_id=node_id,
             ):
-                bounded_sink(
-                    scored_lf,
-                    tmp_path,
-                    streaming_chunk_size=streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE,
-                )
+                if borrowed_path is None:
+                    bounded_sink(
+                        scored_lf,
+                        tmp_path,
+                        streaming_chunk_size=streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE,
+                    )
                 del scored_lf
 
                 try:
@@ -5219,6 +5327,15 @@ class OptimiserSolveService:
                 chunk_size = chunk_decision.chunk_size
                 self._record_setup_chunking(job_id, "optimiser_grid", chunk_decision.provenance)
 
+                _admit_resident_grid(
+                    Path(tmp_path),
+                    [qid_col, step_col, mult_col, objective, *constraint_cols],
+                    qid_col,
+                    len(constraint_cols),
+                    chunk_size,
+                    execution_context,
+                )
+
                 build_kwargs = {
                     "quote_id": qid_col,
                     "scenario_index": step_col,
@@ -5233,7 +5350,11 @@ class OptimiserSolveService:
                 )
         except HTTPException:
             raise
-        except (ExecutionCancelledError, ExecutionMemoryLimitExceededError):
+        except (
+            ExecutionAdmissionError,
+            ExecutionCancelledError,
+            ExecutionMemoryLimitExceededError,
+        ):
             raise
         except PUBLIC_CONTRACT_ERROR_TYPES as exc:
             self._record_setup_failure(
@@ -5270,7 +5391,7 @@ class OptimiserSolveService:
             )
             raise HTTPException(status_code=500, detail=detail) from exc
         finally:
-            if Path(tmp_path).exists():
+            if borrowed_path is None and tmp_path is not None and Path(tmp_path).exists():
                 try:
                     os.unlink(tmp_path)
                 except Exception as cleanup_exc:

@@ -1008,3 +1008,21 @@ and dirty fingerprints continue to strip these server-owned identities.
 The repair dialog loads only when a recovery action is opened. Its local
 Suspense boundary leaves the mounted canvas intact; recovery does not increase
 the initial JavaScript budget.
+### Cache usage loading
+
+The toolbar loads the cache-usage modal on demand when Usage is opened. Its code
+is excluded from the initial JavaScript bundle; its existing loading, error,
+refresh and close behavior is unchanged once mounted. This follows the app's
+existing local Suspense convention for user-opened dialogs.
+
+### Profile recovery after document/store invalidation
+
+The shared profile hook deduplicates only an outstanding request for the current
+slot, data version and node-data store epoch. Resetting the shared store must let
+a still-mounted consumer obtain that profile again, even when the persisted data
+version is unchanged. A discarded response from an older document fence or epoch
+cannot leave the consumer permanently marked as already requested, publish an old
+job, or report an obsolete failure. Completed profiles and active jobs in the
+shared store still suppress duplicate work; a recorded current failure still
+requires the existing explicit retry. This preserves automatic pivot calculation
+after saving presentation/configuration edits and returning to cached data.
