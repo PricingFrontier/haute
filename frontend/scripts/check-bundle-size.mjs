@@ -45,7 +45,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // rating editors' own reads, and the execution-diagnostics indicator — almost
 // all of it lazy panel code. The complete production bundle is 1,400.2 KiB;
 // 1,410 KiB restores about 10 KiB of aggregate headroom.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1410
+// The modelling UI redesign (validation workspace, allocation preview, run
+// summary, column selector and pane readiness) is lazy modelling-panel code and
+// brings the complete production bundle to 1,412.8 KiB; 1,423 KiB restores
+// about 10 KiB of aggregate headroom with the startup and vendor caps unchanged.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1423
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
