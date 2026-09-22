@@ -188,3 +188,67 @@ def test_disk_refusal_on_second_score_batch_cleans_output_and_releases_input(
     assert all(not path.exists() for path in staged)
     paths[0].unlink()
     assert not paths[0].exists()
+
+
+def test_staged_scoring_uses_decoded_width_for_arrow_batch_rows(tmp_path, monkeypatch):
+    from haute._execution_context import ExecutionContext, ExecutionProfile
+
+    path = tmp_path / "wide.parquet"
+    pl.DataFrame(
+        {"feature_a": [1.0] * 50, "feature_b": [2.0] * 50, "wide": ["x" * 4096] * 50}
+    ).write_parquet(path)
+    context = ExecutionContext(operation="scoring_width", profile=ExecutionProfile.LAZY_SINK)
+    monkeypatch.setattr(ExecutionContext, "remaining_memory_bytes", lambda _self: 512 * 1024)
+    seen = []
+
+    class Model(_SumModel):
+        def predict(self, frame):
+            seen.append(len(frame))
+            return super().predict(frame)
+
+    with context.stage("score"):
+        result = scorer._score_batched_unified(
+            Model(),
+            pl.scan_parquet(path).filter(pl.col("feature_a") > 0),
+            ["feature_a", "feature_b"],
+            frozenset(),
+            "pyfunc",
+            "regression",
+            "prediction",
+        ).collect()
+    assert result["prediction"].to_list() == [3.0] * 50
+    assert seen and max(seen) <= 16
+
+
+@pytest.mark.parametrize("derived", [False, True])
+def test_scoring_cancellation_after_prediction_removes_output(tmp_path, monkeypatch, derived):
+    from haute._execution_context import ExecutionCancelledError, ExecutionContext, ExecutionProfile
+
+    lf, paths = _scan(tmp_path, multipart=False, empty=False)
+    if derived:
+        lf = lf.filter(pl.col("feature_a") > 0)
+    context = ExecutionContext(operation="score_cancel", profile=ExecutionProfile.LAZY_SINK)
+    monkeypatch.setattr(scorer, "_SCORE_BATCH_SIZE", 2)
+
+    class Model(_SumModel):
+        def predict(self, frame):
+            prediction = super().predict(frame)
+            context.cancel()
+            return prediction
+
+    model = Model()
+    output = tmp_path / "cancelled.parquet"
+    with pytest.raises(ExecutionCancelledError), context.stage("score"):
+        with scorer.model_score_output_destination(output):
+            scorer._score_batched_unified(
+                model,
+                lf,
+                ["feature_a", "feature_b"],
+                frozenset(),
+                "pyfunc",
+                "regression",
+                "prediction",
+            )
+    assert model.calls == 1
+    assert not output.exists()
+    assert all(path.is_file() for path in paths)

@@ -1570,7 +1570,12 @@ separately in a fresh-process measurement.
 When both validation and final-test partitions exist, validation metrics are
 computed and their frame/prediction allocations released before final-test
 diagnostics are materialised; returned primary metrics remain validation metrics.
-# Batch scoring from existing snapshot scans
+Diagnostic prediction uses the existing bounded batch reader with a 65,536-row
+ceiling and fills one output array in order. Feature/offset semantics, prediction
+dtype/trailing dimensions and exact metrics are preserved. Invalid output row
+counts or changing shapes/dtypes fail clearly; cancellation closes the reader.
+
+### Batch scoring from existing snapshot scans
 
 When the scoring input is proven sliceable by the existing Polars classifier,
 batch scoring consumes projected slices of that LazyFrame directly. It keeps
@@ -1585,3 +1590,8 @@ temporary-file path so an upstream computation is executed only once. Both
 paths write through the current output destination, cancellation and cleanup
 contracts. This removes a complete input rewrite for reusable scans without
 introducing a dataset interface or changing scoring semantics.
+
+Both direct scans and owned adapter-file scoring choose batch rows from decoded
+input width and the current execution allowance, retaining the scoring row
+ceiling. Dictionary compression must not bypass this rule on the Arrow reader
+used for staged input.

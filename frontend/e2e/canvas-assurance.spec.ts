@@ -64,7 +64,9 @@ async function expectCanvasScreenshot(
   locator: Locator,
   name: string,
 ): Promise<void> {
-  await expect(locator).toHaveScreenshot(name, {
+  // Keep the journey running so CI captures every viewport mismatch. Each
+  // mismatch still fails the test; functional assertions remain immediate.
+  await expect.soft(locator).toHaveScreenshot(name, {
     animations: "disabled",
     caret: "hide",
     maxDiffPixelRatio: 0.02,

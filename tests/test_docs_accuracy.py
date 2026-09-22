@@ -146,7 +146,17 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "optimiser",
     "pipeline-config",
 )
-_ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = ()
+_ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
+    "pipeline-cache-memory-design.md",
+    "pr-227-cache-evidence.md",
+    "pr-227-ci-implementation-evidence.md",
+    "pr-227-fable-5.1-review.md",
+    "pr-227-fable-reconciliation.md",
+    "pr-227-fable-review-request.md",
+    "pr-227-implementation-progress.md",
+    "pr-227-materialisation-evidence.md",
+    "pr-227-review.md",
+)
 _COMPONENT_PACKAGE_HEADING = re.compile(
     r"^###\s+([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\b",
     flags=re.MULTILINE,

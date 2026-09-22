@@ -1182,8 +1182,12 @@ class SourceCacheStore:
                     break
             try:
                 generation = self._metadata_from_path(identity, generation_id)
-            except BaseException:
+            except BaseException as exc:
                 self._release_input_lease(identity, generation_id)
+                if isinstance(exc, SourceCacheLegacyLayoutError):
+                    raise FileNotFoundError(
+                        f"source-cache generation {generation_id} uses the retired layout"
+                    ) from exc
                 raise
         try:
             yield generation

@@ -401,9 +401,7 @@ test.describe("Explore cached field pivot journey", () => {
     expect(failureMessage).not.toMatch(/File\s+"/i)
 
     // The previous generation is still there, now stale for this code
-    await expect
-      .poll(() => reCacheButton.evaluate((el) => el.style.background))
-      .toContain("var(--warning-strong)")
+    await expect(page.getByTestId("data-cache-status")).toHaveText("Cache out of date")
     await expect(page.getByTestId("explore-preview-frame")).toContainText(/cache stale/i)
 
     // Restore code and Re-cache: report is fresh again

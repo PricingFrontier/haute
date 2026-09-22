@@ -46,6 +46,12 @@ The [implementation evidence](pr-227-implementation-progress.md) records the
 subsequent fixes, reproducible before/after memory and runtime measurements,
 targeted tests, and remaining CI verification for the focused plan.
 
+The supporting inventories record [cache lifecycle evidence](pr-227-cache-evidence.md),
+[materialisation evidence](pr-227-materialisation-evidence.md), and
+[CI implementation evidence](pr-227-ci-implementation-evidence.md). The
+[Fable review request](pr-227-fable-review-request.md) preserves the scope and
+instructions supplied for that independent review.
+
 ## Working protocol
 
 1. Pick one package from its owning component.

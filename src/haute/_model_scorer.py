@@ -19,7 +19,8 @@ import numpy as np
 import polars as pl
 
 from haute._cache import CacheConsumer, checked_cache_input_values
-from haute._chunked_writes import sliceable
+from haute._chunked_writes import _budgeted_rows, sliceable
+from haute._execution_context import current_execution_context
 from haute._file_ops import ensure_disk_headroom
 from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
@@ -1939,8 +1940,13 @@ def _batch_score_to_parquet(
         if isinstance(input_path, str):
             pf = reader = pq.ParquetFile(input_path)
             input_schema = pl.read_parquet_schema(input_path)
+            batch_rows, _, _ = _budgeted_rows(
+                _SCORE_BATCH_SIZE,
+                (pl.scan_parquet(input_path),),
+                execution_context=current_execution_context(),
+            )
             batches: Iterator[pl.DataFrame | pl.Series] = (
-                pl.from_arrow(batch) for batch in pf.iter_batches(batch_size=_SCORE_BATCH_SIZE)
+                pl.from_arrow(batch) for batch in pf.iter_batches(batch_size=batch_rows)
             )
             batch_context: AbstractContextManager[Iterator[pl.DataFrame | pl.Series]] = nullcontext(
                 batches
@@ -1952,8 +1958,11 @@ def _batch_score_to_parquet(
             )
         input_schema_names = list(input_schema)
         _require_offset_column(input_schema_names, offset_column)
+        execution_context = current_execution_context()
         with batch_context as input_batches:
             for chunk_raw in input_batches:
+                if execution_context is not None:
+                    execution_context.checkpoint(label="model_score_batch")
                 chunk = chunk_raw.to_frame() if isinstance(chunk_raw, pl.Series) else chunk_raw
                 feature_chunk = chunk.select(features)
                 _validate_runtime_categorical_values(feature_chunk, normalised_levels)
@@ -1992,6 +2001,8 @@ def _batch_score_to_parquet(
                     can_predict_proba=can_predict_proba,
                 )
                 table = chunk.to_arrow()
+                if execution_context is not None:
+                    execution_context.checkpoint(label="model_score_batch_write")
                 if writer is None:
                     writer = pq.ParquetWriter(
                         sink if sink is not None else out_path,

@@ -929,6 +929,11 @@ reader releases. Clear, replacement, quota reclamation and reconciliation check
 live holders under the shared lock before deleting or crediting a generation.
 Dead owner markers can be reclaimed; age alone never overrides a live marker.
 
+A current-generation lease preserves the ordinary open contract for retired
+layouts: they are absent (`FileNotFoundError`), so preparation can rebuild them.
+Failed validation releases its marker and local reference count before raising.
+Named-generation leases retain their existing generation-missing error contract.
+
 Keep the input retirement grace as an additional retention policy and preserve
 the supervised parent's retained-generation handoff. A held superseded generation
 can survive beyond grace or explicit Clear and stays readable until release;

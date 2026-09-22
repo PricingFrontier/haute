@@ -89,7 +89,13 @@ def worker(workspace: Path, case: str, rows: int) -> None:
     elif case == "grid":
         from price_contour import build_grid_from_parquet_chunked
     else:
-        from haute._frame_profile import _build_frame_stats
+        import haute._frame_profile as frame_profile
+
+        # Keep this historical allocation baseline on its original single-aggregation control.
+        frame_profile._PROFILE_DISTINCT_PARTITION_ROWS = max(
+            rows, frame_profile._PROFILE_DISTINCT_PARTITION_ROWS
+        )
+        _build_frame_stats = frame_profile._build_frame_stats
 
     gc.collect()
     baseline = current_rss_bytes()

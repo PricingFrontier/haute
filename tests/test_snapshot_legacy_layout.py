@@ -88,6 +88,9 @@ def test_a_single_file_input_snapshot_is_missing_and_rebuilt(tmp_path: Path) -> 
     with pytest.raises(FileNotFoundError), fresh_store.lease(identity):
         pass
 
+    assert fresh_store.leased_generation_ids(identity) == frozenset()
+    assert not list(retired.directory.glob(".lease-*"))
+
     rebuilt = fresh_store.build(identity, builder, context=_context())
 
     assert builder.calls == 2
@@ -151,6 +154,9 @@ def test_layout_2_generation_reads_as_absent(tmp_path: Path) -> None:
     assert fresh_store.status(identity).state == "missing"
     with pytest.raises(FileNotFoundError), fresh_store.lease(identity):
         pass
+
+    assert fresh_store.leased_generation_ids(identity) == frozenset()
+    assert not list(retired.directory.glob(".lease-*"))
 
     rebuilt = fresh_store.build(identity, builder, context=_context())
 

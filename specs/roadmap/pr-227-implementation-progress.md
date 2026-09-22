@@ -76,6 +76,19 @@ It preserves schema order, projection and empty-input semantics; complex input
 keeps its existing owned staging file. The affected scorer suites passed 159
 tests with one existing skip. Additional direct/multipart/derived input cases
 prove no borrowed input is deleted after prediction or disk failures.
+Staged-file scoring also sizes Arrow batches from decoded width and the execution
+allowance. Three further regressions cover dictionary-compressed wide values and
+cancellation immediately after prediction on both direct and staged input.
+
+`pr-227-consumer-io-benchmark.py/json` records 12 verified fresh-worker runs with
+two threads and 5 ms RSS sampling. For 500k scoring rows (eight Float32 input
+features and one Int64 identifier), single-file and multipart scans avoid the
+4,083,014-byte adapter written by the staged control. Single-file incremental
+peak was about 155 MiB versus 167–171 MiB staged. This small mock-predictor workload
+does **not** show a latency improvement: direct single-file scoring took
+0.810–0.847 seconds versus 0.728–0.758 seconds staged. Scalar result verification
+is outside the timer; RSS sampling includes it. The result establishes reduced
+I/O, not a general scoring speedup.
 
 Optimiser chunk sizing now considers decoded sample widths as well as Parquet
 page bytes. A dictionary regression previously chose 21,845 rows under a 64 KiB
@@ -87,6 +100,14 @@ the decoded sample and row count estimate the resident grid plus conversion,
 sorting and reader overlap; an oversized estimate raises the existing admission
 error. The conservative quote-ID allowance assumes up to one quote per row until
 the solver validates layout, so it can overestimate multi-scenario inputs.
+
+The consumer I/O measurement also exercises the real grid adapter at 500k rows,
+20 scenarios per quote and four constraints. An unchanged single-file scan takes
+0.067–0.068 seconds and writes no adapter; filtered/multipart scans retain one
+85,328-byte adapter and take 0.115–0.204 seconds. Incremental peak is about
+22–23 MiB direct and 62–65 MiB with the adapter. These are highly compressible
+fixtures measuring setup alone, without a solve or the preceding validation
+pipeline. Necessary type conversions can still require the adapter.
 
 Diagnostics compute and release validation quality before loading holdout,
 and predict through bounded batches into one final prediction array. Exact
@@ -140,3 +161,15 @@ PR CI, including browser, compatibility, mutation and full coverage gates,
 remains outstanding. These workload measurements do not guarantee bounded RAM
 for every arbitrary Polars plan; existing typed refusals and worker limits are
 still required.
+
+The first implementation CI run, `35725827590` at `ea200e90`, passed frontend,
+static/typing, performance, dependency-floor, optional-dependency, package and
+platform smoke checks. It found a current-generation lease regression for retired
+layouts; the correction restores `FileNotFoundError` and verifies marker/reference
+cleanup before rebuilding. Training seeding's exact recipe-call assertion now
+includes the bounded decoded-width sample while still proving zero upstream
+source calls and equal output. The roadmap inventory lists the dated review
+reports through its existing explicit allowlist. Browser follow-up repairs use
+the shared stale-status text and the visually inspected narrow Banding artifact.
+These repairs require a subsequent CI run; this paragraph does not mark the
+failed run as passing.

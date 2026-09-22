@@ -375,7 +375,9 @@ def test_second_training_run_seeds_first_runs_captures(
     assert second.captures == {}
     assert second.calls["src"] == 0
     assert second.calls["other"] == 0
-    assert second.calls["B"] == 3
+    # Plan construction, recipe-equivalence check, bounded decoded-width sample,
+    # and the one output slice. None re-executes the seeded join's producers.
+    assert second.calls["B"] == 4
     assert_frame_equal(second.frame, first.frame)
 
 
