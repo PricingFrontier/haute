@@ -12,7 +12,7 @@ function typeChars(input: HTMLElement, text: string) {
   }
 }
 
-describe("CommittedTextField — one commit per field edit (undo-atomicity)", () => {
+describe("CommittedTextField - one commit per field edit (undo-atomicity)", () => {
   it("does not commit while typing; commits once on blur", () => {
     const onCommit = vi.fn()
     render(<CommittedTextField value="" onCommit={onCommit} data-testid="f" />)
@@ -105,7 +105,7 @@ describe("CommittedTextField — one commit per field edit (undo-atomicity)", ()
   })
 })
 
-describe("CommittedTextArea — commit on blur only (Enter is a newline)", () => {
+describe("CommittedTextArea - commit on blur only (Enter is a newline)", () => {
   it("does not commit while typing; commits once on blur", () => {
     const onCommit = vi.fn()
     render(<CommittedTextArea value="" onCommit={onCommit} data-testid="t" />)
@@ -120,7 +120,7 @@ describe("CommittedTextArea — commit on blur only (Enter is a newline)", () =>
     expect(onCommit).toHaveBeenCalledWith("select 1")
   })
 
-  it("Enter does NOT commit — it is a newline in a textarea", () => {
+  it("Enter does NOT commit - it is a newline in a textarea", () => {
     const onCommit = vi.fn()
     render(<CommittedTextArea value="a" onCommit={onCommit} data-testid="t" />)
     const area = screen.getByTestId("t") as HTMLTextAreaElement

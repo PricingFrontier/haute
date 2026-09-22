@@ -833,6 +833,18 @@ export default function usePipelineAPI({
       setPreviewBusy(false)
       return
     }
+    if (useUIStore.getState().calculationMode === "manual") {
+      // Manual calculation: show the node's last result for the current
+      // source and row limit, and run nothing until Refresh is pressed.
+      const stored = useNodeResultsStore.getState().getPreview(node.id)
+      setPreviewData(
+        stored && stored.source === activeSourceRef.current && stored.rowLimit === rowLimitRef.current
+          ? stored.data
+          : null,
+      )
+      setPreviewBusy(false)
+      return
+    }
     setPreviewBusy(true)
     if (useDocumentStatusStore.getState().loadStatus === "degraded") {
       if (activeSubmodelIdentity !== null) {
@@ -1314,14 +1326,17 @@ export default function usePipelineAPI({
     }
   }, [graphRef, parentGraphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef, addToast])
 
-  // The displayed preview is fetched again once a snapshot is published,
-  // refreshed, or cleared after its request was sent: its rows may have been
+  // In automatic calculation, the displayed preview is fetched again once a
+  // snapshot is published, refreshed, or cleared after its request was sent: its rows may have been
   // computed from data that has since changed. A refetch whose seeds did not
   // change is a backend cache hit. Other nodes' stored previews are fetched
   // again when next displayed.
   const nodeDataEpoch = useNodeDataStore((s) => s.epoch)
   useEffect(() => {
     if (!previewData || previewBusy) return
+    // In manual calculation the stale preview stays on screen, marked out of
+    // date, until Refresh is pressed.
+    if (useUIStore.getState().calculationMode === "manual") return
     const frame = framePreviewEpochs.current.get(previewData)
     if (frame) {
       if (frame.epoch !== nodeDataEpoch) previewNodeFrame(previewData.nodeId, frame.portLabel)

@@ -9,8 +9,6 @@
  *                                     across 8 JSX handler sites
  *     L441  onFocus       — label input borderColor + boxShadow (two writes)
  *     L442  onBlur        — label input borderColor + boxShadow reset (two writes)
- *     L449  onMouseEnter  — refresh button opacity
- *     L450  onMouseLeave  — refresh button opacity reset
  *     L458  onMouseEnter  — close-button background
  *     L459  onMouseLeave  — close-button background reset
  *     L479  onMouseEnter  — tab button background (state-gated on activeTab !== tab)
@@ -183,7 +181,7 @@ describe("inspector-panel hover structural checks", () => {
       const hits = countCurrentTargetStyleWrites(src)
       expect(
         hits,
-        `${rel} still contains ${hits} inline \`currentTarget.style.*\` writes — migrate each to a CSS class (.hover-chrome / .hover-bg in index.css) or Tailwind \`hover:bg-...\`.  Preserve only non-styling event-handler logic (selection, focus, tooltip side-effects).`,
+        `${rel} still contains ${hits} inline \`currentTarget.style.*\` writes - migrate each to a CSS class (.hover-chrome / .hover-bg in index.css) or Tailwind \`hover:bg-...\`.  Preserve only non-styling event-handler logic (selection, focus, tooltip side-effects).`,
       ).toBe(0)
     },
   )
@@ -422,7 +420,7 @@ describe("NodePanel tab hover dual state", () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────
-//  NodePanel: close button + refresh button + label input (focus)
+//  NodePanel: close button + label input (focus)
 // ─────────────────────────────────────────────────────────────────────
 describe("NodePanel standalone hover/focus sites", () => {
   it("close button dispatches mouseEnter/mouseLeave without inline style mutation", () => {
@@ -435,18 +433,6 @@ describe("NodePanel standalone hover/focus sites", () => {
     const after = closeBtn.style.background
     // Post-migration the hover bg should come from CSS — so the inline
     // `.style.background` attribute should not flicker.
-    expect(duringHover).toBe(before)
-    expect(after).toBe(before)
-  })
-
-  it("refresh button dispatches mouseEnter/mouseLeave without inline opacity mutation", () => {
-    renderNodePanel()
-    const refreshBtn = screen.getByTitle("Refresh preview")
-    const before = refreshBtn.style.opacity
-    fireEvent.mouseEnter(refreshBtn)
-    const duringHover = refreshBtn.style.opacity
-    fireEvent.mouseLeave(refreshBtn)
-    const after = refreshBtn.style.opacity
     expect(duringHover).toBe(before)
     expect(after).toBe(before)
   })

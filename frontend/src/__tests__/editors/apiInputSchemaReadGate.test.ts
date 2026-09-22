@@ -71,7 +71,7 @@ function configWith(columns: unknown[]): Record<string, unknown> {
   }
 }
 
-describe("readV2 render-gate — keeps blank entries by default (no silent drop)", () => {
+describe("readV2 render-gate - keeps blank entries by default (no silent drop)", () => {
   it("keeps a column whose NAME is blank (path intact)", () => {
     const v2 = readV2(configWith([BLANK_NAME_COL, VALID_COL]))
     expect(v2.tables[0].columns).toHaveLength(2)
@@ -102,7 +102,7 @@ describe("readV2 render-gate — keeps blank entries by default (no silent drop)
     expect(v2.tables[0]).toMatchObject({ path: "", label: "orphan" })
   })
 
-  it("keeps a blank table LABEL verbatim — does NOT coerce it to the path", () => {
+  it("keeps a blank table LABEL verbatim - does NOT coerce it to the path", () => {
     // The label is the runtime port name; a blank label is backend-invalid.
     // Masking it as the path would render the row as valid and silently
     // rewrite the persisted "" to the path on the next edit.
@@ -136,7 +136,7 @@ describe("readV2 render-gate — keeps blank entries by default (no silent drop)
     expect(v2.tables[0].columns).toHaveLength(3)
   })
 
-  it("still drops genuinely non-object entries (null / string) — not content-bearing", () => {
+  it("still drops genuinely non-object entries (null / string) - not content-bearing", () => {
     const config = {
       tables: [
         null,
@@ -161,7 +161,7 @@ describe("readV2 render-gate — keeps blank entries by default (no silent drop)
 
 })
 
-describe("readV2 { dropIncomplete: true } — infer-path sanitisation drops blanks", () => {
+describe("readV2 { dropIncomplete: true } - infer-path sanitisation drops blanks", () => {
   it("drops blank-name and blank-path columns", () => {
     const v2 = readV2(configWith([BLANK_NAME_COL, BLANK_PATH_COL, VALID_COL]), {
       dropIncomplete: true,

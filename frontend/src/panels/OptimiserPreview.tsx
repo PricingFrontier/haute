@@ -65,6 +65,7 @@ export type OptimiserPreviewData = {
 interface OptimiserPreviewProps {
   data: OptimiserPreviewData
   nodeId: string
+  onRefresh?: () => void
   allNodes: SimpleNode[]
   edges: SimpleEdge[]
 }
@@ -139,7 +140,7 @@ function HeaderPointStepper({
   )
 }
 
-export default function OptimiserPreview({ data, nodeId, allNodes, edges }: OptimiserPreviewProps) {
+export default function OptimiserPreview({ data, nodeId, allNodes, edges, onRefresh }: OptimiserPreviewProps) {
   const liveData = useNodeResultsStore((s) => s.getOptimiserPreview(nodeId))
   const displayData = liveData ?? data
   const { result, jobId, constraints } = displayData
@@ -395,6 +396,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
     <PreviewPanelFrame
       nodeLabel={displayData.nodeLabel}
       nodeType={NODE_TYPES.OPTIMISER}
+      onRefresh={onRefresh}
       subtitle={statusSummary}
       actions={(
         <HeaderPointStepper
@@ -726,7 +728,7 @@ function ExportMlflowSection({
         style={{ color: "var(--text-muted)" }}
       >
         {availability.available ? (
-          `Destination: ${availability.label} — ${availability.destination}`
+          `Destination: ${availability.label} - ${availability.destination}`
         ) : (
           <>
             {`${availability.reason} `}

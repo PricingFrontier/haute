@@ -623,7 +623,7 @@ function stripComments(text: string): string {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("index.css — design-token contract", () => {
+describe("index.css - design-token contract", () => {
   it("contains a :root { ... } block", () => {
     // Sanity: the rest of the suite assumes this is present.
     expect(() => findRootBlockRange(CSS_CODE)).not.toThrow()
@@ -637,7 +637,7 @@ describe("index.css — design-token contract", () => {
         .map((h) => `  index.css:${h.line}  ${h.literal}   // ${h.lineText}`)
         .join("\n")
       throw new Error(
-        `Found ${hits.length} hex literal(s) outside :root — move each to a CSS custom property and reference via var(--name):\n${summary}`,
+        `Found ${hits.length} hex literal(s) outside :root - move each to a CSS custom property and reference via var(--name):\n${summary}`,
       )
     }
     expect(hits).toEqual([])
@@ -649,10 +649,10 @@ describe("index.css — design-token contract", () => {
     const dangling = refs.filter((r) => isDangling(r, declared))
     if (dangling.length > 0) {
       const summary = dangling
-        .map((d) => `  index.css:${d.line}  var(${d.name})  — undeclared and not an allowlisted parameterised token`)
+        .map((d) => `  index.css:${d.line}  var(${d.name})  - undeclared and not an allowlisted parameterised token`)
         .join("\n")
       throw new Error(
-        `Found ${dangling.length} dangling var(--...) reference(s). Declare the token in :root — or, ONLY if JSX sets it inline, add it to PARAMETERISED_TOKENS with a fallback at every call site:\n${summary}`,
+        `Found ${dangling.length} dangling var(--...) reference(s). Declare the token in :root - or, ONLY if JSX sets it inline, add it to PARAMETERISED_TOKENS with a fallback at every call site:\n${summary}`,
       )
     }
     expect(dangling).toEqual([])
@@ -725,7 +725,7 @@ describe("index.css — design-token contract", () => {
     expect(stale).toEqual([])
   })
 
-  it("a non-trivial palette is declared (smoke — prevents accidental :root deletion)", () => {
+  it("a non-trivial palette is declared (smoke - prevents accidental :root deletion)", () => {
     // If someone deletes the :root declarations in a refactor, the other
     // tests would still pass (no hex outside :root, no dangling refs because
     // there are no refs either).  This smoke test pins that a real palette
@@ -875,7 +875,7 @@ describe("Tailwind-provided tokens", () => {
     try {
       ;({ compile } = await import("tailwindcss"))
     } catch {
-      throw new Error("Cannot import tailwindcss — is frontend/node_modules installed? (npm ci --prefix frontend)")
+      throw new Error("Cannot import tailwindcss - is frontend/node_modules installed? (npm ci --prefix frontend)")
     }
     const twEntry = path.resolve(HERE, "..", "..", "node_modules", "tailwindcss", "index.css")
     const compiled = await compile(CSS, {
@@ -893,13 +893,13 @@ describe("Tailwind-provided tokens", () => {
       const declRe = new RegExp(`(^|[^-\\w])${token}\\s*:`, "m")
       expect(
         declRe.test(output),
-        `${token} is not emitted by the app's compiled CSS — the TAILWIND_PROVIDED_TOKENS premise no longer holds`,
+        `${token} is not emitted by the app's compiled CSS - the TAILWIND_PROVIDED_TOKENS premise no longer holds`,
       ).toBe(true)
     }
   })
 })
 
-describe("ts/tsx source — design-token contract", () => {
+describe("ts/tsx source - design-token contract", () => {
   it("every var(--name) in live source resolves to an index.css token (or is an allowlisted parameterised token with a fallback)", () => {
     // Regression guard for the bug class where a component references a
     // token that was never declared (or was renamed away): the style is
@@ -917,7 +917,7 @@ describe("ts/tsx source — design-token contract", () => {
       const dangling = findVarRefs(text).filter((r) => isDangling(r, declared))
       for (const d of dangling) {
         const rel = path.relative(SRC_ROOT, file).split(path.sep).join(path.posix.sep)
-        offenders.push(`  ${rel}:${d.line}  var(${d.name})  — undeclared and not an allowlisted parameterised token`)
+        offenders.push(`  ${rel}:${d.line}  var(${d.name})  - undeclared and not an allowlisted parameterised token`)
       }
     }
     if (offenders.length > 0) {
@@ -1081,7 +1081,7 @@ describe("ts/tsx source — design-token contract", () => {
       const text = stripComments(readFileSync(path.join(SRC_ROOT, rel), "utf8"))
       expect(
         MONO_FACE.test(text),
-        `${rel} is exempted but no longer contains a raw mono fontFamily — remove the exemption`,
+        `${rel} is exempted but no longer contains a raw mono fontFamily - remove the exemption`,
       ).toBe(true)
     }
   })
@@ -1137,7 +1137,7 @@ describe("ts/tsx source — design-token contract", () => {
     expect(stripComments(src)).toContain("--canary")
   })
 
-  it("scans a non-trivial source tree (smoke — prevents silent scope loss)", () => {
+  it("scans a non-trivial source tree (smoke - prevents silent scope loss)", () => {
     // If the walker's filters ever accidentally exclude everything (e.g. a
     // bad rename of SRC_ROOT), the contract test above would pass vacuously.
     const files = collectSourceFiles(SRC_ROOT)

@@ -802,7 +802,7 @@ export default function ApiInputEditor({
                     onChange={(e) => setSaltNames(e.target.checked)}
                   />
                   salt names
-                  <Tooltip label="Key naming: the dotted part of the path inside its record collapses to underscores — $[:].customer.id becomes customer_id — so sibling leaves like customer.id and order.id stay distinct. Any remaining name collision gets a numeric suffix (_2). Untick to name by the bare leaf (id) instead, relying on the suffix alone.">
+                  <Tooltip label="Key naming: the dotted part of the path inside its record collapses to underscores - $[:].customer.id becomes customer_id - so sibling leaves like customer.id and order.id stay distinct. Any remaining name collision gets a numeric suffix (_2). Untick to name by the bare leaf (id) instead, relying on the suffix alone.">
                     <HelpCircle
                       size={11}
                       data-testid="api-input-salt-help"
@@ -892,7 +892,7 @@ export default function ApiInputEditor({
               {/* Positional keys, NOT `${table.path}-${ti}`: rows are only
                   ever appended/removed (never reordered), and a key derived
                   from the edited path remounted the row on every committed
-                  path change — dropping focus mid-edit (CODE_REVIEW W1.5). */}
+                  path change - dropping focus mid-edit (CODE_REVIEW W1.5). */}
               {v2.tables.map((table, ti) => (
                 <TableBlock
                   key={ti}
@@ -988,7 +988,7 @@ export default function ApiInputEditor({
         return (
           <KeyPickerModal
             title={isAttributes ? "Add keys" : "Inherit keys"}
-            targetLabel={`${t.label || "(unnamed)"} — ${t.path}`}
+            targetLabel={`${t.label || "(unnamed)"} - ${t.path}`}
             accentColor={accentColor}
             groups={
               isAttributes
@@ -1210,7 +1210,7 @@ function TableBlock({
  */
 function columnNameError(candidate: string, otherNames: readonly string[]): string | null {
   if (!candidate.trim()) {
-    return "A name is required — this column is invalid and can't be saved without one."
+    return "A name is required - this column is invalid and can't be saved without one."
   }
   if (otherNames.includes(candidate)) {
     return `Duplicate column name: "${candidate}" is already used in this table.`
@@ -1309,7 +1309,7 @@ function ColumnRow({
       />
       {collidingPaths.length > 0 && (
         <Tooltip
-          label={`"${col.name}" is also the name of a different field: ${collidingPaths.join(", ")}. A name should mean one field everywhere — rename one of them.`}
+          label={`"${col.name}" is also the name of a different field: ${collidingPaths.join(", ")}. A name should mean one field everywhere - rename one of them.`}
         >
           <span data-testid={`${testIdPrefix}-name-collision`} className="shrink-0 mt-0.5">
             <AlertTriangle size={10} style={{ color: "var(--danger-text)" }} />
@@ -1345,7 +1345,7 @@ function ColumnRow({
       <Tooltip
         label={
           col.key === true
-            ? "A key — click to remove it from the keys section (stays confirmed)"
+            ? "A key - click to remove it from the keys section (stays confirmed)"
             : "Make this field a key: confirms it and moves it into the keys at the top"
         }
       >
@@ -1437,7 +1437,7 @@ function ColumnRow({
 function validateTablePath(candidate: string): string | null {
   const trimmed = candidate.trim()
   if (!trimmed) {
-    return "A path is required — this table is invalid and can't be saved without one."
+    return "A path is required - this table is invalid and can't be saved without one."
   }
   return validateInputTablePath(trimmed)
 }
@@ -1445,7 +1445,7 @@ function validateTablePath(candidate: string): string | null {
 /** INPUT column-path validator: blank-guard + the shared column-path grammar. */
 function validateColumnPath(candidate: string): string | null {
   if (!candidate.trim()) {
-    return "A path is required — this column is invalid and can't be saved without one."
+    return "A path is required - this column is invalid and can't be saved without one."
   }
   return validateInputColumnPath(candidate.trim())
 }

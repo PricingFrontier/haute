@@ -36,7 +36,7 @@ const remote = (over: Partial<Record<string, unknown>> = {}) => ({
   ...over,
 })
 
-describe("RemotePushControl — error paths and catch-up matrix", () => {
+describe("RemotePushControl - error paths and catch-up matrix", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockGetGitRemotes.mockResolvedValue({ remotes: [], working_branch: "dev" })
@@ -143,7 +143,7 @@ describe("RemotePushControl — error paths and catch-up matrix", () => {
       remote: "origin",
       working: { status: "diverged", ahead: 1, behind: 2 },
       ledger: { status: "diverged", ahead: 1, behind: 2 },
-      message: "forked 'origin' — never force-pushes.",
+      message: "forked 'origin' - never force-pushes.",
     }
     mockGitPush.mockRejectedValue(
       new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),
@@ -173,7 +173,7 @@ describe("RemotePushControl — error paths and catch-up matrix", () => {
       remote: "origin",
       working: { status: "diverged", ahead: 1, behind: 2 },
       ledger: { status: "diverged", ahead: 1, behind: 2 },
-      message: "forked 'origin' — never force-pushes.",
+      message: "forked 'origin' - never force-pushes.",
     }
     mockGitPush.mockRejectedValue(
       new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),

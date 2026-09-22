@@ -26,7 +26,7 @@
 | `src/haute/routes/io_capabilities.py` | `/api/io-capabilities`, the versioned provider/format/cache capability contract consumed by the input and output editors. |
 | `src/haute/routes/input_cache.py` | `/api/input-cache/*`, the shared build/status/cancel/clear lifecycle for snapshot-backed inputs. |
 | `src/haute/routes/node_data.py` | `/api/node-data/point`, `/run`, `/status/{job_id}`, `/cancel/{job_id}`, and `/clear` for the data a consumer node reads. |
-| `src/haute/routes/cache.py` | `GET /api/cache/usage`, the report of both snapshot-store budgets against their limits; `POST /api/cache/nodes`, the per-node report of what each node of a graph holds within them; and `POST /api/cache/clear`, which clears the identities a report's row named. The reports answer one explicit request; the first takes no arguments and names the environment variable behind each limit. |
+| `src/haute/routes/cache.py` | `POST /api/cache/nodes`, the per-node inventory of stored datasets plus owners outside the open graph; and `POST /api/cache/clear`, which clears the identities a report's row names. The inventory answers explicit requests rather than polling. |
 | `src/haute/routes/banding.py` | FastAPI router (`/api/banding`): whole-dataset statistics for the banding factor being edited, delegating to `_banding_stats.py`. |
 | `src/haute/routes/rating.py` | FastAPI router (`/api/rating`): whole-dataset levels for the raw factor columns a Rating Step rates on, delegating to `_rating_levels.py`. |
 | `src/haute/routes/_rating_levels.py` | Reads those levels over the node's shared data point under `run_synchronous_analysis`, keyed by the rating lookup's own key expression. |
@@ -72,11 +72,8 @@
   a false statement in the evidence. A Data Output that writes eagerly or to a database records no
   strategy at all, because the chunked writer is not on that path.
 
-- A refused capture reaches a node-data build's job as the warning an automatic capture records
-  (`snapshot_capture_skipped`, the node, `reason="quota"`), because a failing build's
-  `worker_evidence` is adopted before its error propagates and a failed job is written with its
-  execution metrics. Without it a build the user asked for reported the store's own text, naming
-  no node, while the same refusal in a preview named one.
+- A failing build's `worker_evidence` is adopted before its error propagates, and a
+  failed job retains its execution metrics. Cache-specific quota refusals no longer exist.
 
 **Exception hierarchy** (`errors.py`, abridged to route-relevant branches) — every subclass
 roots at `HauteError`, which renders
@@ -581,12 +578,12 @@ data, so it is `NodeSnapshotInputsChangedError`; an identity that moved at eithe
 check (a source or snapshot changed while the build read it) is
 `NodeSnapshotInputsChangedError`, reported as a contract error and never published. It returns
 a closed `_NodeSnapshotWorkerOutcome` (generation id and `published`/`superseded` with the
-execution's `worker_evidence()`, or a `public_contract`, `memory`, `quota`, or
+execution's `worker_evidence()`, or a `public_contract`, `memory`, or
 `contract` failure). The parent validates the envelope, adopts the child's input preparation, seeds,
 captures, and warnings into its own execution context (`adopt_worker_evidence`), and completes the
 job under the registry's latest-publication guard with `generation_id`, `outcome`, and
 execution metrics, or maps failures to `contract_error`, `memory_limited`,
-`error` (quota, with its actionable message), the cancellation or supersession reason, a public
+the cancellation or supersession reason, a public
 contract error from input preparation (except that a preparation failure after the job was
 cancelled or superseded ends with that reason), or the internal-error envelope. After the worker has terminated, the supervisor discards any
 staging directory carrying its token — the build's own and its captures' — which a killed
@@ -603,27 +600,13 @@ killed the worker over its RSS limit.
 
 ### Cache usage
 
-**Cache usage** (`routes/cache.py`): `GET /api/cache/usage` takes no arguments and returns
-`CacheUsageResponse` — `node_outputs` and `input_snapshots`, each reporting
-`generations_used`/`generations_limit` and `bytes_used`/`bytes_limit` plus the name of the
-environment variable behind each limit. The numbers come from
-`NodeSnapshotStore.usage_report()`, which walks the identity directories once per budget
-through the store's own `_bucket_usage` accounting, so an identity whose marker does not
-classify counts against both budgets here exactly as it does at admission: what the response
-reports is what would refuse the next capture, not a second opinion about it. The variable
-names are reported rather than assumed by the client because the server is what reads them
-(`INPUT_CACHE_MAX_*_VARIABLE` in `_source_cache.py`, `NODE_SNAPSHOT_MAX_*_VARIABLE` in
-`_node_snapshots.py`, each used both to read the limit and to report its name), so a user told
-to raise a limit is told the name the store actually read. The walk is what an admission pays,
-so the endpoint answers an explicit request and its response is a snapshot, not a
-subscription; a surface that wants to poll needs an incremental count in the store first. The
-two budgets are independent — node outputs and input snapshots neither consume nor evict one
-another — so no combined total is reported.
-
-The report reads: it takes no lock and changes no generation. The request is not free of
-writes, though, because constructing `NodeSnapshotStore` creates `.haute_cache/inputs` when
-it is absent and, once per process per root, sweeps retired directories — the same
-construction every other store-backed route performs, not something this endpoint adds.
+**User-managed inventory.** The cache API lists and clears stored data without
+byte or entry-count budgets. The budget-only `GET /api/cache/usage` endpoint
+and its response types are removed. `POST /api/cache/nodes` lists data owned by
+the graph's nodes plus every remaining stored dataset; `/api/cache/clear`
+clears the identities named by the selected row. Cache-specific quota errors
+and eviction diagnostics are removed. Active-reader leases, replacement,
+disk-headroom checks and real write failures retain their existing behavior.
 
 **Per-node cache report** (`routes/cache.py`): `POST /api/cache/nodes` takes a graph and a
 source and returns `CacheNodesResponse`. The graph is flattened first, so a submodel's nodes
@@ -641,7 +624,7 @@ so a programming error still surfaces as a 500. A `SourceCacheCorruptError` is d
 node's data exists and is damaged, so `_corrupt_response` synthesises the row from the
 consumer point — the kind is a graph lookup and the producer is the point's — with
 `state="corrupt"` and no reason, and the row carries the bytes like any other, because the
-budget charges a corrupt generation like any other. A `PipelineGraph` carries no id-uniqueness
+corrupt generation still occupies disk space. A `PipelineGraph` carries no id-uniqueness
 validator, so a duplicated node id is resolved once; two rows would otherwise claim one
 node's bytes. Each
 row's `state` describes the generation that node would read for its own column demand, while
@@ -668,11 +651,10 @@ data under another source, an input snapshot nothing reads. `unattributed_*` is 
 metadata could name. Every row and owner also carries `newest_created_at` and `build_seconds`
 from its newest generation's metadata, so the report says when a thing was cached and how long
 that took; a generation published before durations were recorded reports `null`, which the
-surfaces must show as unknown rather than as an instant build. Per budget, the rows plus `other` plus `unattributed_*` therefore equal
-what `GET /api/cache/usage` reports, which is the invariant
-`tests/test_cache_nodes_routes.py` asserts directly. `unmarked_identities` counts
-identities whose provider marker does not classify: admission charges each to *both* budgets,
-so it is what explains a usage report larger than the sum of the rows.
+surfaces must show as unknown rather than as an instant build. Rows plus `other` plus
+`unattributed_*` account for stored dataset bytes, which
+`tests/test_cache_nodes_routes.py` checks independently against files on disk.
+`unmarked_identities` counts identities whose provider marker does not classify.
 
 
 **Clearing a row** (`routes/cache.py`): `POST /api/cache/clear` takes the `identity_digests`
@@ -688,8 +670,7 @@ moment out of date is an ordinary race. The response reports what was cleared an
 freed, which the caller uses rather than assuming its request succeeded.
 
 This is the only way to reclaim a node the graph no longer has: `/api/node-data/clear`
-resolves a node of the posted graph, so a deleted or renamed node's cache was previously
-reclaimable only under quota pressure. Cache data is regenerable, so the endpoint needs no
+resolves a node of the posted graph. Cache data is regenerable, so the endpoint needs no
 confirmation of its own; what it must not do is surprise a reader mid-scan, and it does not,
 because every clear retires a held generation on release rather than deleting it underneath
 the scan.
@@ -974,8 +955,8 @@ entirely and leave every touched file in whatever state it happened to be in."
   reported including one with nothing cached, a re-cache replacing rather than adding to a
   node's dataset, two nodes resolving to one input snapshot reporting its bytes once with the
   second naming the first, a second identity under one path label still accounted for, a
-  misconfigured Data Input leaving the rest of the report intact, the per-budget invariant
-  that rows plus `other` plus `unattributed_*` equal the usage report against a stray
+  misconfigured Data Input leaving the rest of the report intact, the accounting invariant
+  that rows plus `other` plus `unattributed_*` equal stored dataset bytes against a stray
   generation and a staging directory on disk, a generation whose metadata is unreadable
   reported as unattributed, a corrupt point reported as a row with `state="corrupt"` and its
   bytes rather than as an absence, clearing a row removing exactly its own identities while
@@ -985,16 +966,7 @@ entirely and leave every touched file in whatever state it happened to be in."
   node no longer in the graph and a node's data under another source both reported as `other`,
   an input snapshot reported on its reader's row and nowhere else, a node reading an upstream
   point carrying no size and naming that node, an unwired Banding reported as a row with a
-  reason rather than failing the request, and the unmarked-identity count that explains a
-  larger usage report.
-
-- `tests/test_cache_usage_routes.py` covers `GET /api/cache/usage`: both budgets' generations
-  and bytes against their pinned limits after one node-output publication and one input
-  snapshot, zero against both in an empty store, the four variable names, that raising
-  each named variable moves the limit the response reports under that name — which is what
-  rules out a name that no longer matches the variable the store reads — and that an
-  identity whose provider marker is unrecognised raises both budgets' generations and
-  bytes, which is the admission behaviour the report is required to mirror.
+  reason rather than failing the request, and the unmarked-identity diagnostic count.
 
 - `tests/test_node_data_routes.py` covers a missing point for Banding, one build shared by
   Explore and Banding on one parent (`building` with the job, `joined`, then cached), an

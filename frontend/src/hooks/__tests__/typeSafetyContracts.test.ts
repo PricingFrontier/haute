@@ -98,7 +98,7 @@ function readSource(path: string): string {
 // #116 — isPipelineResponse / parsePipelineResponse
 // ===========================================================================
 
-describe("#116 — isPipelineResponse / parsePipelineResponse", () => {
+describe("#116 - isPipelineResponse / parsePipelineResponse", () => {
   // -------------------------------------------------------------------------
   // Shape-level acceptance
   // -------------------------------------------------------------------------
@@ -433,7 +433,7 @@ describe("#116 — isPipelineResponse / parsePipelineResponse", () => {
 // #117 — validateReactFlowNode
 // ===========================================================================
 
-describe("#117 — validateReactFlowNode", () => {
+describe("#117 - validateReactFlowNode", () => {
   describe("acceptance", () => {
     it("accepts a minimal valid ReactFlow node and returns it narrowed", async () => {
       const { validateReactFlowNode } = await loadGuards()

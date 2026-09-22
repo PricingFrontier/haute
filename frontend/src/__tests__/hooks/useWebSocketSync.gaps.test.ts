@@ -172,7 +172,7 @@ function nodeAt(id: string, x: number, y: number, label?: string): Node {
 
 // ── Test suites ──────────────────────────────────────────────────
 
-describe("useWebSocketSync — gap tests", () => {
+describe("useWebSocketSync - gap tests", () => {
   let originalWebSocket: typeof globalThis.WebSocket
 
   beforeEach(() => {
@@ -333,7 +333,7 @@ describe("useWebSocketSync — gap tests", () => {
   // ────────────────────────────────────────────────────────────────
 
   describe("multiple rapid document update messages", () => {
-    it("processes each document update — last one's nodes win", async () => {
+    it("processes each document update - last one's nodes win", async () => {
       // Catches: if the hook accumulated state or debounced updates
       // incorrectly, intermediate updates might be dropped or merged
       // wrong, leaving the UI out of sync with the file on disk.

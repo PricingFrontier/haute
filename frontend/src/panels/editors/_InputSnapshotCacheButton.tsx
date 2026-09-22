@@ -136,7 +136,7 @@ export default function InputSnapshotCacheButton({
         timestampField="created_at"
         labels={{
           ...PARQUET_CACHE_LABELS,
-          notCachedHint: "No cache yet — the first run creates it automatically",
+          notCachedHint: "No cache yet - the first run creates it automatically",
         }}
         disabled={!requiredReady}
         disabledReason="Complete the required source fields to cache as Parquet."
@@ -147,7 +147,7 @@ export default function InputSnapshotCacheButton({
             className="mt-1 text-[10px] px-1"
             style={{ color: "var(--warning-strong)" }}
           >
-            Source changed since cache — Refresh to update.
+            Source changed since cache - Refresh to update.
           </p>
         )}
     </div>

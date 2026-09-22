@@ -28,7 +28,7 @@ interface SpawnChipBranch {
 }
 
 const HASH_TOOLTIP =
-  "Commit hash — a unique ID for every save or milestone. Fragment of a much " +
+  "Commit hash - a unique ID for every save or milestone. Fragment of a much " +
   "longer hexadecimal string."
 
 // Rail-cell node centres: aligned with the first text line of each row kind
@@ -483,7 +483,7 @@ function GitPanelBranchScope({
                 className={`text-[10px] font-medium uppercase tracking-wider block mb-1.5${rail !== null ? " px-2.5" : ""}`}
                 style={{ color: "var(--text-muted)" }}
               >
-                Out-of-version saves ({pending.length}) — to fold into next milestone
+                Out-of-version saves ({pending.length}) - to fold into next milestone
               </span>
               <div className={rail !== null ? "flex flex-col pr-2.5" : "flex flex-col gap-1.5 pl-2"}>
                 {pending.map((s, i) => {
@@ -542,7 +542,7 @@ function GitPanelBranchScope({
               style={{ border: "1px solid var(--border)" }}
             >
             {/* All straight vertical rail lines, one element per contiguous
-                run — phase-coherent across every row and divider below. */}
+                run - phase-coherent across every row and divider below. */}
             {rail !== null && railRuns !== null && (
               <GraphRailOverlay
                 runs={railRuns}
@@ -847,7 +847,7 @@ function GitPanelBranchScope({
             style={{ left: forkDraft.x, top: forkDraft.y, background: "var(--bg-panel)", border: "1px solid var(--border)" }}
           >
             <span className="text-[12px] font-medium" style={{ color: "var(--text-primary)" }}>
-              {forkDraft.move ? "New branch — move your work here" : "New branch from this point"}
+              {forkDraft.move ? "New branch - move your work here" : "New branch from this point"}
             </span>
             <input
               autoFocus

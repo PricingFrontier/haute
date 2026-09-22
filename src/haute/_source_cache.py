@@ -22,7 +22,7 @@ import polars as pl
 from haute._cache import CacheConsumer, canonical_json, checked_cache_inputs
 from haute._chunked_writes import is_part_name, part_name, part_paths, scan_parts, write_parts
 from haute._credential_security import is_credential_name, validate_credential_free_uri
-from haute._env import float_env, int_env
+from haute._env import float_env
 from haute._file_lock import _acquire_file_lock, _release_file_lock
 from haute._file_ops import atomic_write_text, ensure_disk_headroom
 from haute._hashing import content_hash
@@ -57,12 +57,6 @@ _DEFAULT_RETIRE_GRACE_SECONDS = 30 * 60
 NODE_OUTPUT_PROVIDER: Final = "node_output"
 CacheBucket = Literal["node_output", "input"]
 IdentityClassification = Literal["node_output", "input", "unknown"]
-# The environment variables behind the input budget's limits. They are named
-# rather than inlined because the usage report tells a user which variable to
-# change: reading the limit and reporting its name from one constant is what
-# stops the two from drifting.
-INPUT_CACHE_MAX_BYTES_VARIABLE = "HAUTE_INPUT_CACHE_MAX_BYTES"
-INPUT_CACHE_MAX_GENERATIONS_VARIABLE = "HAUTE_INPUT_CACHE_MAX_GENERATIONS"
 KNOWN_INPUT_PROVIDERS = frozenset({"file", "lakehouse", "database", "databricks", "inline"})
 _LEASE_PREFIX = ".lease-"
 _TOKEN_LENGTH = 12
@@ -88,10 +82,6 @@ class SourceCacheLegacyLayoutError(SourceCacheGenerationMissingError):
 
 class SourceCacheBuildError(SourceCacheError):
     """A builder is not admissible for a source snapshot build."""
-
-
-class SourceCacheQuotaExceededError(SourceCacheError):
-    """Publishing a generation would exceed the configured store quota."""
 
 
 def _reject_secrets(value: object) -> None:
@@ -179,15 +169,9 @@ class SourceCacheBuildContext:
     # it can reconcile exactly those two and never another build's.
     generation_id: str | None = None
     staging_token: str | None = None
-    # A spawned build never retires superseded generations: its lease counts are
-    # child-local, so a generation the parent process still leases would look
-    # unreferenced. The supervising parent retires with its own lease counts.
+    # Supervised workers leave retirement to the parent after the build succeeds.
+    # Cross-process lease markers protect readers during the handoff.
     defer_retirement: bool = False
-    # Generations the supervising parent still leases. Meaningful with
-    # ``defer_retirement``: the child's lease table is empty, so without these
-    # ids its quota projection would count the parent-leased current generation
-    # as reclaimable and publish beyond the hard limit.
-    retained_generation_ids: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if self.build_class not in ("bounded", "admitted_eager", "unsupported"):
@@ -200,11 +184,6 @@ class SourceCacheBuildContext:
             _validate_generation_id(self.generation_id)
         if self.staging_token is not None:
             _validate_staging_token(self.staging_token)
-        if not isinstance(self.retained_generation_ids, (frozenset, set)):
-            raise ValueError("retained_generation_ids must be a set of generation ids")
-        for retained in self.retained_generation_ids:
-            _validate_generation_id(retained)
-        self.retained_generation_ids = frozenset(self.retained_generation_ids)
 
     def checkpoint(self) -> None:
         cancelled = self.cancellation
@@ -321,7 +300,7 @@ def _ensure_identity_marker(identity_dir: Path, provider: str) -> None:
 
 
 def classify_identity_marker(identity_dir: Path) -> IdentityClassification:
-    """Classify an identity directory's budget bucket from its provider marker.
+    """Classify an identity directory's dataset kind from its provider marker.
 
     Answers ``"node_output"``, ``"input"``, or ``"unknown"``. A missing,
     unreadable, or unrecognised marker answers ``"unknown"``.
@@ -571,8 +550,6 @@ class SourceCacheStore:
         self,
         root: str | Path,
         *,
-        max_bytes: int | None = None,
-        max_generations: int | None = None,
         retire_grace_seconds: float | None = None,
     ) -> None:
         self.root = Path(root).resolve()
@@ -586,20 +563,6 @@ class SourceCacheStore:
             )
         self.inputs_root = self.root / ".haute_cache" / "inputs"
         self.inputs_root.mkdir(parents=True, exist_ok=True)
-        if max_bytes is None:
-            max_bytes = int_env(INPUT_CACHE_MAX_BYTES_VARIABLE, 20 * 1024 * 1024 * 1024)
-        if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
-            raise ValueError("source-cache max_bytes must be a positive integer")
-        self.max_bytes = max_bytes
-        if max_generations is None:
-            max_generations = int_env(INPUT_CACHE_MAX_GENERATIONS_VARIABLE, 64)
-        if (
-            isinstance(max_generations, bool)
-            or not isinstance(max_generations, int)
-            or max_generations <= 0
-        ):
-            raise ValueError("source-cache max_generations must be a positive integer")
-        self.max_generations = max_generations
         if retire_grace_seconds is None:
             retire_grace_seconds = float_env(
                 "HAUTE_INPUT_CACHE_RETIRE_GRACE_SECONDS",
@@ -932,120 +895,6 @@ class SourceCacheStore:
                 writer.close()
         return {}
 
-    def _bucket_usage(
-        self,
-        bucket: CacheBucket,
-        *,
-        exclude: Path | None = None,
-    ) -> tuple[int, int]:
-        """Return (generation_count, total_bytes) for *bucket*.
-
-        Performs one walk over the identity directories under ``inputs_root``.
-        An identity classified as *bucket* or as ``"unknown"`` is counted in
-        both generations and bytes (generation parts plus staging under those
-        identities, excluding *exclude*).
-        """
-        count = 0
-        bytes_total = 0
-        try:
-            entries = tuple(self.inputs_root.iterdir())
-        except FileNotFoundError:
-            return 0, 0
-        for identity_dir in entries:
-            if not identity_dir.is_dir() or identity_dir.is_symlink():
-                continue
-            classification = classify_identity_marker(identity_dir)
-            if classification != bucket and classification != "unknown":
-                continue
-
-            generations_dir = identity_dir / "generations"
-            try:
-                gen_dirs = tuple(generations_dir.iterdir())
-            except FileNotFoundError:
-                gen_dirs = ()
-            for gen_dir in gen_dirs:
-                if not gen_dir.is_dir() or gen_dir.is_symlink():
-                    continue
-                has_meta = False
-                try:
-                    for entry in gen_dir.iterdir():
-                        if entry.name == "meta.json" and not entry.is_symlink() and entry.is_file():
-                            has_meta = True
-                        elif (
-                            is_part_name(entry.name) and not entry.is_symlink() and entry.is_file()
-                        ):
-                            try:
-                                bytes_total += entry.stat().st_size
-                            except FileNotFoundError:
-                                pass
-                except FileNotFoundError:
-                    continue
-                if has_meta:
-                    count += 1
-
-            try:
-                staging_entries = tuple(identity_dir.iterdir())
-            except FileNotFoundError:
-                staging_entries = ()
-            for staging in staging_entries:
-                if (
-                    not staging.name.startswith(".staging-")
-                    or not staging.is_dir()
-                    or staging.is_symlink()
-                    or (exclude is not None and staging == exclude)
-                ):
-                    continue
-                for root, directories, files in os.walk(staging, followlinks=False):
-                    root_path = Path(root)
-                    directories[:] = [
-                        name for name in directories if not (root_path / name).is_symlink()
-                    ]
-                    for name in files:
-                        file_path = root_path / name
-                        if file_path.is_symlink():
-                            continue
-                        try:
-                            bytes_total += file_path.stat().st_size
-                        except FileNotFoundError:
-                            continue
-        return count, bytes_total
-
-    def _admit_publication_within_quota(
-        self,
-        identity: SourceCacheIdentity,
-        *,
-        new_size_bytes: int,
-        staging_path: Path,
-        retained_generation_ids: frozenset[str] = frozenset(),
-    ) -> None:
-        current_count, current_size = self._bucket_usage("input", exclude=staging_path)
-        reclaimable = 0
-        reclaimable_count = 0
-        if classify_identity_marker(self.identity_path(identity)) in {"input", "unknown"}:
-            try:
-                current_id = self._read_pointer(identity)
-                current_dir = self.identity_path(identity) / "generations" / current_id
-                if (
-                    current_id not in retained_generation_ids
-                    and current_dir.is_dir()
-                    and not self._has_live_holders_locked(current_dir)
-                ):
-                    reclaimable = generation_bytes(current_dir)
-                    reclaimable_count = 1
-            except (FileNotFoundError, SourceCacheCorruptError):
-                pass
-
-        projected_bytes = current_size - reclaimable + new_size_bytes
-        projected_count = current_count - reclaimable_count + 1
-        if projected_bytes <= self.max_bytes and projected_count <= self.max_generations:
-            return
-
-        raise SourceCacheQuotaExceededError(
-            "source-cache quota exceeded: existing snapshots are kept until "
-            "explicitly refreshed or cleared. Clear an unused Data Input "
-            "snapshot or raise the cache quota."
-        )
-
     def build(
         self,
         identity: SourceCacheIdentity,
@@ -1120,27 +969,6 @@ class SourceCacheStore:
                 with self._lease_lock:
                     if not context.defer_retirement:
                         self._retire_unleased_locked(identity)
-                    try:
-                        self._admit_publication_within_quota(
-                            identity,
-                            new_size_bytes=metadata.size_bytes,
-                            staging_path=staging,
-                            retained_generation_ids=context.retained_generation_ids,
-                        )
-                    except SourceCacheQuotaExceededError:
-                        # Quota pressure outranks the reader grace: reclaim the
-                        # graced generations once and admit again, or fail.
-                        self._retire_unleased_locked(identity, force=True)
-                        logger.warning(
-                            "source_cache_grace_reclaimed_under_quota_pressure",
-                            identity_digest=identity.digest,
-                        )
-                        self._admit_publication_within_quota(
-                            identity,
-                            new_size_bytes=metadata.size_bytes,
-                            staging_path=staging,
-                            retained_generation_ids=context.retained_generation_ids,
-                        )
                     final_dir = generations_dir / generation_id
                     staging.replace(final_dir)
                     with self._lock:
@@ -1222,9 +1050,7 @@ class SourceCacheStore:
     def leased_generation_ids(self, identity: SourceCacheIdentity) -> frozenset[str]:
         """Return the generations of *identity* this process currently leases.
 
-        A supervising parent hands these to a spawned build, whose own lease
-        table is empty, so the child's quota projection treats them as retained
-        instead of reclaimable.
+        This is an inspection utility for the supervising process.
         """
         with self._identity_lock(identity):
             with self._lock:

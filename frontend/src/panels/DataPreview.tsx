@@ -3,6 +3,7 @@ import { X, AlertCircle, CheckCircle2, Table2, Search, Layers } from "lucide-rea
 import { getDtypeColor } from "../utils/dtypeColors"
 import { formatValue } from "../utils/formatValue"
 import ExecutionDiagnosticsIndicator from "../components/ExecutionDiagnosticsIndicator"
+import PreviewOutOfDateBadge from "../components/PreviewOutOfDateBadge"
 import type { ColumnInfo } from "../types/node"
 import type {
   SchemaWarning,
@@ -48,6 +49,9 @@ export interface PreviewData {
 
 interface DataPreviewProps {
   data: PreviewData | null
+  /** Active node label so its preview frame is available before results arrive. */
+  nodeLabel?: string
+  onRefresh?: () => void
   onCellClick?: (rowIndex: number, column: string, rowValues?: Record<string, unknown>) => void
   tracedCell?: { rowIndex: number; column: string } | null
   embedded?: boolean
@@ -188,7 +192,7 @@ const DataCell = memo(function DataCell({
   )
 })
 
-export default function DataPreview({ data, onCellClick, tracedCell, embedded = false, nodeType, onSelectFrame }: DataPreviewProps) {
+export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, tracedCell, embedded = false, nodeType, onSelectFrame }: DataPreviewProps) {
   const [columnSearch, setColumnSearch] = useState("")
 
   // Frame labels for a multi-frame producer (a multi-table apiInput). The
@@ -302,7 +306,16 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
     return () => cancelAnimationFrame(ref.current)
   }, [])
 
-  if (!data) return null
+  if (!data) {
+    if (embedded || !nodeLabel) return null
+    return (
+      <PreviewPanelFrame nodeLabel={nodeLabel} nodeType={nodeType} onRefresh={onRefresh}>
+        <div className="flex-1 flex items-center justify-center text-xs" style={{ color: "var(--text-muted)" }}>
+          Refresh to preview this node.
+        </div>
+      </PreviewPanelFrame>
+    )
+  }
 
   const returnedRows = data.preview_row_count ?? data.preview.length
   const previewLimit = data.preview_row_limit ?? returnedRows
@@ -489,6 +502,7 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
               {data.row_count.toLocaleString()} rows{" \u00b7 "}{data.column_count || columns.length} cols
             </span>
             <ExecutionDiagnosticsIndicator metrics={data.execution_metrics} />
+            <PreviewOutOfDateBadge data={data} />
           </>
         )}
         {data.status === "error" && (
@@ -525,6 +539,7 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
     <PreviewPanelFrame
       nodeLabel={data.nodeLabel}
       nodeType={nodeType}
+      onRefresh={onRefresh}
       actions={frameSelectControl}
       collapsedMeta={data.status === "ok" ? `${data.row_count.toLocaleString()} rows \u00b7 ${data.column_count || columns.length} cols` : undefined}
     >

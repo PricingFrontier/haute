@@ -10,8 +10,8 @@
 | `src/haute/_input_preparation.py` | Automatic snapshot preparation planned before execution: freshness check, cap gate, in-process or worker build, per-process single-flight, preparation records, and staging-token cleanup. |
 | `src/haute/_database_io.py` | Credential-free database locator/query validation and bounded read-only SQLite snapshot batches. |
 | `src/haute/_credential_security.py` | Shared URI credential detection and provider-diagnostic redaction. |
-| `src/haute/_source_cache.py` | Primary owner of source-cache identities, generations, metadata, publication, leases, quota, status, and cleanup. A generation's metadata records `build_seconds`, the wall-clock span from allocating its staging directory to writing that metadata — how long caching it took — absent on a generation published before it was recorded, which reads as unknown rather than instant. |
-| `src/haute/_node_snapshots.py` | Node-output snapshots in the shared store: slot and signature identity, class mappings, slot index, column sets and dependencies, cross-process publication and lease locks, lease markers, retention, eviction, clear, and pin; also the per-budget usage report (`usage_report`, `CacheUsageReport`, `CacheBudgetUsage`) and the per-owner inventory (`inventory`, `CacheInventory`, `CacheOwnerUsage`) the cache endpoints serve. |
+| `src/haute/_source_cache.py` | Primary owner of source-cache identities, generations, metadata, publication, leases, status, and cleanup. A generation's metadata records `build_seconds`, the wall-clock span from allocating its staging directory to writing that metadata — how long caching it took — absent on a generation published before it was recorded, which reads as unknown rather than instant. |
+| `src/haute/_node_snapshots.py` | Node-output snapshots in the shared store: slot and signature identity, class mappings, slot index, column sets and dependencies, cross-process publication and lease locks, lease markers, retention, clear, and pin; also the per-owner inventory (`inventory`, `CacheInventory`, `CacheOwnerUsage`) the cache endpoints serve. |
 | `src/haute/_polars_io_schema.py` | Cached index over the committed Polars callable schema, live introspection of the installed Polars, and the intersection of the two. |
 | `src/haute/_polars_io_arguments.json` | Generated Polars callable signature data checked against the pinned Polars version. |
 | `src/haute/_polars_dtypes.py` | Struct-capable dtype JSON codec used by registry schema arguments. |
@@ -60,14 +60,12 @@ relationship is recorded in `specs/ownership.toml`.
   its record; `SourceCacheGenerationMissingError` (a `SourceCacheCorruptError`) reports a
   named generation that does not exist.
 - `SourceCacheStore` coordinates same-root handles in-process, publishes generations, tracks
-  local leases and verified-generation memos, applies quotas, reclaims provably stale
+  local leases and verified-generation memos, reclaims provably stale
   staging, and exposes `build`, `lease`, `lease_generation`, `clear`, and `status`. Leases
-  are process-local. A
-  superseded generation is retired only after `HAUTE_INPUT_CACHE_RETIRE_GRACE_SECONDS`
-  (default 1800) have elapsed since the current generation was published, so a reader in
-  another process finishes its scan; an explicit clear and quota pressure reclaim
-  immediately, the latter logged
-  (`source_cache_grace_reclaimed_under_quota_pressure`). A reconcile removal that leaves
+  protected across processes by lease markers and a shared lock. A
+  superseded generation is normally retired after `HAUTE_INPUT_CACHE_RETIRE_GRACE_SECONDS`
+  (default 1800) have elapsed since the current generation was published; explicit clear
+  bypasses the grace period while preserving live readers. A reconcile removal that leaves
   its directory behind is logged (`source_cache_reconcile_removal_failed`) and reported as
   `unremovable`.
 - `source_signature` memoises by path, size, and mtime, so an unchanged file is hashed once
@@ -176,22 +174,12 @@ an in-place or non-atomic fallback.
    starts — never before a `cap_unavailable` refusal or a stale reuse; the
    record is appended to the context (`ExecutionContext.record_input_preparation`) and
    surfaces as `metrics_payload()["input_preparation"]`.
-7. A spawned build never retires superseded generations: the child's lease counts are
-   process-local, so a generation the parent still leases would look unreferenced there.
-   The child's build context sets `defer_retirement=True`, which skips both retirement
-   passes in `SourceCacheStore.build`, and the supervising parent calls
-   `SourceCacheStore.retire_unleased(identity)` — with its own lease counts — after a
-   successful spawned build and after a reconciliation that reported `published`.
-   Because the child's lease table is empty, the supervising parent also passes the
-   generation ids it leases at spawn time (`SourceCacheStore.leased_generation_ids`,
-   carried on the request as `retained_generation_ids` and set on the child's build
-   context), and the child's quota projection treats them as retained rather than
-   reclaimable. A lease the parent acquires after that snapshot is the accepted
-   cross-process window: the generation is kept until its release, and the release
-   path retires it.
+7. A spawned build sets `defer_retirement=True`; its supervising parent calls
+   `SourceCacheStore.retire_unleased(identity)` after success or reconciliation reporting
+   `published`. Shared lease markers protect readers in either process. There is no
+   retained-generation list on the worker request or build context.
 8. Worker failure classification maps the child's own exception type name carried by
-   `IsolatedWorkerRemoteError.remote_type` first: `SourceCacheQuotaExceededError` (or the
-   direct instance) is `quota_exceeded`, and `NativeMemoryLimitUnsupportedError` /
+   `IsolatedWorkerRemoteError.remote_type` first: `NativeMemoryLimitUnsupportedError` /
    `NativeMemoryLimitCleanupError` are `cap_unavailable`. It then uses
    `isolated_worker_failure_is_memory` and the worker's terminal reason to choose
    `memory_limited`, `cancelled`, `timed_out`, or `build_failed`. Each reason code carries
@@ -223,17 +211,15 @@ an in-place or non-atomic fallback.
    in a read pass. Publication reads every part's footer and schema but never re-reads a
    part in full to hash it; verification and the verified-generation memo check xxh64.
    It writes canonical `meta.json` and validates the staged generation.
-5. Quota admission rejects the incoming publication when projected byte/count limits would
-   be exceeded; it never evicts another identity's current generation.
-6. The staging directory is atomically renamed and `current.json` is atomically replaced.
-7. Locally leased old generations survive until the final lease release.
+5. The staging directory is atomically renamed and `current.json` is atomically replaced.
+6. Old generations with live leases survive until the final lease release. Publication
+   has no cache byte/count limit and never evicts another identity's current dataset.
 
 Construction of a store handle inspects staging directories only. It recursively finds the
 newest activity timestamp and removes a directory only when that timestamp predates
 `HAUTE_INPUT_CACHE_STAGING_MAX_AGE_SECONDS`; stat failures and recent staging are preserved.
-Non-current generations are never startup-swept. Staging bytes under an identity are
-included in that identity's budget projection, excluding only the build currently being
-admitted.
+Non-current generations are never startup-swept. Retained staging bytes appear in the
+inventory and consume physical disk space.
 
 ### Snapshot lease lifecycle
 
@@ -263,33 +249,13 @@ admitted.
 
 `src/haute/_node_snapshots.py` extends the store as `NodeSnapshotStore`, a subclass
 that delegates every non-`node_output` identity to `SourceCacheStore` unchanged.
-The store maintains two budgets: input snapshots, which is every provider that is
-not `node_output`, keeping `HAUTE_INPUT_CACHE_MAX_GENERATIONS` (64) and
-`HAUTE_INPUT_CACHE_MAX_BYTES` (20 GiB) and the `max_generations` / `max_bytes`
-constructor arguments; and node outputs, having
-`HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS` (512) and `HAUTE_NODE_SNAPSHOT_MAX_BYTES`
-(40 GiB) and the `node_output_max_generations` / `node_output_max_bytes`
-constructor arguments on `NodeSnapshotStore`, validated the way the existing
-pair is: a positive integer, a bool refused, an unusable environment value
-refused the same way. Each of the four limits is read through the constant that
-also names it (`INPUT_CACHE_MAX_GENERATIONS_VARIABLE` /
-`INPUT_CACHE_MAX_BYTES_VARIABLE` in `_source_cache.py`,
-`NODE_SNAPSHOT_MAX_GENERATIONS_VARIABLE` / `NODE_SNAPSHOT_MAX_BYTES_VARIABLE`
-in `_node_snapshots.py`), so a surface that tells a user which variable to
-raise cannot name one the store does not read.
-
-`NodeSnapshotStore.usage_report()` returns a `CacheUsageReport` of two
-`CacheBudgetUsage` values — node outputs and input snapshots — each carrying
-the generations and bytes used, the limits, and those variable names. It takes
-no lock and mutates nothing, and it is one `_bucket_usage` walk per budget:
-the same walk, and the same cost, an admission pays. An identity whose
-provider marker does not classify is therefore counted against both budgets
-here exactly as it is at admission, so the report states what would refuse the
-next capture rather than a second opinion about it. It is deliberately too
-expensive to poll; its consumer is the
-[cache-usage endpoint](../server-api/low-level.md#cache-usage), whose request
-is not free of writes because constructing the store can create the inputs
-root and sweep retired directories.
+Input snapshots and node outputs have no cache-specific byte or count budgets,
+constructor limit arguments, or limit environment variables. The budget usage report
+and its endpoint are removed. Published datasets remain until explicit clear or
+replacement; physical disk-headroom checks and execution-memory limits still apply.
+The [cache inventory endpoint](../server-api/low-level.md#cache-usage) lists the data
+for user-managed cleanup. Constructing the store can create the inputs root and sweep
+retired directories.
 
 `NodeSnapshotStore.inventory()` attributes every generation on disk to the owner its
 metadata names, returning a `CacheInventory` of `CacheOwnerUsage` values. A generation's
@@ -303,14 +269,11 @@ caller holding one — a node's resolved input snapshot — can tell whether tha
 own. A generation whose `meta.json` is absent
 or unreadable, and staging under an identity with no readable generation, are reported as
 `unattributed_*` rather than dropped, so the owners' bytes plus the unattributed bytes
-account for what the budgets say — and, since the walk skips symlinked files exactly as the
-budget's own does, the two totals cannot diverge on one. A node-output owner is keyed by
+account for the stored dataset bytes, skipping symlinked files. A node-output owner is keyed by
 pipeline, node and source, because several pipelines can share one project root and therefore
 one store. `unmarked_identities` counts identities holding
-generations whose provider marker does not classify; those are charged to both budgets at
-admission while the inventory attributes each to the one bucket its metadata names, so that
-count is what explains a difference between the two. Like `usage_report` it takes no lock
-and mutates nothing.
+generations whose provider marker does not classify. Metadata still attributes those
+generations to their owners when readable. Inventory takes no lock and mutates nothing.
 
 - **Identity.** `NodeSnapshotSlot(pipeline_source_file, node_id, source, semantics_class)`
   has a SHA-256 slot digest. `slot.identity(signature)` is a `SourceCacheIdentity` with
@@ -361,9 +324,8 @@ and mutates nothing.
   file directly in the identity directory holds the provider name as one line,
   written atomically as part of creating that directory before anything is
   staged into it, by both paths that create one (a node-output staging allocation
-  and an input-snapshot build). An identity whose marker is missing, unreadable,
-  or not a provider the store knows is charged to both budgets, in generations
-  and bytes, so unreadable data is never free; it is never skipped. Each
+  and an input-snapshot build). Missing or unreadable provider markers are reported
+  by the inventory; their dataset bytes are not silently skipped. Each
   generation's `meta.json` carries a `node_output` block (metadata version 2:
   slot, slot digest, signature, `column_set` of `"all"` or a sorted list, and
   `dependencies` as identity digest → generation id). The per-slot index is
@@ -404,7 +366,7 @@ and mutates nothing.
   the identity's publication lock applies the publication rule. `explicit` marks an explicit
   cache build: only it may `refresh`, pin the slot, or replace a corrupt latest generation;
   an automatic capture raises the corruption. A superseded outcome returns the artifact.
-  Otherwise, under the lease lock, it admits quota, records the candidate identity and
+  Otherwise, under the lease lock, it records the candidate identity and
   retention in the slot index, renames staging to the generation, seeds the verified memo,
   creates the publisher's marker and in-process count, then commits the pointer. Indexing
   before exposure keeps interrupted candidates discoverable; an existing slot pin protects
@@ -418,7 +380,7 @@ and mutates nothing.
   reader still holds is left alone and retires when that reader releases it, since
   `_release_node_lease` retires a generation whose pointer has gone — a scan in flight never
   has its files deleted underneath it, though a scan that outlives its lease, always a
-  contract violation, now loses its files at the next re-cache rather than the next eviction.
+  contract violation, loses its files at the next re-cache or clear.
   Such a signature stays **indexed and unpointed**: dropping it from the index would strand
   its generation where `clear_slot`, which walks the index, could never see it if the holder
   died without releasing, leaving a node showing two datasets and a Clear that cannot remove
@@ -426,26 +388,8 @@ and mutates nothing.
   prunes it when it retires the last generation of an unpointed identity. Any failure after the publisher's lease exists
   releases that lease before raising.
   The returned `NodeSnapshotPublication` holds the lease (or owns the artifact) until closed.
-- **Quota.** What each budget counts: its own generations and their bytes, plus
-  the staging bytes under its identities, including an identity that holds
-  staging and no generation yet. An identity whose marker is missing,
-  unreadable, or not a known provider is charged to both budgets. Admission and
-  reclaiming read one budget: an input publication counts and reclaims within
-  the input budget, a node-output publication within the node-output budget,
-  and a node-output admission never counts or evicts an input snapshot.
-  Admission projects published plus retained staging bytes, excluding the
-  artifact being admitted, and the subtraction made for an unheld superseded
-  generation applies only to usage the projection actually counted. When over
-  the byte or count limit it lists unleased, unpinned node-output generations,
-  non-current first then by last use, and raises `NodeSnapshotQuotaRejectedError`
-  (a `SourceCacheQuotaExceededError` carrying the artifact) without evicting
-  when even all of them would not make room. Otherwise it retires candidates in
-  order, re-checking markers at the `evict_before_marker_check` fault point,
-  removing an evicted current generation's pointer and index entry, and logs
-  `node_snapshot_evicted`. Tests prove input snapshots do not consume
-  node-output slots and the mirror, a node-output admission retires only node
-  outputs, each budget counts its own bytes including staging, and
-  unclassifiable identities are charged to both budgets.
+- **Retention.** Neither explicit nor automatic datasets are removed to admit another
+  dataset. Pins and last-used metadata remain available, but do not control storage limits.
 - **Clear and pin.** `clear_slot(slot)` removes every indexed identity's pointer, retires
   each unheld generation, and deletes the index; `clear(identity)` does the same for one
   identity. `pin(identity)` pins a slot to an identity that has a current generation.
@@ -454,7 +398,7 @@ and mutates nothing.
   and store construction removes any leftover retired directory. A rename refused by an open
   Windows handle is logged (`node_snapshot_retirement_deferred`) and left selectable.
 
-### Staging reclamation and quota admission
+### Staging reclamation and publication
 
 Store construction examines only real, non-symlink `.staging-*` directories.
 For each it walks the tree without following symlinks and finds the newest
@@ -463,42 +407,10 @@ when that proof is readable and older than the configured threshold; a recent,
 racing, or unreadable tree remains. No generation directory is part of startup
 cleanup.
 
-The store enforces two budgets: input snapshots, which is every provider that is
-not `node_output`, keeping `HAUTE_INPUT_CACHE_MAX_GENERATIONS` (64) and
-`HAUTE_INPUT_CACHE_MAX_BYTES` (20 GiB) and the `max_generations` / `max_bytes`
-constructor arguments; and node outputs, having
-`HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS` (512) and `HAUTE_NODE_SNAPSHOT_MAX_BYTES`
-(40 GiB) and the `node_output_max_generations` / `node_output_max_bytes`
-constructor arguments on `NodeSnapshotStore`, validated the way the existing
-pair is. An identity is classified by a `provider` file directly in the identity
-directory holding the provider name as one line, written atomically as part of
-creating that directory, before anything is staged into it, by both paths that
-create one. An identity whose marker is missing, unreadable, or not a provider
-the store knows is charged to both budgets, in generations and bytes, so
-unreadable data is never free; it is never skipped.
-
-Before publication, quota accounting reads one budget: an input publication
-counts and reclaims within the input budget, a node-output publication within
-the node-output budget, and a node-output admission never counts or evicts an
-input snapshot. What each budget counts is its own generations and their bytes,
-plus the staging bytes under its identities, including an identity that holds
-staging and no generation yet. Quota accounting totals those published bytes
-plus retained staging bytes under that budget's identities except the staging
-tree being admitted, then adds the new artifact and generation count. The
-subtraction both admission paths make for an unheld superseded generation
-applies only to usage the projection counted: the old current generation for the
-same identity is subtracted only if locally unleased and not named in the build
-context's `retained_generation_ids`, because successful pointer replacement
-makes it reclaimable (a retained id is a lease held by the supervising parent of
-a spawned build, which the child cannot see). Every input provider draws on one
-input budget, where publication past that budget is refused rather than evicting
-another identity's current generation: no current generation for another
-identity is an eviction candidate. If the projection still exceeds byte or count
-limits, admission raises an actionable quota error
-(`SourceCacheQuotaExceededError`) and leaves every pointer/generation unchanged.
-Tests prove that each budget counts its own bytes including staging, that every
-input provider draws on one input budget with oversized publications refused,
-and that an identity with an unreadable marker is charged to both budgets.
+Both publication paths atomically write a `provider` marker before staging data.
+The marker assists inventory diagnostics; it does not select a quota or eviction policy.
+There is no byte/count admission step. Current datasets for other identities remain
+untouched, including automatic node captures, and users clear them through the inventory.
 
 Snapshot-mode execution contacts the configured provider only through automatic
 preparation, which is the explicit build path scheduled before planning under a hard cap.
@@ -605,9 +517,9 @@ is no eager dataframe or collect-then-write fallback.
 - Empty snapshots retain schema when declarations prove it. Integer/real runtime mixtures
   widen to float; incompatible text/blob/numeric mixtures fail before the data cursor emits.
 - Missing SQLite paths fail without creating a file.
-- Clear removes the pointer first and retires only unleased local generations.
+- Clear removes the pointer first and retires only generations without live leases.
 - Startup never removes generations; it removes only staging older than the configured
-  activity threshold, and quota accounting includes retained staging bytes.
+  activity threshold, and inventory includes retained staging bytes.
 - Full artifact SHA-256 is verified once per stable generation stat gate per process rather
   than once per lease.
 - Partitioned Parquet sinks validate the final layout and preserve the previous published
@@ -669,13 +581,12 @@ invalid input before side effects. `BoundedMemoryUnsupportedError` is raised by 
 execution discipline for operations that cannot meet the selected profile.
 
 `SourceCacheBuildError` covers cancellation, deadline, unsupported build class, and invalid
-builder output. `SourceCacheQuotaExceededError` rejects a publication without replacing the
-current pointer. `SourceCacheCorruptError` is reserved for proven structural/integrity
+builder output. `SourceCacheCorruptError` is reserved for proven structural/integrity
 failure. `OSError` subclasses from transient filesystem access are not relabelled corrupt.
 
 `InputPreparationError` (`error_code="input_preparation_failed"`) wraps automatic
 preparation outcomes with a stable `reason_code` (`cap_unavailable`, `build_failed`,
-`memory_limited`, `cancelled`, `timed_out`, `quota_exceeded`), the node id, identity
+`memory_limited`, `cancelled`, `timed_out`), the node id, identity
 digest, build class, and a remediation; it never carries a locator or a secret. It is a
 member of `PUBLIC_CONTRACT_ERROR_TYPES` in `haute.routes._contract_errors`: synchronous
 routes answer HTTP 422 with its payload, and background jobs record the `memory_limited`
@@ -694,7 +605,7 @@ overwrite is an HTTP 409; registered data sinks keep their documented overwrite 
    secret-bearing keys/values before hashing or metadata publication.
 2. A snapshot build rejects unsupported/mismatched build class before creating
    staging. Once staged, cancellation/deadline checkpoints bracket provider
-   read, artifact write, integrity/footer/schema measurement, quota admission,
+   read, artifact write, integrity/footer/schema measurement,
    generation rename, and pointer publication. Metadata is written and the
    staged artifact is self-validated before the pointer changes. Any failure
    removes staging and any unpublished generation; the prior current pointer
@@ -726,10 +637,9 @@ The operational review checks that this specification answers: Which exact
 source semantics enter snapshot identity and where are credentials rejected?
 What owns a lease from acquisition through derived plans and final release, and
 what do refresh and clear do meanwhile? Which staging trees may startup reclaim,
-which bytes/counts enter quota projection, and when may another current
-generation be evicted? At which boundary does each config, provider,
-cancellation, schema, integrity, quota, pointer, SQLite, and output failure
-surface? The identity, lease, reclamation/quota, SQLite, output, and ordered
+and which datasets does explicit clear remove? At which boundary does each config, provider,
+cancellation, schema, integrity, pointer, SQLite, and output failure
+surface? The identity, lease, reclamation/publication, SQLite, output, and ordered
 failure sections above are the maintained answers.
 
 ## Testing
@@ -741,7 +651,7 @@ failure sections above are the maintained answers.
 - `tests/test_pipeline_runtime_path_validation.py` verifies runtime path/graph validation, HTTP status mapping, sidecar/codegen case-collision and reserved-name protections, and safe rename/delete semantics.
 - `tests/test_read_user_text.py` verifies robust text/config/pipeline decoding across encodings and malformed inputs.
 - `tests/test_sink.py` verifies sink execution errors, parquet/CSV output, directory creation, scenario handling, compute failures, and response metadata.
-- `tests/test_data_output_seeding.py` drives writes through the write-output route with the sink worker in process: a second write seeds the producer the first captured and builds nothing; a write after a batch training run seeds that run's capture; an in-process `write_data_output` seeds and captures too; no `haute_sink_` directory or dataframe-cache entry is written; a worker stopped, timed out, or killed at its cap leaves no capture staging and publishes nothing; the worker stages under the parent's token; the response metrics keep the parent's input preparation; a capture the quota refuses is read from the run's own staging through the write, with the plan and the request's chunk size held until the write completes; preparation that ends past the sink timeout — returning or failing — is a 504 that starts no worker, and otherwise the worker gets the remainder; a request cancelled during preparation stops it, and one cancelled while preparation still succeeds starts no worker; and a parent plan-opening failure (contract, corrupt cache, admission) starts no worker.
+- `tests/test_data_output_seeding.py` drives writes through the write-output route with the sink worker in process: a second write seeds the producer the first captured and builds nothing; a write after a batch training run seeds that run's capture; an in-process `write_data_output` seeds and captures too; no `haute_sink_` directory or dataframe-cache entry is written; a worker stopped, timed out, or killed at its cap leaves no capture staging and publishes nothing; the worker stages under the parent's token; the response metrics keep the parent's input preparation; a superseded capture is read from the run's own staging through the write, with the plan and the request's chunk size held until the write completes; preparation that ends past the sink timeout — returning or failing — is a 504 that starts no worker, and otherwise the worker gets the remainder; a request cancelled during preparation stops it, and one cancelled while preparation still succeeds starts no worker; and a parent plan-opening failure (contract, corrupt cache, admission) starts no worker.
 
 - `tests/test_execution_profile_semantics.py` proves what a node's data is under every
   profile that may read or write a snapshot: that the bounded profiles agree with each
@@ -749,8 +659,8 @@ failure sections above are the maintained answers.
   columns, that they refuse the same sources the same way, and that the interactive preview
   does not promise the bounded row order and so shares no snapshot with them.
 - `tests/test_source_cache.py` covers canonical/redacted identity, atomic refresh,
-  immutable generations, leases, corruption, quota, same-identity single flight,
-  age-gated staging reclamation, quota-visible staging, digest memoization, non-destructive
+  immutable generations, leases, corruption, no-budget retention, same-identity single flight,
+  age-gated staging reclamation, digest memoization, non-destructive
   generation startup, and transient OS failures.
 - `tests/test_input_providers.py` covers direct-Parquet and offline snapshot reads,
   provider identities, execution-lifetime leases, SQLite empty/mixed storage classes,
@@ -781,7 +691,7 @@ failure sections above are the maintained answers.
   deduplication, unreadable files, retained resolver seams, and cross-platform path spelling.
 - `tests/test_input_cache_route.py` covers HTTP build/status/cancel/clear lifecycle and
   conflict/admission behaviour, and that an admitted-eager explicit build runs through the
-  worker entry point with its `memory_limited`, `cancelled`, `timed_out`, quota, and
+  worker entry point with its `memory_limited`, `cancelled`, `timed_out`, and
   `completed` outcomes mapped onto the job lifecycle (a fake spawn receives the budget, the
   generation id, and the staging token; a memory-limited outcome reconciles both through
   `reconcile_unpublished(identity, generation_id, staging_token)`, removing
@@ -857,29 +767,19 @@ failure sections above are the maintained answers.
   replacement, never narrowing a stale generation, refresh only by explicit builds, a writer
   bound to a replaced dependency, cleared dependencies, a corrupt latest generation surfaced
   by an automatic capture and replaced by an explicit build),
-  least-recently-used eviction, pinned and leased generations surviving quota pressure,
-  staged-artifact handover on rejection, pin inheritance and explicit pinning, no rehash
+  datasets retained until explicit clear despite removed limit settings,
+  staged-artifact handover on supersession, pin inheritance and explicit pinning, no rehash
   on a second lease, named-generation leases through refresh and clear, validation only
   after the lease marker exists, malformed generation ids, the publisher's lease released
-  when its handoff fails, lease markers, recorded metadata, and the two-budget quota
-  scenarios: input snapshots not consuming node-output slots and the mirror
-  (`test_input_snapshots_do_not_consume_node_output_slots`,
-  `test_node_outputs_do_not_consume_input_snapshot_slots`); a
-  node-output admission retiring only node outputs
-  (`test_a_node_output_admission_never_evicts_an_input_snapshot`); each budget counting its own bytes
-  including staging (`test_each_budget_counts_only_its_own_bytes_including_staging`); every input
-  provider drawing on one input budget, where a publication past that budget is refused rather than
-  evicting another identity's current generation (`tests/test_source_cache.py`'s
-  `test_input_providers_share_one_budget`); an identity with an unreadable marker charged to both
-  budgets and an oversized refresh of it refused
-  (`test_an_identity_whose_marker_is_unreadable_is_charged_to_both_budgets`,
-  `test_a_generation_with_unreadable_metadata_stays_in_its_marked_budget`); and the new environment
-  variables being read and validated (`test_the_node_output_quota_reads_its_environment`).
+  when its handoff fails, lease markers, and recorded metadata.
+  `test_node_cache_keeps_datasets_until_explicit_clear` and the source-store counterpart
+  `test_input_cache_keeps_datasets_without_byte_or_entry_budgets` prove that obsolete
+  limit settings do not reject new datasets or evict existing ones and that clear is scoped.
 - `tests/test_node_snapshot_cross_process.py` covers two worker processes publishing one
   identity once, a paused reader in another process keeping its generation through
-  eviction and clear, a killed reader's dead marker making its generation evictable, a
+  clear, a killed reader's dead marker allowing its generation to be cleared, a
   writer whose columns miss a concurrently widened generation keeping its own artifact, and
-  both interleavings of a lease and an eviction paused at their fault points.
+  lease/clear interleavings paused at their fault points.
 - `tests/test_source_cache.py` additionally covers a build context with the parent-chosen
   pair staging under `.staging-<staging_token>` and publishing `generation_id`, beneath a
   temporary root long enough that a full-UUID staging name would exceed Windows'
@@ -887,9 +787,7 @@ failure sections above are the maintained answers.
   `reconcile_unpublished` returning `published` for a current generation (nothing removed),
   removing an unreferenced renamed generation without touching the current one or another
   build's staging, removing the token's staging directory, and reporting `absent`
-  otherwise; and every input provider drawing on one input budget, where a publication past
-  that budget is refused rather than evicting another identity's current generation
-  (`test_input_providers_share_one_budget`).
+  otherwise.
 # Publication and part naming corrective contracts (PR #227)
 
 Ordered generation parts follow the numeric, unbounded-index naming contract in
@@ -913,20 +811,17 @@ rollback, the original error includes the rollback failure and the conservative
 pin remains until Clear or another publication. Process death at this boundary
 can likewise retain extra data, but cannot weaken the previous slot pin.
 
-Replacement admission credits all unleased generations of older signatures in the
-same slot that the successful publication will retire, as well as an unleased
-previous generation of the same signature. Credited generations cannot also be
-eviction candidates and stay usable until commit. Live readers prevent credit;
-pins on other slots remain protected. Byte and generation-count quotas apply to
-the resulting retained state; staging and retained readers still count.
+Replacement preserves the previous dataset until commit, then retires superseded
+generations when no live reader holds them. Other slots remain untouched and there
+is no byte/count admission step.
 ### Input leases shared between processes (PR #227 correction)
 
 Input snapshots use the same store-wide lease lock, process-owner token and
 generation markers as node outputs. Both `SourceCacheStore` and
 `NodeSnapshotStore` handles participate. Acquisition records the marker before
 metadata/content validation, and nested local readers retain it until the last
-reader releases. Clear, replacement, quota reclamation and reconciliation check
-live holders under the shared lock before deleting or crediting a generation.
+reader releases. Clear, replacement and reconciliation check
+live holders under the shared lock before deleting a generation.
 Dead owner markers can be reclaimed; age alone never overrides a live marker.
 
 A current-generation lease preserves the ordinary open contract for retired
@@ -935,10 +830,10 @@ Failed validation releases its marker and local reference count before raising.
 Named-generation leases retain their existing generation-missing error contract.
 
 Keep the input retirement grace as an additional retention policy and preserve
-the supervised parent's retained-generation handoff. A held superseded generation
+supervised parent retirement after a successful worker build. A held superseded generation
 can survive beyond grace or explicit Clear and stays readable until release;
-once unpointed, the last release permits retirement. Input build publication and
-quota checks take the shared lease lock before the in-process count lock. Do not
+once unpointed, the last release permits retirement. Input build publication
+takes the shared lease lock before the in-process count lock. Do not
 hold the global lease lock while building or validating a leased input. The
 existing file-lock implementation and token directory are shared, not duplicated.
 ## Scratch filesystem headroom
@@ -954,5 +849,4 @@ output. Concurrent filesystem users and variable compression can still cause
 an OS write failure. Fail with `OSError(ENOSPC)` naming required/available bytes;
 the existing staging owner removes the partial artifact on failure/cancellation.
 Disk checks use actual free space: old generations and already-written staging
-remain charged until deleted, even if quota admission credits their eventual
-retirement. No old generation is removed to make a speculative write fit.
+consume space until deleted. No old generation is removed to make a speculative write fit.

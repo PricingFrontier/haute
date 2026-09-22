@@ -13,6 +13,9 @@ export type RatingStepEditorSection = "tables" | "combined"
 export type ExplorePane = "code" | "overview" | "pivots" | "charts" | "export"
 export type ExplorePreviewPane = "preview" | "overview" | "pivots" | "charts"
 export type ModellingPane = "target" | "features" | "params" | "split" | "train" | "export"
+/** Whether clicking a node calculates its preview ("automatic") or only
+ *  shows its last result until Refresh is pressed ("manual"). */
+export type CalculationMode = "automatic" | "manual"
 
 function setNodeIdEntry<T>(map: Record<string, T>, nodeId: string, value: T): Record<string, T> {
   return { ...map, [nodeId]: value }
@@ -70,6 +73,10 @@ interface UIState {
   // Hover highlight — when set, connected edges glow and unconnected nodes/edges dim
   hoveredNodeId: string | null
   setHoveredNodeId: (id: string | null) => void
+
+  // Preview calculation mode. Session-only: every session starts automatic.
+  calculationMode: CalculationMode
+  setCalculationMode: (mode: CalculationMode) => void
 
   // Node search (Ctrl+K)
   nodeSearchOpen: boolean
@@ -148,6 +155,9 @@ const useUIStore = create<UIState>()((set) => ({
   // Hover highlight
   hoveredNodeId: null,
   setHoveredNodeId: (id) => set({ hoveredNodeId: id }),
+
+  calculationMode: "automatic",
+  setCalculationMode: (mode) => set({ calculationMode: mode }),
 
   // Node search
   nodeSearchOpen: false,

@@ -151,7 +151,7 @@ function nodeWithId(id: string): Node {
   }
 }
 
-describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", () => {
+describe("useWebSocketSync - orphaned dialog state cleared on WS sync (#39)", () => {
   let originalWebSocket: typeof globalThis.WebSocket
 
   beforeEach(() => {

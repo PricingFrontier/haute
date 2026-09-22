@@ -28,17 +28,17 @@ describe("configField", () => {
 
   // ── Falsy-but-not-nullish values are preserved ─────────────────
 
-  it("returns empty string (not fallback) — nullish coalescing doesn't trigger on ''", () => {
+  it("returns empty string (not fallback) - nullish coalescing doesn't trigger on ''", () => {
     const config: Record<string, unknown> = { name: "" }
     expect(configField(config, "name", "fallback")).toBe("")
   })
 
-  it("returns 0 (not fallback) — nullish coalescing doesn't trigger on 0", () => {
+  it("returns 0 (not fallback) - nullish coalescing doesn't trigger on 0", () => {
     const config: Record<string, unknown> = { count: 0 }
     expect(configField(config, "count", 42)).toBe(0)
   })
 
-  it("returns false (not fallback) — nullish coalescing doesn't trigger on false", () => {
+  it("returns false (not fallback) - nullish coalescing doesn't trigger on false", () => {
     const config: Record<string, unknown> = { enabled: false }
     expect(configField(config, "enabled", true)).toBe(false)
   })

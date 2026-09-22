@@ -85,7 +85,7 @@ afterEach(() => {
   document.getElementById("outside")?.remove()
 })
 
-describe("Phase 2D-3 shell merge — panel surface preserved", () => {
+describe("Phase 2D-3 shell merge - panel surface preserved", () => {
   it("panel with a title string renders the title", () => {
     // A panel built by wrapping PanelHeader inside PanelShell (the current
     // pattern in ImportsPanel/GitPanel/UtilityPanel) must render its title.
@@ -151,7 +151,7 @@ describe("Phase 2D-3 shell merge — panel surface preserved", () => {
   })
 })
 
-describe("Phase 2D-3 shell merge — ModalShell focus trap (#41) preserved", () => {
+describe("Phase 2D-3 shell merge - ModalShell focus trap (#41) preserved", () => {
   it("Tab at the last focusable wraps to the first focusable", () => {
     // Regression guard on the pre-existing Phase 1 #41 fix: focus trap must
     // survive the 2D-3 merge even if internal plumbing changes.  Without this,
@@ -228,7 +228,7 @@ describe("Phase 2D-3 shell merge — ModalShell focus trap (#41) preserved", () 
   })
 })
 
-describe("Phase 2D-3 shell merge — consumer regression guards", () => {
+describe("Phase 2D-3 shell merge - consumer regression guards", () => {
   it("ImportsPanel still renders its title, description, and close button after any PanelShell/Header merge", () => {
     // ImportsPanel is the smallest consumer of PanelShell + PanelHeader and
     // touches every surface being merged (title, close, subtitle, panel

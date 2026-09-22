@@ -31,7 +31,7 @@ const REGULARIZATION_TYPES = [
 
 const L1_RATIO_HELP =
   "Elastic Net blends Ridge (L2) and LASSO (L1); the L1 ratio sets the mix. " +
-  "There is no sensible default — leaving it unset would silently fit pure " +
+  "There is no sensible default - leaving it unset would silently fit pure " +
   "Ridge, so a choice is required. Pick a mix, or collapse to Ridge (0) or " +
   "LASSO (1). Your last mix value is kept if you switch back."
 

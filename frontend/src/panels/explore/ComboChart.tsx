@@ -255,7 +255,7 @@ export default function ComboChart({ chart, data }: ComboChartProps) {
                   </th>
                   {data.series.map((series) => (
                     <td key={series.key} className="whitespace-nowrap px-2 py-1.5 tabular-nums">
-                      {series.formattedValues[rowIndex] ?? "—"}
+                      {series.formattedValues[rowIndex] ?? "-"}
                     </td>
                   ))}
                 </tr>

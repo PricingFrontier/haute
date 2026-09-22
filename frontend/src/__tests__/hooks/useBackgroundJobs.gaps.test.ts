@@ -36,7 +36,7 @@ async function advance(ms: number): Promise<void> {
   })
 }
 
-describe("useBackgroundJobs — gap tests", () => {
+describe("useBackgroundJobs - gap tests", () => {
   beforeEach(() => {
     vi.useFakeTimers()
     resetStores()

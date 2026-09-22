@@ -209,7 +209,7 @@ class SharedSnapshotCaptureSkipRecord:
         }
 
 
-CaptureOutcome = Literal["published", "superseded", "quota"]
+CaptureOutcome = Literal["published", "superseded"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1063,7 +1063,7 @@ class SeedPlan:
     def read_generations(self, order: Iterable[str]) -> tuple[ReadGeneration, ...]:
         """Every generation this execution read, seeded or captured, in *order*.
 
-        A capture that kept its own artifact — quota, or superseded — is not
+        A superseded capture that kept its own artifact is not
         a generation anyone else can read, and is not listed.
         """
         reads: dict[str, ReadGeneration] = {}

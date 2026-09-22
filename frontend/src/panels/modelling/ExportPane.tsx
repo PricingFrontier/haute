@@ -59,7 +59,7 @@ export function ExportPane({
   trainedResultExpired = false,
 }: ExportPaneProps) {
   const exportBlockedReason = training
-    ? "Training is running — export is available when it completes."
+    ? "Training is running - export is available when it completes."
     : trainedJobId === null
       ? trainedResultExpired
         ? "The last training result for this node is no longer available (the server restarted or it expired). Train this model again to export it."

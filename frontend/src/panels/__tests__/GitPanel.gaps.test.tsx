@@ -54,7 +54,7 @@ const milestones = {
   ],
 }
 
-describe("GitPanel — uncovered fork/view/peek paths", () => {
+describe("GitPanel - uncovered fork/view/peek paths", () => {
   const defaultProps = { onClose: vi.fn() }
 
   beforeEach(async () => {

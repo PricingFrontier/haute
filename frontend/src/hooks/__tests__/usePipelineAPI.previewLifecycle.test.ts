@@ -123,7 +123,7 @@ const okEnvelope: PreviewEnvelope = {
   node_statuses: { browser_apply: "ok" },
 }
 
-describe("usePipelineAPI — preview lifecycle terminal states (W0)", () => {
+describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
   beforeEach(() => {
     vi.useRealTimers()
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live"] })

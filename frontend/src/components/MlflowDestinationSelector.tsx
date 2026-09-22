@@ -87,7 +87,7 @@ export default function MlflowDestinationSelector({
   const effective = effectiveMlflowDestination(value)
   const availability = mlflowLogAvailability(state, value)
   const resolved = availability.available
-    ? `${availability.label} — ${availability.destination}`
+    ? `${availability.label} - ${availability.destination}`
     : availability.reason
 
   return (

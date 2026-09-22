@@ -27,6 +27,7 @@ type ExplorePreviewProps = {
   submodels?: Record<string, unknown>
   preamble?: string
   previewData?: PreviewData | null
+  onRefresh?: () => void
   onCellClick?: (rowIndex: number, column: string, rowValues?: Record<string, unknown>) => void
   tracedCell?: { rowIndex: number; column: string } | null
 }
@@ -54,6 +55,7 @@ export default function ExplorePreview({
   submodels,
   preamble,
   previewData,
+  onRefresh,
   onCellClick,
   tracedCell,
 }: ExplorePreviewProps) {
@@ -117,6 +119,8 @@ export default function ExplorePreview({
     <PreviewPanelFrame
       nodeLabel={nodeLabel}
       nodeType={nodeType}
+      onRefresh={onRefresh}
+      refreshTitle="Refresh Explore outputs"
       subtitle={`${activeSource} | ${statusText}`}
       actions={
         <span className="inline-flex items-center gap-1">

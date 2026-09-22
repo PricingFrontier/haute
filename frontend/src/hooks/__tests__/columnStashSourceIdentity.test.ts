@@ -194,7 +194,7 @@ describe("column-stash source identity (cache-key completeness)", () => {
 
   it("treats an untagged stash as stale on source switch", async () => {
     vi.useRealTimers()
-    const A = makeStashedNode("A") // no _columnsSource — unknown provenance
+    const A = makeStashedNode("A") // no _columnsSource - unknown provenance
     const params = makeParams()
     params.graphRef.current = { nodes: [A], edges: [] }
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test" }))

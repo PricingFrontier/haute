@@ -194,7 +194,7 @@ function readTarget(name: TargetFile): string {
   const abs = path.join(EDITORS_DIR, name)
   if (!existsSync(abs)) {
     throw new Error(
-      `[editorsHover] target file missing: ${abs} — did the dev move or delete it?`,
+      `[editorsHover] target file missing: ${abs} - did the dev move or delete it?`,
     )
   }
   return readFileSync(abs, "utf8")
@@ -427,7 +427,7 @@ describe("editor hover migration (AST)", () => {
         hits,
         `${name} still imports from utils/hoverHandlers at line(s): ` +
           `${hits.map((h) => `${h.line} (${h.source})`).join(", ")}. ` +
-          `The factory helpers are the same hazard in centralised form — ` +
+          `The factory helpers are the same hazard in centralised form - ` +
           `remove the import and spell the hover in CSS instead.`,
       ).toEqual([])
     })

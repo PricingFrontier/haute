@@ -589,7 +589,10 @@ reconciliation rather than dropping them or committing a second mutation.
     re-fit through it.
 16. **Preview fetch (`usePipelineAPI.fetchPreview` →
     `fetchPreviewImmediate`).** `fetchPreview` cancels any in-flight
-    request/debounce, paints cached data (or a `"loading"` placeholder)
+    request/debounce; under `useUIStore.calculationMode === "manual"` it
+    then paints the stored preview matching source+rowLimit (or `null`) and
+    returns without a request, and the node-data-epoch refetch effect is
+    skipped. Otherwise it paints cached data (or a `"loading"` placeholder)
     immediately, then debounces (`options.debounceMs ?? 200`) before calling
     `fetchPreviewImmediate`. That function snapshots `rowLimit`/
     `activeSource`/`streamingChunkSize` and the node-data epoch
@@ -1101,11 +1104,24 @@ array-only payload or omitted-edge compatibility branch is supported.
   flushed to the `nodeMap` this filter reads yet — so the filter re-checks
   `_columnsSource` directly rather than assuming the effect has already
   stripped every stale stash.
-- **`clusterSnap`/`alignPositions` (layout.ts) snap coordinates within a
-  20px threshold to their cluster median**, so ELK's near-but-not-exact
-  layer alignment renders as visually exact rows/columns; the ELK engine
-  itself is lazily imported once and cached in a module-level promise
-  (`elkPromise`), never re-imported across calls.
+- **Auto-layout models the canvas geometry in `frontend/src/utils/layout.ts`.** The toolbar passes
+  React Flow's `getInternalNode` lookup through `useNodeHandlers` to
+  `getLayoutedElements`. Dimensions use positive finite explicit/measured values,
+  with the existing 240x70 estimate only before measurement. Mounted nodes expose
+  fixed ELK ports at their measured handle centres and compass sides. Edge handle
+  ids select those ports; absent handle ids select the first source/target handle,
+  matching React Flow. Co-located handles of the same type and side share an ELK
+  port, so fan-out and submodel input aliases share their actual attachment point.
+  A missing named handle on a measured node fails clearly. Before mounting,
+  absent handle bounds leave port placement to ELK.
+  ELK uses layered RIGHT layout, 60px node spacing, 120px between layers,
+  LAYER_SWEEP crossing reduction with thoroughness 30, and NETWORK_SIMPLEX
+  placement favouring straight edges. Coordinates are retained without global
+  snapping, which would break port alignment on unequal-height cards. Node origins
+  are applied when converting ELK top-left coordinates back to canvas positions.
+  Missing/non-finite ELK positions reject the whole result. Node order and all
+  non-position fields remain unchanged, and layout is repeatable for the same
+  input. The ELK engine is lazily imported once and cached in `elkPromise`.
 - **`ComparisonView`'s diff `moved` status is mutually exclusive with
   `changed`** — `diffPipelineNodes` only checks position when content is
   unchanged, so a node that both moved and changed content is reported only
@@ -1578,9 +1594,10 @@ again through the editor and save paths.
     partial-layout merge that leaves established nodes fixed, overlap
     avoidance, single-node non-zero position;
     distinct positions for connected nodes; data preserved through
-    layout; a 3-node linear chain; cluster-snapping near-equal
-    y-coordinates; disconnected nodes still positioned; zero-default when
-    ELK omits coordinates; fan-out nodes sharing a snapped x coordinate.
+    layout; a 3-node linear chain; measured dimensions, origins and fixed handle
+    geometry; named output ordering without avoidable crossings; straight branch
+    continuations; disconnected nodes still positioned; invalid ELK output
+    rejection; and repeated layout stability.
   - `frontend/src/utils/__tests__/connectionValidation.test.ts` — edge-join output-to-default-input
     allowed; self-loops rejected; incomplete connections rejected.
   - `frontend/src/utils/__tests__/flowElements.test.ts` — node creation from type metadata defaults;

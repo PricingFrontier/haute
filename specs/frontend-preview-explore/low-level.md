@@ -284,19 +284,9 @@ rather than duplicating the strategy remediation, a terminal memory-limit failur
 is reported instead of the warned strategy — in `ExecutionDiagnosticsIndicator`
 too, where the pressure diagnostic's title wins over the warned strategy's while
 the warned detail stays in the explanation — and the requested and blocking nodes
-are promoted to the canvas warning state. A capture the cache refused records an execution
-warning whose code is `snapshot_capture_skipped` and whose reason is `quota`, excluding that
-code with any other reason and the separate `snapshot_capture_superseded` code, producing a
-warning finding titled
-"Node capture was skipped". It is never an error because preview rows are correct, and it names
-every refused node in arrival order. Its remediation names both store remedies: clearing a
-cached node's data that is no longer needed, or raising the node-output cache quota, naming
-`HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS` and `HAUTE_NODE_SNAPSHOT_MAX_BYTES`. When no other
-diagnostic exists, the refusal is the content and the indicator renders for it alone; when another
-finding is present, that finding keeps its own severity, title and remediation, whether it is an
-execution error, memory pressure, a warned strategy or a projection boundary, and the refusal is
-appended to the explanation in one sentence so refused caching is never lost. Activating the
-icon explains projection limits, refused node captures, correctness, possible I/O/memory cost,
+are promoted to the canvas warning state. Cache storage has no byte/count budgets and
+produces no quota-refusal diagnostic. Activating the
+icon explains projection limits, correctness, possible I/O/memory cost,
 and remediation without exposing raw bounded-collection JSON.
 `ExplorePreview` passes progress or cache-report metrics to
 `ExecutionDiagnosticsSummary`, whose technical detail is disclosed on demand.
@@ -340,6 +330,13 @@ and remediation without exposing raw bounded-collection JSON.
   same top edge as the expand command. Without a measurable parent the ceiling falls back to the
   frame's own bottom edge, then the viewport height. The frame restores its saved height after
   expand-to-top.
+- `PreviewPanelFrame` accepts optional `onRefresh` and `refreshTitle` props and
+  renders the labelled Refresh button immediately before its size controls in
+  both open and collapsed headers. All preview variants forward the active
+  node's existing refresh callback; Explore retains its "Refresh Explore outputs"
+  tooltip. A previewable active node without results gets an explicit empty
+  preview frame so Refresh remains reachable. `NodePanelHeader` contains no
+  Refresh action; `SchemaWarningBanner` keeps its refresh callback.
 - `PreviewPanelTabs` gives exactly one enabled tab `tabIndex=0`; Left/Right wrap across enabled
   tabs, Home/End select the boundary tab, and disabled tabs are skipped.
 
@@ -374,13 +371,9 @@ contents, RFC-4180 CSV quoting through the download blob, full filtered-schema e
 pagination, disabled empty-table actions, and native-button accessibility.
 `frontend/src/__tests__/App.utilityPanelLazy.test.ts` and the bundle-budget tests
 guard the Utility panel's on-demand chunk boundary. Indicator tests in
-`frontend/src/components/__tests__/ExecutionDiagnosticsIndicator.test.tsx` verify that a quota
-refusal warning alone renders the indicator with both remedies and both environment variables
-(`HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS` and `HAUTE_NODE_SNAPSHOT_MAX_BYTES`), multiple refusals
-list every refused node in arrival order, mixed payloads report only quota-refused nodes,
-non-quota skipped capture warnings render nothing, and coexistence across memory pressure,
-rejected strategy, warned strategy, and projection boundary preserves the primary severity,
-title, and remediation while appending the refusal finding. Shared layout/constants and small
+`frontend/src/components/__tests__/ExecutionDiagnosticsIndicator.test.tsx` verify memory
+pressure, rejected and warned strategies, and projection boundaries, including preservation
+of the primary severity, title and remediation when diagnostics coexist. Shared layout/constants and small
 visual helpers are exercised through these component tests rather than owning standalone suites.
 
 Generic browser preview/smoke coverage is in `frontend/e2e/core-flows.spec.ts`,

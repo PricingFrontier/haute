@@ -6,11 +6,11 @@
  * 2. Multiple nodes get distinct positions
  * 3. Connected nodes are laid out left-to-right (ELK "RIGHT" direction)
  * 4. Empty graph returns empty array
- * 5. Cluster snapping aligns nearly-equal coordinates
+ * 5. Measured handles determine branch order and alignment
  * 6. Nodes preserve their original data (only position changes)
  */
 import { describe, it, expect } from "vitest"
-import type { Node, Edge } from "@xyflow/react"
+import { Position, type Node, type Edge, type InternalNode } from "@xyflow/react"
 import {
   getLayoutedElements,
   mergeLayoutedNodePositions,
@@ -34,7 +34,125 @@ function makeEdge(source: string, target: string): Edge {
   } as Edge
 }
 
+function measuredNode(node: Node, sourceYs: number[], targetY = 35): InternalNode {
+  return {
+    ...node,
+    measured: { width: 240, height: 70, ...node.measured },
+    internals: {
+      positionAbsolute: node.position,
+      z: 0,
+      userNode: node,
+      handleBounds: {
+        source: sourceYs.map((y, index) => ({
+          id: `out-${index}`, nodeId: node.id, type: "source",
+          position: Position.Right, x: node.measured?.width ?? 240, y, width: 0, height: 0,
+        })),
+        target: [{
+          id: null, nodeId: node.id, type: "target",
+          position: Position.Left, x: 0, y: targetY, width: 0, height: 0,
+        }],
+      },
+    },
+  }
+}
+
 describe("getLayoutedElements", () => {
+  it("aligns measured connection points on unequal-height cards without snapping their tops", async () => {
+    const nodes = [
+      { ...makeNode("a"), measured: { width: 240, height: 120 } },
+      { ...makeNode("b"), measured: { width: 240, height: 150 } },
+    ]
+    const internals = new Map([
+      ["a", measuredNode(nodes[0], [60], 60)],
+      ["b", measuredNode(nodes[1], [75], 75)],
+    ])
+    const result = await getLayoutedElements(nodes, [makeEdge("a", "b")], id => internals.get(id))
+
+    expect(result[0].position.y + 60).toBeCloseTo(result[1].position.y + 75)
+    expect(result[1].position.x - (result[0].position.x + 240)).toBeGreaterThanOrEqual(120)
+  })
+
+  it.each([false, true])("orders branches by fixed output rows and keeps continuations straight (reversed: %s)", async (reversed) => {
+    const nodes = [
+      { ...makeNode("source"), measured: { width: 240, height: 240 } },
+      makeNode("lower"), makeNode("lower-next"),
+      makeNode("upper"), makeNode("upper-next"), makeNode("sink"),
+    ]
+    const edges = [
+      { ...makeEdge("source", "lower"), sourceHandle: reversed ? "out-0" : "out-1" },
+      { ...makeEdge("source", "upper"), sourceHandle: reversed ? "out-1" : "out-0" },
+      makeEdge("lower", "lower-next"), makeEdge("upper", "upper-next"),
+      makeEdge("lower-next", "sink"), makeEdge("upper-next", "sink"),
+    ]
+    const internals = new Map(nodes.map(node => [
+      node.id, measuredNode(node, node.id === "source" ? [40, 200] : [35]),
+    ]))
+    const result = await getLayoutedElements(nodes, edges, id => internals.get(id))
+    const byId = new Map(result.map(node => [node.id, node]))
+    const upper = byId.get("upper")!.position
+    const lower = byId.get("lower")!.position
+
+    // Fixed source rows and matching target order mean the branch edges cannot cross.
+    const [top, bottom] = reversed ? [lower, upper] : [upper, lower]
+    expect(top.y + 70 + 60).toBeLessThanOrEqual(bottom.y)
+    expect(byId.get("upper-next")!.position.y).toBeCloseTo(upper.y)
+    expect(byId.get("lower-next")!.position.y).toBeCloseTo(lower.y)
+    for (const edge of edges) {
+      expect(byId.get(edge.target)!.position.x)
+        .toBeGreaterThan(byId.get(edge.source)!.position.x + 240)
+    }
+    const repeated = await getLayoutedElements(result, edges, id => internals.get(id))
+    expect(repeated.map(node => node.position)).toEqual(result.map(node => node.position))
+    expect(result.map(node => node.id)).toEqual(nodes.map(node => node.id))
+  })
+
+  it("keeps measured tall sibling cards separated", async () => {
+    const nodes = [makeNode("source"), ...["a", "b"].map(id => ({
+      ...makeNode(id), measured: { width: 300, height: 240 },
+    }))]
+    const result = await getLayoutedElements(nodes, [makeEdge("source", "a"), makeEdge("source", "b")])
+    expect(Math.abs(result[1].position.y - result[2].position.y)).toBeGreaterThanOrEqual(300)
+  })
+
+  it.each([Position.Top, Position.Bottom])("places join input on its %s side while keeping the base path straight", async (side) => {
+    const nodes = [makeNode("base"), makeNode("lookup"), {
+      ...makeNode("join"), measured: { width: 40, height: 34 },
+    }, makeNode("sink")]
+    const internals = new Map(nodes.map(node => [node.id, measuredNode(node, [35])]))
+    const join = measuredNode(nodes[2], [17], 17)
+    join.internals.handleBounds = {
+      source: [{
+        nodeId: "join", type: "source", position: Position.Right,
+        x: 36, y: 17, width: 0, height: 0,
+      }],
+      target: [{
+        id: "base", nodeId: "join", type: "target", position: Position.Left,
+        x: 4, y: 17, width: 0, height: 0,
+      }, {
+        id: "lookup", nodeId: "join", type: "target", position: side,
+        x: 20, y: side === Position.Top ? 6 : 28, width: 0, height: 0,
+      }],
+    }
+    internals.set("join", join)
+    const edges = [
+      { ...makeEdge("base", "join"), targetHandle: "base" },
+      { ...makeEdge("lookup", "join"), targetHandle: "lookup" },
+      makeEdge("join", "sink"),
+    ]
+    const result = await getLayoutedElements(nodes, edges, id => internals.get(id))
+    const [base, lookup, junction, sink] = result.map(node => node.position)
+
+    expect(base.y + 35).toBeCloseTo(junction.y + 17)
+    expect(sink.y + 35).toBeCloseTo(junction.y + 17)
+    expect(base.x + 240).toBeLessThan(junction.x)
+    expect(junction.x + 40).toBeLessThan(sink.x)
+    if (side === Position.Top) {
+      expect(lookup.y + 70).toBeLessThan(junction.y)
+    } else {
+      expect(lookup.y).toBeGreaterThan(junction.y + 34)
+    }
+  })
+
   it("returns empty array for empty input", async () => {
     // Catches: if the function throws on empty input instead of
     // returning [], the initial load of an empty pipeline would crash.
@@ -104,14 +222,7 @@ describe("getLayoutedElements", () => {
     expect(posC.x).toBeGreaterThan(posB.x)
   })
 
-  it("aligns nodes at nearly-the-same y coordinate via cluster snapping", async () => {
-    // Catches: without the alignPositions post-processing, nodes that
-    // ELK places at slightly different y values (e.g. 100 and 103)
-    // would look misaligned. The snapping should make them identical.
-    //
-    // We test a parallel fan-out where a→b and a→c. Both b and c
-    // should be at the same x (different layer) and the same y
-    // (snapped together) OR at least positioned sensibly.
+  it("aligns sibling nodes in the same layer", async () => {
     const nodes = [makeNode("a"), makeNode("b"), makeNode("c")]
     const edges = [makeEdge("a", "b"), makeEdge("a", "c")]
 
@@ -137,11 +248,7 @@ describe("getLayoutedElements", () => {
     }
   })
 
-  it("positions default to zero when ELK returns undefined coordinates", async () => {
-    // Catches: if the `child.x ?? 0` / `child.y ?? 0` fallback is removed,
-    // nodes would get NaN or undefined positions when ELK omits coordinates.
-    // A single disconnected node is most likely to receive (0,0) from ELK;
-    // we verify that the result is a finite number regardless.
+  it("replaces existing positions with finite layout coordinates", async () => {
     const nodes = [makeNode("z", 999, 999)]
     const result = await getLayoutedElements(nodes, [])
 
@@ -149,9 +256,7 @@ describe("getLayoutedElements", () => {
     expect(Number.isFinite(result[0].position.y)).toBe(true)
   })
 
-  it("fan-out nodes in the same layer share snapped x coordinate", async () => {
-    // Catches: if cluster snapping is removed, nodes placed in the same
-    // ELK layer with slightly different x values would appear misaligned.
+  it("fan-out nodes in the same layer share an x coordinate", async () => {
     const nodes = [makeNode("a"), makeNode("b"), makeNode("c"), makeNode("d")]
     const edges = [makeEdge("a", "b"), makeEdge("a", "c"), makeEdge("a", "d")]
 

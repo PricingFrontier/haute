@@ -347,7 +347,7 @@ export default function RatingStepEditor({
     const adds = newFactors.some(factor => !t.factors.includes(factor))
     if (adds && cells > MAX_EDITABLE_TABLE_CELLS) {
       setFactorLimitNotice(
-        `${describeTableSize(newFactors, factorLevels, cells)} — too many to edit here. ` +
+        `${describeTableSize(newFactors, factorLevels, cells)} - too many to edit here. ` +
           `Band the column first, or rate it in a table of its own.`,
       )
       return
@@ -798,7 +798,7 @@ export default function RatingStepEditor({
             color: "var(--text-secondary)",
           }}
         >
-          {describeTableSize(table.factors, factorLevels, tableCellCount)} — too many to edit
+          {describeTableSize(table.factors, factorLevels, tableCellCount)} - too many to edit
           here. Band the column first, or rate it in a table of its own.
         </div>
       )}

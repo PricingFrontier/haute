@@ -12,7 +12,7 @@ export function formatTraceValue(
 ): string {
   const special = formatJsonSpecialValue(v)
   if (special !== null) return special
-  if (v === null || v === undefined) return "—"
+  if (v === null || v === undefined) return "-"
   if (typeof v === "boolean") return String(v)
   if (typeof v === "number") {
     if (Number.isNaN(v)) return "NaN"

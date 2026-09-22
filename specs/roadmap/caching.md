@@ -53,7 +53,7 @@ or where it will not hold at scale.
 
 | Aim | Delivered | Gap |
 |---|---|---|
-| One store, every consumer | Node outputs, input snapshots, and analyses share `.haute_cache`; previews, bounded runs, explicit builds, and traces run under one seed plan. | API-input tables still live in the JSON cache (`CACHE-S08`). |
+| One store, every consumer | Node outputs, input snapshots, and analyses share `.haute_cache`; previews, bounded runs, explicit builds, and traces run under one seed plan. | API-input tables still live in a separate JSON cache that only the Cache as Parquet button builds (`CACHE-S08`). |
 | No duplicated runs | A bounded run seeds from any fresh covering generation and captures a join, fan-out, join feeder, batch Model Score, or consumed producer only where recomputing it costs more than the cache round trip, and records why it skipped the others; a preview seeds the same way and captures only the joins and costly full-input work it must compute in full. A chain of plain transforms is recomputed by every preview and bounded run by design, because recomputing it costs less than the cache round trip. Each capture publishes as soon as it is written, so a run that fails or is cancelled later keeps what it had already published. A preview served from the response cache reports its generations as seeded, and the canvas raises the node-data epoch only for a capture generation it has not seen, so a repeat preview costs no refetch. | Two consumers that resolve the same cold capture point at the same time, or an explicit build and an automatic capture of one node, both compute it; the publication lock decides only who publishes (`CACHE-S19`). |
 | Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. Node outputs have their own budget which input snapshots neither consume nor are evicted by. A preview says when a node was not cached and how to fix it. | A job's refused capture is invisible (`CACHE-S12`); the store's usage is not — the toolbar's cache pane reports both budgets. A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). Every preview prepares the graph several times and signs every lineage node per resolution (`CACHE-S17`). |
 | Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A node with one input whose code is provably row-local is written a slice of its input at a time where a capture or an explicit build writes it, so its memory does not grow with the input. A pass-through node carries its parent's recipe forward, and training preparation writes its prepared parquet through the same bounded writer, slicing the frame or the recipe's input and recording which. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | Full joins rescan the base per lookup chunk and cross joins collect the lookup side (`CACHE-S18`). Full joins rescan the base per lookup chunk and cross joins collect the lookup side (`CACHE-S18`). |
@@ -63,19 +63,19 @@ or where it will not hold at scale.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
+| CACHE-S08 | Planned | P2 | API-input tables are prepared automatically in the shared store, one generation per table; the Cache as Parquet button and the JSON cache go. |
 | CACHE-S12 | Planned | P2 | A refused build says which node it refused, where the user pressed Build. |
 | CACHE-S13 | Planned | P3 | A capturing preview finishes as a job instead of dying at the interactive timeout. Unproven: no measured preview approaches the timeout. |
 | CACHE-S19 | Deferred | P3 | Two consumers that need the same cold capture compute it once. |
 | CACHE-S22 | Planned | P3 | The shapes that cannot carry a write recipe at all can. |
 | CACHE-S17 | Planned | P3 | Planning and store housekeeping cost stays flat as graphs and stores grow. |
 | CACHE-S18 | Planned | P3 | Full and cross joins are written with a bounded number of scans and a bounded part product. |
-| CACHE-S08 | Deferred | P3 | Fold the API-input table cache into the shared snapshot store with per-table validity. |
 
 ## Planned improvements
 
-Delivery order is `CACHE-S17` → `CACHE-S22` → `CACHE-S18`, each gated on a
+`CACHE-S08` goes first, activated on 22-Sep-2026 at the user's request. After it, delivery order is `CACHE-S17` → `CACHE-S22` → `CACHE-S18`, each gated on a
 measurement named in its own entry rather than started on the strength of its
-shape; `CACHE-S19` is deferred with the others; `CACHE-S08` is deferred, and
+shape; `CACHE-S19` is deferred with the others, and
 `CACHE-S12` is now one display change at the node, so it is
 taken whenever that surface is next open rather than in this order. `CACHE-S13` moved down on 20-Sep-2026 because measurement showed
 no preview near its timeout. Every full-frame write is now bounded, so what
@@ -102,6 +102,10 @@ evidence, not the contract text. Each package's **Evidence** line is also its
 affected-file list.
 
 ### CACHE-S12 — A refused capture is visible
+
+**Status:** Superseded by user-managed cache storage. Cache byte/count budgets and
+quota-refusal diagnostics are removed; the historical plan below no longer applies.
+The toolbar's cached-data inventory lists stored datasets with explicit clear controls.
 
 **Why:** A refused capture is shown in the preview pane's
 execution-diagnostics indicator, naming the node and both remedies. The
@@ -532,29 +536,126 @@ joins).
 
 ### CACHE-S08 — One store for API-input tables
 
-**Why:** API-input tables are cached per port by the JSON-shredding cache in its
-own `working/` and `committed/` layers, a second durable store beside the
-shared snapshot store, and that cache is built and validated for all of a
-node's emitting tables together, so editing one table's schema makes the
-node's other tables unusable until the next build.
+**Decision (22-Sep-2026):** API-input tables are prepared automatically in the
+shared snapshot store, the same way Data Input snapshots are. The "Cache as
+Parquet" button, the JSON cache's `working/` and `committed/` layers, and the
+uncached direct shred are removed, not kept alongside. There is no interim
+step that publishes the direct-shred spill into the JSON cache, because that
+would mean building cleanup and inventory support for a store this package
+removes.
 
-**Plan:** Evaluate moving per-port table caches into the shared snapshot store
-while preserving the committed layer used by deployment, and evaluate
-per-table validity so an edit to one table leaves the node's other tables
-current. A shred reads the whole source whatever the number of tables, so the
-evaluation measures how much of a build's cost is table materialisation rather
-than the source traversal.
+**Why:** A Data Input's snapshot is built by the first run that needs it and
+rebuilt when its source or configuration changes. An `apiInput` has neither:
+its tables are only cached when the user presses "Cache as Parquet". Without
+that build:
 
-**Activation trigger:** The data-point resolver serves API-input tables in
-production use and a measured maintenance or disk cost from running two
-durable stores.
+- Every run re-shreds the whole source. The direct path writes the demanded
+  ports to a spill and discards it
+  (`src/haute/_json_shred/_cache.py`, "do not write, refresh, or promote cache
+  state").
+- The data-point resolver loads the node in cache-only mode and raises
+  `CacheRequiredError`.
+- Per-table ancestor sizing reports "estimate unavailable".
 
-**Acceptance:** A decision record, and if implemented, JSON-cache route, deploy
-bundling, and data-point resolver tests pass against one store.
+The JSON cache is also a second durable store. The toolbar's cached-data
+inventory does not list it or clear it. A save promotes it through
+`mirror_cache_to_committed`, and preview fingerprints need their own
+`json_cache_signature` component to track it. It is built and validated for
+all of a node's emitting tables together, so editing one table's schema makes
+the node's other tables unusable until the next build. Nothing needs the
+committed layer: deploy does not bundle it, and `.haute_cache/` is gitignored.
+
+**Plan:**
+
+1. **Identity per emitting table.** Add an `api_input` input provider to
+   `KNOWN_INPUT_PROVIDERS`. One identity is one emitting table. Its descriptor
+   includes the resolved source path, the shred options that apply to every
+   table, that table's own spec (segments, selected columns, dtypes) and a
+   shred-semantics version. It does not include sibling tables or the port
+   label. Editing one table changes only that table's identity. The saved
+   schema and an unsaved edit are different identities that exist side by
+   side, which is what the committed layer provided.
+2. **Freshness from the existing source proof.** The JSON source proof (a
+   SHA-256 of the file, memoised against its native revision) becomes the
+   identity's `source_signature`. `SourceCacheStore.status` then marks a
+   changed file as `stale`. A missing file with a published generation
+   reuses it with `source_unavailable`, exactly as a Data Input does.
+3. **Automatic preparation.** `prepare_input_snapshots()` also prepares the
+   emitting tables that feed the pruned target lineage. It uses the same
+   status → reuse/build/refresh ladder, cap gate, in-process or worker build,
+   per-identity single-flight, deadline, cancellation, and preparation
+   records. The build writes the full width of each table, not the run's
+   column demand, so every later consumer can reuse it. A build shreds the
+   source once and writes every missing or stale table of the node in that
+   pass. Tables that are already fresh are skipped. The source is still read
+   in full, so per-table validity saves writes and keeps other tables
+   readable; it does not save the parse. The build class is `bounded`, using
+   the existing aggregate-bounded row-group writer.
+4. **One read path.** `resolve_api_input_from_config` leases the current
+   generation of each demanded table and scans it with the column demand
+   applied, as the Data Input resolver does. A missing generation outside an
+   admitted execution is the `input_snapshot_missing` rejection, not a direct
+   shred. Deploy profiles never write the store (`snapshot_write_class`
+   returns `None`). Generated standalone code keeps an in-process bounded
+   shred of the source, because it runs without a project store.
+5. **Consumers.**
+   - The data-point resolver's `api_input_table` kind resolves and leases
+     store generations instead of using `api_input_cache_only`.
+   - The RAM estimator sizes each table from its generation metadata.
+   - Preview and runtime fingerprints key on the table identity and
+     generation, and `json_cache_signature` is removed.
+   - The cache inventory lists each table under the node that owns it, and
+     clearing a table goes through the same clear action as every other
+     dataset.
+6. **Removals.** Remove the following:
+   - `working/` and `committed/` directories and `mirror_cache_to_committed`
+     with its save-pipeline step.
+   - `cache_state_signature_for_graph`.
+   - `api_input_cache_only` and `ApiInputCacheRequiredError`.
+   - The direct-spill fallback.
+   - The `json-cache` build, progress, status and delete routes, and the
+     node-data service's `_JSON_CACHE_BUILD_ENDPOINT`.
+   - The "Cache as Parquet" `CacheFetchButton` in the API Input editor, which
+     is replaced by the shared input-snapshot status and clear control that
+     the Data Input editor uses.
+
+   Schema inference (`/infer`) stays. Existing JSON cache directories are not
+   migrated; they read as absent and the store's housekeeping sweeps them.
+
+**Acceptance:**
+
+- A fresh project with no JSON cache previews a node downstream of an
+  `apiInput` and publishes one generation per emitting table. A second preview
+  reuses them and records `reused` without reading the source.
+- Editing one table's columns leaves its sibling tables' generations current
+  and rebuilds only that table on the next run. Touching the source file
+  refreshes every table of the node.
+- The data-point resolver serves an `api_input_table` point after a single
+  automatic build.
+- The RAM estimator sizes a group-by beneath an `apiInput` without an explicit
+  build.
+- The cache inventory reports the tables, and clearing one removes it.
+- Nothing is left under `.haute_cache/working` or `.haute_cache/committed`.
+- Save no longer touches cache state.
+- The JSON-shredding, data-point, input-preparation, execution-profile
+  semantics (`tests/test_execution_profile_semantics.py`), codegen and API
+  Input editor suites pass against the one store.
 
 **Owning specifications:** [caching](../caching/low-level.md);
-[JSON shredding](../json-shredding/low-level.md).
+[JSON shredding](../json-shredding/low-level.md);
+[IO layer](../io-layer/low-level.md#automatic-preparation);
+[execution engine](../execution-engine/low-level.md);
+[server API](../server-api/low-level.md);
+[frontend node editors](../frontend-node-editors/low-level.md).
 
-**Dependencies:** The caching data-point resolver.
+**Dependencies:** None. The data-point resolver, automatic input preparation
+and the cache inventory are delivered.
 
-**Evidence:** `src/haute/_json_shred/_cache.py`; `src/haute/routes/json_cache.py`.
+**Evidence:** `src/haute/_json_shred/_cache.py`; `src/haute/_json_shred/_writer.py`;
+`src/haute/_json_shred/_source_proof.py`; `src/haute/_json_flatten.py`;
+`src/haute/_source_cache.py`; `src/haute/_input_preparation.py`;
+`src/haute/_data_points.py`; `src/haute/_ram_estimate.py`;
+`src/haute/execution.py`; `src/haute/routes/json_cache.py`;
+`src/haute/routes/_save_pipeline.py`; `src/haute/routes/_node_data_service.py`;
+`frontend/src/panels/editors/ApiInputEditor.tsx`;
+`frontend/src/components/CacheFetchButton.tsx`.

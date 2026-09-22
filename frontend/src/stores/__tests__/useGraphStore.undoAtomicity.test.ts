@@ -44,7 +44,7 @@ function deleteSelection(selectedIds: Set<string>) {
 
 const ids = (arr: { id: string }[]) => arr.map((x) => x.id).sort()
 
-describe("useGraphStore — undo atomicity", () => {
+describe("useGraphStore - undo atomicity", () => {
   beforeEach(() => {
     resetGraphStoreForTests()
   })
@@ -97,7 +97,7 @@ describe("useGraphStore — undo atomicity", () => {
     expect(useGraphStore.getState().undoStack).toHaveLength(0)
   })
 
-  it("selection size does not scale undo entries — 4 nodes deleted is still ONE undo", () => {
+  it("selection size does not scale undo entries - 4 nodes deleted is still ONE undo", () => {
     // Nick's note: the count was a CONSTANT two before the fix, so it must be
     // a CONSTANT one after — independent of how many nodes/edges are removed.
     seed(

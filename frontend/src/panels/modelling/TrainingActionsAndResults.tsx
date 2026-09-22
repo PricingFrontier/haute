@@ -135,7 +135,7 @@ export function TrainingActionsAndResults({
       {ramEstimateError && !ramEstimateLoading && !ramEstimate && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)" }}>
           <AlertTriangle size={12} className="shrink-0" style={{ color: "var(--warning-strong)" }} />
-          <span style={{ color: "var(--warning)" }}>RAM estimate unavailable — training will still work</span>
+          <span style={{ color: "var(--warning)" }}>RAM estimate unavailable - training will still work</span>
         </div>
       )}
       {ramEstimate && !ramEstimateLoading && adjusted && (
@@ -251,7 +251,7 @@ export function TrainingActionsAndResults({
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--train-complete-bg)", border: "1px solid var(--train-complete-border)" }}>
           <CheckCircle2 size={12} style={{ color: "var(--train-complete-text)" }} className="shrink-0" />
           <span style={{ color: "var(--train-complete-text)" }}>
-            Model trained — results in preview panel below
+            Model trained - results in preview panel below
           </span>
         </div>
       )}

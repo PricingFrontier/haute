@@ -20,7 +20,7 @@ const run = (over: Partial<RailRun> = {}): RailRun => ({
 /** The overlay swallows nothing, so a no-op menu handler is fine. */
 const noop = () => {}
 
-describe("GraphRailOverlay — dotted runs render bottom-anchored", () => {
+describe("GraphRailOverlay - dotted runs render bottom-anchored", () => {
   it("draws a dotted run with its dash phase 0 at the BOTTOM end (endpoints swapped)", () => {
     const { container } = render(
       <GraphRailOverlay runs={[run({ dotted: true })]} dimmed={false} onLaneContextMenu={noop} />,

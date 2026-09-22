@@ -24,7 +24,7 @@ function StorageChip() {
         onClick={() => openModal("storage")}
         className="flex items-center text-[11px] font-medium px-1.5 py-0.5 rounded-md hover-chrome"
         style={{ color: "var(--danger)" }}
-        title="Work is lost if this app restarts — click to save it to a repository."
+        title="Work is lost if this app restarts - click to save it to a repository."
       >
         Not stored
       </button>
@@ -98,7 +98,7 @@ function ForkChip() {
       onClick={() => openModal("upstream")}
       className="text-[11px] font-medium px-1.5 py-0.5 rounded-md hover-chrome"
       style={{ color: "var(--text-muted)" }}
-      title={`Forked from ${forkedFrom} — click to compare with it.`}
+      title={`Forked from ${forkedFrom} - click to compare with it.`}
     >
       Forked
     </button>
@@ -235,7 +235,7 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
         onClick={() => openModal(stateMeta.modal)}
         className="toolbar-btn flex items-center justify-center gap-1 px-2.5 py-1 text-[12px] font-medium rounded-md min-w-[136px] max-w-[220px] w-full"
         style={{ color: "var(--danger)" }}
-        title={`${stateMeta.label} — click to resolve in the Git panel`}
+        title={`${stateMeta.label} - click to resolve in the Git panel`}
       >
         <GitBranch size={13} aria-hidden="true" className="shrink-0" />
         <span className="truncate">{stateMeta.label}</span>
@@ -257,7 +257,7 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
           data-testid="branch-indicator-name"
           onClick={openOnCurrent}
           className="toolbar-btn flex items-center justify-center gap-1 px-2.5 py-1 text-[12px] font-medium font-mono rounded-md min-w-[136px] max-w-[220px] w-full truncate"
-          title={`Working branch: ${status.working_branch} — click to manage branches`}
+          title={`Working branch: ${status.working_branch} - click to manage branches`}
         >
           <GitBranch size={13} aria-hidden="true" className="shrink-0" />
           <span className="truncate">{status.working_branch}</span>

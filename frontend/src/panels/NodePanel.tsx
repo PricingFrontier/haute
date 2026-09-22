@@ -99,11 +99,6 @@ const POLARS_TAB_HINTS: Record<string, React.ReactNode> = {
   [NODE_TYPES.MODEL_SCORE]: <>Post-processing Code (optional)</>,
 }
 
-const NO_REFRESH_PREVIEW = new Set<string>([
-  NODE_TYPES.SUBMODEL,
-  NODE_TYPES.SUBMODEL_PORT,
-])
-
 // Right-panel panes for Explore nodes. Code prepares the analysis dataset;
 // Overview, Pivots, and Charts configure display, while Export remains scaffolding.
 const EXPLORE_PANES = [
@@ -459,7 +454,7 @@ function InstancePanel({
               <div className="flex items-start gap-1.5 px-2 py-1.5 rounded-md" style={{ background: 'var(--warning-soft)', border: '1px solid var(--warning-border)' }}>
                 <AlertTriangle size={11} style={{ color: 'var(--warning-strong)' }} className="shrink-0 mt-0.5" />
                 <span className="text-[10px] leading-relaxed" style={{ color: 'var(--warning-strong)' }}>
-                  Name matching is ambiguous for {unresolvedAmbiguous.join(", ")} — several upstream
+                  Name matching is ambiguous for {unresolvedAmbiguous.join(", ")} - several upstream
                   sources fit. Pick each one explicitly; saving and running are blocked until mapped.
                 </span>
               </div>
@@ -477,7 +472,7 @@ function InstancePanel({
                     value={effectiveMap[orig] || ""}
                     onChange={(e) => handleMappingChange(orig, e.target.value)}
                   >
-                    <option value="">— unmapped —</option>
+                    <option value="">- unmapped -</option>
                     {instInputs.map((i) => (
                       <option key={i.name} value={i.name}>{i.label}</option>
                     ))}
@@ -756,7 +751,7 @@ function NodeRecoveryStatus({
               {summary.fieldChanges.map((change, index) => (
                 <li key={`${change.path}:${index}`}>
                   <span className="font-mono">{change.path || "settings"}</span>: {change.outcome}{" "}
-                  — {change.reason}
+                  - {change.reason}
                 </li>
               ))}
             </ul>
@@ -800,7 +795,7 @@ function NodeRecoveryStatus({
           <ul className="mt-0.5" style={{ color: "var(--text-secondary)" }}>
             {entries.map((entry) => (
               <li key={`${entry.path}:${entry.code}`}>
-                <span className="font-mono">{entry.path}</span> — {entry.message}
+                <span className="font-mono">{entry.path}</span> - {entry.message}
               </li>
             ))}
           </ul>
@@ -842,9 +837,6 @@ type NodePanelHeaderProps = {
   label: string
   readOnly: boolean
   onRenameNode?: (nodeId: string, label: string) => Promise<OnUpdateConfigResult>
-  showRefreshPreview: boolean
-  refreshTitle: string
-  onRefreshPreview?: () => void
   onClose: () => void
 }
 
@@ -853,9 +845,6 @@ function NodePanelHeader({
   label,
   readOnly,
   onRenameNode,
-  showRefreshPreview,
-  refreshTitle,
-  onRefreshPreview,
   onClose,
 }: NodePanelHeaderProps) {
   const rename = useNodeRenameSession(nodeId)
@@ -879,17 +868,6 @@ function NodePanelHeader({
           >
             <Lock size={11} aria-hidden="true" />Read-only
           </span>
-        )}
-        {showRefreshPreview && (
-          <button
-            onClick={onRefreshPreview}
-            className="px-2 py-1 rounded shrink-0 transition-opacity flex items-center gap-1 text-[11px] font-medium hover:opacity-[0.85]"
-            style={{ background: "var(--accent)", color: "var(--text-on-accent)" }}
-            title={refreshTitle}
-          >
-            <RefreshCw size={11} />
-            Refresh
-          </button>
         )}
         <button
           data-testid="node-panel-close"
@@ -1544,8 +1522,6 @@ function NodePanelContent({
   const showColumnsTab = isKnownNodeType && !isInstance && !NO_COLUMNS_TAB.has(nodeType)
   const showPolarsTab = isKnownNodeType && !isInstance && POLARS_TAB_TYPES.has(nodeType)
   const showExplorePanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.EXPLORE
-  const showRefreshPreview = !!onRefreshPreview && !NO_REFRESH_PREVIEW.has(nodeType)
-  const refreshTitle = showExplorePanes ? "Refresh Explore outputs" : "Refresh preview"
   const activeExplorePane = showExplorePanes ? rememberedExplorePane ?? "code" : "code"
   const algorithm = typeof config.algorithm === "string" ? config.algorithm.toLowerCase() : ""
   const modellingPanes = modellingPanesFor(algorithm)
@@ -1615,9 +1591,6 @@ function NodePanelContent({
         label={String(node.data.label)}
         readOnly={readOnly || Boolean(scopedSave)}
         onRenameNode={onRenameNode}
-        showRefreshPreview={showRefreshPreview}
-        refreshTitle={refreshTitle}
-        onRefreshPreview={onRefreshPreview}
         onClose={onClose}
       />
 

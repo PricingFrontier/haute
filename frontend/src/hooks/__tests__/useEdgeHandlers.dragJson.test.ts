@@ -67,7 +67,7 @@ function makeDragEvent(type: string, rawConfig: string | undefined) {
   } as unknown as React.DragEvent
 }
 
-describe("useEdgeHandlers.onDrop — malformed drag JSON fails loudly (#35)", () => {
+describe("useEdgeHandlers.onDrop - malformed drag JSON fails loudly (#35)", () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()

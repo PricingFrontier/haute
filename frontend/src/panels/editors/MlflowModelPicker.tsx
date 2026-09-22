@@ -93,7 +93,7 @@ export function RegisteredModelPicker({
         )}
         {!errorModels && !loadingModels && models.length === 0 && (
           <p className="mt-0.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
-            No registered models yet — haute logs training runs; your promotion
+            No registered models yet - haute logs training runs; your promotion
             process registers them.
           </p>
         )}
@@ -132,7 +132,7 @@ export function RegisteredModelPicker({
             ))}
             {selectedModelVersions.map((v) => (
               <option key={v.version} value={v.version}>
-                v{v.version} — {v.status}
+                v{v.version} - {v.status}
                 {v.description ? ` (${v.description})` : ""}
               </option>
             ))}

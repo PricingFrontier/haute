@@ -5653,10 +5653,10 @@ def test_worker_metrics_carry_the_parents_evidence_ahead_of_their_own() -> None:
     )
     worker.record_shared_snapshot_capture(
         SharedSnapshotCaptureRecord(
-            "C", "c" * 64, CaptureKind.CONSUMED, "quota", None, NodeSnapshotColumns.all()
+            "C", "c" * 64, CaptureKind.CONSUMED, "superseded", None, NodeSnapshotColumns.all()
         )
     )
-    worker.record_execution_warning("snapshot_capture_skipped", node_id="C", reason="quota")
+    worker.record_execution_warning("snapshot_capture_superseded", node_id="C")
 
     merged = parent.metrics_with_worker_evidence(worker.metrics_payload())
 
@@ -5667,7 +5667,7 @@ def test_worker_metrics_carry_the_parents_evidence_ahead_of_their_own() -> None:
     assert [capture["node_id"] for capture in merged["shared_snapshot_captures"]] == ["C"]
     assert [(warning["code"], warning["node_id"]) for warning in merged["warnings"]] == [
         ("snapshot_capture_superseded", "A"),
-        ("snapshot_capture_skipped", "C"),
+        ("snapshot_capture_superseded", "C"),
     ]
     # The parent now holds the worker's evidence, so a later worker's metrics
     # carry both processes' evidence.

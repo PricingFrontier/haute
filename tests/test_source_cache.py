@@ -31,7 +31,6 @@ from haute._source_cache import (
     SourceCacheCorruptError,
     SourceCacheGenerationMissingError,
     SourceCacheIdentity,
-    SourceCacheQuotaExceededError,
     SourceCacheStore,
     _validate_generation_files,
 )
@@ -632,57 +631,25 @@ def test_leases_are_shared_across_store_instances_for_the_same_root(tmp_path: Pa
     assert not generation.directory.exists()
 
 
-def test_build_rejects_publication_that_exceeds_store_quota(tmp_path: Path) -> None:
-    store = SourceCacheStore(tmp_path, max_bytes=1)
-    identity = _identity(path="data/input.parquet", format="parquet")
-
-    with pytest.raises(SourceCacheQuotaExceededError):
-        store.build(
-            identity,
-            _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
-            context=_context(),
-        )
-
-    assert store.status(identity).state == "missing"
-    assert not any(store.identity_path(identity).glob(".staging-*"))
-    assert not any((store.identity_path(identity) / "generations").glob("*"))
-
-
-def test_generation_quota_rejects_another_current_snapshot(tmp_path: Path) -> None:
-    store = SourceCacheStore(tmp_path, max_bytes=1_000_000, max_generations=2)
-    oldest = _identity(path="oldest.parquet")
-    middle = _identity(path="middle.parquet")
-    newest = _identity(path="newest.parquet")
-
-    store.build(
-        oldest,
-        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
-        context=_context(),
-    )
-    store.build(
-        middle,
-        _LazyBuilder(pl.DataFrame({"id": [2]}).lazy()),
-        context=_context(),
-    )
-    with pytest.raises(
-        SourceCacheQuotaExceededError,
-        match="existing snapshots are kept.*Clear an unused Data Input snapshot",
-    ):
-        store.build(
-            newest,
-            _LazyBuilder(pl.DataFrame({"id": [3]}).lazy()),
-            context=_context(),
-        )
-
-    assert store.status(oldest).state == "ready"
-    assert store.status(middle).state == "ready"
-    assert store.status(newest).state == "missing"
+def test_input_cache_keeps_datasets_without_byte_or_entry_budgets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HAUTE_INPUT_CACHE_MAX_BYTES", "1")
+    monkeypatch.setenv("HAUTE_INPUT_CACHE_MAX_GENERATIONS", "1")
+    store = SourceCacheStore(tmp_path)
+    identities = [_identity(path=f"input-{i}.csv") for i in range(2)]
+    for i, identity in enumerate(identities):
+        store.build(identity, _LazyBuilder(pl.DataFrame({"id": [i]}).lazy()), context=_context())
+    for i, identity in enumerate(identities):
+        with store.lease(identity) as leased:
+            assert leased.lazy_frame.collect()["id"].to_list() == [i]
+    store.clear(identities[0])
+    assert store.status(identities[0]).state == "missing"
+    assert store.status(identities[1]).state == "ready"
 
 
-def test_generation_quota_reclaims_an_unleased_superseded_generation(tmp_path: Path) -> None:
-    store = SourceCacheStore(
-        tmp_path, max_bytes=1_000_000, max_generations=1, retire_grace_seconds=0
-    )
+def test_refresh_reclaims_an_unleased_superseded_generation(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path, retire_grace_seconds=0)
     identity = _identity(path="refreshable.parquet")
     first = store.build(
         identity,
@@ -702,8 +669,8 @@ def test_generation_quota_reclaims_an_unleased_superseded_generation(tmp_path: P
     assert store.open_generation(identity).lazy_frame.collect()["id"].to_list() == [2]
 
 
-def test_generation_quota_never_evicts_a_leased_snapshot(tmp_path: Path) -> None:
-    store = SourceCacheStore(tmp_path, max_bytes=1_000_000, max_generations=1)
+def test_new_identity_publishes_while_an_existing_snapshot_is_leased(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path)
     pinned = _identity(path="pinned.parquet")
     replacement = _identity(path="replacement.parquet")
     store.build(
@@ -713,22 +680,14 @@ def test_generation_quota_never_evicts_a_leased_snapshot(tmp_path: Path) -> None
     )
 
     with store.lease(pinned):
-        with pytest.raises(SourceCacheQuotaExceededError):
-            store.build(
-                replacement,
-                _LazyBuilder(pl.DataFrame({"id": [2]}).lazy()),
-                context=_context(),
-            )
-        assert store.status(pinned).state == "ready"
-
-    with pytest.raises(SourceCacheQuotaExceededError):
         store.build(
             replacement,
             _LazyBuilder(pl.DataFrame({"id": [2]}).lazy()),
             context=_context(),
         )
+        assert store.status(pinned).state == "ready"
     assert store.status(pinned).state == "ready"
-    assert store.status(replacement).state == "missing"
+    assert store.status(replacement).state == "ready"
 
 
 def test_store_startup_preserves_unproven_cross_process_staging_and_generations(
@@ -819,23 +778,6 @@ def test_store_rejects_non_positive_or_non_finite_staging_age(
 
     with pytest.raises(RuntimeError, match="finite number greater than 0"):
         SourceCacheStore(tmp_path)
-
-
-def test_retained_staging_bytes_count_against_publication_quota(tmp_path: Path) -> None:
-    staging = tmp_path / ".haute_cache" / "inputs" / "other" / ".staging-live"
-    staging.mkdir(parents=True)
-    (staging / "data.parquet").write_bytes(b"x" * 1_000)
-    store = SourceCacheStore(tmp_path, max_bytes=1_000)
-    identity = _identity(path="new.parquet")
-
-    with pytest.raises(SourceCacheQuotaExceededError):
-        store.build(
-            identity,
-            _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
-            context=_context(),
-        )
-
-    assert staging.exists()
 
 
 def test_a_parent_chosen_pair_names_the_staging_directory_and_the_generation(
@@ -1062,38 +1004,6 @@ def test_clear_reclaims_a_graced_generation(tmp_path: Path) -> None:
     store.clear(identity)
 
     assert not any((store.identity_path(identity) / "generations").glob("*"))
-
-
-def test_quota_pressure_reclaims_a_graced_generation_and_publishes(tmp_path: Path) -> None:
-    store = SourceCacheStore(
-        tmp_path, max_bytes=1_000_000, max_generations=1, retire_grace_seconds=1800
-    )
-    identity = _identity(path="pressured.parquet")
-    first = store.build(
-        identity,
-        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
-        context=_context(),
-    )
-    second = store.build(
-        identity,
-        _LazyBuilder(pl.DataFrame({"id": [2]}).lazy()),
-        context=_context(),
-        refresh=True,
-    )
-    # The graced first generation puts this identity over its generation quota.
-    assert first.directory.is_dir()
-
-    third = store.build(
-        identity,
-        _LazyBuilder(pl.DataFrame({"id": [3]}).lazy()),
-        context=_context(),
-        refresh=True,
-    )
-
-    assert third.generation_id not in (first.generation_id, second.generation_id)
-    # Quota pressure reclaimed the graced generation and the build published.
-    assert not first.directory.exists()
-    assert store.open_generation(identity).lazy_frame.collect()["id"].to_list() == [3]
 
 
 def test_reconcile_keeps_a_generation_this_process_leases(tmp_path: Path) -> None:
@@ -1349,54 +1259,3 @@ def test_corrupting_a_later_part_is_corruption(tmp_path: Path, corrupt_mode: str
     fresh_store = SourceCacheStore(tmp_path)
     with pytest.raises(SourceCacheCorruptError):
         fresh_store.open_generation(identity)
-
-
-def test_quota_sums_parts(tmp_path: Path) -> None:
-    # Short names and roots: a staging temp file sits ~160 characters below the
-    # root, and an xdist temp root plus a long test name overflows MAX_PATH.
-    source_parquet = tmp_path / "source.parquet"
-    expected = pl.DataFrame({"id": list(range(10)), "val": [f"v{i}" for i in range(10)]})
-    expected.write_parquet(source_parquet)
-
-    identity = _identity(path="source.parquet", format="parquet")
-    builder = _LazyBuilder(pl.scan_parquet(source_parquet))
-
-    # Probe 4-part sizes under an unconstrained store
-    probe_store = SourceCacheStore(tmp_path)
-    with temporary_streaming_chunk_size(3):
-        probe_gen = probe_store.build(identity, builder, context=_context())
-    assert len(probe_gen.data_paths) == 4
-    first_part_size = probe_gen.data_paths[0].stat().st_size
-    total_size = sum(p.stat().st_size for p in probe_gen.data_paths)
-    assert total_size > first_part_size
-
-    # Set quota so that the first part alone is within quota, but total exceeds it
-    quota_store = SourceCacheStore(tmp_path / "q", max_bytes=first_part_size + 1)
-    with temporary_streaming_chunk_size(3):
-        with pytest.raises(SourceCacheQuotaExceededError):
-            quota_store.build(
-                identity,
-                builder,
-                context=_context(),
-            )
-
-
-def test_input_providers_share_one_budget(tmp_path: Path) -> None:
-    store = SourceCacheStore(tmp_path, max_generations=1)
-    file_id = SourceCacheIdentity(provider="file", descriptor={"path": "first.parquet"})
-    file_df = pl.DataFrame({"a": [1, 2, 3]})
-    store.build(file_id, _LazyBuilder(file_df.lazy()), context=_context())
-
-    with store.lease(file_id) as leased:
-        assert_frame_equal(leased.lazy_frame.collect(), file_df)
-
-    db_id = SourceCacheIdentity(
-        provider="database",
-        descriptor={"connection": "DB_URL", "query": "SELECT * FROM t"},
-    )
-    with pytest.raises(SourceCacheQuotaExceededError):
-        store.build(db_id, _LazyBuilder(pl.DataFrame({"b": [4, 5]}).lazy()), context=_context())
-
-    with store.lease(file_id) as leased:
-        assert_frame_equal(leased.lazy_frame.collect(), file_df)
-    assert store.open_generation(file_id).generation_id is not None

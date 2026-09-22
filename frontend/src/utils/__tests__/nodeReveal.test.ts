@@ -6,7 +6,7 @@ const nearest = { kind: "nearest" } as const
 const canvas = { width: 800, height: 600 }
 const node = { x: 0, y: 0, width: 200, height: 80 }
 
-describe("nodeRevealViewport — nearest placement", () => {
+describe("nodeRevealViewport - nearest placement", () => {
   it("leaves the view alone when the node is fully visible, even inside the margin", () => {
     // Screen box x 2..202, y 5..85: visible but closer to the edge than the margin.
     const viewport = { x: 2, y: 5, zoom: 1 }
@@ -67,7 +67,7 @@ describe("nodeRevealViewport — nearest placement", () => {
   })
 })
 
-describe("nodeRevealViewport — centred placement", () => {
+describe("nodeRevealViewport - centred placement", () => {
   it("centres the node in the canvas at the requested zoom", () => {
     const viewport = { x: 0, y: 0, zoom: 1 }
     const placedNode = { x: 1000, y: 400, width: 200, height: 80 }

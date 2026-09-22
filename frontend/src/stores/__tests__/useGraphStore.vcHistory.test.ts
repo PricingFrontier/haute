@@ -41,7 +41,7 @@ beforeEach(() => {
   })
 })
 
-describe("useGraphStore — pushVcEntry", () => {
+describe("useGraphStore - pushVcEntry", () => {
   it("appends a kind:'vc' entry and clears the redo stack", () => {
     useGraphStore.setState({
       redoStack: [{ nodes: [], edges: [], preamble: "stale", submodels: {} }],
@@ -77,7 +77,7 @@ describe("useGraphStore — pushVcEntry", () => {
   })
 })
 
-describe("useGraphStore — undo/redo of a vc entry", () => {
+describe("useGraphStore - undo/redo of a vc entry", () => {
   it("runs the undo leg with history locked, then unlocks and enables redo", async () => {
     let resolveUndo!: () => void
     const entry = makeEntry({ undo: vi.fn(() => new Promise<void>((res) => { resolveUndo = res })) })
@@ -159,7 +159,7 @@ describe("useGraphStore — undo/redo of a vc entry", () => {
   })
 })
 
-describe("useGraphStore — vc entries interleaved with graph snapshots", () => {
+describe("useGraphStore - vc entries interleaved with graph snapshots", () => {
   it("undoes the vc entry pushed after graph edits FIRST, then the edits; redo reverses", async () => {
     // 1. A graph edit (snapshots the pre-edit empty graph)…
     useGraphStore.getState().setNodes([makeNode("n1")])

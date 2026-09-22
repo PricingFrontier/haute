@@ -127,7 +127,7 @@ describe("InputSnapshotCacheButton", () => {
     })
     vi.mocked(clearInputCache).mockResolvedValue(missing)
     renderButton()
-    expect(await screen.findByText("Source changed since cache — Refresh to update.")).toBeInTheDocument()
+    expect(await screen.findByText("Source changed since cache - Refresh to update.")).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: "Refresh Cache" }))
     fireEvent.click(await screen.findByRole("button", { name: /Cancel/ }))

@@ -45,12 +45,9 @@ def _isolate_repository_source_cache(
     A test that never sets its own project root inherits the repository root,
     so ``SourceCacheStore`` publishes its snapshots into
     ``<repo>/.haute_cache/inputs``. That store is shared by every xdist
-    worker, is never cleaned between runs, and admits at most
-    ``HAUTE_INPUT_CACHE_MAX_GENERATIONS`` (64) generations store-wide, counted
-    across every identity rather than per identity. Local runs therefore
-    accumulate generations until the cap is reached, after which any test
-    publishing a new identity fails with ``SourceCacheQuotaExceededError``.
-    CI never sees it: a fresh checkout starts with an empty cache.
+    worker and is never cleaned between runs. Isolating it prevents tests from
+    accumulating cached data in the working tree or reading an earlier run's
+    snapshots.
 
     Stores opened against the repository root are redirected to a per-session
     directory — the same redirect ``_widen_sandbox_root`` applies to the

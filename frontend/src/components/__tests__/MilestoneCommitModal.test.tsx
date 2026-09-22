@@ -114,7 +114,7 @@ describe("MilestoneCommitModal", () => {
 
     await waitFor(() => expect(screen.getByTestId("milestone-fork-confirm")).toBeInTheDocument())
     expect(screen.getByTestId("milestone-fork-confirm")).toHaveTextContent("fork")
-    expect(onConfirmed).not.toHaveBeenCalled() // not committed yet — it's a warning
+    expect(onConfirmed).not.toHaveBeenCalled() // not committed yet - it's a warning
 
     fireEvent.click(screen.getByTestId("milestone-fork-anyway"))
     await waitFor(() =>

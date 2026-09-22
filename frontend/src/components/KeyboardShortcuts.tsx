@@ -12,6 +12,7 @@ const shortcuts = [
   { keys: `${mod}+S`, label: "Save pipeline" },
   { keys: `${mod}+K`, label: "Search nodes" },
   { keys: `${mod}+1`, label: "Fit view" },
+  { keys: `${mod}+Enter`, label: "Refresh the open preview" },
   { keys: "Delete / Backspace", label: "Delete selected" },
   { keys: "?", label: "Show this help" },
 ]

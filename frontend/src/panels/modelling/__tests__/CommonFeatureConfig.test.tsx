@@ -50,7 +50,7 @@ describe("CommonFeatureConfig", () => {
     expect(screen.queryByText("target")).toBeNull()
     expect(screen.queryByText("weight")).toBeNull()
     expect(screen.queryByText("date")).toBeNull()
-    expect(screen.getByText("missing_feature — not found")).toBeInTheDocument()
+    expect(screen.getByText("missing_feature - not found")).toBeInTheDocument()
     expect(within(featureRow("region")).getByText("String")).toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText("Search features"), {

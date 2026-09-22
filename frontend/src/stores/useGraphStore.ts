@@ -1051,7 +1051,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       if (get().vcBusy) {
         throw new Error(
           "resetForTests called while a VC undo/redo is in flight (vcBusy). " +
-            "Settle that promise first — its completion handlers set() unconditionally " +
+            "Settle that promise first - its completion handlers set() unconditionally " +
             "and would overwrite the fresh reset with stale VC state.",
         )
       }

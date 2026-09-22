@@ -92,10 +92,9 @@ cannot install the cap reuses a ready-but-stale generation with warning code
 `cap_unavailable_stale_reused` — only a missing generation is refused typed
 (`cap_unavailable`). A superseded generation is itself retired only after
 `HAUTE_INPUT_CACHE_RETIRE_GRACE_SECONDS` (default 1800) have elapsed since the current
-generation was published, because leases are process-local; an explicit clear and quota
-pressure reclaim immediately, the latter logged. Quota pressure rejects the incoming build with an actionable error; it
-never silently evicts another input's current snapshot. Users must clear an
-unused snapshot or raise the configured quota before retrying.
+generation was published; explicit clear bypasses this grace while preserving live
+cross-process leases. Input snapshots and node outputs have no byte/count storage limits
+or automatic eviction. Users inspect and clear stored datasets through the cache inventory.
 
 Studio also prepares structured Quote Inputs (JSON/JSONL/NDJSON/XML) before
 preview. It checks the existing working/committed cache against the current

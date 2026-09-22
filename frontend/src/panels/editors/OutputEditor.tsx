@@ -673,8 +673,8 @@ export default function OutputEditor({
           {/* Top-level FRAMES table: one row per frame, EXPANDABLE to show each
               frame's read-only INPUT SCHEMA (columns + types). The chevron/label
               toggles the schema view; the shared table-actions strip still does
-              Copy/Share/Save of the whole frame set. Read-only here — editing
-              happens per-frame below — so no Paste-in. */}
+              Copy/Share/Save of the whole frame set. Read-only here - editing
+              happens per-frame below - so no Paste-in. */}
           <div
             data-testid="output-frames-table"
             className="rounded-md"
@@ -1325,7 +1325,7 @@ function MappingRow({
           className="w-full text-[11px] px-1 py-0.5 rounded font-mono"
           style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
         >
-          <option value="">— column —</option>
+          <option value="">- column -</option>
           {columnOptions.map((c) => (
             <option key={c} value={c}>
               {c}
@@ -1348,7 +1348,7 @@ function MappingRow({
           data-testid={`${testIdPrefix}-pill`}
           className="mt-1 text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0"
           style={{ background: "var(--warning-soft)", color: "var(--warning-strong)" }}
-          title="Auto-mapped — edit the column or path to confirm"
+          title="Auto-mapped - edit the column or path to confirm"
         >
           Inferred
         </span>

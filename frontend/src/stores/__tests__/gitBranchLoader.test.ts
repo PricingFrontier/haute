@@ -64,7 +64,7 @@ describe("gitBranchLoader single-flight", () => {
     a.resolve({ current: "main", branches: [branch("a")] })
     await window
     await flush()
-    expect(getWorkingBranches).toHaveBeenCalledTimes(2) // A, B — C only after B settles
+    expect(getWorkingBranches).toHaveBeenCalledTimes(2) // A, B - C only after B settles
 
     b.resolve({ current: "main", branches: [branch("b")] })
     await flush()

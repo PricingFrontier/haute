@@ -73,6 +73,24 @@ describe("DataPreview", () => {
     expect(container.innerHTML).toBe("")
   })
 
+  it("keeps refresh available before the active node has preview data", () => {
+    const onRefresh = vi.fn()
+    render(<DataPreview data={null} nodeLabel="Claims" onRefresh={onRefresh} />)
+
+    expect(screen.getByText("Claims")).toBeInTheDocument()
+    expect(screen.getByLabelText("Collapse preview panel")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
+    expect(onRefresh).toHaveBeenCalledOnce()
+  })
+
+  it.each(["ok", "loading", "error"] as const)("refreshes from the %s preview header", (status) => {
+    const onRefresh = vi.fn()
+    render(<DataPreview data={makePreview({ status })} onRefresh={onRefresh} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
+    expect(onRefresh).toHaveBeenCalledOnce()
+  })
+
   it("renders node label in header", () => {
     render(<DataPreview data={makePreview()} />)
     expect(screen.getByText("Test Node")).toBeInTheDocument()
