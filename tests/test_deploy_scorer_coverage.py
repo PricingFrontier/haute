@@ -339,7 +339,8 @@ class TestScoreGraphStaticDataSourceRemap:
     reads from the local bundled file at runtime.
     """
 
-    def test_static_source_reads_remapped_path(self, tmp_path):
+    @pytest.mark.parametrize("bundled", [True, False])
+    def test_static_source_reads_remapped_path(self, tmp_path, bundled):
         from haute.deploy._scorer import score_graph
 
         # Bundled static parquet at a local path.
@@ -404,7 +405,25 @@ class TestScoreGraphStaticDataSourceRemap:
         )
 
         input_df = pl.DataFrame({"x": [1.0]})
-        remap = {"static_ds__snapshot.parquet": str(ds_path)}
+        remap = {
+            ("static_ds" if bundled else "unrelated") + "__snapshot.part-00000.parquet": str(
+                ds_path
+            )
+        }
+
+        if not bundled:
+            from haute._polars_io_registry import PolarsIoConfigError
+
+            # An unrelated bundled file must not mask this source's missing snapshot.
+            with pytest.raises(PolarsIoConfigError, match="input_snapshot_missing"):
+                score_graph(
+                    graph=graph,
+                    input_df=input_df,
+                    input_node_ids=["src"],
+                    output_node_id="out",
+                    artifact_paths=remap,
+                )
+            return
 
         result = score_graph(
             graph=graph,

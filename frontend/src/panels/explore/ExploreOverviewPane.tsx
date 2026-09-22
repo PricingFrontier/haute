@@ -14,7 +14,7 @@
  */
 
 import type { JSX } from "react"
-import type { ExploreCacheReport } from "../../api/types"
+
 import type { SimpleNode } from "../editors"
 import {
   CategoricalSummaryCard,
@@ -29,13 +29,14 @@ import {
   type OverviewCardKey,
 } from "./overviewCardDefinitions"
 import { readOverview } from "./overviewConfig"
+import type { ExploreDataView } from "./exploreDataView"
 
 interface ExploreOverviewPaneProps {
   node: SimpleNode
-  report: ExploreCacheReport | null
+  report: ExploreDataView | null
 }
 
-const CARD_RENDERERS: Record<OverviewCardKey, (report: ExploreCacheReport) => JSX.Element> = {
+const CARD_RENDERERS: Record<OverviewCardKey, (report: ExploreDataView) => JSX.Element> = {
   dataset_snapshot: (report) => <DatasetSnapshotCard report={report} />,
   schema: (report) => <SchemaTableCard report={report} />,
   numeric_summary: (report) => <NumericSummaryCard report={report} />,
@@ -86,7 +87,7 @@ export default function ExploreOverviewPane({ node, report }: ExploreOverviewPan
       >
         <EmptyState
           title="No cached data yet"
-          body="Use 'Needs caching' above to cache the data and populate the enabled cards."
+          body="Refresh this node to cache its data and populate the enabled cards."
         />
       </div>
     )

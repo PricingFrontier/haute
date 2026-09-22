@@ -21,18 +21,36 @@ Modelling and optimiser result presentation belongs to
 ## Behaviour
 
 - Data previews render loading, error and successful data, support column search, selected-frame
-  switching, trace-cell clicks, and virtualise large row/column grids.
-- Explore computes a source- and lineage-sensitive cache identity, starts/cancels an Explore run,
-  exposes Preview, Overview, Pivots, and Charts tabs in that order, and uses a completed report only when its stored
-  canonical identity matches the current graph identity. An active job remains visible and
-  cancellable if the graph or active source changes while it runs.
-- Opening an Explore preview inspects the backend's durable cache for the current identity. A
-  current generation hydrates the report/result store without another run, including after a
-  browser or backend restart. The header cache action has three unambiguous idle states: red
-  `Needs caching` when no retained dataset exists, green `Re-cache` when the exact identity is
-  current, and yellow `Re-cache` when a retained dataset is stale. Re-cache is a forced refresh,
-  not a cache-hit lookup. While a run is active the existing progress and Cancel controls replace
-  the idle action.
+  switching, trace-cell clicks, and virtualise large row/column grids. Row limits, column
+  limits, and the table's rendering do not depend on where the rows came from.
+- A preview's rows being computed from shared snapshots instead of recomputed is how the
+  pipeline is meant to work, so the panel says nothing about it; its status row carries
+  warnings and errors only. A preview is current
+  only while no snapshot has been published, widened, refreshed, or cleared since it was
+  requested: the displayed preview is then fetched again — a backend cache hit when its seeds
+  did not change — and other nodes' stored previews when next displayed. A preview's own
+  captures do not fetch it again unless something else changed while it was in flight.
+- A trace carries the seed plan of the preview it explains. When that preview or the
+  snapshots change, the displayed trace and highlight are hidden, an in-flight trace is
+  aborted, and a late response is discarded; a trace whose snapshots have expired refreshes
+  the preview.
+- Explore reads the shared data point its node resolves to, exposes Preview, Overview, Pivots,
+  and Charts tabs in that order, and renders statistics only from the shared profile of the data
+  version that point currently holds. An active job remains visible and cancellable if the graph
+  or active source changes while it runs.
+- Explore shows the same cache state, the same progress, and the same one build as every other
+  consumer of that data: opening Explore beside a Banding or Rating editor on the same input
+  joins the running job rather than starting a second one, and one narrow generation can be
+  current for Banding while it is only partial for Explore's wider column demand. The state
+  survives a browser or backend restart, because it is the point's state and not the browser's.
+- The header shows the shared data-cache state and nothing to act on: red `Not cached` when the
+  point has no data, green `Cached` when the whole demand is cached, yellow `Cache out of date`
+  or `Cached for some columns` when the data is stale or covers only some of the columns this
+  consumer reads, and — while a build runs — progress with Cancel. Caching is what the node's own
+  Refresh button does about data that is missing, stale, partial or unreadable; data that is
+  already current is left alone, because the same button is pressed to re-read a node's generated
+  fields. Refresh is also the recovery path from an unreadable snapshot. A point read straight
+  from its Parquet file states that instead, having nothing to cache.
 - Overview cards have a fixed order and are individually enabled from config. They display
   dataset, quality, numeric, categorical and schema information with accessible empty states.
   Schema, numeric-summary, and categorical-summary tables expose native-button actions to copy
@@ -41,7 +59,7 @@ Modelling and optimiser result presentation belongs to
   exported in full. Empty tables keep both actions visible but disabled. The optional Overview
   card implementation, including its action bars, is loaded on demand only when Overview is
   selected; the pane exposes a labelled loading state during that short module load.
-- Schema rows and their exports include concise profile cues supplied by the report: identifier
+- Schema rows and their exports include concise profile cues supplied by the profile: identifier
   candidate, high cardinality, text length range/mean, and temporal span. Exact duplicate-row
   findings appear through the existing Data Quality issue list.
 - Charts is lazy-loaded and renders enabled PivotCharts in persisted order. Each independently
@@ -101,9 +119,16 @@ Modelling and optimiser result presentation belongs to
   A failed autosave or flush preserves the dirty draft and blocks file switching until a later
   save succeeds. Shared preview chrome supports resizing, collapse and keyboard-accessible
   roving tabs.
-- Preview places actionable projection-boundary, rejected-strategy, or memory
-  pressure detail behind an accessible status icon beside the row/column
-  summary. A successfully admitted materialisation boundary is informational and
+- Preview places actionable projection-boundary, rejected-strategy, memory
+  pressure, or cache quota refusal detail behind an accessible status icon beside
+  the row/column summary. A capture the cache refused under quota
+  (`snapshot_capture_skipped` with reason `quota`, excluding superseded captures)
+  reports as a warning naming every refused node in arrival order; its remediation
+  names both remedies: clear unneeded cached node data, or raise the node-output cache quota
+  via `HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS` and `HAUTE_NODE_SNAPSHOT_MAX_BYTES`.
+  The refusal renders alone when no other diagnostic exists, or appends in one sentence
+  to coexisting diagnostic content, which keeps its own severity, title and remediation.
+  A successfully admitted materialisation boundary is informational and
   stays silent only when the same plan has no unprojected boundary and its execution
   metrics report no memory pressure. Mixed plans keep the real projection issue
   visible at the unprojected node. Explore
@@ -114,9 +139,11 @@ Modelling and optimiser result presentation belongs to
 ## Design rationale
 
 Virtualisation and delegated cell events make tabular inspection remain responsive at large
-dimensions. Cache identity excludes view-only Explore overview, pivot-card, and chart-card settings so changing
-displayed cards does not invalidate an otherwise reusable report. Cached reports are identity-gated,
-while running jobs are node-owned so a changed editor cannot strand their Cancel action. Utility-module
+dimensions. The data a consumer reads excludes view-only Explore overview, pivot-card, and
+chart-card settings, so changing displayed cards neither rebuilds the data nor recomputes its
+profile. Statistics are gated on the data version they were computed from — a rebuild blanks the
+panes rather than mislabelling the previous data's numbers — while running jobs are shared and
+node-owned so a changed editor cannot strand their Cancel action. Utility-module
 saves separately guard stale responses after an awaited request. Explore table actions reuse the
 shared clipboard and RFC-4180 CSV serializers so quoting behaviour cannot drift from editor
 exports; exports contain the same display strings and headers as the corresponding card rather
@@ -124,19 +151,23 @@ than reconstructing raw data in the browser.
 
 ## Interactions
 
-It uses graph, settings, UI and node-results stores, the API client, and shared diagnostics/UI
-components. Its cell-click callback feeds [frontend-trace-ui](../frontend-trace-ui/high-level.md).
-Explore configuration is edited by [frontend-node-editors](../frontend-node-editors/high-level.md).
-[Frontend shared infrastructure](../frontend-shared/high-level.md) owns background polling and
-advances Explore jobs to terminal result-store state.
+It uses graph, settings, UI, node-results and node-data stores, the API client, and shared
+diagnostics/UI components. Its cell-click callback feeds
+[frontend-trace-ui](../frontend-trace-ui/high-level.md). Explore configuration is edited by
+[frontend-node-editors](../frontend-node-editors/high-level.md).
+[Frontend shared infrastructure](../frontend-shared/high-level.md) owns the shared data-cache and
+profile hooks, the shared cache control, background polling, and advancing jobs to terminal
+result-store state.
 
 ## Failure model
 
-Preview errors are normal rendered states. Explore start failures and cancellation responses that
-do not include a completed report are recorded as terminal errors and surfaced to the user; a
-cached report with a stale identity is not rendered, but an active node job is never hidden by an
-identity change. A failed cache-status inspection is surfaced rather than being mistaken for a
-green hit. Invalid optional overview configuration is discarded while parsing. Invalid
+Preview errors are normal rendered states. A failed build or profile request is surfaced to the
+user and leaves the panes showing the state the point reports; a profile computed from another
+data version is not rendered, but an active job is never hidden by an identity change. A failed
+point inspection is surfaced rather than being mistaken for a green hit, an identity change
+aborts an in-flight inspection, and a document-fence change prevents a late reply from writing
+state. Invalid optional overview configuration is discarded while parsing. Invalid
 chart- or pivot-card configuration is surfaced in its pane rather than silently replaced, while
 malformed data that a renderer cannot safely interpret is allowed to surface rather than being
-fabricated.
+fabricated. A preview that read no snapshot shows no cached data label, and a refetch after a
+snapshot change that fails shows the ordinary preview error.

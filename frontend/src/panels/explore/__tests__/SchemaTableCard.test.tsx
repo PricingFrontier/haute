@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
-import type { ExploreCacheReport, ExploreColumnStat } from "../../../api/types"
+import type { ExploreColumnStat } from "../../../api/types"
+import type { ExploreDataView } from "../exploreDataView"
 import SchemaTableCard from "../SchemaTableCard"
 
 const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard")
@@ -26,13 +27,11 @@ function makeColumn(overrides: Partial<ExploreColumnStat> = {}): ExploreColumnSt
   }
 }
 
-function makeReport(overrides: Partial<ExploreCacheReport> = {}): ExploreCacheReport {
+function makeReport(overrides: Partial<ExploreDataView> = {}): ExploreDataView {
   return {
-    status: "ok",
-    node_id: "explore_1",
-    upstream_node_id: "source_1",
+    producer_node_id: "source_1",
     source: "pricing",
-    dataframe_cache_key: "explore_dataset:abc123",
+    data_version: "data-v1",
     row_count: 200,
     column_count: 1,
     generated_at: 1710000000,

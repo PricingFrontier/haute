@@ -49,6 +49,24 @@ backend API modules own validation and persistence.
 - Banding exposes categorical/numeric rule editing, preview-derived suggestions and histogram
   context. Rating supports one- and two-way factor tables, value-level matching, statistics,
   paste/copy and downloadable table data.
+- Banding and Rating say whose rows their numbers describe. Both show the shared data-cache
+  control, and when the node's data point is cached both read the whole dataset: Banding its
+  distribution, values and per-rule counts, Rating the levels of the raw factor columns its
+  tables rate on, so a level absent from the preview can still be given a rate. Without a
+  current point — or with one the node has moved on from — each says so and falls back to the
+  preview sample rather than presenting a sample's answer as the data's. A failure is shown in
+  place of that label, carrying the server's own message, and the preview basis continues.
+- The Rating Step editor says none of this when nothing in it reads the data: a table whose
+  factors are all banded outputs takes its levels from the banding configuration, so it shows
+  neither a basis nor the cache control.
+- Levels the data adds are appended to the ones the Rating Step editor already shows, never put
+  in front of them: they arrive while the user is typing, and a row that moved would take the
+  value meant for its neighbour. The slice of a three-factor table is held as the level itself
+  rather than a position for the same reason. A table whose factors would make more cells than
+  the editor can edit is not drawn or rebuilt; it says how many cells it would take instead, and
+  a factor that would take a table past that size is not added at all, because entries the editor
+  cannot build would leave the table without a value for its own factor. Dropping a factor stays
+  possible whatever the size, so a table the data has made oversized can still be shrunk.
 - IO editors obtain supported formats and their arguments from the server. API/data input,
   output, external-file, transform, explore, live-switch, scenario, submodel,
   model-score and optimiser-apply editors render only their own configuration contract.

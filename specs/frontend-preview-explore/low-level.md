@@ -8,7 +8,7 @@
 - Preview requests may seed `requestedPreviewColumns` from cached columns only
   when their structural version and source match the request. Missing provenance
   or a mismatch requires schema discovery by omitting that optional projection.
-  This applies to direct, recovery, downstream propagation and upstream refresh
+  This applies to direct, recovery and upstream refresh
   requests. Fresh schemas retain the initial preview column limit.
 - Deselecting join columns must therefore let downstream pass-through previews
   discover the remaining columns without requesting the old schema. Actual code
@@ -25,10 +25,13 @@
 | `frontend/src/panels/previewPanelLayout.ts` | Shared preview-panel dimensions and header/action layout constants. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-diagnostic banner owned by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md) and consumed by Explore progress and cache reports. |
 | `frontend/src/components/ExecutionDiagnosticsIndicator.tsx` | Compact preview-header execution diagnostic indicator. |
-| `frontend/src/panels/ExplorePreview.tsx` | Explore run/cancel/store lifecycle and Preview/Overview/Pivots/Charts tab composition. |
-| `frontend/src/api/types.ts`, `frontend/src/types/guards.ts`, `frontend/src/stores/useNodeResultsStore.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned Explore API contracts, runtime guards, and node-scoped report/pivot job/result state consumed by the preview panes. |
+| `frontend/src/panels/ExplorePreview.tsx` | Explore's shared-data-cache and profile composition: the data-cache action, the profiling progress, and the Preview/Overview/Pivots/Charts tabs. It owns no cache of its own. |
+| `frontend/src/hooks/useNodeDataCache.ts`, `frontend/src/hooks/useNodeDataProfile.ts`, `frontend/src/components/DataCacheStatus.tsx`, `frontend/src/components/dataCacheLabels.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned shared data-cache state, the shared `profile` analysis of the data a consumer reads, and the one cache state and its wording every consumer shows. |
+| `frontend/src/panels/explore/exploreDataView.ts` | Adapts a point's profile into what the Explore panes render, and returns nothing when the profile does not describe the data version the point currently holds. |
+| `frontend/src/stores/useNodeDataStore.ts` (`slotForConsumer`, `profileForConsumer`) | [frontend-shared](../frontend-shared/low-level.md)-owned reads of what a consumer node was last told it reads, answered only for the identity the answer was recorded under. |
+| `frontend/src/api/types.ts`, `frontend/src/types/guards.ts`, `frontend/src/stores/useNodeResultsStore.ts`, `frontend/src/stores/useNodeDataStore.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned Explore API contracts, runtime guards, node-scoped pivot job/result state, and the slot-keyed data-point/profile state consumed by the preview panes. |
 | `frontend/src/panels/UtilityPanel.tsx` | Utility-module list/read/create/delete/editor UI with debounced, flushable saves and syntax-error display. `App.tsx` loads the panel through a lazy import only after the user opens Utility, keeping its editor and API path out of startup JavaScript. |
-| `frontend/src/panels/explore/cacheIdentity.ts` | Upstream-lineage/config identity for an Explore cache request; authored-step projection excludes generated step code on the node and its stepped ancestors. |
+| `frontend/src/panels/dataPointIdentity.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned upstream-lineage/config identity of the data a consumer reads, used to detect when the data a pane's results belong to has changed; its authored-step projection excludes the generated step code on the node and on its stepped ancestors, so a render response arriving later cannot invalidate it. |
 | `frontend/src/panels/explore/overviewCardDefinitions.ts`, `frontend/src/panels/explore/overviewConfig.ts` | Ordered overview-card registry and defensive config reader. |
 | `frontend/src/panels/explore/ExploreOverviewPane.tsx` | Enabled-card/empty-state dispatcher. |
 | `frontend/src/panels/explore/pivotConfig.ts`, `frontend/src/panels/explore/pivotNumberFormat.ts`, `frontend/src/panels/explore/useExplorePivotActions.ts`, `frontend/src/panels/explore/useAutoUpdateExplorePivots.ts`, `frontend/src/panels/explore/ExplorePivotsPane.tsx`, `frontend/src/panels/explore/PivotTableGrid.tsx` | Pivot version-1 parsing, number-format helpers, calculation identity, and the shared result-freshness predicate; shared table/chart run and cancel lifecycle; deduplicated automatic scheduling for mounted consumers; enabled-section lifecycle; virtualised semantic matrix rendering. |
@@ -37,19 +40,27 @@
 | `frontend/src/panels/explore/ExploreSummaryCards.tsx`, `frontend/src/panels/explore/SchemaTableCard.tsx` | Dataset, quality, numeric, categorical and schema report cards, including card-specific export grids. |
 | `frontend/src/panels/explore/ExploreTableActions.tsx` | Read-only copy-as-TSV and download-as-CSV actions for supported Explore tables, built on the shared table serializers. |
 | `frontend/src/panels/explore/DistinctInfoButton.tsx`, `frontend/src/panels/explore/StatValueCell.tsx` | Distinct-count explanation and reusable optional-stat cell. |
-| `frontend/e2e/explore.spec.ts` | Explore browser journey: author/connect an Explore node, materialise and reload its cache, configure Pivots using the durable report schema, and observe fixed decimal formats in the calculated result. |
+| `frontend/e2e/explore.spec.ts` | Explore browser journey: author/connect an Explore node, cache its data and reload, configure Pivots using the profile's schema, and observe fixed decimal formats in the calculated result. |
 
 ## Key types and data structures
 
 - `PreviewData` in `frontend/src/panels/DataPreview.tsx` carries status, schema, preview rows,
-  optional frame schema/selection and execution diagnostics. The table combines preview columns
+  optional frame schema/selection, execution diagnostics, and the response's `seed_plan`: the
+  shared-snapshot generations the rows were computed from, each `seeded` (read instead of
+  computing the node) or `captured` (computed and written by this preview). The table combines preview columns
   with selected-frame/flat schema so a returned value is never omitted merely for missing dtype.
 - `OverviewConfig` is `Partial<Record<OverviewCardKey, boolean>>`; the fixed
   `OVERVIEW_CARD_DEFINITIONS` order is authoritative regardless of raw-object key order.
-- Explore jobs/results in `frontend/src/stores/useNodeResultsStore.ts` are accepted only when
-  a cached result's stored `configHash` matches `frontend/src/panels/ExplorePreview.tsx`'s newly
-  calculated canonical identity. Active jobs are node-owned and remain actionable across
-  identity changes.
+- `ExploreDataView` in `frontend/src/panels/explore/exploreDataView.ts` is what every Explore
+  pane renders: the profile's `row_count`, `column_count`, `columns` and `overview_summary`,
+  the `data_version` they were computed from, and the `source` and `producer_node_id` the panes
+  label them with. `exploreDataView(profile, dataVersion, producerNodeId, source)` takes only
+  primitives and stored objects, so a caller can select them from the shared store without
+  creating an object per render, and returns `null` when the profile's `data_version` differs
+  from the point's — statistics are never shown beside another version's labels.
+- Pivot jobs/results in `frontend/src/stores/useNodeResultsStore.ts` are accepted only when a
+  cached result's stored `configHash` matches the newly calculated canonical identity. Active
+  jobs are node-owned and remain actionable across identity changes.
 
 ## Control flow
 
@@ -62,48 +73,60 @@
    render spacer cells for skipped columns.
 3. One delegated tbody click handler reads row/column dataset attributes and calls the supplied
    trace callback. Embedded mode omits outer frame chrome; normal mode uses the shared frame.
+4. The status bar of an `ok` preview states its row and column counts and any execution
+   diagnostic, and nothing about where its rows came from. Reading a `seeded` entry instead of
+   recomputing the node is ordinary operation, not a finding, so it is not reported there; the
+   warning and error affordances stay for things the user has to act on. `seed_plan` still
+   reaches the trace, which is seeded from exactly what the preview read.
 
 ### Explore and overview
 
-1. `frontend/src/panels/explore/cacheIdentity.ts` finds all upstream nodes, removes Explore
-   overview, shared-formula-library, pivot, and chart settings from data-affecting config, and
-   includes submodels/preamble. Calculated-field definitions affect pivot calculations but never
-   the materialised Explore dataframe. On the Explore node and on every stepped ancestor it
-   also removes the generated `code` and `_steps_error` a step list materialises
-   (`authoredPolarsConfig`), so a render response arriving after the report was computed
-   cannot invalidate its identity; editing the steps themselves still does.
-2. `frontend/src/panels/ExplorePreview.tsx` canonicalises that identity together with the active
-   source. It posts that graph identity to `/api/explore/cache-status` on mount and whenever the
-   identity changes; a rerender that preserves the identity (for example a canvas drag) does not
-   re-post. A `current` response hydrates the completed result store without a run; a
-   `stale` response controls the warning action state but is not installed as a current report.
-   It ignores retained frontend results with a different identity, but keeps them as evidence of
-   staleness and keeps the node's active job visible and cancellable using the source that job
-   actually started with. It records immediate cache hits as completed results and background
-   starts as jobs.
-3. Start failures, and cancellation responses without a completed report, call the result-store
-   failure path; thrown start/cancel errors also toast. When that path retains an earlier successful
-   report, its stored graph/source identity remains the identity that produced the report rather
-   than being relabelled as the failed attempt's identity. `useBackgroundJobs` in frontend-shared
-   polls background Explore and pivot jobs and moves terminal responses into the result store. A
-   visible report is touched to update cache recency. Preview, Overview, Pivots, and Charts mount
-   only for their active tab; a remembered value from a still-unsupported pane normalises to Preview.
+1. `frontend/src/panels/ExplorePreview.tsx` holds no cache state of its own. `useNodeDataCache`
+   resolves the node's shared data point for the active source and reports that point's
+   availability for this consumer's column demand; `useNodeDataProfile` supplies the shared
+   `profile` analysis of the point's current data version. A Banding or Rating editor on the same
+   input therefore shows the same state and joins the same build rather than starting a second
+   one.
+2. `exploreDataView(profile, point.data_version, point.point.producer_node_id, activeSource)`
+   builds what the Overview, Pivots and Charts panes render. Because it returns `null` unless the
+   profile's data version is the one the point currently holds, a rebuild between two renders
+   blanks the panes instead of attributing the previous data's statistics to the new data.
+   `frontend/src/panels/dataPointIdentity.ts` remains the identity pivot and chart results are
+   gated on; calculated-field definitions affect pivot calculations but never the data itself.
+   The panes an editor renders read the shared store through `profileForConsumer`/
+   `slotForConsumer`, which answer only for the identity the consumer is currently asking about:
+   until the new point answers, a source switch or a rewiring leaves them with nothing rather
+   than the previous point's statistics under the new labels.
+3. The profile is asked for once per slot and data version, and only while the point is
+   `current` — it describes the whole dataset, so it is never computed from partial data. The
+   request carries a document-execution fence: a reply that arrives after the document has moved
+   on is dropped rather than published. Whichever consumer asked, the running profile job is
+   polled once for the whole application and its result is stored per slot, so every pane showing
+   that data gets it, and its progress can be cancelled from any of them. A failure — of the
+   request or of the job — is recorded against that slot and the data version it was asked for,
+   shown in the frame's subtitle, and offered as a Retry action; nothing asks again on its own
+   while it stands, so a failed profile is never an empty pane with no way forward (a
+   directly-read point has no cache to rebuild). A job's outcome belongs to the
+   version *it* profiled, not to whatever the point holds when it ends, so a re-cache that
+   published while it ran is still profiled rather than inheriting the older attempt's failure. A
+   refused cancellation leaves the job running, cancellable, and its failure visible. Preview, Overview, Pivots and Charts mount only
+   for their active tab; a remembered value from a still-unsupported pane normalises to Preview.
    `ExploreOverviewPane` is a `React.lazy` boundary, so its report-card and export code stays out
    of startup JavaScript. Suspense renders a labelled Overview loading state inside the existing
    tabpanel until that module is ready.
-4. When idle, the cache action derives one of three states from the identity-gated result, retained
-   stale result, and backend inspection: `missing` renders a filled red `Needs caching` button;
-   `current` renders a filled green `Re-cache` button; `stale` renders a filled yellow `Re-cache`
-   button. The subtitle mirrors `Needs caching`, `Cached`, or `Cache stale`. Clicking either
-   Re-cache state sends `refresh: true`; clicking Needs caching normally sends `refresh: false`.
-   After an inspection error it sends `refresh: true`, providing an explicit recovery path that
-   bypasses a corrupt selected generation. The status request is abortable and an obsolete
-   identity response cannot hydrate the new identity. A
-   resolved backend `missing` state is authoritative over an old in-browser report; changing to a
-   source with no generation therefore shows red, while a same-family identity mismatch reported
-   by the backend shows yellow. A stale, missing, or failed inspection suppresses the retained
-   report from dependent panes. Inspection failure also returns the action to red and emits an
-   explicit error toast rather than leaving an unverified green state.
+4. The cache state is the shared `DataCacheStatus`: red `Not cached` for a point with no data,
+   green `Cached` when the whole demand is cached, amber `Cache out of date` or `Cached for some
+   columns` when the cached data is stale or covers only some of the columns this consumer reads,
+   a muted `Checking cache` while the point is being resolved, and — while a build runs — a
+   Cancel button with that build's determinate progress. Nothing in it starts a build: the node's
+   Refresh button does, through `refreshNodeDataCache(nodeId)`, which asks every consumer
+   registered for that node to bring its data up to date. `missing` sends a plain build; `stale`,
+   `partial` and `corrupt` send a refresh, which is also the recovery path from an unreadable
+   snapshot; `current`, `building` and `checking` do nothing, so a Refresh pressed to re-read a
+   node's generated fields never recomputes a dataset that has not changed. A point read straight
+   from its Parquet file has nothing to cache, so the state is replaced by `Reads Parquet
+   directly`. The frame's subtitle states the same status in words, and while the profile runs it
+   states the profile's progress instead.
 5. `frontend/src/panels/explore/overviewConfig.ts` drops malformed config values. The overview
    pane renders no-enabled-cards, no-report, or the ordered enabled renderer set.
    `frontend/src/panels/explore/chartConfig.ts` instead returns an explicit parse failure for a
@@ -261,9 +284,20 @@ rather than duplicating the strategy remediation, a terminal memory-limit failur
 is reported instead of the warned strategy — in `ExecutionDiagnosticsIndicator`
 too, where the pressure diagnostic's title wins over the warned strategy's while
 the warned detail stays in the explanation — and the requested and blocking nodes
-are promoted to the canvas warning state. Activating the icon
-explains projection limits, correctness, possible I/O/memory cost, and
-remediation without exposing raw bounded-collection JSON.
+are promoted to the canvas warning state. A capture the cache refused records an execution
+warning whose code is `snapshot_capture_skipped` and whose reason is `quota`, excluding that
+code with any other reason and the separate `snapshot_capture_superseded` code, producing a
+warning finding titled
+"Node capture was skipped". It is never an error because preview rows are correct, and it names
+every refused node in arrival order. Its remediation names both store remedies: clearing a
+cached node's data that is no longer needed, or raising the node-output cache quota, naming
+`HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS` and `HAUTE_NODE_SNAPSHOT_MAX_BYTES`. When no other
+diagnostic exists, the refusal is the content and the indicator renders for it alone; when another
+finding is present, that finding keeps its own severity, title and remediation, whether it is an
+execution error, memory pressure, a warned strategy or a projection boundary, and the refusal is
+appended to the explanation in one sentence so refused caching is never lost. Activating the
+icon explains projection limits, refused node captures, correctness, possible I/O/memory cost,
+and remediation without exposing raw bounded-collection JSON.
 `ExplorePreview` passes progress or cache-report metrics to
 `ExecutionDiagnosticsSummary`, whose technical detail is disclosed on demand.
 
@@ -286,14 +320,14 @@ remediation without exposing raw bounded-collection JSON.
   and header count. Preview-only columns remain visible with an unknown/empty dtype.
 - `null`/`undefined` display separately from Haute non-finite-float sentinel objects. Table
   windows clamp if a changed result becomes narrower while horizontally scrolled.
-- Explore refuses run while there is no input or a job is active. An instant completed response
-  without a report, or a started response without `job_id`, is an explicit failure rather than a
-  false success.
+- The cache action is disabled while the point cannot be built or a build is already running. A
+  profile response that is neither a completed result nor a started/joined job publishes nothing
+  rather than a false success.
 - A valid empty/missing chart array prompts the user to add a chart. A non-empty array with every
   card disabled reports that no charts are shown. Duplicate/blank ids and wrong-typed fields are
   invalid configuration, not empty state.
-- Explore progress is a determinate ARIA progressbar only while the run is busy. Its value is
-  the displayed fraction clamped to 0-100; native buttons give export actions keyboard semantics,
+- Explore progress is a determinate ARIA progressbar only while the build or the profile is
+  busy. Its value is the displayed fraction clamped to 0-100; native buttons give export actions keyboard semantics,
   and both are disabled when their grid has no body rows.
 - Utility save replies cannot clear/show errors for a different active module. A 400 API detail
   matching `line N` highlights that line; list/load errors are toast-visible, not interpreted as
@@ -311,12 +345,12 @@ remediation without exposing raw bounded-collection JSON.
 
 ## Error handling
 
-Preview `loading` and `error` statuses are ordinary render branches. Explore records a terminal
-error for a failed start or a cancellation that does not return a completed report; thrown
-start/cancel exceptions also toast. Actionable cache-report execution metrics render in the
-shared diagnostics banner. Utility syntax errors remain inline and block a requested file switch;
-other file-operation failures toast or display action-local text. Cache/report/card shape is
-assumed to meet the API contract; optional overview settings alone are parsed defensively.
+Preview `loading` and `error` statuses are ordinary render branches. A failed build or profile
+request toasts and leaves the panes showing the state the point reports, never fabricated
+statistics. Actionable profile execution metrics render in the shared diagnostics banner. Utility
+syntax errors remain inline and block a requested file switch; other file-operation failures
+toast or display action-local text. Point/profile/card shape is assumed to meet the API contract;
+optional overview settings alone are parsed defensively.
 Missing or unsupported execution diagnostics stay silent; the primary preview
 or Explore failure remains authoritative and no diagnostic-unavailable success
 state is fabricated.
@@ -330,25 +364,34 @@ Tests live in `frontend/src/panels/__tests__/DataPreview.test.tsx`,
 `frontend/src/panels/__tests__/UtilityPanel.test.tsx`, plus the focused overview suites under
 `frontend/src/panels/explore/__tests__/` and
 `frontend/src/__tests__/editors/ExploreChartsConfig.test.tsx`. They cover virtualisation, frames, search, trace click
-delegation, boundary/rejected execution diagnostics, cache identity/result/job lifecycle,
-overview/chart card ordering and config, chart list/configure/back/toggle behavior, chart
+delegation, boundary/rejected execution diagnostics, the status bar naming no seeded
+nodes, pivot identity/result/job lifecycle,
+overview/chart card ordering and config, the data-cache state and profile lifecycle, chart
+list/configure/back/toggle behavior, chart
 visualisation empty/error states, roving-tab accessibility, utility save-flush/stale-response behaviour and
 syntax errors. The Explore suites also pin progressbar name/value semantics, TSV headers and
 contents, RFC-4180 CSV quoting through the download blob, full filtered-schema export across
 pagination, disabled empty-table actions, and native-button accessibility.
 `frontend/src/__tests__/App.utilityPanelLazy.test.ts` and the bundle-budget tests
-guard the Utility panel's on-demand chunk boundary. Shared layout/constants and small visual
-helpers are exercised through these component tests rather than owning standalone suites.
+guard the Utility panel's on-demand chunk boundary. Indicator tests in
+`frontend/src/components/__tests__/ExecutionDiagnosticsIndicator.test.tsx` verify that a quota
+refusal warning alone renders the indicator with both remedies and both environment variables
+(`HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS` and `HAUTE_NODE_SNAPSHOT_MAX_BYTES`), multiple refusals
+list every refused node in arrival order, mixed payloads report only quota-refused nodes,
+non-quota skipped capture warnings render nothing, and coexistence across memory pressure,
+rejected strategy, warned strategy, and projection boundary preserves the primary severity,
+title, and remediation while appending the refusal finding. Shared layout/constants and small
+visual helpers are exercised through these component tests rather than owning standalone suites.
 
 Generic browser preview/smoke coverage is in `frontend/e2e/core-flows.spec.ts`,
 `frontend/e2e/data-preview-scroll.benchmark.spec.ts`, and `frontend/e2e/smoke.spec.ts`.
 Explore owns a dedicated browser journey in `frontend/e2e/explore.spec.ts`: it authors and
-connects an Explore node, materialises the full cache, reloads the application, opens Pivots,
-asserts that the durable report's post-code schema populates the field palette, commits a Pivot
+connects an Explore node, caches the whole dataset, reloads the application, opens Pivots,
+asserts that the profile's post-code schema populates the field palette, commits a Pivot
 with fixed decimal places for a Column, Row, and Value, and observes those formats in its calculated
 result. Focused component tests additionally exercise rejected or
-malformed run responses and rejected cancellation so start/cancel failures cannot leave a job or
-cache action in a false-success state.
+malformed build and profile responses and rejected cancellation so those failures cannot leave a
+job or the cache action in a false-success state.
 
 ## Modelling config panes
 

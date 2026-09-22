@@ -118,6 +118,11 @@ function HistoryHarness() {
   />
 }
 
+// This case drives a debounced editor through several edits, renders, undos and
+// redos. It fits the 30s default comfortably on its own; a whole parallel suite
+// run can starve it past that without making it wrong.
+const UNDO_REDO_TIMEOUT_MS = 90_000
+
 describe("PolarsStepsEditor", () => {
   beforeEach(() => {
     resetGraphStoreForTests()
@@ -154,7 +159,7 @@ describe("PolarsStepsEditor", () => {
     expect(field).toHaveValue(20)
     await waitFor(() => expect(current().code).toBe(codeFor(20)), { timeout: 5000 })
     expect(useGraphStore.getState().undoStack).toHaveLength(pendingPriorEdit ? 2 : 1)
-  })
+  }, UNDO_REDO_TIMEOUT_MS)
 
   it("seeds the start input and adds the first step from the chooser under it", async () => {
     const spy = vi.fn()

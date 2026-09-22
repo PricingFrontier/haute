@@ -218,8 +218,9 @@ the right-click node menu with roving-tabindex arrow-key navigation.
 `Toolbar` is the app's top chrome: it organizes controls into a 56px 2-tier stacked
 column layout. The brand section displays the lowercase brand heading and
 package-derived browser version alongside live status dots, aligned to the node palette
-boundary (x = 181px). Adjacent columns house the source selector, preview/chunk row limits
-with synchronized width expansion, integer-ms timing and memory breakdowns, undo/redo with
+boundary (x = 181px). Adjacent columns house the source selector stacked above a
+Cache control that shares its width and opens the cache usage pane,
+preview/chunk row limits with synchronized width expansion, integer-ms timing and memory breakdowns, undo/redo with
 text labels, zoom in/out, centre/layout, Submodel/Instance selection actions, utility/imports,
 assistant and an external Documentation link, and the working branch indicator stacked above
 equal-width Save and Commit buttons.

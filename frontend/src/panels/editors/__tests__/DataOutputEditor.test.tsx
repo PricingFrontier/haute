@@ -230,6 +230,11 @@ beforeEach(() => {
 
 afterEach(cleanup)
 
+// The rejected write crosses a mocked request and several effects before the
+// alert renders, which a whole parallel suite run makes slower without making
+// it wrong.
+const FAILED_WRITE_TIMEOUT_MS = 10_000
+
 describe("DataOutputEditor", () => {
   it("shows only output-capable groups and atomically replaces provider config", async () => {
     const { onReplaceConfig } = renderEditor({
@@ -368,7 +373,7 @@ describe("DataOutputEditor", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Write" }))
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
+    expect(await screen.findByRole("alert", {}, { timeout: FAILED_WRITE_TIMEOUT_MS })).toHaveTextContent(
       "Output storage is unavailable",
     )
     expect(screen.getByRole("button", { name: "Write" })).toBeEnabled()

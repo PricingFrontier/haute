@@ -505,8 +505,10 @@ def test_wait_for_result_defensive_paths(monkeypatch: pytest.MonkeyPatch) -> Non
         (-9, 64 * 1024 * 1024, "memory_limited"),
         (-int(signal.SIGABRT), 64 * 1024 * 1024, "memory_limited"),
         (0xC0000409, 64 * 1024 * 1024, "memory_limited"),
+        (0xC00000FD, 64 * 1024 * 1024, "memory_limited"),
         (-9, None, "error"),
         (0xC0000409, None, "error"),
+        (0xC00000FD, None, "error"),
         (3, 64 * 1024 * 1024, "error"),
     ],
 )

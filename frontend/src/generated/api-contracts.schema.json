@@ -571,7 +571,8 @@
             "auto_range",
             "deploy_live",
             "deploy_batch",
-            "chunked_map_reduce"
+            "chunked_map_reduce",
+            "node_snapshot"
           ],
           "title": "Profile",
           "type": "string"

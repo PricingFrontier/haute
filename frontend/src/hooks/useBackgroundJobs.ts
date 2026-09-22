@@ -11,11 +11,19 @@
  * wires up store selectors and API functions for each job type.
  */
 import { useCallback, useEffect, useRef } from "react"
-import { getExplorePivotStatus, getExploreStatus, getOptimiserStatus, getTrainStatus } from "../api/client"
+import {
+  getExplorePivotStatus,
+  getNodeDataStatus,
+  getOptimiserStatus,
+  getTrainStatus,
+} from "../api/client"
 import { FAILED_JOB_STATUSES } from "../api/types"
+import type { NodeDataStatusResponse } from "../api/types"
 import { ApiResponseValidationError } from "../api/responseValidation"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
-import type { ExplorePivotProgress, ExploreProgress, SolveProgress, TrainProgress } from "../stores/useNodeResultsStore"
+import type { ExplorePivotProgress, SolveProgress, TrainProgress } from "../stores/useNodeResultsStore"
+import useNodeDataStore from "../stores/useNodeDataStore"
+import type { NodeDataSlotJob } from "../stores/useNodeDataStore"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useToastStore from "../stores/useToastStore"
 import { buildExecutionFailureMessage } from "../utils/executionDiagnostics"
@@ -62,6 +70,7 @@ export default function useBackgroundJobs() {
     (s) => s.graphSynchronized,
   )
   const discardActiveJobs = useNodeResultsStore((s) => s.discardActiveJobs)
+  const resetNodeData = useNodeDataStore((s) => s.reset)
   const documentFenceKey = JSON.stringify([
     documentSourceFile,
     documentExecutionGeneration,
@@ -74,9 +83,13 @@ export default function useBackgroundJobs() {
   useEffect(() => {
     if (previousDocumentFenceKey.current !== documentFenceKey) {
       discardActiveJobs()
+      // Shared data points belong to one document and source: a new fence
+      // invalidates every slot, so consumers ask again instead of showing the
+      // previous document's generations.
+      resetNodeData()
       previousDocumentFenceKey.current = documentFenceKey
     }
-  }, [discardActiveJobs, documentFenceKey])
+  }, [discardActiveJobs, documentFenceKey, resetNodeData])
 
   // ── Optimiser job polling ──
 
@@ -160,47 +173,6 @@ export default function useBackgroundJobs() {
     failLabel: "Training failed",
   })
 
-  // ── Explore job polling ──
-
-  const exploreJobs = useNodeResultsStore((s) => s.exploreJobs)
-  const updateExploreProgress = useNodeResultsStore((s) => s.updateExploreProgress)
-  const completeExploreJob = useNodeResultsStore((s) => s.completeExploreJob)
-  const failExploreJob = useNodeResultsStore((s) => s.failExploreJob)
-
-  const explorePollFn = useCallback(
-    (jobId: string, signal: AbortSignal) => getExploreStatus<ExploreProgress>(jobId, { signal }),
-    [],
-  )
-  const exploreOnComplete = useCallback(
-    (nodeId: string, status: ExploreProgress) => {
-      if (!status.result) return
-      completeExploreJob(nodeId, status.result, status)
-    },
-    [completeExploreJob],
-  )
-
-  useJobPolling<(typeof exploreJobs)[string], ExploreProgress>({
-    jobs: exploreJobs,
-    pollFn: explorePollFn,
-    onProgress: updateExploreProgress,
-    progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
-    onComplete: exploreOnComplete,
-    onFail: failExploreJob,
-    labelFn: (job) => job.nodeLabel,
-    jobIdFn: (job) => job.jobId,
-    isComplete: (s) => s.status === "completed",
-    isError: (s) => FAILED_JOB_STATUSES.has(s.status),
-    getResult: (s) => (s.result ? s : undefined),
-    getErrorMessage: (s) => buildExecutionFailureMessage(s.message || "Unknown error", s.execution_metrics, {
-      status: s.status,
-      terminalReason: s.terminal_reason,
-    }),
-    getTerminalPollErrorMessage: getJobPollErrorMessage,
-    addToast,
-    successLabel: "Explore complete",
-    failLabel: "Explore failed",
-  })
-
   // ── Explore pivot job polling ──
 
   const pivotJobs = useNodeResultsStore((s) => s.pivotJobs)
@@ -243,5 +215,92 @@ export default function useBackgroundJobs() {
     addToast,
     successLabel: "Pivot complete",
     failLabel: "Pivot failed",
+  })
+
+  // ── Shared node-data build polling, keyed by slot ──
+  //
+  // One build serves every consumer of a data point, so it is polled once here
+  // and each consumer reads its progress from the slot entry.
+
+  const nodeDataJobs = useNodeDataStore((s) => s.jobs)
+  const updateNodeDataProgress = useNodeDataStore((s) => s.updateJobProgress)
+  const finishNodeDataJob = useNodeDataStore((s) => s.finishJob)
+  const nodeDataPollFn = useCallback(
+    (jobId: string, signal: AbortSignal) => getNodeDataStatus(jobId, { signal }),
+    [],
+  )
+  const nodeDataOnComplete = useCallback(
+    (slotKey: string, status: NodeDataStatusResponse) => finishNodeDataJob(slotKey, status),
+    [finishNodeDataJob],
+  )
+  const nodeDataOnFail = useCallback(
+    (slotKey: string, _message: string, status?: NodeDataStatusResponse) => {
+      void _message
+      finishNodeDataJob(slotKey, status ?? null)
+    },
+    [finishNodeDataJob],
+  )
+
+  useJobPolling<NodeDataSlotJob, NodeDataStatusResponse>({
+    jobs: nodeDataJobs,
+    pollFn: nodeDataPollFn,
+    onProgress: updateNodeDataProgress,
+    progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
+    onComplete: nodeDataOnComplete,
+    onFail: nodeDataOnFail,
+    labelFn: (job) => job.startedByLabel,
+    jobIdFn: (job) => job.jobId,
+    isComplete: (s) => s.status === "completed",
+    isError: (s) => FAILED_JOB_STATUSES.has(s.status),
+    getResult: (s) => s,
+    getErrorMessage: (s) => buildExecutionFailureMessage(
+      s.error || s.message || "Unknown error",
+      s.execution_metrics,
+      { status: s.status, terminalReason: s.terminal_reason },
+    ),
+    getTerminalPollErrorMessage: getJobPollErrorMessage,
+    addToast,
+    successLabel: "Data cached",
+    failLabel: "Data caching failed",
+  })
+
+  // ── Shared data-profile polling, keyed by slot ──
+
+  const profileJobs = useNodeDataStore((s) => s.profileJobs)
+  const updateProfileProgress = useNodeDataStore((s) => s.updateProfileProgress)
+  const finishProfileJob = useNodeDataStore((s) => s.finishProfileJob)
+  const profileOnComplete = useCallback(
+    (slotKey: string, status: NodeDataStatusResponse) => finishProfileJob(slotKey, status),
+    [finishProfileJob],
+  )
+  const profileOnFail = useCallback(
+    (slotKey: string, _message: string, status?: NodeDataStatusResponse) => {
+      void _message
+      finishProfileJob(slotKey, status ?? null)
+    },
+    [finishProfileJob],
+  )
+
+  useJobPolling<NodeDataSlotJob, NodeDataStatusResponse>({
+    jobs: profileJobs,
+    pollFn: nodeDataPollFn,
+    onProgress: updateProfileProgress,
+    progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
+    onComplete: profileOnComplete,
+    onFail: profileOnFail,
+    labelFn: (job) => job.startedByLabel,
+    jobIdFn: (job) => job.jobId,
+    isComplete: (s) => s.status === "completed",
+    isError: (s) => FAILED_JOB_STATUSES.has(s.status),
+    getResult: (s) => s,
+    getErrorMessage: (s) => buildExecutionFailureMessage(
+      s.error || s.message || "Unknown error",
+      s.execution_metrics,
+      { status: s.status, terminalReason: s.terminal_reason },
+    ),
+    getTerminalPollErrorMessage: getJobPollErrorMessage,
+    addToast,
+    successLabel: "Data profile ready",
+    failLabel: "Data profile failed",
   })
 }

@@ -151,7 +151,7 @@ export default function useExplorePivotActions({
       key: string,
       jobId: string,
       calculationIdentity: string,
-      requestedDataframeCacheKey: string | null,
+      requestedDataVersion: string | null,
     ) => {
       startJob(
         key,
@@ -163,7 +163,7 @@ export default function useExplorePivotActions({
         calculationIdentity,
         activeSource,
         structuralVersion,
-        requestedDataframeCacheKey,
+        requestedDataVersion,
       )
     },
     [activeSource, node.id, nodeLabel, startJob, structuralVersion],
@@ -176,7 +176,7 @@ export default function useExplorePivotActions({
       calculationIdentity: string,
       message: string,
       status: JobStatus,
-      requestedDataframeCacheKey: string | null,
+      requestedDataVersion: string | null,
       failure: ExplorePivotFailure | null = null,
       executionMetrics: ExecutionMetrics | null = null,
     ) => {
@@ -185,7 +185,7 @@ export default function useExplorePivotActions({
         key,
         `failed:${key}:${Date.now()}`,
         calculationIdentity,
-        requestedDataframeCacheKey,
+        requestedDataVersion,
       )
       failJob(
         key,
@@ -199,7 +199,7 @@ export default function useExplorePivotActions({
   const updatePivot = useCallback(
     async (
       pivot: ExplorePivotConfig,
-      requestedDataframeCacheKey: string | null = null,
+      requestedDataVersion: string | null = null,
       autoClaimToken?: number,
     ) => {
       const key = explorePivotResultKey(node.id, pivot.id)
@@ -217,7 +217,7 @@ export default function useExplorePivotActions({
           .claimExplorePivotManual(
             key,
             node.id,
-            requestedDataframeCacheKey,
+            requestedDataVersion,
             calculationIdentity,
           )
       // Every submission owns a claim generation. A newer automatic target or
@@ -247,7 +247,7 @@ export default function useExplorePivotActions({
             calculationIdentity,
             message,
             "contract_error",
-            requestedDataframeCacheKey,
+            requestedDataVersion,
             response.failure,
           )
           return
@@ -263,7 +263,7 @@ export default function useExplorePivotActions({
             key,
             jobId,
             calculationIdentity,
-            requestedDataframeCacheKey,
+            requestedDataVersion,
           )
           completeJob(key, response.result, {
             status: "completed",
@@ -285,7 +285,7 @@ export default function useExplorePivotActions({
           key,
           response.job_id,
           calculationIdentity,
-          requestedDataframeCacheKey,
+          requestedDataVersion,
         )
         updateProgress(key, {
           status: "running",
@@ -305,7 +305,7 @@ export default function useExplorePivotActions({
           calculationIdentity,
           errorMessage(error),
           executionJobStatusFromReason(terminalReason),
-          requestedDataframeCacheKey,
+          requestedDataVersion,
           null,
           executionMetricsFromError(error),
         )

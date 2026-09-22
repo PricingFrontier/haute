@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import contextvars
 import math
-import queue
+import shutil
+import tempfile
 import threading
 import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable, Collection, Generator, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import IO, Any, Literal, TypeVar, cast
 
 import polars as pl
 from polars.io.plugins import register_io_source
@@ -23,6 +23,8 @@ from haute._execution_context import (
     ExecutionProfile,
     current_execution_context,
 )
+from haute._file_ops import ensure_disk_headroom
+from haute._hashing import HashingWriter
 from haute._logging import get_logger
 
 logger = get_logger(component="polars_utils")
@@ -85,7 +87,7 @@ def _cancellable_collect(
     lf: pl.LazyFrame,
     *,
     execution_context: ExecutionContext,
-    engine: Literal["auto", "streaming"],
+    engine: Literal["auto", "streaming", "in-memory"],
     poll_seconds: float = 0.01,
 ) -> pl.DataFrame:
     """Collect in the background while propagating request cancellation."""
@@ -148,12 +150,12 @@ def execution_collect(
     lf: pl.LazyFrame,
     *,
     execution_context: ExecutionContext | None = None,
-    engine: Literal["auto", "streaming"] = "auto",
+    engine: Literal["auto", "streaming", "in-memory"] = "auto",
     poll_seconds: float = 0.01,
 ) -> pl.DataFrame:
     """Collect with native cancellation whenever an execution context is active."""
-    if engine not in {"auto", "streaming"}:
-        raise ValueError("engine must be 'auto' or 'streaming'")
+    if engine not in {"auto", "streaming", "in-memory"}:
+        raise ValueError("engine must be 'auto', 'streaming' or 'in-memory'")
     context = execution_context or current_execution_context()
     if context is None:
         try:
@@ -177,99 +179,80 @@ def bounded_collect_batches(
     execution_context: ExecutionContext | None = None,
     stage_name: str = "collect_batches",
     node_id: str | None = None,
-) -> Iterator[pl.DataFrame]:
-    """Yield native streaming batches with execution checkpoints.
+) -> Generator[pl.DataFrame, None, None]:
+    """Yield batches of at most ``chunk_size`` rows, never more than one ahead.
 
-    Polars' own ``collect_batches`` ends its stream as though the query were
-    exhausted when the engine panics, so a crash would read as a short result.
-    The query runs instead as a blocking streaming ``sink_batches`` on a
-    dedicated thread, which raises every engine failure (a panic as
-    ``PanicException``). Batches reach the caller through a one-slot queue;
-    after the batches delivered before a failure, the failure is re-raised.
-    Closing the iterator early stops the query at its next batch.
+    Polars applies no backpressure to ``sink_batches``, ``collect_batches``,
+    or a Python source: a consumer slower than the engine let it materialise
+    the whole frame (8 GiB for a 10M-row, 60-column frame). Each batch is
+    therefore its own query, issued only when the consumer asks for it:
+
+    - sliced — ``lf`` can be sliced at its input (``haute._chunked_writes.
+      sliceable``): each batch is ``lf.slice(offset, chunk_size)``. A failure
+      in batch k raises after batches 0..k-1; closing early reads no more.
+    - staged — otherwise ``lf`` is written once, by the chunked writer, into
+      a private temporary directory, and its parts are sliced. A failure
+      raises before any batch; the directory is removed on exhaustion, close,
+      or failure.
+
+    Batches follow the frame's order in every strategy (``maintain_order`` is
+    always honoured). An engine failure always raises; it is never read as
+    the end of the stream.
     """
+    from haute._chunked_writes import (
+        _budgeted_rows,
+        part_paths,
+        scan_parts,
+        sliceable,
+        write_parts,
+    )
 
+    del maintain_order  # every strategy keeps the frame's order
     if not isinstance(chunk_size, int) or isinstance(chunk_size, bool) or chunk_size <= 0:
         raise ValueError("chunk_size must be a positive integer")
     metrics_context = execution_context or current_execution_context()
     if metrics_context is not None:
         metrics_context.fault_point("collect_before_native", node_id=node_id)
-    handoff: queue.Queue[pl.DataFrame | _BatchStreamEnd] = queue.Queue(maxsize=1)
-    closed = threading.Event()
-
-    def hand_off(item: pl.DataFrame | _BatchStreamEnd) -> bool:
-        while not closed.is_set():
-            try:
-                handoff.put(item, timeout=_BATCH_HANDOFF_POLL_SECONDS)
-            except queue.Full:
-                continue
-            return True
-        return False
-
-    def run_query() -> None:
-        failure: BaseException | None = None
-        try:
-            lf.sink_batches(
-                lambda batch: not hand_off(batch),
-                chunk_size=chunk_size,
-                maintain_order=maintain_order,
-                lazy=False,
-                engine="streaming",
-            )
-        except BaseException as exc:
-            failure = exc
-        hand_off(_BatchStreamEnd(failure))
-
-    query_context = contextvars.copy_context()
-    threading.Thread(
-        target=query_context.run,
-        args=(run_query,),
-        name="haute-collect-batches",
-        daemon=True,
-    ).start()
-
-    def next_batch() -> pl.DataFrame:
-        item = handoff.get()
-        if isinstance(item, _BatchStreamEnd):
-            if item.failure is None:
-                raise StopIteration
-            if isinstance(item.failure, pl.exceptions.ComputeError):
-                _reraise_python_scan_failure(item.failure)
-            raise item.failure
-        return item
-
+    staging: Path | None = None
     try:
         if metrics_context is not None:
             metrics_context.checkpoint(label="before_collect_batches", node_id=node_id)
-        while True:
-            try:
-                if metrics_context is not None:
-                    with metrics_context.stage(
-                        stage_name,
-                        node_id=node_id,
-                        skip_metric_on_exception=(StopIteration,),
-                    ):
-                        batch = next_batch()
-                        metrics_context.record_collect()
-                else:
-                    batch = next_batch()
-            except StopIteration:
-                return
+        source: pl.LazyFrame
+        if sliceable(lf):
+            source = lf
+        else:
+            staging = Path(tempfile.mkdtemp(prefix="haute-batches-"))
+            write_parts(
+                staging,
+                lf,
+                chunk_rows=chunk_size,
+                fast_checkpoint=True,
+                execution_context=metrics_context,
+                node_id=node_id,
+            )
+            source = scan_parts(part_paths(staging))
+        chunk_size, _, _ = _budgeted_rows(
+            chunk_size,
+            (source,),
+            execution_context=metrics_context,
+        )
+        total = int(
+            execution_collect(source.select(pl.len()), execution_context=metrics_context).item()
+        )
+        for offset in range(0, total, chunk_size):
+            if metrics_context is not None:
+                with metrics_context.stage(stage_name, node_id=node_id):
+                    batch = execution_collect(
+                        source.slice(offset, chunk_size), execution_context=metrics_context
+                    )
+            else:
+                batch = execution_collect(source.slice(offset, chunk_size))
             if metrics_context is not None:
                 metrics_context.checkpoint(label="after_collect_batch", node_id=node_id)
             yield batch
     finally:
-        closed.set()
-
-
-_BATCH_HANDOFF_POLL_SECONDS = 0.05
-
-
-@dataclass(frozen=True, slots=True)
-class _BatchStreamEnd:
-    """The end of a batch stream: a clean finish, or the query's failure."""
-
-    failure: BaseException | None
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 # Polars reports an exception raised inside a Python scan source as a
@@ -425,6 +408,108 @@ def row_local_python_scan(
     return _register_python_scan(frames, schema=schema, caller_context=caller_context)
 
 
+def fanout_python_scan(
+    input_lf: pl.LazyFrame,
+    expand: Callable[[pl.DataFrame], pl.DataFrame],
+    *,
+    schema: pl.Schema,
+    fanout: int,
+    generated_columns: Collection[str],
+    required_input_columns: Collection[str] | None,
+    input_schema: pl.Schema | None = None,
+    execution_context: ExecutionContext | None = None,
+    node_id: str | None = None,
+) -> pl.LazyFrame:
+    """Expose a fixed fan-out Python expansion to Polars as a scan source.
+
+    Polars pushes no slice below an ``explode``: a ``.head(n)`` above a
+    row-expanding node still expands every input row and keeps the first ``n``
+    of the result, so an interactive preview of a 10M-row frame expanded 11
+    ways builds 110M rows to show 100. A registered IO source is a scan
+    instead, and the optimiser hands it the row limit and projection it could
+    push down — and only where doing so leaves the query result unchanged (a
+    downstream filter, aggregation, window, or join lookup side withholds the
+    limit).
+
+    ``expand`` must turn a batch of input rows into exactly ``fanout`` output
+    rows per input row, in input order, independently of every other row. The
+    first ``ceil(n / fanout)`` input rows are then exactly the source of the
+    first ``n`` output rows, so the limit always caps ``input_lf``.
+    ``schema`` is the expansion's exact output schema and ``generated_columns``
+    the columns it adds or replaces; every other output column is an input
+    column carried through unchanged. ``required_input_columns`` are the input
+    columns ``expand`` reads (``None``: every input column) — a pushed
+    projection narrows the input to the requested carried columns plus these.
+    """
+    if isinstance(fanout, bool) or not isinstance(fanout, int) or fanout < 1:
+        raise ValueError(f"fanout must be a positive integer, got {fanout!r}")
+    context = execution_context or current_execution_context()
+    caller_context = contextvars.copy_context()
+    generated = frozenset(generated_columns)
+    if input_schema is None:
+        input_schema = input_lf.collect_schema()
+    mismatched_carried = sorted(
+        name
+        for name, dtype in schema.items()
+        if name not in generated and input_schema.get(name) != dtype
+    )
+    if mismatched_carried:
+        raise ValueError(
+            f"non-generated scan columns must be input columns of the same dtype: "
+            f"{mismatched_carried}"
+        )
+    unknown_generated = generated - set(schema.names())
+    if unknown_generated:
+        raise ValueError(
+            f"generated columns are absent from the scan schema: {sorted(unknown_generated)}"
+        )
+    input_names = input_schema.names()
+    required = frozenset(input_names if required_input_columns is None else required_input_columns)
+    unknown_required = required - set(input_names)
+    if unknown_required:
+        raise ValueError(
+            f"required input columns are absent from the input: {sorted(unknown_required)}"
+        )
+
+    def frames(
+        with_columns: list[str] | None,
+        predicate: pl.Expr | None,
+        n_rows: int | None,
+        batch_size: int | None,
+    ) -> Iterator[pl.DataFrame]:
+        source_lf = input_lf if n_rows is None else input_lf.head((n_rows + fanout - 1) // fanout)
+        if with_columns is not None:
+            roots = set() if predicate is None else set(predicate.meta.root_names())
+            keep = ((set(with_columns) | roots) - generated) | required
+            source_lf = source_lf.select(projected_or_carrier_columns(input_names, keep))
+        # Every input row becomes ``fanout`` output rows, so read the input in
+        # proportionally smaller batches to keep an expanded batch bounded by
+        # the chunk size the caller asked for.
+        input_chunk = max(1, (batch_size or DEFAULT_STREAMING_CHUNK_SIZE) // fanout)
+        remaining = n_rows
+        for batch in bounded_collect_batches(
+            source_lf,
+            chunk_size=input_chunk,
+            maintain_order=True,
+            execution_context=context,
+            stage_name="fanout_python_scan",
+            node_id=node_id,
+        ):
+            frame = expand(batch)
+            if remaining is not None:
+                frame = frame.head(remaining)
+                remaining -= frame.height
+            if predicate is not None:
+                frame = frame.filter(predicate)
+            if with_columns is not None:
+                frame = frame.select(with_columns)
+            yield frame
+            if remaining is not None and remaining <= 0:
+                return
+
+    return _register_python_scan(frames, schema=schema, caller_context=caller_context)
+
+
 _ScanFrames = Callable[
     [list[str] | None, pl.Expr | None, int | None, int | None],
     Iterator[pl.DataFrame],
@@ -541,7 +626,7 @@ def _checkpoint_compression(fast_checkpoint: bool) -> Literal["lz4", "zstd"]:
 
 def _streaming_sink_to_path(
     lf: pl.LazyFrame,
-    target: Path,
+    target: Path | IO[bytes],
     *,
     fmt: str,
     compression: Literal["lz4", "zstd"],
@@ -576,12 +661,28 @@ def _eager_write_to_path(
         df.write_parquet(target, compression=compression)
 
 
-def _write_atomically_if_possible(path: Path, writer: Any) -> None:
+_T = TypeVar("_T")
+
+
+def _write_atomically_if_possible(path: Path, writer: Callable[[Path], _T]) -> _T:
     if path.parent.exists():
         with atomic_write(path) as tmp:
-            writer(tmp)
-    else:
-        writer(path)
+            return writer(tmp)
+    return writer(path)
+
+
+def current_streaming_chunk_size() -> int:
+    """The chunk size the current request runs under, else the default.
+
+    A request's ``streaming_chunk_size`` is applied through
+    :func:`temporary_streaming_chunk_size`; chunked writes follow it.
+    """
+    raw = pl.Config.state(if_set=True).get("POLARS_STREAMING_CHUNK_SIZE")
+    try:
+        value = int(raw) if raw else 0
+    except (TypeError, ValueError):
+        value = 0
+    return value if value > 0 else DEFAULT_STREAMING_CHUNK_SIZE
 
 
 @contextmanager
@@ -611,15 +712,48 @@ def streaming_sink(
     *,
     fmt: str = "parquet",
     fast_checkpoint: bool = False,
+    atomic: bool = True,
 ) -> None:
-    """Sink a LazyFrame with Polars streaming and no eager fallback."""
+    """Sink a LazyFrame with Polars streaming and no eager fallback.
+
+    ``atomic=False`` writes straight to ``path``, for a caller already writing
+    to a staging file it will rename or discard itself: a second temporary
+    would leave a hidden sibling in a directory that caller governs and does
+    not sweep.
+    """
     path = Path(path)
     compression = _checkpoint_compression(fast_checkpoint)
 
     def _do_sink(target: Path) -> None:
         _streaming_sink_to_path(lf, target, fmt=fmt, compression=compression)
 
-    _write_atomically_if_possible(path, _do_sink)
+    if atomic:
+        _write_atomically_if_possible(path, _do_sink)
+    else:
+        _do_sink(path)
+
+
+def _bounded_sink_execute(
+    path: Path,
+    streaming_chunk_size: int | None,
+    writer: Callable[[], _T],
+) -> _T:
+    directory = path.parent
+    while not directory.exists():
+        parent = directory.parent
+        if parent == directory:
+            break
+        directory = parent
+    ensure_disk_headroom(directory)
+    metrics_context = current_execution_context()
+    if metrics_context is not None:
+        metrics_context.fault_point("sink_before_native")
+    with temporary_streaming_chunk_size(streaming_chunk_size):
+        result = writer()
+    if metrics_context is not None:
+        metrics_context.fault_point("sink_after_native")
+        metrics_context.record_bytes_written(path.stat().st_size)
+    return result
 
 
 def bounded_sink(
@@ -629,18 +763,59 @@ def bounded_sink(
     fmt: str = "parquet",
     fast_checkpoint: bool = False,
     streaming_chunk_size: int | None = None,
+    atomic: bool = True,
 ) -> None:
     """Sink a LazyFrame through the native streaming API."""
     path = Path(path)
-    metrics_context = current_execution_context()
-    if metrics_context is not None:
-        metrics_context.fault_point("sink_before_native")
-    with temporary_streaming_chunk_size(streaming_chunk_size):
-        streaming_sink(lf, path, fmt=fmt, fast_checkpoint=fast_checkpoint)
-    if metrics_context is not None:
-        metrics_context.fault_point("sink_after_native")
-    if metrics_context is not None:
-        metrics_context.record_bytes_written(path.stat().st_size)
+    _bounded_sink_execute(
+        path,
+        streaming_chunk_size,
+        lambda: streaming_sink(lf, path, fmt=fmt, fast_checkpoint=fast_checkpoint, atomic=atomic),
+    )
+
+
+def _sink_parquet_hashing(
+    lf: pl.LazyFrame,
+    target: Path,
+    *,
+    compression: Literal["lz4", "zstd"],
+) -> str:
+    with HashingWriter(open(target, "wb")) as writer:
+        _streaming_sink_to_path(
+            lf, cast("IO[bytes]", writer), fmt="parquet", compression=compression
+        )
+    return writer.hexdigest()
+
+
+def hashed_streaming_sink(
+    lf: pl.LazyFrame,
+    path: str | Path,
+    *,
+    fast_checkpoint: bool = False,
+) -> str:
+    """Sink a LazyFrame with write-time hashing and Polars streaming."""
+    path = Path(path)
+    compression = _checkpoint_compression(fast_checkpoint)
+    return _write_atomically_if_possible(
+        path,
+        lambda target: _sink_parquet_hashing(lf, target, compression=compression),
+    )
+
+
+def bounded_hashed_sink(
+    lf: pl.LazyFrame,
+    path: str | Path,
+    *,
+    fast_checkpoint: bool = False,
+    streaming_chunk_size: int | None = None,
+) -> str:
+    """Sink a LazyFrame through the native streaming API, hashing during write."""
+    path = Path(path)
+    return _bounded_sink_execute(
+        path,
+        streaming_chunk_size,
+        lambda: hashed_streaming_sink(lf, path, fast_checkpoint=fast_checkpoint),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -210,6 +210,7 @@ class ExecutionStrategyDiagnosticPayload(BaseModel):
         "deploy_live",
         "deploy_batch",
         "chunked_map_reduce",
+        "node_snapshot",
     ]
     boundedness: Literal["bounded", "unbounded", "unknown"]
     reason_code: str
@@ -431,6 +432,54 @@ class InputPreparationRecordPayload(BaseModel):
     warning_code: str | None = None
 
 
+class SharedSnapshotSeedPayload(BaseModel):
+    """One node output an execution read from a shared snapshot generation."""
+
+    node_id: str
+    identity_digest: str
+    generation_id: str
+    columns: Literal["all"] | list[str]
+
+
+class SharedSnapshotCapturePayload(BaseModel):
+    """One full-data materialisation an execution wrote to shared snapshots.
+
+    ``published`` names the generation the execution continued from; otherwise
+    it continued from its own staged artifact and ``generation_id`` is null.
+    """
+
+    node_id: str
+    identity_digest: str
+    kind: Literal["structural", "materialising", "model_score", "consumed"]
+    outcome: Literal["published", "superseded", "quota"]
+    generation_id: str | None = None
+    columns: Literal["all"] | list[str]
+    write_strategy: (
+        Literal["chunked_join", "sliced", "input_sliced", "native", "prewritten"] | None
+    ) = None
+    write_parts: int | None = Field(default=None, ge=1)
+    write_chunk_rows: int | None = Field(default=None, ge=1)
+    write_staged_inputs: int | None = Field(default=None, ge=0)
+    write_input_slices: int | None = Field(default=None, ge=1)
+    write_native_reason: str | None = None
+    write_blocking_operator: str | None = None
+
+
+class SharedSnapshotCaptureSkipPayload(BaseModel):
+    """One candidate capture point skipped under cost gating."""
+
+    node_id: str
+    reason: Literal["cheap_segment", "slice_transparent_feeder"]
+
+
+class ExecutionWarningPayload(BaseModel):
+    """A non-fatal condition an execution continued past."""
+
+    code: str
+    node_id: str | None = None
+    reason: str | None = None
+
+
 class ExecutionMetricsPayload(BaseModel):
     schema_version: int = 1
     operation: str = ""
@@ -492,6 +541,19 @@ class ExecutionMetricsPayload(BaseModel):
     observed_peak_rss_growth_bytes: int | None = Field(default=None, ge=0)
     cancellation_latency_ms: float | None = Field(default=None, ge=0)
     input_preparation: list[InputPreparationRecordPayload] = Field(default_factory=list)
+    shared_snapshot_seeds: list[SharedSnapshotSeedPayload] = Field(default_factory=list)
+    shared_snapshot_captures: list[SharedSnapshotCapturePayload] = Field(default_factory=list)
+    shared_snapshot_capture_skips: list[SharedSnapshotCaptureSkipPayload] = Field(
+        default_factory=list
+    )
+    warnings: list[ExecutionWarningPayload] = Field(default_factory=list)
+    training_write_strategy: str | None = None
+    training_write_input_slices: int | None = Field(default=None, ge=1)
+    training_write_native_reason: str | None = None
+    training_write_blocking_operator: str | None = None
+    data_output_write_strategy: str | None = None
+    data_output_write_input_slices: int | None = Field(default=None, ge=1)
+    data_output_write_native_reason: str | None = None
 
     @model_validator(mode="after")
     def _validate_calibration_evidence(self) -> ExecutionMetricsPayload:

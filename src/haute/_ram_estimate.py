@@ -67,8 +67,20 @@ __all__ = [
     "estimate_gpu_vram_bytes",
     "estimate_materialisation_boundaries",
     "estimate_safe_training_rows",
+    "decoded_frame_row_width_bytes",
     "RamEstimate",
 ]
+
+
+def decoded_frame_row_width_bytes(frame: pl.DataFrame) -> float:
+    """Estimate one decoded row from a bounded materialised sample."""
+    if not isinstance(frame, pl.DataFrame):
+        raise TypeError("frame must be a Polars DataFrame")
+    if frame.height == 0:
+        return float(8 * frame.width)
+    return sum(
+        max(8, frame.get_column(column).estimated_size() / frame.height) for column in frame.columns
+    )
 
 
 class MaterialisationEstimateState(StrEnum):
@@ -462,24 +474,44 @@ def _parquet_metadata(path: str) -> tuple[int, int]:
     return meta.row_count, meta.column_count
 
 
-def _detailed_parquet_metadata(path: str) -> _DetailedSourceMetadata:
-    """Return footer-only parquet metadata used by the RAM estimator."""
-    meta = read_parquet_metadata(Path(path))
-    columns = dict(meta.get("columns", {}))
+def _parquet_files(path: str | Sequence[Path]) -> list[Path]:
+    """The files a Parquet source reads: one path, a list of parts, or a parts pattern."""
+    if not isinstance(path, str):
+        return [Path(part) for part in path]
+    candidate = Path(path)
+    if any(marker in candidate.name for marker in "*?["):
+        return sorted(candidate.parent.glob(candidate.name))
+    return [candidate]
+
+
+def _detailed_parquet_metadata(path: str | Sequence[Path]) -> _DetailedSourceMetadata:
+    """Return footer-only parquet metadata used by the RAM estimator.
+
+    A multi-part source (a snapshot generation's part files) counts every
+    part's rows and bytes; its columns and per-row widths come from the first
+    part, which every part shares.
+    """
+    files = _parquet_files(path)
+    if not files:
+        raise FileNotFoundError(f"no parquet files match {path}")
+    metas = [read_parquet_metadata(file) for file in files]
+    first = metas[0]
+    columns = dict(first.get("columns", {}))
+    column_uncompressed: dict[str, int] = {}
+    for meta in metas:
+        for name, size in dict(meta.get("column_uncompressed_size_bytes", {})).items():
+            column_uncompressed[str(name)] = column_uncompressed.get(str(name), 0) + int(size)
     return _DetailedSourceMetadata(
-        row_count=int(meta["row_count"]),
-        column_count=int(meta["column_count"]),
+        row_count=sum(int(meta["row_count"]) for meta in metas),
+        column_count=int(first["column_count"]),
         columns=columns,
         column_width_keys={str(column): str(column) for column in columns},
-        column_uncompressed_size_bytes={
-            str(name): int(size)
-            for name, size in dict(meta.get("column_uncompressed_size_bytes", {})).items()
-        },
-        uncompressed_size_bytes=int(meta.get("uncompressed_size_bytes", 0)),
+        column_uncompressed_size_bytes=column_uncompressed,
+        uncompressed_size_bytes=sum(int(meta.get("uncompressed_size_bytes", 0)) for meta in metas),
         column_expanded_width_bytes=_probe_expanded_variable_widths(
-            path,
+            str(files[0]),
             columns,
-            row_count=int(meta["row_count"]),
+            row_count=int(first["row_count"]),
         ),
     )
 
@@ -582,7 +614,9 @@ def _source_scoped_metadata(
     )
 
 
-def _data_input_parquet_artifact(config: Mapping[str, Any]) -> tuple[int | None, Path]:
+def _data_input_parquet_artifact(
+    config: Mapping[str, Any],
+) -> tuple[int | None, tuple[Path, ...]]:
     """Return the Parquet artifact used by a Data Input, with a free row count.
 
     Snapshot generations carry their row count in verified metadata; a direct
@@ -603,14 +637,14 @@ def _data_input_parquet_artifact(config: Mapping[str, Any]) -> tuple[int | None,
     validated = validate_data_input_config(config)
     if data_input_is_direct(validated):
         anchored = anchor_config_source_path(validated, base_dir)
-        return None, Path(str(anchored["path"]))
+        return None, tuple(_parquet_files(str(anchored["path"])))
 
     identity = source_cache_identity(
         validated,
         base_dir=base_dir,
     )
     generation = SourceCacheStore(_get_project_root()).open_generation(identity)
-    return generation.metadata.row_count, generation.data_path
+    return generation.metadata.row_count, generation.data_paths
 
 
 def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSourceMetadata | None:
@@ -747,9 +781,9 @@ def _detailed_source_metadata_for_node(node: GraphNode) -> _DetailedSourceMetada
             return None
 
         if node_type == NodeType.DATA_INPUT:
-            _, snapshot_path = _data_input_parquet_artifact(config)
+            _, snapshot_paths = _data_input_parquet_artifact(config)
             return _source_scoped_metadata(
-                _detailed_parquet_metadata(str(snapshot_path)),
+                _detailed_parquet_metadata(snapshot_paths),
                 node.id,
             )
     except (OSError, TypeError, ValueError) as exc:
@@ -2240,3 +2274,23 @@ def _estimate_materialisation_boundary_from_index(
         basis=basis,
         depends_on_many_to_many_join=cardinality.depends_on_many_to_many_join,
     )
+
+
+def estimate_optimiser_grid_peak_bytes(
+    *,
+    row_count: int,
+    constraint_count: int,
+    quote_id_width_bytes: float,
+    input_row_width_bytes: float,
+    chunk_rows: int,
+) -> int:
+    """Conservative grid + build overlap, including one decoded reader batch.
+
+    The solver stores Float32 objective/scenario/constraint vectors. Until its
+    layout validator has run, allow one quote ID and its String/offset metadata
+    per input row. Two copies allow vector growth and sorting/conversion overlap.
+    """
+    numeric_width = 4 * (constraint_count + 2)
+    resident = row_count * (numeric_width + 32 + max(8, quote_id_width_bytes))
+    reader = min(row_count, chunk_rows) * input_row_width_bytes
+    return math.ceil(2 * resident + 2 * reader + 64 * 1024 * 1024)

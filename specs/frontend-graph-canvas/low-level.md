@@ -41,7 +41,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/components/StalePipelineReferenceBanner.tsx` | Labels a retained last-renderable canvas with its prior revision and prevents it from being mistaken for the current source. |
 | `frontend/src/components/PipelineRepairDialog.tsx` | Minimal unavailable-node dry-run/diff/confirmation surface. It submits only document/target identities and a confirmed plan hash, retains config by default, and never authors replacement bytes. |
 | `frontend/src/nodes/UnavailablePipelineNode.tsx` | Dedicated inaccessible node card for unknown decorators and recovery elements that cannot use a canonical node renderer. |
-| `frontend/src/hooks/ensureInputSnapshots.ts` | Pre-preview snapshot orchestration owned behaviourally by [caching](../caching/high-level.md): derives the graph's snapshot-backed Data Inputs (direct Parquet skipped), checks status, starts or joins builds (lazy-sink first, one admitted-eager retry on `snapshot_build_unsupported`), polls jobs to a terminal state with abort support, and notifies at most once when a build starts. |
+| `frontend/src/hooks/ensureInputSnapshots.ts` | Pre-preview snapshot orchestration owned behaviourally by [caching](../caching/high-level.md): derives the graph's snapshot-backed Data Inputs (direct Parquet skipped), checks status, starts or joins builds (lazy-sink first, one admitted-eager retry on `snapshot_build_unsupported`), polls jobs to a terminal state, and notifies at most once when a build starts. An aborted signal cancels the job it is polling and waits for that job to reach a terminal state, because a point reports itself as building until then and nothing else is polling it; a refused cancellation, a status it cannot read afterwards, or a build still running after sixty polls all raise `CancellationFailedError` instead of being reported as a completed cancellation, because whether the build stopped is then unknown. `cancelInputSnapshotBuild` performs that cancel-and-wait for a caller holding a job id, and `onJobStarted` reports each build's id so a caller can use it. Its `force` option is for a caller that wants the data recomputed rather than served as it is: it skips the readiness probe, asks the input-snapshot build to `refresh`, and removes a structured Quote Input's working cache first, because the JSON build endpoint answers a still-valid working cache with no work. |
 | `frontend/src/hooks/useWebSocketSync.ts` | The `/ws/sync` WebSocket client: connect/reconnect with exponential backoff, document-fingerprint resync, applying accepted `pipeline_document_update` frames through one atomic clean-snapshot transition with the authoritative status fence (including preserved-block/revision refs and graph-scoped dirty blocking), treating `parse_error` as a document system failure, and session expiry. |
 | `frontend/src/hooks/useSubmodelNavigation.ts` | `handleCreateSubmodel`/`handleDrillIntoSubmodel`/`handleBreadcrumbNavigate`/`handleDissolveSubmodel` — definition/occurrence-aware view-stack state machine, local embedded-definition drill/project, recursive authoritative identity resolution for canonical transform responses, layout, revision-preconditioned transform requests, and one atomic dirty history entry per create/dissolve. |
 | `frontend/src/utils/submodelViewGraph.ts` | Pure projection from one definition plus its occurrence bindings into collision-safe composite Input/Output nodes and definition-port boundary edges. Input rows retain the definition-wide binding slice so history restoration can restore parent connections atomically while active-occurrence external-node presentation remains local. |
@@ -592,20 +592,52 @@ reconciliation rather than dropping them or committing a second mutation.
     request/debounce, paints cached data (or a `"loading"` placeholder)
     immediately, then debounces (`options.debounceMs ?? 200`) before calling
     `fetchPreviewImmediate`. That function snapshots `rowLimit`/
-    `activeSource`/`streamingChunkSize` once, checks the node-results cache
-    for a hit matching source+rowLimit; if the cached entry also matches the
-    current `structuralVersion` it short-circuits with no network call,
-    otherwise it shows the cached data while re-fetching in the background.
-    Before any network preview is sent, the request awaits
-    the dynamically loaded `ensureInputSnapshots` on the resolved graph — its
-    cache-preparation code loads only when a preview requires it, rather than
-    during initial application startup. Missing snapshot-backed
+    `activeSource`/`streamingChunkSize` and the node-data epoch
+    (`useNodeDataStore`) once, checks the node-results cache for a hit
+    matching source+rowLimit; if the cached entry also matches the current
+    `structuralVersion` and was requested at that epoch it short-circuits with
+    no network call, otherwise it shows the cached data while re-fetching in
+    the background. The stored entry records the epoch the request was sent
+    under. A response whose `seed_plan` lists a `captured` entry announces its
+    captured generation ids once it has been applied, before the preview stops
+    being busy; the announcement raises the epoch only for a generation the
+    store has not seen. If the announcement raised the epoch and the epoch still
+    equals the one the stored preview is current at, the entry is first
+    re-stamped to the raised epoch (`advancePreviewEpoch`), so the preview's own
+    capture never fetches it again; if something else moved the epoch while it
+    was in flight, it keeps its request epoch and is fetched again at once. A
+    superseded response raises the epoch only then. `refreshPreview`'s upstream
+    previews and `previewNodeFrame` announce their captures too; neither is
+    stored. A frame preview keeps the epoch it is current at — stamped one past
+    its request epoch only when its announcement raised the epoch and nothing
+    else moved the epoch, keeping its request epoch otherwise — and its frame
+    beside the object the panel shows. A separate effect fetches the displayed
+    preview again — a frame
+    preview for its frame through `previewNodeFrame` — whenever it is the stored
+    entry or such a frame preview, no request for it is running, and its epoch
+    differs from the store's — a snapshot was
+    published, widened, refreshed, or cleared after its request; a refetch
+    whose seeds did not change is a backend cache hit, and one that fails
+    shows the preview error. Other nodes' stored previews are fetched again
+    when next displayed.
+    Before any network preview is sent, the request asks the backend which
+    inputs the preview reads (`previewInputs`, `POST /api/pipeline/preview/inputs`
+    — none above a shared snapshot it seeds from, none outside its lineage) and
+    awaits the dynamically loaded `ensureInputSnapshots` on just those graph
+    nodes, an input instance contributing its original's config — its cache-preparation code loads only when a preview requires it,
+    rather than during initial application startup. Those missing snapshot-backed
     inputs are built or joined first (see the caching spec) — and an ensure
-    failure surfaces as that node's preview error; `refreshPreview` and
-    `previewNodeFrame` gate the same way.
-    If the graph changes during this preparation, an otherwise current node
-    preview must stop with a visible instruction to refresh; it must not
-    execute the obsolete graph or leave the loading placeholder stranded.
+    failure surfaces as that node's preview error; `refreshPreview` (for the
+    union of its target and stale upstream previews) and `previewNodeFrame`
+    gate the same way.
+    If the graph changes during this preparation — an editor settling its
+    node's config, such as the Apply editor mirroring its loaded artifact,
+    commonly lands in the `previewInputs` round trip — an otherwise current
+    node preview is prepared again for the graph as it now is, as a new request
+    (so the abandoned one can neither paint nor end the new one's busy state),
+    up to `MAX_PREVIEW_PREPARATION_RESTARTS` (2) times; a graph that keeps
+    changing stops with a visible instruction to refresh. It never executes the
+    obsolete graph or leaves the loading placeholder stranded.
     A newer request, changed document fence, or deleted node retains ownership
     of its current panel state, so late preparation cannot restore that node.
     Structured Quote Inputs participate in this automatic preparation only
@@ -619,10 +651,8 @@ reconciliation rather than dropping them or committing a second mutation.
     memory-limit 507 reads as plain language — see
     [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md)),
     else the string detail, else the thrown error's message.
-    `previewNode()` resolves into `resultToPreview`; if the response's
-    columns differ from the node's previous columns
-    (`columnsEqualByFingerprint`), `propagate(nodeId)` kicks off the
-    downstream cascade. Every write of `_columns`/`_availableColumns`/
+    `previewNode()` resolves into `resultToPreview`. Every write of
+    `_columns`/`_availableColumns`/
     `_schemaWarnings` onto node data — the direct-fetch path, the
     schema-map path (`applyPreviewSchemaMapsToNodes`), and the
     stale-upstream gap-fill in `refreshPreview` — also stamps
@@ -640,15 +670,29 @@ reconciliation rather than dropping them or committing a second mutation.
     `_columns`/`_availableColumns`/`_schemaWarnings`/`_columnsSource`
     deleted from its data via destructuring, returning it to the
     pre-preview state.
-17. **Downstream cascade (`propagate`, inside
-    `fetchPreviewImmediate`).** BFS-reaches every node downstream of the
-    changed node, tracks per-node pending-parent counts, and only enqueues a
-    node once every parent that could change its columns has settled;
-    `settleNode` recurses through unchanged nodes without previewing them.
-    A bounded ready-queue (`drainReadyQueue`) runs at most
-    `DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT` (4) previews concurrently. The
-    whole cascade resolves once every reachable node has settled, the
-    request is still current, or the shared `AbortController` fires.
+17. **No downstream cascade.** A preview previews its target and nothing
+    below it. The response's `node_columns`/`node_available_columns`/
+    `node_frame_columns` maps already carry every *ancestor*'s schema — the
+    preview route asks the executor for them with
+    `include_schema_metadata=True`, which resolves them without
+    materialising those ancestors — and `applyPreviewSchemaMapsToNodes`
+    writes them onto node data. The readers of a column stash are: an
+    editor, which reads its own node's `_columns` or an upstream source's
+    through `NodePanel.edgeSourceColumns`; the save-time edge-join gate,
+    which reads *any* join's two inputs and therefore only reports a
+    missing key for a stash stamped with the current structural version and
+    source (`EdgeJoinColumnsFence`); and the canvas warning badge
+    (`PipelineNode`, `_schemaWarnings`), refreshed lazily by the next
+    preview at or below that node. For editors, a descendant's columns are
+    never read before that descendant is previewed in its own right, so
+    refreshing them eagerly materialised frames to produce metadata that
+    was always recomputed anyway, and captured those frames into the shared
+    node-data cache for nodes the user was frequently about to change.
+    `usePipelineAPI.noDownstreamPreviews.test.ts` pins the absence,
+    including for a response that genuinely changes the target's columns —
+    the condition the removed cascade fired on. `refreshPreview`'s
+    stale-upstream gap-fill is the one place a preview request fans out
+    into several, bounded by `PREVIEW_FANOUT_CONCURRENCY_LIMIT` (4).
 18. **Save (`usePipelineAPI.handleSave`).** Refuses to run while drilled
     into a submodel. Runs `validateConfigRefs` (warns, does not block) and
     `findFirstInvalidEdgeJoin` (blocks with an error toast if invalid).
@@ -1144,8 +1188,9 @@ array-only payload or omitted-edge compatibility branch is supported.
   each distinguish three outcomes on preview failure: an abort or
   supersession (`isAbortError`/`isPreviewSupersededError`) is silent
   cancellation; an `ApiTimeoutError` additionally toasts `error`; anything
-  else paints an error `PreviewData` and — for cascade/upstream members —
-  toasts a `warning` naming the failing node, without aborting siblings.
+  else paints an error `PreviewData` and — for a refresh's upstream
+  members — toasts a `warning` naming the failing node, without aborting
+  siblings.
 - `usePipelineAPI.handleSave` never throws out of the hook: `ApiError`
   detail is preferred when present, else the exception's `message`, else a
   literal `"unknown error"`; every branch resolves `false` after toasting.
@@ -1406,21 +1451,35 @@ again through the editor and save paths.
   - `frontend/src/hooks/__tests__/usePipelineAPI.abortStale.test.ts` (#31) — switching the selected
     node while a preview is aborted clears the prior node's preview data
     and the aborted fetch never re-paints onto the new node's panel.
-  - `frontend/src/hooks/__tests__/usePipelineAPI.propagation.test.ts` (Phase 2D-5, largest cascade
-    suite) — linear-order cascading; source/rowLimit captured at cascade
-    start surviving a mid-flight store flip; halting at an unchanged
-    downstream node; no duplicate downstream work from an overlapping
-    second `fetchPreview`; direct-children fan-out; concurrency cap under
-    wide fan-out; stale-supersession toast suppression vs genuine-conflict
-    warnings; diamond-shaped dedup (shared child previews once, waits for
-    the slower branch); no-op when the previewed node has no downstream
-    edges; one downstream rejection does not abort sibling previews.
+  - `frontend/src/hooks/__tests__/usePipelineAPI.noDownstreamPreviews.test.ts`
+    — a preview issues exactly one request when its node has downstream
+    children, when the response genuinely changes that node's columns (the
+    condition the removed cascade fired on), and along a chain, so no
+    descendant is materialised for metadata nothing reads before that
+    descendant is previewed itself.
+  - `frontend/src/hooks/__tests__/usePipelineAPI.nodeDataEpoch.test.ts` — the
+    displayed preview fetched again once a snapshot is published after its
+    request; a preview's own capture raising the epoch without fetching it
+    again; an own capture whose epoch moved in flight fetched again; a stored
+    preview from an older epoch shown and fetched again, and one from the
+    current epoch answered without a request; a displayed frame preview fetched
+    again for its frame, and not for its own capture; a
+    duplicate announcement leaving the epoch untouched while a new generation
+    raises it once; a frame preview not being refetched for a duplicate
+    announcement; and a reset making the next announcement count again.
+    `frontend/src/hooks/__tests__/usePipelineAPI.nodeDataEpoch.test.ts` covers
+    the hook's announcement cases.
+    The cache-identity fixtures in
+    `frontend/src/hooks/__tests__/usePipelineAPI.gaps.test.ts` record the
+    current epoch, so each varies only the dimension it tests.
   - `frontend/src/hooks/__tests__/usePipelineAPI.previewLifecycle.test.ts` (W0) — a preview response or
     failure arriving after a mid-flight structuralVersion bump still
     reaches a terminal panel state; a node deleted mid-flight is never
-    resurrected into the panel or cache.
-  - `frontend/src/hooks/__tests__/usePipelineAPI.refPattern.test.ts` (#33/#34) — a single
-    `activeSource` snapshot spans a fetch and its downstream cascade;
+    resurrected into the panel or cache; a graph changed during input
+    preparation is prepared again and previewed at its new version, with the
+    abandoned preparation never ending the new request's busy state, and a
+    graph that keeps changing stops with the refresh instruction.
+  - `frontend/src/hooks/__tests__/usePipelineAPI.refPattern.test.ts` (#33/#34) —
     `handleSave` reads `activeSource` at invocation time, not a stale
     closure; a `rowLimit` change mid-fetch does not affect the
     already-running preview.
@@ -1623,7 +1682,9 @@ again through the editor and save paths.
   branch; exact preservation of a named API-input `sourceHandle`; immediate
   drill into an unsaved whole-graph submodel with that API Input and its
   authoritative frame handle rendered; and a
-  downstream trace retaining both Edge Join ancestors, leaving them undimmed,
+  downstream trace retaining both Edge Join ancestors — as steps, or the one
+  above a join read from its shared snapshot as a `snapshot_seed` omission —
+  leaving them undimmed,
   and highlighting their connecting path while reserving node-active styling
   for column-relevant steps. All
   drag points are derived from live locator geometry and every assertion is

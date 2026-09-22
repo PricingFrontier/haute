@@ -4,7 +4,9 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/_rating.py` | Pure-logic frame transforms: banding rule evaluation (`_apply_banding`, `_banding_condition`, `_breakpoints_to_rules`) and the banding-factor loop (`_apply_banding_factors`), rating-table lookup (`_apply_rating_table`), combining (`_combine_rating_columns`, `_combine_rating_output`), exact dtype descriptor round-tripping plus the canonical factor-key form (`rating_dtype_descriptor`, `rating_dtype_from_descriptor`, `normalise_rating_key`, `_rating_key_expr`), the rating-step loop (`_apply_rating_step_outputs`) and the two generated-code entry points (`apply_banding_from_config`, `apply_rating_step_from_config`). |
+| `src/haute/_binning.py` | Equal-width bins over a numeric column (`equal_width_bins`), the one definition of "the histogram of this column" every surface that shows one uses. |
+| `src/haute/routes/_banding_stats.py` | Whole-dataset statistics for the factor being edited, over the shared data point its node reads; owned by [server-api](../server-api/low-level.md#banding-statistics). |
+| `src/haute/_rating.py` | Pure-logic frame transforms: banding rule evaluation (`_apply_banding`, `_banding_condition`, `_breakpoints_to_rules`), the shared rule preparation both the output expression and the per-rule claim expression are built from (`banding_numeric_column_expr`, `banding_categorical_claims`, `banding_continuous_claims`, `banding_rule_claim_expr`) and the banding-factor loop (`_apply_banding_factors`), rating-table lookup (`_apply_rating_table`), combining (`_combine_rating_columns`, `_combine_rating_output`), exact dtype descriptor round-tripping plus the canonical factor-key form (`rating_dtype_descriptor`, `rating_dtype_from_descriptor`, `normalise_rating_key`, `_rating_key_expr`), the rating-step loop (`_apply_rating_step_outputs`) and the two generated-code entry points (`apply_banding_from_config`, `apply_rating_step_from_config`). |
 | `src/haute/_rating_step_config.py` | Rating-table config normalisation: canonical ordered row-array validation and optional `factorDtypes` descriptor validation/preservation. |
 | `src/haute/_banding_config.py` | Banding config normalisation: compact key/value-map ⟷ canonical row-array conversion for `categorical`/`breakpoints` rules (`expand_banding_config_from_sidecar`, `compact_banding_config_for_sidecar`, `normalise_banding_rules`, `normalise_banding_factors`). |
 
@@ -48,7 +50,36 @@
    called at the save/codegen boundary (`src/haute/_config_validation.py`), while runtime enforces
    usable-rule checks inside `_apply_banding`.
 3. `_apply_banding_factors(lf, factors)` loops factors in order, calling `_apply_banding` per factor; each factor's output column is added via `lf.with_columns(...)`, so later factors can already see earlier factors' output columns.
-4. Inside `_apply_banding`: `breakpoints` rules are converted to `continuous` rules first (`_breakpoints_to_rules`); float input columns are NaN/Infinity-sanitised to null (`when(is_nan|is_infinite).then(null).otherwise(col)` — built as a *local* expression, never aliased back onto the source column, so it cannot corrupt other nodes' view of that column); then a `pl.when/then` chain is built rule-by-rule (`_banding_condition` consumes the shared continuous-rule parser and turns each usable `op1/val1[,op2/val2]` pair into a boolean expression, ANDed together) and finished with `.otherwise(default)`.
+4. Inside `_apply_banding`: `breakpoints` rules are converted to `continuous` rules first (`_breakpoints_to_rules`); float input columns are NaN/Infinity-sanitised to null (`banding_numeric_column_expr` — a *local* expression, never aliased back onto the source column, so it cannot corrupt other nodes' view of that column); then a `pl.when/then` chain is built rule-by-rule (`_banding_condition` consumes the shared continuous-rule parser and turns each usable `op1/val1[,op2/val2]` pair into a boolean expression, ANDed together) and finished with `.otherwise(default)`. The categorical remap is `banding_categorical_claims` with its indices dropped.
+
+### Which rule claimed a row — `banding_rule_claim_expr` (`_rating.py`)
+
+`banding_rule_claim_expr(column_expr, dtype, mode, rules, right_closed, *, output_column="")`
+returns, per row, the index in *rules* of the rule that claims it, or null. It exists because a
+count per rule cannot be recovered from the output column: several rules may share an assignment,
+and the default may equal one of them.
+
+It is not a second implementation of banding. Both expressions are built from the same
+preparation, so a claim is exactly the rule whose assignment `_apply_banding` writes for that row,
+and a null claim is exactly a defaulted row:
+
+- `normalise_banding_rules` runs first, so the index is the rule's position in the list the caller
+  passed (the user's order), and a rule map is indexed in its iteration order.
+- `banding_continuous_claims` converts breakpoints through the same `_breakpoints_to_rules`, which
+  now carries each interval's source breakpoint. Execution evaluates the intervals sorted by
+  boundary with the open-ended one last, so a claim names the breakpoint the user wrote rather than
+  its position in the chain.
+- `banding_categorical_claims` builds the same last-wins remap on the column cast to text, so a
+  Float64 `1.0` is claimed by a `"1.0"` rule and never by a `"1"` rule, a repeated value is claimed
+  by its last rule, and a rule missing either its value or its assignment claims nothing.
+- Continuous modes read the column through `banding_numeric_column_expr`, so NaN and infinity are
+  unclaimed exactly as they are defaulted.
+- A rule with no assignment is skipped by both, so the row it would have covered is unclaimed
+  rather than claimed by a rule whose output never appears.
+- A factor with no rules is execution's documented no-op, so every row is unclaimed — one null per
+  row, not a single null.
+- Rules execution rejects raise the same `ValueError`; `output_column`, when given, reproduces
+  execution's message verbatim for the "no usable rule" cases.
    Operators are resolved through the exported immutable
    `SUPPORTED_BANDING_OPERATORS` contract. An unknown operator raises before a
    `when` branch or output frame is published; trace enrichment imports the
@@ -222,6 +253,19 @@ Backend tests live under `tests/` (no dedicated subdirectory for this component)
   entries and agreeing with the preview premium row by row.
 - **`tests/test_rating.py`** (largest suite) — direct unit coverage of `_rating.py`: banding condition building, `_apply_rating_table` (incl. non-numeric defaults, duplicate entries, extra entry columns, schema-call-count/perf regression, large tables, all-null tables, boundary/negative/extreme float values, special-character factor names), `_combine_rating_columns` (incl. non-numeric columns, edge cases, multiply-with-zero, min/max mixed values), `_apply_banding` edge cases, sequential rating tables, dtype-preservation regressions (B1/B2), empty-string/int-typed factor values, null factor columns, and canonical row-array rating-step application end to end.
 - **`tests/test_banding.py`** — continuous/categorical `_apply_banding`, `_build_node_fn` integration, banding decorator parsing and codegen, standalone-execution parity with the executor path, multi-factor banding, hardening/adversarial inputs, and the full `breakpoints` mode (ordering, closures, open-ended boundary).
+- **`tests/test_banding_stats.py`** — `POST /api/banding/stats` through a cached point: the bin
+  edges with the last closed, a constant column, values no bin can hold, a column with no finite
+  value, the text each dtype casts to, categorical ordering, cap, `distinct_count` and
+  `other_count`, the RAT-B01 breakpoint vector as `rule_counts`, a rebuilt point measured again
+  rather than answered from the memo, and each failure: not-current, a missing column, a numeric
+  mode on text, rules execution refuses, and invalid wiring.
+- **`tests/test_banding_claims.py`** — `banding_rule_claim_expr` against hand-calculated vectors:
+  breakpoint claims following the user's rule order under both closures, a repeated label and a
+  default equal to it keeping their own counts, the last-wins categorical remap on the text each
+  dtype casts to, a rule with no assignment claiming nothing, an unconfigured factor claiming
+  nothing rather than raising, and the rejections execution shares. A property test over 120
+  generated frames and rule sets asserts the invariant the counts rest on: every claimed row gets
+  that rule's assignment from `_apply_banding`, and every unclaimed row gets the default.
 - **`tests/test_rating_step.py`** — `RATING_STEP` executor node building, decorator parsing, codegen, and canonical-sidecar round-trip integration.
 - **`tests/test_rating_step_config_coverage.py`** — targeted and property coverage
   of `_rating_step_config.py`: every zero/one/two/three-factor accepted canonical

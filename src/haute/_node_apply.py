@@ -24,11 +24,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from os import PathLike
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import polars as pl
 
 from haute._types import _Frame
+
+#: A frame in either evaluation mode, returned in the mode it was given.
+_EagerOrLazy = TypeVar("_EagerOrLazy", pl.LazyFrame, pl.DataFrame)
 
 # ── Scenario-expander defaults ────────────────────────────────────────────
 # Canonical home; re-exported from ``_builders`` for the chunking /
@@ -214,8 +217,25 @@ def expand_scenarios_from_config(
     base_dir=...)`` so a standalone ``pipeline.run()`` expands exactly like
     the GUI executor instead of passing the frame straight through.
     """
-    cfg = _resolve_node_config(config, base_dir)
+    return _expand_scenarios(lf, _resolve_node_config(config, base_dir))
 
+
+def _scenario_grid_columns(cfg: Mapping[str, Any]) -> dict[str, pl.DataType]:
+    """The columns the expansion adds or replaces, with the dtypes it casts to."""
+    step_col = cfg.get("step_column") or "scenario_index"
+    grid: dict[str, pl.DataType] = {step_col: pl.Int32()}
+    col_name = (cfg.get("column_name") or "").strip()
+    if col_name:
+        # Float32 to match Rust QuoteGrid schema (price-contour ingests f32).
+        grid[col_name] = pl.Float32()
+    return grid
+
+
+def _expand_scenarios(lf: _EagerOrLazy, cfg: Mapping[str, Any]) -> _EagerOrLazy:
+    """Expand each row into its scenario grid, as an expression over *lf*.
+
+    Eager as well as lazy: the scan form below expands a collected batch.
+    """
     col_name = (cfg.get("column_name") or "").strip()
     raw_min = cfg.get("min_value")
     min_val = float(raw_min) if raw_min is not None else _DEFAULT_SCENARIO_MIN
@@ -230,16 +250,49 @@ def expand_scenarios_from_config(
         import numpy as np
 
         vals = np.linspace(min_val, max_val, steps, dtype=np.float32)
-        # Float32 to match Rust QuoteGrid schema (price-contour ingests f32).
         scenario_exprs.append(pl.lit(pl.Series(col_name, vals).implode()).first().alias(col_name))
         explode_cols.append(col_name)
-    cast_exprs = [pl.col(step_col).cast(pl.Int32)]
-    if col_name:
-        cast_exprs.append(pl.col(col_name).cast(pl.Float32))
+    cast_exprs = [pl.col(name).cast(dtype) for name, dtype in _scenario_grid_columns(cfg).items()]
     return (
         lf.with_columns(scenario_exprs)
         .explode(explode_cols, empty_as_null=True)
         .with_columns(cast_exprs)
+    )
+
+
+def expand_scenarios_bounded(
+    lf: _Frame,
+    config: Mapping[str, Any],
+    *,
+    node_id: str | None = None,
+) -> _Frame:
+    """Scenario expansion an interactive row limit can reach through.
+
+    :func:`expand_scenarios_from_config` expands through ``explode``, and
+    Polars pushes no slice below one: a preview of a node under the expander
+    builds every expanded row before a ``head(n)`` keeps its first few — 110M
+    rows to show 100 of a 10M-row frame on an 11-step grid. This form exposes
+    the SAME expansion as a scan, so a pushed limit of ``n`` rows expands only
+    the first ``ceil(n / stepCount)`` input rows, and Polars pushes it only
+    where the query result is unchanged. The executor uses it for the
+    interactive preview; a full run expands through the expression.
+    """
+    from haute._polars_utils import fanout_python_scan
+
+    cfg = dict(config)
+    steps = scenario_step_count(cfg)
+    input_lf = lf.lazy() if isinstance(lf, pl.DataFrame) else lf
+    input_schema = input_lf.collect_schema()
+    grid = _scenario_grid_columns(cfg)
+    return fanout_python_scan(
+        input_lf,
+        lambda batch: _expand_scenarios(batch, cfg),
+        schema=pl.Schema({**input_schema, **grid}),
+        fanout=steps,
+        generated_columns=tuple(grid),
+        required_input_columns=(),
+        input_schema=input_schema,
+        node_id=node_id,
     )
 
 

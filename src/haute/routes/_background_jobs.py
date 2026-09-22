@@ -298,8 +298,14 @@ class IsolatedJobSupervisor:
         completed_message: str = "Completed",
         on_finished: Callable[[], None] | None = None,
         start_time: float | None = None,
+        failure_metrics: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> IsolatedSupervisorThread:
-        """Launch one versioned protocol worker under lifecycle supervision."""
+        """Launch one versioned protocol worker under lifecycle supervision.
+
+        *failure_metrics* maps the execution metrics a failed worker reports
+        before the job records them; a completed worker's metrics are
+        *completed_fields*' to map.
+        """
         runner = self._protocol_runner or run_worker_protocol
         map_completed = completed_fields or (lambda result: {"result": result})
         return self._launch_callable(
@@ -317,6 +323,7 @@ class IsolatedJobSupervisor:
             completed_message=completed_message,
             on_finished=on_finished,
             start_time=time.monotonic() if start_time is None else start_time,
+            failure_metrics=failure_metrics,
         )
 
     def _launch_callable(
@@ -328,6 +335,7 @@ class IsolatedJobSupervisor:
         completed_message: str,
         start_time: float,
         on_finished: Callable[[], None] | None = None,
+        failure_metrics: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> IsolatedSupervisorThread:
         thread: IsolatedSupervisorThread
 
@@ -337,6 +345,7 @@ class IsolatedJobSupervisor:
                     execute,
                     completed_fields=completed_fields,
                     completed_message=completed_message,
+                    failure_metrics=failure_metrics,
                 )
                 outcome = self._finish_outcome(job_id, outcome, on_finished)
                 self._persist_terminal_outcome(
@@ -385,15 +394,20 @@ class IsolatedJobSupervisor:
         *,
         completed_fields: Callable[[Any], Mapping[str, Any]],
         completed_message: str,
+        failure_metrics: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> _SupervisorOutcome:
         try:
             result = execute()
             fields = dict(completed_fields(result))
         except IsolatedWorkerError as exc:
+            failure_fields = _isolated_worker_failure_fields(exc)
+            reported = failure_fields.get("execution_metrics")
+            if failure_metrics is not None and isinstance(reported, dict):
+                failure_fields["execution_metrics"] = failure_metrics(reported)
             return _SupervisorOutcome(
                 terminal_reason=_coerce_worker_terminal_reason(exc.terminal_reason),
                 message=_worker_terminal_message(exc),
-                fields=_isolated_worker_failure_fields(exc),
+                fields=failure_fields,
             )
         except BaseException as exc:
             return _unexpected_supervisor_outcome(

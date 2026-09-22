@@ -1,97 +1,98 @@
-const NUM_BINS = 40
+import type { BandingHistogramBin } from "../../../api/types"
+
 const LABEL_HEIGHT = 12
 
 interface BandingHistogramProps {
-  values: number[]
+  /**
+   * The distribution to draw, as the server sends it or as the preview
+   * fallback builds it — one shape, so the picture does not depend on where
+   * the numbers came from.
+   */
+  bins: BandingHistogramBin[]
   boundaries: number[]
   height?: number
   accentColor: string
 }
 
-export function BandingHistogram({ values, boundaries, height = 50, accentColor }: BandingHistogramProps) {
-  if (values.length === 0) return null
+export function BandingHistogram({
+  bins,
+  boundaries,
+  height = 50,
+  accentColor,
+}: BandingHistogramProps) {
+  if (bins.length === 0) return null
 
-  let min = values[0]
-  let max = values[0]
-  for (let i = 1; i < values.length; i++) {
-    if (values[i] < min) min = values[i]
-    if (values[i] > max) max = values[i]
-  }
+  const min = bins[0].lower
+  const max = bins[bins.length - 1].upper
   const range = max - min
+  const maxCount = Math.max(...bins.map((bin) => bin.count))
+  const barAreaHeight = height - LABEL_HEIGHT
 
-  // Edge case: all values are the same — render a single centered bar
+  // A constant column is one bin with no width: draw it centred rather than
+  // dividing by a zero range.
   if (range === 0) {
-    const barHeight = height - LABEL_HEIGHT
     return (
-      <svg role="img" aria-label="Distribution histogram" width="100%" height={height} style={{ display: "block" }}>
-        <rect
-          x="45%"
-          y={0}
-          width="10%"
-          height={barHeight}
-          fill="var(--text-muted)"
-          opacity={0.3}
-        />
+      <svg
+        role="img"
+        aria-label="Distribution histogram"
+        width="100%"
+        height={height}
+        style={{ display: "block" }}
+      >
+        <rect x="45%" y={0} width="10%" height={barAreaHeight} fill="var(--text-muted)" opacity={0.3} />
         <text x="0" y={height} fontSize={9} fill="var(--text-muted)">
           {formatNum(min)}
         </text>
-        {boundaries.map((_b, i) => {
-          // With no range, place boundary lines at center
-          return (
-            <line
-              key={i}
-              x1="50%"
-              y1={0}
-              x2="50%"
-              y2={barHeight}
-              stroke={accentColor}
-              strokeWidth={1.5}
-              strokeDasharray="3,2"
-            />
-          )
-        })}
+        {boundaries.map((_boundary, index) => (
+          <line
+            key={index}
+            x1="50%"
+            y1={0}
+            x2="50%"
+            y2={barAreaHeight}
+            stroke={accentColor}
+            strokeWidth={1.5}
+            strokeDasharray="3,2"
+          />
+        ))}
       </svg>
     )
   }
 
-  // Bucket values into bins
-  const bins = new Array(NUM_BINS).fill(0)
-  for (const v of values) {
-    let idx = Math.floor(((v - min) / range) * NUM_BINS)
-    if (idx >= NUM_BINS) idx = NUM_BINS - 1
-    bins[idx]++
-  }
-
-  const maxBin = Math.max(...bins)
-  const barAreaHeight = height - LABEL_HEIGHT
-  const barWidth = 100 / NUM_BINS // percentage
-
   return (
-    <svg role="img" aria-label="Distribution histogram" width="100%" height={height} style={{ display: "block" }} viewBox={`0 0 100 ${height}`} preserveAspectRatio="none">
-      {/* Histogram bars */}
-      {bins.map((count, i) => {
-        if (count === 0) return null
-        const barH = (count / maxBin) * barAreaHeight
+    <svg
+      role="img"
+      aria-label="Distribution histogram"
+      width="100%"
+      height={height}
+      style={{ display: "block" }}
+      viewBox={`0 0 100 ${height}`}
+      preserveAspectRatio="none"
+    >
+      {bins.map((bin, index) => {
+        if (bin.count === 0 || maxCount === 0) return null
+        const barHeight = (bin.count / maxCount) * barAreaHeight
+        const x = ((bin.lower - min) / range) * 100
+        const width = Math.max(((bin.upper - bin.lower) / range) * 100, 0.5)
         return (
           <rect
-            key={i}
-            x={i * barWidth}
-            y={barAreaHeight - barH}
-            width={barWidth}
-            height={barH}
+            key={index}
+            x={x}
+            y={barAreaHeight - barHeight}
+            width={width}
+            height={barHeight}
             fill="var(--text-muted)"
             opacity={0.3}
           />
         )
       })}
 
-      {/* Boundary lines */}
-      {boundaries.map((b, i) => {
-        const xPct = ((b - min) / range) * 100
+      {boundaries.map((boundary, index) => {
+        const xPct = ((boundary - min) / range) * 100
         if (xPct < 0 || xPct > 100) return null
         return (
           <line
-            key={i}
+            key={index}
             x1={xPct}
             y1={0}
             x2={xPct}
@@ -103,7 +104,6 @@ export function BandingHistogram({ values, boundaries, height = 50, accentColor 
         )
       })}
 
-      {/* Min/max labels */}
       <text x={0} y={height - 1} fontSize={2.5} fill="var(--text-muted)" textAnchor="start">
         {formatNum(min)}
       </text>

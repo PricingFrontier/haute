@@ -423,10 +423,14 @@ candidate, with the error toast.
   fetches its preview; a cache hit for the same structural version, source,
   and row limit paints instantly and skips the network call, otherwise
   cached data paints immediately while a fresh fetch runs in the
-  background. A schema change cascades to every reachable downstream node
-  (bounded concurrency, diamond-shaped fan-in deduplicated so a shared
-  child previews once), each terminating in a definite ok/error state even
-  if the graph structure changes mid-flight.
+  background. A preview runs the node and its ancestors and nothing below
+  it: the response carries schema metadata for those ancestors without
+  materialising them, which is the only column refresh an editor reads. A
+  reader that can reach any node's columns rather than its own and its
+  upstream — the save-time edge-join gate — only states a column fact about
+  a stash stamped with the current structural version and source. The
+  preview terminates in a definite ok/error state even if the graph
+  structure changes mid-flight.
 - **Column stash source identity.** Cached editor columns and schema warnings
   carry the source under which they were captured. Initial mount and a source
   change discard any stash from another or unknown source, returning that node
@@ -619,16 +623,19 @@ candidate, with the error toast.
   cleanup can run before React commits the node-removal render and expose a
   torn node/cache view to another subscriber; deferral lets the graph commit
   first.
-- **The preview cascade snapshots row limit, active source, and chunk size
-  once at fetch time**, then closes over those values for every node it
-  previews in that cascade — reading the live settings refs again partway
-  through would let a user flipping the active data source mid-cascade split
-  one logical preview across two sources.
-- **Downstream propagation is bounded and deduplicated**, not a naive
-  "preview every descendant": a diamond-shaped fan-in
-  previews its shared child exactly once (waiting for every changed parent
-  first), and a fixed request bound prevents a wide fan-out from saturating
-  the backend.
+- **A preview snapshots row limit, active source, and chunk size once at
+  fetch time**, then closes over those values for every request it makes —
+  reading the live settings refs again partway through would let a user
+  flipping the active data source mid-flight split one logical preview
+  across two sources. A refresh's upstream fan-out is bounded by a fixed
+  request limit so a wide fan-in cannot saturate the backend.
+- **A preview never runs nodes downstream of its target.** Refreshing a
+  descendant's columns means materialising its frame, and nothing reads
+  those columns until that node is previewed in its own right: every editor
+  reads its own node's columns or an upstream source's. Doing it eagerly
+  computed the same data twice — the second time being the one anyone read
+  — and captured datasets into the shared node-data cache for nodes the
+  user was often about to change.
 - **Save concurrency uses request ordering, not a boolean in-flight gate.**
   The user can start a second save (or keep editing) while the first is
   still in flight; only marking a save's *own* captured snapshot as saved,
@@ -749,7 +756,8 @@ candidate, with the error toast.
 - Saving never rejects to the UI — every failure path is caught and surfaced
   as an error toast, and the action reports failure so Commit can stop safely
   before opening its milestone dialog.
-- A preview request or its downstream cascade member that fails with an
+- A preview request, or an upstream preview a refresh ran to fill a column
+  gap, that fails with an
   aborted/superseded error is treated as expected cancellation (no toast);
   any other failure shows a `warning` toast naming the failing node, and a
   client-side preview *timeout* additionally shows an `error` toast.

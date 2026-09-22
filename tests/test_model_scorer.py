@@ -25,7 +25,9 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 
+from haute._hashing import content_hash
 from haute._mlflow_io import ScoringModel
 from haute._model_scorer import (
     FeatureMismatchError,
@@ -39,7 +41,9 @@ from haute._model_scorer import (
     _run_score_pipeline,
     _sink_to_temp,
     _validate_features,
+    model_score_output_destination,
     model_score_temp_file_scope,
+    score_frame,
     score_from_config,
 )
 from haute._polars_utils import streaming_collect
@@ -1337,7 +1341,7 @@ class TestRunScorePipeline:
         with pytest.raises(RuntimeError, match="predict failed"):
             _run_score_pipeline(
                 sm,
-                pl.DataFrame({"a": [1.0]}).lazy(),
+                pl.DataFrame({"a": [1.0]}).lazy().filter(pl.col("a") > 0),
                 task="regression",
                 output_col="prediction",
                 source="batch",
@@ -2004,3 +2008,56 @@ def test_supported_flavors_derived_from_modelflavor_literal():
 
     assert _SUPPORTED_FLAVORS == frozenset(get_args(ModelFlavor))
     assert _SUPPORTED_FLAVORS == frozenset({"catboost", "pyfunc", "rustystats"})
+
+
+@pytest.mark.parametrize(
+    "input_df",
+    [
+        pl.DataFrame({"a": [1.0, 2.0, 3.0], "b": [4.0, 5.0, 6.0]}),
+        pl.DataFrame({"a": [], "b": []}, schema={"a": pl.Float64, "b": pl.Float64}),
+    ],
+    ids=["non-empty", "empty"],
+)
+def test_prewritten_scored_generation_carries_its_digest(
+    tmp_path: Path,
+    input_df: pl.DataFrame,
+) -> None:
+    dest_path = tmp_path / "part-00000.parquet"
+    model = MagicMock()
+    model.feature_names_ = ["a", "b"]
+    model.predict.side_effect = lambda x: np.full(len(x), 0.5, dtype=np.float64)
+    del model.predict_proba
+
+    with model_score_output_destination(dest_path) as destination:
+        res_lf = score_frame(
+            model=model,
+            lf=input_df.lazy(),
+            features=["a", "b"],
+            cat_feature_names=frozenset(),
+            flavor="pyfunc",
+            task="regression",
+            output_col="pred",
+            batch=True,
+        )
+        collected = res_lf.collect()
+
+        assert destination.used is True
+        assert destination.digest is not None
+        assert destination.digest == content_hash(dest_path)
+        from_disk = pl.read_parquet(dest_path)
+        assert_frame_equal(collected, from_disk)
+
+        digest_before = destination.digest
+        second_lf = score_frame(
+            model=model,
+            lf=input_df.lazy(),
+            features=["a", "b"],
+            cat_feature_names=frozenset(),
+            flavor="pyfunc",
+            task="regression",
+            output_col="pred",
+            batch=True,
+        )
+        second_collected = second_lf.collect()
+        assert destination.digest == digest_before
+        assert_frame_equal(second_collected, from_disk)

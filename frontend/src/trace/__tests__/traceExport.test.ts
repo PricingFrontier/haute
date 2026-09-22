@@ -95,6 +95,7 @@ function traceFixture(): TraceResult {
         match_columns: ["quote_id"],
         ignored_columns: [],
         matched_row_indices: [1, 2],
+        seed_node_ids: [],
       },
     ],
     generated_at: "2026-07-23T12:34:56+00:00",

@@ -81,6 +81,30 @@ def struct_frame() -> pl.DataFrame:
     )
 
 
+class _StubPlan:
+    """The seed plan of a write transaction whose graph a unit test never executes."""
+
+    def __enter__(self) -> _StubPlan:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        return None
+
+    def handoff(self) -> str:
+        return "stub-handoff"
+
+
+def _stub_plans(monkeypatch: pytest.MonkeyPatch) -> None:
+    from haute.routes import pipeline as pipeline_route
+
+    monkeypatch.setattr(pipeline_route, "data_output_seed_plan_request", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipeline_route, "open_seed_plan", lambda *_a, **_k: _StubPlan())
+
+
+def _transaction_context() -> ExecutionContext:
+    return ExecutionContext(operation="pipeline_write_output", profile=ExecutionProfile.LAZY_SINK)
+
+
 class TestExecuteSinkDataOutput:
     @pytest.mark.parametrize(
         ("failure_kind", "expected_kind"),
@@ -165,6 +189,7 @@ class TestExecuteSinkDataOutput:
             str(tmp_path),
             False,
             None,
+            None,
             budget,
         )
 
@@ -196,6 +221,7 @@ class TestExecuteSinkDataOutput:
                 str(tmp_path),
                 False,
                 None,
+                None,
                 SimpleNamespace(),  # type: ignore[arg-type]
             )
 
@@ -207,6 +233,8 @@ class TestExecuteSinkDataOutput:
         primary_failure: bool,
     ) -> None:
         from haute.routes import pipeline as pipeline_route
+
+        _stub_plans(monkeypatch)
 
         final = tmp_path / "result.parquet"
         staging = tmp_path / ".result.haute-stage-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.parquet"
@@ -264,6 +292,7 @@ class TestExecuteSinkDataOutput:
                 SimpleNamespace(memory_limit_bytes=1024),  # type: ignore[arg-type]
                 WorkerCancellationGate(),
                 display_path="result.parquet",
+                execution_context=_transaction_context(),
             )
 
         if primary_failure:
@@ -280,6 +309,8 @@ class TestExecuteSinkDataOutput:
         from haute._worker_isolation import IsolatedWorkerStoppedError
         from haute.routes import pipeline as pipeline_route
 
+        _stub_plans(monkeypatch)
+
         gate = WorkerCancellationGate()
         gate.request()
         with pytest.raises(IsolatedWorkerStoppedError):
@@ -295,6 +326,7 @@ class TestExecuteSinkDataOutput:
                 SimpleNamespace(memory_limit_bytes=1024),  # type: ignore[arg-type]
                 gate,
                 display_path="database",
+                execution_context=_transaction_context(),
             )
 
         monkeypatch.setattr(
@@ -315,6 +347,7 @@ class TestExecuteSinkDataOutput:
                 SimpleNamespace(memory_limit_bytes=1024),  # type: ignore[arg-type]
                 WorkerCancellationGate(),
                 display_path="database",
+                execution_context=_transaction_context(),
             )
 
         monkeypatch.setattr(
@@ -338,6 +371,7 @@ class TestExecuteSinkDataOutput:
                 SimpleNamespace(memory_limit_bytes=1024),  # type: ignore[arg-type]
                 WorkerCancellationGate(),
                 display_path="database",
+                execution_context=_transaction_context(),
             )
 
     @pytest.mark.parametrize(
@@ -455,6 +489,8 @@ class TestExecuteSinkDataOutput:
     ) -> None:
         from haute.routes import pipeline as pipeline_route
 
+        _stub_plans(monkeypatch)
+
         final = tmp_path / "result.parquet"
         staging = tmp_path / ".result.haute-stage-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.parquet"
         decoy = tmp_path / ".decoy.haute-stage-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.parquet"
@@ -489,6 +525,7 @@ class TestExecuteSinkDataOutput:
                 budget=SimpleNamespace(memory_limit_bytes=1),  # type: ignore[arg-type]
                 cancellation_requested=WorkerCancellationGate(),
                 display_path="result.parquet",
+                execution_context=_transaction_context(),
             )
 
         assert not staging.exists()
@@ -503,6 +540,8 @@ class TestExecuteSinkDataOutput:
 
         from haute._worker_isolation import IsolatedWorkerStoppedError
         from haute.routes import pipeline as pipeline_route
+
+        _stub_plans(monkeypatch)
 
         final = tmp_path / "result.parquet"
         staging = tmp_path / ".result.haute-stage-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.parquet"
@@ -545,6 +584,7 @@ class TestExecuteSinkDataOutput:
                 budget=SimpleNamespace(memory_limit_bytes=1),  # type: ignore[arg-type]
                 cancellation_requested=cancellation_requested,
                 display_path="result.parquet",
+                execution_context=_transaction_context(),
             )
 
         assert not final.exists()
@@ -784,6 +824,17 @@ class TestExecuteSinkDataOutput:
                 memory_sampler=lambda: 0,
             )
 
+        # Without a native cap, the unprovable group-by is refused.
+        with pytest.raises(GroupByExecutionUnsupportedError):
+            write_data_output(
+                graph,
+                "batch_output",
+                source="batch",
+                execution_context=_context(),
+                project_root=haute_scratch,
+            )
+        assert not destination.exists()
+
         context = _context()
         with native_memory_backend_scope("windows_job"):
             write_data_output(
@@ -811,16 +862,25 @@ class TestExecuteSinkDataOutput:
         assert payload["execution_strategy"]["status"] == "warned"
         ExecutionMetricsPayload.model_validate(payload)
 
+        # The capped run captured the aggregate, so a later uncapped write
+        # reads that snapshot and runs no group-by at all.
         destination.unlink()
-        with pytest.raises(GroupByExecutionUnsupportedError):
-            write_data_output(
-                graph,
-                "batch_output",
-                source="batch",
-                execution_context=_context(),
-                project_root=haute_scratch,
-            )
-        assert not destination.exists()
+        uncapped = _context()
+        write_data_output(
+            graph,
+            "batch_output",
+            source="batch",
+            execution_context=uncapped,
+            project_root=haute_scratch,
+        )
+        assert [
+            seed["node_id"]
+            for seed in uncapped.metrics_payload(status="completed")["shared_snapshot_seeds"]
+        ] == ["claims_agg"]
+        assert_frame_equal(
+            pl.read_parquet(destination).sort("quote_id"),
+            expected.sort("quote_id"),
+        )
 
     def test_parent_rejects_tampered_output_stage_without_replacing_target(
         self, haute_scratch

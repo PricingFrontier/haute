@@ -406,7 +406,15 @@ class TestInChildFailureOutcomes:
         assert job["error_code"] == error_code
         assert job["http_status_code"] == status_code
         assert job["error_detail"] == detail
-        assert job["execution_metrics"] == {"status": "failed"}
+        # The child's metrics, carrying the job's evidence (none for a parquet source).
+        assert job["execution_metrics"] == {
+            "status": "failed",
+            "input_preparation": [],
+            "shared_snapshot_seeds": [],
+            "shared_snapshot_captures": [],
+            "shared_snapshot_capture_skips": [],
+            "warnings": [],
+        }
         assert run.prepared_admission_releases() == 1
         assert not Path(run.parquet_path).exists()
 

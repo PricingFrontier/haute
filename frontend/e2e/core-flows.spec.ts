@@ -84,6 +84,9 @@ test.describe("core browser flows", () => {
     await modellingPanes.getByRole("tab", { name: "Train", exact: true }).click()
     const trainButton = page.getByRole("button", { name: /Train Model/i })
     await expect(trainButton).toBeVisible()
+    // The pane's memory estimate reserves the training budget while it runs,
+    // so training starts once it has answered, as for a user reading it.
+    await expect(page.getByText("Dataset fits in memory")).toBeVisible()
     await trainButton.click()
 
     await expect(

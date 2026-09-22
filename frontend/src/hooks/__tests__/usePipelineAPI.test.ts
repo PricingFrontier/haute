@@ -3,7 +3,7 @@ import type { Mock } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import usePipelineAPI, {
-  DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT,
+  PREVIEW_FANOUT_CONCURRENCY_LIMIT,
   PREVIEW_INITIAL_COLUMN_LIMIT,
 } from "../usePipelineAPI"
 import useToastStore from "../../stores/useToastStore"
@@ -25,6 +25,7 @@ import { LOADED_DOCUMENT_FINGERPRINT, makeLoadedPipeline, makePipelineEditorDocu
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
+  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),
@@ -93,6 +94,7 @@ import {
   buildJsonCache,
   getJsonCacheStatusForSchema,
   loadPipeline,
+  previewInputs,
   previewNode,
   previewRecoveryNode,
   savePipeline,
@@ -100,6 +102,11 @@ import {
 } from "../../api/client"
 import { resolveGraphFromRefs } from "../../utils/buildGraph"
 import { makeEdge, makeNode, makeTrainResult } from "../../test-utils/factories"
+
+// A preview that waits on a cache build crosses several effects and mocked
+// requests; a whole parallel suite run makes that slower without making it
+// wrong, and waitFor's 1s default is the thing that gives out first.
+const CACHE_WAIT_TIMEOUT_MS = 10_000
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
 const mockRecoveryPreview = vi.mocked(previewRecoveryNode)
@@ -297,7 +304,7 @@ describe("usePipelineAPI", () => {
       undoStack: [],
       redoStack: [],
     })
-    useNodeResultsStore.setState({ previews: {}, columnCache: {}, trainJobs: {}, trainResults: {}, solveJobs: {}, exploreJobs: {}, pivotJobs: {}, pivotStartClaims: {} })
+    useNodeResultsStore.setState({ previews: {}, columnCache: {}, trainJobs: {}, trainResults: {}, solveJobs: {}, pivotJobs: {}, pivotStartClaims: {} })
     mockLoad.mockReset()
     mockPreview.mockReset()
     mockRecoveryPreview.mockReset()
@@ -306,6 +313,7 @@ describe("usePipelineAPI", () => {
     mockGetInputCacheStatus.mockReset()
     vi.mocked(buildJsonCache).mockReset()
     vi.mocked(getJsonCacheStatusForSchema).mockReset()
+    vi.mocked(previewInputs).mockReset().mockResolvedValue({ input_node_ids: [] })
     mockResolveGraphFromRefs.mockReset()
     mockResolveGraphFromRefs.mockImplementation((graphRef, parentGraphRef, submodelsRef, preambleRef) => {
       if (parentGraphRef.current) {
@@ -1331,6 +1339,64 @@ describe("usePipelineAPI", () => {
     })
   })
 
+  // The gate reads the two inputs of EVERY join, which are usually nowhere
+  // near the node last previewed. Their column stashes are written by
+  // whichever preview last ran at or below them, so the gate must state a
+  // missing key only for a stash captured from the graph it is validating —
+  // otherwise a save that is actually valid is refused with a claim about
+  // "the current upstream columns" that nothing supports.
+  it.each([
+    ["a stash captured from this graph", 0, true],
+    ["a stash captured from an older graph", -1, false],
+  ])("handleSave blocks a missing edgeJoin key only for %s", async (_case, versionOffset, expectBlocked) => {
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
+    mockSave.mockResolvedValue({
+      status: "saved",
+      file: "test.py",
+      pipeline_name: "test",
+      source_revision: "revision-save",
+      warnings: [],
+    })
+    const graph = edgeJoinSaveGraph({ how: "left", on: ["policy_id"] })
+    const params = makeParams()
+    params.graphRef.current = graph
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    // Both inputs carry columns WITHOUT the configured key.
+    const { activeSource } = useSettingsStore.getState()
+    const stamp = useGraphStore.getState().structuralVersion + versionOffset
+    for (const id of ["quotes", "lookup"]) {
+      const input = graph.nodes.find((node) => node.id === id)!
+      input.data = {
+        ...input.data,
+        _columns: [{ name: "state", dtype: "String" }],
+        _columnsStructuralVersion: stamp,
+        _columnsSource: activeSource,
+      }
+    }
+
+    await act(async () => {
+      await result.current.handleSave()
+    })
+
+    if (expectBlocked) {
+      expect(mockSave).not.toHaveBeenCalled()
+      await waitFor(() => {
+        expect(useToastStore.getState().toasts.some((t) =>
+          t.type === "error" &&
+          t.text.includes("Edge Join") &&
+          t.text.includes("policy_id is not in the current upstream columns"),
+        )).toBe(true)
+      })
+    } else {
+      expect(mockSave).toHaveBeenCalled()
+      expect(useToastStore.getState().toasts.some((t) =>
+        t.type === "error" && t.text.includes("not in the current upstream columns"),
+      )).toBe(false)
+    }
+  })
+
   it("loads sources from backend", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({
       nodes: [],
@@ -1573,13 +1639,17 @@ describe("usePipelineAPI", () => {
       const target = makeNode("claims")
       const params = makeParams()
       params.graphRef.current = { nodes: [input, target], edges: [makeEdge(input.id, target.id)] }
+      vi.mocked(previewInputs).mockResolvedValue({ input_node_ids: [input.id] })
       mockPreview.mockResolvedValue({
         node_id: "claims", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0,
       })
       const { result } = renderHook(() => usePipelineAPI(params))
-      await waitFor(() => expect(result.current.loading).toBe(false))
+      await waitFor(() => expect(result.current.loading).toBe(false), { timeout: CACHE_WAIT_TIMEOUT_MS })
       act(() => { result.current.fetchPreview(target, { debounceMs: 0 }) })
-      await waitFor(() => expect(buildJsonCache).toHaveBeenCalledOnce())
+      await waitFor(
+        () => expect(buildJsonCache).toHaveBeenCalledOnce(),
+        { timeout: CACHE_WAIT_TIMEOUT_MS },
+      )
       expect(mockPreview).not.toHaveBeenCalled()
       expect(result.current.previewData?.loading_message).toContain("Caching Quote Input")
       if (outcome === "cancelled") act(() => result.current.cancelPreview())
@@ -1591,7 +1661,10 @@ describe("usePipelineAPI", () => {
           skipped_records: 0, skipped_rows: {},
         })
       })
-      await waitFor(() => expect(result.current.previewBusy).toBe(false))
+      await waitFor(
+        () => expect(result.current.previewBusy).toBe(false),
+        { timeout: CACHE_WAIT_TIMEOUT_MS },
+      )
       if (outcome === "completed") {
         expect(mockPreview).toHaveBeenCalledOnce()
         expect(result.current.previewData?.status).toBe("ok")
@@ -1651,6 +1724,7 @@ describe("usePipelineAPI", () => {
       nodes: [input, target],
       edges: [makeEdge(input.id, target.id)],
     }
+    vi.mocked(previewInputs).mockResolvedValue({ input_node_ids: [input.id] })
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
 
@@ -1677,6 +1751,117 @@ describe("usePipelineAPI", () => {
     )
   })
 
+  it("prepares only the inputs the preview's seeded execution reads", async () => {
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
+    mockGetInputCacheStatus.mockResolvedValue(inputCacheSnapshot("missing"))
+    mockBuildInputCache.mockResolvedValue({
+      schema_version: 1,
+      job_id: "snapshot-job",
+      identity_digest: "snapshot-identity",
+      status: "running",
+      joined: false,
+    })
+    mockGetInputCacheJob.mockResolvedValue(inputCacheJob("completed"))
+    mockPreview.mockResolvedValue({
+      node_id: "target", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0,
+    })
+    const read = makeSnapshotInput("read-input")
+    const aboveSeed = makeSnapshotInput("above-seed")
+    const target = makeNode("target")
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [read, aboveSeed, target],
+      edges: [makeEdge(read.id, target.id), makeEdge(aboveSeed.id, target.id)],
+    }
+    vi.mocked(previewInputs).mockResolvedValue({ input_node_ids: [read.id] })
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(target, { debounceMs: 0 })
+    })
+
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+    expect(previewInputs).toHaveBeenCalledWith(
+      expect.objectContaining({ nodeId: "target", source: "live" }),
+    )
+    expect(mockGetInputCacheStatus).toHaveBeenCalledOnce()
+    expect(mockGetInputCacheStatus.mock.calls[0][0]).toMatchObject({
+      config: expect.objectContaining({ path: "read-input.csv" }),
+    })
+    expect(mockBuildInputCache).toHaveBeenCalledOnce()
+    expect(vi.mocked(previewInputs).mock.invocationCallOrder[0])
+      .toBeLessThan(mockPreview.mock.invocationCallOrder[0])
+  })
+
+  it("prepares the original's input for an input instance the preview reads", async () => {
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
+    mockGetInputCacheStatus.mockResolvedValue(inputCacheSnapshot("missing"))
+    mockBuildInputCache.mockResolvedValue({
+      schema_version: 1,
+      job_id: "snapshot-job",
+      identity_digest: "snapshot-identity",
+      status: "running",
+      joined: false,
+    })
+    mockGetInputCacheJob.mockResolvedValue(inputCacheJob("completed"))
+    mockPreview.mockResolvedValue({
+      node_id: "target", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0,
+    })
+    const original = makeSnapshotInput("original-input")
+    const instance = {
+      ...makeNode("input-copy", NODE_TYPES.DATA_INPUT),
+      data: { nodeType: NODE_TYPES.DATA_INPUT, label: "input copy", config: { instanceOf: original.id } },
+    }
+    const target = makeNode("target")
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [original, instance, target],
+      edges: [makeEdge(instance.id, target.id)],
+    }
+    vi.mocked(previewInputs).mockResolvedValue({ input_node_ids: [instance.id] })
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(target, { debounceMs: 0 })
+    })
+
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+    expect(mockGetInputCacheStatus).toHaveBeenCalledOnce()
+    expect(mockGetInputCacheStatus.mock.calls[0][0]).toMatchObject({
+      config: expect.objectContaining({ path: "original-input.csv" }),
+    })
+    expect(mockBuildInputCache).toHaveBeenCalledOnce()
+  })
+
+  it("previews without building an unavailable input the preview never reads", async () => {
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
+    mockGetInputCacheStatus.mockResolvedValue(inputCacheSnapshot("missing"))
+    mockBuildInputCache.mockRejectedValue(new Error("this input cannot be built"))
+    mockPreview.mockResolvedValue({
+      node_id: "target", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0,
+    })
+    const unused = makeSnapshotInput("unused-input")
+    const target = makeNode("target")
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [unused, target],
+      edges: [makeEdge(unused.id, target.id)],
+    }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(target, { debounceMs: 0 })
+    })
+
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+    expect(mockGetInputCacheStatus).not.toHaveBeenCalled()
+    expect(mockBuildInputCache).not.toHaveBeenCalled()
+    expect(mockPreview).toHaveBeenCalledOnce()
+  })
+
   it("blocks preview and surfaces an input snapshot build failure", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
     mockGetInputCacheStatus.mockResolvedValue(inputCacheSnapshot("missing"))
@@ -1697,6 +1882,7 @@ describe("usePipelineAPI", () => {
       nodes: [input, target],
       edges: [makeEdge(input.id, target.id)],
     }
+    vi.mocked(previewInputs).mockResolvedValue({ input_node_ids: [input.id] })
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
 
@@ -2001,7 +2187,7 @@ describe("usePipelineAPI", () => {
     expect(result.current.previewData?.nodeId).toBe("nb_batch")
   })
 
-  it.each(["direct", "propagation"])("discovers downstream columns after join deselection (%s)", async (mode) => {
+  it("discovers downstream columns after join deselection", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
     const remainingColumns = [{ name: "quote_id", dtype: "i64" }]
     const oldColumns = [...remainingColumns, { name: "first_name", dtype: "str" }]
@@ -2039,7 +2225,7 @@ describe("usePipelineAPI", () => {
         : node))
     })
     act(() => {
-      const target = params.graphRef.current.nodes.find((node) => node.id === (mode === "direct" ? "downstream" : "join"))!
+      const target = params.graphRef.current.nodes.find((node) => node.id === "downstream")!
       result.current.fetchPreview(target, { debounceMs: 0 })
     })
     await waitFor(() => {
@@ -2282,39 +2468,23 @@ describe("usePipelineAPI", () => {
     expect(updated.data._columns).toEqual([{ name: "premium", dtype: "Float64" }])
   })
 
-  it("fetchPreview aborts downstream propagation previews when the request is cancelled", async () => {
+  it("fetchPreview aborts the in-flight preview when the request is cancelled", async () => {
     const root = makeNode("root", "polars", {
       data: { label: "Root", nodeType: "polars", config: {} },
     })
-    const child = makeNode("child", "polars", {
-      data: { label: "Child", nodeType: "polars", config: {} },
-    })
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
 
-    let childSignal: AbortSignal | undefined
+    let rootSignal: AbortSignal | undefined
     mockPreview.mockImplementation(({ nodeId, signal }) => {
       if (nodeId === "root") {
-        return Promise.resolve({
-          node_id: "root",
-          status: "ok",
-          columns: [{ name: "root_col", dtype: "f64" }],
-          preview: [{ root_col: 1 }],
-          row_count: 1,
-          column_count: 1,
-        })
-      }
-      if (nodeId === "child") {
-        childSignal = signal
+        rootSignal = signal
         return new Promise(() => {})
       }
       throw new Error(`Unexpected preview ${nodeId}`)
     })
 
     const params = makeParams()
-    params.graphRef.current = {
-      nodes: [root, child],
-      edges: [makeEdge("root", "child")],
-    }
+    params.graphRef.current = { nodes: [root], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
 
@@ -2322,15 +2492,15 @@ describe("usePipelineAPI", () => {
       result.current.fetchPreview(root, { debounceMs: 0 })
     })
 
-    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2))
-    expect(childSignal).toBeInstanceOf(AbortSignal)
-    expect(childSignal?.aborted).toBe(false)
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
+    expect(rootSignal).toBeInstanceOf(AbortSignal)
+    expect(rootSignal?.aborted).toBe(false)
 
     act(() => {
       result.current.cancelPreview()
     })
 
-    expect(childSignal?.aborted).toBe(true)
+    expect(rootSignal?.aborted).toBe(true)
   })
 
   it("fetchPreview carries execution metrics into visible preview data and cache", async () => {
@@ -2786,7 +2956,7 @@ describe("usePipelineAPI", () => {
 
     const target = makeNode("target")
     const upstreamIds = Array.from(
-      { length: DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT * 2 + 1 },
+      { length: PREVIEW_FANOUT_CONCURRENCY_LIMIT * 2 + 1 },
       (_, index) => `upstream-${index + 1}`,
     )
     const upstreamNodes = upstreamIds.map((id) => makeNode(id))
@@ -2804,10 +2974,10 @@ describe("usePipelineAPI", () => {
     })
 
     await waitFor(() => {
-      expect(callOrder).toHaveLength(DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT)
+      expect(callOrder).toHaveLength(PREVIEW_FANOUT_CONCURRENCY_LIMIT)
     })
-    expect(activeUpstream.size).toBe(DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT)
-    expect(maxConcurrentUpstream).toBeLessThanOrEqual(DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT)
+    expect(activeUpstream.size).toBe(PREVIEW_FANOUT_CONCURRENCY_LIMIT)
+    expect(maxConcurrentUpstream).toBeLessThanOrEqual(PREVIEW_FANOUT_CONCURRENCY_LIMIT)
 
     let resolvedUpstream = 0
     while (resolvedUpstream < upstreamIds.length) {
@@ -2829,10 +2999,10 @@ describe("usePipelineAPI", () => {
       const remaining = upstreamIds.length - resolvedUpstream
       await waitFor(() => {
         expect(activeUpstream.size).toBe(
-          Math.min(DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT, remaining),
+          Math.min(PREVIEW_FANOUT_CONCURRENCY_LIMIT, remaining),
         )
       })
-      expect(maxConcurrentUpstream).toBeLessThanOrEqual(DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT)
+      expect(maxConcurrentUpstream).toBeLessThanOrEqual(PREVIEW_FANOUT_CONCURRENCY_LIMIT)
     }
 
     await waitFor(() => expect(callOrder).toContain("target"))

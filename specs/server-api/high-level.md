@@ -225,6 +225,38 @@ hard-code format knowledge. `/api/input-cache/*` owns shared snapshot build, pro
 cancellation, status, and clear operations for file, database, lakehouse, and Databricks
 inputs.
 
+`/api/node-data/*` reports and builds the data a consumer node reads. A request names the
+consumer node; the data-point resolver maps it to a point and column demand. `point` reports
+the point, its kind, its state for that consumer's demand (a fresh snapshot lacking demanded
+columns is `partial`), data version, row count, size, and for a node output the generation's
+column set, retention (`pinned` or `automatic`), and any running build with its progress.
+`run` builds a node-output point as a pinned, full-width snapshot in an isolated worker under
+the `node_snapshot` profile, with the existing admission, memory budget, cancellation, and job
+failure envelope. A run for the identity a running build is producing joins that build; a run
+for the same slot under a different signature supersedes the running build, and the new build
+waits for the superseded worker to stop before it is admitted; simultaneous identical requests
+start one build; a build publishes under the signature of the inputs it actually read, including
+input snapshots it prepared; a non-refresh run on a point already current
+for every column pins it and completes as cached; `refresh` rebuilds a current point. A
+snapshot-backed Data Input or an API-input table point is never built here: `run` answers
+`delegated` naming the existing input-cache or JSON-cache build route, and a direct-Parquet
+Data Input completes as cached because it reads its file directly. `clear` cancels a running
+build of the slot, waits for it to stop, and removes every signature's snapshot and the slot's
+pin, while any
+generation still leased elsewhere retires when released, and any stored analysis of the point
+is removed. Invalid consumer wiring returns 400 `node_data_point_invalid`.
+
+`profile` reports the data profile — per-column statistics and the overview summary — of the
+point's current data version. A point that is not current asks to be cached; a stored profile
+of exactly that data version is returned immediately; a running profile of the same data is
+joined; otherwise a profile job runs the computation in an isolated worker under the
+`explore_analysis` profile while the request's parent holds the point's lease, and the result
+is stored by data version, so a refreshed, rewritten, or widened point is always profiled
+again and never serves the previous data's profile. Short analyses that answer inside a
+request (banding statistics, rating levels, pivot members) run under the same admission and
+memory controls, are memoised per data version, and are cancelled when the client
+disconnects.
+
 **Utility scripts.** `GET/POST/PUT/DELETE /api/utility[/{module}]` manage Python files under
 the project's `utility/` directory — reusable helpers a pipeline's preamble imports via
 `from utility.<module> import *`. Every write is AST-syntax-checked before landing on disk;

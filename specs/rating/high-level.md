@@ -209,6 +209,11 @@ Out of scope (owned by neighbouring components):
   in the Calculation and Nodes tabs. Rating enrichment also receives the exact
   factor dtypes from the consumed parent frame; it does not reimplement lookup
   or rule matching.
+- **[server-api](../server-api/high-level.md)** — `routes/_rating_levels.py`
+  publishes the levels of a Rating Step's raw factor columns over the node's
+  shared data point, keyed by the same `_rating_key_expr` the lookup joins on,
+  so a level offered in the editor is a level a run matches. It reads that
+  module's key expression rather than rendering values its own way.
 - **modelling / optimiser** — the optimiser's ratebook-apply path is a
   downstream consumer, not a peer: it constructs synthetic rating-table specs
   from a saved artifact's factor tables and ordered `factor_dtypes` descriptors,

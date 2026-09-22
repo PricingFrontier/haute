@@ -40,7 +40,12 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // production bundle is 1,388.8 KiB; its ~14.3 KiB increase from the 1,374.5 KiB
 // baseline gets 1,399 KiB, restoring the ~10 KiB aggregate headroom with the
 // startup and vendor caps unchanged.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1399
+// The shared node-output cache adds the data-point surface every consumer reads
+// through — cache state and its buttons on the node panel, the banding and
+// rating editors' own reads, and the execution-diagnostics indicator — almost
+// all of it lazy panel code. The complete production bundle is 1,400.2 KiB;
+// 1,410 KiB restores about 10 KiB of aggregate headroom.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1410
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
@@ -114,7 +119,13 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // error diagnostics with an accessible Tooltip adds ~2.0 KiB of deliberate eager
 // UI core to the always-mounted toolbar. The merged initial bundle is 283.1 KiB;
 // 285 KiB restores ~1.9 KiB of headroom while keeping startup caps tight.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 285
+// The shared node-output cache puts a consumer's data-point state on the always
+// mounted node panel — its cache button and availability, and the diagnostics
+// indicator that names a refused capture — which is eager by design: it reports
+// on data the panel is already showing. The lazy-only preload guard above still
+// passes, so nothing was pulled forward by accident. The merged initial bundle
+// is 290.2 KiB; 292 KiB restores ~1.8 KiB of headroom on the same terms.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 292
 
 // Chunks that should only be fetched when their preview or editor is needed.
 // If one appears as a startup modulepreload, the app has likely

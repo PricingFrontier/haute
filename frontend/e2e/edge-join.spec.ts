@@ -383,8 +383,13 @@ test.describe("Authored column settings survive the complete browser persistence
         await expect(table.locator("thead th > div:first-child")).toHaveText(
           includesDiscard ? ["identifier", "premium", "region", "discard"] : ["identifier", "premium", "region"],
         )
-        await expect(table.locator("tbody tr").first().getByRole("cell")).toHaveText(
-          includesDiscard ? ["1", "1", "12.5", "North", "99"] : ["1", "1", "12.5", "North"],
+        // Row order is not part of what a preview promises — a preview may read
+        // a join's rows from a shared snapshot — so find the row by identifier.
+        const identifierOne = table.locator("tbody tr").filter({
+          has: page.locator("td:nth-child(2)", { hasText: /^1$/ }),
+        })
+        await expect(identifierOne.getByRole("cell")).toHaveText(
+          includesDiscard ? [/^\d+$/, "1", "12.5", "North", "99"] : [/^\d+$/, "1", "12.5", "North"],
         )
       }
       await openSubject()
@@ -539,10 +544,19 @@ test.describe("Edge Join insertion workflow", () => {
     const response = await traceResponse
     expect(response.status(), "trace request succeeds").toBe(200)
     const tracePayload = await response.json() as {
-      trace?: { steps?: Array<{ node_id?: string }> }
+      trace?: {
+        steps?: Array<{ node_id?: string }>
+        omissions?: Array<{ node_id?: string; reason?: string }>
+      }
     }
     const tracedNodeIds = tracePayload.trace?.steps?.map((step) => step.node_id) ?? []
-    expect(tracedNodeIds, "trace retains both Edge Join ancestors").toEqual(
+    // The previews above captured the joins, so the trace may read one from
+    // its snapshot; a join above that point is reported as skipped for it
+    // rather than recomputed. Either way both joins stay in the trace.
+    const skippedForSnapshot = (tracePayload.trace?.omissions ?? [])
+      .filter((omission) => omission.reason === "snapshot_seed")
+      .map((omission) => omission.node_id)
+    expect([...tracedNodeIds, ...skippedForSnapshot], "trace retains both Edge Join ancestors").toEqual(
       expect.arrayContaining([finalFirstJoin.id, finalSecondJoin.id]),
     )
     await expect(page.getByRole("complementary", { name: /node properties/i })).toContainText(/Trace:/)

@@ -1718,11 +1718,10 @@ class TestExecuteSink:
         df = pl.read_parquet(out)
         assert set(df.columns) >= {"key", "a", "b"}
 
-    def test_sink_passes_checkpoint_dir(self, tmp_path):
-        """write_data_output must pass a checkpoint_dir to _execute_lazy."""
+    def test_sink_runs_under_a_seed_plan(self, tmp_path):
+        """write_data_output executes under the seed plan it opened, with no checkpoint dir."""
         graph, _ = _make_sink_graph(tmp_path)
 
-        from pathlib import Path
         from unittest.mock import patch
 
         from haute._execute_lazy import _execute_lazy as original
@@ -1737,32 +1736,29 @@ class TestExecuteSink:
             write_data_output(graph, output_node_id="sink")
 
         assert len(captured_kwargs) == 1
-        cp_dir = captured_kwargs[0].get("checkpoint_dir")
-        assert cp_dir is not None
-        assert isinstance(cp_dir, Path)
+        assert captured_kwargs[0]["snapshot_plan"] is not None
+        assert captured_kwargs[0]["prepare_inputs"] is False
+        assert "checkpoint_dir" not in captured_kwargs[0]
 
-    def test_sink_cleans_up_checkpoint_dir(self, tmp_path):
-        """Checkpoint temp directory should be removed after sink completes."""
+    def test_sink_releases_its_plan_after_the_write(self, tmp_path):
+        """The seed plan stays open through the write and is closed once it completes."""
         graph, _ = _make_sink_graph(tmp_path)
 
-        from pathlib import Path
         from unittest.mock import patch
 
         from haute._execute_lazy import _execute_lazy as original
 
-        created_dirs: list[Path] = []
+        plans: list = []
 
         def spy(*args, **kwargs):
-            cp_dir = kwargs.get("checkpoint_dir")
-            if cp_dir is not None:
-                created_dirs.append(cp_dir)
+            plans.append(kwargs["snapshot_plan"])
             return original(*args, **kwargs)
 
         with patch("haute.executor._execute_lazy", side_effect=spy):
             write_data_output(graph, output_node_id="sink")
 
-        assert len(created_dirs) == 1
-        assert not created_dirs[0].exists(), "checkpoint dir should be cleaned up"
+        assert len(plans) == 1
+        assert plans[0]._closed
 
     def test_live_scenario_resolves_batch_from_ism(self, tmp_path):
         """When scenario='live', write_data_output resolves the batch scenario
@@ -2551,7 +2547,8 @@ class TestResolveBatchScenario:
 class TestPreviewCachePartialHit:
     """Verify the cache-extend (partial-hit) path in execute_graph."""
 
-    def test_partial_hit_extends_cache(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("fresh_error", [False, True])
+    def test_partial_hit_extends_cache(self, tmp_path, monkeypatch, fresh_error):
         """When a cached graph fingerprint exists but the target node is
         not yet materialized, execute_graph should re-execute for the new
         target and merge the results.
@@ -2606,6 +2603,19 @@ class TestPreviewCachePartialHit:
         assert results1["mid"].status == "ok"
         assert "leaf" not in results1
 
+        if fresh_error:
+            real_eager = executor_mod._eager_execute
+
+            def eager_with_partial_error(*args, **kwargs):
+                result = list(real_eager(*args, **kwargs))
+                # A producer can return usable frame evidence alongside a node error.
+                # Cache extension must preserve that error instead of reviving an old success.
+                result[2] = {**result[2], "mid": "partial result rejected"}
+                result[5] = {**result[5], "mid": 7}
+                return tuple(result)
+
+            monkeypatch.setattr(executor_mod, "_eager_execute", eager_with_partial_error)
+
         # Second call: same graph, but now requesting "leaf" — partial hit
         results2 = execute_graph(graph, target_node_id="leaf")
         assert "leaf" in results2
@@ -2613,7 +2623,12 @@ class TestPreviewCachePartialHit:
         assert results2["leaf"].row_count == 3
         # The merged cache should also still contain "mid" and "src"
         assert "mid" in results2
-        assert results2["mid"].status == "ok"
+        if fresh_error:
+            assert results2["mid"].status == "error"
+            assert results2["mid"].error == "partial result rejected"
+            assert _preview_cache.get("partial-hit-regression")["error_lines"]["mid"] == 7
+        else:
+            assert results2["mid"].status == "ok"
         assert plan_calls == 2, "a partial extension must plan against the current request"
 
         _preview_cache.clear()

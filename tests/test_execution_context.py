@@ -64,6 +64,39 @@ def _clear_execution_memory_env(monkeypatch: pytest.MonkeyPatch) -> None:
     admission_mod._clear_in_flight_reservations_for_tests()
 
 
+def test_remaining_memory_bytes_samples_once_and_enforces_the_budget() -> None:
+    samples = Mock(return_value=75)
+    context = ExecutionContext(
+        operation="remaining",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_limit_bytes=100,
+        memory_sampler=samples,
+    )
+
+    assert context.remaining_memory_bytes() == 25
+    samples.assert_called_once_with()
+
+
+def test_remaining_memory_bytes_preserves_memory_sampler_failures() -> None:
+    unavailable = ExecutionContext(
+        operation="remaining-unavailable",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_limit_bytes=100,
+        memory_sampler=lambda: None,
+    )
+    over_budget = ExecutionContext(
+        operation="remaining-over-budget",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_limit_bytes=100,
+        memory_sampler=lambda: 101,
+    )
+
+    with pytest.raises(ExecutionMemoryLimitExceededError, match="sampler became unavailable"):
+        unavailable.remaining_memory_bytes()
+    with pytest.raises(ExecutionMemoryLimitExceededError, match="exceeded its memory budget"):
+        over_budget.remaining_memory_bytes()
+
+
 def test_windows_current_rss_bytes_returns_none_when_windll_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2733,7 +2766,10 @@ def test_lazy_graph_execution_checks_cancellation_before_node_work() -> None:
         _execute_lazy(graph, build_node_fn, execution_context=context)
 
 
-def test_lazy_graph_execution_records_build_and_checkpoint_stages(tmp_path) -> None:
+def test_lazy_graph_execution_records_build_and_capture_stages(tmp_path) -> None:
+    from haute._node_snapshots import NodeSnapshotStore
+    from haute._seed_plans import SeedPlanRequest, open_resolved_seed_plan
+
     graph = make_graph(
         {
             "nodes": [
@@ -2750,13 +2786,21 @@ def test_lazy_graph_execution_records_build_and_checkpoint_stages(tmp_path) -> N
                     "data": {
                         "label": "mid",
                         "nodeType": NodeType.POLARS.value,
-                        "config": {},
+                        "config": {"code": "df = df.with_columns(pl.col('a').rank().alias('r'))"},
                     },
                 },
                 {
                     "id": "left",
                     "data": {
                         "label": "left",
+                        "nodeType": NodeType.POLARS.value,
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "both",
+                    "data": {
+                        "label": "both",
                         "nodeType": NodeType.POLARS.value,
                         "config": {},
                     },
@@ -2774,6 +2818,8 @@ def test_lazy_graph_execution_records_build_and_checkpoint_stages(tmp_path) -> N
                 make_edge("source", "mid").model_dump(),
                 make_edge("mid", "left").model_dump(),
                 make_edge("mid", "right").model_dump(),
+                make_edge("left", "both").model_dump(),
+                make_edge("right", "both").model_dump(),
             ],
         }
     )
@@ -2788,25 +2834,37 @@ def test_lazy_graph_execution_records_build_and_checkpoint_stages(tmp_path) -> N
             return node.id, lambda: pl.DataFrame({"a": [1, 2]}).lazy(), True
         if node.id == "mid":
             return node.id, lambda df: df.with_columns((pl.col("a") + 1).alias("b")), False
+        if node.id == "both":
+            return node.id, lambda left, right: pl.concat([left, right]), False
         return node.id, lambda df: df.select("b"), False
 
-    outputs, *_ = _execute_lazy(
-        graph,
-        build_node_fn,
-        checkpoint_dir=tmp_path,
-        execution_context=context,
+    request = SeedPlanRequest(
+        graph=graph,
+        target_node_id="both",
+        source="live",
+        profile=ExecutionProfile.LAZY_SINK,
     )
-
-    assert outputs["left"].collect()["b"].to_list() == [2, 3]
+    with open_resolved_seed_plan(request, store=NodeSnapshotStore(tmp_path)) as plan:
+        outputs, *_ = _execute_lazy(
+            graph,
+            build_node_fn,
+            target_node_id="both",
+            execution_context=context,
+            prepare_inputs=False,
+            snapshot_plan=plan,
+        )
+        assert outputs["both"].collect()["b"].to_list() == [2, 3, 2, 3]
     metrics = context.metrics.snapshot()
     assert [metric.node_id for metric in metrics if metric.name == "lazy_build"] == [
         "source",
         "mid",
         "left",
         "right",
+        "both",
     ]
+    # The fan-out is materialised as a capture into the shared snapshot store.
     assert any(
-        metric.name == "lazy_checkpoint_parquet" and metric.node_id == "mid" for metric in metrics
+        metric.name == "lazy_snapshot_capture" and metric.node_id == "mid" for metric in metrics
     )
 
 
@@ -3133,7 +3191,7 @@ async def test_trace_route_maps_target_not_found_and_unknown_value_errors(
 
     with pytest.raises(HTTPException) as exc_info:
         await pipeline_route.trace_row(
-            TraceRequest(graph=graph, row_index=0, target_node_id="source")
+            TraceRequest(seed_plan=[], graph=graph, row_index=0, target_node_id="source")
         )
 
     assert exc_info.value.status_code == expected_status
@@ -3170,7 +3228,7 @@ async def test_trace_route_maps_contract_mismatch_to_http_422(monkeypatch) -> No
     monkeypatch.setattr(pipeline_route, "execute_trace", raise_contract_mismatch)
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.trace_row(TraceRequest(graph=graph, row_index=0))
+        await pipeline_route.trace_row(TraceRequest(seed_plan=[], graph=graph, row_index=0))
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail == "bad contract (node_id=source)"
@@ -4073,7 +4131,9 @@ async def test_sink_route_does_not_fall_back_after_isolated_timeout(monkeypatch,
     fallback.assert_not_called()
 
 
-def test_optimiser_execute_pipeline_forwards_execution_context(tmp_path) -> None:
+def test_optimiser_execute_pipeline_forwards_execution_context() -> None:
+    import contextlib
+
     from haute.routes._job_store import JobStore
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserSolveRequest
@@ -4110,6 +4170,7 @@ def test_optimiser_execute_pipeline_forwards_execution_context(tmp_path) -> None
         return {"opt": pl.DataFrame({"a": [1]}).lazy()}, ["opt"], {}, {}
 
     with (
+        contextlib.ExitStack() as resources,
         patch("haute.routes._optimiser_service.execute_lazy_graph", side_effect=fake_execute_lazy),
         patch("haute.executor._resolve_batch_scenario", return_value="batch"),
         patch("haute.executor._compile_preamble", return_value={}),
@@ -4117,7 +4178,7 @@ def test_optimiser_execute_pipeline_forwards_execution_context(tmp_path) -> None
         service._execute_pipeline(
             body,
             job_id,
-            tmp_path,
+            resources,
             execution_context=context,
         )
 
@@ -5557,3 +5618,88 @@ def test_input_preparation_records_reach_the_metrics_payload() -> None:
     ]
     validated = ExecutionMetricsPayload.model_validate(payload)
     assert validated.input_preparation[0].action == "refreshed"
+
+
+def test_worker_metrics_carry_the_parents_evidence_ahead_of_their_own() -> None:
+    from haute._execution_schemas import ExecutionMetricsPayload
+    from haute._input_preparation import InputPreparationRecord
+    from haute._node_snapshots import NodeSnapshotColumns
+    from haute._seed_plans import (
+        CaptureKind,
+        SharedSnapshotCaptureRecord,
+        SharedSnapshotSeedRecord,
+    )
+
+    parent = ExecutionContext(operation="parent", profile=ExecutionProfile.TRAINING_PREP)
+    parent.record_input_preparation(
+        InputPreparationRecord(
+            node_id="src",
+            identity_digest="a" * 64,
+            action="reused",
+            build_class="bounded",
+            execution="in_process",
+            memory_limit_bytes=None,
+            elapsed_seconds=0.0,
+            row_count=3,
+            size_bytes=64,
+            generation_id="8f0d4a2c-1c3b-4f5a-9c2d-0e1f2a3b4c5d",
+            warning_code="source_unavailable",
+        )
+    )
+    parent.record_execution_warning("snapshot_capture_superseded", node_id="A")
+    worker = ExecutionContext(operation="worker", profile=ExecutionProfile.TRAINING_PREP)
+    worker.record_shared_snapshot_seed(
+        SharedSnapshotSeedRecord("B", "b" * 64, "gen-b", NodeSnapshotColumns.all())
+    )
+    worker.record_shared_snapshot_capture(
+        SharedSnapshotCaptureRecord(
+            "C", "c" * 64, CaptureKind.CONSUMED, "quota", None, NodeSnapshotColumns.all()
+        )
+    )
+    worker.record_execution_warning("snapshot_capture_skipped", node_id="C", reason="quota")
+
+    merged = parent.metrics_with_worker_evidence(worker.metrics_payload())
+
+    assert merged["operation"] == "worker"
+    assert [record["node_id"] for record in merged["input_preparation"]] == ["src"]
+    assert merged["input_preparation"][0]["warning_code"] == "source_unavailable"
+    assert [seed["node_id"] for seed in merged["shared_snapshot_seeds"]] == ["B"]
+    assert [capture["node_id"] for capture in merged["shared_snapshot_captures"]] == ["C"]
+    assert [(warning["code"], warning["node_id"]) for warning in merged["warnings"]] == [
+        ("snapshot_capture_superseded", "A"),
+        ("snapshot_capture_skipped", "C"),
+    ]
+    # The parent now holds the worker's evidence, so a later worker's metrics
+    # carry both processes' evidence.
+    assert parent.worker_evidence()["shared_snapshot_seeds"] == merged["shared_snapshot_seeds"]
+    ExecutionMetricsPayload.model_validate(merged)
+
+
+def test_adopted_worker_input_preparation_is_copied_into_parent_evidence() -> None:
+    from haute._input_preparation import InputPreparationRecord
+
+    parent = ExecutionContext(operation="parent", profile=ExecutionProfile.TRAINING_PREP)
+    worker = ExecutionContext(operation="worker", profile=ExecutionProfile.TRAINING_PREP)
+    worker.record_input_preparation(
+        InputPreparationRecord(
+            node_id="source",
+            identity_digest="a" * 64,
+            action="built",
+            build_class="bounded",
+            execution="in_process",
+            memory_limit_bytes=None,
+            elapsed_seconds=0.1,
+            row_count=4,
+            size_bytes=16,
+            generation_id="8f0d4a2c-1c3b-4f5a-9c2d-0e1f2a3b4c5d",
+            warning_code=None,
+        )
+    )
+    payload = worker.metrics_payload()
+
+    parent.adopt_worker_evidence(payload)
+    payload["input_preparation"][0]["node_id"] = "mutated"  # type: ignore[index]
+
+    evidence = parent.worker_evidence()
+    assert evidence["input_preparation"][0]["node_id"] == "source"
+    assert parent.metrics_payload()["input_preparation"][0]["node_id"] == "source"

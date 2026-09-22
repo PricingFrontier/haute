@@ -148,6 +148,28 @@ Out of scope (owned elsewhere, linked where relevant):
   multi-entry expression chains: each chain entry evaluates in order against
   values fed forward from prior entries, seeded from pre-node input values rather
   than the node's final output values.
+- **A pass-through value borrows only a proven formula.** A target that passes the traced
+  column through shows the formula of the step that provably supplied its value: the value is
+  followed back through the single parent holding it with that same value to the step that
+  added or last modified it, and evaluated on the value from before that assignment. A join
+  whose sides both hold the value, a parent whose row is unknown, or a snapshot on the way
+  leaves no formula rather than another branch's.
+- **A trace reads what its preview read.** A trace request carries the `seed_plan` of the
+  preview it explains, possibly empty: every snapshot generation that preview read, whether it
+  seeded it or captured it itself. Each listed generation is checked against the signature the
+  trace's graph produces at its point and leased; a retired generation or a mismatched
+  signature answers HTTP 409 `preview_seed_plan_expired`, and the preview is refreshed. The
+  trace then reads exactly those generations and captures nothing, so it shows the preview's
+  rows even for a preview that computed and captured a join for the first time. A listed
+  generation lacking columns the trace reads there is recomputed instead, with every listed
+  seed built from it, and a plan that ends up seeding nothing runs the trace as without one.
+  Correlation stops at each seeded point: a step whose row comes from the snapshot, carrying
+  its `snapshot_generation_id`, never given a calculation reconstructed from its own output,
+  and where downstream provenance ends with the value it held. Every node the execution
+  skipped because of a seed is reported as a `snapshot_seed` omission naming the seeds below
+  it, whatever column is traced; a node that still executed for another branch stays
+  traceable through that branch. A preview whose lineage was not admitted carries an empty
+  plan, and its traces seed nothing.
 - **Column-scoped traces prune to relevance.** When a `column` is supplied, the
   trace tags every step by whether it touches that column, then keeps: (a) for a
   pass-through column, only the nodes whose output actually carries it; (b) for a

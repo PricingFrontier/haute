@@ -78,3 +78,5 @@ tests/test_json_cache_corrupt_and_errors.py::test_aggregators_skip_missing_or_no
 tests/test_json_cache_coverage_uplift.py::TestBuildJsonCacheExceptions::test_malformed_data_returns_422
 tests/test_json_cache_coverage_uplift.py::TestInferExceptions::test_infer_malformed_json_returns_422
 tests/test_json_cache_coverage_uplift.py::TestInferExceptions::test_infer_generic_exception_returns_500
+# Working-directory identity and completed-build cleanup for source preparation.
+tests/test_json_cache_routes.py::test_build_running_matches_the_working_directory_and_finished_builds_disappear

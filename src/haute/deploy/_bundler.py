@@ -256,7 +256,8 @@ def _collect_static_data_input(
             )
         identity = source_cache_identity(validated, base_dir=pipeline_dir)
         generation = resources.enter_context(SourceCacheStore(_get_project_root()).lease(identity))
-        artifacts[f"{node_id}__snapshot.parquet"] = generation.data_path
+        for path in generation.data_paths:
+            artifacts[f"{node_id}__snapshot.{path.name}"] = path
         artifacts[f"{node_id}__snapshot.meta.json"] = generation.metadata_path
         if snapshot_provenance is not None:
             snapshot_provenance[node_id] = {

@@ -11,6 +11,9 @@
 import type {
   ApplyOptimiserRequest,
   ApplyOptimiserResponse,
+  CacheClearResponse,
+  CacheNodesResponse,
+  CacheUsageResponse,
   DatabricksCatalogsResponse,
   DatabricksSchemasResponse,
   DatabricksTablesResponse,
@@ -18,9 +21,6 @@ import type {
   DissolveSubmodelResponse,
   EditorIdentityBatchRequest,
   EditorIdentityBatchResponse,
-  ExploreRunResponse,
-  ExploreCacheSnapshotResponse,
-  ExploreStatusResponse,
   ExplorePivotMembersResponse,
   ExplorePivotRunResponse,
   ExplorePivotStatusResponse,
@@ -77,6 +77,13 @@ import type {
   MlflowModel,
   MlflowModelVersion,
   MlflowRun,
+  NodeDataClearResponse,
+  NodeDataPointResponse,
+  BandingStatsResponse,
+  RatingLevelsResponse,
+  NodeDataProfileResponse,
+  NodeDataRunResponse,
+  NodeDataStatusResponse,
   LogOptimiserToMlflowRequest,
   OptimiserEstimate,
   OptimiserSolveResponse,
@@ -85,8 +92,10 @@ import type {
   OutputDestinationResponse,
   PipelineGraph,
   PolarsStepsRenderResponse,
+  PreviewInputsResponse,
   PreviewNodeResponse,
   SaveOptimiserRequest,
+  TraceSeedPlanEntry,
   SaveOptimiserResponse,
   SavePipelineResponse,
   SchemaResult,
@@ -104,18 +113,25 @@ import type {
 } from "./types"
 import {
   parseApplyOptimiserResponse,
+  parseCacheClearResponse,
+  parseCacheNodesResponse,
+  parseCacheUsageResponse,
   parseDatabricksCatalogsResponse,
   parseDatabricksSchemasResponse,
   parseDatabricksTablesResponse,
   parseDatabricksWarehousesResponse,
   parseDissolveSubmodelResponse,
   parseEditorNodeIdentityBatchResponse,
-  parseExploreRunResponse,
-  parseExploreCacheSnapshotResponse,
-  parseExploreStatusResponse,
   parseExplorePivotMembersResponse,
   parseExplorePivotRunResponse,
   parseExplorePivotStatusResponse,
+  parseNodeDataClearResponse,
+  parseNodeDataPointResponse,
+  parseBandingStatsResponse,
+  parseRatingLevelsResponse,
+  parseNodeDataProfileResponse,
+  parseNodeDataRunResponse,
+  parseNodeDataStatusResponse,
   parseFrontierAutoRangeStartResponse,
   parseFrontierAutoRangeStatusResponse,
   parseFrontierStatusResponse,
@@ -173,6 +189,7 @@ import {
   parseOutputAssembleDryRunResponse,
   parsePipelineResponse,
   parsePolarsStepsRenderResponse,
+  parsePreviewInputsResponse,
   parsePreviewNodeResponse,
   parseSavePipelineResponse,
   parseSchemaResponse,
@@ -853,6 +870,36 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
   ).then((data) => parsePreviewNodeResponse(data) as PreviewNodeResponse)
 }
 
+export interface PreviewInputsArgs {
+  graph: GraphPayload
+  nodeId: string
+  source?: string
+  requestedPreviewColumns?: string[]
+  portLabel?: string
+  signal?: AbortSignal
+}
+
+/**
+ * The inputs a preview of `nodeId` would read — snapshot-backed Data Inputs
+ * and structured API Inputs — so only those are prepared before it. A preview
+ * seeded from shared snapshots reads nothing above its seeds.
+ */
+export function previewInputs(args: PreviewInputsArgs): Promise<PreviewInputsResponse> {
+  return post<unknown>(
+    "/api/pipeline/preview/inputs",
+    {
+      graph: args.graph,
+      node_id: args.nodeId,
+      source: args.source ?? "live",
+      ...(args.requestedPreviewColumns
+        ? { requested_preview_columns: args.requestedPreviewColumns }
+        : {}),
+      ...(args.portLabel !== undefined ? { port_label: args.portLabel } : {}),
+    },
+    { signal: args.signal },
+  ).then(parsePreviewInputsResponse)
+}
+
 export interface RenderPolarsStepsArgs {
   steps: unknown[]
   inputNames: string[]
@@ -991,6 +1038,9 @@ export interface TraceCellArgs {
   row_limit?: number
   source?: string
   row_values?: Record<string, unknown>
+  /** The `seed_plan` of the preview being traced: the trace reads exactly
+   * those generations, and none when it is empty. */
+  seed_plan: TraceSeedPlanEntry[]
   streamingChunkSize?: number
   signal?: AbortSignal
   timeout?: number
@@ -1133,6 +1183,48 @@ export function fetchIoCapabilities(
 }
 
 // ---------------------------------------------------------------------------
+// Cache usage (the cache settings pane)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read both cache budgets' usage against their limits.
+ *
+ * The server walks every identity, generation and staging entry to answer
+ * this — what an admission pays — so a caller asks for it when a user asks to
+ * see it, and never on a timer.
+ */
+export function fetchCacheUsage(
+  options?: { signal?: AbortSignal },
+): Promise<CacheUsageResponse> {
+  return request<unknown>("/api/cache/usage", options).then(parseCacheUsageResponse)
+}
+
+/**
+ * Report every node of `graph` and everything else the store holds.
+ *
+ * Costs one point resolution per node on top of the store walk, so it is read
+ * with the usage on open and on Refresh, never on a timer.
+ */
+/**
+ * Clear the identities a report's row named — exactly what that row reported,
+ * and nothing else. A digest the store no longer holds is reported as not
+ * cleared rather than failing.
+ */
+export function clearCacheIdentities(
+  digests: string[],
+  options?: { signal?: AbortSignal },
+): Promise<CacheClearResponse> {
+  return post<unknown>("/api/cache/clear", { digests }, options).then(parseCacheClearResponse)
+}
+
+export function fetchCacheNodes(
+  payload: { graph: unknown; source: string },
+  options?: { signal?: AbortSignal },
+): Promise<CacheNodesResponse> {
+  return post<unknown>("/api/cache/nodes", payload, options).then(parseCacheNodesResponse)
+}
+
+// ---------------------------------------------------------------------------
 // Input-cache endpoints
 // ---------------------------------------------------------------------------
 
@@ -1172,6 +1264,136 @@ export function clearInputCache(
 }
 
 // ---------------------------------------------------------------------------
+// Node data endpoints
+// ---------------------------------------------------------------------------
+
+export interface NodeDataArgs {
+  graph: GraphPayload
+  node_id: string
+  source?: string
+  signal?: AbortSignal
+}
+
+export function getNodeDataPoint(args: NodeDataArgs): Promise<NodeDataPointResponse> {
+  const { signal, ...payload } = args
+  return post<unknown>(
+    "/api/node-data/point",
+    {
+      ...payload,
+      source: payload.source ?? "live",
+    },
+    { signal },
+  ).then(parseNodeDataPointResponse)
+}
+
+export function runNodeData(
+  args: NodeDataArgs & { refresh?: boolean; streamingChunkSize?: number; timeout?: number },
+): Promise<NodeDataRunResponse> {
+  const { streamingChunkSize, signal, timeout = 300_000, ...payload } = args
+  return post<unknown>(
+    "/api/node-data/run",
+    {
+      ...payload,
+      source: payload.source ?? "live",
+      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
+    },
+    { signal, timeout },
+  ).then(parseNodeDataRunResponse)
+}
+
+export function getNodeDataStatus(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<NodeDataStatusResponse> {
+  return request<unknown>(`/api/node-data/status/${encodeURIComponent(jobId)}`, options).then(
+    (data) =>
+      validateApiResponse("Could not read node data status", () =>
+        parseNodeDataStatusResponse(data),
+      ),
+  )
+}
+
+export function cancelNodeData(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<NodeDataStatusResponse> {
+  return post<unknown>(
+    `/api/node-data/cancel/${encodeURIComponent(jobId)}`,
+    {},
+    options,
+  ).then(parseNodeDataStatusResponse)
+}
+
+export function getNodeDataProfile(args: NodeDataArgs): Promise<NodeDataProfileResponse> {
+  const { signal, ...payload } = args
+  return post<unknown>(
+    "/api/node-data/profile",
+    {
+      ...payload,
+      source: payload.source ?? "live",
+    },
+    { signal },
+  ).then(parseNodeDataProfileResponse)
+}
+
+export interface BandingStatsArgs extends NodeDataArgs {
+  /** The factor in the editor, so counts follow what is being edited. */
+  factor: Record<string, unknown>
+  histogramBins?: number
+  valueLimit?: number
+}
+
+export function getBandingStats(args: BandingStatsArgs): Promise<BandingStatsResponse> {
+  const { signal, factor, histogramBins, valueLimit, ...payload } = args
+  return post<unknown>(
+    "/api/banding/stats",
+    {
+      ...payload,
+      source: payload.source ?? "live",
+      factor,
+      ...(histogramBins === undefined ? {} : { histogram_bins: histogramBins }),
+      ...(valueLimit === undefined ? {} : { value_limit: valueLimit }),
+    },
+    { signal },
+  ).then(parseBandingStatsResponse)
+}
+
+export interface RatingLevelsArgs {
+  graph: GraphPayload
+  node_id: string
+  source?: string
+  columns: string[]
+  valueLimit?: number
+  signal?: AbortSignal
+}
+
+export function getRatingLevels(args: RatingLevelsArgs): Promise<RatingLevelsResponse> {
+  const { signal, columns, valueLimit, ...payload } = args
+  return post<unknown>(
+    "/api/rating/levels",
+    {
+      ...payload,
+      source: payload.source ?? "live",
+      columns,
+      ...(valueLimit === undefined ? {} : { value_limit: valueLimit }),
+    },
+    { signal },
+  ).then(parseRatingLevelsResponse)
+}
+
+export function clearNodeData(args: NodeDataArgs): Promise<NodeDataClearResponse> {
+  const { signal, ...payload } = args
+  return post<unknown>(
+    "/api/node-data/clear",
+    {
+      ...payload,
+      source: payload.source ?? "live",
+    },
+    { signal },
+  ).then(parseNodeDataClearResponse)
+}
+
+// ---------------------------------------------------------------------------
 // Explore endpoints
 // ---------------------------------------------------------------------------
 
@@ -1183,58 +1405,6 @@ export interface RunExploreArgs {
   streamingChunkSize?: number
   signal?: AbortSignal
   timeout?: number
-}
-
-export interface GetExploreCacheSnapshotArgs {
-  graph: GraphPayload
-  node_id: string
-  source?: string
-  streamingChunkSize?: number
-  signal?: AbortSignal
-}
-
-export function getExploreCacheSnapshot(
-  args: GetExploreCacheSnapshotArgs,
-): Promise<ExploreCacheSnapshotResponse> {
-  const { streamingChunkSize, signal, ...payload } = args
-  return post<unknown>(
-    "/api/explore/cache-status",
-    {
-      ...payload,
-      source: payload.source ?? "live",
-      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
-    },
-    { signal },
-  ).then(parseExploreCacheSnapshotResponse)
-}
-
-export function runExplore(args: RunExploreArgs): Promise<ExploreRunResponse> {
-  const { streamingChunkSize, signal, timeout = 300_000, ...payload } = args
-  return post<unknown>(
-    "/api/explore/run",
-    {
-      ...payload,
-      source: payload.source ?? "live",
-      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
-    },
-    { signal, timeout },
-  ).then(parseExploreRunResponse)
-}
-
-export function getExploreStatus<T extends ExploreStatusResponse = ExploreStatusResponse>(
-  jobId: string,
-  options?: { signal?: AbortSignal },
-): Promise<T> {
-  return request<unknown>(`/api/explore/status/${encodeURIComponent(jobId)}`, options)
-    .then((data) => validateApiResponse("Could not read Explore status", () => parseExploreStatusResponse(data) as T))
-}
-
-export function cancelExplore<T extends ExploreStatusResponse = ExploreStatusResponse>(
-  jobId: string,
-  options?: { signal?: AbortSignal },
-): Promise<T> {
-  return post<unknown>(`/api/explore/cancel/${encodeURIComponent(jobId)}`, {}, options)
-    .then((data) => parseExploreStatusResponse(data) as T)
 }
 
 export interface RunExplorePivotArgs {

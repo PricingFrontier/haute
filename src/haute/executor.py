@@ -25,13 +25,12 @@ import signal
 import stat as stat_module
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import uuid
 from collections.abc import Mapping
-from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass
+from contextlib import AbstractContextManager, ExitStack, nullcontext
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +43,7 @@ from haute._cache import (
     preamble_execution_fingerprint,
     preamble_imports_utility,
 )
+from haute._data_points import DataPointResolver
 from haute._env import int_env
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
@@ -59,6 +59,17 @@ from haute._path_resolution import (
 )
 from haute._registry import ensure_registry_ready
 from haute._sandbox import safe_globals, validate_user_code
+from haute._seed_plans import (
+    ReadGeneration,
+    SeedPlan,
+    SeedPlanDecision,
+    SeedPlanHandoff,
+    SeedPlanRequest,
+    open_seed_plan,
+    preview_lineage_admitted,
+    resolve_seed_plan,
+)
+from haute._source_cache import SourceCacheGenerationMissingError
 from haute._types import NodeData
 from haute._validation_error import HauteValidationError
 from haute.errors import PreambleError
@@ -491,7 +502,7 @@ def _compile_preamble(
     *,  # pragma: no mutate
     pipeline_dir: str | Path | None = None,  # pragma: no mutate
     memo: GraphFingerprintMemo | None = None,  # pragma: no mutate
-    execution_fingerprint: str | None = None,
+    execution_fingerprint: str | None = None,  # pragma: no mutate
 ) -> dict[str, Any]:
     """Compile user-defined preamble code into a namespace dict.
 
@@ -918,9 +929,54 @@ def _result_order_for_target(
     return [nid for nid in order if nid in needed]
 
 
+def _seeded_fingerprint(decision: SeedPlanDecision | None) -> str | None:  # pragma: no mutate
+    """The seed generations a preview reads, for its cache key; ``None`` if it seeds none.
+
+    A preview that seeds nothing computes the same data as one without a
+    plan, so both are keyed alike.
+    """
+    if decision is None or not decision.seeds:
+        return None
+    return decision.fingerprint
+
+
+def _preview_entry_is_current(
+    entry: Mapping[str, Any],
+    plan: SeedPlan,
+    graph: PipelineGraph,
+    *,
+    source: str,
+) -> bool:
+    """Whether every generation a cached preview lists is still the one its point reads.
+
+    Each is leased for the rest of this request, so a hit never hands the
+    trace a generation that is gone. A retired or missing generation, one
+    that is no longer its identity's latest, or an identity the graph no
+    longer produces at that point is a miss. Corruption and every other
+    storage failure propagate as the store's error, as a direct read would.
+    """
+    generations: tuple[ReadGeneration, ...] = tuple(entry.get("seed_plan", ()))
+    if not generations:
+        return True
+    resolver = DataPointResolver(graph, source=source, store=plan.store)
+    for generation in generations:
+        signature = resolver.node_output_signature(generation.node_id)
+        slot = resolver.node_output_slot(generation.node_id)
+        if slot.identity(signature).digest != generation.identity.digest:
+            return False
+        try:
+            plan.hold_generation(generation.identity, generation.generation_id)
+        except SourceCacheGenerationMissingError:
+            return False
+        latest = plan.store.latest_generation(generation.identity)
+        if latest is None or latest.generation_id != generation.generation_id:
+            return False
+    return True
+
+
 def _preview_preparation_order(
     graph: PipelineGraph,
-    target_node_id: str | None,
+    target_node_id: str | None,  # pragma: no mutate
     source: str,
 ) -> list[str]:
     """Node ids of the preview's executed lineage, for input preparation.
@@ -953,6 +1009,8 @@ def execute_graph(
     include_schema_metadata: bool = False,
     port_label: str | None = None,  # pragma: no mutate
     execution_context: ExecutionContext | None = None,  # pragma: no mutate
+    shared_snapshots: bool = False,
+    staging_token: str | None = None,  # pragma: no mutate
 ) -> dict[str, NodeResult]:
     """Execute a graph and return per-node results.
 
@@ -987,6 +1045,14 @@ def execute_graph(
             frame whose rows/columns the flat ``columns`` / ``preview`` should
             reflect. Single-frame targets ignore it. Threaded into the preview
             cache key so each frame is a distinct cache entry.
+        shared_snapshots: When set (the preview route), a target whose
+            lineage ``preview_lineage_admitted`` accepts runs under a seed
+            plan: it seeds from shared snapshots, captures its joins and
+            materialisations into them, and records the generations its rows
+            were computed from on the execution context
+            (``preview_seed_plan``). Any other target runs as without it.
+        staging_token: The token a plan stages its captures under, so a
+            supervising process can discard what a killed worker left.
 
     Returns:
         Dict mapping node_id → {
@@ -1017,10 +1083,74 @@ def execute_graph(
                 include_schema_metadata=include_schema_metadata,
                 port_label=port_label,
                 execution_context=admitted_context,
+                shared_snapshots=shared_snapshots,
+                staging_token=staging_token,
             )
         finally:
             admitted_context.release_admission(preserve_primary_error=True)
 
+    core = functools.partial(
+        _execute_graph_core,
+        graph,
+        target_node_id,
+        row_limit,
+        max_preview_rows,
+        source,
+        enforce_contracts,
+        target_preview_only=target_preview_only,
+        requested_preview_columns=requested_preview_columns,
+        include_schema_metadata=include_schema_metadata,
+        port_label=port_label,
+        execution_context=execution_context,
+    )
+    execution_context.record_preview_seed_plan(())
+    if not shared_snapshots or target_node_id is None or not graph.source_file:
+        return core(snapshot_plan=None, seed_plan_request=None)
+    with runtime_project_root_scope(graph.source_file):
+        if not preview_lineage_admitted(graph, target_node_id, source=source):
+            return core(snapshot_plan=None, seed_plan_request=None)
+        request = SeedPlanRequest(
+            graph=graph,
+            target_node_id=target_node_id,
+            source=source,
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            required_columns_by_node=_preview_required_columns_by_node(
+                graph,
+                target_node_id,
+                requested_preview_columns,
+            )
+            or None,
+            # The requested columns only say which to show first; one the
+            # node no longer produces (a deselected column) is dropped, as
+            # without a plan.
+            best_effort_demand=True,
+        )
+        plan = open_seed_plan(
+            request,
+            execution_context=execution_context,
+            staging_token=staging_token,
+        )
+    with plan:
+        return core(snapshot_plan=plan, seed_plan_request=request)
+
+
+def _execute_graph_core(
+    graph: PipelineGraph,
+    target_node_id: str | None,  # pragma: no mutate
+    row_limit: int | None,  # pragma: no mutate
+    max_preview_rows: int,
+    source: str,
+    enforce_contracts: bool,
+    *,
+    target_preview_only: bool,
+    requested_preview_columns: list[str] | None,  # pragma: no mutate
+    include_schema_metadata: bool,
+    port_label: str | None,  # pragma: no mutate
+    execution_context: ExecutionContext,
+    snapshot_plan: SeedPlan | None,  # pragma: no mutate
+    seed_plan_request: SeedPlanRequest | None,  # pragma: no mutate
+) -> dict[str, NodeResult]:
+    """One preview execution, under its leased seed plan when it has one."""
     # Include enforce_contracts in the cache key so a toggle flips
     # between distinct cache slots instead of serving a stale entry
     # computed under a different enforcement mode.  Without this, the
@@ -1033,6 +1163,16 @@ def execute_graph(
     )
 
     def _plan_current_request() -> None:
+        # Under a plan only what it builds is admitted and estimated, and the
+        # estimates read its seeds' generations instead of their computation.
+        scope: dict[str, Any] = (
+            {
+                "materialising_node_ids": snapshot_plan.decision.executed_node_ids,
+                "estimation_graph": snapshot_plan.estimation_graph(graph),
+            }
+            if snapshot_plan is not None
+            else {}
+        )
         execution_facade.plan_execution_strategy(
             execution_facade.ProjectionRequest(
                 graph=graph,
@@ -1042,6 +1182,7 @@ def execute_graph(
                 source=source,
             ),
             execution_context=execution_context,
+            **scope,
         )
 
     def _current_execution_strategy() -> execution_facade.ExecutionStrategyResult:
@@ -1064,28 +1205,44 @@ def execute_graph(
         else None
     )
     # Preparation runs before the runtime identity is computed, so a refreshed
-    # generation's pointer is the one this preview entry is keyed by.
-    with runtime_project_root_scope(graph.source_file):
-        prepare_input_snapshots(
-            _preview_preparation_order(graph, target_node_id, source),
-            graph.node_map,
-            profile=execution_context.profile,
-            execution_context=execution_context,
-            base_dir=preparation_base_dir(graph),
-            schema_only=False,
-        )
-    fp = execution_facade.preview_lineage_cache_key(
+    # generation's pointer is the one this preview entry is keyed by. A seed
+    # plan was opened after preparing exactly the inputs its execution reads.
+    if snapshot_plan is None:
+        with runtime_project_root_scope(graph.source_file):
+            prepare_input_snapshots(
+                _preview_preparation_order(graph, target_node_id, source),
+                graph.node_map,
+                profile=execution_context.profile,
+                execution_context=execution_context,
+                base_dir=preparation_base_dir(graph),
+                schema_only=False,
+            )
+    # Read once: this key, and the key a capturing preview stores under after
+    # it ran, describe the inputs as they were here, never a later read.
+    runtime_identity = execution_facade.lineage_runtime_input_identity(
         graph,
         target_node_id=target_node_id,
         source=source,
-        requested_columns=requested_preview_columns,
-        initial_column_limit=preview_initial_column_limit,
-        row_limit=row_limit,
-        port_label=port_label,
-        enforce_contracts=enforce_contracts,
-        materialisation_scope="target_only" if target_preview_only else "full",
         memo=fingerprint_memo,
     )
+
+    def _cache_key(seeds: SeedPlanDecision | None) -> str:  # pragma: no mutate
+        return execution_facade.preview_lineage_cache_key(
+            graph,
+            target_node_id=target_node_id,
+            source=source,
+            requested_columns=requested_preview_columns,
+            initial_column_limit=preview_initial_column_limit,
+            row_limit=row_limit,
+            port_label=port_label,
+            enforce_contracts=enforce_contracts,
+            materialisation_scope="target_only" if target_preview_only else "full",
+            memo=fingerprint_memo,
+            runtime_input_identity=runtime_identity,
+            seed_plan_fingerprint=_seeded_fingerprint(seeds),
+        )
+
+    fp = _cache_key(snapshot_plan.decision if snapshot_plan is not None else None)
     # Runtime inputs and source-selected lineage are fingerprinted inside
     # the shared factory, so unrelated graph state cannot invalidate this entry.
     errors: dict[str, str] = {}
@@ -1097,11 +1254,90 @@ def execute_graph(
     # columns without being collected. Survives a cache hit via the
     # ``frame_columns`` cache slot below.
     frame_cols: dict[tuple[str, str], list[tuple[str, str]]] = {}
-    preview_entry_pinned = False
+    pinned_key: str | None = None
+    read_generations: tuple[ReadGeneration, ...] = ()
+    # A plan with captures computes data a pre-execution key never described:
+    # it is stored only under the key its post-capture plan gives (below).
+    captures_planned = snapshot_plan is not None and bool(snapshot_plan.decision.captures)
+
+    def _post_capture_key() -> str | None:  # pragma: no mutate
+        """The key a new request would now compute, if this execution's data answers it."""
+        assert snapshot_plan is not None and seed_plan_request is not None
+        now = execution_facade.lineage_runtime_input_identity(
+            graph,
+            target_node_id=target_node_id,
+            source=source,
+            memo=GraphFingerprintMemo(),
+        )
+        if now.digest != runtime_identity.digest:
+            return None
+        with runtime_project_root_scope(graph.source_file):
+            decision = resolve_seed_plan(seed_plan_request, store=snapshot_plan.store)
+        read = {
+            (generation.identity.digest, generation.generation_id)
+            for generation in read_generations
+        }
+        if any(
+            (seed.identity.digest, seed.generation_id) not in read
+            for seed in decision.seeds.values()
+        ):
+            return None
+        return _cache_key(decision)
+
+    def _store_entry(entry: dict[str, Any]) -> None:
+        nonlocal pinned_key
+        entry["seed_plan"] = read_generations
+        key = _post_capture_key() if captures_planned else fp
+        if key is None:
+            logger.info(
+                "preview_cache_store_skipped",
+                fingerprint=fp[:8],
+                reason="post_capture_plan_not_read",
+            )
+            return
+        # Pin the entry through result serialisation so it cannot be evicted
+        # while the caller is still building the response. Full preview
+        # entries may later be reused by trace; target-only entries
+        # intentionally retain only the selected node.
+        if _preview_cache.put(key, entry):
+            _preview_cache.pin(key)
+            pinned_key = key
+        else:
+            logger.info(
+                "preview_cache_store_skipped",
+                fingerprint=key[:8],
+                reason="entry_exceeds_cache_budget",
+            )
+
+    def _execute(stage: str) -> tuple[Any, ...]:
+        _plan_current_request()
+        with execution_context.stage(stage):
+            return _eager_execute(
+                graph,
+                target_node_id,
+                row_limit,
+                source=source,
+                enforce_contracts=enforce_contracts,
+                fingerprint_memo=fingerprint_memo,
+                required_columns_by_node=preview_required_columns,
+                materialize_node_ids=preview_materialize_node_ids,
+                materialize_column_limits_by_node=preview_materialize_column_limits,
+                execution_context=execution_context,
+                snapshot_plan=snapshot_plan,
+            )
 
     # Check if we can extend the cache (same graph, new target is a superset)
     with execution_context.stage("preview_cache_lookup"):
         cached = _preview_cache.get(fp)
+        if (
+            cached is not None
+            and snapshot_plan is not None
+            and not _preview_entry_is_current(cached, snapshot_plan, graph, source=source)
+        ):
+            # A generation the entry was computed from is gone or replaced.
+            _preview_cache.evict_where(lambda key: key == fp)
+            cached = None
+    cache_satisfies_request = False
     if cached is not None:
         prev_outputs = cached["eager_outputs"]
         cached_order = cached["order"]
@@ -1123,115 +1359,101 @@ def execute_graph(
                 cached_output_columns=cached["output_columns"],
             )
         )
-        if cache_satisfies_request:
-            # Full cache hit — all required nodes already materialised
-            with execution_context.stage("preview_cache_hit"):
-                cached_strategy = cached.get("execution_strategy")
-                if not isinstance(cached_strategy, execution_facade.ExecutionStrategyResult):
-                    raise RuntimeError("preview cache entry is missing its execution strategy")
-                execution_context.projection_plan = cached_strategy
-                logger.debug(
-                    "preview_cache_hit",
-                    fingerprint=fp[:8],
-                    target=target_node_id,
-                    cached_nodes=len(prev_outputs),
-                )
-                eager_outputs = prev_outputs
-                order = cached_order
-                errors = cached["errors"]
-                timings = cached["timings"]
-                memory_bytes = cached["memory_bytes"]
-                error_lines = cached["error_lines"]
-                avail_cols = cached["available_columns"]
-                output_cols = cached["output_columns"]
-                frame_cols = cached["frame_columns"]
-        else:
-            # Partial hit — extend with newly-needed nodes
+        if not cache_satisfies_request and captures_planned:
+            # A partial hit under captures executes as a miss: extending it
+            # would store outputs computed before those captures existed.
+            cached = None
+    if cached is not None and cache_satisfies_request:
+        # Full cache hit — all required nodes already materialised
+        with execution_context.stage("preview_cache_hit"):
+            cached_strategy = cached.get("execution_strategy")
+            if not isinstance(cached_strategy, execution_facade.ExecutionStrategyResult):
+                raise RuntimeError("preview cache entry is missing its execution strategy")
+            execution_context.projection_plan = cached_strategy
             logger.debug(
-                "preview_cache_extend",
+                "preview_cache_hit",
                 fingerprint=fp[:8],
                 target=target_node_id,
                 cached_nodes=len(prev_outputs),
             )
-            _plan_current_request()
-            with execution_context.stage("preview_cache_extend"):
-                (
-                    raw_outputs,
-                    order,
-                    errors,
-                    timings,
-                    memory_bytes,
-                    error_lines,
-                    avail_cols,
-                    output_cols,
-                    frame_cols,
-                ) = _eager_execute(
-                    graph,
-                    target_node_id,
-                    row_limit,
-                    source=source,
-                    enforce_contracts=enforce_contracts,
-                    fingerprint_memo=fingerprint_memo,
-                    required_columns_by_node=preview_required_columns,
-                    materialize_node_ids=preview_materialize_node_ids,
-                    materialize_column_limits_by_node=preview_materialize_column_limits,
-                    execution_context=execution_context,
-                )
-            eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
-            # Fresh eager outputs win over prev_outputs for any overlap:
-            # the prev_outputs may contain stale entries for nodes that were
-            # re-executed (e.g. delete-then-re-add with same id) and serving
-            # the stale DataFrame would hide legitimate config changes from
-            # the caller.  The extend-path only needs prev_outputs for nodes
-            # the current execution did NOT recompute.
-            merged = {**prev_outputs, **eager_outputs}
-            merged_errors = {**cached["errors"], **errors}
-            merged_timings = {**cached["timings"], **timings}
-            merged_memory = {**cached["memory_bytes"], **memory_bytes}
-            merged_error_lines = {**cached["error_lines"], **error_lines}
-            merged_avail = {**cached["available_columns"], **avail_cols}
-            merged_output_cols = {**cached["output_columns"], **output_cols}
-            merged_frame_cols = {**cached["frame_columns"], **frame_cols}
-            merged_order = list(dict.fromkeys(cached["order"] + order))
-            # A node that re-executed successfully in the extend path must
-            # clear any stale cached error from an earlier transient failure.
-            for nid in eager_outputs:
-                if nid not in errors:
-                    merged_errors.pop(nid, None)
-                    merged_error_lines.pop(nid, None)
-            preview_store_retained = _preview_cache.put(
-                fp,
-                {
-                    "eager_outputs": merged,
-                    "errors": merged_errors,
-                    "order": merged_order,
-                    "timings": merged_timings,
-                    "memory_bytes": merged_memory,
-                    "error_lines": merged_error_lines,
-                    "available_columns": merged_avail,
-                    "output_columns": merged_output_cols,
-                    "frame_columns": merged_frame_cols,
-                    "execution_strategy": _current_execution_strategy(),
-                },
+            eager_outputs = prev_outputs
+            order = cached_order
+            errors = cached["errors"]
+            timings = cached["timings"]
+            memory_bytes = cached["memory_bytes"]
+            error_lines = cached["error_lines"]
+            avail_cols = cached["available_columns"]
+            output_cols = cached["output_columns"]
+            frame_cols = cached["frame_columns"]
+            read_generations = tuple(
+                replace(generation, kind="seeded") for generation in cached.get("seed_plan", ())
             )
-            if preview_store_retained:
-                _preview_cache.pin(fp)
-                preview_entry_pinned = True
-            else:
-                logger.info(
-                    "preview_cache_store_skipped",
-                    fingerprint=fp[:8],
-                    reason="entry_exceeds_cache_budget",
-                )
-            eager_outputs = merged
-            errors = merged_errors
-            timings = merged_timings
-            memory_bytes = merged_memory
-            error_lines = merged_error_lines
-            avail_cols = merged_avail
-            output_cols = merged_output_cols
-            frame_cols = merged_frame_cols
-            order = merged_order
+    elif cached is not None:
+        # Partial hit — extend with newly-needed nodes
+        logger.debug(
+            "preview_cache_extend",
+            fingerprint=fp[:8],
+            target=target_node_id,
+            cached_nodes=len(prev_outputs),
+        )
+        (
+            raw_outputs,
+            order,
+            errors,
+            timings,
+            memory_bytes,
+            error_lines,
+            avail_cols,
+            output_cols,
+            frame_cols,
+        ) = _execute("preview_cache_extend")
+        eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
+        if snapshot_plan is not None:
+            read_generations = snapshot_plan.read_generations(order)
+        # Fresh eager outputs win over prev_outputs for any overlap:
+        # the prev_outputs may contain stale entries for nodes that were
+        # re-executed (e.g. delete-then-re-add with same id) and serving
+        # the stale DataFrame would hide legitimate config changes from
+        # the caller.  The extend-path only needs prev_outputs for nodes
+        # the current execution did NOT recompute.
+        merged = {**prev_outputs, **eager_outputs}
+        merged_errors = {**cached["errors"], **errors}
+        merged_timings = {**cached["timings"], **timings}
+        merged_memory = {**cached["memory_bytes"], **memory_bytes}
+        merged_error_lines = {**cached["error_lines"], **error_lines}
+        merged_avail = {**cached["available_columns"], **avail_cols}
+        merged_output_cols = {**cached["output_columns"], **output_cols}
+        merged_frame_cols = {**cached["frame_columns"], **frame_cols}
+        merged_order = list(dict.fromkeys(cached["order"] + order))
+        # A node that re-executed successfully in the extend path must
+        # clear any stale cached error from an earlier transient failure.
+        for nid in eager_outputs:
+            if nid not in errors:
+                merged_errors.pop(nid, None)
+                merged_error_lines.pop(nid, None)
+        _store_entry(
+            {
+                "eager_outputs": merged,
+                "errors": merged_errors,
+                "order": merged_order,
+                "timings": merged_timings,
+                "memory_bytes": merged_memory,
+                "error_lines": merged_error_lines,
+                "available_columns": merged_avail,
+                "output_columns": merged_output_cols,
+                "frame_columns": merged_frame_cols,
+                "execution_strategy": _current_execution_strategy(),
+            }
+        )
+        eager_outputs = merged
+        errors = merged_errors
+        timings = merged_timings
+        memory_bytes = merged_memory
+        error_lines = merged_error_lines
+        avail_cols = merged_avail
+        output_cols = merged_output_cols
+        frame_cols = merged_frame_cols
+        order = merged_order
     else:
         # Complete cache miss — execute from scratch
         logger.debug(
@@ -1240,33 +1462,21 @@ def execute_graph(
             target=target_node_id,
             prev_fingerprint=(_preview_cache.most_recent_key or "")[:8],
         )
-        _plan_current_request()
-        with execution_context.stage("preview_cache_miss"):
-            (
-                raw_outputs,
-                order,
-                errors,
-                timings,
-                memory_bytes,
-                error_lines,
-                avail_cols,
-                output_cols,
-                frame_cols,
-            ) = _eager_execute(
-                graph,
-                target_node_id,
-                row_limit,
-                source=source,
-                enforce_contracts=enforce_contracts,
-                fingerprint_memo=fingerprint_memo,
-                required_columns_by_node=preview_required_columns,
-                materialize_node_ids=preview_materialize_node_ids,
-                materialize_column_limits_by_node=preview_materialize_column_limits,
-                execution_context=execution_context,
-            )
+        (
+            raw_outputs,
+            order,
+            errors,
+            timings,
+            memory_bytes,
+            error_lines,
+            avail_cols,
+            output_cols,
+            frame_cols,
+        ) = _execute("preview_cache_miss")
         eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
-        preview_store_retained = _preview_cache.put(
-            fp,
+        if snapshot_plan is not None:
+            read_generations = snapshot_plan.read_generations(order)
+        _store_entry(
             {
                 "eager_outputs": eager_outputs,
                 "errors": errors,
@@ -1278,21 +1488,9 @@ def execute_graph(
                 "output_columns": output_cols,
                 "frame_columns": frame_cols,
                 "execution_strategy": _current_execution_strategy(),
-            },
+            }
         )
-        # Pin this entry through result serialisation so it cannot be
-        # evicted while the caller is still building the response. Full
-        # preview entries may later be reused by trace; target-only
-        # entries intentionally retain only the selected node.
-        if preview_store_retained:
-            _preview_cache.pin(fp)
-            preview_entry_pinned = True
-        else:
-            logger.info(
-                "preview_cache_store_skipped",
-                fingerprint=fp[:8],
-                reason="entry_exceeds_cache_budget",
-            )
+    execution_context.record_preview_seed_plan(read_generations)
 
     try:
         # Pre-compute schema warnings for instance nodes by comparing the
@@ -1504,8 +1702,8 @@ def execute_graph(
         # Release the pin even when result serialisation/projection fails.
         # The entry remains in the LRU cache but is no longer exempt from
         # eviction, preventing exception paths from leaking pinned frames.
-        if preview_entry_pinned:
-            _preview_cache.unpin(fp)
+        if pinned_key is not None:
+            _preview_cache.unpin(pinned_key)
 
     error_count = sum(1 for r in results.values() if r.status == "error")
     logger.info(
@@ -1528,6 +1726,7 @@ def _eager_execute(
     materialize_node_ids: set[str] | frozenset[str] | None = None,  # pragma: no mutate
     materialize_column_limits_by_node: dict[str, int] | None = None,  # pragma: no mutate
     execution_context: ExecutionContext | None = None,  # pragma: no mutate
+    snapshot_plan: SeedPlan | None = None,  # pragma: no mutate
 ) -> tuple[
     # Mirrors EagerResult.outputs — may carry per-frame dict for multi-frame
     # apiInput sources.
@@ -1591,6 +1790,7 @@ def _eager_execute(
         materialize_node_ids=materialize_node_ids,
         materialize_column_limits_by_node=materialize_column_limits_by_node,
         execution_context=execution_context,
+        snapshot_plan=snapshot_plan,
     )
     errors = result.errors
     if preamble_error:
@@ -1894,6 +2094,70 @@ def resolve_data_output_path(
     return _contain_output_path(graph, target, project_root=root), path
 
 
+def _data_output_config(graph: PipelineGraph, output_node_id: str) -> dict[str, Any]:
+    output_node = graph.node_map.get(output_node_id)
+    if output_node is None:
+        raise ValueError(f"Data Output node '{output_node_id}' not found")
+    if output_node.data.nodeType != NodeType.DATA_OUTPUT:
+        raise ValueError(f"Node '{output_node_id}' is not a Data Output")
+
+    from haute._polars_io_registry import validate_data_output_config
+
+    return validate_data_output_config(output_node.data.config)
+
+
+def _data_output_required_columns(
+    config: Mapping[str, Any], output_node_id: str
+) -> dict[str, frozenset[str]] | None:  # pragma: no mutate
+    selected_columns = config.get("selected_columns")
+    if not selected_columns:
+        return None
+    if isinstance(selected_columns, str | bytes):
+        raise ValueError("Data Output selected_columns must be a list of column names")
+    selected_seed: set[str] = set()
+    for column in selected_columns:
+        if not isinstance(column, str) or not column:
+            raise ValueError("Data Output selected_columns must contain non-empty string names")
+        selected_seed.add(column)
+    return {output_node_id: frozenset(selected_seed)}
+
+
+def _data_output_scenario(graph: PipelineGraph, source: str) -> str:
+    # Sinks are never used in live serving — model scoring must use the
+    # disk-batched path (any scenario != "live").  But the scenario name
+    # must match a value in the source-switch ISM so edge pruning routes
+    # to the correct branch.  Resolve the first non-live ISM value from
+    # the graph; fall back to "batch" if there are no live_switch nodes.
+    if source == "live":
+        return _resolve_batch_scenario(graph) or "batch"
+    return source
+
+
+def data_output_seed_plan_request(
+    graph: PipelineGraph,
+    output_node_id: str,
+    source: str = "live",
+    *,
+    profile: ExecutionProfile = ExecutionProfile.LAZY_SINK,
+) -> SeedPlanRequest:
+    """The seed plan a Data Output run executes under.
+
+    The Data Output node is a pass-through, so the plan seeds or captures its
+    selected producer with the node's selected columns. A parent supervising a
+    Data Output worker opens it and hands it over; an in-process write opens
+    its own.
+    """
+    config = _data_output_config(graph, output_node_id)
+    return SeedPlanRequest(
+        graph=graph,
+        target_node_id=output_node_id,
+        source=_data_output_scenario(graph, source),
+        profile=profile,
+        consumed_node_ids=(output_node_id,),
+        required_columns_by_node=_data_output_required_columns(config, output_node_id),
+    )
+
+
 def prepare_data_output(
     graph: PipelineGraph,
     output_node_id: str,
@@ -1904,6 +2168,7 @@ def prepare_data_output(
     project_root: str | Path | None = None,  # pragma: no mutate
     overwrite: bool = False,  # pragma: no mutate
     staging_path: str | Path | None = None,  # pragma: no mutate
+    seed_plan: SeedPlanHandoff | None = None,  # pragma: no mutate
 ) -> PreparedDataOutput:
     """Execute a Data Output, leaving file publication to the parent caller.
 
@@ -1920,6 +2185,10 @@ def prepare_data_output(
     File outputs are fully written, synced, and signed at an exact sibling
     staging path but remain invisible. Database/lakehouse writers retain their
     native transactional commit and return a transactional manifest.
+
+    The run executes under a seed plan: the worker path adopts the one its
+    supervising parent opened (*seed_plan*), and an in-process write prepares
+    inputs and opens its own. The plan is held until the output is written.
     """
     if execution_context is None:
         admitted_context = create_admitted_execution_context(
@@ -1936,19 +2205,12 @@ def prepare_data_output(
                 project_root=project_root,
                 overwrite=overwrite,
                 staging_path=staging_path,
+                seed_plan=seed_plan,
             )
         finally:
             admitted_context.release_admission(preserve_primary_error=True)
 
-    output_node = graph.node_map.get(output_node_id)
-    if output_node is None:
-        raise ValueError(f"Data Output node '{output_node_id}' not found")
-    if output_node.data.nodeType != NodeType.DATA_OUTPUT:
-        raise ValueError(f"Node '{output_node_id}' is not a Data Output")
-
-    from haute._polars_io_registry import validate_data_output_config
-
-    config = validate_data_output_config(output_node.data.config)
+    config = _data_output_config(graph, output_node_id)
     from haute._polars_io_registry import format_for_config, format_group
 
     root = _infer_project_root(
@@ -1960,18 +2222,7 @@ def prepare_data_output(
     if is_file_target and out is not None and out.exists() and not overwrite:
         raise DataOutputDestinationExistsError(path)
 
-    selected_columns = config.get("selected_columns")
-
-    required_columns_by_node: dict[str, frozenset[str]] | None = None  # pragma: no mutate
-    if selected_columns:
-        if isinstance(selected_columns, str | bytes):
-            raise ValueError("Data Output selected_columns must be a list of column names")
-        selected_seed: set[str] = set()
-        for column in selected_columns:
-            if not isinstance(column, str) or not column:
-                raise ValueError("Data Output selected_columns must contain non-empty string names")
-            selected_seed.add(column)
-        required_columns_by_node = {output_node_id: frozenset(selected_seed)}
+    required_columns_by_node = _data_output_required_columns(config, output_node_id)
 
     staging_out: Path | None = None  # pragma: no mutate
     if out is not None:
@@ -1989,31 +2240,30 @@ def prepare_data_output(
     if staging_path is not None and staging_out is None:
         raise ValueError("Only atomic file outputs accept a staging path")
 
-    # Sinks are never used in live serving — model scoring must use the
-    # disk-batched path (any scenario != "live").  But the scenario name
-    # must match a value in the source-switch ISM so edge pruning routes
-    # to the correct branch.  Resolve the first non-live ISM value from
-    # the graph; fall back to "batch" if there are no live_switch nodes.
-    if source == "live":
-        output_scenario = _resolve_batch_scenario(graph) or "batch"
-    else:
-        output_scenario = source
+    output_scenario = _data_output_scenario(graph, source)
 
     from haute._polars_utils import (
         DEFAULT_STREAMING_CHUNK_SIZE,
         _malloc_trim,
         streaming_collect,
+        temporary_streaming_chunk_size,
     )
 
-    # Create a temp directory for join checkpoints.  Multi-input nodes
-    # are sunk to parquet here so Polars sees each join as an independent
-    # plan, avoiding chained-join memory accumulation (#24206).
-    # The directory (and all checkpoint files) is cleaned up in finally.
-    tmp_dir = tempfile.mkdtemp(prefix="haute_sink_")
-    checkpoint_path = Path(tmp_dir)
+    # Joins and fan-outs are captured into shared snapshots under the seed
+    # plan, so Polars sees each as an independent plan (#24206) and the next
+    # run starts there. The plan is held until the output is written.
+    plans = ExitStack()
     retain_staging = False
 
     try:
+        # The request's chunk size governs the whole run: every capture and
+        # the output write stream with it.
+        plans.enter_context(
+            temporary_streaming_chunk_size(streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE)
+        )
+        # The engine fills this while it runs; the Data Output's own write reads
+        # its entry to slice the frame rather than sink the whole of it.
+        output_write_recipes: dict[str, Any] = {}
         # Pin a preamble fingerprint snapshot at admission so chunk execution
         # shares one namespace without re-hashing.
         pinned = preamble_execution_fingerprint(
@@ -2027,24 +2277,18 @@ def prepare_data_output(
         )
 
         def _run_lazy() -> pl.LazyFrame:
-            import haute.execution as execution_facade
-
-            dataframe_cache_request = execution_facade.build_dataframe_execution_cache_request(
-                graph,
-                node_ids=[output_node_id],
-                namespace="data_output",
-                source=output_scenario,
-                profile=execution_context.profile,
-                input_fingerprint=execution_facade.dataframe_graph_input_fingerprint(
-                    graph,
-                    target_node_id=output_node_id,
-                    source=output_scenario,
-                ),
-                target_node_id=output_node_id,
-                required_columns_by_node=required_columns_by_node,
-                enforce_contracts=True,
-                preamble_ns_supplied=bool(preamble_ns),
-                streaming_chunk_size=streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE,
+            plan = plans.enter_context(
+                SeedPlan.adopt(seed_plan)
+                if seed_plan is not None
+                else open_seed_plan(
+                    data_output_seed_plan_request(
+                        graph,
+                        output_node_id,
+                        source,
+                        profile=execution_context.profile,
+                    ),
+                    execution_context=execution_context,
+                )
             )
             lazy_outputs, _order, _parents, _names = _execute_lazy(
                 graph,
@@ -2052,11 +2296,12 @@ def prepare_data_output(
                 target_node_id=output_node_id,
                 preamble_ns=preamble_ns or None,
                 source=output_scenario,
-                checkpoint_dir=checkpoint_path,
                 enforce_contracts=True,
                 required_columns_by_node=required_columns_by_node,
                 execution_context=execution_context,
-                dataframe_cache_request=dataframe_cache_request,
+                prepare_inputs=False,
+                snapshot_plan=plan,
+                write_recipes=output_write_recipes,
             )
             lf = lazy_outputs.get(output_node_id)
             if lf is None:
@@ -2088,6 +2333,9 @@ def prepare_data_output(
                 frame,
                 config,
                 resolved_path=staging_out or out,
+                recipe=output_write_recipes.get(output_node_id),
+                execution_context=execution_context,
+                node_id=output_node_id,
             )
 
         if execution_context is not None:
@@ -2176,12 +2424,14 @@ def prepare_data_output(
         retain_staging = staging_out is not None
         return prepared
     finally:
-        if staging_out is not None and not retain_staging:
-            _cleanup_output_staging_path(
-                staging_out,
-                project_root=root,
-            )
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        try:
+            plans.close()
+        finally:
+            if staging_out is not None and not retain_staging:
+                _cleanup_output_staging_path(
+                    staging_out,
+                    project_root=root,
+                )
 
 
 def _prepared_output_paths(prepared: PreparedDataOutput) -> tuple[Path, Path, Path]:

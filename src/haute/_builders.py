@@ -45,12 +45,13 @@ from haute._edge_join import (
     resolve_edge_join_role_indices,
 )
 from haute._execution_context import ExecutionProfile, current_execution_context
-from haute._graph_utils import _sanitize_func_name, build_instance_mapping
+from haute._graph_utils import _sanitize_func_name, build_instance_mapping, edge_input_name
 from haute._io import _select_columns
 from haute._logging import get_logger
 from haute._node_apply import (
     apply_optimiser_apply_from_config,
     assemble_output_from_config,
+    expand_scenarios_bounded,
     expand_scenarios_from_config,
     load_external_object_from_config,
     resolve_api_input_from_config,
@@ -83,11 +84,12 @@ from haute._registry import (
     MODELLING_NODE_SEMANTICS,
     NODE_REGISTRY,
     NodeInputPolicy,
+    RecomputeCost,
 )
 from haute._registry import (
     register_exec as _register_exec_in_registry,
 )
-from haute._types import GraphNode, NodeType, _Frame
+from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph, _Frame
 from haute._user_exec import _exec_user_code
 from haute.errors import ConfigError, RatingFactorDtypeContractError
 
@@ -211,6 +213,15 @@ def resolve_instance_node(node: GraphNode, node_map: dict[str, GraphNode]) -> Gr
     return node.model_copy(update={"data": merged_data})
 
 
+def resolve_instance_nodes(graph: PipelineGraph) -> PipelineGraph:
+    """Return *graph* with every instance node carrying its original's effective config."""
+    node_map = graph.node_map
+    resolved = [resolve_instance_node(node, node_map) for node in graph.nodes]
+    if all(new is old for new, old in zip(resolved, graph.nodes, strict=True)):
+        return graph
+    return graph.model_copy(update={"nodes": resolved})
+
+
 # ---------------------------------------------------------------------------
 # Node builder registry
 # ---------------------------------------------------------------------------
@@ -264,9 +275,11 @@ NodeBuilder = Callable[[NodeBuildContext], tuple[str, Callable, bool]]
 def _register(
     node_type: NodeType,
     *,
+    recompute_cost: RecomputeCost,
     columns: _ColumnContractFn | None = None,
     opaque: bool = False,
     is_behavioural: bool = False,
+    slice_transparent: bool = True,
 ) -> Callable[[NodeBuilder], NodeBuilder]:
     """Decorator to register a node builder for a given NodeType.
 
@@ -303,6 +316,8 @@ def _register(
         node_type,
         column_contract=contract_fn,
         is_behavioural=is_behavioural,
+        recompute_cost=recompute_cost,
+        slice_transparent=slice_transparent,
     )
 
     def decorator(fn: NodeBuilder) -> NodeBuilder:
@@ -340,6 +355,60 @@ def _modelling_passthrough_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) ->
     raise RuntimeError(
         f"Unsupported modelling input policy: {MODELLING_NODE_SEMANTICS.input_policy!r}"
     )
+
+
+# Node types whose builder always returns one of the node's inputs unchanged:
+# their output *is* that input's data. A stubbed Model Score or Optimiser Apply
+# that happens to pass its input through is not listed: that is a configuration
+# state, not what the node type is.
+PASS_THROUGH_NODE_TYPES: frozenset[NodeType] = frozenset(
+    {
+        NodeType.DATA_OUTPUT,
+        MODELLING_NODE_SEMANTICS.node_type,
+        NodeType.OPTIMISER,
+        NodeType.SUBMODEL,
+        NodeType.SUBMODEL_PORT,
+    }
+)
+
+
+def pass_through_selected_edge(
+    node: GraphNode,
+    incoming_edges: list[GraphEdge] | tuple[GraphEdge, ...],
+    node_map: Mapping[str, GraphNode],
+    *,
+    submodels: Mapping[str, Any] | None = None,
+) -> GraphEdge | None:
+    """Return the incoming edge whose frame a pass-through node returns.
+
+    ``incoming_edges`` are the node's connected edges in the order its builder
+    receives them. The answer is an edge, not a parent id: two ports of one
+    API input share a source node but carry different tables. ``None`` means
+    the node is not a pass-through or has nothing connected. An Optimiser that
+    must name its data input and does not raises the builder's own error.
+    """
+    node_type = node.data.nodeType
+    if node_type not in PASS_THROUGH_NODE_TYPES or not incoming_edges:
+        return None
+    if node_type == MODELLING_NODE_SEMANTICS.node_type and (
+        MODELLING_NODE_SEMANTICS.input_policy is not NodeInputPolicy.FIRST_CONNECTED
+    ):
+        raise RuntimeError(
+            f"Unsupported modelling input policy: {MODELLING_NODE_SEMANTICS.input_policy!r}"
+        )
+    if node_type == NodeType.OPTIMISER:
+        names = [
+            edge_input_name(edge, node_map[edge.source], submodels=submodels)
+            for edge in incoming_edges
+        ]
+        data_input = resolve_optimiser_data_input(
+            node.data.config,
+            names,
+            node_label=_sanitize_func_name(node.data.label),
+        )
+        if data_input is not None:
+            return incoming_edges[names.index(data_input)]
+    return incoming_edges[0]
 
 
 def _explore_fn(df: _Frame) -> _Frame:
@@ -434,7 +503,7 @@ def _config_with_resolved_data_path(config: Mapping[str, Any]) -> Mapping[str, A
     return {**config, "path": resolved}
 
 
-@_register(NodeType.API_INPUT, opaque=True)
+@_register(NodeType.API_INPUT, recompute_cost="source", opaque=True)
 def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
 
@@ -466,7 +535,7 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, api_source_fn, True
 
 
-@_register(NodeType.DATA_INPUT, opaque=True)
+@_register(NodeType.DATA_INPUT, recompute_cost="source", opaque=True)
 def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     problem = stepped_code_problem(
@@ -507,7 +576,7 @@ def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, data_input_fn, True
 
 
-@_register(NodeType.DATA_OUTPUT, columns=_passthrough_columns)
+@_register(NodeType.DATA_OUTPUT, recompute_cost="cheap", columns=_passthrough_columns)
 def _build_data_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # During normal run/preview, dataOutput is a pass-through.
     # The actual write happens via write_data_output() on explicit user action.
@@ -520,7 +589,7 @@ def _constant_columns(config: dict[str, Any]) -> _ColumnContract:
     return produced or {"constant"}, set()
 
 
-@_register(NodeType.CONSTANT, columns=_constant_columns)
+@_register(NodeType.CONSTANT, recompute_cost="source", columns=_constant_columns)
 def _build_constant(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     raw_values = config.get("values", []) or []
@@ -543,7 +612,12 @@ def _build_constant(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, constant_fn, True
 
 
-@_register(NodeType.LIVE_SWITCH, columns=_passthrough_columns, is_behavioural=True)
+@_register(
+    NodeType.LIVE_SWITCH,
+    recompute_cost="cheap",
+    columns=_passthrough_columns,
+    is_behavioural=True,
+)
 def _build_live_switch(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     input_scenario_map: dict[str, str] = config.get("input_scenario_map", {})
@@ -571,7 +645,7 @@ def _build_live_switch(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, switch_fn, False
 
 
-@_register(NodeType.EXPLORE, columns=_explore_columns)
+@_register(NodeType.EXPLORE, recompute_cost="cheap", columns=_explore_columns)
 def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     problem = stepped_code_problem(
         ctx.config, NodeType.EXPLORE, step_input_names(NodeType.EXPLORE, [])
@@ -605,7 +679,7 @@ def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, explore_with_code, False
 
 
-@_register(NodeType.EXTERNAL_FILE, opaque=True)
+@_register(NodeType.EXTERNAL_FILE, recompute_cost="code", opaque=True)
 def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     code = str(config.get("code") or "").strip()
@@ -678,7 +752,12 @@ def _output_columns(config: dict[str, Any]) -> _ColumnContract:
     return (set(), referenced)
 
 
-@_register(NodeType.OUTPUT, columns=_output_columns, is_behavioural=True)
+@_register(
+    NodeType.OUTPUT,
+    recompute_cost="cheap",
+    columns=_output_columns,
+    is_behavioural=True,
+)
 def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     if config.get("outputMapping") is None:
@@ -722,7 +801,12 @@ def _banding_columns(config: dict[str, Any]) -> _ColumnContract:
     return produced, referenced
 
 
-@_register(NodeType.BANDING, columns=_banding_columns, is_behavioural=True)
+@_register(
+    NodeType.BANDING,
+    recompute_cost="cheap",
+    columns=_banding_columns,
+    is_behavioural=True,
+)
 def _build_banding(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     factors = _normalise_banding_factors(config)
@@ -759,7 +843,12 @@ def _rating_step_columns(config: dict[str, Any]) -> _ColumnContract:
     return produced, referenced
 
 
-@_register(NodeType.RATING_STEP, columns=_rating_step_columns, is_behavioural=True)
+@_register(
+    NodeType.RATING_STEP,
+    recompute_cost="costly",
+    columns=_rating_step_columns,
+    is_behavioural=True,
+)
 def _build_rating_step(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     problem = stepped_code_problem(
@@ -809,7 +898,13 @@ def _scenario_expander_columns(config: dict[str, Any]) -> _ColumnContract:
     return produced, set()
 
 
-@_register(NodeType.SCENARIO_EXPANDER, columns=_scenario_expander_columns, is_behavioural=True)
+@_register(
+    NodeType.SCENARIO_EXPANDER,
+    recompute_cost="cheap",
+    slice_transparent=False,
+    columns=_scenario_expander_columns,
+    is_behavioural=True,
+)
 def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     # Fail loud at build time on a missing or misconfigured grid size (the
@@ -824,6 +919,8 @@ def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool
     code = str(config.get("code") or "").strip()
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
     _config_captured = dict(config)
+    _interactive = bool(ctx.row_limit)
+    _node_id = ctx.node.id
 
     def scenario_expand_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
         if dfs_by_name:
@@ -831,7 +928,12 @@ def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool
         else:
             lf = dfs_positional[0] if dfs_positional else pl.LazyFrame()
         # Shared with expand_scenarios_from_config (generated standalone code)
-        # so the canvas and the saved file cannot drift.
+        # so the canvas and the saved file cannot drift.  An interactive
+        # execution expands through the scan form of the same expansion, so a
+        # preview limit below the expander reads only the rows it shows
+        # instead of expanding the whole upstream frame first.
+        if _interactive:
+            return expand_scenarios_bounded(lf, _config_captured, node_id=_node_id)
         return expand_scenarios_from_config(lf, _config_captured)
 
     if not code:
@@ -853,7 +955,7 @@ def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool
     return ctx.func_name, scenario_expand_with_code, False
 
 
-@_register(NodeType.OPTIMISER, columns=_passthrough_columns)
+@_register(NodeType.OPTIMISER, recompute_cost="cheap", columns=_passthrough_columns)
 def _build_optimiser(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # Pass-through in preview mode. Solving happens via /api/optimiser/solve.
     # When data_input is configured, select that specific input so the
@@ -921,7 +1023,12 @@ def _optimiser_apply_columns(config: dict[str, Any]) -> _ColumnContract:
     return produced, None
 
 
-@_register(NodeType.OPTIMISER_APPLY, columns=_optimiser_apply_columns, is_behavioural=True)
+@_register(
+    NodeType.OPTIMISER_APPLY,
+    recompute_cost="costly",
+    columns=_optimiser_apply_columns,
+    is_behavioural=True,
+)
 def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     _artifact_path = config.get("artifact_path", "")
@@ -965,7 +1072,11 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, optimiser_apply_fn, False
 
 
-@_register(MODELLING_NODE_SEMANTICS.node_type, columns=_passthrough_columns)
+@_register(
+    MODELLING_NODE_SEMANTICS.node_type,
+    recompute_cost="cheap",
+    columns=_passthrough_columns,
+)
 def _build_modelling(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # Pass-through in preview mode. Training happens via /api/modelling/train.
     return ctx.func_name, _modelling_passthrough_fn, False
@@ -1124,7 +1235,12 @@ def _declared_categorical_levels_for_model_score(
     return merge_categorical_level_declarations(declarations)
 
 
-@_register(NodeType.MODEL_SCORE, columns=_model_score_columns, is_behavioural=True)
+@_register(
+    NodeType.MODEL_SCORE,
+    recompute_cost="costly",
+    columns=_model_score_columns,
+    is_behavioural=True,
+)
 def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     problem = stepped_code_problem(
@@ -1183,7 +1299,7 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, scorer.score, False
 
 
-@_register(NodeType.POLARS, opaque=True)
+@_register(NodeType.POLARS, recompute_cost="code", opaque=True)
 def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     _src_names = list(ctx.source_names)
@@ -1286,7 +1402,7 @@ def _incomplete_transform(message: str) -> Callable[..., _Frame]:
     return incomplete_transform_fn
 
 
-@_register(NodeType.EDGE_JOIN, opaque=True)
+@_register(NodeType.EDGE_JOIN, recompute_cost="costly", opaque=True)
 def _build_edge_join(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     build_edge_join_kwargs(ctx.config)
     base_index, join_index = resolve_edge_join_role_indices(
@@ -1306,6 +1422,10 @@ def _build_edge_join(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             )
         return cast(_Frame, execute_edge_join(dfs[base_index], dfs[join_index], ctx.config))
 
+    # What a caller writing this join in chunks needs to rebuild it exactly:
+    # the roles and the instance-resolved config this builder joins with.
+    edge_join_fn.edge_join_roles = (base_index, join_index)  # type: ignore[attr-defined]
+    edge_join_fn.edge_join_config = dict(ctx.config)  # type: ignore[attr-defined]
     return ctx.func_name, edge_join_fn, False
 
 
@@ -1317,12 +1437,12 @@ def _build_edge_join(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 # KeyError.  Codegen takes the strict stance (see
 # ``_codegen_builders._gen_submodel``): by the time codegen dispatches, the
 # submodel must have been split into its own file via ``graph_to_code_multi``.
-@_register(NodeType.SUBMODEL, columns=_passthrough_columns)
+@_register(NodeType.SUBMODEL, recompute_cost="cheap", columns=_passthrough_columns)
 def _build_submodel(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, _passthrough_fn, False
 
 
-@_register(NodeType.SUBMODEL_PORT, columns=_passthrough_columns)
+@_register(NodeType.SUBMODEL_PORT, recompute_cost="cheap", columns=_passthrough_columns)
 def _build_submodel_port(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, _passthrough_fn, False
 
@@ -1354,8 +1474,9 @@ def _build_node_fn(
 
     Returns (func_name, fn, is_source).
     source_names: sanitized names of upstream nodes (used as variable names).
-    row_limit: if set, Databricks sources push this into SQL LIMIT so the
-        full table is never fetched during preview/trace.
+    row_limit: the interactive row limit. Only Model Score consumes it, to
+        score row-locally; no source applies it, so every other node's frame is
+        the full data a consumer pulls.
     node_map: full graph node_map — used to resolve ``instanceOf`` references.
     source: the active execution source (``"live"`` for eager scoring,
         anything else for batched parquet scoring).

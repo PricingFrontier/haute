@@ -297,11 +297,13 @@ def prepare_input_snapshots(
     schema_only: bool,
     store: SourceCacheStore | None = None,
     spawn: Any = None,
+    deadline: float | None = None,
 ) -> tuple[InputPreparationRecord, ...]:
     """Reuse, build, or refresh every snapshot-backed input in *order*.
 
     Returns the per-input records, which are also recorded on the execution
-    context so the terminal diagnostics carry them.
+    context so the terminal diagnostics carry them. *deadline* is the
+    caller's monotonic deadline, which bounds every build and wait.
     """
     if schema_only:
         return ()
@@ -340,6 +342,7 @@ def prepare_input_snapshots(
                 allow_admitted_eager=True,
             ),
             warning_code=input_snapshot_warning_code(config, base_dir=base_dir),
+            deadline=deadline,
         )
         records.append(record)
         execution_context.record_input_preparation(record)
@@ -359,9 +362,12 @@ def _prepare_one(
     signature: str | None,
     build_class: str,
     warning_code: str | None,
+    deadline: float | None,
 ) -> InputPreparationRecord:
     started_at = time.monotonic()
-    deadline = _build_deadline()
+    # A caller's own deadline (a job's) bounds the build as well: preparing an
+    # input never outlasts the run it prepares for.
+    deadline = _build_deadline() if deadline is None else min(_build_deadline(), deadline)
     digest = identity.digest
     while True:
         status = store.status(identity, source_signature=signature)

@@ -41,6 +41,7 @@ _DEFAULT_MEMORY_LIMIT_BYTES: dict[ExecutionProfile, int] = {
     ExecutionProfile.DEPLOY_LIVE: 1024 * _MIB,
     ExecutionProfile.DEPLOY_BATCH: 4 * 1024 * _MIB,
     ExecutionProfile.CHUNKED_MAP_REDUCE: 4 * 1024 * _MIB,
+    ExecutionProfile.NODE_SNAPSHOT: 4 * 1024 * _MIB,
 }
 
 
@@ -90,6 +91,10 @@ _ADAPTIVE_MEMORY_POLICY: dict[ExecutionProfile, _AdaptiveMemoryPolicy] = {
         available_ram_basis_points=6_000,
         floor_bytes=4 * 1024 * _MIB,
     ),
+    ExecutionProfile.NODE_SNAPSHOT: _AdaptiveMemoryPolicy(
+        available_ram_basis_points=7_000,
+        floor_bytes=4 * 1024 * _MIB,
+    ),
 }
 
 _ADAPTIVE_LOCAL_PROFILES = frozenset(
@@ -102,6 +107,7 @@ _ADAPTIVE_LOCAL_PROFILES = frozenset(
         ExecutionProfile.AUTO_RANGE,
         ExecutionProfile.DEPLOY_BATCH,
         ExecutionProfile.CHUNKED_MAP_REDUCE,
+        ExecutionProfile.NODE_SNAPSHOT,
     }
 )
 
@@ -141,6 +147,10 @@ _PROFILE_MEMORY_ENV: dict[ExecutionProfile, tuple[str, str]] = {
     ExecutionProfile.CHUNKED_MAP_REDUCE: (
         "HAUTE_CHUNKED_MEMORY_LIMIT_BYTES",
         "HAUTE_CHUNKED_MEMORY_LIMIT_MB",
+    ),
+    ExecutionProfile.NODE_SNAPSHOT: (
+        "HAUTE_NODE_SNAPSHOT_MEMORY_LIMIT_BYTES",
+        "HAUTE_NODE_SNAPSHOT_MEMORY_LIMIT_MB",
     ),
 }
 
@@ -186,6 +196,10 @@ _PROFILE_PROCESS_RSS_ENV: dict[ExecutionProfile, tuple[str, str]] = {
         "HAUTE_CHUNKED_PROCESS_RSS_LIMIT_BYTES",
         "HAUTE_CHUNKED_PROCESS_RSS_LIMIT_MB",
     ),
+    ExecutionProfile.NODE_SNAPSHOT: (
+        "HAUTE_NODE_SNAPSHOT_PROCESS_RSS_LIMIT_BYTES",
+        "HAUTE_NODE_SNAPSHOT_PROCESS_RSS_LIMIT_MB",
+    ),
 }
 
 _GLOBAL_PROCESS_RSS_ENV = (
@@ -202,6 +216,7 @@ _IN_FLIGHT_PROFILE_SET = frozenset(
         ExecutionProfile.AUTO_RANGE,
         ExecutionProfile.DEPLOY_BATCH,
         ExecutionProfile.CHUNKED_MAP_REDUCE,
+        ExecutionProfile.NODE_SNAPSHOT,
     }
 )
 _IN_FLIGHT_LOCK = threading.RLock()

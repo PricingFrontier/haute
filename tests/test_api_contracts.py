@@ -81,6 +81,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/AssistantStatusResponse"},
         },
     },
+    "/api/banding/stats": {
+        "POST": {
+            "request_ref": "#/components/schemas/BandingStatsRequest",
+            "success_schema": {"$ref": "#/components/schemas/BandingStatsResponse"},
+        },
+    },
     "/api/databricks/catalogs": {
         "GET": {
             "request_ref": None,
@@ -105,18 +111,6 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/WarehouseListResponse"},
         },
     },
-    "/api/explore/cache-status": {
-        "POST": {
-            "request_ref": "#/components/schemas/ExploreRunRequest",
-            "success_schema": {"$ref": "#/components/schemas/ExploreCacheSnapshotResponse"},
-        },
-    },
-    "/api/explore/cancel/{job_id}": {
-        "POST": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/ExploreStatusResponse"},
-        },
-    },
     "/api/explore/pivots/cancel/{job_id}": {
         "POST": {
             "request_ref": None,
@@ -139,18 +133,6 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         "GET": {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/ExplorePivotStatusResponse"},
-        },
-    },
-    "/api/explore/run": {
-        "POST": {
-            "request_ref": "#/components/schemas/ExploreRunRequest",
-            "success_schema": {"$ref": "#/components/schemas/ExploreRunResponse"},
-        },
-    },
-    "/api/explore/status/{job_id}": {
-        "GET": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/ExploreStatusResponse"},
         },
     },
     "/api/files": {
@@ -191,6 +173,24 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         "GET": {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/IoCapabilitiesResponse"},
+        },
+    },
+    "/api/cache/usage": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/CacheUsageResponse"},
+        },
+    },
+    "/api/cache/nodes": {
+        "POST": {
+            "request_ref": "#/components/schemas/CacheNodesRequest",
+            "success_schema": {"$ref": "#/components/schemas/CacheNodesResponse"},
+        },
+    },
+    "/api/cache/clear": {
+        "POST": {
+            "request_ref": "#/components/schemas/CacheClearRequest",
+            "success_schema": {"$ref": "#/components/schemas/CacheClearResponse"},
         },
     },
     "/api/git/archive": {
@@ -525,6 +525,42 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/TrainStatusResponse"},
         },
     },
+    "/api/node-data/cancel/{job_id}": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/NodeDataStatusResponse"},
+        },
+    },
+    "/api/node-data/clear": {
+        "POST": {
+            "request_ref": "#/components/schemas/NodeDataRequest",
+            "success_schema": {"$ref": "#/components/schemas/NodeDataClearResponse"},
+        },
+    },
+    "/api/node-data/point": {
+        "POST": {
+            "request_ref": "#/components/schemas/NodeDataRequest",
+            "success_schema": {"$ref": "#/components/schemas/NodeDataPointResponse"},
+        },
+    },
+    "/api/node-data/profile": {
+        "POST": {
+            "request_ref": "#/components/schemas/NodeDataRequest",
+            "success_schema": {"$ref": "#/components/schemas/NodeDataProfileResponse"},
+        },
+    },
+    "/api/node-data/run": {
+        "POST": {
+            "request_ref": "#/components/schemas/NodeDataRunRequest",
+            "success_schema": {"$ref": "#/components/schemas/NodeDataRunResponse"},
+        },
+    },
+    "/api/node-data/status/{job_id}": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/NodeDataStatusResponse"},
+        },
+    },
     "/api/optimiser/apply": {
         "POST": {
             "request_ref": "#/components/schemas/OptimiserApplyRequest",
@@ -651,6 +687,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/PreviewNodeResponse"},
         },
     },
+    "/api/pipeline/preview/inputs": {
+        "POST": {
+            "request_ref": "#/components/schemas/PreviewInputsRequest",
+            "success_schema": {"$ref": "#/components/schemas/PreviewInputsResponse"},
+        },
+    },
     "/api/pipeline/recovery-preview": {
         "POST": {
             "request_ref": "#/components/schemas/RecoveryPreviewRequest",
@@ -724,6 +766,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
                 "type": "array",
                 "items": {"$ref": "#/components/schemas/PipelineSummary"},
             },
+        },
+    },
+    "/api/rating/levels": {
+        "POST": {
+            "request_ref": "#/components/schemas/RatingLevelsRequest",
+            "success_schema": {"$ref": "#/components/schemas/RatingLevelsResponse"},
         },
     },
     "/api/schema": {

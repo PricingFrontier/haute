@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import type { Node, Edge } from "@xyflow/react"
 import { MarkerType, useStore } from "@xyflow/react"
 import type { TraceResult } from "../types/trace"
+import type { PreviewSeedPlanEntry } from "../api/types"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import {
   isSubmodelDefinition,
@@ -23,6 +24,8 @@ import {
 import useSettingsStore from "../stores/useSettingsStore"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useGraphStore from "../stores/useGraphStore"
+import useNodeDataStore from "../stores/useNodeDataStore"
+import { apiErrorCode } from "../api/errors"
 
 export const TRACE_MOTION_GRAPH_SIZE_LIMIT = GRAPH_EFFECTS_LITE_GRAPH_SIZE_LIMIT
 const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)"
@@ -43,6 +46,8 @@ interface TracingParams {
   nodeStatuses: Record<string, NodeStatus>
   hoveredNodeId: string | null
   refreshPreview?: (node: Node) => void
+  /** The `seed_plan` of the preview shown for the selected node. */
+  previewSeedPlan?: PreviewSeedPlanEntry[]
 }
 
 export type TraceRequestState =
@@ -222,11 +227,13 @@ export default function useTracing({
   nodeStatuses,
   hoveredNodeId,
   refreshPreview,
+  previewSeedPlan,
 }: TracingParams): TracingReturn {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
   const streamingChunkSize = useSettingsStore((s) => s.streamingChunkSize)
   const activeSource = useSettingsStore((s) => s.activeSource)
   const structuralVersion = useGraphStore((s) => s.structuralVersion)
+  const nodeDataEpoch = useNodeDataStore((s) => s.epoch)
   // Boost edge contrast at low zoom — only re-renders on threshold change
   const zoomedOut = useStore((s) => s.transform[2] < 0.45)
   const prefersReducedMotion = usePrefersReducedMotion()
@@ -268,12 +275,28 @@ export default function useTracing({
     setStoredTraceState({ status: "idle" })
   }, [])
 
-  const semanticContext = stableValue({
+  // What a 409's recovery notice belongs to. The preview refresh it starts
+  // replaces the seed plan and may raise the node-data epoch; the notice
+  // asking for the row again must outlive exactly that refresh.
+  const recoveryContext = stableValue({
     structuralVersion,
     activeSource,
     rowLimit,
     streamingChunkSize,
     targetNodeId: selectedNode?.id ?? null,
+  })
+  const recoveryContextToken = useMemo<object>(
+    () => ({ recoveryContext }),
+    [recoveryContext],
+  )
+  const semanticContext = stableValue({
+    recoveryContext,
+    // The generations the explained preview read, and the node-data epoch:
+    // a snapshot published, refreshed, or cleared invalidates the evidence.
+    seedPlan: (previewSeedPlan ?? []).map(
+      (entry) => [entry.node_id, entry.identity_digest, entry.generation_id],
+    ),
+    nodeDataEpoch,
   })
   // The token is renewed on every context transition, including A → B → A,
   // so evidence invalidated by an intermediate change can never reappear.
@@ -287,6 +310,7 @@ export default function useTracing({
   const traceContextIsCurrent = (
     storedTraceState.status === "idle"
     || storedSemanticContextToken === semanticContextToken
+    || storedSemanticContextToken === recoveryContextToken
   )
   const traceResult = traceContextIsCurrent ? storedTraceResult : null
   const tracedCell = traceContextIsCurrent ? storedTracedCell : null
@@ -371,6 +395,12 @@ export default function useTracing({
       row_limit: rowLimit,
       source: activeSource,
       row_values: rowValues,
+      seed_plan: (previewSeedPlan ?? []).map((entry) => ({
+        node_id: entry.node_id,
+        port_label: null,
+        identity_digest: entry.identity_digest,
+        generation_id: entry.generation_id,
+      })),
       streamingChunkSize,
       signal: controller.signal,
     })
@@ -419,7 +449,11 @@ export default function useTracing({
           activeRequestContext.current = null
           setStoredTraceResult(null)
           setStoredTracedCell(null)
-          setStoredTraceState({ status: "error", message: "This row changed before it could be traced. The preview is being refreshed — select the intended row again when it is ready.", detail: errorDetail(err), retryable: false })
+          const message = apiErrorCode(err) === "preview_seed_plan_expired"
+            ? "The cached data this preview read has changed. The preview is being refreshed — select the row again when it is ready."
+            : "This row changed before it could be traced. The preview is being refreshed — select the intended row again when it is ready."
+          setStoredSemanticContextToken(recoveryContextToken)
+          setStoredTraceState({ status: "error", message, detail: errorDetail(err), retryable: false })
           return
         }
         setStoredTraceResult(null)
@@ -430,7 +464,7 @@ export default function useTracing({
           traceAbort.current = null
         }
       })
-  }, [selectedNode, nodes, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, rowLimit, streamingChunkSize, activeSource, semanticContext, semanticContextToken, refreshPreview])
+  }, [selectedNode, nodes, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, rowLimit, streamingChunkSize, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan])
 
   const handleCellClick = startTrace
   const cancelTrace = clearTrace
@@ -536,6 +570,12 @@ export default function useTracing({
     const ids = new Set<string>()
     for (const s of traceResult.steps) {
       ids.add(resolveTraceId(s.node_id))
+    }
+    // A node skipped because a shared snapshot below it was read is still on
+    // the value's path — its data reached the target through that snapshot —
+    // so it is not dimmed as unrelated, though it carries no traced value.
+    for (const omission of traceResult.omissions) {
+      if (omission.reason === "snapshot_seed") ids.add(resolveTraceId(omission.node_id))
     }
     return ids
   }, [traceResult, resolveTraceId])

@@ -35,7 +35,11 @@ from __future__ import annotations
 import importlib.util
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
+
+if TYPE_CHECKING:
+    from haute._chunked_writes import WriteRecipe
+    from haute._execution_context import ExecutionContext
 
 import polars as pl
 
@@ -969,12 +973,71 @@ def _resolve_output_target(fmt: IoFormat, config: Mapping[str, Any]) -> dict[str
     return {"path": path}
 
 
+def _sliced_sink_taken(
+    lf: pl.LazyFrame,
+    *,
+    callable_name: str,
+    arguments: Mapping[str, Any],
+    resolved_path: Any,
+    recipe: WriteRecipe | None,
+    execution_context: ExecutionContext | None,
+    node_id: str | None,
+) -> bool:
+    """Write a Parquet sink a slice at a time, or say why it was not.
+
+    The native sink's peak grows with the input; the chunked writer's does not.
+    The seam is here rather than at the caller because this function validates
+    the user's own ``arguments`` against ``sink_parquet`` and forwards them,
+    and the chunked writer is pyarrow's, which takes different names and
+    different values for the same ideas. Rather than translate them and risk
+    quietly writing a different file than the user asked for, the bounded path
+    is taken only when there are none to translate; anything else keeps today's
+    write and records that as the reason. Which arguments are worth translating
+    should be decided by seeing which ones are actually used.
+    """
+    from pathlib import Path
+
+    from haute._chunked_writes import write_file
+
+    def record(strategy: str, reason: str | None, slices: int | None) -> None:
+        if execution_context is not None:
+            execution_context.record_data_output_write(
+                strategy=strategy, native_reason=reason, input_slices=slices
+            )
+
+    if callable_name != "sink_parquet":
+        record("native", "output_format_not_sliceable", None)
+        return False
+    if arguments:
+        # Name them. Which arguments are worth translating is a question about
+        # which ones people actually set, and a bare reason gives whoever asks
+        # it nothing to count.
+        named = ",".join(sorted(str(name) for name in arguments))
+        record("native", f"output_arguments_not_translatable:{named}", None)
+        return False
+    written = write_file(
+        Path(resolved_path),
+        lf,
+        recipe=recipe,
+        execution_context=execution_context,
+        node_id=node_id,
+        # The executor already writes to a staging generation it renames or
+        # discards, so a second temporary would leave a sibling it never sweeps.
+        atomic=False,
+    )
+    record(written.strategy, written.native_reason, written.input_slices)
+    return True
+
+
 def write_polars_output(
     lf: pl.LazyFrame,
     config: Mapping[str, Any],
     *,
     resolved_path: Any = None,
     profile: ExecutionProfile | str = ExecutionProfile.LAZY_SINK,
+    recipe: WriteRecipe | None = None,
+    execution_context: ExecutionContext | None = None,
+    node_id: str | None = None,
 ) -> int | None:
     """Execute the polars output invocation a dataOutput config describes.
 
@@ -1007,6 +1070,16 @@ def write_polars_output(
                 f"Format {fmt.name!r} output requires a resolved filesystem path."
             )
         if mode == "sink":
+            if _sliced_sink_taken(
+                lf,
+                callable_name=callable_name,
+                arguments=arguments,
+                resolved_path=resolved_path,
+                recipe=recipe,
+                execution_context=execution_context,
+                node_id=node_id,
+            ):
+                return None
             getattr(lf, callable_name)(resolved_path, **arguments)
             return None
         df = streaming_collect(lf)

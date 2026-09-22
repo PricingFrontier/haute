@@ -73,6 +73,8 @@ from haute.routes._optimiser_service import (
 )
 from haute.routes._training_artifacts import reap_stale_training_artifacts
 from haute.routes.assistant import router as assistant_router
+from haute.routes.banding import router as banding_router
+from haute.routes.cache import router as cache_router
 from haute.routes.databricks import router as databricks_router
 from haute.routes.explore import router as explore_router
 from haute.routes.files import router as files_router
@@ -82,9 +84,11 @@ from haute.routes.io_capabilities import router as io_capabilities_router
 from haute.routes.json_cache import router as json_cache_router
 from haute.routes.mlflow import router as mlflow_router
 from haute.routes.modelling import router as modelling_router
+from haute.routes.node_data import router as node_data_router
 from haute.routes.optimiser import router as optimiser_router
 from haute.routes.output_assemble import router as output_assemble_router
 from haute.routes.pipeline import router as pipeline_router
+from haute.routes.rating import router as rating_router
 from haute.routes.submodel import router as submodel_router
 from haute.routes.utility import router as utility_router
 from haute.schemas import SessionStatusResponse
@@ -575,6 +579,10 @@ app.include_router(input_cache_router)
 app.include_router(json_cache_router)
 app.include_router(submodel_router)
 app.include_router(explore_router)
+app.include_router(node_data_router)
+app.include_router(cache_router)
+app.include_router(banding_router)
+app.include_router(rating_router)
 app.include_router(modelling_router)
 app.include_router(optimiser_router)
 app.include_router(mlflow_router)

@@ -20,6 +20,16 @@ if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
 
+@pytest.mark.parametrize("value", [float("inf"), float("-inf")])
+def test_infinite_pivot_dimension_has_a_public_remediation(value: float) -> None:
+    from haute.routes._pivot_service import PivotContractError, _member_key
+
+    with pytest.raises(PivotContractError) as caught:
+        _member_key(value)
+    assert caught.value.failure.reason_code == "invalid_pivot_member"
+    assert "infinite" in caught.value.failure.remediation
+
+
 _TERMINAL = {
     "completed",
     "error",
@@ -32,18 +42,35 @@ _TERMINAL = {
 
 
 @pytest.fixture(autouse=True)
-def _clean_pivot_state(_widen_sandbox_root):
-    from haute.routes.explore import _explore_service, _store
+def _pinned_admission_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin modest budgets so these tests do not depend on the host's free RAM.
+
+    Unpinned, a build reserves 70% of *available* RAM (22.5 GiB on this
+    development host) from a process-wide in-flight budget that is itself
+    derived from available RAM, so a second heavy operation live in the same
+    process — or simply less free RAM later in a long parallel run — makes
+    admission exceed that budget. The parent then never reaches its worker and
+    every terminal status becomes ``memory_limited``: correct behaviour for a
+    build memory cannot back, but not what these tests are about. Tests that
+    exercise admission and memory limits raise or set their own, which still
+    takes precedence over this.
+    """
+    monkeypatch.setenv("HAUTE_NODE_SNAPSHOT_MEMORY_LIMIT_MB", "1024")
+    monkeypatch.setenv("HAUTE_EXPLORE_MEMORY_LIMIT_MB", "1024")
+
+
+@pytest.fixture(autouse=True)
+def _clean_pivot_state(haute_scratch: Path):
+    from haute.routes.explore import _pivot_service, _store
+    from haute.routes.node_data import _store as node_data_store
 
     _store.clear_all()
+    node_data_store.clear_all()
     yield
     _store.clear_all()
-    _explore_service._report_cache.clear()
-    try:
-        from haute.routes.explore import _pivot_service
-    except ImportError:
-        return
+    node_data_store.clear_all()
     _pivot_service._result_cache.clear()
+    _pivot_service._members_cache.clear()
 
 
 def _graph(path: Path) -> dict[str, Any]:
@@ -73,6 +100,49 @@ def _graph(path: Path) -> dict[str, Any]:
             "edges": [make_edge("source", "explore").model_dump()],
         }
     ).model_dump()
+
+
+def _graph_with_transform(path: Path) -> dict[str, Any]:
+    """Explore behind a transform: its point is that transform's node output."""
+    graph = make_graph(
+        {
+            "source_file": str(path.with_name("pipeline.py")),
+            "preamble": "import polars as pl",
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataInput",
+                        "config": {
+                            "inputType": "file",
+                            "format": "parquet",
+                            "mode": "scan",
+                            "path": str(path),
+                            "arguments": {},
+                        },
+                    },
+                },
+                {
+                    "id": "shaped",
+                    "data": {
+                        "label": "shaped",
+                        "nodeType": "polars",
+                        "config": {"code": "df = source"},
+                    },
+                },
+                {
+                    "id": "explore",
+                    "data": {"label": "Explore", "nodeType": "explore", "config": {}},
+                },
+            ],
+            "edges": [
+                make_edge("source", "shaped").model_dump(),
+                make_edge("shaped", "explore").model_dump(),
+            ],
+        }
+    )
+    return graph.model_dump()
 
 
 def _pivot(**updates: Any) -> dict[str, Any]:
@@ -114,7 +184,9 @@ def _pivot(**updates: Any) -> dict[str, Any]:
     return pivot
 
 
-def _poll(client: TestClient, path: str, job_id: str, timeout: float = 10.0) -> dict[str, Any]:
+# A build or calculation on a machine running the whole suite in parallel takes
+# longer than a spot check would; the deadline only has to fail a stuck job.
+def _poll(client: TestClient, path: str, job_id: str, timeout: float = 60.0) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         response = client.get(f"{path}/{job_id}")
@@ -127,18 +199,28 @@ def _poll(client: TestClient, path: str, job_id: str, timeout: float = 10.0) -> 
 
 
 def _materialise(
-    client: TestClient, graph: dict[str, Any], *, source: str = "live"
+    client: TestClient, graph: dict[str, Any], *, source: str = "live", refresh: bool = False
 ) -> dict[str, Any]:
-    response = client.post(
-        "/api/explore/run", json={"graph": graph, "node_id": "explore", "source": source}
-    )
+    """Cache the data the Explore node reads, and return its point."""
+    body = {"graph": graph, "node_id": "explore", "source": source, "refresh": refresh}
+    response = client.post("/api/node-data/run", json=body)
     assert response.status_code == 200, response.text
     payload = response.json()
-    if payload["status"] == "completed":
-        return payload["result"]
-    final = _poll(client, "/api/explore/status", payload["job_id"])
-    assert final["status"] == "completed", final
-    return final["result"]
+    if payload["status"] in {"started", "joined"}:
+        final = _poll(client, "/api/node-data/status", payload["job_id"])
+        assert final["status"] == "completed", final
+    point = _point(client, graph, source=source)
+    assert point["state"] == "current", point
+    return point
+
+
+def _point(client: TestClient, graph: dict[str, Any], *, source: str = "live") -> dict[str, Any]:
+    response = client.post(
+        "/api/node-data/point",
+        json={"graph": graph, "node_id": "explore", "source": source},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
 def _wait_for_pivot_worker(job_id: str, timeout: float = 5.0) -> None:
@@ -208,6 +290,27 @@ def _cell(
     )
 
 
+def test_pivot_on_a_directly_read_data_input_needs_no_build(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Explore wired straight to a Data Input analyses that file as it stands."""
+    path = tmp_path / "claims.parquet"
+    pl.DataFrame({"region": ["North"], "year": [2024], "claims": [10.0]}).write_parquet(path)
+    graph = _graph(path)
+    point = _point(client, graph)
+    assert (point["kind"], point["state"], point["reads_directly"]) == (
+        "data_input",
+        "current",
+        True,
+    )
+
+    final, result = _run_pivot(client, graph, _pivot())
+
+    assert final["status"] == "completed", final
+    assert result is not None
+    assert result["data_version"] == point["data_version"]
+
+
 def test_pivot_run_requires_exact_materialised_explore_cache(
     client: TestClient, tmp_path: Path
 ) -> None:
@@ -216,7 +319,12 @@ def test_pivot_run_requires_exact_materialised_explore_cache(
 
     response = client.post(
         "/api/explore/pivots/run",
-        json={"graph": _graph(path), "node_id": "explore", "source": "live", "pivot": _pivot()},
+        json={
+            "graph": _graph_with_transform(path),
+            "node_id": "explore",
+            "source": "live",
+            "pivot": _pivot(),
+        },
     )
 
     assert response.status_code == 200
@@ -235,12 +343,12 @@ def test_pivot_run_requires_exact_materialised_explore_cache(
     }
 
 
-def test_pivot_uses_durable_explore_cache_restored_after_process_restart(
+def test_pivot_recalculates_from_the_published_snapshot_after_its_result_cache_is_dropped(
     client: TestClient,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from haute.routes.explore import _explore_service
-    from haute.schemas import ExploreRunRequest
+    from haute.routes.explore import _pivot_service
 
     path = tmp_path / "claims.parquet"
     pl.DataFrame(
@@ -250,28 +358,203 @@ def test_pivot_uses_durable_explore_cache_restored_after_process_restart(
             "claims": [10.0, 20.0],
         }
     ).write_parquet(path)
-    graph = _graph(path)
-    _materialise(client, graph)
+    # A node output, so the pivot has a published snapshot to lease.
+    graph = _graph_with_transform(path)
+    point = _materialise(client, graph)
 
-    request = ExploreRunRequest.model_validate(
-        {"graph": graph, "node_id": "explore", "source": "live"}
-    )
-    spec = _explore_service.prepare_spec(request)
-    _explore_service._report_cache.clear()
-    spec.dataframe_cache_request.cache.clear()
+    first_final, first_result = _run_pivot(client, graph, _pivot())
+    assert first_final["status"] == "completed", first_final
+    assert first_result is not None
+    assert len(_pivot_service._result_cache) == 1
 
-    snapshot = client.post(
-        "/api/explore/cache-status",
-        json={"graph": graph, "node_id": "explore", "source": "live"},
-    )
-    assert snapshot.status_code == 200
-    assert snapshot.json()["state"] == "current"
+    # Nothing of the calculation is kept in the process, and the graph may not
+    # be executed again: the pivot leases the published snapshot and recomputes
+    # from it.
+    _pivot_service._result_cache.clear()
+    import haute.execution as execution_facade
+
+    def _never(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("a pivot must read the published snapshot, never execute the graph")
+
+    monkeypatch.setattr(execution_facade, "execute_lazy_graph", _never)
 
     final, result = _run_pivot(client, graph, _pivot())
 
-    assert final["status"] == "completed"
+    assert final["status"] == "completed", final
     assert result is not None
+    assert result["data_version"] == point["data_version"]
     assert _cell(result, [("string", "North")], [("integer", "2024")], "sum_claims") == 10.0
+
+
+def test_a_refresh_between_two_pivot_runs_never_serves_the_first_result(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "claims.parquet"
+    pl.DataFrame({"region": ["North"], "year": [2024], "claims": [10.0]}).write_parquet(path)
+    graph = _graph_with_transform(path)
+    first_point = _materialise(client, graph)
+
+    first_final, first_result = _run_pivot(client, graph, _pivot())
+    assert first_final["status"] == "completed", first_final
+    assert first_result is not None
+    assert _cell(first_result, [("string", "North")], [("integer", "2024")], "sum_claims") == 10.0
+
+    # The data behind the point changes and the point is rebuilt: the matrix
+    # calculated from the previous generation describes data that is gone.
+    pl.DataFrame({"region": ["North"], "year": [2024], "claims": [99.0]}).write_parquet(path)
+    second_point = _materialise(client, graph, refresh=True)
+    assert second_point["data_version"] != first_point["data_version"]
+
+    second_final, second_result = _run_pivot(client, graph, _pivot())
+
+    assert second_final["status"] == "completed", second_final
+    assert second_result is not None
+    assert second_result["data_version"] == second_point["data_version"]
+    assert _cell(second_result, [("string", "North")], [("integer", "2024")], "sum_claims") == 99.0
+
+
+def test_a_clear_during_a_calculation_cannot_remove_the_data_underneath_it(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute.routes.explore import _pivot_service
+
+    path = tmp_path / "claims.parquet"
+    pl.DataFrame({"region": ["North"], "year": [2024], "claims": [10.0]}).write_parquet(path)
+    graph = _graph_with_transform(path)
+    _materialise(client, graph)
+
+    leased = threading.Event()
+    cleared = threading.Event()
+    original = _pivot_service._calculate_leased
+
+    def calculate_while_cleared(spec: Any, context: Any, lazy: Any) -> Any:
+        # The lease is held here; the clear lands while the aggregation runs.
+        leased.set()
+        assert cleared.wait(10.0)
+        return original(spec, context, lazy)
+
+    monkeypatch.setattr(_pivot_service, "_calculate_leased", calculate_while_cleared)
+
+    started = client.post(
+        "/api/explore/pivots/run",
+        json={"graph": graph, "node_id": "explore", "source": "live", "pivot": _pivot()},
+    ).json()
+    assert started["status"] == "started", started
+    assert leased.wait(10.0)
+
+    clear = client.post(
+        "/api/node-data/clear",
+        json={"graph": graph, "node_id": "explore", "source": "live"},
+    )
+    assert clear.status_code == 200, clear.text
+    assert clear.json()["status"] == "cleared"
+    assert clear.json()["point"]["state"] == "missing"
+    cleared.set()
+
+    final = _poll(client, "/api/explore/pivots/status", started["job_id"])
+
+    assert final["status"] == "completed", final
+    assert (
+        _cell(final["result"], [("string", "North")], [("integer", "2024")], "sum_claims") == 10.0
+    )
+
+
+def test_a_file_rewritten_before_the_calculation_is_never_calculated_under_the_old_version(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    from haute.routes import _pivot_service as pivot_module
+
+    path = tmp_path / "claims.parquet"
+    pl.DataFrame({"region": ["North"], "year": [2024], "claims": [10.0]}).write_parquet(path)
+    # Read straight from the file, so nothing pins the data the request resolved.
+    graph = _graph(path)
+    point = _materialise(client, graph)
+
+    original_context = pivot_module.create_admitted_execution_context
+
+    def rewrite_then_admit(*args: Any, **kwargs: Any) -> Any:
+        # Between resolving the point and leasing it, the file becomes other data.
+        pl.DataFrame({"region": ["North"], "year": [2024], "claims": [99.0]}).write_parquet(path)
+        return original_context(*args, **kwargs)
+
+    # A context, not the fixture: undoing every patch would also undo the
+    # client fixture's own.
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(pivot_module, "create_admitted_execution_context", rewrite_then_admit)
+        final, result = _run_pivot(client, graph, _pivot())
+
+    # The matrix would have been 99.0 labelled as the version that held 10.0.
+    assert final["status"] == "contract_error", final
+    assert result is None
+    assert final["failure"]["reason_code"] == "cache_required"
+    assert _point(client, graph)["data_version"] != point["data_version"]
+
+
+def test_a_file_rewritten_during_the_calculation_is_never_published(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute.routes.explore import _pivot_service
+
+    path = tmp_path / "claims.parquet"
+    pl.DataFrame({"region": ["North"], "year": [2024], "claims": [10.0]}).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    original = _pivot_service._calculate_leased
+
+    def calculate_then_rewrite(spec: Any, context: Any, lazy: Any) -> Any:
+        result = original(spec, context, lazy)
+        pl.DataFrame({"region": ["North"], "year": [2024], "claims": [99.0]}).write_parquet(path)
+        return result
+
+    monkeypatch.setattr(_pivot_service, "_calculate_leased", calculate_then_rewrite)
+
+    final, result = _run_pivot(client, graph, _pivot())
+
+    assert final["status"] == "contract_error", final
+    assert result is None
+    assert final["failure"]["reason_code"] == "cache_required"
+    assert len(_pivot_service._result_cache) == 0
+
+
+def test_members_read_from_a_file_rewritten_underneath_them_are_not_answered(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    from haute.routes.explore import _pivot_service
+
+    path = tmp_path / "claims.parquet"
+    pl.DataFrame({"region": ["North", "South"], "claims": [1.0, 2.0]}).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    original = _pivot_service._member_options
+
+    def read_then_rewrite(body: Any, lazy: Any, context: Any) -> Any:
+        options = original(body, lazy, context)
+        pl.DataFrame({"region": ["East"], "claims": [3.0]}).write_parquet(path)
+        return options
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(_pivot_service, "_member_options", read_then_rewrite)
+        response = client.post(
+            "/api/explore/pivots/members",
+            json={"graph": graph, "node_id": "explore", "source": "live", "field": "region"},
+        )
+
+    assert response.status_code == 200, response.text
+    # Members of data that no version names are neither answered nor memoised.
+    assert response.json()["status"] == "cache_required"
+    answered = client.post(
+        "/api/explore/pivots/members",
+        json={"graph": graph, "node_id": "explore", "source": "live", "field": "region"},
+    ).json()
+    assert answered["status"] == "ok"
+    assert [option["label"] for option in answered["members"]] == ["East"]
 
 
 def test_pivot_calculates_filters_aggregations_repeated_values_and_grand_totals(
@@ -363,7 +646,7 @@ def test_pivot_calculates_filters_aggregations_repeated_values_and_grand_totals(
     assert final["status"] == "completed", final
     assert result is not None
     assert result["version"] == 1
-    assert result["dataframe_cache_key"] == report["dataframe_cache_key"]
+    assert result["data_version"] == report["data_version"]
     assert [value["id"] for value in result["values"]] == [value["id"] for value in values]
     assert len(result["row_paths"]) == 4  # North, South, null, Grand total
     assert len(result["column_paths"]) == 3  # 2024, 2025, Grand total
@@ -1431,20 +1714,22 @@ def test_explore_and_pivot_endpoints_reject_each_others_job_ids(
 
     path = tmp_path / "claims.parquet"
     pl.DataFrame({"region": ["North"], "year": [2024], "claims": [10.0]}).write_parquet(path)
-    graph = _graph(path)
+    # A node output, so building it really creates a node-data job.
+    graph = _graph_with_transform(path)
     _materialise(client, graph)
 
-    # Force a fresh Explore materialisation job so its id exists in the store.
-    explore_run = client.post(
-        "/api/explore/run",
+    # A node-data build job id exists in the shared store; the pivot endpoints
+    # must not accept it.
+    node_data_run = client.post(
+        "/api/node-data/run",
         json={"graph": graph, "node_id": "explore", "source": "live", "refresh": True},
     ).json()
-    assert explore_run["status"] == "started"
-    explore_job_id = explore_run["job_id"]
-    assert _poll(client, "/api/explore/status", explore_job_id)["status"] == "completed"
+    assert node_data_run["status"] == "started"
+    node_data_job_id = node_data_run["job_id"]
+    assert _poll(client, "/api/node-data/status", node_data_job_id)["status"] == "completed"
 
-    assert client.get(f"/api/explore/pivots/status/{explore_job_id}").status_code == 404
-    assert client.post(f"/api/explore/pivots/cancel/{explore_job_id}").status_code == 404
+    assert client.get(f"/api/explore/pivots/status/{node_data_job_id}").status_code == 404
+    assert client.post(f"/api/explore/pivots/cancel/{node_data_job_id}").status_code == 404
 
     original = _pivot_service._calculate
     pivot_started = threading.Event()
@@ -1475,8 +1760,8 @@ def test_explore_and_pivot_endpoints_reject_each_others_job_ids(
     # Explore status/cancel must reject the pivot job id without mutating it:
     # a 404 here proves an Explore cancel can never mark a pivot job cancelled
     # while its calculation keeps running.
-    assert client.get(f"/api/explore/status/{pivot_job_id}").status_code == 404
-    assert client.post(f"/api/explore/cancel/{pivot_job_id}").status_code == 404
+    assert client.get(f"/api/node-data/status/{pivot_job_id}").status_code == 404
+    assert client.post(f"/api/node-data/cancel/{pivot_job_id}").status_code == 404
     still_running = client.get(f"/api/explore/pivots/status/{pivot_job_id}").json()
     assert still_running["status"] == "running"
 
@@ -1535,7 +1820,7 @@ def test_pivot_members_are_typed_exact_and_cache_backed(client: TestClient, tmp_
     pl.DataFrame(
         {"region": ["North", "North", None], "claims": [1.0, 2.0, math.nan]}
     ).write_parquet(path)
-    graph = _graph(path)
+    graph = _graph_with_transform(path)
 
     missing = client.post(
         "/api/explore/pivots/members",
@@ -1829,7 +2114,7 @@ def test_pivot_named_sources_require_and_preserve_their_own_materialised_cache(
 ) -> None:
     path = tmp_path / "named-sources.parquet"
     pl.DataFrame({"region": ["North"], "year": [2024], "claims": [10.0]}).write_parquet(path)
-    graph = _graph(path)
+    graph = _graph_with_transform(path)
     live_report = _materialise(client, graph, source="live")
 
     missing, missing_result = _run_pivot(client, graph, _pivot(), source="named")
@@ -1843,9 +2128,9 @@ def test_pivot_named_sources_require_and_preserve_their_own_materialised_cache(
     assert named_final["status"] == "completed", named_final
     assert named_result is not None
     assert named_result["source"] == "named"
-    assert named_result["dataframe_cache_key"] == named_report["dataframe_cache_key"]
-    assert named_report["dataframe_cache_key"] != live_report["dataframe_cache_key"]
+    assert named_result["data_version"] == named_report["data_version"]
+    assert named_report["slot_key"] != live_report["slot_key"]
     assert live_final["status"] == "completed", live_final
     assert live_result is not None
     assert live_result["source"] == "live"
-    assert live_result["dataframe_cache_key"] == live_report["dataframe_cache_key"]
+    assert live_result["data_version"] == live_report["data_version"]

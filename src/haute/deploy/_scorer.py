@@ -754,23 +754,28 @@ def _score_graph_lazy(
         # Intercept: retained Data Input snapshot or canonical direct Parquet
         # source. The graph config remains canonical; only this deploy-only
         # execution path reads the matching bundled artifact.
-        bundled_data_path: str | None = None
+        bundled_data_source: str | list[str] | None = None
         if node_type == NodeType.DATA_INPUT and remap:
             from haute._polars_io_registry import data_input_is_direct
 
             if data_input_is_direct(config):
-                bundled_data_path = _remap_artifact(nid, config, remap, "path")
+                bundled_data_source = _remap_artifact(nid, config, remap, "path")
             else:
-                bundled_data_path = remap.get(f"{nid}__snapshot.parquet")
-        if bundled_data_path is not None:
-            _bundled_data_path = bundled_data_path
+                prefix = f"{nid}__snapshot.part-"
+                part_keys = sorted(
+                    k for k in remap.keys() if k.startswith(prefix) and k.endswith(".parquet")
+                )
+                if part_keys:
+                    bundled_data_source = [remap[k] for k in part_keys]
+        if bundled_data_source is not None:
+            _bundled_data_source = bundled_data_source
             _code = str(config.get("code") or "").strip()
             _preamble = build_kwargs.get("preamble_ns")
             _profile = build_kwargs.get("execution_profile")
             _required = build_kwargs.get("required_output_columns")
 
             def bundled_snapshot_input(
-                _path: str = _bundled_data_path,
+                _source: str | list[str] = _bundled_data_source,
                 _config: dict[str, Any] = config,
                 _node_id: str = nid,
                 _code_value: str = _code,
@@ -781,7 +786,7 @@ def _score_graph_lazy(
                 from haute._builders import apply_source_scan
 
                 return apply_source_scan(
-                    pl.scan_parquet(_path),
+                    pl.scan_parquet(_source),
                     profile=_execution_profile,
                     required_output_columns=_required_columns,
                     config=_config,

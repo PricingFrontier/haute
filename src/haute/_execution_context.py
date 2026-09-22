@@ -15,9 +15,12 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from haute._logging import get_logger
+
+if TYPE_CHECKING:
+    from haute._chunked_writes import ChunkedWrite
 
 EXECUTION_METRICS_SCHEMA_VERSION = 1
 EXECUTION_TELEMETRY_SCHEMA_VERSION = 1
@@ -48,6 +51,7 @@ class ExecutionProfile(StrEnum):
     DEPLOY_LIVE = "deploy_live"
     DEPLOY_BATCH = "deploy_batch"
     CHUNKED_MAP_REDUCE = "chunked_map_reduce"
+    NODE_SNAPSHOT = "node_snapshot"
 
 
 class ExecutionCacheProofMissReason(StrEnum):
@@ -837,6 +841,16 @@ def _resource_current_rss_bytes() -> int | None:
     return rss if rss > 10_000_000 else rss * 1024
 
 
+@dataclass(frozen=True, slots=True)
+class _EvidenceRecord:
+    """A record reported by another process, kept in its payload form."""
+
+    payload: Mapping[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(self.payload)
+
+
 @dataclass(slots=True, weakref_slot=True)
 class ExecutionContext:
     """Shared per-run execution controls and instrumentation."""
@@ -898,6 +912,18 @@ class ExecutionContext:
     _cache_proof_misses: int = field(default=0, init=False)
     _cache_direct_fallbacks: int = field(default=0, init=False)
     _input_preparation: list[Any] = field(default_factory=list, init=False)
+    _shared_snapshot_seeds: list[Any] = field(default_factory=list, init=False)
+    _shared_snapshot_captures: list[Any] = field(default_factory=list, init=False)
+    _shared_snapshot_capture_skips: list[Any] = field(default_factory=list, init=False)
+    _preview_seed_plan: tuple[Any, ...] = field(default=(), init=False)
+    _execution_warnings: list[dict[str, str | None]] = field(default_factory=list, init=False)
+    _training_write_strategy: str | None = field(default=None, init=False)
+    _training_write_input_slices: int | None = field(default=None, init=False)
+    _training_write_native_reason: str | None = field(default=None, init=False)
+    _training_write_blocking_operator: str | None = field(default=None, init=False)
+    _data_output_write_strategy: str | None = field(default=None, init=False)
+    _data_output_write_input_slices: int | None = field(default=None, init=False)
+    _data_output_write_native_reason: str | None = field(default=None, init=False)
     _cache_proof_miss_reason_counts: dict[ExecutionCacheProofMissReason, int] = field(
         default_factory=lambda: {reason: 0 for reason in ExecutionCacheProofMissReason},
         init=False,
@@ -1000,6 +1026,17 @@ class ExecutionContext:
         if rss_bytes is not None:
             self._observe_rss(rss_bytes, label=label, node_id=node_id)
         self._check_memory_budget(rss_bytes=rss_bytes)
+
+    def remaining_memory_bytes(self) -> int | None:
+        """Return current RSS headroom after enforcing this context's limit."""
+        effective_limit = self._effective_rss_limit_bytes()
+        if effective_limit is None:
+            return None
+        sampled = self.memory_sampler()
+        self._observe_rss(sampled)
+        self._check_memory_budget(rss_bytes=sampled)
+        assert sampled is not None
+        return max(0, effective_limit - sampled)
 
     @contextlib.contextmanager
     def stage(
@@ -1210,6 +1247,129 @@ class ExecutionContext:
         with self._evidence_lock:
             self._input_preparation.append(record)
 
+    def record_shared_snapshot_seed(self, record: Any) -> None:
+        """Record one node output this execution read from a shared snapshot."""
+        with self._evidence_lock:
+            self._shared_snapshot_seeds.append(record)
+
+    def record_shared_snapshot_capture(self, record: Any) -> None:
+        """Record one full-data materialisation this execution wrote to shared snapshots."""
+        with self._evidence_lock:
+            self._shared_snapshot_captures.append(record)
+
+    def record_shared_snapshot_capture_skip(self, record: Any) -> None:
+        """Record one candidate capture point skipped under cost gating."""
+        with self._evidence_lock:
+            self._shared_snapshot_capture_skips.append(record)
+
+    def record_preview_seed_plan(self, generations: tuple[Any, ...]) -> None:
+        """Record the snapshot generations a preview's rows were computed from."""
+        with self._evidence_lock:
+            self._preview_seed_plan = tuple(generations)
+
+    @property
+    def preview_seed_plan(self) -> tuple[Any, ...]:
+        """The generations :meth:`record_preview_seed_plan` recorded, or none."""
+        with self._evidence_lock:
+            return self._preview_seed_plan
+
+    def record_training_write(
+        self, outcome: ChunkedWrite, *, native_reason: str | None = None
+    ) -> None:
+        """Record the outcome of one training frame write.
+
+        ``native_reason`` is the caller's own reason for a write that could not
+        take a recipe — a row-limit sample, or a recipe that did not match the
+        frame. It is kept only when the write actually came back native: a
+        sampled frame may still slice on its own, and a reason for a strategy
+        that did not happen would be a false statement in the evidence.
+        """
+        with self._evidence_lock:
+            self._training_write_strategy = outcome.strategy
+            self._training_write_input_slices = outcome.input_slices
+            self._training_write_blocking_operator = outcome.blocking_operator
+            self._training_write_native_reason = (
+                (native_reason or outcome.native_reason) if outcome.strategy == "native" else None
+            )
+
+    def record_data_output_write(
+        self, *, strategy: str, native_reason: str | None = None, input_slices: int | None = None
+    ) -> None:
+        """Record how one Data Output's file was written, and why.
+
+        Separate from the training fields because this payload is shared by
+        every operation: a preview should not carry four permanently null
+        training fields, nor a training run four null output ones.
+        """
+        with self._evidence_lock:
+            self._data_output_write_strategy = strategy
+            self._data_output_write_input_slices = input_slices
+            self._data_output_write_native_reason = native_reason if strategy == "native" else None
+
+    def worker_evidence(self) -> dict[str, list[dict[str, Any]]]:
+        """This execution's input preparation, seeds, captures, and warnings.
+
+        Returned as payload dicts under their metrics-payload keys. A spawned
+        worker returns this so its supervising parent can report what the
+        worker prepared, read, and wrote (:meth:`adopt_worker_evidence`).
+        """
+        with self._evidence_lock:
+            return {
+                "input_preparation": [dict(record.to_dict()) for record in self._input_preparation],
+                "shared_snapshot_seeds": [
+                    dict(record.to_dict()) for record in self._shared_snapshot_seeds
+                ],
+                "shared_snapshot_captures": [
+                    dict(record.to_dict()) for record in self._shared_snapshot_captures
+                ],
+                "shared_snapshot_capture_skips": [
+                    dict(record.to_dict()) for record in self._shared_snapshot_capture_skips
+                ],
+                "warnings": [dict(warning) for warning in self._execution_warnings],
+            }
+
+    def adopt_worker_evidence(self, evidence: Mapping[str, Any]) -> None:
+        """Report a worker's evidence as this execution's own.
+
+        *evidence* is a worker's :meth:`worker_evidence` or its whole metrics
+        payload, which carries the same keys.
+        """
+        with self._evidence_lock:
+            for payload in evidence.get("input_preparation", ()):
+                self._input_preparation.append(_EvidenceRecord(dict(payload)))
+            for payload in evidence.get("shared_snapshot_seeds", ()):
+                self._shared_snapshot_seeds.append(_EvidenceRecord(dict(payload)))
+            for payload in evidence.get("shared_snapshot_captures", ()):
+                self._shared_snapshot_captures.append(_EvidenceRecord(dict(payload)))
+            for payload in evidence.get("shared_snapshot_capture_skips", ()):
+                self._shared_snapshot_capture_skips.append(_EvidenceRecord(dict(payload)))
+            for warning in evidence.get("warnings", ()):
+                self._execution_warnings.append(
+                    {
+                        "code": warning.get("code"),
+                        "node_id": warning.get("node_id"),
+                        "reason": warning.get("reason"),
+                    }
+                )
+
+    def metrics_with_worker_evidence(self, worker_metrics: Mapping[str, Any]) -> dict[str, Any]:
+        """Adopt a worker's metrics evidence and return them carrying all of it.
+
+        A job whose phases run in separate processes persists the metrics of
+        the process that reported last. Their evidence lists are replaced by
+        this execution's accumulated evidence, so what the parent and every
+        earlier worker prepared, read, wrote, and warned about is not lost.
+        """
+        self.adopt_worker_evidence(worker_metrics)
+        return {**worker_metrics, **self.worker_evidence()}
+
+    def record_execution_warning(
+        self, code: str, *, node_id: str | None = None, reason: str | None = None
+    ) -> None:
+        """Record one non-fatal condition the execution continued past."""
+        with self._evidence_lock:
+            self._execution_warnings.append({"code": code, "node_id": node_id, "reason": reason})
+
     def metrics_summary(
         self,
         *,
@@ -1243,7 +1403,24 @@ class ExecutionContext:
         payload["rss_limit_bytes"] = self._effective_rss_limit_bytes()
         payload["admission"] = self.admission.to_dict() if self.admission is not None else None
         with self._evidence_lock:
+            payload["training_write_strategy"] = self._training_write_strategy
+            payload["training_write_input_slices"] = self._training_write_input_slices
+            payload["training_write_native_reason"] = self._training_write_native_reason
+            payload["training_write_blocking_operator"] = self._training_write_blocking_operator
+            payload["data_output_write_strategy"] = self._data_output_write_strategy
+            payload["data_output_write_input_slices"] = self._data_output_write_input_slices
+            payload["data_output_write_native_reason"] = self._data_output_write_native_reason
             payload["input_preparation"] = [record.to_dict() for record in self._input_preparation]
+            payload["shared_snapshot_seeds"] = [
+                record.to_dict() for record in self._shared_snapshot_seeds
+            ]
+            payload["shared_snapshot_captures"] = [
+                record.to_dict() for record in self._shared_snapshot_captures
+            ]
+            payload["shared_snapshot_capture_skips"] = [
+                record.to_dict() for record in self._shared_snapshot_capture_skips
+            ]
+            payload["warnings"] = [dict(warning) for warning in self._execution_warnings]
         projection_plan = self.projection_plan
         diagnostic = getattr(projection_plan, "diagnostic", None)
         payload["execution_strategy"] = (

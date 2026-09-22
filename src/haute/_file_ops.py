@@ -37,6 +37,7 @@ mkdir that masks configuration bugs.
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import time
@@ -47,6 +48,27 @@ from types import TracebackType
 
 _WINDOWS_REPLACE_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1)
 _IS_WINDOWS = os.name == "nt"
+_DISK_HEADROOM_BYTES = 64 * 1024
+
+
+def ensure_disk_headroom(directory: Path, additional_bytes: int = 0) -> None:
+    """Fail before a write when its destination filesystem lacks headroom."""
+    if (
+        isinstance(additional_bytes, bool)
+        or not isinstance(additional_bytes, int)
+        or additional_bytes < 0
+    ):
+        raise ValueError("additional_bytes must be a non-negative integer")
+    if not directory.is_dir():
+        raise FileNotFoundError(directory)
+    required = additional_bytes + _DISK_HEADROOM_BYTES
+    available = shutil.disk_usage(directory).free
+    if available < required:
+        raise OSError(
+            errno.ENOSPC,
+            f"insufficient disk space: required {required} bytes, available {available} bytes",
+            str(directory),
+        )
 
 
 def _temp_path_for(target: Path) -> Path:
@@ -70,6 +92,32 @@ def _replace_with_windows_contention_retry(source: Path, target: Path) -> None:
             if not _IS_WINDOWS or getattr(exc, "winerror", None) not in {5, 32} or delay is None:
                 raise
             time.sleep(delay)
+
+
+def remove_tree(path: Path) -> bool:
+    """Remove a directory tree best-effort, retrying transient Windows failures.
+
+    Returns whether the tree is gone. Windows fails a delete with
+    ERROR_ACCESS_DENIED or ERROR_SHARING_VIOLATION while an antivirus scanner or
+    indexer briefly holds a handle on a file that was just written, so those two
+    codes receive the same short bounded retry as an atomic replace. Callers use
+    this for cleanup they must not abort on, and report a tree that survives.
+    """
+    for delay in (*_WINDOWS_REPLACE_RETRY_DELAYS_SECONDS, None):
+        try:
+            shutil.rmtree(path)
+            return True
+        except FileNotFoundError:
+            # A missing *root* is the tree already being gone. A missing
+            # descendant is not: Windows reports a path it cannot open — one
+            # past its 260-character limit, say — the same way, and the tree
+            # survives. Answering on the root keeps that visible to the caller.
+            return not path.exists()
+        except OSError as exc:
+            if not _IS_WINDOWS or getattr(exc, "winerror", None) not in {5, 32} or delay is None:
+                return not path.exists()
+            time.sleep(delay)
+    return not path.exists()
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:

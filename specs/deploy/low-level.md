@@ -386,8 +386,9 @@ pair. Deploy never uses the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair.
    with the execution profile, required columns, materialized code, and preamble context,
    without opening the provider, then normal executor column post-processing applies);
    retained direct-Parquet `dataInput` nodes (remap their configured path to the
-   bundled source); retained snapshot-backed `dataInput` nodes with a bundled
-   `node_id__snapshot.parquet` (scan the leased parquet through a deploy-only interception
+   bundled source); retained snapshot-backed `dataInput` nodes with bundled
+   `node_id__snapshot.part-NNNNN.parquet` parts (one artifact per part of the leased
+   generation; scan them in part order through a deploy-only interception
    path while retaining the canonical config unchanged, user code,
    preamble namespace, and executor post-processing);
    `externalFile` with a remapped bundled path (run its user code against the

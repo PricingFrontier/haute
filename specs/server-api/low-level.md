@@ -21,10 +21,17 @@
 | `src/haute/_sidecar.py` | Core read-side `.haute.json` contract: `SidecarModel`, the typed absent/valid/corrupt/unreadable read state, and the sidecar source/position normalisers. Lives outside the web layer so editor recovery never imports routes. |
 | `src/haute/routes/__init__.py` | Package docstring only — no code. |
 | `src/haute/routes/_helpers.py` | Re-exports the core sidecar read contract and `load_pipeline_editor_document` for route consumers; path/index/watcher/WebSocket helpers; strict `parse_pipeline_to_graph`; the sidecar write path (`save_sidecar`); historical-commit parsing; and the shared `save_lock`. |
-| `src/haute/routes/pipeline.py` | `/api/pipelines`, `/api/pipeline`, `/api/pipeline/{name}`, `/api/pipeline/editor-identities`, `/api/pipeline/polars-steps/render`, `/api/pipeline/save`, `/api/pipeline/repair/remove/dry-run`, `/api/pipeline/repair/remove/apply`, `/api/pipeline/read-json`, `/api/pipeline/trace`, `/api/pipeline/preview`, `/api/pipeline/recovery-preview`, `/api/pipeline/write-output`, `/api/pipeline/output-destination` — plus the supersession-key builders, shared output-request preparation, `_prepare_runtime_graph` request containment, runtime-input/output path validators, and memory-limit-to-HTTP-exception translators shared across graph-executing route families. |
+| `src/haute/routes/pipeline.py` | `/api/pipelines`, `/api/pipeline`, `/api/pipeline/{name}`, `/api/pipeline/editor-identities`, `/api/pipeline/polars-steps/render`, `/api/pipeline/save`, `/api/pipeline/repair/remove/dry-run`, `/api/pipeline/repair/remove/apply`, `/api/pipeline/read-json`, `/api/pipeline/trace`, `/api/pipeline/preview`, `/api/pipeline/preview/inputs`, `/api/pipeline/recovery-preview`, `/api/pipeline/write-output`, `/api/pipeline/output-destination` — plus the supersession-key builders, shared output-request preparation, `_prepare_runtime_graph` request containment, runtime-input/output path validators, and memory-limit-to-HTTP-exception translators shared across graph-executing route families. |
 | `src/haute/routes/files.py` | `/api/files` (directory browse) and `/api/schema` (flat-file plus XML structured-record schema/preview). |
 | `src/haute/routes/io_capabilities.py` | `/api/io-capabilities`, the versioned provider/format/cache capability contract consumed by the input and output editors. |
 | `src/haute/routes/input_cache.py` | `/api/input-cache/*`, the shared build/status/cancel/clear lifecycle for snapshot-backed inputs. |
+| `src/haute/routes/node_data.py` | `/api/node-data/point`, `/run`, `/status/{job_id}`, `/cancel/{job_id}`, and `/clear` for the data a consumer node reads. |
+| `src/haute/routes/cache.py` | `GET /api/cache/usage`, the report of both snapshot-store budgets against their limits; `POST /api/cache/nodes`, the per-node report of what each node of a graph holds within them; and `POST /api/cache/clear`, which clears the identities a report's row named. The reports answer one explicit request; the first takes no arguments and names the environment variable behind each limit. |
+| `src/haute/routes/banding.py` | FastAPI router (`/api/banding`): whole-dataset statistics for the banding factor being edited, delegating to `_banding_stats.py`. |
+| `src/haute/routes/rating.py` | FastAPI router (`/api/rating`): whole-dataset levels for the raw factor columns a Rating Step rates on, delegating to `_rating_levels.py`. |
+| `src/haute/routes/_rating_levels.py` | Reads those levels over the node's shared data point under `run_synchronous_analysis`, keyed by the rating lookup's own key expression. |
+| `src/haute/routes/_node_data_service.py` | `NodeDataService`: consumer point responses, delegation, explicit node-output build jobs in isolated workers, the data-profile job, supersession, cancellation, and clear. `points_for_graph` resolves every node of a graph against one resolver for the per-node cache report, returning each node's input-snapshot identity digest alongside its point. |
+| `src/haute/routes/_synchronous_analysis.py` | Request-time analyses of a leased point: admitted execution, memoisation by data version, and client-disconnect cancellation. |
 | `src/haute/routes/utility.py` | `/api/utility` CRUD (list/read/create/update/delete) for `utility/*.py` helper modules, with AST syntax validation on every write. |
 | `src/haute/routes/_save_pipeline.py` | `SavePipelineService` — the transactional save orchestrator: singleton/name-collision/load-error validation, codegen invocation, config-file + sidecar writes, stale-config cleanup, and rollback. |
 | `src/haute/routes/_supersession.py` | `SupersessionCoordinator` / `_SupersessionState` — generation-counted "run latest, cancel/skip the rest" concurrency primitive used by preview and trace. |
@@ -53,6 +60,23 @@
   `result_revision`, `capability_hash`, `plan_hash`, semantic diff,
   verification tier/evidence, warnings and ledger reference as applicable.
   Unknown fields remain rejected at typed HTTP boundaries.
+- `ExecutionMetricsPayload` (`_execution_schemas.py`, re-exported by `schemas.py`) carries
+  the execution metrics payload across routes and worker processes, including scalar
+  single-file training write evidence: `training_write_strategy`, `training_write_input_slices`
+  (`ge=1`), `training_write_native_reason`, and `training_write_blocking_operator`; and the same
+  for a Data Output's own file, `data_output_write_strategy`, `data_output_write_input_slices`
+  (`ge=1`) and `data_output_write_native_reason`. The two are named apart rather than shared
+  because this payload is carried by every operation, and a preview should not report four null
+  training fields nor a training run three null output ones. Each set's native reason is recorded
+  only where the write did come back native: a reason for a strategy that did not happen would be
+  a false statement in the evidence. A Data Output that writes eagerly or to a database records no
+  strategy at all, because the chunked writer is not on that path.
+
+- A refused capture reaches a node-data build's job as the warning an automatic capture records
+  (`snapshot_capture_skipped`, the node, `reason="quota"`), because a failing build's
+  `worker_evidence` is adopted before its error propagates and a failed job is written with its
+  execution metrics. Without it a build the user asked for reported the store's own text, naming
+  no node, while the same refusal in a preview named one.
 
 **Exception hierarchy** (`errors.py`, abridged to route-relevant branches) — every subclass
 roots at `HauteError`, which renders
@@ -197,8 +221,9 @@ when a path/query/body fails model validation):
 | `POST /api/pipeline/save` | `SavePipelineRequest {name="main", description="", graph={}, preamble=null, preserved_blocks=[], source_file="", sources=["live"], active_source="live", base_revision}`; `base_revision` is a required `RevisionToken | null` | `SavePipelineResponse {status="saved", file, pipeline_name, source_revision, warnings=[], git_sha=null, identity_required=false}`, or `409` with a flat `detail` beginning `stale_document_revision:` when `base_revision` does not equal the on-disk `source_revision` (`null` versus an existing file, or a token versus a missing file, are mismatches) |
 | `POST /api/pipeline/read-json` | `ReadJsonRequest {path}` | `ReadJsonResponse`, a root JSON object (arrays/scalars are rejected) |
 | `POST /api/pipeline/polars-steps/render` | `PolarsStepsRenderRequest {steps:[object], input_names:[str], start:"input"|"frame"}` (`start` is required: `input` renders a transform's list, `frame` a surface whose `df` is already bound) | `PolarsStepsRenderResponse {ok, code, step_lines:[[start,end]], step_index, message}`; a step validation failure is `ok: false` with HTTP 200, an empty frame-mode list is `ok: true` with empty code, and the call touches no project state |
-| `POST /api/pipeline/preview` | `PreviewNodeRequest {graph, node_id, row_limit=100 (1..10000), source="live", requested_preview_columns=null (non-empty when present), streaming_chunk_size=null (1..10000000, bool rejected), port_label=null}`; `node_id` is the visible id for a root node and the occurrence-qualified runtime id for a drilled child | `PreviewNodeResponse`, extending `NodeResult` with `node_id`, timings/memory, per-node schemas/statuses, and optional execution metrics |
-| `POST /api/pipeline/trace` | `TraceRequest {graph, row_index=0 (>=0), target_node_id=null, column=null, row_limit=100 (1..10000), source="live", row_values=null, streaming_chunk_size=null}`; a non-null `target_node_id` is the visible id for a root node and the occurrence-qualified runtime id for a drilled child | Explicit JSON `TraceResponse {status, trace}`. `trace` includes successful steps, typed omissions, correlation/waterfall evidence, UTC `generated_at`, source identity, and `execution_origin: fresh_execution|preview_cache|trace_cache`; the payload is serialized and `TraceResponse`-validated in the worker, then the returned `JSONResponse` skips a second event-loop validation pass |
+| `POST /api/pipeline/preview` | `PreviewNodeRequest {graph, node_id, row_limit=100 (1..10000), source="live", requested_preview_columns=null (non-empty when present), streaming_chunk_size=null (1..10000000, bool rejected), port_label=null}`; `node_id` is the visible id for a root node and the occurrence-qualified runtime id for a drilled child | `PreviewNodeResponse`, extending `NodeResult` with `node_id`, timings/memory, per-node schemas/statuses, optional execution metrics, and `seed_plan`: one `PreviewSeedPlanEntry {node_id, port_label=null, node_label, identity_digest, generation_id, columns (null = all), created_at (ISO-8601 UTC), kind: seeded|captured}` per shared-snapshot generation the rows were computed from, in topological order. `seeded` means the plan leased that generation and the response was computed from it; `captured` means this request computed the node and published it. A response served from the preview response cache reports every generation it lists as `seeded`, because the hit leases and verifies each one before serving it and publishes none of them. A partial hit, which extends a cached entry by executing the nodes it lacks, reports the kinds of the plan it ran under. The route executes with `shared_snapshots=True`; in process mode it passes the worker a staging token and discards any capture staging left under it once the worker returns, fails, times out, or is superseded. |
+| `POST /api/pipeline/preview/inputs` | `PreviewInputsRequest {graph, node_id, source="live", requested_preview_columns=null (non-empty when present), port_label=null}` | `PreviewInputsResponse {input_node_ids}` — `preview_input_node_ids`: the snapshot-backed Data Inputs and structured API Inputs the preview's first resolution executes, read without preparing or leasing; for a lineage that is not admitted, every one the target reads. Advisory: the preview prepares whatever its own plan then reads. A graph the preview cannot run as authored (a shape, config, or contract error, flattening included) answers an empty list, and the preview reports that error at the node. |
+| `POST /api/pipeline/trace` | `TraceRequest {graph, row_index=0 (>=0), target_node_id=null, column=null, row_limit=100 (1..10000), source="live", row_values=null, streaming_chunk_size=null, seed_plan}`; a non-null `target_node_id` is the visible id for a root node and the occurrence-qualified runtime id for a drilled child. `seed_plan` is required and may be empty: the explained preview's entries as `TraceSeedPlanEntry {node_id, port_label=null, identity_digest, generation_id}`; it joins the supersession key, and an expired plan answers 409 `preview_seed_plan_expired` in thread and process mode alike | Explicit JSON `TraceResponse {status, trace}`. `trace` includes successful steps, typed omissions, correlation/waterfall evidence, UTC `generated_at`, source identity, and `execution_origin: fresh_execution|preview_cache|trace_cache`; the payload is serialized and `TraceResponse`-validated in the worker, then the returned `JSONResponse` skips a second event-loop validation pass |
 | `POST /api/pipeline/write-output` | `WriteOutputRequest {graph, node_id, source="live", streaming_chunk_size=null, overwrite=false}` | `WriteOutputResponse` with status, row count, destination path/table, format, publication outcome, and execution metrics |
 | `POST /api/pipeline/output-destination` | `OutputDestinationRequest {graph, node_id}` | Safe destination display path, format, and suffix-mismatch flag; performs no graph execution or filesystem write |
 | `GET /api/files` | Query `dir="."`, `extensions=null`; omission derives readable extensions from the I/O registry | `BrowseFilesResponse {dir, items:[{name,path,type,size?}]}`; files have numeric byte size, directories serialize `size: null` |
@@ -498,14 +523,293 @@ worker and removes a known file staging artifact before returning 504. The sole 
 and directory-fsync section runs under the same short gate that records route cancellation, so a
 result/cancel race has one linearized winner and cannot pass through a check/rename gap.
 
-**Explore materialisation** (`routes/_explore_service.py`, `_explore_cache.py`): the background
-supervisor remains a parent thread only to bridge the synchronous one-shot worker into the job
-lifecycle. The child performs graph execution, bounded materialisation/statistics, and prepares a
-parent-named durable generation without selecting it. The parent validates the immutable report
-and artifact, rechecks latest-wins ownership, atomically commits `current.json`, restores the
-committed generation into process-local caches, and transitions the job. Cancellation,
-supersession, timeout, and worker failure terminate/join the process and discard that exact staged
-generation; child code cannot write the `JobStore` or parent LRU caches.
+**Node-data build and profile** (`routes/_node_data_service.py`): the background supervisor
+remains a parent thread only to bridge the synchronous one-shot worker into the job lifecycle.
+The child performs graph execution and writes only into the parent-named staging directory it is
+given, or — for a profile — leases the parent's exact resolution and computes statistics without
+writing anything. The parent validates the returned manifest or analysis outcome, rechecks
+latest-wins ownership, publishes the generation or the analysis document, and transitions the
+job. Cancellation, supersession, timeout, and worker failure terminate/join the process and
+discard that exact staging directory *before* the job's terminal status is published, so a client
+that reads the outcome never finds staging the build left behind; a last-resort sweep after the
+status covers a path that failed while publishing it. Child code cannot write the `JobStore`, the
+snapshot store's current pointer, or the analysis-result store.
+
+### Node-data builds
+
+**Node-data builds** (`routes/node_data.py`, `routes/_node_data_service.py`): every request is
+flattened, source-file checked, and runtime-path validated like other graph routes before
+`NodeDataService` resolves the consumer point with a `DataPointResolver` over
+`NodeSnapshotStore(project root)`. The resolver's building probe reports a node-output build
+from the service's own identity-digest → running-job map, an input-snapshot build through
+`input_cache.input_snapshot_build_running(identity_digest)`, and a JSON cache build through
+`json_cache.json_cache_build_running(working_cache_dir)`. `point` returns
+`NodeDataPointResponse` (`slot_key` is `producer|port|source`); node-output details come from
+the slot's latest generation and the running job; snapshot-backed inputs report their
+generation's rows and bytes and name `/api/input-cache/build` and `/api/input-cache/clear`;
+API-input tables name `/api/json-cache/build` and `/api/json-cache`; a direct-Parquet input sets
+`reads_directly`. A service-wide slot lock makes each `run` decision and each `clear` atomic, so
+simultaneous identical requests start one job and join it. `run` pins and completes a node
+output current for `all` unless `refresh`, joins the running job for the same identity, and
+otherwise creates a `node_data` job with a parent-chosen staging token, registers
+it latest for the slot digest (superseding and transitioning the previous job), and starts a
+supervisor thread. The thread first joins the superseded job's thread, then creates an admitted
+`node_snapshot` context, binds metrics publication, and prepares the node's snapshot-backed
+inputs itself (`prepare_graph` then `prepare_input_snapshots` under that context). Preparation
+can build or refresh input snapshots whose generations belong to the signature, so the thread
+then binds the build to the identity of the prepared inputs, re-keys the running job under that
+identity (so `point` and joins still find it), opens a
+[seed plan](../caching/low-level.md#seed-plans) for the build (`NODE_SNAPSHOT`, the built node
+as `build_node_id` so only strictly upstream points are seeded, the request's `refresh`, which
+seeds nothing but still captures) whose captures stage under the build's own token, and — with
+that plan leased until the worker has exited — runs `_run_node_snapshot_worker` in an
+isolated worker with `HAUTE_NODE_SNAPSHOT_TIMEOUT` (default 1800 s), passing the plan's handoff
+in the request. The child sets the project root, confirms the bound identity, and runs its whole
+execution and its target write under the request's `streaming_chunk_size`, so the target and every
+capture the run makes resolve the same size (a request that names no size leaves the process
+default in force): it adopts the plan (leasing the same generations), executes the node under it
+with `enforce_contracts=True` and `prepare_inputs=False` — intermediate capture points are
+published as automatic generations —
+rejects a multi-frame output (`node_snapshot_multi_frame_unsupported`), sinks the frame into
+staging named by the parent's token via `write_parts` (passing the node's join recipe or
+write recipe from execution, so a chunk-local filter writes `input_sliced`), confirms the identity again, and publishes with
+`explicit=True`, the request's `refresh`, and as `dependencies` the closure the plan recorded
+for the node, so replacing any snapshot it seeded or captured makes it stale. A superseded
+publication counts as cached only when a current, full-width generation of the node exists;
+otherwise something the build read was replaced while it ran and nothing holds the node's
+data, so it is `NodeSnapshotInputsChangedError`; an identity that moved at either
+check (a source or snapshot changed while the build read it) is
+`NodeSnapshotInputsChangedError`, reported as a contract error and never published. It returns
+a closed `_NodeSnapshotWorkerOutcome` (generation id and `published`/`superseded` with the
+execution's `worker_evidence()`, or a `public_contract`, `memory`, `quota`, or
+`contract` failure). The parent validates the envelope, adopts the child's input preparation, seeds,
+captures, and warnings into its own execution context (`adopt_worker_evidence`), and completes the
+job under the registry's latest-publication guard with `generation_id`, `outcome`, and
+execution metrics, or maps failures to `contract_error`, `memory_limited`,
+`error` (quota, with its actionable message), the cancellation or supersession reason, a public
+contract error from input preparation (except that a preparation failure after the job was
+cancelled or superseded ends with that reason), or the internal-error envelope. After the worker has terminated, the supervisor discards any
+staging directory carrying its token — the build's own and its captures' — which a killed
+worker could not remove. `clear` cancels
+the slot's running job, waits for that job's supervisor thread to finish so the worker can no
+longer publish, and then calls `NodeSnapshotStore.clear_slot`; for other kinds it answers
+`delegated`; every kind's `clear` also cancels the point's running profiles and removes its
+stored analyses. An invalid API-input port is `node_data_point_invalid` (400) on every route.
+`status` serves both job kinds and reports `error`, `error_code`, and `error_detail` from the
+job, so a memory limit and a changed-data contract error are distinguishable from the message
+alone. Every resource failure carries `error_code` `memory_limit` with the execution payload as
+`error_detail`, whether the execution reported the limit, admission refused it, or the parent
+killed the worker over its RSS limit.
+
+### Cache usage
+
+**Cache usage** (`routes/cache.py`): `GET /api/cache/usage` takes no arguments and returns
+`CacheUsageResponse` — `node_outputs` and `input_snapshots`, each reporting
+`generations_used`/`generations_limit` and `bytes_used`/`bytes_limit` plus the name of the
+environment variable behind each limit. The numbers come from
+`NodeSnapshotStore.usage_report()`, which walks the identity directories once per budget
+through the store's own `_bucket_usage` accounting, so an identity whose marker does not
+classify counts against both budgets here exactly as it does at admission: what the response
+reports is what would refuse the next capture, not a second opinion about it. The variable
+names are reported rather than assumed by the client because the server is what reads them
+(`INPUT_CACHE_MAX_*_VARIABLE` in `_source_cache.py`, `NODE_SNAPSHOT_MAX_*_VARIABLE` in
+`_node_snapshots.py`, each used both to read the limit and to report its name), so a user told
+to raise a limit is told the name the store actually read. The walk is what an admission pays,
+so the endpoint answers an explicit request and its response is a snapshot, not a
+subscription; a surface that wants to poll needs an incremental count in the store first. The
+two budgets are independent — node outputs and input snapshots neither consume nor evict one
+another — so no combined total is reported.
+
+The report reads: it takes no lock and changes no generation. The request is not free of
+writes, though, because constructing `NodeSnapshotStore` creates `.haute_cache/inputs` when
+it is absent and, once per process per root, sweeps retired directories — the same
+construction every other store-backed route performs, not something this endpoint adds.
+
+**Per-node cache report** (`routes/cache.py`): `POST /api/cache/nodes` takes a graph and a
+source and returns `CacheNodesResponse`. The graph is flattened first, so a submodel's nodes
+are reported the way they are cached — individually. `NodeDataService.points_for_graph`
+resolves every node's point against one `DataPointResolver` and the caller's store — the whole
+report builds one `NodeSnapshotStore` — because the per-node cost is the resolution itself.
+That cost is `CACHE-S17`'s, multiplied by the node count: each signature re-walks the
+canonical graph, so the batch is quadratic in node copies. It is milliseconds per node at the
+sizes measured and is why this endpoint is asked for explicitly rather than polled; a node whose point cannot be resolved becomes a row
+rather than failing the request, because a report about every node is worth least precisely
+when one node is half-configured. An unwired Banding (`NodeDataPointInvalidError`) and a Data
+Input with no path (`PolarsIoConfigError`, raised resolving its own identity) carry
+`unavailable_reason`; both are named rather than caught as the `ValueError` they derive from,
+so a programming error still surfaces as a 500. A `SourceCacheCorruptError` is different: the
+node's data exists and is damaged, so `_corrupt_response` synthesises the row from the
+consumer point — the kind is a graph lookup and the producer is the point's — with
+`state="corrupt"` and no reason, and the row carries the bytes like any other, because the
+budget charges a corrupt generation like any other. A `PipelineGraph` carries no id-uniqueness
+validator, so a duplicated node id is resolved once; two rows would otherwise claim one
+node's bytes. Each
+row's `state` describes the generation that node would read for its own column demand, while
+`generations`/`size_bytes` are only ever data that row is the one to carry: every signature
+the store holds for it as a node output, or the whole identity behind it when it is a
+snapshot-backed input.
+
+**Every byte is reported exactly once**, which three rules together secure. A node reading an
+upstream point does not carry that point's bytes and names it in `reads_from`, though it still
+carries its own captured output. A shared input snapshot — two Data Inputs with one
+configuration, or one submodel instantiated twice, resolving to a single identity — is charged
+to exactly one reader and named on all of them in `shares_snapshot_with`; the carrier is the
+smallest node id among the readers, never iteration order, so an unrelated edit never moves
+bytes from one row to another. And a row's figures
+come from the inventory's owner for the identity, never from the single generation the point
+resolved, so a non-current generation or an in-flight staging directory under that identity is
+reported rather than dropped. Matching is by identity digest, which `points_for_graph` returns
+for exactly that purpose, because a descriptor's label is not an identity: the same file read
+with different arguments is a different identity with the same path.
+
+The route tracks the identities its rows carry and lists every other owner in `other`, so the
+two halves are exhaustive by construction — a node no longer in the graph, the same node's
+data under another source, an input snapshot nothing reads. `unattributed_*` is what no
+metadata could name. Every row and owner also carries `newest_created_at` and `build_seconds`
+from its newest generation's metadata, so the report says when a thing was cached and how long
+that took; a generation published before durations were recorded reports `null`, which the
+surfaces must show as unknown rather than as an instant build. Per budget, the rows plus `other` plus `unattributed_*` therefore equal
+what `GET /api/cache/usage` reports, which is the invariant
+`tests/test_cache_nodes_routes.py` asserts directly. `unmarked_identities` counts
+identities whose provider marker does not classify: admission charges each to *both* budgets,
+so it is what explains a usage report larger than the sum of the rows.
+
+
+**Clearing a row** (`routes/cache.py`): `POST /api/cache/clear` takes the `identity_digests`
+a report's row carried and clears exactly those, through
+`NodeSnapshotStore.clear_identity`. A row names identities only when it carries their bytes,
+so clearing a row removes what that row reported and nothing else — not the node's data under
+another source, which is a different row, and not a shared snapshot charged to a different
+reader. The identity is reconstructed from a generation's own metadata and **only cleared when
+the reconstruction reproduces the digest that was asked for**, so a hash the caller supplies
+can never name a different identity than the one the store verifies. A digest the store no
+longer holds is reported as not cleared rather than failing the request: acting on a report a
+moment out of date is an ordinary race. The response reports what was cleared and the bytes
+freed, which the caller uses rather than assuming its request succeeded.
+
+This is the only way to reclaim a node the graph no longer has: `/api/node-data/clear`
+resolves a node of the posted graph, so a deleted or renamed node's cache was previously
+reclaimable only under quota pressure. Cache data is regenerable, so the endpoint needs no
+confirmation of its own; what it must not do is surprise a reader mid-scan, and it does not,
+because every clear retires a held generation on release rather than deleting it underneath
+the scan.
+
+### The data profile
+
+`POST /api/node-data/profile` answers with the point's profile for its current data version.
+Under a service-wide profile lock, the point is resolved for every column: a point that is not
+`current` is `cache_required` (the profile describes the whole dataset, so it is never computed
+from partial data), an `AnalysisResultStore` document for `(point digest, data version,
+profile, 1)` is `completed` with the result, a running profile of the same point and data
+version is `joined`, and otherwise a `node_profile` job is created and `started`. The job
+thread creates an admitted `explore_analysis` context, binds metrics publication, and holds
+`lease_resolved(resolution, exact=True)` for the whole job, so the worker reads exactly the
+data the parent resolved even if the point is refreshed or cleared meanwhile. It runs
+`_run_profile_worker` in an isolated worker (`HAUTE_NODE_DATA_PROFILE_TIMEOUT`, default
+1800 s), which sets the project root, leases the same resolution exactly, computes
+`_build_frame_stats` from `src/haute/_frame_profile.py` (owned by
+[explore-eda](../explore-eda/low-level.md)) in a `node_data_profile` stage, and for a direct
+file re-resolves afterwards so a rewrite during the read is reported rather than profiled. It
+returns a closed outcome carrying either the profile or a `public_contract`, `memory`,
+`contract`, or `changed` failure, validated by the parent through the same envelope as a
+build; the parent then writes the store and completes the job with the profile under the
+profile lock and the registry's latest-publication guard, so publication is indivisible against
+both a cancellation and a `clear` of the point: whichever of the two serialises first, a
+cleared point never keeps an analysis of the data that was removed, and a terminal admission,
+memory, cancellation, or changed-data outcome leaves the analysis store unchanged.
+
+### Banding statistics
+
+`POST /api/banding/stats` (`routes/banding.py`, `routes/_banding_stats.py`) answers what one
+banding factor's data looks like over the whole point its node reads. The factor comes from the
+editor rather than the saved graph, so the numbers follow what the user is editing; the node only
+says which point to read. Because the edited factor may name a column the saved node does not, the
+request resolves the point for the node's demand *widened by that column*, so a snapshot without it
+reads as not current for this request instead of answering from data that lacks it — and the
+`point` in the response is that same widened reading.
+
+`status: "cache_required"` with the point is the whole answer when the point is not current or its
+data changed underneath the request. Otherwise the statistics are computed through
+`run_synchronous_analysis`, so they run under an admitted `explore_analysis` context, hold the
+lease for the collection, and are memoised per data version and request — the request digest
+covers the column, mode, rules, closure, bin count and value limit, so an edit that cannot change
+the numbers does not recompute them. The route runs the analysis through
+`run_until_disconnected`, so the editor superseding its own request on the next keystroke stops
+that scan instead of leaving a whole-dataset collection holding its admission and lease for an
+answer nobody will read; `/api/explore/pivots/members` answers the same way.
+
+`data_version` is the version the *lease served*, not the one the point reported when the request
+resolved: a refresh between the two makes those different, and the editor decides whether it may
+show whole-dataset counts by comparing this version with the one its point currently holds, so a
+result labelled with a version it was not computed from would be shown as current.
+
+For a numeric mode (`continuous`, `breakpoints`) the response carries `non_finite_count`, `minimum`
+and `maximum` over the finite values, and `bins` from the shared `_binning.equal_width_bins`:
+equal-width `[lower, upper)` intervals with the last closed at the maximum, one bin for a constant
+column, and no bins at all for a column with no finite value. Every numeric dtype is measured as a
+float, including `Decimal`, which has no `is_finite` of its own and raises on the check. A value is
+counted in the bin whose *published* edges contain it — `bin_edges` derives the edges and the count
+is placed against those numbers — because deriving an index by arithmetic instead is a second
+calculation that can round differently from the edge it should agree with: over 40 bins of `[0, 1]`
+it put `0.3` in the bin whose lower edge is `0.30000000000000004`, above the value itself. For `categorical` it carries `values`
+as `{value, count}` on the column cast to the text execution matches on — sorted by count
+descending then value ascending and capped at `value_limit` — with `distinct_count` over non-null
+values and `other_count` for the non-null rows outside the returned ones; nulls count only in
+`null_count`, and `"NaN"` and `"inf"` are ordinary values. When the factor has rules, `rule_counts`
+is aligned to the user's rules and `unmatched_count` is the rest, both from
+[`banding_rule_claim_expr`](../rating/low-level.md#which-rule-claimed-a-row--bandingruleclaimexpr-ratingpy),
+so the editor shows the counts a run would produce.
+
+Three conditions are HTTP 422: a column the data does not have (whether the projection or the
+schema finds it), a numeric mode on a column it cannot compare, and rules execution itself would
+refuse — the last carrying execution's own message. The repository keeps `HTTPException.detail` a
+plain string, so these are told apart by their messages rather than by a code in the body. Invalid
+consumer wiring is HTTP 400, and admission or memory-limit failure is HTTP 507 through the shared
+analysis helper.
+
+Request-time analyses (`routes/_synchronous_analysis.py`) answer inside the request instead:
+`run_synchronous_analysis` serves the `SynchronousAnalysisCache` entry for the point's current
+data version, or admits an `explore_analysis` context, leases the point, computes under it,
+and memoises the result under the version the lease actually served; a point that is not
+`current` raises `cache_required`, a direct file rewritten while the analysis read it raises
+`node_data_changed` and is neither returned nor memoised, and an admission or memory-limit
+failure is HTTP 507 with the execution error payload.
+`run_until_disconnected` runs one of these off the event loop and cancels its context when the
+client disconnects or the request task itself is cancelled; either way it waits for the
+abandoned analysis to stop, so its admission and lease are always released, discarding whatever
+that analysis reports, before answering 499 or propagating the cancellation.
+
+### Rating factor levels
+
+`POST /api/rating/levels` (`routes/rating.py`, `routes/_rating_levels.py`) answers which levels the
+raw factor columns of a Rating Step actually hold, over the whole point its node reads. The editor
+listed the levels of preview rows, so a level appearing only outside them could not be given a rate
+and its rows silently took the table's default.
+
+The request names `columns` (1–100, read once each in the order first asked) and a `value_limit`
+(1–10000, default 1000). The point is resolved for the node's demand *widened by those columns*, on
+the same rule as the banding statistics above, and the response carries that same widened reading.
+`status: "cache_required"` with the point is the whole answer when the point is not current or its
+data changed underneath the request; otherwise the levels are read through `run_synchronous_analysis`
+— admitted, leased, cancellable, and memoised per data version and request — and the route runs it
+through `run_until_disconnected`, so a superseded request stops its scan. `data_version` is the
+version the lease served, for the same reason it is on the banding response.
+
+Each column's `values` are `{value, count}` pairs keyed by the rating lookup's own
+`_rating_key_expr`, so a level chosen in the editor is one the lookup joins on rather than a
+rendering of the value that merely looks like it. They are sorted by count descending then value
+ascending and capped at `value_limit`, so what the cap keeps is what the data is mostly made of.
+`distinct_count` counts the levels that could be chosen — the number `values` would hold without
+the cap — and `null_count` the missing rows. A missing value and a blank string are neither of them
+something to rate on, so neither is a level: only the missing ones are counted. `total_rows` is the
+rows those levels were read from, which the editor reports.
+
+Two conditions are HTTP 422: a column the data does not have (whether the projection or the schema
+finds it), and a column that is not text — `String`, `Categorical` or `Enum`, the kinds the preview
+path has always offered, because a number's levels are banding's job. As with the banding
+statistics, `HTTPException.detail` stays a plain string and the two are told apart by their
+messages. Invalid consumer wiring is HTTP 400, and admission or memory-limit failure is HTTP 507
+through the shared analysis helper.
 
 ## Edge cases and invariants
 
@@ -612,7 +916,7 @@ later write and cleanup checks still compare against the captured identities.
 | `HTTPException` (raised directly) | path validation, node lookup, syntax checks | 400 / 403 / 404 / 409 | `raise_node_not_found`, `raise_node_type_error`, `raise_pipeline_not_found`, `raise_validation_error` centralise the structured-log + raise pattern. |
 | Any other `Exception` | route catch-alls | 500 | Route handlers generally log and return `_INTERNAL_ERROR_DETAIL`; `_RequestIdMiddleware` is a separate backstop whose fixed detail is `Internal server error`. |
 
-The synchronous public-contract adapter maps this closed set to HTTP 422 (except `InputPreparationError` with `reason_code == "memory_limited"`, which maps to 507); background jobs
+The synchronous public-contract adapter maps this closed set to HTTP 422 (except `InputPreparationError` with `reason_code == "memory_limited"`, which maps to 507, and `SeedPlanExpiredError`, which maps to 409 because the preview a trace explains must be refreshed); background jobs
 use the same stable codes and named fields under terminal `contract_error` (or `memory_limited` for that memory case):
 
 | Exception | Stable code | Named fields |
@@ -629,6 +933,14 @@ use the same stable codes and named fields under terminal `contract_error` (or `
 | `RatingFactorDtypeContractError` | `rating_factor_dtype_contract` | `table`, `factor`, `saved_dtype`, `input_dtype` |
 | `LiveSwitchScenarioError` | `live_switch_scenario_missing` | `switch`, `scenario`, `available_mappings` |
 | `OutputNestingKeyError` | `output_nesting_key_null` | `frame`, `output_path`, `key` |
+| `SnapshotPlanInputsChangedError` | `snapshot_plan_inputs_changed` | `target_node_id` |
+| `SnapshotCorruptError` | `snapshot_corrupt` | `node_id`, `node_label` |
+| `SeedPlanExpiredError` | `preview_seed_plan_expired` | `node_id` |
+
+A preview answers `snapshot_plan_inputs_changed` for inputs that moved before it collected
+anything and, since the mid-run case now stops too, for inputs that move while it runs: it
+would otherwise render a seed signed for the old inputs beside a branch recomputed from the
+new ones. Both are the same 422 the frontend already handles.
 
 Except for handlers that return a `JSONResponse` directly, `HTTPException` responses use
 FastAPI's `{"detail": <string-or-object>}` envelope; this includes structured 507 memory
@@ -658,6 +970,64 @@ entirely and leave every touched file in whatever state it happened to be in."
 
 ## Testing
 
+- `tests/test_cache_nodes_routes.py` covers `POST /api/cache/nodes`: every node of the graph
+  reported including one with nothing cached, a re-cache replacing rather than adding to a
+  node's dataset, two nodes resolving to one input snapshot reporting its bytes once with the
+  second naming the first, a second identity under one path label still accounted for, a
+  misconfigured Data Input leaving the rest of the report intact, the per-budget invariant
+  that rows plus `other` plus `unattributed_*` equal the usage report against a stray
+  generation and a staging directory on disk, a generation whose metadata is unreadable
+  reported as unattributed, a corrupt point reported as a row with `state="corrupt"` and its
+  bytes rather than as an absence, clearing a row removing exactly its own identities while
+  another source's row and an unrelated orphan are untouched, clearing a digest the store no
+  longer holds reported rather than failing, clearing an orphaned row reclaiming it, another pipeline's node of the same name kept off this
+  one's row, a shared snapshot's carrier not depending on node order, a
+  node no longer in the graph and a node's data under another source both reported as `other`,
+  an input snapshot reported on its reader's row and nowhere else, a node reading an upstream
+  point carrying no size and naming that node, an unwired Banding reported as a row with a
+  reason rather than failing the request, and the unmarked-identity count that explains a
+  larger usage report.
+
+- `tests/test_cache_usage_routes.py` covers `GET /api/cache/usage`: both budgets' generations
+  and bytes against their pinned limits after one node-output publication and one input
+  snapshot, zero against both in an empty store, the four variable names, that raising
+  each named variable moves the limit the response reports under that name — which is what
+  rules out a name that no longer matches the variable the store reads — and that an
+  identity whose provider marker is unrecognised raises both budgets' generations and
+  bytes, which is the admission behaviour the report is required to mirror.
+
+- `tests/test_node_data_routes.py` covers a missing point for Banding, one build shared by
+  Explore and Banding on one parent (`building` with the job, `joined`, then cached), an
+  upstream edit making the point stale and a run publishing the new signature, a different
+  signature superseding a running build, refresh recomputing a randomly sampled producer, a
+  partial automatic generation becoming current and pinned, clear removing every signature,
+  contract and admission failures through the job envelope, cancellation and clear
+  terminating a real sleeping worker without publication or staging, clear never letting a
+  build paused before publication repopulate the slot, simultaneous identical runs sharing one
+  job, a killed worker's staging discarded by the parent, a build that prepares or refreshes
+  its CSV input snapshot completing current, a build paused after preparation found by `point`
+  and joined, a source replaced after execution read its rows never being published,
+  cancellation during input preparation ending `cancelled`, delegation and direct reads for source kinds,
+  invalid wiring and an invalid API-input port as 400, and a real isolated-worker build. Seed
+  plans in builds: caching `A` then `B` seeds `A`, records it in `B`'s dependencies and in the
+  job's metrics, and refreshing `A` stales `B`; clearing `A` leaves `B` current; caching `B`
+  before `A` leaves `B` current; refreshing the root of `A → B → C` stales both descendants; a
+  refresh build seeds nothing yet still captures its fan-out and join feeder; a build whose seed
+  is refreshed before it publishes ends `contract_error` rather than reporting the node cached;
+  and a build worker stopped, timed out, or killed at its memory cap ends with that status and
+  removes the capture it had staged. `test_an_explicit_build_and_its_captures_share_the_requested_chunk_size`
+  and `test_a_build_without_a_chunk_size_leaves_the_ambient_size_alone` verify that an explicit
+  build and its captures share the requested chunk size, that the capture evidence records it,
+  and that an unconfigured build leaves the ambient chunk size alone. An explicit build of a chunk-local filter node writes `input_sliced` across several parts and equals the native result.
+- `tests/test_analysis_results.py` covers the profile route: an uncached point asking to be
+  cached, a profile computed once and then served from the store, a second request joining the
+  running profile, a refreshed point never returning the previous profile, admission failure,
+  a memory limit, and cancellation each ending in the typed terminal state with nothing
+  stored, clear removing a stored profile, a direct file becoming unavailable after a rewrite
+  or a Data Input rename, a file rewritten mid-profile reported as `node_data_changed`, and
+  the synchronous helper running once per data version, requiring a cached point, reporting
+  memory failures as 507, and stopping its analysis both on client disconnect and on
+  cancellation of the request task.
 - `tests/test_contract_error_adapter.py` verifies sync/background contract-error payload parity and rejects unversioned errors.
 - `tests/test_error_detail_sanitization.py` verifies safe public error details, logging, domain-error exposure, route-specific sanitization, and sensitive-information leak prevention.
 - `tests/test_error_response_shape.py` verifies standard error envelopes, flat syntax details, sanitized internal errors, and prohibition of dict route details.
@@ -665,6 +1035,18 @@ entirely and leave every touched file in whatever state it happened to be in."
 - `tests/test_pipeline_read_json_route.py` verifies object JSON reads plus missing/non-JSON/invalid/non-object/traversal rejection.
 - `tests/test_polars_steps.py::test_render_endpoint_reports_invalid_step_as_data` verifies the step render endpoint's rendered, invalid-step (data, not 4xx) and malformed-request (422) outcomes.
 - `tests/test_serialization_invariants.py` verifies non-finite values serialize as sentinels in schema-preview and preview responses.
+- `tests/test_preview_snapshot_seeding.py` covers preview seed-plan responses: a repeat preview
+  reporting its generations as seeded (`test_a_repeat_preview_announces_its_generations_as_seeded`),
+  and an extended cache hit reporting the plan it ran under
+  (`test_an_extended_cache_hit_reports_the_current_plans_generations`).
+- `tests/test_training_seeding.py` covers training preparation: a modelling node over a chunk-local
+  filter parent writes its prepared parquet `input_sliced` across several slices, with rows,
+  order and schema equal to the native result, and its metrics report `training_write_strategy`
+  and `training_write_input_slices` through the worker path; a run with column exclusions
+  composes the drop into the recipe; a run with a row-limit sample takes the native path with
+  `training_write_native_reason="row_limit_sample"`; a mismatched recipe degrades to native with
+  `training_write_native_reason="recipe_mismatch"` and a recorded warning; and cancellation
+  mid-write leaves no prepared parquet.
 
 Tests live under `tests/`, one file per module or per feature slice, using FastAPI's
 `TestClient` against a temporary project directory (a `haute.toml` + pipeline `.py` fixture)

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
-import tempfile
 import threading
 import time
 from collections.abc import Mapping
@@ -317,13 +317,11 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
         "node_label": node.data.label,
     }
     job_id = _store.create_job(initial_job)
-    # ``TemporaryDirectory`` cleans up the checkpoint dir even if the
-    # process is interrupted between phases — ``mkdtemp`` + manual rmtree
-    # leaks on signal/crash, which adds up over long-running sessions.
+    # The seed plan entered on this stack is held while the estimate reads
+    # its frames, and released on every exit.
     execution_context: ExecutionContext | None = None
     try:
-        with tempfile.TemporaryDirectory(prefix="haute_opt_estimate_") as raw_dir:
-            checkpoint_dir = Path(raw_dir)
+        with contextlib.ExitStack() as resources:
             execution_context = create_admitted_execution_context(
                 operation="optimiser_estimate",
                 profile=ExecutionProfile.OPTIMISER_SETUP,
@@ -332,7 +330,7 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
             lazy_outputs = _solve_service._execute_pipeline(
                 body,
                 job_id,
-                checkpoint_dir,
+                resources,
                 required_columns_by_node=required_columns_by_node,
                 target_node_id=data_input_id or body.node_id,
                 execution_context=execution_context,

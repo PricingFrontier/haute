@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
+from haute._chunked_writes import ChunkedWrite
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from tests.conftest import make_ready_file_input_config
@@ -107,55 +108,58 @@ def _make_optimiser_graph(data_path: str, *, mode: str = "online") -> dict:
 
 
 class TestDataOutputExecutionThreading:
-    """``write_data_output`` passes its chunk size into graph execution."""
+    """``write_data_output`` runs its execution and write under its chunk size."""
 
-    def test_uses_request_value(self, tmp_path):
+    def _run(self, tmp_path, *, streaming_chunk_size: int | None) -> list[tuple[str, int | None]]:
+        from contextlib import contextmanager
+
         from haute.executor import write_data_output
 
         out_path = str(tmp_path / "out.parquet")
         graph = _make_sink_graph(out_path)
+        events: list[tuple[str, int | None]] = []
 
-        captured: dict[str, object] = {}
+        @contextmanager
+        def recording_chunk_size(chunk_size):
+            events.append(("enter", chunk_size))
+            yield
+            events.append(("exit", chunk_size))
 
         def fake_execute_lazy(*_args, **kwargs):
-            captured.update(kwargs)
+            events.append(("execute", None))
             return {"sink": lf}, ["s", "sink"], {}, {}
+
+        from haute._polars_io_registry import write_polars_output
+
+        def recording_write(*args, **kwargs):
+            events.append(("write", None))
+            return write_polars_output(*args, **kwargs)
 
         lf = pl.DataFrame({"x": [1, 2, 3]}).lazy()
         with (
             patch(
-                "haute.executor._execute_lazy",
-                side_effect=fake_execute_lazy,
+                "haute._polars_utils.temporary_streaming_chunk_size",
+                side_effect=recording_chunk_size,
             ),
+            patch("haute.executor._execute_lazy", side_effect=fake_execute_lazy),
+            patch("haute._polars_io_registry.write_polars_output", side_effect=recording_write),
         ):
-            write_data_output(graph, "sink", streaming_chunk_size=12345)
+            write_data_output(graph, "sink", streaming_chunk_size=streaming_chunk_size)
+        return events
 
-        assert captured["dataframe_cache_request"].streaming_chunk_size == 12345
+    def test_uses_request_value(self, tmp_path):
+        events = self._run(tmp_path, streaming_chunk_size=12345)
+        # Execution and the write both happen inside the scope.
+        assert events == [("enter", 12345), ("execute", None), ("write", None), ("exit", 12345)]
 
     def test_default_when_missing(self, tmp_path):
-        from haute.executor import write_data_output
-
-        out_path = str(tmp_path / "out.parquet")
-        graph = _make_sink_graph(out_path)
-
-        captured: dict[str, object] = {}
-
-        def fake_execute_lazy(*_args, **kwargs):
-            captured.update(kwargs)
-            return {"sink": lf}, ["s", "sink"], {}, {}
-
-        lf = pl.DataFrame({"x": [1]}).lazy()
-        with (
-            patch(
-                "haute.executor._execute_lazy",
-                side_effect=fake_execute_lazy,
-            ),
-        ):
-            write_data_output(graph, "sink")
-
-        assert (
-            captured["dataframe_cache_request"].streaming_chunk_size == DEFAULT_STREAMING_CHUNK_SIZE
-        )
+        events = self._run(tmp_path, streaming_chunk_size=None)
+        assert events == [
+            ("enter", DEFAULT_STREAMING_CHUNK_SIZE),
+            ("execute", None),
+            ("write", None),
+            ("exit", DEFAULT_STREAMING_CHUNK_SIZE),
+        ]
 
 
 class TestSinkRouteThreading:
@@ -358,7 +362,7 @@ class TestOptimiserExecutePipelineChunkSize:
 
         captured: list[int | None] = []
 
-        from contextlib import contextmanager
+        from contextlib import ExitStack, contextmanager
 
         def fake_ctx(chunk_size):
             captured.append(chunk_size)
@@ -370,6 +374,7 @@ class TestOptimiserExecutePipelineChunkSize:
             return _cm()
 
         with (
+            ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 return_value=({"opt": lf}, ["opt"], {}, {}),
@@ -382,9 +387,7 @@ class TestOptimiserExecutePipelineChunkSize:
                 side_effect=fake_ctx,
             ),
         ):
-            tmp = haute_scratch / "haute_test_chunk"
-            tmp.mkdir()
-            svc._execute_pipeline(body, "job-id", tmp)
+            svc._execute_pipeline(body, "job-id", resources)
         return captured
 
     def test_uses_request_value(self, haute_scratch):
@@ -430,9 +433,18 @@ class TestTrainPreparationChunkSize:
 
         captured: dict[str, object] = {}
 
-        def fake_bounded_sink(lf, path, **kwargs):
-            captured.update(kwargs)
-            pl.DataFrame({"claim_count": [1.0], "driver_age": [40]}).write_parquet(path)
+        def fake_write_file(
+            destination,
+            frame,
+            *,
+            recipe=None,
+            chunk_rows=None,
+            execution_context=None,
+            node_id=None,
+        ):
+            captured["chunk_rows"] = chunk_rows
+            pl.DataFrame({"claim_count": [1.0], "driver_age": [40]}).write_parquet(destination)
+            return ChunkedWrite(strategy="native", parts=(), chunks=1, staged_inputs=0)
 
         def fake_execute_lazy(*_args, **_kwargs):
             return (
@@ -467,8 +479,8 @@ class TestTrainPreparationChunkSize:
                     MagicMock(write_text=MagicMock()),
                 ),
                 patch(
-                    "haute._polars_utils.bounded_sink",
-                    side_effect=fake_bounded_sink,
+                    "haute._chunked_writes.write_file",
+                    side_effect=fake_write_file,
                 ),
             ):
                 outcome = prepare_training_data(request, execution_context=context)
@@ -480,11 +492,11 @@ class TestTrainPreparationChunkSize:
 
     def test_uses_request_value(self, tmp_path):
         captured = self._run(tmp_path, streaming_chunk_size=12345)
-        assert captured.get("streaming_chunk_size") == 12345
+        assert captured.get("chunk_rows") == 12345
 
     def test_default_when_missing(self, tmp_path):
         captured = self._run(tmp_path, streaming_chunk_size=None)
-        assert captured.get("streaming_chunk_size") == DEFAULT_STREAMING_CHUNK_SIZE
+        assert captured.get("chunk_rows") == DEFAULT_STREAMING_CHUNK_SIZE
 
 
 # ---------------------------------------------------------------------------
@@ -893,7 +905,7 @@ class TestTraceHandlerThreading:
         ):
             resp = client.post(
                 "/api/pipeline/trace",
-                json={"graph": graph, **body_kwargs},
+                json={"seed_plan": [], "graph": graph, **body_kwargs},
             )
         assert resp.status_code == 200, resp.text
         return captured
@@ -989,7 +1001,7 @@ class TestTraceHandlerThreading:
         ):
             resp = client.post(
                 "/api/pipeline/trace",
-                json={"graph": graph, "streaming_chunk_size": 12345},
+                json={"seed_plan": [], "graph": graph, "streaming_chunk_size": 12345},
             )
             assert resp.status_code == 504, resp.text
             assert worker_started.wait(timeout=1.0)

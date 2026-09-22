@@ -14,8 +14,26 @@ export type EdgeJoinValidationNode = {
     nodeType?: string
     config?: Record<string, unknown>
     _columns?: EdgeJoinColumnInfo[]
+    _columnsStructuralVersion?: number
+    _columnsSource?: string
     [key: string]: unknown
   }
+}
+
+/**
+ * The graph state a captured column stash must match to be quoted back at the
+ * user as fact.
+ *
+ * A stash is written by whichever preview last ran at or below a node, so it
+ * can describe an older graph or another data source. Column *options* may
+ * still be offered from a stale stash — a slightly out-of-date dropdown costs
+ * the user nothing — but a diagnostic that blocks a save must not. A caller
+ * that omits the fence is declaring it cannot vouch for any stash, and gets
+ * no column diagnostics rather than unfounded ones.
+ */
+export type EdgeJoinColumnsFence = {
+  structuralVersion: number
+  activeSource: string
 }
 
 export type EdgeJoinValidationEdge = {
@@ -70,11 +88,13 @@ export function analyzeEdgeJoinNode({
   config,
   nodes,
   edges,
+  columnsFence,
 }: {
   nodeId: string
   config: Record<string, unknown>
   nodes: EdgeJoinValidationNode[]
   edges: EdgeJoinValidationEdge[]
+  columnsFence?: EdgeJoinColumnsFence
 }): EdgeJoinAnalysis {
   const diagnostics: string[] = []
   const nodeMap = new Map(nodes.map((node) => [node.id, node]))
@@ -116,6 +136,10 @@ export function analyzeEdgeJoinNode({
   const baseColumns = getColumns(baseRoleEdge, nodeMap.get(baseRoleInput))
   const joinColumns = getColumns(joinRoleEdge, nodeMap.get(joinRoleInput))
   const commonColumns = commonColumnOptions(baseColumns, joinColumns)
+  // Offer every column as an option, but only claim a key is *missing* from a
+  // side whose columns describe this graph — see EdgeJoinColumnsFence.
+  const baseColumnsCurrent = columnsAreCurrent(baseRoleEdge, nodeMap.get(baseRoleInput), columnsFence)
+  const joinColumnsCurrent = columnsAreCurrent(joinRoleEdge, nodeMap.get(joinRoleInput), columnsFence)
 
   if (hasSameConfig && hasPairedConfig) {
     diagnostics.push("Choose either same-name keys or paired base/join keys, not both.")
@@ -132,9 +156,12 @@ export function analyzeEdgeJoinNode({
   if ([...onKeys, ...leftKeys, ...rightKeys].some((key) => key === "")) {
     diagnostics.push("Join key rows cannot be blank.")
   }
-  addColumnDiagnostics(diagnostics, "Base", leftKeys, baseColumns)
-  addColumnDiagnostics(diagnostics, "Join", rightKeys, joinColumns)
-  addColumnDiagnostics(diagnostics, "Same-name", onKeys, commonColumns)
+  if (baseColumnsCurrent) addColumnDiagnostics(diagnostics, "Base", leftKeys, baseColumns)
+  if (joinColumnsCurrent) addColumnDiagnostics(diagnostics, "Join", rightKeys, joinColumns)
+  // A same-name key must exist on both sides, so neither side may be stale.
+  if (baseColumnsCurrent && joinColumnsCurrent) {
+    addColumnDiagnostics(diagnostics, "Same-name", onKeys, commonColumns)
+  }
 
   return {
     diagnostics: dedupe(diagnostics),
@@ -162,6 +189,7 @@ export function analyzeEdgeJoinNode({
 export function findFirstInvalidEdgeJoin(
   nodes: EdgeJoinValidationNode[],
   edges: EdgeJoinValidationEdge[],
+  columnsFence?: EdgeJoinColumnsFence,
 ): EdgeJoinValidationIssue | null {
   for (const node of nodes) {
     if (node.data?.nodeType !== NODE_TYPES.EDGE_JOIN) continue
@@ -170,6 +198,7 @@ export function findFirstInvalidEdgeJoin(
       config: node.data.config ?? {},
       nodes,
       edges,
+      columnsFence,
     })
     if (analysis.diagnostics.length > 0) return { node, analysis }
   }
@@ -237,6 +266,28 @@ function getColumns(
     return apiInputFrameColumns(node.data.config, edge.sourceHandle)
   }
   return node?.data?._columns ?? []
+}
+
+/**
+ * Whether *node*'s columns describe the graph the caller is validating.
+ *
+ * An API Input's columns are read from its own authored config, so they are
+ * always current. Every other node's are a preview capture, current only
+ * while stamped with the fence's structural version and source.
+ */
+function columnsAreCurrent(
+  edge: EdgeJoinValidationEdge | undefined,
+  node: EdgeJoinValidationNode | undefined,
+  fence: EdgeJoinColumnsFence | undefined,
+): boolean {
+  if (edge && node?.data?.nodeType === NODE_TYPES.API_INPUT && Array.isArray(node.data.config?.tables)) {
+    return true
+  }
+  if (!fence || !node?.data) return false
+  return (
+    node.data._columnsStructuralVersion === fence.structuralVersion &&
+    node.data._columnsSource === fence.activeSource
+  )
 }
 
 function commonColumnOptions(

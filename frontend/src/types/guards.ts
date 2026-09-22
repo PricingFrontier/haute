@@ -13,6 +13,12 @@ import {
   validateExecutionStrategyDiagnostic,
 } from "../generated/api-contracts.execution-strategy-diagnostic.validators.mjs"
 import type {
+  CacheBudgetUsage,
+  CacheClearResponse,
+  CacheNodeEntry,
+  CacheNodesResponse,
+  CacheOwnerEntry,
+  CacheUsageResponse,
   DatabricksCatalogsResponse,
   DatabricksSchemasResponse,
   DatabricksTablesResponse,
@@ -23,6 +29,10 @@ import type {
   ExecutionCacheProof,
   ExecutionMemoryPressureEvent,
   InputPreparationRecord,
+  ExecutionWarning,
+  SharedSnapshotCapture,
+  SharedSnapshotCaptureSkip,
+  SharedSnapshotSeed,
   ExecutionMetrics,
   ExecutionColumnWidth,
   ExecutionColumnWidths,
@@ -33,16 +43,12 @@ import type {
   ExecutionStrategyProvenance,
   ExecutionStrategyReason,
   ExecutionStageMetrics,
-  ExploreCacheReport,
-  ExploreCacheSnapshotResponse,
   ExploreCategoricalColumnProfile,
   ExploreColumnStat,
   ExploreDataQualityIssue,
   ExploreDataQualitySummary,
   ExploreDistinctValueCount,
   ExploreOverviewSummary,
-  ExploreRunResponse,
-  ExploreStatusResponse,
   ExplorePivotCell,
   ExplorePivotFailure,
   ExplorePivotMemberKey,
@@ -123,13 +129,24 @@ import type {
   MlflowModel,
   MlflowModelVersion,
   MlflowRun,
+  NodeDataClearResponse,
+  NodeDataColumns,
+  NodeDataPointResponse,
+  NodeDataProfile,
+  BandingStatsResponse,
+  RatingLevelsResponse,
+  NodeDataProfileResponse,
+  NodeDataRunResponse,
+  NodeDataStatusResponse,
   OptimiserHistoryEntry,
   OptimiserEstimate,
   OptimiserSolveResponse,
   OptimiserSolveResult,
   OptimiserStatusResponse,
   PolarsStepsRenderResponse,
+  PreviewInputsResponse,
   PreviewNodeResponse,
+  PreviewSeedPlanEntry,
   ApplyOptimiserResponse,
   SaveOptimiserResponse,
   SavePipelineResponse,
@@ -144,7 +161,11 @@ import type {
   UtilityReadResponse,
   UtilityWriteResult,
 } from "../api/types"
-import { JOB_STATUS_VALUES } from "../api/types"
+import {
+  JOB_STATUS_VALUES,
+  NODE_DATA_POINT_KINDS,
+  NODE_DATA_POINT_STATES,
+} from "../api/types"
 import {
   PIPELINE_NODE_TYPES,
   type BackendNodeStatus,
@@ -689,6 +710,130 @@ function parseInputPreparationRecord(
   }
 }
 
+function parseSnapshotColumns(parser: string, value: unknown, field: string): "all" | string[] {
+  return value === "all" ? "all" : parseStringArray(parser, value, field)
+}
+
+function parseSharedSnapshotSeed(
+  parser: string,
+  value: unknown,
+  field: string,
+): SharedSnapshotSeed {
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    node_id: expectString(parser, obj.node_id, `${field}.node_id`),
+    identity_digest: expectString(parser, obj.identity_digest, `${field}.identity_digest`),
+    generation_id: expectString(parser, obj.generation_id, `${field}.generation_id`),
+    columns: parseSnapshotColumns(parser, obj.columns, `${field}.columns`),
+  }
+}
+
+function parseSharedSnapshotCapture(
+  parser: string,
+  value: unknown,
+  field: string,
+): SharedSnapshotCapture {
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    node_id: expectString(parser, obj.node_id, `${field}.node_id`),
+    identity_digest: expectString(parser, obj.identity_digest, `${field}.identity_digest`),
+    kind: expectStringLiteral(parser, obj.kind, `${field}.kind`, [
+      "structural",
+      "materialising",
+      "model_score",
+      "consumed",
+    ]),
+    outcome: expectStringLiteral(parser, obj.outcome, `${field}.outcome`, [
+      "published",
+      "superseded",
+      "quota",
+    ]),
+    generation_id: optionalNullableString(parser, obj, "generation_id"),
+    columns: parseSnapshotColumns(parser, obj.columns, `${field}.columns`),
+    ...(obj.write_strategy === undefined
+      ? {}
+      : {
+          write_strategy: expectNullableStringLiteral(
+            parser,
+            obj.write_strategy,
+            `${field}.write_strategy`,
+            ["chunked_join", "sliced", "input_sliced", "native", "prewritten"] as const,
+          ),
+        }),
+    ...optionalNullablePositiveCount(parser, obj, "write_parts", field),
+    ...optionalNullablePositiveCount(parser, obj, "write_chunk_rows", field),
+    ...optionalNullableCount(parser, obj, "write_staged_inputs", field),
+    ...optionalNullablePositiveCount(parser, obj, "write_input_slices", field),
+    ...(obj.write_native_reason === undefined
+      ? {}
+      : {
+          write_native_reason: expectNullableString(
+            parser,
+            obj.write_native_reason,
+            `${field}.write_native_reason`,
+          ),
+        }),
+    ...(obj.write_blocking_operator === undefined
+      ? {}
+      : {
+          write_blocking_operator: expectNullableString(
+            parser,
+            obj.write_blocking_operator,
+            `${field}.write_blocking_operator`,
+          ),
+        }),
+  }
+}
+
+function parseSharedSnapshotCaptureSkip(
+  parser: string,
+  value: unknown,
+  field: string,
+): SharedSnapshotCaptureSkip {
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    node_id: expectString(parser, obj.node_id, `${field}.node_id`),
+    reason: expectStringLiteral(parser, obj.reason, `${field}.reason`, [
+      "cheap_segment",
+      "slice_transparent_feeder",
+    ]),
+  }
+}
+
+function optionalNullableCount<K extends string>(
+  parser: string,
+  obj: Record<string, unknown>,
+  key: K,
+  field: string,
+  { positive = false }: { positive?: boolean } = {},
+): Partial<Record<K, number | null>> {
+  const value = obj[key]
+  if (value === undefined) return {}
+  if (value === null) return { [key]: null } as Partial<Record<K, number | null>>
+  const expectCount = positive ? expectPositiveInteger : expectNonNegativeInteger
+  return {
+    [key]: expectCount(parser, value, `${field}.${key}`),
+  } as Partial<Record<K, number | null>>
+}
+
+function optionalNullablePositiveCount<K extends string>(
+  parser: string,
+  obj: Record<string, unknown>,
+  key: K,
+  field: string,
+): Partial<Record<K, number | null>> {
+  return optionalNullableCount(parser, obj, key, field, { positive: true })
+}
+
+function parseExecutionWarning(parser: string, value: unknown, field: string): ExecutionWarning {
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    code: expectString(parser, obj.code, `${field}.code`),
+    node_id: optionalNullableString(parser, obj, "node_id"),
+    reason: optionalNullableString(parser, obj, "reason"),
+  }
+}
+
 function parseExecutionMetrics(
   parser: string,
   value: unknown,
@@ -766,6 +911,68 @@ function parseExecutionMetrics(
     input_preparation: optionalArray(parser, obj, "input_preparation", (item, itemField) =>
       parseInputPreparationRecord(parser, item, itemField),
     ),
+    shared_snapshot_seeds: optionalArray(parser, obj, "shared_snapshot_seeds", (item, itemField) =>
+      parseSharedSnapshotSeed(parser, item, itemField),
+    ),
+    shared_snapshot_captures: optionalArray(parser, obj, "shared_snapshot_captures", (item, itemField) =>
+      parseSharedSnapshotCapture(parser, item, itemField),
+    ),
+    shared_snapshot_capture_skips: optionalArray(
+      parser,
+      obj,
+      "shared_snapshot_capture_skips",
+      (item, itemField) => parseSharedSnapshotCaptureSkip(parser, item, itemField),
+    ),
+    warnings: optionalArray(parser, obj, "warnings", (item, itemField) =>
+      parseExecutionWarning(parser, item, itemField),
+    ),
+    ...(obj.training_write_strategy === undefined
+      ? {}
+      : {
+          training_write_strategy: expectNullableString(
+            parser,
+            obj.training_write_strategy,
+            `${field}.training_write_strategy`,
+          ),
+        }),
+    ...optionalNullablePositiveCount(parser, obj, "training_write_input_slices", field),
+    ...(obj.training_write_native_reason === undefined
+      ? {}
+      : {
+          training_write_native_reason: expectNullableString(
+            parser,
+            obj.training_write_native_reason,
+            `${field}.training_write_native_reason`,
+          ),
+        }),
+    ...(obj.training_write_blocking_operator === undefined
+      ? {}
+      : {
+          training_write_blocking_operator: expectNullableString(
+            parser,
+            obj.training_write_blocking_operator,
+            `${field}.training_write_blocking_operator`,
+          ),
+        }),
+    ...(obj.data_output_write_strategy === undefined
+      ? {}
+      : {
+          data_output_write_strategy: expectNullableString(
+            parser,
+            obj.data_output_write_strategy,
+            `${field}.data_output_write_strategy`,
+          ),
+        }),
+    ...optionalNullablePositiveCount(parser, obj, "data_output_write_input_slices", field),
+    ...(obj.data_output_write_native_reason === undefined
+      ? {}
+      : {
+          data_output_write_native_reason: expectNullableString(
+            parser,
+            obj.data_output_write_native_reason,
+            `${field}.data_output_write_native_reason`,
+          ),
+        }),
   }
 }
 
@@ -1394,6 +1601,39 @@ export function parsePreviewNodeResponse(value: unknown): PreviewNodeResponse {
       parseColumnInfo,
     ),
     execution_metrics: optionalExecutionMetrics("parsePreviewNodeResponse", obj, "execution_metrics"),
+    seed_plan: optionalArray("parsePreviewNodeResponse", obj, "seed_plan", parsePreviewSeedPlanEntry),
+  }
+}
+
+const PREVIEW_SEED_KINDS = ["seeded", "captured"] as const
+
+export function parsePreviewSeedPlanEntry(value: unknown, field: string): PreviewSeedPlanEntry {
+  const parser = "parsePreviewNodeResponse"
+  const obj = expectPlainObject(parser, value, field)
+  if (obj.port_label !== null && obj.port_label !== undefined) {
+    throw new Error(`${parser}: expected ${field}.port_label to be null`)
+  }
+  return {
+    node_id: expectNonBlankString(parser, obj.node_id, `${field}.node_id`),
+    port_label: null,
+    node_label: expectString(parser, obj.node_label, `${field}.node_label`),
+    identity_digest: expectNonBlankString(parser, obj.identity_digest, `${field}.identity_digest`),
+    generation_id: expectNonBlankString(parser, obj.generation_id, `${field}.generation_id`),
+    columns:
+      obj.columns === null ? null : parseStringArray(parser, obj.columns, `${field}.columns`),
+    created_at: expectNonBlankString(parser, obj.created_at, `${field}.created_at`),
+    kind: expectStringLiteral(parser, obj.kind, `${field}.kind`, PREVIEW_SEED_KINDS),
+  }
+}
+
+export function parsePreviewInputsResponse(value: unknown): PreviewInputsResponse {
+  const obj = expectPlainObject("parsePreviewInputsResponse", value)
+  return {
+    input_node_ids: parseStringArray(
+      "parsePreviewInputsResponse",
+      obj.input_node_ids,
+      "field `input_node_ids`",
+    ),
   }
 }
 
@@ -1499,6 +1739,7 @@ function parseTraceStep(value: unknown, field: string): TraceStep {
     calculation,
     node_detail,
     row_lineage_type: optionalNullableString("parseTraceResponse", obj, "row_lineage_type"),
+    snapshot_generation_id: optionalNullableString("parseTraceResponse", obj, "snapshot_generation_id"),
   }
 }
 
@@ -1540,6 +1781,9 @@ function parseTraceCorrelationDiagnostic(value: unknown, field: string): TraceCo
       ? []
       : parseArray("parseTraceResponse", obj.matched_row_indices, `${field}.matched_row_indices`, (item, itemField) =>
         expectNumber("parseTraceResponse", item, itemField)),
+    seed_node_ids: obj.seed_node_ids === undefined
+      ? []
+      : parseStringArray("parseTraceResponse", obj.seed_node_ids, `${field}.seed_node_ids`),
   }
 }
 
@@ -1764,13 +2008,121 @@ function parseInputCacheGeneration(value: unknown, field: string): InputCacheGen
 export function parseInputCacheBuildResponse(value: unknown): InputCacheBuildResponse { const p = "parseInputCacheBuildResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), status: expectStringLiteral(p, obj.status, "field `status`", ["running"]), joined: expectBoolean(p, obj.joined, "field `joined`") } }
 export function parseInputCacheSnapshotResponse(value: unknown): InputCacheSnapshotResponse { const p = "parseInputCacheSnapshotResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), state: expectStringLiteral(p, obj.state, "field `state`", INPUT_CACHE_SNAPSHOT_STATES), freshness: expectStringLiteral(p, obj.freshness, "field `freshness`", INPUT_CACHE_FRESHNESS), generation: obj.generation === null ? null : parseInputCacheGeneration(obj.generation, "field `generation`") } }
 export function parseInputCacheJobStatusResponse(value: unknown): InputCacheJobStatusResponse { const p = "parseInputCacheJobStatusResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), status: expectStringLiteral(p, obj.status, "field `status`", JOB_STATUS_VALUES), terminal_reason: expectNullableString(p, obj.terminal_reason, "field `terminal_reason`"), message: expectString(p, obj.message, "field `message`"), refresh: expectBoolean(p, obj.refresh, "field `refresh`"), build_class: expectStringLiteral(p, obj.build_class, "field `build_class`", BUILD_CLASSES), progress: parseInputCacheProgress(obj.progress, "field `progress`"), snapshot: obj.snapshot === null ? null : parseInputCacheSnapshotResponse(obj.snapshot), error_code: expectNullableString(p, obj.error_code, "field `error_code`") } }
+function parseCacheBudgetUsage(value: unknown, field: string): CacheBudgetUsage {
+  const p = "parseCacheUsageResponse"
+  const obj = expectPlainObject(p, value, field)
+  return {
+    generations_used: expectNonNegativeInteger(p, obj.generations_used, `${field}.generations_used`),
+    generations_limit: expectPositiveInteger(p, obj.generations_limit, `${field}.generations_limit`),
+    generations_limit_variable: expectNonBlankString(p, obj.generations_limit_variable, `${field}.generations_limit_variable`),
+    bytes_used: expectNonNegativeInteger(p, obj.bytes_used, `${field}.bytes_used`),
+    bytes_limit: expectPositiveInteger(p, obj.bytes_limit, `${field}.bytes_limit`),
+    bytes_limit_variable: expectNonBlankString(p, obj.bytes_limit_variable, `${field}.bytes_limit_variable`),
+  }
+}
+
+export function parseCacheUsageResponse(value: unknown): CacheUsageResponse {
+  const p = "parseCacheUsageResponse"
+  const obj = expectPlainObject(p, value)
+  return {
+    schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"),
+    node_outputs: parseCacheBudgetUsage(obj.node_outputs, "field `node_outputs`"),
+    input_snapshots: parseCacheBudgetUsage(obj.input_snapshots, "field `input_snapshots`"),
+  }
+}
+
+const CACHE_POINT_KINDS = ["data_input", "api_input_table", "node_output"] as const
+const CACHE_POINT_STATES = [
+  "current",
+  "stale",
+  "partial",
+  "missing",
+  "building",
+  "corrupt",
+] as const
+const CACHE_RETENTIONS = ["pinned", "automatic"] as const
+const CACHE_BUCKETS = ["node_output", "input"] as const
+
+function parseCacheNodeEntry(value: unknown, field: string): CacheNodeEntry {
+  const p = "parseCacheNodesResponse"
+  const obj = expectPlainObject(p, value, field)
+  return {
+    node_id: expectNonBlankString(p, obj.node_id, `${field}.node_id`),
+    kind: obj.kind === null
+      ? null
+      : expectStringLiteral(p, obj.kind, `${field}.kind`, CACHE_POINT_KINDS),
+    state: obj.state === null
+      ? null
+      : expectStringLiteral(p, obj.state, `${field}.state`, CACHE_POINT_STATES),
+    reads_directly: expectBoolean(p, obj.reads_directly, `${field}.reads_directly`),
+    reads_from: expectNullableString(p, obj.reads_from, `${field}.reads_from`),
+    shares_snapshot_with: parseArray(p, obj.shares_snapshot_with, `${field}.shares_snapshot_with`, (value, at) => expectNonBlankString(p, value, at)),
+    row_count: expectNullableNumber(p, obj.row_count, `${field}.row_count`),
+    generations: expectNonNegativeInteger(p, obj.generations, `${field}.generations`),
+    size_bytes: expectNonNegativeInteger(p, obj.size_bytes, `${field}.size_bytes`),
+    newest_created_at: expectNullableNumber(p, obj.newest_created_at, `${field}.newest_created_at`),
+    build_seconds: expectNullableNumber(p, obj.build_seconds, `${field}.build_seconds`),
+    identity_digests: parseArray(p, obj.identity_digests, `${field}.identity_digests`, (value, at) => expectNonBlankString(p, value, at)),
+    retention: obj.retention === null
+      ? null
+      : expectStringLiteral(p, obj.retention, `${field}.retention`, CACHE_RETENTIONS),
+    unavailable_reason: expectNullableString(p, obj.unavailable_reason, `${field}.unavailable_reason`),
+  }
+}
+
+function parseCacheOwnerEntry(value: unknown, field: string): CacheOwnerEntry {
+  const p = "parseCacheNodesResponse"
+  const obj = expectPlainObject(p, value, field)
+  return {
+    bucket: expectStringLiteral(p, obj.bucket, `${field}.bucket`, CACHE_BUCKETS),
+    label: expectNonBlankString(p, obj.label, `${field}.label`),
+    node_id: expectNullableString(p, obj.node_id, `${field}.node_id`),
+    source: expectNullableString(p, obj.source, `${field}.source`),
+    generations: expectNonNegativeInteger(p, obj.generations, `${field}.generations`),
+    row_count: expectNullableNumber(p, obj.row_count, `${field}.row_count`),
+    size_bytes: expectNonNegativeInteger(p, obj.size_bytes, `${field}.size_bytes`),
+    newest_created_at: expectNullableNumber(p, obj.newest_created_at, `${field}.newest_created_at`),
+    build_seconds: expectNullableNumber(p, obj.build_seconds, `${field}.build_seconds`),
+    identity_digests: parseArray(p, obj.identity_digests, `${field}.identity_digests`, (value, at) => expectNonBlankString(p, value, at)),
+  }
+}
+
+export function parseCacheClearResponse(value: unknown): CacheClearResponse {
+  const p = "parseCacheClearResponse"
+  const obj = expectPlainObject(p, value)
+  return {
+    schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"),
+    cleared: parseArray(p, obj.cleared, "field `cleared`", (v, at) => expectNonBlankString(p, v, at)),
+    freed_bytes: expectNonNegativeInteger(p, obj.freed_bytes, "field `freed_bytes`"),
+  }
+}
+
+export function parseCacheNodesResponse(value: unknown): CacheNodesResponse {
+  const p = "parseCacheNodesResponse"
+  const obj = expectPlainObject(p, value)
+  return {
+    schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"),
+    source: expectString(p, obj.source, "field `source`"),
+    nodes: parseArray(p, obj.nodes, "field `nodes`", parseCacheNodeEntry),
+    other: parseArray(p, obj.other, "field `other`", parseCacheOwnerEntry),
+    unattributed_generations: expectNonNegativeInteger(
+      p, obj.unattributed_generations, "field `unattributed_generations`",
+    ),
+    unattributed_bytes: expectNonNegativeInteger(
+      p, obj.unattributed_bytes, "field `unattributed_bytes`",
+    ),
+    unmarked_identities: expectNonNegativeInteger(
+      p, obj.unmarked_identities, "field `unmarked_identities`",
+    ),
+  }
+}
+
 export function parseInputCacheCancelResponse(value: unknown): InputCacheCancelResponse { const p = "parseInputCacheCancelResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), cancellation_requested: expectBoolean(p, obj.cancellation_requested, "field `cancellation_requested`"), status: expectStringLiteral(p, obj.status, "field `status`", JOB_STATUS_VALUES) } }
 
 // ---------------------------------------------------------------------------
 // Explore contracts
 // ---------------------------------------------------------------------------
 
-const EXPLORE_RUN_STATUSES = ["started", "running", "completed"] as const
 const EXPLORE_COLUMN_KINDS = ["Numeric", "Text", "Temporal", "Boolean", "Nested", "Other"] as const
 
 function parseExploreColumnStat(value: unknown, field: string): ExploreColumnStat {
@@ -1870,61 +2222,263 @@ function parseExploreOverviewSummary(value: unknown, field: string): ExploreOver
   }
 }
 
-export function parseExploreCacheReport(value: unknown): ExploreCacheReport {
-  const obj = expectPlainObject("parseExploreCacheReport", value)
+const NODE_DATA_RETENTIONS = ["pinned", "automatic"] as const
+const NODE_DATA_RUN_STATUSES = ["started", "joined", "completed", "delegated"] as const
+const NODE_DATA_OUTCOMES = ["published", "superseded"] as const
+const NODE_DATA_CLEAR_STATUSES = ["cleared", "delegated"] as const
+
+export function parseNodeDataColumns(
+  parser: string,
+  value: unknown,
+  field: string,
+): NodeDataColumns {
+  if (value === "all") {
+    return "all"
+  }
+  return expectArray(parser, value, field).map((item, index) =>
+    expectString(parser, item, `${field}[${index}]`),
+  )
+}
+
+export function parseNodeDataPointResponse(value: unknown): NodeDataPointResponse {
+  const parser = "parseNodeDataPointResponse"
+  const obj = expectPlainObject(parser, value)
+  const pointObj = expectPlainObject(parser, obj.point, "field `point`")
+  const generationObj =
+    obj.generation === undefined || obj.generation === null
+      ? null
+      : expectPlainObject(parser, obj.generation, "field `generation`")
+  const jobObj =
+    obj.job === undefined || obj.job === null
+      ? null
+      : expectPlainObject(parser, obj.job, "field `job`")
+
   return {
-    status: expectStringLiteral("parseExploreCacheReport", obj.status, "field `status`", ["ok"] as const),
-    node_id: expectString("parseExploreCacheReport", obj.node_id, "field `node_id`"),
-    upstream_node_id: expectString("parseExploreCacheReport", obj.upstream_node_id, "field `upstream_node_id`"),
-    source: expectString("parseExploreCacheReport", obj.source, "field `source`"),
-    dataframe_cache_key: expectString(
-      "parseExploreCacheReport",
-      obj.dataframe_cache_key,
-      "field `dataframe_cache_key`",
+    consumer_node_id: expectString(parser, obj.consumer_node_id, "field `consumer_node_id`"),
+    point: {
+      producer_node_id: expectString(
+        parser,
+        pointObj.producer_node_id,
+        "field `point.producer_node_id`",
+      ),
+      port_label: optionalNullableString(parser, pointObj, "port_label"),
+    },
+    slot_key: expectString(parser, obj.slot_key, "field `slot_key`"),
+    kind: expectStringLiteral(parser, obj.kind, "field `kind`", NODE_DATA_POINT_KINDS),
+    state: expectStringLiteral(parser, obj.state, "field `state`", NODE_DATA_POINT_STATES),
+    demand: parseNodeDataColumns(parser, obj.demand, "field `demand`"),
+    data_version: optionalNullableString(parser, obj, "data_version"),
+    row_count: optionalNullableNumber(parser, obj, "row_count"),
+    size_bytes: optionalNullableNumber(parser, obj, "size_bytes"),
+    retention:
+      obj.retention === undefined || obj.retention === null
+        ? null
+        : expectStringLiteral(parser, obj.retention, "field `retention`", NODE_DATA_RETENTIONS),
+    generation:
+      generationObj === null
+        ? null
+        : {
+            generation_id: expectString(
+              parser,
+              generationObj.generation_id,
+              "field `generation.generation_id`",
+            ),
+            columns: parseNodeDataColumns(
+              parser,
+              generationObj.columns,
+              "field `generation.columns`",
+            ),
+            row_count: expectNumber(parser, generationObj.row_count, "field `generation.row_count`"),
+            column_count: expectNumber(
+              parser,
+              generationObj.column_count,
+              "field `generation.column_count`",
+            ),
+            size_bytes: expectNumber(parser, generationObj.size_bytes, "field `generation.size_bytes`"),
+            retention: expectStringLiteral(
+              parser,
+              generationObj.retention,
+              "field `generation.retention`",
+              NODE_DATA_RETENTIONS,
+            ),
+            fresh: expectBoolean(parser, generationObj.fresh, "field `generation.fresh`"),
+            created_at: expectNumber(parser, generationObj.created_at, "field `generation.created_at`"),
+          },
+    job:
+      jobObj === null
+        ? null
+        : {
+            job_id: expectString(parser, jobObj.job_id, "field `job.job_id`"),
+            progress: expectNumber(parser, jobObj.progress, "field `job.progress`"),
+            message: expectString(parser, jobObj.message, "field `job.message`"),
+          },
+    reads_directly: optionalBoolean(parser, obj, "reads_directly"),
+    build_endpoint: optionalNullableString(parser, obj, "build_endpoint"),
+    clear_endpoint: optionalNullableString(parser, obj, "clear_endpoint"),
+  }
+}
+
+export function parseNodeDataProfile(value: unknown): NodeDataProfile {
+  const parser = "parseNodeDataProfile"
+  const obj = expectPlainObject(parser, value)
+  return {
+    row_count: expectNumber(parser, obj.row_count, "field `row_count`"),
+    column_count: expectNumber(parser, obj.column_count, "field `column_count`"),
+    columns: expectArray(parser, obj.columns ?? [], "field `columns`").map((column, index) =>
+      parseExploreColumnStat(column, `field \`columns[${index}]\``),
     ),
-    row_count: expectNumber("parseExploreCacheReport", obj.row_count, "field `row_count`"),
-    column_count: expectNumber("parseExploreCacheReport", obj.column_count, "field `column_count`"),
-    generated_at: expectNumber("parseExploreCacheReport", obj.generated_at, "field `generated_at`"),
-    columns: parseArray("parseExploreCacheReport", obj.columns, "field `columns`", parseExploreColumnStat),
-    overview_summary: parseExploreOverviewSummary(obj.overview_summary, "field `overview_summary`"),
-    execution_metrics: optionalExecutionMetrics("parseExploreCacheReport", obj, "execution_metrics"),
-  }
-}
-
-export function parseExploreCacheSnapshotResponse(value: unknown): ExploreCacheSnapshotResponse {
-  const obj = expectPlainObject("parseExploreCacheSnapshotResponse", value)
-  return {
-    state: expectStringLiteral(
-      "parseExploreCacheSnapshotResponse",
-      obj.state,
-      "field `state`",
-      ["missing", "current", "stale"] as const,
+    overview_summary: parseExploreOverviewSummary(
+      obj.overview_summary ?? {},
+      "field `overview_summary`",
     ),
-    message: expectString("parseExploreCacheSnapshotResponse", obj.message, "field `message`"),
-    result: obj.result === undefined || obj.result === null ? null : parseExploreCacheReport(obj.result),
+    data_version: expectString(parser, obj.data_version, "field `data_version`"),
+    generated_at: expectNumber(parser, obj.generated_at, "field `generated_at`"),
   }
 }
 
-export function parseExploreRunResponse(value: unknown): ExploreRunResponse {
-  const obj = expectPlainObject("parseExploreRunResponse", value)
+export function parseBandingStatsResponse(value: unknown): BandingStatsResponse {
+  const parser = "parseBandingStatsResponse"
+  const obj = expectPlainObject(parser, value)
   return {
-    status: expectStringLiteral("parseExploreRunResponse", obj.status, "field `status`", EXPLORE_RUN_STATUSES),
-    job_id: optionalNullableString("parseExploreRunResponse", obj, "job_id"),
-    cached: optionalBoolean("parseExploreRunResponse", obj, "cached"),
-    message: optionalString("parseExploreRunResponse", obj, "message"),
-    result: obj.result === undefined || obj.result === null ? null : parseExploreCacheReport(obj.result),
+    status: expectStringLiteral(parser, obj.status, "field `status`", [
+      "ok",
+      "cache_required",
+    ] as const),
+    point: parseNodeDataPointResponse(obj.point),
+    data_version: optionalNullableString(parser, obj, "data_version"),
+    total_rows: expectNumber(parser, obj.total_rows ?? 0, "field `total_rows`"),
+    null_count: expectNumber(parser, obj.null_count ?? 0, "field `null_count`"),
+    non_finite_count: optionalNullableNumber(parser, obj, "non_finite_count"),
+    minimum: optionalNullableNumber(parser, obj, "minimum"),
+    maximum: optionalNullableNumber(parser, obj, "maximum"),
+    bins: expectArray(parser, obj.bins ?? [], "field `bins`").map((bin, index) => {
+      const item = expectPlainObject(parser, bin)
+      return {
+        lower: expectNumber(parser, item.lower, `field \`bins[${index}].lower\``),
+        upper: expectNumber(parser, item.upper, `field \`bins[${index}].upper\``),
+        count: expectNumber(parser, item.count, `field \`bins[${index}].count\``),
+      }
+    }),
+    values: expectArray(parser, obj.values ?? [], "field `values`").map((entry, index) => {
+      const item = expectPlainObject(parser, entry)
+      return {
+        value: expectString(parser, item.value, `field \`values[${index}].value\``),
+        count: expectNumber(parser, item.count, `field \`values[${index}].count\``),
+      }
+    }),
+    distinct_count: optionalNullableNumber(parser, obj, "distinct_count"),
+    other_count: optionalNullableNumber(parser, obj, "other_count"),
+    rule_counts: expectArray(parser, obj.rule_counts ?? [], "field `rule_counts`").map(
+      (count, index) => expectNumber(parser, count, `field \`rule_counts[${index}]\``),
+    ),
+    unmatched_count: optionalNullableNumber(parser, obj, "unmatched_count"),
   }
 }
 
-export function parseExploreStatusResponse(value: unknown): ExploreStatusResponse {
-  const obj = expectPlainObject("parseExploreStatusResponse", value)
+export function parseRatingLevelsResponse(value: unknown): RatingLevelsResponse {
+  const parser = "parseRatingLevelsResponse"
+  const obj = expectPlainObject(parser, value)
   return {
-    status: expectStringLiteral("parseExploreStatusResponse", obj.status, "field `status`", JOB_STATUS_VALUES),
-    progress: optionalNumber("parseExploreStatusResponse", obj, "progress"),
-    message: optionalString("parseExploreStatusResponse", obj, "message"),
-    result: obj.result === undefined || obj.result === null ? null : parseExploreCacheReport(obj.result),
-    terminal_reason: optionalNullableString("parseExploreStatusResponse", obj, "terminal_reason"),
-    execution_metrics: optionalExecutionMetrics("parseExploreStatusResponse", obj, "execution_metrics"),
+    status: expectStringLiteral(parser, obj.status, "field `status`", [
+      "ok",
+      "cache_required",
+    ] as const),
+    point: parseNodeDataPointResponse(obj.point),
+    data_version: optionalNullableString(parser, obj, "data_version"),
+    total_rows: expectNumber(parser, obj.total_rows ?? 0, "field `total_rows`"),
+    columns: expectArray(parser, obj.columns ?? [], "field `columns`").map((entry, index) => {
+      const item = expectPlainObject(parser, entry)
+      return {
+        column: expectString(parser, item.column, `field \`columns[${index}].column\``),
+        values: expectArray(parser, item.values ?? [], `field \`columns[${index}].values\``).map(
+          (level, position) => {
+            const value = expectPlainObject(parser, level)
+            return {
+              value: expectString(
+                parser,
+                value.value,
+                `field \`columns[${index}].values[${position}].value\``,
+              ),
+              count: expectNumber(
+                parser,
+                value.count,
+                `field \`columns[${index}].values[${position}].count\``,
+              ),
+            }
+          },
+        ),
+        distinct_count: expectNumber(
+          parser,
+          item.distinct_count ?? 0,
+          `field \`columns[${index}].distinct_count\``,
+        ),
+        null_count: expectNumber(
+          parser,
+          item.null_count ?? 0,
+          `field \`columns[${index}].null_count\``,
+        ),
+      }
+    }),
+  }
+}
+
+export function parseNodeDataProfileResponse(value: unknown): NodeDataProfileResponse {
+  const parser = "parseNodeDataProfileResponse"
+  const obj = expectPlainObject(parser, value)
+  return {
+    status: expectStringLiteral(parser, obj.status, "field `status`", [
+      "completed",
+      "started",
+      "joined",
+      "cache_required",
+    ] as const),
+    job_id: optionalNullableString(parser, obj, "job_id"),
+    message: optionalString(parser, obj, "message"),
+    result:
+      obj.result === undefined || obj.result === null ? null : parseNodeDataProfile(obj.result),
+    point: parseNodeDataPointResponse(obj.point),
+  }
+}
+
+export function parseNodeDataRunResponse(value: unknown): NodeDataRunResponse {
+  const parser = "parseNodeDataRunResponse"
+  const obj = expectPlainObject(parser, value)
+  return {
+    status: expectStringLiteral(parser, obj.status, "field `status`", NODE_DATA_RUN_STATUSES),
+    job_id: optionalNullableString(parser, obj, "job_id"),
+    cached: optionalBoolean(parser, obj, "cached"),
+    message: optionalString(parser, obj, "message"),
+    point: parseNodeDataPointResponse(obj.point),
+  }
+}
+
+export function parseNodeDataStatusResponse(value: unknown): NodeDataStatusResponse {
+  const parser = "parseNodeDataStatusResponse"
+  const obj = expectPlainObject(parser, value)
+  return {
+    status: expectStringLiteral(parser, obj.status, "field `status`", JOB_STATUS_VALUES),
+    progress: optionalNumber(parser, obj, "progress"),
+    message: optionalString(parser, obj, "message"),
+    terminal_reason: optionalNullableString(parser, obj, "terminal_reason"),
+    error: optionalNullableString(parser, obj, "error"),
+    error_code: optionalNullableString(parser, obj, "error_code"),
+    execution_metrics: optionalExecutionMetrics(parser, obj, "execution_metrics"),
+    generation_id: optionalNullableString(parser, obj, "generation_id"),
+    outcome:
+      obj.outcome === undefined || obj.outcome === null
+        ? null
+        : expectStringLiteral(parser, obj.outcome, "field `outcome`", NODE_DATA_OUTCOMES),
+    profile:
+      obj.profile === undefined || obj.profile === null ? null : parseNodeDataProfile(obj.profile),
+  }
+}
+
+export function parseNodeDataClearResponse(value: unknown): NodeDataClearResponse {
+  const parser = "parseNodeDataClearResponse"
+  const obj = expectPlainObject(parser, value)
+  return {
+    status: expectStringLiteral(parser, obj.status, "field `status`", NODE_DATA_CLEAR_STATUSES),
+    point: parseNodeDataPointResponse(obj.point),
   }
 }
 
@@ -1975,6 +2529,14 @@ function expectNonNegativeInteger(parser: string, value: unknown, field: string)
   const parsed = expectSafeInteger(parser, value, field)
   if (parsed < 0) {
     throw new Error(`${parser}: expected ${field} to be a non-negative integer`)
+  }
+  return parsed
+}
+
+function expectPositiveInteger(parser: string, value: unknown, field: string): number {
+  const parsed = expectSafeInteger(parser, value, field)
+  if (parsed < 1) {
+    throw new Error(`${parser}: expected ${field} to be a positive integer`)
   }
   return parsed
 }
@@ -2220,11 +2782,7 @@ function parseExplorePivotResult(value: unknown, field: string): ExplorePivotRes
     node_id: expectString(parser, obj.node_id, `${field}.node_id`),
     pivot_id: expectString(parser, obj.pivot_id, `${field}.pivot_id`),
     source: expectString(parser, obj.source, `${field}.source`),
-    dataframe_cache_key: expectString(
-      parser,
-      obj.dataframe_cache_key,
-      `${field}.dataframe_cache_key`,
-    ),
+    data_version: expectString(parser, obj.data_version, `${field}.data_version`),
     calculation_key: expectString(parser, obj.calculation_key, `${field}.calculation_key`),
     row_fields: parseArray(parser, obj.row_fields, `${field}.row_fields`, (item, itemField) =>
       expectString(parser, item, itemField),

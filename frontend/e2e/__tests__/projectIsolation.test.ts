@@ -68,7 +68,9 @@ function fullResetSequence(branchDeletes: string[][]): string[][] {
     ...branchDeletes,
     // Version-label tag scrub (the mocked list reports none to delete).
     ["tag", "--list", "version/*"],
-    ["clean", "-fdx"],
+    // The store's process-liveness marker is held open by the running backend
+    // for its whole life, so the scrub must exclude it or it can never pass.
+    ["clean", "-fdx", "-e", "/.haute_cache/inputs/.processes/"],
     // Healthy-clone reseed: working branch + its ledger, HEAD on the ledger.
     ["branch", e2eWorkingBranch, "main"],
     ["branch", e2eLedgerBranch, "main"],

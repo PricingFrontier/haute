@@ -138,7 +138,7 @@ export function NodeConfigEditor({
       return <OutputEditor config={config} onUpdate={onUpdateConfig} nodeId={node.id} />
 
     case NODE_TYPES.BANDING:
-      return <BandingEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} upstreamColumns={upstreamColumns} accentColor={accentColor} previewRows={previewRows} />
+      return <BandingEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} upstreamColumns={upstreamColumns} accentColor={accentColor} previewRows={previewRows} nodeId={node.id} />
 
     case NODE_TYPES.SCENARIO_EXPANDER:
       return <ScenarioExpanderEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} upstreamColumns={upstreamColumns} />

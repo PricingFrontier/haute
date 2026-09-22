@@ -18,7 +18,7 @@ so it can only be widened together with a new proof.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Literal
@@ -35,15 +35,21 @@ __all__ = [
     "SelectorForm",
     "chunk_admitted_names",
     "chunk_admitted_selector_constructors",
+    "costly_expression_methods",
+    "costly_frame_methods",
+    "full_input_work",
     "lineage_supported_frame_methods",
     "materialisation_factor_basis_points",
     "measured_operation_names",
     "materialising_expression_methods",
     "materialising_frame_methods",
     "operation",
+    "recompute_cost",
     "registered_names",
+    "slice_transparent",
     "unbounded_expansion_expression_methods",
     "validate_operations",
+    "validate_recompute_declarations",
 ]
 
 
@@ -132,6 +138,11 @@ class PolarsOperation:
     """
 
     note: str
+    costly_to_recompute: bool | None = None
+    """Whether recomputing the operation is costly compared to a cache round-trip."""
+
+    slice_transparent: bool | None = None
+    """Whether Polars pushes a row slice through this operation unchanged."""
 
 
 def _op(
@@ -147,6 +158,8 @@ def _op(
     lineage_supported: bool = False,
     materialisation_factor_basis_points: int = 100,
     memory_evidence: MemoryEvidence = "none",
+    costly_to_recompute: bool | None = None,
+    slice_transparent: bool | None = None,
 ) -> PolarsOperation:
     return PolarsOperation(
         receiver=receiver,
@@ -160,6 +173,8 @@ def _op(
         materialisation_factor_basis_points=materialisation_factor_basis_points,
         memory_evidence=memory_evidence,
         note=note,
+        costly_to_recompute=costly_to_recompute,
+        slice_transparent=slice_transparent,
     )
 
 
@@ -366,6 +381,13 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         _P_ROW_LOCAL,
         "proof: df_with_columns_seq (lineage parser accepts only with_columns)",
         chunk_admitted=True,
+    ),
+    _op(
+        _FRAME,
+        "unnest",
+        _ROW_LOCAL,
+        _P_ROW_LOCAL,
+        "expands a struct column into its fields, one output row per input row",
     ),
     # Order-dependent frame methods: the result depends on rows outside a chunk.
     _op(
@@ -944,8 +966,211 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
 )
 
 
+_RECOMPUTE_COST_DECLARATIONS: Mapping[tuple[OperationReceiver, str | None, str], bool] = (
+    MappingProxyType(
+        {
+            # Order-dependent costly: expr arg_sort, rank, sort, sort_by, unique, n_unique,
+            # value_counts; frame sort, top_k, bottom_k, unique; polars_function arg_sort_by.
+            (OperationReceiver.EXPR, None, "arg_sort"): True,
+            (OperationReceiver.EXPR, None, "rank"): True,
+            (OperationReceiver.EXPR, None, "sort"): True,
+            (OperationReceiver.EXPR, None, "sort_by"): True,
+            (OperationReceiver.EXPR, None, "unique"): True,
+            (OperationReceiver.EXPR, None, "n_unique"): True,
+            (OperationReceiver.EXPR, None, "value_counts"): True,
+            (OperationReceiver.FRAME, None, "sort"): True,
+            (OperationReceiver.FRAME, None, "top_k"): True,
+            (OperationReceiver.FRAME, None, "bottom_k"): True,
+            (OperationReceiver.FRAME, None, "unique"): True,
+            (OperationReceiver.POLARS_FUNCTION, None, "arg_sort_by"): True,
+            # Order-dependent cheap: expr backward_fill, forward_fill, cum_count, cum_max,
+            # cum_min, cum_prod, cum_sum, diff, pct_change, shift, reverse, ewm_mean,
+            # rolling_max, rolling_mean, rolling_min, rolling_std, rolling_sum, interpolate,
+            # implode, first, last, head, tail; frame gather, head, limit, slice, tail,
+            # sample, reverse, shift, with_row_index; polars_function arg_where.
+            (OperationReceiver.EXPR, None, "backward_fill"): False,
+            (OperationReceiver.EXPR, None, "forward_fill"): False,
+            (OperationReceiver.EXPR, None, "cum_count"): False,
+            (OperationReceiver.EXPR, None, "cum_max"): False,
+            (OperationReceiver.EXPR, None, "cum_min"): False,
+            (OperationReceiver.EXPR, None, "cum_prod"): False,
+            (OperationReceiver.EXPR, None, "cum_sum"): False,
+            (OperationReceiver.EXPR, None, "diff"): False,
+            (OperationReceiver.EXPR, None, "pct_change"): False,
+            (OperationReceiver.EXPR, None, "shift"): False,
+            (OperationReceiver.EXPR, None, "reverse"): False,
+            (OperationReceiver.EXPR, None, "ewm_mean"): False,
+            (OperationReceiver.EXPR, None, "rolling_max"): False,
+            (OperationReceiver.EXPR, None, "rolling_mean"): False,
+            (OperationReceiver.EXPR, None, "rolling_min"): False,
+            (OperationReceiver.EXPR, None, "rolling_std"): False,
+            (OperationReceiver.EXPR, None, "rolling_sum"): False,
+            (OperationReceiver.EXPR, None, "interpolate"): False,
+            (OperationReceiver.EXPR, None, "implode"): False,
+            (OperationReceiver.EXPR, None, "first"): False,
+            (OperationReceiver.EXPR, None, "last"): False,
+            (OperationReceiver.EXPR, None, "head"): False,
+            (OperationReceiver.EXPR, None, "tail"): False,
+            (OperationReceiver.FRAME, None, "gather"): False,
+            (OperationReceiver.FRAME, None, "head"): False,
+            (OperationReceiver.FRAME, None, "limit"): False,
+            (OperationReceiver.FRAME, None, "slice"): False,
+            (OperationReceiver.FRAME, None, "tail"): False,
+            (OperationReceiver.FRAME, None, "sample"): False,
+            (OperationReceiver.FRAME, None, "reverse"): False,
+            (OperationReceiver.FRAME, None, "shift"): False,
+            (OperationReceiver.FRAME, None, "with_row_index"): False,
+            (OperationReceiver.POLARS_FUNCTION, None, "arg_where"): False,
+            # Fan-in costly: expr over, median, mode, quantile; frame agg, group_by,
+            # groupby, group_by_dynamic, join, join_asof, join_where, merge_sorted,
+            # pivot, rolling, upsample.
+            (OperationReceiver.EXPR, None, "over"): True,
+            (OperationReceiver.EXPR, None, "median"): True,
+            (OperationReceiver.EXPR, None, "mode"): True,
+            (OperationReceiver.EXPR, None, "quantile"): True,
+            (OperationReceiver.FRAME, None, "agg"): True,
+            (OperationReceiver.FRAME, None, "group_by"): True,
+            (OperationReceiver.FRAME, None, "groupby"): True,
+            (OperationReceiver.FRAME, None, "group_by_dynamic"): True,
+            (OperationReceiver.FRAME, None, "join"): True,
+            (OperationReceiver.FRAME, None, "join_asof"): True,
+            (OperationReceiver.FRAME, None, "join_where"): True,
+            (OperationReceiver.FRAME, None, "merge_sorted"): True,
+            (OperationReceiver.FRAME, None, "pivot"): True,
+            (OperationReceiver.FRAME, None, "rolling"): True,
+            (OperationReceiver.FRAME, None, "upsample"): True,
+            # Fan-in cheap: expr sum, mean, min, max, count, len, std, var, arg_max,
+            # arg_min; frame interpolate; namespace str concat, namespace str join;
+            # polars_function len.
+            (OperationReceiver.EXPR, None, "sum"): False,
+            (OperationReceiver.EXPR, None, "mean"): False,
+            (OperationReceiver.EXPR, None, "min"): False,
+            (OperationReceiver.EXPR, None, "max"): False,
+            (OperationReceiver.EXPR, None, "count"): False,
+            (OperationReceiver.EXPR, None, "len"): False,
+            (OperationReceiver.EXPR, None, "std"): False,
+            (OperationReceiver.EXPR, None, "var"): False,
+            (OperationReceiver.EXPR, None, "arg_max"): False,
+            (OperationReceiver.EXPR, None, "arg_min"): False,
+            (OperationReceiver.FRAME, None, "interpolate"): False,
+            (OperationReceiver.NAMESPACE, "str", "concat"): False,
+            (OperationReceiver.NAMESPACE, "str", "join"): False,
+            (OperationReceiver.POLARS_FUNCTION, None, "len"): False,
+            # Opaque costly: expr map_elements, map_batches, pipe, register_plugin,
+            # rolling_map; frame collect, collect_batches, fetch, iter_rows, lazy,
+            # map_batches, partition_by, pipe, rows, sink_csv, sink_parquet, to_numpy,
+            # to_pandas, with_context.
+            (OperationReceiver.EXPR, None, "map_elements"): True,
+            (OperationReceiver.EXPR, None, "map_batches"): True,
+            (OperationReceiver.EXPR, None, "pipe"): True,
+            (OperationReceiver.EXPR, None, "register_plugin"): True,
+            (OperationReceiver.EXPR, None, "rolling_map"): True,
+            (OperationReceiver.FRAME, None, "collect"): True,
+            (OperationReceiver.FRAME, None, "collect_batches"): True,
+            (OperationReceiver.FRAME, None, "fetch"): True,
+            (OperationReceiver.FRAME, None, "iter_rows"): True,
+            (OperationReceiver.FRAME, None, "lazy"): True,
+            (OperationReceiver.FRAME, None, "map_batches"): True,
+            (OperationReceiver.FRAME, None, "partition_by"): True,
+            (OperationReceiver.FRAME, None, "pipe"): True,
+            (OperationReceiver.FRAME, None, "rows"): True,
+            (OperationReceiver.FRAME, None, "sink_csv"): True,
+            (OperationReceiver.FRAME, None, "sink_parquet"): True,
+            (OperationReceiver.FRAME, None, "to_numpy"): True,
+            (OperationReceiver.FRAME, None, "to_pandas"): True,
+            (OperationReceiver.FRAME, None, "with_context"): True,
+            # Opaque cheap: polars_function all, exclude, first, last, nth, selectors.
+            (OperationReceiver.POLARS_FUNCTION, None, "all"): False,
+            (OperationReceiver.POLARS_FUNCTION, None, "exclude"): False,
+            (OperationReceiver.POLARS_FUNCTION, None, "first"): False,
+            (OperationReceiver.POLARS_FUNCTION, None, "last"): False,
+            (OperationReceiver.POLARS_FUNCTION, None, "nth"): False,
+            (OperationReceiver.POLARS_FUNCTION, None, "selectors"): False,
+        }
+    )
+)
+
+
+def _resolve_recompute_facts(
+    entries: tuple[PolarsOperation, ...],
+    declarations: Mapping[
+        tuple[OperationReceiver, str | None, str], bool
+    ] = _RECOMPUTE_COST_DECLARATIONS,
+) -> tuple[PolarsOperation, ...]:
+    resolved: list[PolarsOperation] = []
+    for entry in entries:
+        key = (entry.receiver, entry.namespace, entry.name)
+        if entry.costly_to_recompute is not None:
+            cost = entry.costly_to_recompute
+        elif key in declarations:
+            cost = declarations[key]
+        elif entry.operation_class in (OperationClass.ROW_LOCAL, OperationClass.ROW_EXPANDING):
+            cost = False
+        else:
+            raise RuntimeError(
+                f"Operation {(entry.receiver.value, entry.namespace, entry.name)!r} must declare "
+                "its recompute cost: order-dependent, fan-in, and opaque operations must "
+                "declare their recompute cost."
+            )
+
+        if entry.slice_transparent is not None:
+            transparent = entry.slice_transparent
+        elif entry.operation_class is OperationClass.ROW_LOCAL:
+            if entry.receiver is OperationReceiver.FRAME and entry.name in ("filter", "drop_nulls"):
+                transparent = False
+            else:
+                transparent = True
+        elif entry.receiver is OperationReceiver.POLARS_FUNCTION and entry.name in (
+            "all",
+            "exclude",
+            "first",
+            "last",
+            "nth",
+            "selectors",
+        ):
+            transparent = True
+        else:
+            transparent = False
+
+        resolved.append(replace(entry, costly_to_recompute=cost, slice_transparent=transparent))
+    return tuple(resolved)
+
+
 _EXPANSION_ALLOWED_CLASSES = frozenset({OperationClass.ROW_EXPANDING, OperationClass.OPAQUE})
 _ROW_LOCAL_OR_OPAQUE_CLASSES = frozenset({OperationClass.ROW_LOCAL, OperationClass.OPAQUE})
+
+
+def validate_recompute_declarations(
+    entries: tuple[PolarsOperation, ...] = _ENTRIES,
+    declarations: Mapping[
+        tuple[OperationReceiver, str | None, str], bool
+    ] = _RECOMPUTE_COST_DECLARATIONS,
+) -> None:
+    """Validate that recompute declarations match registered operations without contradiction."""
+    entry_keys = {(entry.receiver, entry.namespace, entry.name) for entry in entries}
+    for key in declarations:
+        if key not in entry_keys:
+            raise RuntimeError(f"Declaration table key {key!r} names no existing Polars operation.")
+    for entry in entries:
+        key = (entry.receiver, entry.namespace, entry.name)
+        if key in declarations and entry.costly_to_recompute is not None:
+            raise RuntimeError(
+                f"Operation {key!r} carries both an explicit costly_to_recompute on the entry "
+                "and an entry in _RECOMPUTE_COST_DECLARATIONS."
+            )
+    resolved = _resolve_recompute_facts(entries, declarations)
+    for entry in resolved:
+        op_key = (entry.receiver.value, entry.namespace, entry.name)
+        if type(entry.costly_to_recompute) is not bool:
+            raise RuntimeError(
+                f"Operation {op_key!r} has resolved "
+                f"costly_to_recompute={entry.costly_to_recompute!r}, expected bool."
+            )
+        if type(entry.slice_transparent) is not bool:
+            raise RuntimeError(
+                f"Operation {op_key!r} has resolved "
+                f"slice_transparent={entry.slice_transparent!r}, expected bool."
+            )
 
 
 def validate_operations(entries: tuple[PolarsOperation, ...] = _ENTRIES) -> None:
@@ -1004,10 +1229,14 @@ def validate_operations(entries: tuple[PolarsOperation, ...] = _ENTRIES) -> None
 
 
 validate_operations()
+validate_recompute_declarations()
 
 
 POLARS_OPERATIONS: Mapping[tuple[str, str | None, str], PolarsOperation] = MappingProxyType(
-    {(entry.receiver.value, entry.namespace, entry.name): entry for entry in _ENTRIES}
+    {
+        (entry.receiver.value, entry.namespace, entry.name): entry
+        for entry in _resolve_recompute_facts(_ENTRIES)
+    }
 )
 
 
@@ -1088,6 +1317,60 @@ def materialising_expression_methods() -> frozenset[str]:
         if entry.receiver is OperationReceiver.EXPR
         and entry.policy is OperationPolicy.MATERIALISATION_BOUNDARY
     )
+
+
+def costly_frame_methods() -> frozenset[str]:
+    """Return the frame methods that are costly to recompute."""
+    return frozenset(
+        entry.name
+        for entry in POLARS_OPERATIONS.values()
+        if entry.receiver is OperationReceiver.FRAME
+        and entry.namespace is None
+        and entry.costly_to_recompute
+    )
+
+
+def costly_expression_methods() -> frozenset[str]:
+    """Return the expression methods that are costly to recompute."""
+    return frozenset(
+        entry.name
+        for entry in POLARS_OPERATIONS.values()
+        if entry.receiver is OperationReceiver.EXPR
+        and entry.namespace is None
+        and entry.costly_to_recompute
+    )
+
+
+def recompute_cost(
+    receiver: OperationReceiver,
+    name: str,
+    namespace: str | None = None,
+) -> bool | None:
+    """Return whether the operation is costly to recompute, or None if unregistered."""
+    entry = operation(receiver, name, namespace)
+    return entry.costly_to_recompute if entry is not None else None
+
+
+def slice_transparent(
+    receiver: OperationReceiver,
+    name: str,
+    namespace: str | None = None,
+) -> bool | None:
+    """Return whether Polars pushes a slice through this operation, or None if unregistered."""
+    entry = operation(receiver, name, namespace)
+    return entry.slice_transparent if entry is not None else None
+
+
+def full_input_work(
+    receiver: OperationReceiver,
+    name: str,
+    namespace: str | None = None,
+) -> bool | None:
+    """Return whether the operation is full-input work, or None if unregistered."""
+    entry = operation(receiver, name, namespace)
+    if entry is None:
+        return None
+    return bool(entry.costly_to_recompute and entry.operation_class is not OperationClass.OPAQUE)
 
 
 def materialisation_factor_basis_points(operator: str) -> int:

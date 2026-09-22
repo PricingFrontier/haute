@@ -1,24 +1,28 @@
 from __future__ import annotations
 
+import gc
 import os
 import threading
 import time
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import polars as pl
 import pytest
 
 import haute.modelling._training_job as training_job
 from haute._execution_context import (
+    ExecutionCancelledError,
     ExecutionContext,
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
 from haute.modelling._split import PARTITION_TRAIN, PARTITION_VALIDATION
-from haute.modelling._training_job import TrainingJob, TrainResult, _PreparedData
+from haute.modelling._training_job import TrainingJob, TrainResult, _PreparedData, _SplitResult
 from haute.routes._job_store import JobStore
 from haute.routes._train_service import TrainService
 from tests.test_training_worker_protocol import (
@@ -191,6 +195,267 @@ def test_partition_reads_use_streaming_collect_and_preserve_projection(
     assert calls == [["feature", "target", "weight"]]
     assert "unused_wide" not in calls[0]
     assert "training_partition_materialise" in context.metrics_summary().stage_elapsed_ms
+
+
+def test_diagnostic_predictions_are_bounded_and_preserve_multidimensional_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = TrainingJob(name="diagnostic_batches", data=pl.DataFrame({"x": [1]}), target="y")
+    frame = pl.DataFrame({"x": [1, 2, 3, 4, 5]})
+    batches: list[int] = []
+
+    def bounded(lf, *, chunk_size, **_kwargs):
+        assert chunk_size == 65_536
+        for offset in range(0, 5, 2):
+            yield lf.slice(offset, 2).collect()
+
+    class Algo:
+        def predict(self, _model, batch, _features, *, offset=None):
+            batches.append(len(batch))
+            return np.column_stack((batch["x"].to_numpy(), batch["x"].to_numpy() * 10))
+
+    monkeypatch.setattr(training_job, "bounded_collect_batches", bounded)
+    result = job._predict_diagnostic_batches(Algo(), object(), frame, ["x"], execution_context=None)
+    assert batches == [2, 2, 1]
+    assert result.tolist() == [[1, 10], [2, 20], [3, 30], [4, 40], [5, 50]]
+
+
+def test_diagnostic_predictions_keep_empty_input_algorithm_behavior() -> None:
+    job = TrainingJob(name="diagnostic_empty", data=pl.DataFrame({"x": [1]}), target="y")
+
+    class Algo:
+        def predict(self, _model, frame, _features, *, offset=None):
+            assert frame.height == 0
+            return np.asarray([], dtype=np.float32)
+
+    result = job._predict_diagnostic_batches(
+        Algo(),
+        object(),
+        pl.DataFrame({"x": pl.Series([], dtype=pl.Int64)}),
+        ["x"],
+        execution_context=None,
+    )
+    assert result.dtype == np.float32
+
+
+def test_diagnostic_prediction_cancellation_stops_before_second_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = TrainingJob(name="diagnostic_cancel", data=pl.DataFrame({"x": [1]}), target="y")
+    closed = False
+
+    def batches(*_args, **_kwargs):
+        nonlocal closed
+        try:
+            yield pl.DataFrame({"x": [1]})
+            raise ExecutionCancelledError("cancelled")
+        finally:
+            closed = True
+
+    class Algo:
+        calls = 0
+
+        def predict(self, _model, _frame, _features, *, offset=None):
+            self.calls += 1
+            return np.asarray([1.0])
+
+    algo = Algo()
+    monkeypatch.setattr(training_job, "bounded_collect_batches", batches)
+    with pytest.raises(ExecutionCancelledError):
+        job._predict_diagnostic_batches(
+            algo, object(), pl.DataFrame({"x": [1, 2]}), ["x"], execution_context=_context()
+        )
+    assert algo.calls == 1
+    assert closed
+
+
+def test_catboost_releases_raw_training_allocations_before_loading_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    split_path = tmp_path / "split.parquet"
+    pl.DataFrame(
+        {
+            "feature": [1.0, 2.0, 3.0, 4.0],
+            "target": [1.0, 0.0, 1.0, 0.0],
+            "weight": [0.5, 0.6, 0.7, 0.8],
+            "offset": [0.1, 0.2, 0.3, 0.4],
+            "_partition": [
+                PARTITION_TRAIN,
+                PARTITION_VALIDATION,
+                PARTITION_TRAIN,
+                PARTITION_VALIDATION,
+            ],
+        }
+    ).write_parquet(split_path)
+
+    class FakeCatBoostAlgorithm:
+        def fit(self, *_args: Any, **_kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(model=object(), best_iteration=None, loss_history=[])
+
+    raw_refs: dict[str, weakref.ReferenceType[Any]] = {}
+    pool_values: list[dict[str, list[float] | None]] = []
+    pools_built = 0
+    original_collect = training_job._training_streaming_collect
+
+    def recording_collect(
+        lf: pl.LazyFrame,
+        *,
+        stage_name: str,
+        execution_context: ExecutionContext | None = None,
+    ) -> pl.DataFrame:
+        nonlocal pools_built
+        if stage_name == "training_validation_partition_materialise":
+            gc.collect()
+            assert pools_built == 1
+            assert all(reference() is None for reference in raw_refs.values())
+        frame = original_collect(lf, stage_name=stage_name, execution_context=execution_context)
+        if stage_name == "training_train_partition_materialise":
+            raw_refs["train_df"] = weakref.ref(frame)
+        return frame
+
+    def fake_build_pool(
+        frame: pl.DataFrame,
+        _features: list[str],
+        _cat_features: list[str],
+        *,
+        y: Any = None,
+        w: Any = None,
+        baseline: Any = None,
+    ) -> object:
+        nonlocal pools_built
+        pool_values.append(
+            {
+                "y": None if y is None else y.tolist(),
+                "w": None if w is None else w.tolist(),
+                "baseline": None if baseline is None else baseline.tolist(),
+            }
+        )
+        if pools_built == 0:
+            raw_refs["features"] = weakref.ref(frame)
+            raw_refs["y"] = weakref.ref(y)
+            raw_refs["w"] = weakref.ref(w)
+            raw_refs["baseline"] = weakref.ref(baseline)
+        pools_built += 1
+        return object()
+
+    monkeypatch.setitem(training_job.ALGORITHM_REGISTRY, "catboost", FakeCatBoostAlgorithm)
+    monkeypatch.setattr(training_job, "_training_streaming_collect", recording_collect)
+    monkeypatch.setattr("haute.modelling._algorithms._build_pool", fake_build_pool)
+
+    job = TrainingJob(
+        name="allocation_order",
+        data=str(split_path),
+        target="target",
+        weight="weight",
+        offset="offset",
+        algorithm="catboost",
+        task="regression",
+    )
+    job._train_model(
+        _SplitResult(str(split_path), False, n_train=2, n_validation=2, n_holdout=0),
+        ["feature"],
+        [],
+        None,
+        lambda _message, _progress: None,
+    )
+
+    assert pool_values == [
+        {"y": [1.0, 1.0], "w": [0.5, 0.7], "baseline": [0.1, 0.3]},
+        {"y": [0.0, 0.0], "w": [0.6, 0.8], "baseline": [0.2, 0.4]},
+    ]
+
+
+def test_glm_keeps_training_and_validation_frames_for_its_fit_interface(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    split_path = tmp_path / "glm-split.parquet"
+    pl.DataFrame(
+        {
+            "feature": [1.0, 2.0],
+            "target": [1.0, 0.0],
+            "_partition": [PARTITION_TRAIN, PARTITION_VALIDATION],
+        }
+    ).write_parquet(split_path)
+    received: dict[str, pl.DataFrame] = {}
+
+    class FakeGlmAlgorithm:
+        def fit(
+            self,
+            train: pl.DataFrame,
+            *_args: Any,
+            eval_df: pl.DataFrame | None,
+            **_kwargs: Any,
+        ) -> SimpleNamespace:
+            received["train"] = train
+            assert eval_df is not None
+            received["validation"] = eval_df
+            return SimpleNamespace(model=object(), best_iteration=None, loss_history=[])
+
+    monkeypatch.setitem(training_job.ALGORITHM_REGISTRY, "glm", FakeGlmAlgorithm)
+    TrainingJob(
+        name="glm_frames",
+        data=str(split_path),
+        target="target",
+        algorithm="glm",
+        params={"family": "gaussian", "terms": {"feature": {"type": "linear"}}},
+    )._train_model(
+        _SplitResult(str(split_path), False, n_train=1, n_validation=1, n_holdout=0),
+        ["feature"],
+        [],
+        None,
+        lambda _message, _progress: None,
+    )
+
+    assert received["train"]["target"].to_list() == [1.0]
+    assert received["validation"]["target"].to_list() == [0.0]
+
+
+def test_catboost_without_validation_does_not_read_validation_partition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    split_path = tmp_path / "no-validation-split.parquet"
+    pl.DataFrame(
+        {"feature": [1.0], "target": [1.0], "_partition": [PARTITION_TRAIN]}
+    ).write_parquet(split_path)
+    stages: list[str] = []
+    original_collect = training_job._training_streaming_collect
+
+    class FakeCatBoostAlgorithm:
+        def fit(self, *_args: Any, **_kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(model=object(), best_iteration=None, loss_history=[])
+
+    def recording_collect(
+        lf: pl.LazyFrame,
+        *,
+        stage_name: str,
+        execution_context: ExecutionContext | None = None,
+    ) -> pl.DataFrame:
+        stages.append(stage_name)
+        return original_collect(lf, stage_name=stage_name, execution_context=execution_context)
+
+    monkeypatch.setitem(training_job.ALGORITHM_REGISTRY, "catboost", FakeCatBoostAlgorithm)
+    monkeypatch.setattr(training_job, "_training_streaming_collect", recording_collect)
+    monkeypatch.setattr(
+        "haute.modelling._algorithms._build_pool", lambda *_args, **_kwargs: object()
+    )
+    TrainingJob(
+        name="no_validation",
+        data=str(split_path),
+        target="target",
+        algorithm="catboost",
+        task="regression",
+    )._train_model(
+        _SplitResult(str(split_path), False, n_train=1, n_validation=0, n_holdout=0),
+        ["feature"],
+        [],
+        None,
+        lambda _message, _progress: None,
+    )
+
+    assert stages == ["training_train_partition_materialise"]
 
 
 def _admitted_training_context(
@@ -669,3 +934,87 @@ def test_training_mlflow_log_receives_cancellation_checkpoint(tmp_path: Path) ->
         job._log_to_mlflow(result, check_cancelled=check_cancelled)
 
     assert log.call_args.kwargs["check_cancelled"] is check_cancelled
+
+
+def test_validation_metric_allocations_are_released_before_holdout(monkeypatch):
+    from haute.modelling import _metrics
+    from haute.modelling._split import PARTITION_HOLDOUT
+
+    job = TrainingJob(
+        name="diagnostic_lifetimes",
+        data=pl.DataFrame({"x": [1]}),
+        target="y",
+        weight="w",
+        offset="o",
+        metrics=["rmse"],
+    )
+    refs = []
+    order = []
+
+    def read(_self, _path, partition, **_kwargs):
+        if partition == PARTITION_HOLDOUT:
+            gc.collect()
+            assert len(refs) == 4
+            assert all(reference() is None for reference in refs)
+        order.append(partition)
+        frame = pl.DataFrame(
+            {
+                "x": [10.0, 20.0],
+                "y": [11.0, 21.0] if partition == PARTITION_VALIDATION else [12.0, 22.0],
+                "w": [2.0, 3.0],
+                "o": [1.0, 1.0],
+            }
+        )
+        if partition == PARTITION_VALIDATION:
+            refs.append(weakref.ref(frame))
+        return frame
+
+    real_metrics = training_job.compute_metrics
+
+    def metrics(y, prediction, weights, *args, **kwargs):
+        assert weights.tolist() == [2.0, 3.0]
+        if order == [PARTITION_VALIDATION]:
+            refs.extend(weakref.ref(value) for value in (y, prediction, weights))
+        return real_metrics(y, prediction, weights, *args, **kwargs)
+
+    class Algo:
+        def feature_importance(self, _model):
+            return [{"feature": "x", "importance": 1.0}]
+
+        def predict(self, _model, frame, features, *, offset):
+            assert features == ["x"] and offset == "o"
+            return (frame["x"] + frame["o"]).to_numpy()
+
+    monkeypatch.setattr(TrainingJob, "_read_partition", read)
+    monkeypatch.setattr(training_job, "compute_metrics", metrics)
+    monkeypatch.setattr(_metrics, "compute_pdp", lambda *_a, **_k: [])
+    result = job._compute_metrics(
+        _SplitResult("unused.parquet", False, n_train=1, n_validation=2, n_holdout=2),
+        ["x"],
+        [],
+        SimpleNamespace(model=object(), algo=Algo(), fit_params={}),
+        lambda *_args: None,
+    )
+    assert order == [PARTITION_VALIDATION, PARTITION_HOLDOUT]
+    assert result.diagnostics_set == "holdout"
+    assert result.metrics["rmse"] == 0.0
+    assert result.holdout_metrics["rmse"] == 1.0
+
+
+def test_diagnostic_prediction_wrong_row_count_closes_reader(monkeypatch):
+    closed = []
+
+    def batches(*_args, **_kwargs):
+        try:
+            yield pl.DataFrame({"x": [1, 2]})
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr(training_job, "bounded_collect_batches", batches)
+    job = TrainingJob(name="bad_predictions", data=pl.DataFrame({"x": [1]}), target="y")
+    algo = SimpleNamespace(predict=lambda *_a, **_k: np.array([1.0]))
+    with pytest.raises(ValueError, match="one row per input"):
+        job._predict_diagnostic_batches(
+            algo, object(), pl.DataFrame({"x": [1, 2]}), ["x"], execution_context=None
+        )
+    assert closed == [True]

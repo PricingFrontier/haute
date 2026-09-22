@@ -24,18 +24,17 @@ specified in [Explore / EDA](../explore-eda/high-level.md),
 
 **Why:** Analysts need distributions without client-side raw-data processing.
 
-**Plan:** Emit capped server-binned numeric histograms from the bounded report
-path and render them with explicit empty/skipped states.
+**Plan:** Emit capped server-binned numeric histograms from the shared profile
+analysis and render them with explicit empty/skipped states.
 
 **Acceptance:** Tests cover null, constant, negative, and wide-schema guardrail
 cases plus chart rendering.
 
-**Dependencies:** The current bounded Explore collection, cache, and tab/panel
-contracts.
+**Dependencies:** The current bounded profile analysis, the shared data point,
+and the tab/panel contracts.
 
-**Evidence:** `src/haute/routes/_explore_service.py`;
-`src/haute/schemas.py`; `frontend/src/panels/explore`;
-`tests/test_explore_routes.py`.
+**Evidence:** `src/haute/_frame_profile.py`; `src/haute/schemas.py`;
+`frontend/src/panels/explore`; `tests/test_frame_profile.py`.
 
 ### EDA-E10 — Target relationships
 
@@ -53,12 +52,13 @@ weight validation, numeric and categorical results, bounded levels, ranked UI
 rendering, exact single-/multi-column key counts, unhashable key rejection, and
 cache identity for the selected analysis and columns.
 
-**Dependencies:** EDA-E09 plus the current bounded collection, dataframe-cache,
-job-lifecycle, and tab/panel contracts.
+**Dependencies:** EDA-E09 plus the current bounded collection, the shared data
+point and its analysis-result store, and the job-lifecycle and tab/panel
+contracts.
 
 **Evidence:** `src/haute/routes/explore.py`;
-`src/haute/routes/_explore_service.py`; `frontend/src/panels/explore`;
-`tests/test_explore_routes.py`.
+`src/haute/routes/_pivot_service.py`; `frontend/src/panels/explore`;
+`tests/test_analysis_results.py`.
 
 ### EDA-E18 — Advanced Excel pivot parity
 

@@ -16,6 +16,7 @@
 | `.github/workflows/frontend-shuffle.yml` | Runs the scheduled/manual shuffled Vitest monitor and raises/updates shuffle-watch issues with its seed on eligible failures. |
 | `.github/workflows/property-exploration.yml` | Runs the weekly/manual wide-budget Hypothesis lane (HAUTE_PROPERTY_EXAMPLES over `scripts/property_test_files.txt`) and raises/updates property-watch issues on eligible failures. |
 | `.github/workflows/container-smoke.yml` | Runs the weekly/manual container deployment smoke lane (process smoke check, Docker image build, run, /health and /quote verification) and raises/updates container-watch issues on eligible failures. |
+| `.github/workflows/e2e-snapshots.yml` | Manual-dispatch lane that re-renders Playwright screenshot baselines in the same Ubuntu environment the browser E2E lane compares them in, for the per-platform `-linux` baselines a Windows or macOS developer cannot produce. It writes nothing to the repository: it uploads only the baselines whose pixels changed, for review and commit alongside the change that moved them. |
 | `.github/workflows/mutation.yml` | Plans changed mutation targets, runs separate CI-job shards whose mutants execute serially per runner, and uses a failure-aware non-cancelled status condition on the single merge gate so plan/shard failures become failed rather than skipped checks. |
 | `.github/workflows/performance.yml` | Runs scheduled/manual Python and browser-performance lanes and uploads their artifacts. |
 | `frontend/package.json` | Cross-component dependency owned by [build-and-distribution](../build-and-distribution/low-level.md); defines frontend lint/type/unit/coverage/bundle/E2E/benchmark command entry points and frontend critical-coverage entries. |
@@ -50,6 +51,7 @@
 | `frontend/scripts/check-bundle-size.mjs` | Enforces frontend bundle-size expectations. |
 | `frontend/scripts/check-critical-coverage.mjs` | Reads Vitest coverage summary and enforces `frontend/package.json` critical entries. |
 | `frontend/scripts/check-ui-dependencies.mjs` | Audits UI dependency constraints used by the frontend bundle check. |
+| `scripts/collect_changed_snapshots.py` | Stages the screenshot baselines a Linux render changed, for the snapshot-refresh lane's artifact. Enumerates with `--untracked-files=all` so a wholly new snapshot directory is reported file by file rather than as one entry, and lets a failed Git query raise rather than read as "nothing changed". |
 | `scripts/check_critical_coverage.py` | Enforces configured backend per-file statement/branch coverage floors from coverage JSON. |
 | `scripts/check_changed_coverage.py` | Intersects a Git new-file-line diff with Coverage.py format-3 statement and branch-arc evidence, enforcing 100% changed executable coverage for the configured execution-critical source surface. |
 | `scripts/check_dependency_audit.py` | Stdlib-only fail-closed advisory-policy orchestrator/parser: exports the exact locked Python graph, runs pinned `pip-audit` and full-tree `npm audit`, validates report schemas, gives npm meta-findings a topology-independent transitive identity, and subtracts only current exact accepted-risk entries. |
@@ -233,6 +235,12 @@
    preceding main revision for a push). The coverage-gate checkout contains the
    required history; an unreadable base revision is a gate failure rather than an
    empty-diff pass.
+   Critical coverage follows the implementation owners when a module is retired.
+   The former Explore cache's 84% statement/70% branch floors apply to the shared
+   source store, node snapshots and analysis results. The former Explore service's
+   94%/86% floors apply to node-data orchestration and frame profiling. This
+   preserves the existing floors while checking the modules that now execute
+   those responsibilities; deleted files cannot satisfy a coverage gate.
 4. Compatibility, optional-dependency, platform, package, init, and mutation
    configuration smoke lanes run their named commands. The 3.14 probe is
    explicitly allowed to fail without blocking the workflow result.
@@ -374,6 +382,16 @@
   with `# pragma: no mutate`; executable expressions and branch decisions must
   remain in scope and be killed by focused witnesses rather than hidden behind
   a pragma or a relaxed survivor budget.
+- The executor mutation command includes the snapshot-preview lifecycle suite,
+  so leased-generation validation, post-capture input identity and cache-hit
+  refresh races are checked by mutation testing as well as ordinary coverage.
+  The JSON-cache command also includes the active-build directory identity and
+  completed-build cleanup witness.
+- A pytest session owns an isolated source-cache coordination table and closes
+  its process-owner handles at session teardown before restoring any previous
+  table. This lets an embedded mutation run remove its temporary project on
+  Windows after pytest returns, while production owner locks retain their
+  process lifetime.
 - The JSON-shred witness selection includes complete-inference cache isolation,
   concurrent request sharing and revision invalidation, native-filter equivalence
   to the full inference walk, bounded prefix learning, fused-parser error parity,

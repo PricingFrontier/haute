@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import xxhash
 
 # ``resource`` is POSIX-only; on Windows it's absent and the RSS test is
 # skipped anyway. Import it lazily so module *collection* works cross-platform.
@@ -31,7 +32,7 @@ try:
 except ImportError:  # pragma: no cover — Windows branch
     resource = None  # type: ignore[assignment]
 
-from haute._hashing import HASH_ALGO, content_hash, content_hash_bytes
+from haute._hashing import HASH_ALGO, HashingWriter, content_hash, content_hash_bytes
 
 # ---------------------------------------------------------------------------
 # Known test vectors (canonical xxh64 digests with default seed=0)
@@ -459,3 +460,18 @@ class TestPathInput:
         unresolved = Path(os.fspath(p))
         resolved = p.resolve()
         assert content_hash(unresolved) == content_hash(resolved)
+
+
+class TestHashingWriter:
+    def test_hashing_writer_digest_equals_file_digest(self, tmp_path: Path) -> None:
+        p = tmp_path / "out.bin"
+        payload = b"test bytes written incrementally across chunks"
+        with open(p, "wb") as raw:
+            writer = HashingWriter(raw)
+            writer.write(payload[:10])
+            writer.write(payload[10:])
+            writer.close()
+            digest = writer.hexdigest()
+
+        assert digest == content_hash(p)
+        assert digest == xxhash.xxh64(payload, seed=0).hexdigest()

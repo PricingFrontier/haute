@@ -141,9 +141,9 @@ in `src/haute/routes/_optimiser_service.py`, which:
    `_run_solve_setup_and_launch`) and returns
    `OptimiserSolveResponse(status="started", job_id=...)` immediately.
 
-The setup thread runs inside a `tempfile.TemporaryDirectory` checkpoint directory. Its context
-manager cleans the directory on normal or exceptional context exit; an abrupt process termination
-can still leave OS-temporary files behind.
+The setup thread runs inside a `contextlib.ExitStack` on which `_execute_pipeline` enters the
+run's [seed plan](../caching/low-level.md#seed-plans); the plan's seed leases and capture staging
+are held until the grid is built and released on every exit. No checkpoint directory is written.
 
 1. Admits an `ExecutionContext` (profile `OPTIMISER_SETUP`) — an admission failure here is caught
    by the setup worker and published as the solve job's `memory_limited` terminal status, not
@@ -163,11 +163,27 @@ can still leave OS-temporary files behind.
 8. Launches the actual solver thread (`_launch_background`), passing the built
    `QuoteGrid`, config, and (ratebook) the factors handle and factor-level order.
 
-`_execute_pipeline` passes the required-column seed to the execution facade, whose typed
-strategy result is attached to the admitted context and drives the same lazy execution and
-dataframe-cache request. Auto-range uses that same `_execute_pipeline` boundary and
-request context; there is no standalone optimiser-owned projection-plan helper or
-second planning policy.
+`_execute_pipeline(body, job_id, resources, ...)` opens the run's seed plan on the caller's
+`resources` stack (`open_seed_plan`, which prepares the lineage's snapshot-backed inputs, under
+the job's profile — `OPTIMISER_SETUP` or `AUTO_RANGE`) and executes with `prepare_inputs=False`
+and `snapshot_plan=` that plan, passing the required-column seed to the execution facade, whose
+typed strategy result is attached to the admitted context. The plan's consumed nodes are what
+setup reads afterwards: an explicit target alone (the estimate's data input, the streaming
+auto-range base node); otherwise the execution target — the resolved `data_input` in online
+mode, or the Optimiser itself, which resolves along its selected `data_input` edge to its
+producer — and every banding side input from the Optimiser's own edges that the run executes,
+`apiInput` ports included. The plan applies capture eligibility itself: a node-output producer
+is seeded or captured, an `apiInput` is built and never captured (its tables have their own
+store), and the two-input Optimiser is a pass-through, so it is neither a join nor captured and
+its unselected inputs are built only because setup consumes them. Auto-range passes, as the
+plan's `capture_columns_by_node`, the column demand the solve's own setup plans at every node
+(`_solve_columns_by_node`: the execution facade's `plan_projection` for the solve's target and
+`_optimiser_solve_required_columns_by_node`), so whichever node auto-range captures — the data
+input, or the streaming path's base below the scenario expander — carries what the solve reads
+there, and the following solve (and the input estimate, which reads the data input with the
+solve's columns) seeds instead of recomputing. A node the solve reads whole carries no demand
+and is not widened. Auto-range uses that same `_execute_pipeline` boundary and request context;
+there is no second planning policy or private dataframe-cache namespace.
 
 Every failure mode in this thread (cancellation, `HTTPException`, memory-admission error,
 bounded-streaming-unsupported error, or a bare exception) is mapped to a terminal job-store
@@ -789,6 +805,18 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   logs and swallows failures and dispatches to the ratebook-factor cleaner. (The streaming
   contiguity, projection, checkpoint, memory-limit, non-finite, interleaving and frontier-range
   contracts live in `tests/test_optimiser_contracts.py`, above.)
+- **`tests/test_optimiser_seeding.py`** — setup, auto-range, and the input estimate under seed
+  plans, run through `_execute_pipeline` as their callers run it: setup after a batch training
+  run seeds the training run's captured join and builds nothing; a ratebook setup cold builds
+  each node once and captures the data producer and the banding side input — the two-input
+  Optimiser is neither checkpointed nor captured — and warm seeds both and builds nothing; a
+  banding side input from an `apiInput` port is built on every run but never captured, and
+  factor extraction succeeds cold and warm; auto-range, whose own demand is narrower than the
+  solve's, captures the solve's columns so the following solve seeds, and streaming auto-range
+  does the same at its pre-expansion base, so the solve seeds the base and builds nothing above
+  it; the input estimate seeds
+  setup's capture; and a real solve, auto-range, and estimate through the routes create no
+  checkpoint directory and no dataframe-cache entry.
 - **`tests/test_optimiser_service_validation.py`** — focused unit tests for
   `_validate_and_project`'s non-finite/overflow/null-quote-id detection (including float64→
   float32 overflow rejection) and end-to-end single-/multi-quote real-solver lifecycle tests
@@ -876,3 +904,28 @@ The required behaviour is defined in
 - The missing/malformed/range-order failure model remains strict and names the exact constraint.
 - Backend fixtures that exercise frontier computation use per-constraint ranges; historical
   scalar-field fixtures are deleted.
+## Decoded input widths for setup chunking
+
+Automatic optimiser-grid and ratebook-factor chunk sizing uses the larger of
+the existing Parquet page-size estimate and a bounded decoded sample (at most
+512 rows). Each sampled column has an eight-byte minimum, and strings/binary
+use their decoded resident width. Repeated dictionary values must not make a
+large decoded batch look like a tiny encoded page. Explicit positive row
+overrides retain their current meaning. The existing setup execution limits
+remain authoritative: chunked input still builds a resident solver grid.
+## Reuse and admit the resident grid input
+
+Grid setup reuses a single local Parquet scan when its optimised plan is only
+the scan/projection, without predicates, slices, virtual columns, schema
+overrides, hive partitions, column mapping or deletion files. Its physical
+column dtypes must agree with the projected frame. No-op casts are omitted.
+The current caller keeps its input lease alive; borrowed input is never removed
+by grid cleanup. Multipart or transformed input retains one projected adapter
+file because the installed solver interface accepts one file.
+
+Before constructing the resident grid, estimate numeric vectors, quote IDs,
+sorting/conversion overlap and one reader batch from row count and decoded
+sample widths. Refuse an estimate exceeding the current execution context's
+remaining allowance with the existing typed admission error. The estimate is
+conservative and does not replace runtime limits. The existing solver/frontier
+work keeps sharing its prepared grid; this change adds no parallel grid copies.

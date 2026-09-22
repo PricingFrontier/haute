@@ -96,6 +96,7 @@ vi.mock("../api/client", async () => {
         }
       }),
     })),
+    previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
     previewNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
     previewRecoveryNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
     dryRunRemoveUnavailableNode: vi.fn(() => Promise.resolve({})),
@@ -135,10 +136,12 @@ vi.mock("../api/client", async () => {
     logOptimiserToMlflow: vi.fn(() => Promise.resolve({})),
     selectFrontierPoint: vi.fn(() => Promise.resolve({})),
     // Explore
-    runExplore: vi.fn(() => Promise.resolve({ status: "started", job_id: "explore-job-1", cached: false, message: "started" })),
-    getExploreCacheSnapshot: vi.fn(() => Promise.resolve({ state: "missing", message: "No cache", result: null })),
-    getExploreStatus: vi.fn(() => Promise.resolve({ status: "running", progress: 0, message: "running", result: null })),
-    cancelExplore: vi.fn(() => Promise.resolve({ status: "cancelled", progress: 1, message: "cancelled", result: null })),
+    getNodeDataPoint: vi.fn(() => Promise.resolve(missingPoint())),
+    runNodeData: vi.fn(() => Promise.resolve({ status: "started", job_id: "node-data-1", cached: false, message: "Caching started", point: missingPoint() })),
+    getNodeDataStatus: vi.fn(() => Promise.resolve({ status: "running", progress: 0, message: "Caching data" })),
+    cancelNodeData: vi.fn(() => Promise.resolve({ status: "cancelled", progress: 1, message: "cancelled" })),
+    clearNodeData: vi.fn(() => Promise.resolve({ status: "cleared", point: missingPoint() })),
+    getNodeDataProfile: vi.fn(() => Promise.resolve({ status: "cache_required", message: "Cache it first", point: missingPoint() })),
     // Databricks
     getWarehouses: vi.fn(() => Promise.resolve({ warehouses: [] })),
     getCatalogs: vi.fn(() => Promise.resolve({ catalogs: [] })),
@@ -307,8 +310,6 @@ function resetAllStores(): void {
     solveJobs: {},
     trainResults: {},
     trainJobs: {},
-    exploreResults: {},
-    exploreJobs: {},
   })
   useSettingsStore.setState({
     rowLimit: 100,
@@ -328,6 +329,42 @@ function resetAllStores(): void {
 }
 
 /** Make a React Flow node with the minimum valid shape + a readable label. */
+function missingPoint(nodeId = "explore_1") {
+  return {
+    consumer_node_id: nodeId,
+    point: { producer_node_id: "source_0", port_label: null },
+    slot_key: "source_0||live",
+    kind: "node_output" as const,
+    state: "missing" as const,
+    demand: "all" as const,
+    data_version: null,
+    generation: null,
+    job: null,
+    reads_directly: false,
+  }
+}
+
+function currentPoint(nodeId = "explore_1") {
+  return {
+    ...missingPoint(nodeId),
+    state: "current" as const,
+    data_version: "gen-1",
+    row_count: 1,
+    size_bytes: 128,
+    retention: "pinned" as const,
+    generation: {
+      generation_id: "gen-1",
+      columns: "all" as const,
+      row_count: 1,
+      column_count: 1,
+      size_bytes: 128,
+      retention: "pinned" as const,
+      fresh: true,
+      created_at: 1,
+    },
+  }
+}
+
 function makeNode(id: string, label: string, nodeType = "polars"): { id: string; type: string; position: { x: number; y: number }; data: Record<string, unknown> } {
   const functionName = label.trim().replaceAll(" ", "_").replaceAll("-", "_")
   const special = nodeType === "apiInput" || nodeType === "submodel" || nodeType === "submodelPort"
@@ -477,10 +514,12 @@ beforeEach(() => {
   vi.mocked(api.previewRecoveryNode).mockReset().mockResolvedValue({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })
   vi.mocked(api.dryRunRemoveUnavailableNode).mockReset()
   vi.mocked(api.applyRemoveUnavailableNode).mockReset()
-  vi.mocked(api.runExplore).mockReset().mockResolvedValue({ status: "started", job_id: "explore-job-1", cached: false, message: "started" })
-  vi.mocked(api.getExploreCacheSnapshot).mockReset().mockResolvedValue({ state: "missing", message: "No cache", result: null })
-  vi.mocked(api.getExploreStatus).mockReset().mockResolvedValue({ status: "running", progress: 0, message: "running", result: null })
-  vi.mocked(api.cancelExplore).mockReset().mockResolvedValue({ status: "cancelled", progress: 1, message: "cancelled", result: null })
+  vi.mocked(api.getNodeDataPoint).mockReset().mockResolvedValue(missingPoint())
+  vi.mocked(api.runNodeData).mockReset().mockResolvedValue({ status: "started", job_id: "node-data-1", cached: false, message: "Caching started", point: missingPoint() })
+  vi.mocked(api.getNodeDataStatus).mockReset().mockResolvedValue({ status: "running", progress: 0, message: "Caching data" })
+  vi.mocked(api.cancelNodeData).mockReset().mockResolvedValue({ status: "cancelled", progress: 1, message: "cancelled" })
+  vi.mocked(api.clearNodeData).mockReset().mockResolvedValue({ status: "cleared", point: missingPoint() })
+  vi.mocked(api.getNodeDataProfile).mockReset().mockResolvedValue({ status: "cache_required", message: "Cache it first", point: missingPoint() })
   vi.mocked(api.getMlflowDestinations).mockReset().mockResolvedValue({
     mlflow_installed: true,
     mlflow_importable: true,
@@ -511,6 +550,15 @@ afterEach(() => {
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
+
+// A startup check, a save gate and a branch confirmation each cross several
+// effects and mocked requests; a whole parallel suite run makes that slower
+// than the one-second default without making it wrong.
+const MODAL_TIMEOUT_MS = 10_000
+// A panel hydrating from a fetched profile crosses a load, several effects and
+// a mocked request; a whole parallel suite run makes that slower without making
+// it wrong, and these queries otherwise keep the 1s default.
+const PANEL_HYDRATION_TIMEOUT_MS = 10_000
 
 describe("App integration — mounts and renders main chrome", () => {
   it("does not open websocket sync while the initial pipeline load is pending", async () => {
@@ -620,7 +668,7 @@ describe("App integration — degraded execution fence", () => {
       )
     })
     expect(vi.mocked(api.previewNode)).not.toHaveBeenCalled()
-    expect(vi.mocked(api.getExploreCacheSnapshot)).not.toHaveBeenCalled()
+    expect(vi.mocked(api.getNodeDataPoint)).not.toHaveBeenCalled()
     expect(screen.queryByTestId("explore-preview-frame")).not.toBeInTheDocument()
     expect(screen.getByTestId("node-document-readonly-inspector")).toBeInTheDocument()
   })
@@ -676,16 +724,27 @@ describe("App integration — degraded execution fence", () => {
 
     render(<App />)
     await waitForAppReady()
-    fireEvent.click(await screen.findByTestId("unavailable-node-Broken"))
-    fireEvent.click(await screen.findByRole("button", { name: "Remove unavailable node" }))
-    await screen.findByText("Remove broken.")
+    fireEvent.click(
+      await screen.findByTestId("unavailable-node-Broken", {}, { timeout: PANEL_HYDRATION_TIMEOUT_MS }),
+    )
+    fireEvent.click(
+      await screen.findByRole(
+        "button",
+        { name: "Remove unavailable node" },
+        { timeout: PANEL_HYDRATION_TIMEOUT_MS },
+      ),
+    )
+    await screen.findByText("Remove broken.", {}, { timeout: PANEL_HYDRATION_TIMEOUT_MS })
     expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["broken@10"])
 
     fireEvent.click(screen.getByRole("button", { name: "Remove node" }))
 
-    await waitFor(() => {
-      expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["survivor"])
-    })
+    await waitFor(
+      () => {
+        expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["survivor"])
+      },
+      { timeout: PANEL_HYDRATION_TIMEOUT_MS },
+    )
     expect(useDocumentStatusStore.getState().sourceRevision).toBe("revision-repaired")
     expect(screen.queryByTestId("pipeline-repair-dialog")).not.toBeInTheDocument()
     expect(screen.queryByTestId("node-recovery-diagnostics")).not.toBeInTheDocument()
@@ -982,8 +1041,8 @@ describe("App integration — load a pipeline with nodes", () => {
     const exploreNode = await screen.findByText("Claims Explore")
     fireEvent.click(exploreNode)
 
-    expect(await screen.findByRole("button", { name: "Needs caching" })).toBeInTheDocument()
-    expect(vi.mocked(api.getExploreCacheSnapshot)).toHaveBeenCalledWith(expect.objectContaining({
+    expect(await screen.findByTestId("data-cache-status")).toHaveTextContent("Not cached")
+    expect(vi.mocked(api.getNodeDataPoint)).toHaveBeenCalledWith(expect.objectContaining({
       node_id: "explore_1",
       source: "live",
     }))
@@ -1010,7 +1069,7 @@ describe("App integration — load a pipeline with nodes", () => {
     expect(screen.getByText(/Showing 2 of 4 rows/)).toBeInTheDocument()
   })
 
-  it("hydrates Pivot field actions from a current Explore cache report on cold load", async () => {
+  it("hydrates Pivot field actions from the shared data profile on cold load", async () => {
     const sourceNode = makeNode("source_0", "Claims Source", "dataInput")
     sourceNode.data.config = { inputType: "file", format: "parquet", mode: "scan", path: "data/claims.parquet", arguments: {} }
     sourceNode.data._columns = [{ name: "upstream_only", dtype: "i64" }]
@@ -1020,10 +1079,14 @@ describe("App integration — load a pipeline with nodes", () => {
       nodes: [sourceNode, exploreNode], edges: [{ id: "e1", source: "source_0", target: "explore_1" }],
       preamble: "", preserved_blocks: [], source_revision: "revision-test",
     }))
-    vi.mocked(api.getExploreCacheSnapshot).mockResolvedValueOnce({
-      state: "current", message: "Cached", result: {
-        status: "ok", node_id: "explore_1", upstream_node_id: "source_0", source: "live",
-        dataframe_cache_key: "explore_dataset:post-code", row_count: 1, column_count: 1, generated_at: 1,
+    const profiledPoint = currentPoint()
+    vi.mocked(api.getNodeDataPoint).mockResolvedValue(profiledPoint)
+    vi.mocked(api.getNodeDataProfile).mockResolvedValue({
+      status: "completed",
+      message: "Profile is ready",
+      point: profiledPoint,
+      result: {
+        row_count: 1, column_count: 1, generated_at: 1, data_version: "gen-1",
         columns: [{ name: "post_code_only", dtype: "Utf8", kind: "Text", null_count: 0, distinct_count: 1, unique_ratio: 1, is_high_cardinality: false, is_identifier_candidate: false, text_min_length: 1, text_mean_length: 1, text_max_length: 1, temporal_span: null }],
         overview_summary: { data_quality: { issue_count: 0, issues: [], duplicate_row_count: 0, duplicate_ratio: 0 }, categorical_summary: [] },
       },
@@ -1031,15 +1094,23 @@ describe("App integration — load a pipeline with nodes", () => {
 
     render(<App />)
     await waitForAppReady()
-    fireEvent.click(await screen.findByText("Claims Explore"))
-    fireEvent.click((await screen.findAllByRole("tab", { name: "Pivots" })).find(
+    fireEvent.click(await screen.findByText("Claims Explore", {}, { timeout: PANEL_HYDRATION_TIMEOUT_MS }))
+    fireEvent.click((await screen.findAllByRole("tab", { name: "Pivots" }, { timeout: PANEL_HYDRATION_TIMEOUT_MS })).find(
       (tab) => tab.id === "explore-pivots-tab",
     )!)
     await findEditorTestId("explore-pivots-config")
-    fireEvent.click(await screen.findByRole("button", { name: "Add Pivot" }))
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Add Pivot" }, { timeout: PANEL_HYDRATION_TIMEOUT_MS }),
+    )
     fireEvent.click(screen.getByRole("button", { name: /configure pivot/i }))
 
-    expect(await screen.findByRole("group", { name: "post_code_only field actions" })).toBeInTheDocument()
+    expect(
+      await screen.findByRole(
+        "group",
+        { name: "post_code_only field actions" },
+        { timeout: PANEL_HYDRATION_TIMEOUT_MS },
+      ),
+    ).toBeInTheDocument()
   })
 })
 
@@ -1225,20 +1296,29 @@ describe("App integration — save pipeline", () => {
     await waitForAppReady()
 
     // The startup check itself surfaces the selection modal (state unset).
-    await waitFor(() => {
-      expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument()
-    })
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument()
+      },
+      { timeout: MODAL_TIMEOUT_MS },
+    )
     // Dismiss the startup modal to isolate the save-gate path.
     fireEvent.keyDown(document, { key: "Escape" })
-    await waitFor(() => {
-      expect(screen.queryByTestId("working-branch-modal")).toBeNull()
-    })
+    await waitFor(
+      () => {
+        expect(screen.queryByTestId("working-branch-modal")).toBeNull()
+      },
+      { timeout: MODAL_TIMEOUT_MS },
+    )
 
     // Clicking Save must NOT save directly — it re-opens the gate modal.
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
-    await waitFor(() => {
-      expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument()
-    })
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument()
+      },
+      { timeout: MODAL_TIMEOUT_MS },
+    )
     expect(vi.mocked(api.savePipeline)).not.toHaveBeenCalled()
 
     // Confirming the branch sets it and lets the queued save proceed.
@@ -1302,13 +1382,19 @@ describe("App integration — save pipeline", () => {
     await waitForAppReady()
 
     // Dismiss the startup chooser to isolate the commit-gate path.
-    await waitFor(() => expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument())
+    await waitFor(
+      () => expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument(),
+      { timeout: MODAL_TIMEOUT_MS },
+    )
     fireEvent.keyDown(document, { key: "Escape" })
     await waitFor(() => expect(screen.queryByTestId("working-branch-modal")).toBeNull())
 
     // Commit with no working branch → re-opens the chooser (queued action).
     fireEvent.click(screen.getByTestId("toolbar-save-commit"))
-    await waitFor(() => expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument())
+    await waitFor(
+      () => expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument(),
+      { timeout: MODAL_TIMEOUT_MS },
+    )
     expect(vi.mocked(api.commitMilestone)).not.toHaveBeenCalled()
 
     // Confirm a branch → save flushes, then the milestone modal opens.

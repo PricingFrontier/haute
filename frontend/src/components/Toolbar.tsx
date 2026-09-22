@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useCallback } from "react"
+import { Suspense, lazy, useState, useMemo, useRef, useCallback } from "react"
 import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, Bot, Loader2, Group, Link2, BookOpen } from "lucide-react"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import type { NodeTiming, NodeMemory } from "../api/types"
@@ -8,6 +8,8 @@ import useSettingsStore, { MAX_STREAMING_CHUNK_SIZE, MIN_STREAMING_CHUNK_SIZE } 
 import useUIStore from "../stores/useUIStore"
 import useClickOutside from "../hooks/useClickOutside"
 import MlflowSettingsModal from "./MlflowSettingsModal"
+
+const CacheSettingsModal = lazy(() => import("./CacheSettingsModal"))
 
 declare const __APP_VERSION__: string
 
@@ -91,6 +93,10 @@ export default function Toolbar({
     () => Math.max(8, String(rowLimit).length, String(streamingChunkSize).length),
     [rowLimit, streamingChunkSize],
   )
+  // Local, not in the UI store: the toolbar is the only thing that opens the
+  // cache pane, so no other surface needs to read or set this.
+  const [cacheSettingsOpen, setCacheSettingsOpen] = useState(false)
+  const closeCacheSettings = useCallback(() => setCacheSettingsOpen(false), [])
   const [addingSource, setAddingSource] = useState(false)
   const [newSourceName, setNewSourceName] = useState("")
   const [sourceError, setSourceError] = useState<string | null>(null)
@@ -140,123 +146,144 @@ export default function Toolbar({
           />
         </div>
       </div>
-      {/* Source selector — custom dropdown */}
-      <div ref={sourceRef} className="relative flex items-center gap-1">
-        <label className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>Source</label>
-        {addingSource ? (
-          <form
-            className="relative flex items-center gap-0.5"
-            onSubmit={(e) => {
-              e.preventDefault()
-              const result = addSource(newSourceName)
-              if (result.ok) {
-                setActiveSource(result.key)
-                setAddingSource(false)
-                setNewSourceName("")
-                setSourceError(null)
-              } else if (result.reason === "empty") {
-                // Keep the form open so the user can supply a name.
-                setSourceError("Enter a name for the source.")
-              } else {
-                // A distinct label that sanitises onto an existing key — name
-                // the collision so the reject is intelligible, not silent.
-                setSourceError(`Matches existing source "${result.key}".`)
-              }
-            }}
-          >
-            <input
-              autoFocus
-              value={newSourceName}
-              onChange={(e) => { setNewSourceName(e.target.value); if (sourceError) setSourceError(null) }}
-              onBlur={() => requestAnimationFrame(() => { setAddingSource(false); setNewSourceName(""); setSourceError(null) })}
-              placeholder="name"
-              aria-invalid={sourceError ? true : undefined}
-              aria-describedby={sourceError ? "source-add-error" : undefined}
-              className="w-20 px-1.5 py-1 text-[11px] font-mono rounded focus:outline-none"
-              style={{ background: 'var(--chrome-hover)', border: `1px solid ${sourceError ? 'var(--danger)' : 'var(--accent)'}`, color: 'var(--text-primary)' }}
-            />
-            {sourceError && (
-              <span
-                id="source-add-error"
-                role="alert"
-                data-testid="source-add-error"
-                className="absolute top-full left-0 mt-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium z-50"
-                style={{ background: 'var(--danger-soft)', color: 'var(--danger-text)', border: '1px solid var(--danger-border)' }}
-              >
-                {sourceError}
-              </span>
-            )}
-          </form>
-        ) : (
-          <button
-            data-testid="source-selector"
-            onClick={() => setSourceOpen((v) => !v)}
-            disabled={editingDisabled || !sourceSelectionTrusted}
-            className="flex items-center gap-1.5 px-2 py-1 text-[12px] font-mono rounded-md transition-colors"
-            /* Shares the toolbar button surface so the two boxed controls in
-               the bar don't sit at different lightnesses. */
-            style={{
-              background: sourceOpen ? 'var(--accent-soft)' : 'var(--btn-surface)',
-              border: `1px solid ${sourceOpen ? 'var(--accent)' : 'var(--btn-border)'}`,
-              color: 'var(--text-primary)',
-            }}
-            title="Data source"
-          >
-            {sourceSelectionTrusted && activeSource === "live" && (
-              <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
-            )}
-            <span>{sourceSelectionTrusted ? activeSource : "Unavailable"}</span>
-            <ChevronDown size={11} style={{ color: 'var(--text-muted)', transition: 'transform 150ms', transform: sourceOpen ? 'rotate(180deg)' : undefined }} />
-          </button>
-        )}
-        {sourceOpen && !editingDisabled && sourceSelectionTrusted && (
-          <div
-            className="absolute top-full left-0 mt-1 rounded-lg shadow-2xl z-50 min-w-[160px] overflow-hidden"
-            style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)' }}
-          >
-            <div className="py-1">
-              {sources.map((s) => {
-                const isActive = s === activeSource
-                return (
-                  <button
-                    key={s}
-                    onClick={() => { setActiveSource(s); setSourceOpen(false) }}
-                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12px] font-mono text-left transition-colors ${isActive ? "" : "hover:bg-[var(--chrome-hover)]"}`}
-                    style={{
-                      color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
-                      background: isActive ? 'var(--accent-soft)' : 'transparent',
-                    }}
-                  >
-                    {s === "live"
-                      ? <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
-                      : <span className="w-1.5 shrink-0" />}
-                    {s}
-                  </button>
-                )
-              })}
-            </div>
-            <div className="py-1" style={{ borderTop: '1px solid var(--border)' }}>
-              <button
-                onClick={() => { setAddingSource(true); setSourceOpen(false) }}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--chrome-hover)] hover:text-[var(--text-secondary)]"
-                style={{ color: 'var(--text-muted)' }}
-              >
-                <Plus size={12} />
-                Add source
-              </button>
-              {activeSource !== "live" && (
-                <button
-                  onClick={() => { removeSource(activeSource); setSourceOpen(false) }}
-                  className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--danger-soft)]"
-                  style={{ color: 'var(--danger)' }}
+      {/* Source and Cache column — the Source selector sits on the top row, in
+          line with Preview Rows and Undo, and the Cache control underneath it.
+          The two rows are one grid so the control column takes the width of the
+          wider control and both buttons come out identical, whatever the active
+          source is named. */}
+      <div className="grid grid-cols-[auto_auto] items-center gap-x-1 gap-y-1 w-fit" data-testid="toolbar-source-cache">
+        <label className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>Source:</label>
+        <div ref={sourceRef} className="relative w-full">
+          {addingSource ? (
+            <form
+              className="relative flex items-center gap-0.5"
+              onSubmit={(e) => {
+                e.preventDefault()
+                const result = addSource(newSourceName)
+                if (result.ok) {
+                  setActiveSource(result.key)
+                  setAddingSource(false)
+                  setNewSourceName("")
+                  setSourceError(null)
+                } else if (result.reason === "empty") {
+                  // Keep the form open so the user can supply a name.
+                  setSourceError("Enter a name for the source.")
+                } else {
+                  // A distinct label that sanitises onto an existing key — name
+                  // the collision so the reject is intelligible, not silent.
+                  setSourceError(`Matches existing source "${result.key}".`)
+                }
+              }}
+            >
+              <input
+                autoFocus
+                value={newSourceName}
+                onChange={(e) => { setNewSourceName(e.target.value); if (sourceError) setSourceError(null) }}
+                onBlur={() => requestAnimationFrame(() => { setAddingSource(false); setNewSourceName(""); setSourceError(null) })}
+                placeholder="name"
+                aria-invalid={sourceError ? true : undefined}
+                aria-describedby={sourceError ? "source-add-error" : undefined}
+                className="w-20 px-1.5 py-1 text-[11px] font-mono rounded focus:outline-none"
+                style={{ background: 'var(--chrome-hover)', border: `1px solid ${sourceError ? 'var(--danger)' : 'var(--accent)'}`, color: 'var(--text-primary)' }}
+              />
+              {sourceError && (
+                <span
+                  id="source-add-error"
+                  role="alert"
+                  data-testid="source-add-error"
+                  className="absolute top-full left-0 mt-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium z-50"
+                  style={{ background: 'var(--danger-soft)', color: 'var(--danger-text)', border: '1px solid var(--danger-border)' }}
                 >
-                  <Trash2 size={12} />
-                  Remove "{activeSource}"
-                </button>
+                  {sourceError}
+                </span>
               )}
+            </form>
+          ) : (
+            <button
+              data-testid="source-selector"
+              onClick={() => setSourceOpen((v) => !v)}
+              disabled={editingDisabled || !sourceSelectionTrusted}
+              className="w-full flex items-center justify-between gap-1.5 px-2 py-1 text-[12px] font-mono rounded-md transition-colors"
+              /* Shares the toolbar button surface so the two boxed controls in
+                 the bar don't sit at different lightnesses.  The chevron is
+                 pinned right rather than trailing the name, so the control still
+                 reads as a dropdown when the grid stretches it past its text. */
+              style={{
+                background: sourceOpen ? 'var(--accent-soft)' : 'var(--btn-surface)',
+                border: `1px solid ${sourceOpen ? 'var(--accent)' : 'var(--btn-border)'}`,
+                color: 'var(--text-primary)',
+              }}
+              title="Data source"
+            >
+              <span className="flex items-center gap-1.5 min-w-0">
+                {sourceSelectionTrusted && activeSource === "live" && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
+                )}
+                <span className="truncate">{sourceSelectionTrusted ? activeSource : "Unavailable"}</span>
+              </span>
+              <ChevronDown size={11} className="shrink-0" style={{ color: 'var(--text-muted)', transition: 'transform 150ms', transform: sourceOpen ? 'rotate(180deg)' : undefined }} />
+            </button>
+          )}
+          {sourceOpen && !editingDisabled && sourceSelectionTrusted && (
+            <div
+              className="absolute top-full left-0 mt-1 rounded-lg shadow-2xl z-50 min-w-[160px] overflow-hidden"
+              style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)' }}
+            >
+              <div className="py-1">
+                {sources.map((s) => {
+                  const isActive = s === activeSource
+                  return (
+                    <button
+                      key={s}
+                      onClick={() => { setActiveSource(s); setSourceOpen(false) }}
+                      className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12px] font-mono text-left transition-colors ${isActive ? "" : "hover:bg-[var(--chrome-hover)]"}`}
+                      style={{
+                        color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
+                        background: isActive ? 'var(--accent-soft)' : 'transparent',
+                      }}
+                    >
+                      {s === "live"
+                        ? <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
+                        : <span className="w-1.5 shrink-0" />}
+                      {s}
+                    </button>
+                  )
+                })}
+              </div>
+              <div className="py-1" style={{ borderTop: '1px solid var(--border)' }}>
+                <button
+                  onClick={() => { setAddingSource(true); setSourceOpen(false) }}
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--chrome-hover)] hover:text-[var(--text-secondary)]"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  <Plus size={12} />
+                  Add source
+                </button>
+                {activeSource !== "live" && (
+                  <button
+                    onClick={() => { removeSource(activeSource); setSourceOpen(false) }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--danger-soft)]"
+                    style={{ color: 'var(--danger)' }}
+                  >
+                    <Trash2 size={12} />
+                    Remove "{activeSource}"
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
+        <label className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>Cache:</label>
+        <button
+          data-testid="toolbar-cache"
+          onClick={() => setCacheSettingsOpen(true)}
+          aria-haspopup="dialog"
+          aria-expanded={cacheSettingsOpen}
+          className="toolbar-btn w-full px-2 py-1 text-[12px] font-medium rounded-md flex items-center justify-center"
+          title="Cache usage — what the cache holds against its limits"
+        >
+          Usage
+        </button>
       </div>
       {/* Rows & Chunk configuration column — Preview Rows on top of Chunk Rows */}
       <div className="flex flex-col gap-1 ml-2.5 w-fit" data-testid="toolbar-rows-chunk">
@@ -518,6 +545,11 @@ export default function Toolbar({
         </BranchIndicator>
       </div>
       {mlflowSettingsOpen && <MlflowSettingsModal onClose={closeMlflowSettings} />}
+      {cacheSettingsOpen && (
+        <Suspense fallback={null}>
+          <CacheSettingsModal onClose={closeCacheSettings} />
+        </Suspense>
+      )}
     </header>
   )
 }

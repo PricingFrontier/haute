@@ -10,11 +10,11 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type {
-  ExploreCacheReport,
   ExplorePivotResult,
   ExplorePivotRunResponse,
   ExplorePivotStatusResponse,
 } from "../../../api/types"
+import type { ExploreDataView } from "../exploreDataView"
 import useGraphStore from "../../../stores/useGraphStore"
 import useNodeResultsStore, {
   explorePivotResultKey,
@@ -88,14 +88,12 @@ function makeNode(pivots: ExplorePivotConfig[]): SimpleNode {
 }
 
 function makeReport(
-  dataframeCacheKey = "explore_dataset:current",
-): ExploreCacheReport {
+  dataVersion = "explore_dataset:current",
+): ExploreDataView {
   return {
-    status: "ok",
-    node_id: "explore_1",
-    upstream_node_id: "source_1",
+    producer_node_id: "source_1",
     source: "pricing",
-    dataframe_cache_key: dataframeCacheKey,
+    data_version: dataVersion,
     row_count: 1,
     column_count: 2,
     generated_at: 1,
@@ -114,7 +112,7 @@ function makeReport(
 
 function makeResult(
   pivot: ExplorePivotConfig,
-  dataframeCacheKey = "explore_dataset:current",
+  dataVersion = "explore_dataset:current",
 ): ExplorePivotResult {
   const outputs = pivotOutputs(pivot)
   return {
@@ -122,7 +120,7 @@ function makeResult(
     node_id: "explore_1",
     pivot_id: pivot.id,
     source: "pricing",
-    dataframe_cache_key: dataframeCacheKey,
+    data_version: dataVersion,
     calculation_key: "calculation-key",
     row_fields: ["region"],
     column_fields: [],
@@ -152,7 +150,7 @@ function makeResult(
 
 function renderPane(
   pivots: ExplorePivotConfig[],
-  report: ExploreCacheReport | null = makeReport(),
+  report: ExploreDataView | null = makeReport(),
 ) {
   const node = makeNode(pivots)
   return render(
@@ -171,7 +169,7 @@ function startStoredJob(
   pivot: ExplorePivotConfig,
   jobId: string,
   calculationIdentity = pivotCalculationIdentity(pivot),
-  requestedDataframeCacheKey: string | null = "explore_dataset:current",
+  requestedDataVersion: string | null = "explore_dataset:current",
 ) {
   const key = explorePivotResultKey("explore_1", pivot.id)
   useNodeResultsStore.getState().startExplorePivotJob(
@@ -184,21 +182,21 @@ function startStoredJob(
     calculationIdentity,
     "pricing",
     0,
-    requestedDataframeCacheKey,
+    requestedDataVersion,
   )
   return key
 }
 
 function completeStoredResult(
   pivot: ExplorePivotConfig,
-  dataframeCacheKey = "explore_dataset:current",
+  dataVersion = "explore_dataset:current",
   calculationIdentity = pivotCalculationIdentity(pivot),
 ) {
   const key = startStoredJob(pivot, `completed-${pivot.id}`, calculationIdentity)
   act(() => {
     useNodeResultsStore
       .getState()
-      .completeExplorePivotJob(key, makeResult(pivot, dataframeCacheKey))
+      .completeExplorePivotJob(key, makeResult(pivot, dataVersion))
   })
   return key
 }
@@ -315,7 +313,7 @@ describe("ExplorePivotsPane", () => {
 
     expect(
       screen.getByText(
-        "Cache the full Explore data above to calculate this pivot automatically.",
+        "Refresh this node to cache its full data; this pivot then calculates automatically.",
       ),
     ).toBeVisible()
     expect(mockRunExplorePivot).not.toHaveBeenCalled()
@@ -688,7 +686,7 @@ describe("ExplorePivotsPane", () => {
     await waitFor(() => expect(mockRunExplorePivot).toHaveBeenCalledTimes(1))
     await waitFor(() => {
       expect(
-        useNodeResultsStore.getState().pivotJobs[key]?.requestedDataframeCacheKey,
+        useNodeResultsStore.getState().pivotJobs[key]?.requestedDataVersion,
       ).toBeNull()
     })
   })

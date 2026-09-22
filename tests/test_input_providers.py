@@ -440,10 +440,10 @@ def test_snapshot_reader_lease_survives_refresh_until_execution_context_closes(
     )
 
     assert second.generation_id != first.generation_id
-    assert first.data_path.exists()
+    assert all(path.exists() for path in first.data_paths)
     assert leased_frame.collect()["id"].to_list() == [1]
     context.release_admission()
-    assert not first.data_path.parent.exists()
+    assert not first.directory.exists()
 
 
 def test_derived_snapshot_plan_retains_lease_without_execution_context(
@@ -469,9 +469,9 @@ def test_derived_snapshot_plan_retains_lease_without_execution_context(
     pl.DataFrame({"id": [2]}).write_ndjson(source)
     build_input_snapshot(config, store=store, base_dir=tmp_path, refresh=True)
 
-    assert first.data_path.exists()
+    assert all(path.exists() for path in first.data_paths)
     assert derived.collect()["id"].to_list() == [1]
 
     del derived
     gc.collect()
-    assert not first.data_path.parent.exists()
+    assert not first.directory.exists()

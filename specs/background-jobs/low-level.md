@@ -365,7 +365,11 @@ The thread executes one total outcome pipeline:
    rather than `str(exc)` ("Isolated worker raised …"); the wrapper text is kept in
    the diagnostic `error` field, and a child-supplied `error` string it would
    overwrite moves to `worker_error` (only when non-empty and actually
-   different from the wrapper). Any other `BaseException` becomes an `error`
+   different from the wrapper). When the caller passes `failure_metrics`, the
+   `execution_metrics` a failed worker reports are mapped through it before they are
+   recorded — training and dispersion pass
+   `ExecutionContext.metrics_with_worker_evidence`, so a failed worker's metrics keep
+   preparation's evidence. Any other `BaseException` becomes an `error`
    outcome with a bounded generic message plus `supervisor_error_class`
    (no `worker_error_class`, which only typed worker failures carry); the
    original exception is retained as `exception_to_report`.

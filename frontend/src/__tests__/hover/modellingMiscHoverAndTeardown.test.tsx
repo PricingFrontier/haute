@@ -156,7 +156,22 @@ type SrcFile = {
  *    `hoverBg` as identifiers in string/identifier positions as part
  *    of the negative assertion tables.
  */
+/**
+ * Eight sweeps in this file each enumerate and parse the same ~760 files.
+ * The tree does not change while the suite runs, so the walk and every AST
+ * are computed once and shared; parsing with `setParentNodes` eight times
+ * over instead was enough to exceed the per-test budget under coverage
+ * instrumentation. Each sweep still sees the whole tree and the same AST.
+ */
+let walkCache: SrcFile[] | null = null
+const parseCache = new Map<string, ts.SourceFile>()
+
 function walkFrontendSrc(): SrcFile[] {
+  if (walkCache === null) walkCache = collectFrontendSrc()
+  return walkCache
+}
+
+function collectFrontendSrc(): SrcFile[] {
   const results: SrcFile[] = []
   const selfAbs = path.resolve(HERE, "modellingMiscHoverAndTeardown.test.tsx")
 
@@ -185,14 +200,18 @@ function walkFrontendSrc(): SrcFile[] {
 
 /** Parse a TS/TSX source file into a TypeScript AST SourceFile. */
 function parseSource(abs: string, text: string): ts.SourceFile {
+  const cached = parseCache.get(abs)
+  if (cached !== undefined) return cached
   const scriptKind = abs.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS
-  return ts.createSourceFile(
+  const parsed = ts.createSourceFile(
     abs,
     text,
     ts.ScriptTarget.Latest,
     /*setParentNodes*/ true,
     scriptKind,
   )
+  parseCache.set(abs, parsed)
+  return parsed
 }
 
 /**

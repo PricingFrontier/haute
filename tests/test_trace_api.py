@@ -68,7 +68,7 @@ def _simple_parquet(tmp_path: Path, data: dict | None = None) -> Path:
 
 def _trace_post(client, graph_dict: dict, **kwargs) -> Any:
     """POST to the trace endpoint and return the response."""
-    payload: dict[str, Any] = {"graph": graph_dict, **kwargs}
+    payload: dict[str, Any] = {"graph": graph_dict, "seed_plan": [], **kwargs}
     return client.post("/api/pipeline/trace", json=payload)
 
 

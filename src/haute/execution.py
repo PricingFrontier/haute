@@ -17,7 +17,7 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import polars as pl
 
@@ -101,6 +101,10 @@ from haute.projection import (
     with_materialisation_boundaries,
 )
 
+if TYPE_CHECKING:
+    from haute._chunked_writes import JoinRecipe, WriteRecipe
+    from haute._seed_plans import SeedPlan
+
 __all__ = [
     "AllExceptColumns",
     "BoundedDiagnosticCollection",
@@ -138,6 +142,7 @@ __all__ = [
     "materialize_lazy_frame_with_cache",
     "plan_prepared_execution_strategy",
     "plan_execution_strategy",
+    "plan_projection",
     "preview_lineage_cache_key",
     "prune_source_switch_edges",
     "ratebook_factor_required_columns",
@@ -246,44 +251,40 @@ def plan_execution_strategy(
         _AUTO_MATERIALISATION_ESTIMATE
     ),
     runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
+    materialising_node_ids: Iterable[str] | None = None,
+    estimation_graph: PipelineGraph | None = None,
 ) -> ExecutionStrategyResult:
-    """Return the sole route-facing V1 execution-planning result."""
+    """Return the sole route-facing V1 execution-planning result.
+
+    ``materialising_node_ids`` limits admission and estimation to the
+    materialisations the execution will actually perform; a planned execution
+    passes the nodes it builds, so a branch it never builds (or that a seed
+    covers) is neither estimated nor refused. ``estimation_graph`` replaces
+    the request graph for materialisation estimates only — a planned execution
+    passes one whose seeds are Parquet inputs of their leased generations.
+    """
     prepared = prepare_graph(
         request.graph,
         request.target_node_id,
         source=request.source,
     )
     children_of = _children_of(prepared.order, prepared.parents_of)
-    required_columns_by_node = normalise_required_columns_by_node(
-        request.required_columns_by_node,
-        prepared.order,
-    )
-    projection_plan = compute_prepared_plan(
-        prepared.order,
-        children_of,
-        prepared.node_map,
-        required_columns_by_node=required_columns_by_node,
-        relevant_edges=prepared.relevant_edges,
-        submodels=prepared.submodels,
-        selector_aliases=preamble_selector_aliases(request.graph.preamble or ""),
-    )
-    projection_plan = with_api_input_port_projection_boundaries(
-        projection_plan,
-        prepared.node_map,
-        prepared.relevant_edges,
-    )
-    materialising_sequences = materialising_operator_sequences_by_node(
-        prepared.order,
-        prepared.node_map,
-        relevant_edges=prepared.relevant_edges,
-        submodels=prepared.submodels,
+    required_columns_by_node, projection_plan = _prepared_projection_plan(prepared, request)
+    materialising_sequences = _only_nodes(
+        materialising_operator_sequences_by_node(
+            prepared.order,
+            prepared.node_map,
+            relevant_edges=prepared.relevant_edges,
+            submodels=prepared.submodels,
+        ),
+        materialising_node_ids,
     )
     materialising_operators = first_materialising_operators(materialising_sequences)
     resolved_estimate: MaterialisationEstimate | None
     if materialising_operators:
         if materialisation_estimate is _AUTO_MATERIALISATION_ESTIMATE:
             resolved_estimate = _estimate_materialising_boundaries(
-                request.graph,
+                estimation_graph if estimation_graph is not None else request.graph,
                 materialising_sequences,
                 source=request.source,
                 projection_plan=projection_plan,
@@ -314,6 +315,46 @@ def plan_execution_strategy(
     if execution_context is not None:
         execution_context.projection_plan = result
     return result
+
+
+def plan_projection(request: ProjectionRequest) -> ProjectionPlan:
+    """Return the column demand *request*'s execution plans at every node.
+
+    The projection half of :func:`plan_execution_strategy`, for a caller that
+    needs another execution's demand — auto-range captures the columns the
+    following solve reads — without planning, estimating, or admitting it.
+    """
+    prepared = prepare_graph(
+        request.graph,
+        request.target_node_id,
+        source=request.source,
+    )
+    return _prepared_projection_plan(prepared, request)[1]
+
+
+def _prepared_projection_plan(
+    prepared: PreparedGraph,
+    request: ProjectionRequest,
+) -> tuple[dict[str, set[str] | AllExceptColumns], ProjectionPlan]:
+    required_columns_by_node = normalise_required_columns_by_node(
+        request.required_columns_by_node,
+        prepared.order,
+    )
+    projection_plan = compute_prepared_plan(
+        prepared.order,
+        _children_of(prepared.order, prepared.parents_of),
+        prepared.node_map,
+        required_columns_by_node=required_columns_by_node,
+        relevant_edges=prepared.relevant_edges,
+        submodels=prepared.submodels,
+        selector_aliases=preamble_selector_aliases(request.graph.preamble or ""),
+    )
+    projection_plan = with_api_input_port_projection_boundaries(
+        projection_plan,
+        prepared.node_map,
+        prepared.relevant_edges,
+    )
+    return required_columns_by_node, projection_plan
 
 
 def _estimate_materialising_boundaries(
@@ -370,6 +411,7 @@ def plan_prepared_execution_strategy(
     relevant_edges: Iterable[GraphEdge] | None = None,
     submodels: Mapping[str, Any] | None = None,
     selector_aliases: frozenset[str] = frozenset(),
+    materialising_node_ids: Iterable[str] | None = None,
 ) -> ExecutionStrategyResult:
     """Plan projection/streaming strategy for an already prepared graph.
 
@@ -402,11 +444,14 @@ def plan_prepared_execution_strategy(
         )
     if prepared_relevant_edges is not None:
         materialising_operators = first_materialising_operators(
-            materialising_operator_sequences_by_node(
-                order,
-                node_map,
-                relevant_edges=prepared_relevant_edges,
-                submodels=submodels,
+            _only_nodes(
+                materialising_operator_sequences_by_node(
+                    order,
+                    node_map,
+                    relevant_edges=prepared_relevant_edges,
+                    submodels=submodels,
+                ),
+                materialising_node_ids,
             )
         )
     else:
@@ -423,7 +468,12 @@ def plan_prepared_execution_strategy(
             for child in children:
                 input_names_by_node.setdefault(child, set()).add(name)
         materialising_operators = first_materialising_operators(
-            materialising_operator_sequences_by_input_names(order, node_map, input_names_by_node)
+            _only_nodes(
+                materialising_operator_sequences_by_input_names(
+                    order, node_map, input_names_by_node
+                ),
+                materialising_node_ids,
+            )
         )
     result = _finalise_execution_strategy(
         projection_plan,
@@ -441,6 +491,20 @@ def plan_prepared_execution_strategy(
     if execution_context is not None:
         execution_context.projection_plan = result
     return result
+
+
+_NodeValue = TypeVar("_NodeValue")
+
+
+def _only_nodes(
+    by_node: Mapping[str, _NodeValue],
+    node_ids: Iterable[str] | None,
+) -> Mapping[str, _NodeValue]:
+    """Keep only the named nodes' entries; ``None`` keeps every entry."""
+    if node_ids is None:
+        return by_node
+    keep = frozenset(node_ids)
+    return {node_id: value for node_id, value in by_node.items() if node_id in keep}
 
 
 def _children_of(
@@ -1121,6 +1185,31 @@ def _runtime_input_fingerprint_entry(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeInputIdentity:
+    """The runtime inputs of one scope, read once.
+
+    Hashing it, with or without extra entries, reads nothing: a fingerprint
+    built from it describes the inputs as they were when it was read, however
+    long ago that was.
+    """
+
+    payload: Mapping[str, object]
+
+    def fingerprint(self, extra: Mapping[str, object] | None = None) -> str:
+        inputs = checked_cache_inputs(
+            CacheConsumer.RUNTIME_GRAPH_INPUT,
+            {**self.payload, "extra": dict(sorted((extra or {}).items()))},
+        )
+        digest = content_hash_bytes(inputs.canonical_bytes)
+        return f"runtime-input:v{inputs.contract.version}:{digest}"
+
+    @property
+    def digest(self) -> str:
+        """The identity itself, for comparing two reads of the same scope."""
+        return self.fingerprint()
+
+
 def dataframe_graph_input_fingerprint(
     graph: PipelineGraph,
     *,
@@ -1137,6 +1226,24 @@ def dataframe_graph_input_fingerprint(
     component is not a standalone execution identity: callers pair it with
     their checked graph or lineage fingerprint.
     """
+    return dataframe_graph_input_identity(
+        graph,
+        target_node_id=target_node_id,
+        source=source,
+        ignore_node_ids=ignore_node_ids,
+        memo=memo,
+    ).fingerprint(extra_fingerprints)
+
+
+def dataframe_graph_input_identity(
+    graph: PipelineGraph,
+    *,
+    target_node_id: str | None,
+    source: str,
+    ignore_node_ids: Iterable[str] = (),
+    memo: GraphFingerprintMemo | None = None,
+) -> RuntimeInputIdentity:
+    """Read the runtime inputs :func:`dataframe_graph_input_fingerprint` signs."""
 
     graph = canonical_dataframe_execution_graph(graph)
     if target_node_id is not None and target_node_id not in graph.node_map:
@@ -1168,8 +1275,7 @@ def dataframe_graph_input_fingerprint(
         for node in sorted(scoped_graph.nodes, key=lambda item: item.id)
         if node.data.nodeType in runtime_input_node_types
     ]
-    inputs = checked_cache_inputs(
-        CacheConsumer.RUNTIME_GRAPH_INPUT,
+    return RuntimeInputIdentity(
         {
             "source": source,
             "sources": source_entries,
@@ -1179,10 +1285,8 @@ def dataframe_graph_input_fingerprint(
                 pipeline_dir=_cache_pipeline_dir(scoped_graph),
                 memo=memo,
             ),
-            "extra": dict(sorted((extra_fingerprints or {}).items())),
-        },
+        }
     )
-    return f"runtime-input:v{inputs.contract.version}:{content_hash_bytes(inputs.canonical_bytes)}"
 
 
 def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict[str, Path]:
@@ -1270,16 +1374,21 @@ def _preview_contract_fingerprint(
     return f"preview-contract-v{_PREVIEW_CONTRACT_FINGERPRINT_VERSION}:{digest}"
 
 
-def _lineage_runtime_input_fingerprint(
+def lineage_runtime_input_identity(
     graph: PipelineGraph,
-    prepared: PreparedGraph,
     *,
+    target_node_id: str | None,
     source: str,
-    memo: GraphFingerprintMemo | None,
-) -> str:
-    relevant_graph = _lineage_runtime_graph(graph, prepared)
-    return dataframe_graph_input_fingerprint(
-        relevant_graph,
+    memo: GraphFingerprintMemo | None = None,
+) -> RuntimeInputIdentity:
+    """Read the runtime inputs of *target_node_id*'s source-pruned lineage.
+
+    The identity the preview/trace cache key signs; a caller that must key an
+    entry by the inputs its execution read, not by a later read, keeps it.
+    """
+    prepared = prepare_graph(graph, target_node_id, source=source)
+    return dataframe_graph_input_identity(
+        _lineage_runtime_graph(graph, prepared),
         target_node_id=None,
         source=source,
         memo=memo,
@@ -1298,9 +1407,26 @@ def preview_lineage_cache_key(
     enforce_contracts: bool,
     materialisation_scope: str,
     memo: GraphFingerprintMemo | None = None,
+    runtime_input_identity: RuntimeInputIdentity | None = None,
+    seed_plan_fingerprint: str | None = None,
 ) -> str:
-    """Return the sole preview/trace cache identity for one target lineage."""
+    """Return the sole preview/trace cache identity for one target lineage.
+
+    *seed_plan_fingerprint* names the snapshot generations the execution
+    seeded from; it joins the runtime-input fingerprint, so an entry computed
+    from one seed generation is never served for another. An execution that
+    seeds nothing passes ``None`` and computes, and is keyed as, the same data
+    as one without a plan. *runtime_input_identity*, when given, is the read
+    of the lineage's inputs to sign instead of reading them again.
+    """
     prepared = prepare_graph(graph, target_node_id, source=source)
+    identity = (
+        runtime_input_identity
+        if runtime_input_identity is not None
+        else lineage_runtime_input_identity(
+            graph, target_node_id=target_node_id, source=source, memo=memo
+        )
+    )
     request = LineageCacheKeyRequest(
         graph=graph,
         prepared=prepared,
@@ -1315,11 +1441,8 @@ def preview_lineage_cache_key(
             materialisation_scope=materialisation_scope,
         ),
         selected_live_switch_path=selected_live_switch_path(prepared),
-        runtime_input_fingerprint=_lineage_runtime_input_fingerprint(
-            graph,
-            prepared,
-            source=source,
-            memo=memo,
+        runtime_input_fingerprint=identity.fingerprint(
+            {"seed_plan": seed_plan_fingerprint} if seed_plan_fingerprint is not None else None
         ),
         execution_semantics_version=PREVIEW_EXECUTION_SEMANTICS_VERSION,
     )
@@ -1389,7 +1512,6 @@ def execute_lazy_graph(
     target_node_id: str | None = None,
     preamble_ns: dict[str, Any] | None = None,
     source: str = "live",
-    checkpoint_dir: Path | None = None,
     enforce_contracts: bool = False,
     preserve_node_ids: set[str] | frozenset[str] | None = None,
     required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
@@ -1399,6 +1521,10 @@ def execute_lazy_graph(
     schema_only: bool = False,
     runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
     prepare_inputs: bool = True,
+    snapshot_plan: SeedPlan | None = None,
+    join_recipes: dict[str, JoinRecipe] | None = None,
+    write_recipes: dict[str, WriteRecipe] | None = None,
+    unshaped_frames: dict[str, pl.LazyFrame] | None = None,
 ) -> LazyExecutionResult:
     """Execute a graph lazily through the shared production engine.
 
@@ -1407,6 +1533,15 @@ def execute_lazy_graph(
     ``plan_prepared_execution_strategy`` for what that declaration relaxes.
     Supply ``runtime_source_frames_by_node`` when source nodes are injected
     DataFrames and group-by admission must estimate those request-local inputs.
+    A ``snapshot_plan`` (``haute._seed_plans``) makes the run seed from and
+    capture into shared snapshots; without one nothing is captured, and only a
+    ``dataframe_cache_request`` (deploy scoring) materialises node outputs.
+    ``join_recipes``, when given, receives the recipe of every edge join the
+    run builds, so a caller writing one in full can write it in chunks;
+    ``write_recipes``, when given, receives the recipe of every single-input
+    node the run builds, so a caller writing one in full can write it in chunks;
+    ``unshaped_frames`` receives, for every node that selects or renames its
+    columns, its frame before that step.
     """
     from haute._execute_lazy import _execute_lazy
 
@@ -1416,7 +1551,6 @@ def execute_lazy_graph(
         target_node_id=target_node_id,
         preamble_ns=preamble_ns,
         source=source,
-        checkpoint_dir=checkpoint_dir,
         enforce_contracts=enforce_contracts,
         preserve_node_ids=preserve_node_ids,
         required_columns_by_node=required_columns_by_node,
@@ -1426,6 +1560,10 @@ def execute_lazy_graph(
         schema_only=schema_only,
         runtime_source_frames_by_node=runtime_source_frames_by_node,
         prepare_inputs=prepare_inputs,
+        snapshot_plan=snapshot_plan,
+        join_recipes=join_recipes,
+        write_recipes=write_recipes,
+        unshaped_frames=unshaped_frames,
     )
 
 

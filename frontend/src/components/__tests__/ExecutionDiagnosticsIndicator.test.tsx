@@ -28,6 +28,69 @@ function warnedStrategyMetrics(withPressure: boolean) {
   })
 }
 
+function memoryPressureMetrics() {
+  return makeExecutionMetricsFixture({
+    execution_strategy: null,
+  })
+}
+
+function rejectedStrategyMetrics() {
+  return makeExecutionMetricsFixture({
+    memory_pressure_events: [],
+    execution_strategy: {
+      schema_version: 1,
+      status: "rejected",
+      strategy: "materialisation-boundary",
+      profile: "preview_eager",
+      boundedness: "bounded",
+      reason_code: "no_safe_plan",
+      detail_state: "available",
+      boundaries: { state: "available", total_count: 0, items: [] },
+      reasons: { state: "available", total_count: 0, items: [] },
+      provenance: { state: "available", total_count: 0, items: [] },
+      blocking_node_id: "unsafe_node",
+      blocking_operator: null,
+      remediation: "Add an explicit filter.",
+      estimated_peak_bytes: null,
+      headroom_bytes: null,
+    },
+  })
+}
+
+function projectionBoundaryMetrics() {
+  return makeExecutionMetricsFixture({
+    memory_pressure_events: [],
+    execution_strategy: {
+      schema_version: 1,
+      status: "boundary",
+      strategy: "full-width-conservative",
+      profile: "preview_eager",
+      boundedness: "bounded",
+      reason_code: "projection_limited",
+      detail_state: "available",
+      boundaries: {
+        state: "available",
+        total_count: 1,
+        items: [
+          {
+            boundary_kind: "unprojected-streaming-boundary",
+            node_id: "stream_node",
+            operator: "filter",
+            topological_rank: 0,
+          },
+        ],
+      },
+      reasons: { state: "available", total_count: 0, items: [] },
+      provenance: { state: "available", total_count: 0, items: [] },
+      blocking_node_id: "stream_node",
+      blocking_operator: "filter",
+      remediation: "Constrain the projected columns.",
+      estimated_peak_bytes: null,
+      headroom_bytes: null,
+    },
+  })
+}
+
 afterEach(cleanup)
 
 describe("ExecutionDiagnosticsIndicator", () => {
@@ -45,5 +108,152 @@ describe("ExecutionDiagnosticsIndicator", () => {
     expect(
       screen.getByLabelText("Preview execution warning details"),
     ).toHaveAttribute("title", "Preview memory pressure")
+  })
+
+  it("renders when the only warning is a quota refusal, naming the node and remedies", () => {
+    const metrics = makeExecutionMetricsFixture({
+      memory_pressure_events: [],
+      execution_strategy: null,
+      warnings: [
+        {
+          code: "snapshot_capture_skipped",
+          node_id: "score",
+          reason: "quota",
+        },
+      ],
+    })
+    render(<ExecutionDiagnosticsIndicator metrics={metrics} />)
+
+    expect(screen.getByLabelText("Preview execution warning details")).toBeInTheDocument()
+    const status = screen.getByRole("status")
+    expect(status).toHaveTextContent("score")
+    expect(status).toHaveTextContent(/clear a cached node's data that is no longer needed/i)
+    expect(status).toHaveTextContent(/raise the node-output cache quota/i)
+    expect(status).toHaveTextContent("HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS")
+    expect(status).toHaveTextContent("HAUTE_NODE_SNAPSHOT_MAX_BYTES")
+  })
+
+  it("names both nodes when two captures were refused", () => {
+    const metrics = makeExecutionMetricsFixture({
+      memory_pressure_events: [],
+      execution_strategy: null,
+      warnings: [
+        {
+          code: "snapshot_capture_skipped",
+          node_id: "first_node",
+          reason: "quota",
+        },
+        {
+          code: "snapshot_capture_skipped",
+          node_id: "second_node",
+          reason: "quota",
+        },
+      ],
+    })
+    render(<ExecutionDiagnosticsIndicator metrics={metrics} />)
+
+    const status = screen.getByRole("status")
+    // Arrival order, not just presence: a reversed list would pass on
+    // presence alone.
+    expect(status).toHaveTextContent("'first_node' and 'second_node'")
+  })
+
+  it("describes only the refused node when mixed with a superseded warning", () => {
+    const metrics = makeExecutionMetricsFixture({
+      memory_pressure_events: [],
+      execution_strategy: null,
+      warnings: [
+        {
+          code: "snapshot_capture_skipped",
+          node_id: "refused_node",
+          reason: "quota",
+        },
+        {
+          code: "snapshot_capture_superseded",
+          node_id: "superseded_node",
+          reason: null,
+        },
+      ],
+    })
+    render(<ExecutionDiagnosticsIndicator metrics={metrics} />)
+
+    const status = screen.getByRole("status")
+    expect(status).toHaveTextContent("refused_node")
+    expect(status).not.toHaveTextContent("superseded_node")
+  })
+
+  it("renders nothing when a snapshot_capture_skipped warning has a reason other than quota", () => {
+    const metrics = makeExecutionMetricsFixture({
+      memory_pressure_events: [],
+      execution_strategy: null,
+      warnings: [
+        {
+          code: "snapshot_capture_skipped",
+          node_id: "some_node",
+          reason: "superseded",
+        },
+      ],
+    })
+    const { container } = render(<ExecutionDiagnosticsIndicator metrics={metrics} />)
+
+    expect(container.firstChild).toBeNull()
+    expect(screen.queryByRole("status")).not.toBeInTheDocument()
+  })
+
+  it.each([
+    {
+      name: "memory pressure",
+      metrics: memoryPressureMetrics(),
+      expectedTitle: "Preview memory pressure",
+      expectedSeverity: "warning" as const,
+      expectedRemediation: "Memory used:",
+    },
+    {
+      name: "a rejected strategy",
+      metrics: rejectedStrategyMetrics(),
+      expectedTitle: "Execution could not use a safe strategy",
+      expectedSeverity: "error" as const,
+      expectedRemediation: "Add an explicit filter.",
+    },
+    {
+      name: "a warned strategy",
+      metrics: warnedStrategyMetrics(false),
+      expectedTitle: "Execution ran without a memory estimate",
+      expectedSeverity: "warning" as const,
+      expectedRemediation: "Use a bounded aggregation.",
+    },
+    {
+      name: "a projection boundary without pressure",
+      metrics: projectionBoundaryMetrics(),
+      expectedTitle: "Column projection was limited",
+      expectedSeverity: "warning" as const,
+      expectedRemediation: "Constrain the projected columns.",
+    },
+  ])("coexists with $name while preserving title, severity, and remediation", ({ metrics, expectedTitle, expectedSeverity, expectedRemediation }) => {
+    const withRefusal = {
+      ...metrics,
+      warnings: [
+        {
+          code: "snapshot_capture_skipped",
+          node_id: "refused_node",
+          reason: "quota",
+        },
+      ],
+    }
+    render(<ExecutionDiagnosticsIndicator metrics={withRefusal} />)
+
+    expect(screen.getByText(expectedTitle)).toBeInTheDocument()
+    const ariaLabel = expectedSeverity === "error"
+      ? "Preview execution error details"
+      : "Preview execution warning details"
+    expect(screen.getByLabelText(ariaLabel)).toBeInTheDocument()
+
+    const status = screen.getByRole("status")
+    expect(status).toHaveTextContent(expectedRemediation)
+    expect(status).toHaveTextContent("refused_node")
+    expect(status).toHaveTextContent(/clear a cached node's data that is no longer needed/i)
+    expect(status).toHaveTextContent(/raise the node-output cache quota/i)
+    expect(status).toHaveTextContent("HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS")
+    expect(status).toHaveTextContent("HAUTE_NODE_SNAPSHOT_MAX_BYTES")
   })
 })

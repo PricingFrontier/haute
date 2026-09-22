@@ -3,10 +3,8 @@ import { describe, expect, it } from "vitest"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import {
   parseApplyOptimiserResponse,
+  parsePreviewInputsResponse,
   parseDissolveSubmodelResponse,
-  parseExploreRunResponse,
-  parseExploreCacheSnapshotResponse,
-  parseExploreStatusResponse,
   parseExplorePivotMembersResponse,
   parseExplorePivotRunResponse,
   parseExplorePivotStatusResponse,
@@ -61,6 +59,8 @@ import {
   parseUtilityListResponse,
   parseUtilityReadResponse,
   parseUtilityWriteResponse,
+  parseNodeDataProfileResponse,
+  parseRatingLevelsResponse,
 } from "../guards"
 import {
   parseTrainEstimateResponse,
@@ -559,6 +559,64 @@ describe("API response guards", () => {
     ).toThrow(/status/i)
   })
 
+  it("parses the generations a preview was computed from", () => {
+    const parsed = parsePreviewNodeResponse(loadUiContractFixture("preview_node"))
+
+    expect(parsed.seed_plan).toEqual([
+      expect.objectContaining({
+        node_id: "join",
+        port_label: null,
+        node_label: "Join",
+        columns: ["policy_id", "premium", "region"],
+        kind: "seeded",
+      }),
+      expect.objectContaining({ node_id: "rates", columns: null, kind: "captured" }),
+    ])
+  })
+
+  it("defaults the seed plan to empty and rejects malformed entries", () => {
+    const { seed_plan: _omitted, ...withoutPlan } = loadUiContractFixture<Record<string, unknown>>(
+      "preview_node",
+    )
+    expect(parsePreviewNodeResponse(withoutPlan).seed_plan).toEqual([])
+
+    const fixture = loadUiContractFixture<{ seed_plan: Record<string, unknown>[] }>("preview_node")
+    const entry = fixture.seed_plan[0]
+    expect(() =>
+      parsePreviewNodeResponse({ ...fixture, seed_plan: [{ ...entry, kind: "borrowed" }] }),
+    ).toThrow(/kind/)
+    expect(() =>
+      parsePreviewNodeResponse({ ...fixture, seed_plan: [{ ...entry, port_label: "drivers" }] }),
+    ).toThrow(/port_label/)
+  })
+
+  it.each([
+    ["an empty string", ""],
+    ["a whitespace-only string", "   "],
+    ["an omitted field", undefined],
+    ["a non-string value", 123],
+  ])(
+    "rejects a seed plan entry with %s generation_id",
+    (_label, invalidValue) => {
+      const fixture = loadUiContractFixture<{ seed_plan: Record<string, unknown>[] }>("preview_node")
+      const { generation_id: _omitted, ...entryWithoutGenId } = fixture.seed_plan[0]
+      const entry =
+        invalidValue === undefined
+          ? entryWithoutGenId
+          : { ...entryWithoutGenId, generation_id: invalidValue }
+      expect(() =>
+        parsePreviewNodeResponse({ ...fixture, seed_plan: [entry] }),
+      ).toThrow(/generation_id/)
+    },
+  )
+
+  it("parses the inputs a preview would read", () => {
+    expect(parsePreviewInputsResponse({ input_node_ids: ["policies", "quotes"] })).toEqual({
+      input_node_ids: ["policies", "quotes"],
+    })
+    expect(() => parsePreviewInputsResponse({ input_node_ids: [1] })).toThrow(/input_node_ids/)
+  })
+
   it("parses preview truncation metadata", () => {
     const parsed = parsePreviewNodeResponse(loadUiContractFixture("preview_node"))
 
@@ -608,6 +666,540 @@ describe("API response guards", () => {
         },
       }),
     ).toThrow(/action/i)
+  })
+
+  it("preserves shared snapshot seeds, captures, and warnings", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        shared_snapshot_seeds: [
+          { node_id: "join", identity_digest: "d1", generation_id: "g1", columns: "all" },
+        ],
+        shared_snapshot_captures: [
+          {
+            node_id: "banding",
+            identity_digest: "d2",
+            kind: "consumed",
+            outcome: "quota",
+            generation_id: null,
+            columns: ["premium", "region"],
+            write_strategy: "chunked_join",
+            write_parts: 20,
+            write_chunk_rows: 500,
+            write_staged_inputs: 0,
+            write_input_slices: 4,
+            write_native_reason: "unsupported_frame_method",
+            write_blocking_operator: "head",
+          },
+        ],
+        shared_snapshot_capture_skips: [
+          { node_id: "select_1", reason: "cheap_segment" },
+        ],
+        warnings: [{ code: "snapshot_capture_skipped", node_id: "banding", reason: "quota" }],
+      },
+    })
+
+    expect(parsed.execution_metrics?.shared_snapshot_seeds).toEqual([
+      { node_id: "join", identity_digest: "d1", generation_id: "g1", columns: "all" },
+    ])
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.outcome).toBe("quota")
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.columns).toEqual(["premium", "region"])
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_strategy).toBe("chunked_join")
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_parts).toBe(20)
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_chunk_rows).toBe(500)
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_staged_inputs).toBe(0)
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_input_slices).toBe(4)
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_native_reason).toBe("unsupported_frame_method")
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_blocking_operator).toBe("head")
+    expect(parsed.execution_metrics?.shared_snapshot_capture_skips).toEqual([
+      { node_id: "select_1", reason: "cheap_segment" },
+    ])
+    expect(parsed.execution_metrics?.warnings).toEqual([
+      { code: "snapshot_capture_skipped", node_id: "banding", reason: "quota" },
+    ])
+  })
+
+  it("accepts null write_chunk_rows in shared snapshot captures", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        shared_snapshot_captures: [
+          {
+            node_id: "banding",
+            identity_digest: "d2",
+            kind: "consumed",
+            outcome: "quota",
+            generation_id: null,
+            columns: ["premium", "region"],
+            write_strategy: "sliced",
+            write_parts: 20,
+            write_chunk_rows: null,
+          },
+        ],
+      },
+    })
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_chunk_rows).toBeNull()
+  })
+
+  it("rejects a negative write_parts in shared snapshot captures", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_captures: [
+            {
+              node_id: "banding",
+              identity_digest: "d2",
+              kind: "consumed",
+              outcome: "quota",
+              generation_id: null,
+              columns: ["premium", "region"],
+              write_strategy: "sliced",
+              write_parts: -1,
+            },
+          ],
+        },
+      }),
+    ).toThrow(/write_parts/i)
+  })
+
+  it("rejects a negative write_chunk_rows in shared snapshot captures", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_captures: [
+            {
+              node_id: "banding",
+              identity_digest: "d2",
+              kind: "consumed",
+              outcome: "quota",
+              generation_id: null,
+              columns: ["premium", "region"],
+              write_strategy: "sliced",
+              write_chunk_rows: -1,
+            },
+          ],
+        },
+      }),
+    ).toThrow(/write_chunk_rows/i)
+  })
+
+  it("rejects a non-numeric write_chunk_rows in shared snapshot captures", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_captures: [
+            {
+              node_id: "banding",
+              identity_digest: "d2",
+              kind: "consumed",
+              outcome: "quota",
+              generation_id: null,
+              columns: ["premium", "region"],
+              write_strategy: "sliced",
+              write_chunk_rows: "twenty",
+            },
+          ],
+        },
+      }),
+    ).toThrow(/write_chunk_rows/i)
+  })
+
+  it("rejects a zero write_parts in shared snapshot captures", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_captures: [
+            {
+              node_id: "banding",
+              identity_digest: "d2",
+              kind: "consumed",
+              outcome: "quota",
+              generation_id: null,
+              columns: ["premium", "region"],
+              write_strategy: "sliced",
+              write_parts: 0,
+            },
+          ],
+        },
+      }),
+    ).toThrow(/write_parts/i)
+  })
+
+  it("rejects a zero write_chunk_rows in shared snapshot captures", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_captures: [
+            {
+              node_id: "banding",
+              identity_digest: "d2",
+              kind: "consumed",
+              outcome: "quota",
+              generation_id: null,
+              columns: ["premium", "region"],
+              write_strategy: "sliced",
+              write_chunk_rows: 0,
+            },
+          ],
+        },
+      }),
+    ).toThrow(/write_chunk_rows/i)
+  })
+
+  it("accepts a count of 1 for write_parts and write_chunk_rows in shared snapshot captures", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        shared_snapshot_captures: [
+          {
+            node_id: "banding",
+            identity_digest: "d2",
+            kind: "consumed",
+            outcome: "quota",
+            generation_id: null,
+            columns: ["premium", "region"],
+            write_strategy: "sliced",
+            write_parts: 1,
+            write_chunk_rows: 1,
+          },
+        ],
+      },
+    })
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_parts).toBe(1)
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_chunk_rows).toBe(1)
+  })
+
+  it("accepts zero write_staged_inputs in shared snapshot captures", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        shared_snapshot_captures: [
+          {
+            node_id: "banding",
+            identity_digest: "d2",
+            kind: "consumed",
+            outcome: "quota",
+            generation_id: null,
+            columns: ["premium", "region"],
+            write_strategy: "sliced",
+            write_staged_inputs: 0,
+          },
+        ],
+      },
+    })
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_staged_inputs).toBe(0)
+  })
+
+  it("rejects an unknown write_strategy in shared snapshot captures", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_captures: [
+            {
+              node_id: "banding",
+              identity_digest: "d2",
+              kind: "consumed",
+              outcome: "quota",
+              generation_id: null,
+              columns: ["premium", "region"],
+              write_strategy: "unknown_strategy",
+            },
+          ],
+        },
+      }),
+    ).toThrow(/write_strategy/i)
+  })
+
+  it("accepts input_sliced as write_strategy in shared snapshot captures", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        shared_snapshot_captures: [
+          {
+            node_id: "banding",
+            identity_digest: "d2",
+            kind: "consumed",
+            outcome: "quota",
+            generation_id: null,
+            columns: ["premium", "region"],
+            write_strategy: "input_sliced",
+            write_input_slices: 3,
+          },
+        ],
+      },
+    })
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_strategy).toBe("input_sliced")
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_input_slices).toBe(3)
+  })
+
+  it("accepts null write_input_slices, write_native_reason, and write_blocking_operator in shared snapshot captures", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        shared_snapshot_captures: [
+          {
+            node_id: "banding",
+            identity_digest: "d2",
+            kind: "consumed",
+            outcome: "quota",
+            generation_id: null,
+            columns: ["premium", "region"],
+            write_strategy: "native",
+            write_input_slices: null,
+            write_native_reason: null,
+            write_blocking_operator: null,
+          },
+        ],
+      },
+    })
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_input_slices).toBeNull()
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_native_reason).toBeNull()
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_blocking_operator).toBeNull()
+  })
+
+  it("rejects a negative write_input_slices in shared snapshot captures", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_captures: [
+            {
+              node_id: "banding",
+              identity_digest: "d2",
+              kind: "consumed",
+              outcome: "quota",
+              generation_id: null,
+              columns: ["premium", "region"],
+              write_strategy: "input_sliced",
+              write_input_slices: -1,
+            },
+          ],
+        },
+      }),
+    ).toThrow(/write_input_slices/i)
+  })
+
+  it("rejects a zero write_input_slices in shared snapshot captures", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_captures: [
+            {
+              node_id: "banding",
+              identity_digest: "d2",
+              kind: "consumed",
+              outcome: "quota",
+              generation_id: null,
+              columns: ["premium", "region"],
+              write_strategy: "input_sliced",
+              write_input_slices: 0,
+            },
+          ],
+        },
+      }),
+    ).toThrow(/write_input_slices/i)
+  })
+
+  it("rejects a non-numeric write_input_slices in shared snapshot captures", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_captures: [
+            {
+              node_id: "banding",
+              identity_digest: "d2",
+              kind: "consumed",
+              outcome: "quota",
+              generation_id: null,
+              columns: ["premium", "region"],
+              write_strategy: "input_sliced",
+              write_input_slices: "two",
+            },
+          ],
+        },
+      }),
+    ).toThrow(/write_input_slices/i)
+  })
+
+  it("accepts a count of 1 for write_input_slices in shared snapshot captures", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        shared_snapshot_captures: [
+          {
+            node_id: "banding",
+            identity_digest: "d2",
+            kind: "consumed",
+            outcome: "quota",
+            generation_id: null,
+            columns: ["premium", "region"],
+            write_strategy: "input_sliced",
+            write_input_slices: 1,
+          },
+        ],
+      },
+    })
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_input_slices).toBe(1)
+  })
+
+  it("preserves training write metrics evidence", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        training_write_strategy: "input_sliced",
+        training_write_input_slices: 3,
+        training_write_native_reason: "unsupported_frame_method",
+        training_write_blocking_operator: "head",
+      },
+    })
+    expect(parsed.execution_metrics?.training_write_strategy).toBe("input_sliced")
+    expect(parsed.execution_metrics?.training_write_input_slices).toBe(3)
+    expect(parsed.execution_metrics?.training_write_native_reason).toBe("unsupported_frame_method")
+    expect(parsed.execution_metrics?.training_write_blocking_operator).toBe("head")
+  })
+
+  it("preserves a Data Output's write metrics evidence", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        data_output_write_strategy: "sliced",
+        data_output_write_input_slices: 4,
+        data_output_write_native_reason: null,
+      },
+    })
+    expect(parsed.execution_metrics?.data_output_write_strategy).toBe("sliced")
+    expect(parsed.execution_metrics?.data_output_write_input_slices).toBe(4)
+    expect(parsed.execution_metrics?.data_output_write_native_reason).toBeNull()
+  })
+
+  it("rejects a non-positive Data Output slice count", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          data_output_write_input_slices: 0,
+        },
+      }),
+    ).toThrow()
+  })
+
+  it("accepts null training write fields in execution metrics", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        training_write_strategy: null,
+        training_write_input_slices: null,
+        training_write_native_reason: null,
+        training_write_blocking_operator: null,
+      },
+    })
+    expect(parsed.execution_metrics?.training_write_strategy).toBeNull()
+    expect(parsed.execution_metrics?.training_write_input_slices).toBeNull()
+    expect(parsed.execution_metrics?.training_write_native_reason).toBeNull()
+    expect(parsed.execution_metrics?.training_write_blocking_operator).toBeNull()
+  })
+
+  it("rejects a negative training_write_input_slices in execution metrics", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          training_write_input_slices: -1,
+        },
+      }),
+    ).toThrow(/training_write_input_slices/i)
+  })
+
+  it("rejects a zero training_write_input_slices in execution metrics", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          training_write_input_slices: 0,
+        },
+      }),
+    ).toThrow(/training_write_input_slices/i)
+  })
+
+  it("defaults shared snapshot evidence to empty lists when omitted", () => {
+    // The fixture predates shared snapshots, so it carries none of these fields.
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: executionMetricsFixture(),
+    })
+
+    expect(parsed.execution_metrics?.shared_snapshot_seeds).toEqual([])
+    expect(parsed.execution_metrics?.shared_snapshot_captures).toEqual([])
+    expect(parsed.execution_metrics?.shared_snapshot_capture_skips).toEqual([])
+    expect(parsed.execution_metrics?.warnings).toEqual([])
+  })
+
+  it("rejects a shared snapshot capture with an unknown outcome", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_captures: [
+            {
+              node_id: "banding",
+              identity_digest: "d2",
+              kind: "consumed",
+              outcome: "evicted",
+              generation_id: null,
+              columns: "all",
+            },
+          ],
+        },
+      }),
+    ).toThrow(/outcome/i)
+  })
+
+  it("rejects a shared snapshot capture skip with an unknown reason", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...executionMetricsFixture(),
+          shared_snapshot_capture_skips: [
+            {
+              node_id: "banding",
+              reason: "unknown_reason",
+            },
+          ],
+        },
+      }),
+    ).toThrow(/reason/i)
   })
 
   it("makes malformed execution-strategy diagnostics unavailable without rejecting metrics", () => {
@@ -743,6 +1335,38 @@ describe("API response guards", () => {
     expect(parsed.trace?.correlation_diagnostics).toEqual([])
     expect(parsed.trace?.generated_at).toBe("2026-07-23T12:00:00+00:00")
     expect(parsed.trace?.execution_origin).toBe("fresh_execution")
+  })
+
+  it("parses where a seeded trace read its rows and what it skipped", () => {
+    const fixture = loadUiContractFixture<{ trace: Record<string, unknown> }>("trace_response")
+    const [step] = fixture.trace.steps as Record<string, unknown>[]
+    const parsed = parseTraceResponse({
+      ...fixture,
+      trace: {
+        ...fixture.trace,
+        steps: [{ ...step, node_id: "join", snapshot_generation_id: "generation-1" }],
+        omissions: [{
+          node_id: "policies",
+          node_name: "policies",
+          node_type: "dataInput",
+          topological_rank: 0,
+          reason: "snapshot_seed",
+          diagnostic_index: 0,
+        }],
+        correlation_diagnostics: [{
+          code: "snapshot_seed",
+          severity: "info",
+          reason: "snapshot_seed",
+          message: "Not computed: the trace read the snapshot of join.",
+          node_id: "policies",
+          seed_node_ids: ["join"],
+        }],
+      },
+    })
+
+    expect(parsed.trace?.steps[0]?.snapshot_generation_id).toBe("generation-1")
+    expect(parsed.trace?.omissions[0]?.reason).toBe("snapshot_seed")
+    expect(parsed.trace?.correlation_diagnostics[0]?.seed_node_ids).toEqual(["join"])
   })
 
   it("rejects a trace response with no trace (backend always returns one)", () => {
@@ -1307,30 +1931,21 @@ describe("API response guards", () => {
     expect(parsed.error_detail).toEqual(detail)
   })
 
-  it("parses explore run and status responses as cache descriptors", () => {
-    const run = parseExploreRunResponse(loadUiContractFixture("explore_run_response"))
-    const status = parseExploreStatusResponse(loadUiContractFixture("explore_status_response"))
+  it("parses a data-profile response as the statistics of one data version", () => {
+    const parsed = parseNodeDataProfileResponse(
+      loadUiContractFixture("node_data_profile_response"),
+    )
 
-    expect(run.cached).toBe(true)
-    expect(run.result?.row_count).toBe(150)
-    expect(run.result?.column_count).toBe(3)
-    expect(run.result?.dataframe_cache_key).toContain("explore_dataset")
-    expect(run.result?.overview_summary.data_quality.issue_count).toBe(0)
-    expect(status.result?.dataframe_cache_key).toBe(run.result?.dataframe_cache_key)
-  })
-
-  it("parses an Explore cache snapshot response", () => {
-    const parsed = parseExploreCacheSnapshotResponse({
-      state: "missing",
-      message: "No cached Explore result.",
-      result: null,
-    })
-
-    expect(parsed).toEqual({
-      state: "missing",
-      message: "No cached Explore result.",
-      result: null,
-    })
+    expect(parsed.status).toBe("completed")
+    expect(parsed.result?.row_count).toBe(150)
+    expect(parsed.result?.column_count).toBe(3)
+    expect(parsed.result?.data_version).toBe(parsed.point.data_version)
+    expect(parsed.result?.overview_summary.data_quality.issue_count).toBe(1)
+    expect(parsed.result?.columns.map((column: { name: string }) => column.name)).toEqual([
+      "policy_id",
+      "premium",
+      "region",
+    ])
   })
 
   it("parses typed pivot matrices, job status, and exact members", () => {
@@ -1422,30 +2037,73 @@ describe("API response guards", () => {
     ).toThrow(/parseExplorePivot/i)
   })
 
-  it("rejects malformed explore result payloads", () => {
-    const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+  it("reads rating levels, defaulting the counts a cache-required answer omits", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("rating_levels_response")
+
+    const answered = parseRatingLevelsResponse(fixture)
+    expect(answered.columns[0].values).toEqual([
+      { value: "North", count: 750 },
+      { value: "South", count: 249 },
+      { value: "Orkney", count: 1 },
+    ])
+    expect(answered.columns[0].distinct_count).toBe(3)
+
+    // A cache-required answer carries the point and nothing else; the reader
+    // must not invent levels, and must not throw over their absence either.
+    const unanswered = parseRatingLevelsResponse({
+      status: "cache_required",
+      point: fixture.point,
+    })
+    expect(unanswered.columns).toEqual([])
+    expect(unanswered.total_rows).toBe(0)
+    expect(unanswered.data_version).toBeNull()
+  })
+
+  it("rejects rating levels that are not levels", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("rating_levels_response")
+
+    expect(() =>
+      parseRatingLevelsResponse({ ...fixture, status: "partial" }),
+    ).toThrow(/parseRatingLevels/i)
+    expect(() =>
+      parseRatingLevelsResponse({
+        ...fixture,
+        columns: [{ column: 7, values: [], distinct_count: 0, null_count: 0 }],
+      }),
+    ).toThrow(/columns\[0\]\.column/)
+    expect(() =>
+      parseRatingLevelsResponse({
+        ...fixture,
+        columns: [{ column: "region", values: [{ value: null, count: 1 }] }],
+      }),
+    ).toThrow(/columns\[0\]\.values\[0\]\.value/)
+  })
+
+  it("rejects malformed profile payloads", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("node_data_profile_response")
     const result = fixture.result as Record<string, unknown>
 
     expect(() =>
-      parseExploreStatusResponse({
+      parseNodeDataProfileResponse({
         ...fixture,
-        result: {
-          ...result,
-          row_count: "bad",
-        },
+        result: { ...result, row_count: "bad" },
       }),
-    ).toThrow(/parseExploreCacheReport/i)
+    ).toThrow(/parseNodeDataProfile/i)
   })
 
-  describe("parseExploreColumnStat (via parseExploreCacheReport.columns)", () => {
+  describe("parseExploreColumnStat (via parseNodeDataProfile.columns)", () => {
     function withColumns(columns: unknown): Record<string, unknown> {
-      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const fixture = loadUiContractFixture<Record<string, unknown>>(
+        "node_data_profile_response",
+      )
       const result = fixture.result as Record<string, unknown>
       return { ...fixture, result: { ...result, columns } }
     }
 
     function withoutResultField(key: string): Record<string, unknown> {
-      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const fixture = loadUiContractFixture<Record<string, unknown>>(
+        "node_data_profile_response",
+      )
       const result = fixture.result as Record<string, unknown>
       const { [key]: _removed, ...nextResult } = result
       void _removed
@@ -1453,7 +2111,7 @@ describe("API response guards", () => {
     }
 
     it("parses a fully populated column stat", () => {
-      const parsed = parseExploreStatusResponse(
+      const parsed = parseNodeDataProfileResponse(
         withColumns([
           {
             name: "premium",
@@ -1499,7 +2157,7 @@ describe("API response guards", () => {
     })
 
     it("accepts null distinct_count", () => {
-      const parsed = parseExploreStatusResponse(
+      const parsed = parseNodeDataProfileResponse(
         withColumns([
           {
             name: "sparse",
@@ -1521,30 +2179,30 @@ describe("API response guards", () => {
       expect(col.distinct_count).toBeNull()
     })
 
-    it("throws when columns is missing from a cache report", () => {
-      expect(() => parseExploreStatusResponse(withoutResultField("columns"))).toThrow(
-        /parseExploreCacheReport/i,
-      )
+    it("accepts a profile without columns as an empty column list", () => {
+      const parsed = parseNodeDataProfileResponse(withoutResultField("columns"))
+
+      expect(parsed.result?.columns).toEqual([])
     })
 
-    it.each(["source", "row_count", "column_count", "generated_at"])(
-      "throws when %s is missing from a cache report",
+    it.each(["row_count", "column_count", "generated_at", "data_version"])(
+      "throws when %s is missing from a profile",
       (field) => {
-        expect(() => parseExploreStatusResponse(withoutResultField(field))).toThrow(
-          /parseExploreCacheReport/i,
+        expect(() => parseNodeDataProfileResponse(withoutResultField(field))).toThrow(
+          /parseNodeDataProfile/i,
         )
       },
     )
 
     it("throws when overview_summary is missing from a cache report", () => {
-      expect(() => parseExploreStatusResponse(withoutResultField("overview_summary"))).toThrow(
+      expect(() => parseNodeDataProfileResponse(withoutResultField("overview_summary"))).toThrow(
         /parseExploreOverviewSummary/i,
       )
     })
 
     it("throws when distinct_count is missing", () => {
       expect(() =>
-        parseExploreStatusResponse(
+        parseNodeDataProfileResponse(
           withColumns([
             { name: "minimal", dtype: "Int64", kind: "Numeric", null_count: 0 },
           ]),
@@ -1553,12 +2211,14 @@ describe("API response guards", () => {
     })
 
     it("throws when overview summary issue severity is invalid", () => {
-      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const fixture = loadUiContractFixture<Record<string, unknown>>(
+        "node_data_profile_response",
+      )
       const result = fixture.result as Record<string, unknown>
       const overview = result.overview_summary as Record<string, unknown>
 
       expect(() =>
-        parseExploreStatusResponse({
+        parseNodeDataProfileResponse({
           ...fixture,
           result: {
             ...result,
@@ -1575,11 +2235,13 @@ describe("API response guards", () => {
     })
 
     it("parses categorical summary profiles", () => {
-      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const fixture = loadUiContractFixture<Record<string, unknown>>(
+        "node_data_profile_response",
+      )
       const result = fixture.result as Record<string, unknown>
       const overview = result.overview_summary as Record<string, unknown>
 
-      const parsed = parseExploreStatusResponse({
+      const parsed = parseNodeDataProfileResponse({
         ...fixture,
         result: {
           ...result,
@@ -1614,12 +2276,14 @@ describe("API response guards", () => {
     })
 
     it("throws when categorical summary value counts are malformed", () => {
-      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const fixture = loadUiContractFixture<Record<string, unknown>>(
+        "node_data_profile_response",
+      )
       const result = fixture.result as Record<string, unknown>
       const overview = result.overview_summary as Record<string, unknown>
 
       expect(() =>
-        parseExploreStatusResponse({
+        parseNodeDataProfileResponse({
           ...fixture,
           result: {
             ...result,
@@ -1642,7 +2306,7 @@ describe("API response guards", () => {
 
     it("throws when name is missing", () => {
       expect(() =>
-        parseExploreStatusResponse(
+        parseNodeDataProfileResponse(
           withColumns([
             {
               dtype: "Float64",
@@ -1657,7 +2321,7 @@ describe("API response guards", () => {
 
     it("throws when dtype is missing", () => {
       expect(() =>
-        parseExploreStatusResponse(
+        parseNodeDataProfileResponse(
           withColumns([
             {
               name: "x",
@@ -1672,7 +2336,7 @@ describe("API response guards", () => {
 
     it("throws when kind is missing", () => {
       expect(() =>
-        parseExploreStatusResponse(
+        parseNodeDataProfileResponse(
           withColumns([
             {
               name: "x",
@@ -1687,7 +2351,7 @@ describe("API response guards", () => {
 
     it("throws when kind is invalid", () => {
       expect(() =>
-        parseExploreStatusResponse(
+        parseNodeDataProfileResponse(
           withColumns([
             {
               name: "x",
@@ -1703,7 +2367,7 @@ describe("API response guards", () => {
 
     it("throws when null_count is missing", () => {
       expect(() =>
-        parseExploreStatusResponse(
+        parseNodeDataProfileResponse(
           withColumns([
             {
               name: "x",
@@ -1718,7 +2382,7 @@ describe("API response guards", () => {
 
     it("throws when null_count is a string", () => {
       expect(() =>
-        parseExploreStatusResponse(
+        parseNodeDataProfileResponse(
           withColumns([
             {
               name: "x",
@@ -1734,7 +2398,7 @@ describe("API response guards", () => {
 
     it("throws when numeric profile counts are malformed", () => {
       expect(() =>
-        parseExploreStatusResponse(
+        parseNodeDataProfileResponse(
           withColumns([
             {
               name: "premium",

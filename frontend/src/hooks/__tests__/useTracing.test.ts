@@ -9,6 +9,7 @@ import useTracing, {
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
+import useNodeDataStore from "../../stores/useNodeDataStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 import { makeNode, makeEdge } from "../../test-utils/factories"
 import { NODE_TYPES } from "../../utils/nodeTypes"
@@ -271,6 +272,39 @@ describe("useTracing", () => {
     })
     await waitFor(() => expect(result.current.traceResult).not.toBeNull())
     expect(result.current.tracedCell).toEqual({ rowIndex: 0, column: "price" })
+  })
+
+  it("sends the displayed preview's seed plan, and none without one", async () => {
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: makeTrace(["n1", "n2"]) })
+    const previewSeedPlan = [{
+      node_id: "join",
+      port_label: null,
+      node_label: "Join",
+      identity_digest: "b".repeat(64),
+      generation_id: "generation-7",
+      columns: null,
+      created_at: "2026-09-19T00:00:00+00:00",
+      kind: "captured" as const,
+    }]
+    const seeded = renderHook(() => useTracing(makeParams({ previewSeedPlan })))
+    await act(async () => {
+      seeded.result.current.handleCellClick(0, "price")
+    })
+    await waitFor(() => expect(mockTraceCell).toHaveBeenCalledOnce())
+    expect(mockTraceCell.mock.calls[0][0].seed_plan).toEqual([{
+      node_id: "join",
+      port_label: null,
+      identity_digest: "b".repeat(64),
+      generation_id: "generation-7",
+    }])
+    seeded.unmount()
+
+    const unseeded = renderHook(() => useTracing(makeParams()))
+    await act(async () => {
+      unseeded.result.current.handleCellClick(0, "price")
+    })
+    await waitFor(() => expect(mockTraceCell).toHaveBeenCalledTimes(2))
+    expect(mockTraceCell.mock.calls[1][0].seed_plan).toEqual([])
   })
 
   it("ignores stale trace responses when a newer click resolves first", async () => {
@@ -1031,5 +1065,150 @@ describe("useTracing", () => {
     for (const n of result.current.nodesWithStatus) {
       expect(n.data._hoverDimmed).toBe(false)
     }
+  })
+})
+
+describe("useTracing validity across shared snapshots", () => {
+  const seedPlanEntry = (generationId: string) => ({
+    node_id: "join",
+    port_label: null,
+    node_label: "Join",
+    identity_digest: "b".repeat(64),
+    generation_id: generationId,
+    columns: null,
+    created_at: "2026-09-19T00:00:00+00:00",
+    kind: "seeded" as const,
+  })
+
+  beforeEach(() => {
+    useSettingsStore.setState({ rowLimit: 1000, activeSource: "live" })
+    useDocumentStatusStore.getState().loadDocumentStatus(
+      makePipelineEditorDocument({ source_file: "main.py", source_revision: "r1" }),
+    )
+    mockTraceCell.mockReset()
+    mockReducedMotion(false)
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it("hides a completed trace when a snapshot is published, refreshed, or cleared", async () => {
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: makeTrace(["n1", "n2"]) })
+    const { result } = renderHook(() => useTracing(makeParams({ previewSeedPlan: [seedPlanEntry("g1")] })))
+    await act(async () => { result.current.handleCellClick(0, "price") })
+    await waitFor(() => expect(result.current.traceState.status).toBe("ready"))
+
+    act(() => useNodeDataStore.getState().bumpEpoch())
+
+    expect(result.current.traceState.status).toBe("idle")
+    expect(result.current.traceResult).toBeNull()
+    expect(result.current.tracedCell).toBeNull()
+  })
+
+  it("aborts an in-flight trace and discards its late response when the epoch changes", async () => {
+    let resolve!: (value: Awaited<ReturnType<typeof traceCell>>) => void
+    let signal: AbortSignal | undefined
+    mockTraceCell.mockImplementation((args) => {
+      signal = args.signal
+      return new Promise((done) => { resolve = done })
+    })
+    const { result } = renderHook(() => useTracing(makeParams({ previewSeedPlan: [seedPlanEntry("g1")] })))
+    act(() => result.current.handleCellClick(0, "price"))
+    await waitFor(() => expect(mockTraceCell).toHaveBeenCalledOnce())
+
+    act(() => useNodeDataStore.getState().bumpEpoch())
+
+    expect(signal?.aborted).toBe(true)
+    expect(result.current.traceState.status).toBe("idle")
+    await act(async () => { resolve({ status: "ok", trace: makeTrace(["n1", "n2"]) }) })
+    expect(result.current.traceResult).toBeNull()
+  })
+
+  it("hides a completed trace when the explained preview reads other generations", async () => {
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: makeTrace(["n1", "n2"]) })
+    const { result, rerender } = renderHook(
+      ({ plan }) => useTracing(makeParams({ previewSeedPlan: plan })),
+      { initialProps: { plan: [seedPlanEntry("g1")] } },
+    )
+    await act(async () => { result.current.handleCellClick(0, "price") })
+    await waitFor(() => expect(result.current.traceState.status).toBe("ready"))
+
+    rerender({ plan: [seedPlanEntry("g1")] })
+    expect(result.current.traceState.status).toBe("ready")
+
+    rerender({ plan: [seedPlanEntry("g2")] })
+    expect(result.current.traceState.status).toBe("idle")
+    expect(result.current.traceResult).toBeNull()
+  })
+
+  it("keeps a node skipped for a snapshot on the canvas trace path, without a traced value", async () => {
+    mockTraceCell.mockResolvedValue({
+      status: "ok",
+      trace: {
+        ...makeTrace(["n2"]),
+        omissions: [
+          { node_id: "n1", node_name: "n1", node_type: "polars", topological_rank: 0, reason: "snapshot_seed", diagnostic_index: 0 },
+          { node_id: "n0", node_name: "n0", node_type: "polars", topological_rank: 0, reason: "ambiguous_match", diagnostic_index: 1 },
+        ],
+      },
+    })
+    const nodes = [makeNode("n0"), makeNode("n1"), makeNode("n2")] as Node[]
+    const edges = [makeEdge("n0", "n2"), makeEdge("n1", "n2")] as Edge[]
+    const { result } = renderHook(() => useTracing(makeParams({ nodes, edges })))
+    await act(async () => { result.current.handleCellClick(0, "price") })
+    await waitFor(() => expect(result.current.traceResult).not.toBeNull())
+
+    const node = (id: string) => result.current.nodesWithStatus.find((candidate) => candidate.id === id)!
+    // Its data reached the target through the snapshot: on the path, not dimmed.
+    expect(node("n1").data._traceDimmed).toBe(false)
+    expect(node("n1").data._traceActive).toBe(false)
+    // Other omissions keep their existing treatment.
+    expect(node("n0").data._traceDimmed).toBe(true)
+    const edge = (source: string) => result.current.edgesWithTrace.find((candidate) => candidate.source === source)!
+    expect(edge("n1").style?.strokeWidth).toBe(2.5)
+    expect(edge("n0").style?.strokeWidth).toBe(1)
+  })
+
+  it("refreshes the preview when the generations it read have expired", async () => {
+    const err = Object.assign(new Error("HTTP 409"), {
+      status: 409,
+      rawDetail: {
+        error_code: "preview_seed_plan_expired",
+        message: "The preview's shared snapshot 'join' is no longer current.",
+      },
+    })
+    mockTraceCell.mockRejectedValue(err)
+    const refreshPreview = vi.fn()
+    const { result, rerender } = renderHook(
+      ({ plan, selectedNode }) => useTracing(makeParams({ refreshPreview, previewSeedPlan: plan, selectedNode })),
+      {
+        initialProps: {
+          plan: [seedPlanEntry("g1")] as ReturnType<typeof seedPlanEntry>[] | undefined,
+          selectedNode: makeNode("n2"),
+        },
+      },
+    )
+    await act(async () => { result.current.handleCellClick(0, "price") })
+
+    await waitFor(() => expect(result.current.traceState).toMatchObject({ status: "error", retryable: false }))
+    expect(refreshPreview).toHaveBeenCalledWith(expect.objectContaining({ id: "n2" }))
+    expect(result.current.tracedCell).toBeNull()
+
+    // The refresh replaces the preview — first with a loading one that lists
+    // no generations — and its own captures raise the epoch.
+    const selectedNode = makeNode("n2")
+    rerender({ plan: undefined, selectedNode })
+    act(() => useNodeDataStore.getState().bumpEpoch())
+    rerender({ plan: [seedPlanEntry("g2")], selectedNode })
+
+    expect(result.current.traceState).toMatchObject({
+      status: "error",
+      message: expect.stringContaining("The cached data this preview read has changed"),
+    })
+
+    rerender({ plan: [seedPlanEntry("g2")], selectedNode: makeNode("n1") })
+    expect(result.current.traceState.status).toBe("idle")
   })
 })

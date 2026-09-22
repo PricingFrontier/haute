@@ -296,7 +296,8 @@ Out of scope (owned elsewhere, linked where relevant):
   `_source_cache.py`, `_json_shred/` (`_records.py`, `_runtime_storage.py`, `_writer.py`),
   `deploy/_batch_scoring.py`, and the route modules `routes/pipeline.py`,
   `routes/json_cache.py`, `routes/output_assemble.py`, `routes/input_cache.py`,
-  `routes/_explore_service.py`, `routes/_optimiser_service.py`, `routes/_training_artifacts.py`,
+  `routes/_node_data_service.py`, `routes/_optimiser_service.py`,
+  `routes/_training_artifacts.py`,
   `routes/_training_lifecycle.py`, and `routes/_training_worker.py`. This component owns
   the parsing helpers, not the knobs' meanings, which belong to their respective components.
 

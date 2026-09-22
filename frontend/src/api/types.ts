@@ -184,6 +184,48 @@ export interface InputPreparationRecord {
   warning_code: string | null
 }
 
+/** A node output an execution read from a shared snapshot generation. */
+export interface SharedSnapshotSeed {
+  node_id: string
+  identity_digest: string
+  generation_id: string
+  columns: "all" | string[]
+}
+
+/**
+ * A full-data materialisation an execution wrote to shared snapshots. Only a
+ * `published` capture names the generation it continued from; otherwise the
+ * execution continued from its own staged data.
+ */
+export interface SharedSnapshotCapture {
+  node_id: string
+  identity_digest: string
+  kind: "structural" | "materialising" | "model_score" | "consumed"
+  outcome: "published" | "superseded" | "quota"
+  generation_id: string | null
+  columns: "all" | string[]
+  write_strategy?: "chunked_join" | "sliced" | "input_sliced" | "native" | "prewritten" | null
+  write_parts?: number | null
+  write_chunk_rows?: number | null
+  write_staged_inputs?: number | null
+  write_input_slices?: number | null
+  write_native_reason?: string | null
+  write_blocking_operator?: string | null
+}
+
+/** A candidate capture point skipped under cost gating. */
+export interface SharedSnapshotCaptureSkip {
+  node_id: string
+  reason: "cheap_segment" | "slice_transparent_feeder"
+}
+
+/** A non-fatal condition an execution continued past. */
+export interface ExecutionWarning {
+  code: string
+  node_id: string | null
+  reason: string | null
+}
+
 export interface ExecutionMetrics {
   schema_version: number
   operation: string
@@ -233,6 +275,17 @@ export interface ExecutionMetrics {
   stages: ExecutionStageMetrics[]
   memory_pressure_events: ExecutionMemoryPressureEvent[]
   input_preparation: InputPreparationRecord[]
+  shared_snapshot_seeds: SharedSnapshotSeed[]
+  shared_snapshot_captures: SharedSnapshotCapture[]
+  shared_snapshot_capture_skips: SharedSnapshotCaptureSkip[]
+  warnings: ExecutionWarning[]
+  training_write_strategy?: string | null
+  training_write_input_slices?: number | null
+  training_write_native_reason?: string | null
+  training_write_blocking_operator?: string | null
+  data_output_write_strategy?: string | null
+  data_output_write_input_slices?: number | null
+  data_output_write_native_reason?: string | null
 }
 
 export interface NodeResult {
@@ -292,12 +345,45 @@ export interface SavePipelineResponse {
   identity_required?: boolean
 }
 
+/** One shared-snapshot generation a preview's collected rows were computed from. */
+export interface PreviewSeedPlanEntry {
+  node_id: string
+  /** Always null: only node outputs are seeded or captured. */
+  port_label: null
+  node_label: string
+  identity_digest: string
+  generation_id: string
+  /** The generation's column set; null means all columns. */
+  columns: string[] | null
+  /** ISO-8601 UTC. */
+  created_at: string
+  /** `seeded`: read instead of computing the node. `captured`: computed by
+   * this preview, written, and read by everything below it. */
+  kind: "seeded" | "captured"
+}
+
 export interface PreviewNodeResponse extends NodeResult {
   node_id: string
   /** Per-frame column schemas for multi-frame producers, keyed
    * node_id → frame label → columns. Only nodes that emit 2+ frames appear;
    * single-frame nodes are absent. Additive to `node_columns`. */
   node_frame_columns?: Record<string, Record<string, ColumnInfo[]>>
+  /** Every snapshot generation the rows were computed from, in topological
+   * order; empty when the preview read no snapshot. */
+  seed_plan?: PreviewSeedPlanEntry[]
+}
+
+/** One generation a trace reads: an entry of the preview's `seed_plan`. */
+export interface TraceSeedPlanEntry {
+  node_id: string
+  port_label: null
+  identity_digest: string
+  generation_id: string
+}
+
+/** The inputs a preview would read, so only those are prepared before it. */
+export interface PreviewInputsResponse {
+  input_node_ids: string[]
 }
 
 export interface SubmodelCreateResponse {
@@ -420,6 +506,97 @@ export interface IoCapabilityGroup {
 export interface IoCapabilitiesResponse {
   schema_version: 1
   groups: IoCapabilityGroup[]
+}
+
+// ---------------------------------------------------------------------------
+// Cache-usage contracts (/api/cache)
+// ---------------------------------------------------------------------------
+
+/** One budget's usage against its limits, and the variables that set them. */
+export interface CacheBudgetUsage {
+  generations_used: number
+  generations_limit: number
+  generations_limit_variable: string
+  bytes_used: number
+  bytes_limit: number
+  bytes_limit_variable: string
+}
+
+/**
+ * Both budgets in one response. They are independent — node outputs and input
+ * snapshots neither consume nor evict one another — so there is no combined
+ * total here and none should be rendered.
+ */
+export interface CacheUsageResponse {
+  schema_version: 1
+  node_outputs: CacheBudgetUsage
+  input_snapshots: CacheBudgetUsage
+}
+
+/**
+ * One node of the graph. `state`/`row_count` describe the generation this node
+ * would read for its own columns; `generations`/`size_bytes` are every
+ * signature the store still holds for it, which is what it costs the budget.
+ */
+export interface CacheNodeEntry {
+  node_id: string
+  kind: "data_input" | "api_input_table" | "node_output" | null
+  state: "current" | "stale" | "partial" | "missing" | "building" | "corrupt" | null
+  reads_directly: boolean
+  /** The node this one reads from, when that is another node: its cache is
+   *  reported on that node's row, so this row carries no size. */
+  reads_from: string | null
+  /**
+   * Other nodes resolving to the same input snapshot. Every sharer names the
+   * others, and exactly one of them carries the bytes — the one with a size.
+   */
+  shares_snapshot_with: string[]
+  row_count: number | null
+  generations: number
+  size_bytes: number
+  newest_created_at: number | null
+  /** How long the newest generation took to cache; null when unrecorded. */
+  build_seconds: number | null
+  /** The store identities this row is responsible for; what clearing it clears. */
+  identity_digests: string[]
+  retention: "pinned" | "automatic" | null
+  /** Why this node has no data point at all — an unwired Banding, say. */
+  unavailable_reason: string | null
+}
+
+/** Cached data not attributable to any node of the graph as it stands. */
+export interface CacheOwnerEntry {
+  bucket: "node_output" | "input"
+  label: string
+  node_id: string | null
+  source: string | null
+  generations: number
+  row_count: number | null
+  size_bytes: number
+  newest_created_at: number | null
+  build_seconds: number | null
+  identity_digests: string[]
+}
+
+export interface CacheClearResponse {
+  schema_version: 1
+  cleared: string[]
+  freed_bytes: number
+}
+
+export interface CacheNodesResponse {
+  schema_version: 1
+  source: string
+  nodes: CacheNodeEntry[]
+  other: CacheOwnerEntry[]
+  unattributed_generations: number
+  unattributed_bytes: number
+  /**
+   * Identities whose provider marker does not classify. Admission charges each
+   * to BOTH budgets, so this is what explains a usage report larger than the
+   * sum of the entries above.
+   */
+  unmarked_identities: number
 }
 
 // ---------------------------------------------------------------------------
@@ -1009,41 +1186,161 @@ export interface ExploreOverviewSummary {
 }
 
 /** Lightweight descriptor of a materialised Explore cache entry. */
-export interface ExploreCacheReport {
-  status: "ok"
-  node_id: string
-  upstream_node_id: string
-  source: string
-  dataframe_cache_key: string
-  row_count: number
-  column_count: number
-  generated_at: number
-  columns: ExploreColumnStat[]
-  overview_summary: ExploreOverviewSummary
-  execution_metrics?: ExecutionMetrics | null
+export const NODE_DATA_POINT_KINDS = ["data_input", "api_input_table", "node_output"] as const
+
+export type NodeDataPointKind = (typeof NODE_DATA_POINT_KINDS)[number]
+
+export const NODE_DATA_POINT_STATES = [
+  "current",
+  "stale",
+  "partial",
+  "missing",
+  "building",
+  "corrupt",
+] as const
+
+export type NodeDataPointState = (typeof NODE_DATA_POINT_STATES)[number]
+
+/** A generation's column set: every column, or exactly the named ones. */
+export type NodeDataColumns = "all" | string[]
+
+export type NodeDataRetention = "pinned" | "automatic"
+
+export interface NodeDataPointRef {
+  producer_node_id: string
+  port_label?: string | null
 }
 
-export interface ExploreRunResponse {
-  status: "started" | "running" | "completed"
+export interface NodeDataGeneration {
+  generation_id: string
+  columns: NodeDataColumns
+  row_count: number
+  column_count: number
+  size_bytes: number
+  retention: NodeDataRetention
+  fresh: boolean
+  created_at: number
+}
+
+export interface NodeDataJob {
+  job_id: string
+  progress: number
+  message: string
+}
+
+export interface NodeDataPointResponse {
+  consumer_node_id: string
+  point: NodeDataPointRef
+  slot_key: string
+  kind: NodeDataPointKind
+  state: NodeDataPointState
+  demand: NodeDataColumns
+  data_version?: string | null
+  row_count?: number | null
+  size_bytes?: number | null
+  retention?: NodeDataRetention | null
+  generation?: NodeDataGeneration | null
+  job?: NodeDataJob | null
+  reads_directly: boolean
+  build_endpoint?: string | null
+  clear_endpoint?: string | null
+}
+
+export interface NodeDataRunResponse {
+  status: "started" | "joined" | "completed" | "delegated"
   job_id?: string | null
   cached: boolean
   message: string
-  result?: ExploreCacheReport | null
+  point: NodeDataPointResponse
 }
 
-export interface ExploreCacheSnapshotResponse {
-  state: "missing" | "current" | "stale"
+export interface NodeDataProfile {
+  row_count: number
+  column_count: number
+  columns: ExploreColumnStat[]
+  overview_summary: ExploreOverviewSummary
+  data_version: string
+  generated_at: number
+}
+
+export interface BandingHistogramBin {
+  lower: number
+  upper: number
+  count: number
+}
+
+export interface BandingValueCount {
+  value: string
+  count: number
+}
+
+/** Whole-dataset statistics for one banding factor, or why there are none. */
+export interface BandingStatsResponse {
+  status: "ok" | "cache_required"
+  point: NodeDataPointResponse
+  data_version?: string | null
+  total_rows: number
+  null_count: number
+  /** Numeric modes: values no bin can hold, and the extent of those it can. */
+  non_finite_count?: number | null
+  minimum?: number | null
+  maximum?: number | null
+  bins: BandingHistogramBin[]
+  /** Categorical mode. */
+  values: BandingValueCount[]
+  distinct_count?: number | null
+  other_count?: number | null
+  /** Counts aligned to the user's rules, and the rows no rule claimed. */
+  rule_counts: number[]
+  unmatched_count?: number | null
+}
+
+export interface RatingLevelValue {
+  value: string
+  count: number
+}
+
+/** What one column offers as rating levels, neither missing nor blank. */
+export interface RatingLevelColumn {
+  column: string
+  values: RatingLevelValue[]
+  distinct_count: number
+  null_count: number
+}
+
+/** Whole-dataset levels for raw rating factor columns, or why there are none. */
+export interface RatingLevelsResponse {
+  status: "ok" | "cache_required"
+  point: NodeDataPointResponse
+  data_version?: string | null
+  total_rows: number
+  columns: RatingLevelColumn[]
+}
+
+export interface NodeDataProfileResponse {
+  status: "completed" | "started" | "joined" | "cache_required"
+  job_id?: string | null
   message: string
-  result?: ExploreCacheReport | null
+  result?: NodeDataProfile | null
+  point: NodeDataPointResponse
 }
 
-export interface ExploreStatusResponse {
+export interface NodeDataStatusResponse {
   status: JobStatus
   progress: number
   message: string
-  result?: ExploreCacheReport | null
   terminal_reason?: string | null
+  error?: string | null
+  error_code?: string | null
   execution_metrics?: ExecutionMetrics | null
+  generation_id?: string | null
+  outcome?: "published" | "superseded" | null
+  profile?: NodeDataProfile | null
+}
+
+export interface NodeDataClearResponse {
+  status: "cleared" | "delegated"
+  point: NodeDataPointResponse
 }
 
 export type ExplorePivotMemberKind =
@@ -1100,7 +1397,7 @@ export interface ExplorePivotResult {
   node_id: string
   pivot_id: string
   source: string
-  dataframe_cache_key: string
+  data_version: string
   calculation_key: string
   row_fields: string[]
   column_fields: string[]

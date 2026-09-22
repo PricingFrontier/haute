@@ -70,9 +70,13 @@
 - **`NODE_REGISTRY`** (`src/haute/_registry.py`, populated on the execution side via
   `haute._builders._register`) — the single
   source of truth mapping `NodeType → (exec builder callable, column_contract callback,
-  is_behavioural flag)`. Both `_config_builder.py`'s parse-time contract check and (out of
-  scope here) the executor/codegen read this registry; a `NodeType` with no exec entry is
-  treated as a registration bug (`KeyError`), never silently skipped.
+  is_behavioural flag)`. Each entry also carries the `recompute_cost` field (`cheap`,
+  `costly`, `code`, `source`) and `slice_transparent` flag (default true, false only for
+  `scenarioExpander`), set on the execution side through `register_exec(...,
+  recompute_cost=..., slice_transparent=...)`, required for every type and enforced at import
+  by `validate_registry_complete`. Both `_config_builder.py`'s parse-time contract check and
+  (out of scope here) the executor/codegen read this registry; a `NodeType` with no exec entry
+  is treated as a registration bug (`KeyError`), never silently skipped.
 - **`SharedNodeSemantics` / `MODELLING_NODE_SEMANTICS`** (`src/haute/_registry.py`) —
   the closed first-connected-input passthrough policy and decorator config keys
   shared by the modelling runtime/codegen pair. Both builders consume this one

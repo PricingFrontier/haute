@@ -940,3 +940,41 @@ describe("DataPreview", () => {
     })
   })
 })
+
+describe("DataPreview status row", () => {
+  const entry = (nodeId: string, nodeLabel: string, kind: "seeded" | "captured") => ({
+    node_id: nodeId,
+    port_label: null,
+    node_label: nodeLabel,
+    identity_digest: "a".repeat(64),
+    generation_id: `${nodeId}-generation`,
+    columns: null,
+    created_at: "2026-09-19T00:00:00+00:00",
+    kind,
+  })
+
+  afterEach(() => {
+    cleanup()
+  })
+
+  // The status row is for things the user has to act on. Which nodes a preview
+  // read cached data from is how the pipeline is meant to work, not a finding,
+  // and naming it here put routine provenance where warnings live.
+  it("says nothing about which cached data the rows were computed from", () => {
+    render(
+      <DataPreview
+        data={makePreview({
+          seed_plan: [
+            entry("claims_join", "Claims join", "seeded"),
+            entry("exposure", "Exposure totals", "seeded"),
+            entry("rating_join", "Rating join", "captured"),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.queryByTestId("preview-seeded-from")).toBeNull()
+    expect(screen.queryByText(/cached data/i)).toBeNull()
+    expect(screen.queryByText(/Claims join/)).toBeNull()
+  })
+})

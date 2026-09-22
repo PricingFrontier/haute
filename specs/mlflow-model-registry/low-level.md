@@ -131,7 +131,11 @@
   `_feature_validation_last_entry` (single-slot fast path, see Control
   flow); `_scenario_ctx: ContextVar[str]` (`"live"` vs `"batch"`, set by
   `Pipeline.run()`/`Pipeline.score()`); `_temp_files_to_clean` /
-  `_temp_file_scope` (batch-scorer temp-parquet cleanup bookkeeping).
+  `_temp_file_scope` (batch-scorer temp-parquet cleanup bookkeeping);
+  `_score_output_destination: ContextVar[ScoreOutputDestination | None]`
+  (set by `model_score_output_destination(path)`: the next batch score in
+  that scope writes its output to `path`, records the xxh64 `digest` of the
+  file it received, and marks the destination used).
 
 ## Candidate-run contract
 
@@ -257,14 +261,23 @@ compatible within a version; renaming or removing any listed item requires a new
    backends is two directories) and excludes run
    directories currently marked active by *any* in-flight caller. For each
    oldest inactive directory beyond `_DISK_CACHE_MAX_DIRS` = 50, it re-checks
-   activity and atomically renames the directory to a unique `.evicting-*`
+   activity and atomically renames the directory to a unique `.evicting-<8 hex>`
    tombstone under `_disk_cache_active_runs_guard`, then recursively deletes
-   the tombstone outside the guard. New users either protect the original
+   the tombstone outside the guard. The tombstone name is deliberately short —
+   shorter than any real run id — because a name that grew on the run id it
+   replaced pushed the cached artifact beneath it past Windows' 260-character
+   path limit, where it could no longer be opened, so the deletion failed and
+   the tombstone held disk for good. New users either protect the original
    directory before the rename or cleanly miss it afterwards; unrelated loads
    never wait for recursive deletion. Active directories can therefore make
    the physical total temporarily exceed 50; the next successful download
    triggers another eviction pass. Stale tombstones from an interrupted process
-   are cleaned on a later eviction pass.
+   are cleaned on a later eviction pass. Deletion goes through the shared
+   retrying `remove_tree`, because a delete Windows refuses while an indexer
+   holds a handle would otherwise leave a tombstone holding disk for good; a
+   tree that still survives is logged
+   (`mlflow_disk_cache_tombstone_delete_failed`) rather than ignored, and never
+   raised into a caller that only asked for an artifact.
 
 ### Bounded retry — `_load_with_bounded_retry` (`_mlflow_io.py`)
 
@@ -344,7 +357,16 @@ no reduced-arity path for earlier delegate signatures.
   pruned) input to a temp parquet, delegates to
   `_batch_score_to_parquet` (chunked prediction, see below), unlinks the
   input temp file, registers the output temp file for process-exit
-  cleanup, and returns a lazy scan of it.
+  cleanup, and returns a lazy scan of it. Inside a
+  `model_score_output_destination` scope the output is written to that
+  destination instead of a temporary file and is never registered for
+  cleanup: the destination also records the xxh64 `digest` of the file it
+  received — scored chunks through one `ParquetWriter` and an empty result
+  through `pq.write_table`, both written through one `HashingWriter` — while
+  a temporary scored file (no destination) records none. The planned lazy
+  engine uses this to make a batch Model Score's scored file the staged
+  artifact of its shared-snapshot capture, so the scored rows are written once
+  (see the [execution engine](../execution-engine/low-level.md)).
 
 ### Batched chunk loop — `_batch_score_to_parquet` (`_model_scorer.py`)
 

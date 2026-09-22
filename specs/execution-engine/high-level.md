@@ -30,11 +30,15 @@ running heavy work in a child process the parent can kill on timeout or memory l
   graph, extending the cache when a new target requires more of the graph, and
   discarding entries once source data or graph shape changes.
 - Column-contract enforcement at node input/output boundaries (via `_contracts.py`'s
-  `Contract`, consumed here) and the column-projection planning that lets checkpoints
+  `Contract`, consumed here) and the column-projection planning that lets captures
   and lazy scans avoid materialising unused columns.
-- Structural parquet checkpointing of the lazy plan at fan-in/fan-out/join-feeder
-  boundaries when the caller supplies a checkpoint directory (the normal sink path
-  does) to bound Polars plan duplication.
+- Seed plans: a bounded execution runs under a leased
+  [seed plan](../caching/low-level.md#seed-plans), reading fresh shared snapshots
+  and capturing fan-in/fan-out/join-feeder, materialising, batch Model Score, and
+  consumed points into the shared snapshot store, which bounds Polars plan duplication
+  and lets the next execution start there. An admitted preview runs under its own plan,
+  capturing its joins and materialising operations; a trace runs under the plan of the
+  preview it explains.
 - `ExecutionContext`/`ExecutionProfile`: the per-run cancellation token, optional
   memory budget, stage-timing/RSS-sampling instrumentation, and admission control used
   by route/service long-running operations (preview, sink, training prep, optimiser
@@ -489,12 +493,12 @@ keep reporting the failing line so the editor can name the failing step.
   batch sink run *the same per-node logic*, differing only in when the result is
   collected. Divergence between "what preview shows" and "what the batch run
   produces" would otherwise be a permanent trust problem for users.
-- **Eager-with-caching for interactivity, lazy-with-checkpointing for throughput.**
+- **Eager-with-caching for interactivity, lazy-with-captures for throughput.**
   Interactive preview needs low click-to-result latency on the *same* graph across
   many small edits — caching materialised DataFrames keyed by a graph fingerprint
   wins. Batch/deploy/training need to process rows that may not fit in memory at all —
-  Polars' lazy engine, with the executor breaking join-chain plan duplication via
-  periodic parquet checkpoints, wins there instead. Running one
+  Polars' lazy engine, with the executor breaking join-chain plan duplication by
+  capturing structural points into shared snapshots, wins there instead. Running one
   strategy for both would either make preview too slow (rebuild the whole plan per
   click) or make batch runs memory-unsafe (materialise everything eagerly).
   A JSON source's SHA-256 content proof is likewise the sole raw-file content proof
@@ -513,16 +517,16 @@ keep reporting the failing line so the editor can name the failing step.
   A full preview-cache hit also reuses the immutable strategy result that produced the
   cached frame, so it retains projection warnings and provenance without repeating
   footer estimation. Any miss or cache extension plans afresh before materialisation.
-- **Parquet checkpointing only at structural fan-in/fan-out/join-feeder points.**
-  Polars duplicates the upstream plan for every downstream branch of a lazy frame
-  (a known upstream limitation — pola-rs/polars#24206); checkpointing *every* node
-  would erase the benefit of staying lazy at all, so the engine only checkpoints where
-  a node has more than one parent, more than one child, or feeds a join. The
-  decision is acted on only when `checkpoint_dir` is non-`None`; direct lazy callers
-  may intentionally omit checkpointing.
-
-  The checkpoint action set is intentionally `SKIP` or `PARQUET` only;
-  in-memory `.collect().lazy()` checkpointing is not supported behaviour.
+- **Materialise only at capture points.** Polars duplicates the upstream plan for
+  every downstream branch of a lazy frame (a known upstream limitation —
+  pola-rs/polars#24206); materialising *every* node would erase the benefit of staying
+  lazy at all, so a planned run writes only its capture points — a node with more than
+  one parent or child along effective edges or that feeds a join, a materialising
+  operation, a batch Model Score, and the producer a caller consumes — through the
+  bounded sink into the shared snapshot store, and continues from what it wrote. A run
+  without a plan captures nothing — only a caller's dataframe-cache request (deploy
+  scoring) materialises there — and there is no checkpoint directory.
+  In-memory `.collect().lazy()` materialisation is not supported behaviour.
 - **Profile-scoped memory budgets, not one global limit.** A preview click and a
   10M-row training run have wildly different acceptable memory footprints and
   latency expectations. `ExecutionProfile` lets each call site (preview route,
@@ -686,8 +690,9 @@ keep reporting the failing line so the editor can name the failing step.
   raw `multiprocessing` exit codes: a remote Python exception becomes
   `IsolatedWorkerRemoteError`, a process that exits without a result payload becomes
   `IsolatedWorkerCrashedError` (with a `terminal_reason="memory_limited"` guess when
-  the exit code looks like `SIGKILL`/`SIGABRT`, or the Windows fail-fast status
-  `0xC0000409` a native allocation failure exits with, under a configured memory cap), a
+  the exit code looks like `SIGKILL`/`SIGABRT`, the Windows fail-fast status
+  `0xC0000409` a native allocation failure exits with, or the Windows stack-overflow status
+  `0xC00000FD` a refused stack commit exits with, under a configured memory cap), a
   timeout becomes `IsolatedWorkerTimeoutError`, and parent-owned cleanup callback
   failures are collected into `IsolatedWorkerCleanupError`. A cleanup-only failure is
   raised; when there is already a primary worker failure, cleanup detail is attached
@@ -724,3 +729,47 @@ keep reporting the failing line so the editor can name the failing step.
   the modelling node—not the largest ancestor source. The separate materialisation
   admission estimate uses the greatest upstream/intermediate bound, so a target-row
   downsample is never presented as protection for a larger join or source boundary.
+
+## Bounded executions seed from and capture into shared snapshots
+
+Training preparation, the training evaluation preview, optimiser setup (including
+auto-range and the input estimate), Data Output runs, and explicit node-data builds each
+resolve a seed plan once, after input preparation, by walking upstream from the target
+along effective edges: on each path the first node-output point at or upstream of the target
+with a fresh snapshot in the request's semantics class that covers the execution's column
+demand becomes a seed, and points above a seed are not consulted. Before projection planning,
+each capture point's demand is merged with its current generation's columns and propagated
+upstream, and any seed that cannot supply the propagated columns is dropped, so one execution
+publishes the widened column set. Every consumer in the execution of an upstream snapshot a
+seed was built from, seeded or recomputed, reads the same generation of it; a seed that cannot
+satisfy that is dropped. Seeds are leased for the whole job, including final collection, and a
+spawned worker reads only the generations its parent leased.
+
+Every full-data materialisation the execution performs — the fan-in, fan-out, and
+join-feeder points, nodes calling materialising frame operations, batch Model Score output,
+and the producer the caller consumes — is captured into the shared store through the bounded
+sink, and execution continues from what it wrote: never from a generation another execution
+published while it was computing. A capture never replaces a fresh generation unless widening
+it and never narrows an identity's columns; a capture rejected for quota, or not published
+under the publication rule, continues from its own staged artifact as a request-owned file
+without recomputing the node and is reported as `snapshot_capture_skipped`, while any other
+store failure fails the execution. Worker processes capture directly through the store's
+cross-process locks. There is no temporary checkpoint directory and no private
+dataframe-cache namespace. Deploy scoring neither seeds nor captures; a refresh disables
+seeding but still captures; a profile whose outputs are not proven identical to the
+snapshot's semantics class neither seeds nor captures.
+
+An admitted preview seeds and captures the same way, except that it captures only its joins
+and materialising operations. A stale snapshot is never seeded, and a preview whose lineage is
+not admitted — an API Input in it reads a flat file that a schema-only bounded read refuses —
+neither seeds nor captures. Preview row-limit semantics are unchanged: the limit applies at
+collection, never at sources, and the projection planner's column demand rules still decide
+what each point supplies. The generations a preview's plan lists join the runtime input
+fingerprint of the preview response cache. A response is stored only under the key of the plan
+a new request would choose after its captures, and every hit re-leases the generations it
+lists: a retired, missing, or non-current generation is a miss that executes, while corruption
+and other storage failures propagate. The response lists those generations as its `seed_plan`,
+each `seeded` or `captured`. A trace carries that list and runs under a listed plan that reads
+exactly those generations and captures nothing ([tracing](../tracing/high-level.md)); a
+generation lacking columns the trace reads there is recomputed, with every listed seed built
+from it. Deploy scoring neither seeds nor captures.

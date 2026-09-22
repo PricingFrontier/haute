@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import threading
 import time
@@ -397,7 +398,9 @@ def _make_auto_range_runtime_projectable_graph(left_path: str, right_path: str) 
                         "nodeType": "optimiser",
                         "config": {
                             "mode": "online",
-                            "objective": "not_needed",
+                            # A real column: auto-range captures what the following solve
+                            # reads, so an objective nothing produces would widen its reads.
+                            "objective": "margin",
                             "constraints": {
                                 "conversion_prediction": {"min": 0.0},
                                 "margin": {"min": 0.0},
@@ -855,7 +858,7 @@ class TestSolveRoute:
         assert "bad setup" in job["message"]
         launch_background.assert_not_called()
 
-    def test_setup_memory_limited_preparation_ends_memory_limited(self, scored_data, tmp_path):
+    def test_setup_memory_limited_preparation_ends_memory_limited(self, scored_data):
         """A memory-limited preparation failure is not flattened to contract_error."""
         from haute.errors import InputPreparationError
         from haute.routes._job_store import JobStore
@@ -877,13 +880,14 @@ class TestSolveRoute:
         )
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=failure,
             ),
             pytest.raises(HTTPException) as exc_info,
         ):
-            service._execute_pipeline(body, job_id, tmp_path)
+            service._execute_pipeline(body, job_id, resources)
 
         assert exc_info.value.status_code == 507
         job = store.require_job(job_id)
@@ -894,7 +898,7 @@ class TestSolveRoute:
         assert job["http_status_code"] == 507
         assert job["error_detail"]["reason_code"] == "memory_limited"
 
-    def test_setup_build_failed_preparation_ends_contract_error(self, scored_data, tmp_path):
+    def test_setup_build_failed_preparation_ends_contract_error(self, scored_data):
         """A non-memory preparation failure still ends the job contract_error."""
         from haute.errors import InputPreparationError
         from haute.routes._job_store import JobStore
@@ -916,13 +920,14 @@ class TestSolveRoute:
         )
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=failure,
             ),
             pytest.raises(HTTPException) as exc_info,
         ):
-            service._execute_pipeline(body, job_id, tmp_path)
+            service._execute_pipeline(body, job_id, resources)
 
         assert exc_info.value.status_code == 422
         job = store.require_job(job_id)
@@ -2673,9 +2678,11 @@ class TestEstimateRoute:
         assert execute.call_args.kwargs["target_node_id"] == "source"
         assert score_chunk_sizes
         assert max(score_chunk_sizes) == 3
-        # One load for projection planning and one for the streaming scorer;
-        # repeated chunks must reuse the streaming scorer's loaded model.
-        assert load.call_count == 2
+        # One load each for planning auto-range's projection and the following
+        # solve's (whose columns auto-range captures) — an in-process cache hit
+        # in production, where loads are cached by artifact fingerprint — and
+        # one for the streaming scorer; repeated chunks must reuse its model.
+        assert load.call_count == 3
         execution_metrics = store.require_job(job_id)["execution_metrics"]
         assert "frontier_stream_score_collect" in execution_metrics["stage_elapsed_ms"]
 
@@ -4676,8 +4683,8 @@ class TestEstimateRoute:
         assert start_resp.status_code == 200
         status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
         assert status["status"] == "contract_error"
-        assert "required by a projection contract are missing" in status["error_detail"]
-        assert "expected_margin" in status["error_detail"]
+        # The source scan refuses the projection before anything reads it.
+        assert "Source projection references columns missing" in status["error_detail"]
         assert "expected_margin" in status["error_detail"]
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
@@ -7420,7 +7427,7 @@ class TestUnsupportedMode:
 
 @pytest.mark.usefixtures("_widen_sandbox_root")
 class TestExecutePipelineArgs:
-    """Verify _execute_pipeline passes scenario, preamble_ns, and checkpoint_dir."""
+    """Verify _execute_pipeline passes scenario, preamble_ns, and its seed plan."""
 
     def test_auto_range_required_columns_seed_uses_configured_data_input(self, scored_data):
         """Online auto-range seeds configured data_input with its minimal columns."""
@@ -7842,77 +7849,8 @@ class TestExecutePipelineArgs:
         )
         assert projection.needed_by_node["request"] is None
 
-    def test_shared_multi_frame_source_is_never_a_dataframe_cache_candidate(self):
-        """The per-node cache cannot materialise a dict-of-frames source output."""
-        from haute.routes._optimiser_service import _optimiser_dataframe_cache_node_ids
-
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "request",
-                        "data": {
-                            "label": "Quote_Input_1",
-                            "nodeType": "apiInput",
-                            "config": {
-                                "tables": [
-                                    {"label": "quote_info", "path": "$[:].quotes", "emit": True},
-                                    {
-                                        "label": "rating_factors",
-                                        "path": "$[:].factors",
-                                        "emit": True,
-                                    },
-                                ],
-                            },
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "ratebook",
-                                "objective": "expected_income",
-                                "constraints": {},
-                                "factor_columns": [["territory_band"]],
-                                "data_input": "quote_info",
-                                "banding_source": "rating_factors",
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    {
-                        "id": "e_quotes",
-                        "source": "request",
-                        "sourceHandle": "quote_info",
-                        "target": "opt",
-                    },
-                    {
-                        "id": "e_factors",
-                        "source": "request",
-                        "sourceHandle": "rating_factors",
-                        "target": "opt",
-                    },
-                ],
-            }
-        )
-
-        cache_node_ids = _optimiser_dataframe_cache_node_ids(
-            graph,
-            optimiser_node_id="opt",
-            execution_target_node_id="opt",
-            explicit_target_node=False,
-        )
-
-        assert "request" not in cache_node_ids
-
-    def test_execute_pipeline_runs_uncached_when_every_cache_candidate_is_filtered(
-        self,
-        tmp_path,
-    ):
-        """Shared multi-frame setup must not build an empty cache request."""
+    def test_shared_multi_frame_setup_plans_no_capture(self):
+        """A multi-frame apiInput feeding both optimiser inputs is built, never captured."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserSolveRequest
@@ -7977,14 +7915,22 @@ class TestExecutePipelineArgs:
             captured.update(kwargs)
             return ({"request": {}},)
 
-        with patch(
-            "haute.routes._optimiser_service.execute_lazy_graph",
-            side_effect=fake_execute_lazy_graph,
+        with (
+            patch(
+                "haute.routes._optimiser_service.execute_lazy_graph",
+                side_effect=fake_execute_lazy_graph,
+            ),
+            contextlib.ExitStack() as resources,
         ):
-            outputs = service._execute_pipeline(body, "job-1", tmp_path)
+            outputs = service._execute_pipeline(body, "job-1", resources)
+            plan = captured["snapshot_plan"]
 
-        assert outputs == {"request": {}}
-        assert captured["dataframe_cache_request"] is None
+            assert outputs == {"request": {}}
+            assert captured["prepare_inputs"] is False
+            # Its tables have their own store: the plan builds it and captures nothing.
+            assert plan.decision.captures == {}
+            assert plan.decision.seeds == {}
+            assert "request" in plan.decision.executed_node_ids
 
     def test_solve_passes_optimiser_seed_to_execute_pipeline(self, scored_data):
         from haute.routes._job_store import JobStore
@@ -8096,8 +8042,8 @@ class TestExecutePipelineArgs:
             )
         }
 
-    def test_execute_pipeline_passes_scenario_and_checkpoint(self, scored_data, tmp_path):
-        """_execute_lazy receives scenario != 'live', caller's checkpoint_dir, and preamble_ns."""
+    def test_execute_pipeline_passes_scenario_and_seed_plan(self, scored_data):
+        """_execute_lazy receives scenario != 'live', the run's seed plan, and preamble_ns."""
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -8109,8 +8055,6 @@ class TestExecutePipelineArgs:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
 
         # Capture the kwargs _execute_lazy is called with.
         captured = {}
@@ -8121,6 +8065,7 @@ class TestExecutePipelineArgs:
             return ({"opt": MagicMock()}, [], {}, {})
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
@@ -8134,20 +8079,21 @@ class TestExecutePipelineArgs:
                 return_value={"helper": lambda x: x},
             ),
         ):
-            service._execute_pipeline(body, job_id, checkpoint_dir)
+            service._execute_pipeline(body, job_id, resources)
 
         # source should come from _resolve_batch_scenario (not default "batch")
         assert captured["source"] == "ism_scenario"
-        # checkpoint_dir is the one we passed in
-        assert captured["checkpoint_dir"] == checkpoint_dir
         # preamble_ns is the dict returned by _compile_preamble
         assert captured["preamble_ns"] is not None
         assert "helper" in captured["preamble_ns"]
-        cache_request = captured["dataframe_cache_request"]
-        assert cache_request is not None
-        assert set(cache_request.keys_by_node) == {"source"}
+        # The run is planned against shared snapshots, whose inputs the plan
+        # prepared; it has no checkpoint directory or private cache request.
+        assert captured["snapshot_plan"] is not None
+        assert captured["prepare_inputs"] is False
+        assert "checkpoint_dir" not in captured
+        assert "dataframe_cache_request" not in captured
 
-    def test_execute_pipeline_forwards_required_columns_by_node(self, scored_data, tmp_path):
+    def test_execute_pipeline_forwards_required_columns_by_node(self, scored_data):
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserSolveRequest
@@ -8158,8 +8104,6 @@ class TestExecutePipelineArgs:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
 
         captured = {}
 
@@ -8169,6 +8113,7 @@ class TestExecutePipelineArgs:
 
         seeds = {"opt": frozenset({"quote_id", "expected_income"})}
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
@@ -8179,7 +8124,7 @@ class TestExecutePipelineArgs:
             service._execute_pipeline(
                 body,
                 job_id,
-                checkpoint_dir,
+                resources,
                 required_columns_by_node=seeds,
             )
 
@@ -8267,13 +8212,14 @@ class TestExecutePipelineArgs:
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
 
-        outputs = service._execute_pipeline(body, job_id, tmp_path)
+        with contextlib.ExitStack() as resources:
+            outputs = service._execute_pipeline(body, job_id, resources)
 
-        assert "optimiser_input" in outputs
-        assert "banding" in outputs
-        assert "opt" in outputs
+            assert "optimiser_input" in outputs
+            assert "banding" in outputs
+            assert "opt" in outputs
 
-    def test_execute_pipeline_contract_mismatch_returns_400(self, scored_data, tmp_path):
+    def test_execute_pipeline_contract_mismatch_returns_400(self, scored_data):
         from fastapi import HTTPException
 
         from haute.errors import ContractMismatchError
@@ -8287,10 +8233,9 @@ class TestExecutePipelineArgs:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=ContractMismatchError(
@@ -8305,7 +8250,7 @@ class TestExecutePipelineArgs:
                 service._execute_pipeline(
                     body,
                     job_id,
-                    checkpoint_dir,
+                    resources,
                     required_columns_by_node={"source": frozenset({"volume"})},
                 )
 
@@ -8347,7 +8292,7 @@ class TestExecutePipelineArgs:
             )
         }
 
-    def test_execute_pipeline_defaults_to_batch_when_no_ism(self, scored_data, tmp_path):
+    def test_execute_pipeline_defaults_to_batch_when_no_ism(self, scored_data):
         """When _resolve_batch_scenario returns None, scenario defaults to 'batch'."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -8359,8 +8304,6 @@ class TestExecutePipelineArgs:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
 
         captured = {}
 
@@ -8369,6 +8312,7 @@ class TestExecutePipelineArgs:
             return ({"opt": MagicMock()}, [], {}, {})
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
@@ -8376,11 +8320,11 @@ class TestExecutePipelineArgs:
             patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
-            service._execute_pipeline(body, job_id, checkpoint_dir)
+            service._execute_pipeline(body, job_id, resources)
 
         assert captured["source"] == "batch"
 
-    def test_execute_pipeline_preamble_ns_none_for_empty_preamble(self, scored_data, tmp_path):
+    def test_execute_pipeline_preamble_ns_none_for_empty_preamble(self, scored_data):
         """When _compile_preamble returns empty/falsy, preamble_ns is None."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -8392,8 +8336,6 @@ class TestExecutePipelineArgs:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
 
         captured = {}
 
@@ -8402,6 +8344,7 @@ class TestExecutePipelineArgs:
             return ({"opt": MagicMock()}, [], {}, {})
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
@@ -8409,7 +8352,7 @@ class TestExecutePipelineArgs:
             patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
-            service._execute_pipeline(body, job_id, checkpoint_dir)
+            service._execute_pipeline(body, job_id, resources)
 
         # Empty dict from _compile_preamble is falsy → preamble_ns should be None
         assert captured["preamble_ns"] is None
@@ -8487,10 +8430,10 @@ class TestBuildGridBoundedSink:
 
 @pytest.mark.usefixtures("_widen_sandbox_root")
 class TestExecutePipelineCleanup:
-    """Verify checkpoint dir lifecycle: caller owns creation + cleanup."""
+    """Verify the seed plan's lifecycle: the caller's stack holds it and releases it."""
 
-    def test_execute_pipeline_uses_caller_checkpoint_dir(self, scored_data, tmp_path):
-        """_execute_pipeline passes the caller-provided checkpoint_dir to _execute_lazy."""
+    def test_execute_pipeline_holds_its_plan_on_the_callers_stack(self, scored_data):
+        """The plan stays open while the caller reads the frames and closes with its stack."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserSolveRequest
@@ -8501,8 +8444,6 @@ class TestExecutePipelineCleanup:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
 
         captured = {}
 
@@ -8511,6 +8452,7 @@ class TestExecutePipelineCleanup:
             return ({"opt": MagicMock()}, [], {}, {})
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
@@ -8518,13 +8460,16 @@ class TestExecutePipelineCleanup:
             patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
-            lazy_outputs = service._execute_pipeline(body, job_id, checkpoint_dir)
+            lazy_outputs = service._execute_pipeline(body, job_id, resources)
+            plan = captured["snapshot_plan"]
+            assert not plan._closed
 
         assert isinstance(lazy_outputs, dict)
-        assert captured["checkpoint_dir"] == checkpoint_dir
+        assert plan._closed
+        assert "checkpoint_dir" not in captured
 
-    def test_execute_pipeline_error_does_not_leak_tmpdir(self, scored_data, tmp_path):
-        """When _execute_lazy raises, the caller's finally block cleans the checkpoint dir."""
+    def test_execute_pipeline_error_leaves_its_plan_on_the_callers_stack(self, scored_data):
+        """When _execute_lazy raises, the caller's stack still closes the plan it opened."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserSolveRequest
@@ -8536,36 +8481,30 @@ class TestExecutePipelineCleanup:
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running"})
 
+        plans = []
+
         def failing_execute_lazy(*args, **kwargs):
+            plans.append(kwargs["snapshot_plan"])
             raise RuntimeError("boom")
 
-        # Simulate what start() does: create dir, call _execute_pipeline, cleanup in finally
-        import tempfile
-        from pathlib import Path
+        with (
+            contextlib.ExitStack() as resources,
+            patch(
+                "haute.routes._optimiser_service.execute_lazy_graph",
+                side_effect=failing_execute_lazy,
+            ),
+            patch("haute.executor._resolve_batch_scenario", return_value=None),
+            patch("haute.executor._compile_preamble", return_value={}),
+        ):
+            from fastapi import HTTPException
 
-        checkpoint_dir = Path(tempfile.mkdtemp(prefix="haute_test_"))
-        try:
-            with (
-                patch(
-                    "haute.routes._optimiser_service.execute_lazy_graph",
-                    side_effect=failing_execute_lazy,
-                ),
-                patch("haute.executor._resolve_batch_scenario", return_value=None),
-                patch("haute.executor._compile_preamble", return_value={}),
-            ):
-                from fastapi import HTTPException
+            with pytest.raises(HTTPException):
+                service._execute_pipeline(body, job_id, resources)
+            assert not plans[0]._closed
 
-                with pytest.raises(HTTPException):
-                    service._execute_pipeline(body, job_id, checkpoint_dir)
-        finally:
-            import shutil
+        assert plans[0]._closed
 
-            shutil.rmtree(checkpoint_dir, ignore_errors=True)
-
-        # Checkpoint dir should be gone after caller cleanup
-        assert not checkpoint_dir.exists()
-
-    def test_execute_pipeline_error_raises_http_exception(self, scored_data, tmp_path):
+    def test_execute_pipeline_error_raises_http_exception(self, scored_data):
         """Pipeline execution errors are wrapped in HTTPException(500)."""
         from fastapi import HTTPException
 
@@ -8579,13 +8518,12 @@ class TestExecutePipelineCleanup:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
 
         def failing_execute_lazy(*args, **kwargs):
             raise RuntimeError("boom")
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=failing_execute_lazy,
@@ -8594,7 +8532,7 @@ class TestExecutePipelineCleanup:
             patch("haute.executor._compile_preamble", return_value={}),
         ):
             with pytest.raises(HTTPException) as exc_info:
-                service._execute_pipeline(body, job_id, checkpoint_dir)
+                service._execute_pipeline(body, job_id, resources)
             assert exc_info.value.status_code == 500
 
 
@@ -13631,7 +13569,7 @@ class TestSolveRatebookUnit:
 class TestExecutePipelineExtended:
     """Additional coverage for _execute_pipeline: preamble, streaming chunk."""
 
-    def test_execute_pipeline_restores_chunk_size(self, scored_data, tmp_path):
+    def test_execute_pipeline_restores_chunk_size(self, scored_data):
         """When prev chunk size is set, it is restored after execution."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -13643,8 +13581,6 @@ class TestExecutePipelineExtended:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
 
         captured_chunk_sizes = []
 
@@ -13655,6 +13591,7 @@ class TestExecutePipelineExtended:
             return ({"opt": MagicMock()}, [], {}, {})
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
@@ -13662,12 +13599,12 @@ class TestExecutePipelineExtended:
             patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
-            service._execute_pipeline(body, job_id, checkpoint_dir)
+            service._execute_pipeline(body, job_id, resources)
 
         # During execution, chunk size should have been set to 50000
         assert len(captured_chunk_sizes) == 1
 
-    def test_execute_pipeline_exception_updates_job_store(self, scored_data, tmp_path):
+    def test_execute_pipeline_exception_updates_job_store(self, scored_data):
         """Pipeline failure updates job store with error status."""
         from fastapi import HTTPException
 
@@ -13681,10 +13618,9 @@ class TestExecutePipelineExtended:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=RuntimeError("pipeline broke"),
@@ -13693,7 +13629,7 @@ class TestExecutePipelineExtended:
             patch("haute.executor._compile_preamble", return_value={}),
         ):
             with pytest.raises(HTTPException) as exc_info:
-                service._execute_pipeline(body, job_id, checkpoint_dir)
+                service._execute_pipeline(body, job_id, resources)
             assert exc_info.value.status_code == 500
 
         job = store.require_job(job_id)
@@ -13704,7 +13640,6 @@ class TestExecutePipelineExtended:
     def test_execute_pipeline_preserves_configured_optimiser_data_input(
         self,
         scored_data,
-        tmp_path,
     ):
         """Configured data_input is consumed after graph execution, so preserve it."""
         from haute.routes._job_store import JobStore
@@ -13720,13 +13655,12 @@ class TestExecutePipelineExtended:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
 
         def fake_execute_lazy(*args, **kwargs):
             return ({"opt": MagicMock()}, [], {}, {})
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
@@ -13734,132 +13668,9 @@ class TestExecutePipelineExtended:
             patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
-            service._execute_pipeline(body, job_id, checkpoint_dir)
+            service._execute_pipeline(body, job_id, resources)
 
         assert "source" in execute.call_args.kwargs["preserve_node_ids"]
-
-    def test_execute_pipeline_caches_configured_data_input_between_runs(
-        self,
-        tmp_path,
-    ):
-        """A repeated online setup should reuse the consumed data_input frame."""
-        import haute.execution as execution
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import OptimiserSolveService
-        from haute.schemas import OptimiserSolveRequest
-
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "source",
-                        "data": {
-                            "label": "source",
-                            "nodeType": "dataInput",
-                            "config": {},
-                        },
-                    },
-                    {
-                        "id": "optimiser_input",
-                        "data": {
-                            "label": "optimiser input",
-                            "nodeType": "polars",
-                            "config": {},
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "online",
-                                "objective": "expected_income",
-                                "constraints": {"volume": {"min": 0.9}},
-                                "quote_id": "quote_id",
-                                "scenario_index": "scenario_index",
-                                "scenario_value": "scenario_value",
-                                "data_input": "optimiser_input",
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    make_edge("source", "optimiser_input").model_dump(),
-                    make_edge("optimiser_input", "opt").model_dump(),
-                ],
-            }
-        )
-        body = OptimiserSolveRequest(graph=graph.model_dump(), node_id="opt")
-        store = JobStore()
-        service = OptimiserSolveService(store)
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
-
-        first_calls: list[str] = []
-
-        def first_build(node, **_kwargs):
-            first_calls.append(node.id)
-            if node.id == "source":
-                return (
-                    node.id,
-                    lambda: pl.DataFrame(
-                        {
-                            "quote_id": ["q1", "q1"],
-                            "scenario_index": [0, 1],
-                            "scenario_value": [0.9, 1.1],
-                            "expected_income": [10.0, 12.0],
-                            "volume": [1.0, 0.8],
-                        }
-                    ).lazy(),
-                    True,
-                )
-            if node.id == "optimiser_input":
-                return node.id, lambda input_lf: input_lf, False
-            return node.id, lambda input_lf: input_lf, False
-
-        second_calls: list[str] = []
-
-        def second_build(node, **_kwargs):
-            second_calls.append(node.id)
-            raise AssertionError(f"cached data_input should skip every builder, got {node.id!r}")
-
-        execution.invalidate_dataframe_execution_cache()
-        try:
-            with (
-                patch("haute.executor._build_node_fn", side_effect=first_build),
-                patch("haute.executor._resolve_batch_scenario", return_value=None),
-                patch("haute.executor._compile_preamble", return_value={}),
-            ):
-                first_outputs = service._execute_pipeline(
-                    body,
-                    store.create_job({"status": "running"}),
-                    checkpoint_dir,
-                )
-
-            with (
-                patch("haute.executor._build_node_fn", side_effect=second_build),
-                patch("haute.executor._resolve_batch_scenario", return_value=None),
-                patch("haute.executor._compile_preamble", return_value={}),
-            ):
-                second_outputs = service._execute_pipeline(
-                    body,
-                    store.create_job({"status": "running"}),
-                    checkpoint_dir,
-                )
-        finally:
-            execution.invalidate_dataframe_execution_cache()
-
-        assert first_calls == ["source", "optimiser_input"]
-        assert second_calls == []
-        assert "optimiser_input" in first_outputs
-        assert second_outputs["optimiser_input"].collect().to_dict(as_series=False) == {
-            "quote_id": ["q1", "q1"],
-            "scenario_index": [0, 1],
-            "scenario_value": [0.9, 1.1],
-            "expected_income": [10.0, 12.0],
-            "volume": [1.0, 0.8],
-        }
 
     def test_execute_pipeline_uses_edited_helper_on_next_operation(
         self,
@@ -13930,19 +13741,18 @@ class TestExecutePipelineExtended:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
         body = OptimiserSolveRequest(graph=graph.model_dump(), node_id="opt")
 
         try:
             job_id_1 = store.create_job({"status": "running"})
-            outputs = service._execute_pipeline(
-                body,
-                job_id_1,
-                checkpoint_dir,
-                target_node_id="t",
-            )
-            assert outputs["t"].collect()["v"][0] == 10
+            with contextlib.ExitStack() as resources:
+                outputs = service._execute_pipeline(
+                    body,
+                    job_id_1,
+                    resources,
+                    target_node_id="t",
+                )
+                assert outputs["t"].collect()["v"][0] == 10
 
             # Edit helpers.py to VALUE = 200 (make the file size differ)
             (util_dir / "helpers.py").write_text(
@@ -13954,13 +13764,14 @@ class TestExecutePipelineExtended:
             assert preview_res["t"].preview[0]["v"] == 200
 
             job_id_2 = store.create_job({"status": "running"})
-            outputs_2 = service._execute_pipeline(
-                body,
-                job_id_2,
-                checkpoint_dir,
-                target_node_id="t",
-            )
-            assert outputs_2["t"].collect()["v"][0] == 200
+            with contextlib.ExitStack() as resources:
+                outputs_2 = service._execute_pipeline(
+                    body,
+                    job_id_2,
+                    resources,
+                    target_node_id="t",
+                )
+                assert outputs_2["t"].collect()["v"][0] == 200
         finally:
             execution.invalidate_dataframe_execution_cache()
             _compile_preamble.cache_clear()
@@ -14034,8 +13845,6 @@ class TestExecutePipelineExtended:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
         body = OptimiserSolveRequest(graph=graph.model_dump(), node_id="opt")
 
         _compile_preamble.cache_clear()
@@ -14043,167 +13852,30 @@ class TestExecutePipelineExtended:
 
         try:
             job_id_1 = store.create_job({"status": "running"})
-            outputs_1 = service._execute_pipeline(
-                body,
-                job_id_1,
-                checkpoint_dir,
-                target_node_id="t",
-            )
-            val_1 = outputs_1["t"].collect()["v"][0]
+            with contextlib.ExitStack() as resources:
+                outputs_1 = service._execute_pipeline(
+                    body,
+                    job_id_1,
+                    resources,
+                    target_node_id="t",
+                )
+                val_1 = outputs_1["t"].collect()["v"][0]
 
             job_id_2 = store.create_job({"status": "running"})
-            outputs_2 = service._execute_pipeline(
-                body,
-                job_id_2,
-                checkpoint_dir,
-                target_node_id="t",
-            )
-            val_2 = outputs_2["t"].collect()["v"][0]
+            with contextlib.ExitStack() as resources:
+                outputs_2 = service._execute_pipeline(
+                    body,
+                    job_id_2,
+                    resources,
+                    target_node_id="t",
+                )
+                val_2 = outputs_2["t"].collect()["v"][0]
 
             assert val_1 == val_2 == 10
             assert _compile_preamble.cache_info().hits > initial_hits
         finally:
             execution.invalidate_dataframe_execution_cache()
             _compile_preamble.cache_clear()
-
-    def test_execute_pipeline_reuses_auto_range_data_input_for_solve(
-        self,
-        tmp_path,
-    ):
-        """Auto-range should warm the same optimiser input frame used by solve."""
-        import haute.execution as execution
-        from haute._execution_context import ExecutionContext, ExecutionProfile
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import OptimiserSolveService
-        from haute.schemas import OptimiserFrontierAutoRangeRequest, OptimiserSolveRequest
-
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "source",
-                        "data": {
-                            "label": "source",
-                            "nodeType": "dataInput",
-                            "config": {},
-                        },
-                    },
-                    {
-                        "id": "optimiser_input",
-                        "data": {
-                            "label": "optimiser input",
-                            "nodeType": "polars",
-                            "config": {},
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "online",
-                                "objective": "expected_income",
-                                "constraints": {"volume": {"min": 0.9}},
-                                "quote_id": "quote_id",
-                                "scenario_index": "scenario_index",
-                                "scenario_value": "scenario_value",
-                                "data_input": "optimiser_input",
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    make_edge("source", "optimiser_input").model_dump(),
-                    make_edge("optimiser_input", "opt").model_dump(),
-                ],
-            }
-        )
-        auto_body = OptimiserFrontierAutoRangeRequest(graph=graph.model_dump(), node_id="opt")
-        solve_body = OptimiserSolveRequest(graph=graph.model_dump(), node_id="opt")
-        config = graph.node_map["opt"].data.config
-        auto_range_required_columns_by_node = _auto_range_required_columns_by_node(
-            graph,
-            "opt",
-            config,
-            mode="online",
-        )
-        solve_required_columns_by_node = _optimiser_solve_required_columns_by_node(
-            graph,
-            "opt",
-            config,
-        )
-        store = JobStore()
-        service = OptimiserSolveService(store)
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
-        source_frame = pl.DataFrame(
-            {
-                "quote_id": ["q1", "q1"],
-                "scenario_index": [0, 1],
-                "scenario_value": [0.9, 1.1],
-                "expected_income": [10.0, 12.0],
-                "volume": [1.0, 0.8],
-            }
-        )
-
-        auto_range_calls: list[str] = []
-
-        def auto_range_build(node, **_kwargs):
-            auto_range_calls.append(node.id)
-            if node.id == "source":
-                return node.id, lambda: source_frame.lazy(), True
-            if node.id == "optimiser_input":
-                return node.id, lambda input_lf: input_lf, False
-            return node.id, lambda input_lf: input_lf, False
-
-        solve_calls: list[str] = []
-
-        def solve_build(node, **_kwargs):
-            solve_calls.append(node.id)
-            raise AssertionError(f"auto-range cache should skip every builder, got {node.id!r}")
-
-        execution.invalidate_dataframe_execution_cache()
-        try:
-            with (
-                patch("haute.executor._build_node_fn", side_effect=auto_range_build),
-                patch("haute.executor._resolve_batch_scenario", return_value=None),
-                patch("haute.executor._compile_preamble", return_value={}),
-            ):
-                service._execute_pipeline(
-                    auto_body,
-                    store.create_job({"status": "running"}),
-                    checkpoint_dir,
-                    required_columns_by_node=auto_range_required_columns_by_node,
-                    execution_context=ExecutionContext(
-                        operation="frontier_auto_range",
-                        profile=ExecutionProfile.AUTO_RANGE,
-                    ),
-                )
-
-            with (
-                patch("haute.executor._build_node_fn", side_effect=solve_build),
-                patch("haute.executor._resolve_batch_scenario", return_value=None),
-                patch("haute.executor._compile_preamble", return_value={}),
-            ):
-                solve_outputs = service._execute_pipeline(
-                    solve_body,
-                    store.create_job({"status": "running"}),
-                    checkpoint_dir,
-                    required_columns_by_node=solve_required_columns_by_node,
-                    execution_context=ExecutionContext(
-                        operation="optimiser_solve",
-                        profile=ExecutionProfile.OPTIMISER_SETUP,
-                    ),
-                )
-        finally:
-            execution.invalidate_dataframe_execution_cache()
-
-        assert auto_range_calls == ["source", "optimiser_input"]
-        assert solve_calls == []
-        assert solve_outputs["optimiser_input"].collect().to_dict(as_series=False) == (
-            source_frame.to_dict(as_series=False)
-        )
 
 
 class TestValidateAndProject:
@@ -15639,7 +15311,7 @@ class TestMlflowLogExceptionPath:
 class TestExecutePipelineHTTPExceptionPassthrough:
     """Test that HTTPException raised inside _execute_pipeline is re-raised directly."""
 
-    def test_http_exception_passthrough(self, scored_data, tmp_path):
+    def test_http_exception_passthrough(self, scored_data):
         """HTTPException from _execute_lazy is re-raised, not wrapped."""
         from fastapi import HTTPException
 
@@ -15653,12 +15325,11 @@ class TestExecutePipelineHTTPExceptionPassthrough:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
 
         original_exc = HTTPException(status_code=403, detail="forbidden")
 
         with (
+            contextlib.ExitStack() as resources,
             patch(
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=original_exc,
@@ -15667,7 +15338,7 @@ class TestExecutePipelineHTTPExceptionPassthrough:
             patch("haute.executor._compile_preamble", return_value={}),
         ):
             with pytest.raises(HTTPException) as exc_info:
-                service._execute_pipeline(body, job_id, checkpoint_dir)
+                service._execute_pipeline(body, job_id, resources)
             assert exc_info.value.status_code == 403
             assert exc_info.value.detail == "forbidden"
 

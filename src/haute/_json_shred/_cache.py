@@ -4,8 +4,9 @@ validation, cache loading, and the runtime apiInput source loader."""
 from __future__ import annotations
 
 import stat as stat_module
-from collections.abc import Mapping
-from contextlib import AbstractContextManager, nullcontext
+from collections.abc import Iterator, Mapping
+from contextlib import AbstractContextManager, contextmanager, nullcontext
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,39 @@ logger = get_logger(component="json_shred")
 
 class SourceChangedDuringCacheBuildError(RuntimeError):
     """The structured source no longer matches the generation a worker staged."""
+
+
+class ApiInputCacheRequiredError(RuntimeError):
+    """A cache-only apiInput load found no cache layer able to serve the schema."""
+
+    error_code = "cache_required"
+
+
+@dataclass(slots=True)
+class ApiInputCacheReads:
+    """The cache generations served to apiInput loads inside :func:`api_input_cache_only`.
+
+    ``served`` maps each loaded data path to the ``meta.json`` payload of the
+    layer that served it, so a caller can version exactly the data it read.
+    """
+
+    served: dict[str, dict[str, Any]]
+
+
+_API_INPUT_CACHE_ONLY: ContextVar[ApiInputCacheReads | None] = ContextVar(
+    "haute_api_input_cache_only", default=None
+)
+
+
+@contextmanager
+def api_input_cache_only() -> Iterator[ApiInputCacheReads]:
+    """Make apiInput loads in this context raise instead of shredding the raw source."""
+    reads = ApiInputCacheReads(served={})
+    token = _API_INPUT_CACHE_ONLY.set(reads)
+    try:
+        yield reads
+    finally:
+        _API_INPUT_CACHE_ONLY.reset(token)
 
 
 @dataclass(frozen=True, slots=True)
@@ -662,7 +696,9 @@ def load_v2_api_source(
     - prefers a valid, readable, schema-matching ``working/`` parquet cache,
       then ``committed/`` (the deploy / fresh-server case).
     - when neither cache can serve the current schema and source signature,
-      shreds JSON, JSONL, or XML directly for this run without writing cache state.
+      shreds JSON, JSONL, or XML directly for this run without writing cache state,
+      unless :func:`api_input_cache_only` is active, which raises
+      :class:`ApiInputCacheRequiredError` instead.
     - 1+ emitting labels → a ``dict[port_label, LazyFrame]`` in schema order.
 
     Frame resolution uses the shared :func:`table_is_emitting` predicate, so
@@ -834,8 +870,16 @@ def load_v2_api_source(
                 continue
             if execution_context is not None:
                 execution_context.record_cache_proof_hit()
+            cache_only_reads = _API_INPUT_CACHE_ONLY.get()
+            if cache_only_reads is not None:
+                cache_only_reads.served[str(data_path)] = dict(cache_meta)
             return {table_spec.label: bundle[table_spec.label] for table_spec in table_specs}
 
+    if _API_INPUT_CACHE_ONLY.get() is not None:
+        raise ApiInputCacheRequiredError(
+            "API Input tables are not cached for the current schema and source. "
+            "Build the JSON cache before reading the whole dataset."
+        )
     # Neither cache can serve the current post-schema shape. Shred the source
     # for this execution only; do not write, refresh, or promote cache state.
     direct_bundle, skip_stats = _writer._shred_data_file_to_direct_spill(

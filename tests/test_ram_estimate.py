@@ -23,6 +23,7 @@ from haute._ram_estimate import (
     _data_input_parquet_artifact,
     _dedupe_resolved_columns,
     _detailed_ancestor_source_metadata,
+    _detailed_parquet_metadata,
     _detailed_source_metadata_for_node,
     _DetailedSourceMetadata,
     _edge_join_key_columns_on_path,
@@ -40,6 +41,7 @@ from haute._ram_estimate import (
     _ResolvedRowCardinality,
     _safe_edge_input_name,
     _source_column_base_widths,
+    decoded_frame_row_width_bytes,
     estimate_gpu_vram_bytes,
     estimate_materialisation_boundaries,
     estimate_safe_training_rows,
@@ -53,6 +55,28 @@ from tests.conftest import build_test_input_snapshot
 def _boundary_estimate(graph: PipelineGraph, target_node_id: str) -> MaterialisationEstimate:
     [(_, estimate)] = list(estimate_materialisation_boundaries(graph, [target_node_id]))
     return estimate
+
+
+def test_decoded_frame_row_width_uses_materialised_variable_width_values() -> None:
+    value = "x" * 4_096
+    frame = pl.DataFrame({"label": [value] * 4, "number": [1, 2, 3, 4]})
+
+    assert decoded_frame_row_width_bytes(frame) == sum(
+        max(8, frame.get_column(column).estimated_size() / frame.height) for column in frame.columns
+    )
+    assert decoded_frame_row_width_bytes(frame) >= len(value) + 8
+
+
+def test_decoded_frame_row_width_empty_and_invalid_inputs_fail_clearly() -> None:
+    assert decoded_frame_row_width_bytes(pl.DataFrame(schema={"a": pl.String})) == 8
+    with pytest.raises(TypeError, match="Polars DataFrame"):
+        decoded_frame_row_width_bytes(object())  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("path", [[], "missing-*.parquet"])
+def test_detailed_parquet_metadata_refuses_empty_file_sets(path: object) -> None:
+    with pytest.raises(FileNotFoundError, match="no parquet files match"):
+        _detailed_parquet_metadata(path)  # type: ignore[arg-type]
 
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
@@ -233,7 +257,7 @@ def test_persistent_data_input_uses_verified_generation_row_count(
     generation_path = tmp_path / "generation.parquet"
     generation = SimpleNamespace(
         metadata=SimpleNamespace(row_count=17),
-        data_path=generation_path,
+        data_paths=(generation_path,),
     )
     opened: list[object] = []
 
@@ -258,7 +282,7 @@ def test_persistent_data_input_uses_verified_generation_row_count(
         ),
     )
 
-    assert _data_input_parquet_artifact({"source": "persistent"}) == (17, generation_path)
+    assert _data_input_parquet_artifact({"source": "persistent"}) == (17, (generation_path,))
     assert opened == [(tmp_path, ("identity", tmp_path))]
 
 

@@ -245,6 +245,18 @@
      temp parquet (`src/haute/routes/_training_preparation.py::create_training_parquet_path`); from that point
      supervision runs inside a `try` whose `except BaseException` backstop discards the path,
      so the only exit that keeps it is a successful hand-off;
+   - it prepares the lineage's inputs and opens the run's
+     [seed plan](../caching/low-level.md#seed-plans) itself (`open_seed_plan` with
+     `training_seed_plan_request`: `TRAINING_PREP`, the modelling node, its demand), because a
+     node's signature signs its prepared inputs; a failure there — input preparation, a corrupt
+     snapshot, admission — becomes the same job outcome the child would have reported
+     (`preparation_failure_outcome`, shared with the child), and a cancellation propagates.
+     The job's deadline (`start_time + timeout`) bounds that preparation (`open_seed_plan(...,
+     deadline=)`, which no automatic build or wait outlasts); a failure once the deadline has
+     passed, or a plan that opens with no budget left, is the job's `timed_out` and launches no
+     child, and the child is given only what preparation left of the budget. The plan's seed
+     leases are held until the child has exited, and closing it removes any capture staging a
+     killed child left under its token;
    - it launches exactly one spawn worker,
      `run_isolated_worker(prepare_training_data_worker, request, budget, config=...)`, with
      `worker_config_for_memory_policy(memory_limit_bytes=budget.memory_limit_bytes,
@@ -255,16 +267,38 @@
      `materialisation_estimate_unavailable` rejection an uncapped surface must raise;
    - the request is plain picklable data (`graph`, `node_id`, `job_id`, `source`,
      `parquet_path`, modelling `config`, `project_root`, `streaming_chunk_size`, `row_limit`,
-     `exclude`, `keep_columns`, `required_columns_by_node`, `preamble_supplied`); the child
-     never touches the `JobStore`.
+     `exclude`, `keep_columns`, `required_columns_by_node`, `preamble_supplied`, and the
+     plan's `seed_plan` handoff); the child never touches the `JobStore`.
+   - the job's `execution_metrics` are the reporting process's metrics carrying the whole
+     job's evidence (`ExecutionContext.metrics_with_worker_evidence`): the parent adopts the
+     preparation child's input preparation, seeds, captures, and warnings behind its own, and
+     the training and dispersion workers' metrics — completed, or reported with a failure
+     (the supervisor's `failure_metrics`) — carry that evidence ahead of theirs, so nothing
+     preparation read, wrote, or warned about is lost when a later process reports.
    `_training_preparation.py::prepare_training_data` is the child core: it recompiles the
-   preamble when supplied, runs the upstream pipeline lazily, derives the version-1
+   preamble when supplied, adopts the parent's seed plan (or, called without one, prepares
+   inputs and opens its own), runs the upstream pipeline lazily under it with
+   `prepare_inputs=False` — seeds read, the modelling node's producer and every join, fan-out,
+   and materialisation captured into shared snapshots, no checkpoint directory and no private
+   dataframe-cache namespace — holding the plan until the sink completes, derives the version-1
    feature-selection diagnostic from the materialised schema, rejects HTTP
    422/`contract_error` if target/metadata/exclusion rules leave no feature columns, validates
    the required columns actually arrived, projects away excluded columns while retaining
-   explicit `feature_columns` even when a stale `exclude` entry also names them, streams the
-   result to the parent's temp parquet with `bounded_sink` under the context's
-   `training_sink_write` stage, and then runs the target/task gate;
+   explicit `feature_columns` even when a stale `exclude` entry also names them (composing
+   column drops into an admitted recipe), writes the prepared frame to the parent's temp parquet
+   with a single `write_file` call under the context's `training_sink_write` stage — which
+   slices the frame directly when sliceable (`strategy="sliced"`), or slices the recipe's input
+   when the node carries one (`strategy="input_sliced"`), or sinks natively and records why
+   (`strategy="native"`, `native_reason` naming the recipe's reason or `not_sliceable`);
+   a row-limit sample discards the recipe and takes the native path with
+   `native_reason="row_limit_sample"` unless the sampled frame is itself sliceable;
+   a `RecipeEquivalenceError` writes again through the same `write_file` with no recipe, which
+   always lands on `native` with `native_reason="recipe_mismatch"` and warning code
+   `recipe_mismatch`: the equivalence check runs only on the branch a non-sliceable frame reaches,
+   so the second write finds that same frame unsliceable too; and execution metrics record the
+   write outcome across four fields (`training_write_strategy`, `training_write_input_slices`,
+   `training_write_native_reason`, `training_write_blocking_operator`) — and then runs the
+   target/task gate;
    `training_target_task_issue` (`_target_check.py`) validates the sunk parquet's
    target column against the configured task and the effective metric set
    (`effective_metrics` — explicit config metrics or the objective-implied defaults,
@@ -288,10 +322,12 @@
    failed: <exc>")` (500/`error`), never a bare exception.
    Expected child failures are returned, never raised across the boundary: a
    `TrainingPreparationFailure` carries `terminal_reason`
-   (`contract_error`|`memory_limited`|`error`), the job `message`/`fields`, and the
+   (`contract_error`|`memory_limited`|`cancelled`|`error`), the job `message`/`fields`, and the
    `http_status_code`/`http_detail`, computed in the child with the same
    `_http_failure_job_parts`/`contract_error_job_fields`/`_memory_limit_http_exception`
-   helpers the in-thread path used, so job records and HTTP payloads are unchanged. Every
+   helpers the in-thread path used, so job records and HTTP payloads are unchanged. A cancelled
+   run maps to `cancelled` with `CLIENT_CLOSED_REQUEST_STATUS`, both in the mapper and ahead of
+   the worker's own catch-all, so a cancellation is never reported as a pipeline failure. Every
    child failure removes the parquet first — no partial training artifact ever exists.
    The parent maps the outcome: a `failure` transitions to its `terminal_reason` and raises
    the paired `HTTPException`; a success whose `parquet_path` differs from the parent's, or
@@ -1269,6 +1305,35 @@ rows/features) and retry.
   `tests/test_training_worker_protocol.py::test_dispersion_worker_maps_estimator_failures`
   proves the dispersion worker applies the same taxonomy, keeping the dependency text
   out of the public message and in the diagnostic `error` field.
+- `tests/test_training_seeding.py` drives preparation through the supervising parent with the
+  child in process: a second run seeds the first run's capture with an equal frame and builds
+  nothing; a batch Model Score is scored once; a stale snapshot is never seeded; an `A → B`
+  chain seeds only `B` and never reads `A`; a refreshed root is seeded below a stale chain;
+  branches recording different generations recompute from sources; a single cached branch seeds
+  its recorded ancestor, and recomputes both branches once that ancestor is cleared; a child
+  whose seed is refreshed and cleared before it starts reads the leased rows; the evaluation
+  preview seeds a training capture and a training run widens the preview's; no checkpoint
+  directory or dataframe-cache entry is written; a child stopped, timed out, or killed at
+  its memory cap leaves no capture staging; preparation time comes out of the child's budget,
+  and preparation that ends past the job deadline — or fails after it — is the job's
+  `timed_out`; a plan-opening failure in the parent (cancellation, input-preparation contract
+  error, corrupt cache, admission refusal) is classified without launching the child, removes
+  the parquet, and releases admission once; the job's metrics keep the parent's input
+  preparation alongside the child's seeds and captures; and a training job run to completion
+  through the routes keeps preparation's captures and seeds. A failed fit
+  (`tests/test_training_worker_protocol.py::test_failed_fit_keeps_the_jobs_preparation_evidence`)
+  and a failed or completed dispersion estimate (`tests/test_modelling_routes.py`) keep them
+  too. The single `write_file` training write is covered across its strategies: a modelling node
+  directly off a data input writes `sliced` with rows, order and schema equal to the native
+  result; a modelling node over a chunk-local filter parent writes its prepared parquet
+  `input_sliced` across several slices, reporting `training_write_strategy` and
+  `training_write_input_slices` through the worker path; column exclusions compose into the
+  write recipe; a row-limit sample takes the native path with
+  `training_write_native_reason="row_limit_sample"` while a sliceable sample records no native
+  reason; a mismatched recipe degrades to native with
+  `training_write_native_reason="recipe_mismatch"` and records a `recipe_mismatch` warning;
+  mid-write failure fails the job `error` leaving no prepared parquet; and cancellation
+  mid-write leaves no prepared parquet.
 - `tests/test_training_preparation_worker.py` pins the hard-capped preparation
   worker: exactly one `haute-training-prep` launch per preparation with the budget's
   `memory_limit_bytes`, the remaining job timeout, and a `stop_reason` that reads the
@@ -1475,7 +1540,12 @@ The implementation seams are:
 - `POST /api/modelling/estimate` calls the same planner over the same eligible rows and
   returns only bounded counts/ranges. The editor shows this neutral exact preview once
   enough fields are valid; malformed or incomplete configuration remains a click-time
-  validation issue rather than an estimate-warning state.
+  validation issue rather than an estimate-warning state. `TrainService.evaluation_preview`
+  materialises only the target and evaluation key in process, under its own seed plan
+  (`open_seed_plan` with `training_seed_plan_request`) held through collection: it reads a
+  training run's capture of the modelling node's producer when one covers its demand, and
+  otherwise captures that producer with its narrow demand, which the next training run
+  widens.
 
 Focused evidence lives in `tests/test_evaluation.py`,
 `tests/test_train_evaluation_config.py`, `tests/test_training_evaluation.py`,
@@ -1484,3 +1554,44 @@ Focused evidence lives in `tests/test_evaluation.py`,
 `tests/test_training_worker_protocol.py`, `tests/test_modelling_routes.py`, and
 `tests/test_modelling_export.py`. Frontend guard, config, preview, summary and progress
 suites prove the same canonical vocabulary and bounded lifecycle end to end.
+### Training allocation ordering (cache implementation correction)
+
+CatBoost constructs its training Pool and releases the raw training frame,
+feature frame, labels, weights and baseline conversion references before loading
+the validation partition. Validation loading retains the existing projection,
+partition selection, feature names/dtypes and offset semantics; it remains
+cancellable and measured through the existing execution context. No-validation
+training performs no validation read. The GLM adapter continues to receive its
+training and validation frames together, as required by its current interface.
+Test the lifetime boundary with weak references rather than relying on garbage
+collector or allocator RSS behavior in a unit test. Record real allocation peaks
+separately in a fresh-process measurement.
+
+When both validation and final-test partitions exist, validation metrics are
+computed and their frame/prediction allocations released before final-test
+diagnostics are materialised; returned primary metrics remain validation metrics.
+Diagnostic prediction uses the existing bounded batch reader with a 65,536-row
+ceiling and fills one output array in order. Feature/offset semantics, prediction
+dtype/trailing dimensions and exact metrics are preserved. Invalid output row
+counts or changing shapes/dtypes fail clearly; cancellation closes the reader.
+
+### Batch scoring from existing snapshot scans
+
+When the scoring input is proven sliceable by the existing Polars classifier,
+batch scoring consumes projected slices of that LazyFrame directly. It keeps
+the caller's frame and lease ownership alive until scoring finishes and never
+unlinks source parts. This includes a leased multipart Parquet scan. Input
+projection retains model features, offsets and requested passthrough columns
+in their original order; empty input retains the same output schema.
+
+The existing `_batch_score_to_parquet` adapter accepts a LazyFrame as well as
+its current single-file input. Complex inputs retain the existing owned
+temporary-file path so an upstream computation is executed only once. Both
+paths write through the current output destination, cancellation and cleanup
+contracts. This removes a complete input rewrite for reusable scans without
+introducing a dataset interface or changing scoring semantics.
+
+Both direct scans and owned adapter-file scoring choose batch rows from decoded
+input width and the current execution allowance, retaining the scoring row
+ceiling. Dictionary compression must not bypass this rule on the Arrow reader
+used for staged input.

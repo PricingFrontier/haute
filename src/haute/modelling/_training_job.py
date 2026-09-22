@@ -8,16 +8,17 @@ import hashlib
 import os
 import tempfile
 from collections.abc import Callable, Iterable, Mapping
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager, closing, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+import numpy as np
 import polars as pl
 
 from haute._execution_context import ExecutionCancelledError, ExecutionContext
 from haute._logging import get_logger
-from haute._polars_utils import streaming_collect
+from haute._polars_utils import bounded_collect_batches, streaming_collect
 from haute.errors import HauteError, HauteValidationError
 from haute.modelling._algorithms import (
     ALGORITHM_REGISTRY,
@@ -1907,20 +1908,21 @@ class TrainingJob:
         )
         _mem_checkpoint(f"read train partition ({len(train_df):,} rows)")
 
-        eval_df = None
-        if has_validation:
+        def load_validation() -> pl.DataFrame:
             _report("Loading validation data", 0.25)
-            eval_df = _training_streaming_collect(
+            validation = _training_streaming_collect(
                 self._scan_with_columns(data_path, features)
                 .filter(pl.col("_partition") == PARTITION_VALIDATION)
                 .drop("_partition"),
                 stage_name="training_validation_partition_materialise",
                 execution_context=execution_context,
             )
-            _mem_checkpoint(f"read validation partition ({len(eval_df):,} rows)")
+            _mem_checkpoint(f"read validation partition ({len(validation):,} rows)")
+            return validation
 
         if is_glm:
             # GLM: pass DataFrames directly (no Pool conversion needed)
+            eval_df = load_validation() if has_validation else None
             _report("Fitting GLM", 0.3)
             with _training_stage(execution_context, "training_algorithm_fit"):
                 fit_result = algo.fit(
@@ -1981,7 +1983,8 @@ class TrainingJob:
             _mem_checkpoint("train pool built")
 
             eval_pool = None
-            if eval_df is not None:
+            if has_validation:
+                eval_df = load_validation()
                 _report("Building eval pool", 0.25)
                 val_y = eval_df[self.target].cast(pl.Float64).to_numpy()
                 val_w = eval_df[self.weight].cast(pl.Float64).to_numpy() if self.weight else None
@@ -2136,6 +2139,44 @@ class TrainingJob:
             f"Underlying error: {exc}"
         )
 
+    def _predict_diagnostic_batches(
+        self,
+        algo: Any,
+        model: Any,
+        frame: pl.DataFrame,
+        features: list[str],
+        *,
+        execution_context: ExecutionContext | None,
+    ) -> np.ndarray:
+        """Predict diagnostics in bounded row batches without changing empty semantics."""
+        if frame.height == 0:
+            return np.asarray(algo.predict(model, frame, features, offset=self.offset))
+        result: np.ndarray | None = None
+        offset = 0
+        with closing(
+            bounded_collect_batches(
+                frame.lazy(),
+                chunk_size=65_536,
+                execution_context=execution_context,
+                stage_name="training_diagnostic_predictions",
+            )
+        ) as batches:
+            for batch in batches:
+                prediction = np.asarray(algo.predict(model, batch, features, offset=self.offset))
+                if prediction.ndim == 0 or prediction.shape[0] != batch.height:
+                    raise ValueError("Diagnostic predictions must have one row per input row")
+                if result is None:
+                    result = np.empty((frame.height, *prediction.shape[1:]), dtype=prediction.dtype)
+                elif prediction.dtype != result.dtype or prediction.shape[1:] != result.shape[1:]:
+                    raise ValueError("Diagnostic prediction shape or dtype changed between batches")
+                next_offset = offset + len(batch)
+                result[offset:next_offset] = prediction
+                offset = next_offset
+                del batch, prediction
+        if result is None or offset != frame.height:
+            raise RuntimeError("Diagnostic prediction batches did not cover the input rows")
+        return result
+
     def _compute_metrics(
         self,
         split_result: _SplitResult,
@@ -2193,6 +2234,33 @@ class TrainingJob:
             diag_partition = PARTITION_TRAIN
             diagnostics_set = "train"
 
+        # Holdout diagnostics are the largest live allocation in this branch.
+        # Calculate and release validation quality first so the two partitions
+        # are never resident together.
+        validation_metrics: dict[str, float] | None = None
+        vp = self.variance_power
+        if has_holdout and has_validation:
+            val_df = self._read_partition(
+                data_path,
+                PARTITION_VALIDATION,
+                columns=glm_columns,
+                execution_context=execution_context,
+                stage_name="training_validation_metrics_materialise",
+            )
+            val_y_true = val_df[self.target].to_numpy()
+            val_y_pred = self._predict_diagnostic_batches(
+                algo, model, val_df, features, execution_context=execution_context
+            )
+            val_w = val_df[self.weight].to_numpy() if self.weight else None
+            try:
+                validation_metrics = compute_metrics(
+                    val_y_true, val_y_pred, val_w, self.metrics, variance_power=vp
+                )
+            except _METRIC_STAGE_FAILURE_TYPES as exc:
+                raise self._metric_stage_error(exc, evaluation_set="validation") from exc
+            del val_df, val_y_true, val_y_pred, val_w
+            gc.collect()
+
         # ── Read the diagnostics partition ONCE — metrics + all diagnostics ──
         _report("Computing diagnostics", 0.8)
         diag_df = self._read_partition(
@@ -2205,11 +2273,12 @@ class TrainingJob:
         _mem_checkpoint(f"read {diagnostics_set} partition for diagnostics ({len(diag_df):,} rows)")
         y_true = diag_df[self.target].to_numpy()
         # Reported fit quality describes the predictions the model serves.
-        y_pred = algo.predict(model, diag_df, features, offset=self.offset)
+        y_pred = self._predict_diagnostic_batches(
+            algo, model, diag_df, features, execution_context=execution_context
+        )
         w = diag_df[self.weight].to_numpy() if self.weight else None
 
         # Primary metrics from the diagnostics set
-        vp = self.variance_power
         try:
             metrics = compute_metrics(
                 y_true,
@@ -2222,33 +2291,12 @@ class TrainingJob:
             raise self._metric_stage_error(exc, evaluation_set=diagnostics_set) from exc
 
         # When holdout is present, diagnostics were computed on holdout.
-        # Also compute validation metrics separately so both are available.
+        # Validation quality was already computed and released before this read.
         holdout_metrics: dict[str, float] = {}
         if diagnostics_set == "holdout":
             holdout_metrics = metrics
-            # Compute validation metrics separately if a validation set exists
-            if has_validation:
-                val_df = self._read_partition(
-                    data_path,
-                    PARTITION_VALIDATION,
-                    columns=glm_columns,
-                    execution_context=execution_context,
-                    stage_name="training_validation_metrics_materialise",
-                )
-                val_y_true = val_df[self.target].to_numpy()
-                val_y_pred = algo.predict(model, val_df, features, offset=self.offset)
-                val_w = val_df[self.weight].to_numpy() if self.weight else None
-                try:
-                    metrics = compute_metrics(
-                        val_y_true,
-                        val_y_pred,
-                        val_w,
-                        self.metrics,
-                        variance_power=vp,
-                    )
-                except _METRIC_STAGE_FAILURE_TYPES as exc:
-                    raise self._metric_stage_error(exc, evaluation_set="validation") from exc
-                del val_df
+            if validation_metrics is not None:
+                metrics = validation_metrics
 
         # Double-lift
         double_lift = compute_double_lift(y_true, y_pred, w)

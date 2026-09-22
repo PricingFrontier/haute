@@ -1024,7 +1024,7 @@ export function pivotCalculationIdentity(pivot: ExplorePivotConfig): string {
 /** The retained-result fields freshness depends on; structurally satisfied by
  * the node-results store's cached pivot entries. */
 export type PivotResultFreshnessEntry = {
-  result: { dataframe_cache_key: string } | null
+  result: { data_version: string } | null
   calculationIdentity: string
 }
 
@@ -1035,13 +1035,13 @@ export type PivotResultFreshnessEntry = {
  */
 export function isPivotResultFresh(
   entry: PivotResultFreshnessEntry | null | undefined,
-  dataframeCacheKey: string | null | undefined,
+  dataVersion: string | null | undefined,
   calculationIdentity: string,
 ): boolean {
   return Boolean(
     entry?.result
-      && dataframeCacheKey
-      && entry.result.dataframe_cache_key === dataframeCacheKey
+      && dataVersion
+      && entry.result.data_version === dataVersion
       && entry.calculationIdentity === calculationIdentity,
   )
 }

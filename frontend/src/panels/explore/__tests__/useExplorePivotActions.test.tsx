@@ -2,11 +2,11 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type {
-  ExploreCacheReport,
   ExplorePivotResult,
   ExplorePivotRunResponse,
   ExplorePivotStatusResponse,
 } from "../../../api/types"
+import type { ExploreDataView } from "../exploreDataView"
 import useDocumentStatusStore from "../../../stores/useDocumentStatusStore"
 import useGraphStore from "../../../stores/useGraphStore"
 import useNodeResultsStore, {
@@ -67,7 +67,7 @@ const result: ExplorePivotResult = {
   node_id: node.id,
   pivot_id: "claims",
   source: "pricing",
-  dataframe_cache_key: "explore:current",
+  data_version: "explore:current",
   calculation_key: "calculation",
   row_fields: ["region"],
   column_fields: [],
@@ -138,7 +138,7 @@ describe("useExplorePivotActions", () => {
       .mockResolvedValueOnce(completed(currentResult))
     const config = pivot()
     const pivots = [config]
-    const report = { dataframe_cache_key: result.dataframe_cache_key } as ExploreCacheReport
+    const report = { data_version: result.data_version } as ExploreDataView
     for (let consumer = 0; consumer < consumers; consumer += 1) {
       renderHook(() => {
         const actions = useExplorePivotActions({ node, allNodes: [node], edges: [] })
@@ -160,7 +160,7 @@ describe("useExplorePivotActions", () => {
     useDocumentStatusStore.setState({ loadStatus: "degraded" })
     const config = pivot()
     const pivots = [config]
-    const report = { dataframe_cache_key: result.dataframe_cache_key } as ExploreCacheReport
+    const report = { data_version: result.data_version } as ExploreDataView
     mockRunExplorePivot.mockResolvedValue({
       status: "completed", job_id: null, cached: true, message: "Pivot cache hit",
       result, failure: null,
@@ -272,7 +272,7 @@ describe("useExplorePivotActions", () => {
     expect(hook.current.submitting).toEqual({})
     expect(job).toMatchObject({
       jobId: "pivot-job",
-      requestedDataframeCacheKey: "dataframe-current",
+      requestedDataVersion: "dataframe-current",
       progress: { status: "running", message: "Starting" },
     })
   })
@@ -494,7 +494,7 @@ describe("useExplorePivotActions", () => {
       expect(newerToken).not.toBeNull()
       expect(
         useNodeResultsStore.getState().pivotStartClaims[claimKey()],
-      ).toMatchObject({ dataframeCacheKey: "df-next", token: newerToken })
+      ).toMatchObject({ dataVersion: "df-next", token: newerToken })
     })
 
     it("releases the claim through the real failure path, allowing a retry", async () => {
@@ -613,7 +613,7 @@ describe("useExplorePivotActions", () => {
       const token2 = useNodeResultsStore
         .getState()
         .claimExplorePivotAuto(key, node.id, "df-new", identity())
-      const newResult = { ...result, dataframe_cache_key: "df-new" }
+      const newResult = { ...result, data_version: "df-new" }
       mockRunExplorePivot.mockResolvedValueOnce({
         status: "completed",
         job_id: "new-job",
@@ -661,10 +661,10 @@ describe("useExplorePivotActions", () => {
       expect(hook.current.submitting.claims).toBe(true)
       expect(
         useNodeResultsStore.getState().pivotResults[key]?.result
-          ?.dataframe_cache_key,
+          ?.data_version,
       ).toBe("df-new")
 
-      const nextResult = { ...result, dataframe_cache_key: "df-next" }
+      const nextResult = { ...result, data_version: "df-next" }
       await act(async () => {
         resolveNext({
           status: "completed",
@@ -679,7 +679,7 @@ describe("useExplorePivotActions", () => {
       expect(hook.current.submitting.claims).toBeUndefined()
       expect(
         useNodeResultsStore.getState().pivotResults[key]?.result
-          ?.dataframe_cache_key,
+          ?.data_version,
       ).toBe("df-next")
     })
 
@@ -709,7 +709,7 @@ describe("useExplorePivotActions", () => {
         .getState()
         .claimExplorePivotAuto(key, node.id, "df-new", identity())
       expect(token2).not.toBeNull()
-      const newResult = { ...result, dataframe_cache_key: "df-new" }
+      const newResult = { ...result, data_version: "df-new" }
       mockRunExplorePivot.mockResolvedValueOnce({
         status: "completed",
         job_id: "new-job",
@@ -721,7 +721,7 @@ describe("useExplorePivotActions", () => {
       await act(() => hook.current.updatePivot(pivot(), "df-new", token2!))
       expect(
         useNodeResultsStore.getState().pivotResults[key]?.result
-          ?.dataframe_cache_key,
+          ?.data_version,
       ).toBe("df-new")
 
       // The old response completes last: neither promoted nor stored.
@@ -738,7 +738,7 @@ describe("useExplorePivotActions", () => {
       })
       expect(
         useNodeResultsStore.getState().pivotResults[key]?.result
-          ?.dataframe_cache_key,
+          ?.data_version,
       ).toBe("df-new")
       expect(useNodeResultsStore.getState().pivotResults[key]?.jobId).toBe(
         "new-job",
@@ -773,7 +773,7 @@ describe("useExplorePivotActions", () => {
         )
       })
 
-      const retryResult = { ...result, dataframe_cache_key: "df-retry" }
+      const retryResult = { ...result, data_version: "df-retry" }
       mockRunExplorePivot.mockResolvedValueOnce({
         status: "completed",
         job_id: "retry-job",
@@ -790,7 +790,7 @@ describe("useExplorePivotActions", () => {
           job_id: "automatic-job",
           cached: true,
           message: "Completed",
-          result: { ...result, dataframe_cache_key: "df-auto" },
+          result: { ...result, data_version: "df-auto" },
           failure: null,
         })
         await automaticStart
@@ -798,7 +798,7 @@ describe("useExplorePivotActions", () => {
 
       expect(useNodeResultsStore.getState().pivotResults[key]).toMatchObject({
         jobId: "retry-job",
-        result: { dataframe_cache_key: "df-retry" },
+        result: { data_version: "df-retry" },
       })
       expect(useNodeResultsStore.getState().pivotJobs[key]).toBeUndefined()
     })

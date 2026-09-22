@@ -23,6 +23,8 @@ In scope:
 - API-input flat-file adapters and common Polars collect/sink helpers;
 - provider dispatch for file, lakehouse, inline, database, and Databricks inputs;
 - source-cache identity, build, publication, lease, quota, clear, and status behaviour;
+- node-output snapshots in the same store: signatures, slots, column widening, retention and
+  eviction, and cross-process publication and leases;
 - bounded SQLite snapshot acquisition.
 
 The [Databricks IO component](../databricks-io/high-level.md) owns Databricks credential
@@ -121,7 +123,46 @@ Leases are process-local. A superseded generation is retired only after
 generation was published, so a reader in another process finishes its scan; an explicit
 clear and quota pressure reclaim immediately, the latter logged.
 
-Store startup never deletes a generation. It may reclaim a staging directory only when the
+Node outputs live in the same store as a `node_output` provider with their own budget. A
+node-output identity is a slot — pipeline source file, node, source, and execution
+semantics class — plus the node's
+checked data signature, so every signature of a node keeps its own generation and a
+reverted edit finds its earlier snapshot again. A per-slot index lists a slot's identities:
+for a requested signature the slot is `current` when that identity has a fresh generation,
+`stale` when its own generation is stale or only other identities have generations, and
+`missing` otherwise. Each generation records the column set it holds (`all` or an explicit
+list) and the transitive closure of snapshot generations its rows derive from. A
+generation is fresh when no recorded dependency identity now has a different current
+generation; a cleared or evicted dependency does not make it stale. A writer always
+continues from its own completed artifact. Under the identity's publication lock it
+publishes only when every dependency it recorded is still current or cleared, its columns
+contain the latest generation's columns, and there is no fresh latest generation, it widens
+that generation, or it is an explicit refresh; otherwise it keeps its artifact as a
+request-owned file and the outcome is `superseded`. A published generation therefore never
+narrows its identity's columns, and replacing or widening a generation makes every
+descendant recorded against the previous one stale.
+
+A node-output generation is `pinned` when its slot's pin names its identity and `automatic`
+otherwise; an explicit build pins, and a pin passes to the slot's newest publication. Its
+last-used time is its metadata file's modification time, refreshed on lease at most once a
+minute. Quota pressure on a node-output publication retires unleased automatic
+generations — superseded ones first, then least recently used — and logs each; when even
+that cannot make room nothing is evicted and the publication raises the quota error while
+handing its completed staged artifact to the caller intact. Input-snapshot quota behaviour
+is unchanged. Node-output publication, eviction, clear, and leases are coordinated across
+processes: a per-identity publication lock is held from a writer's re-check to its first
+lease, and a store-wide lease lock, always taken after it, makes lease acquisition,
+publication through the publisher's first lease, and retirement atomic. Every lease is also
+a marker file in its generation naming the owning process's token, whose liveness is an
+exclusive lock that process holds on its token file, so retirement never removes a
+generation another live process reads, and a dead owner's marker is removed. Retirement
+renames a generation out of selection under the lock and deletes its files afterwards.
+Clear removes a slot's identities, pointers, and pin but never a generation another
+operation still leases; that generation retires when released. A reader may lease a named
+generation, current or not, so a spawned worker reads exactly the generation its parent
+leased.
+
+Store startup never deletes a published generation. It may reclaim a staging directory only when the
 newest filesystem activity beneath that directory is older than the configured stale-build
 threshold; recent or unreadable staging state is preserved. Unreclaimed staging bytes count
 against the store byte quota. Publication and leases are coordinated within one process,
@@ -197,6 +238,8 @@ When `overwrite=false`, an existing data-output destination raises
 than treating it as an I/O failure or replacing the destination.
 
 Malformed pointers, digest mismatches, metadata mismatches, invalid generation identifiers,
-or invalid Parquet footer/schema evidence raise `SourceCacheCorruptError`; callers do not
+linked, hard-linked, reparse-point, or escaping generation artifacts, or invalid Parquet
+footer/schema evidence raise `SourceCacheCorruptError`; a named generation that does not
+exist or was retired raises its `SourceCacheGenerationMissingError` subclass. Callers do not
 silently rebuild or fall back. Transient operating-system access errors propagate as
 operating-system errors so operators can retry and are not told durable data is corrupt.

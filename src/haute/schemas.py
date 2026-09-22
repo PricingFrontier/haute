@@ -840,6 +840,34 @@ class NodeMemoryInfo(BaseModel):
     memory_bytes: int
 
 
+class PreviewSeedPlanEntry(BaseModel):
+    """One snapshot generation a preview's collected rows were computed from.
+
+    ``seeded``: read instead of computing the node. ``captured``: computed by
+    this preview, published, and read by everything below it. ``columns`` is
+    the generation's column set, ``None`` for all columns; ``port_label`` is
+    always ``None``, since only node outputs are seeded or captured.
+    """
+
+    node_id: str
+    port_label: None = None
+    node_label: str
+    identity_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    generation_id: str = Field(min_length=1)
+    columns: list[str] | None
+    created_at: str
+    kind: Literal["seeded", "captured"]
+
+    @field_validator("created_at")
+    @classmethod
+    def _created_at_must_be_utc(cls, value: str) -> str:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        utc_offset = parsed.utcoffset()
+        if utc_offset is None or utc_offset.total_seconds() != 0:
+            raise ValueError("created_at must include a UTC offset")
+        return value
+
+
 class PreviewNodeResponse(NodeResult):
     """Full preview response — extends ``NodeResult`` with graph-wide metadata.
 
@@ -863,11 +891,39 @@ class PreviewNodeResponse(NodeResult):
     node_frame_columns: dict[str, dict[str, list[ColumnInfo]]] = Field(default_factory=dict)
     node_schema_warnings: dict[str, list[SchemaWarning]] = Field(default_factory=dict)
     execution_metrics: ExecutionMetricsPayload | None = None
+    # Every snapshot generation the collected rows were computed from, in
+    # topological order; empty when the preview read no snapshot.
+    seed_plan: list[PreviewSeedPlanEntry] = Field(default_factory=list)
+
+
+class PreviewInputsRequest(BaseModel):
+    """Which inputs a preview would read, so the browser prepares only those."""
+
+    graph: Graph
+    node_id: str
+    source: str = "live"
+    requested_preview_columns: list[str] | None = Field(default=None, min_length=1)
+    port_label: str | None = None
+
+
+class PreviewInputsResponse(BaseModel):
+    """Snapshot-backed Data Inputs and structured API Inputs, in execution order."""
+
+    input_node_ids: list[str]
 
 
 # ---------------------------------------------------------------------------
 # /api/pipeline/trace
 # ---------------------------------------------------------------------------
+
+
+class TraceSeedPlanEntry(BaseModel):
+    """One generation the preview a trace explains was computed from."""
+
+    node_id: str
+    port_label: None = None
+    identity_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    generation_id: str = Field(min_length=1)
 
 
 class TraceRequest(BaseModel):
@@ -879,6 +935,9 @@ class TraceRequest(BaseModel):
     source: str = "live"
     row_values: dict[str, Any] | None = None
     streaming_chunk_size: StreamingChunkSize = None
+    # The ``seed_plan`` of the preview this trace explains: the trace reads
+    # exactly those generations and nothing else, even if snapshots now exist.
+    seed_plan: list[TraceSeedPlanEntry]
 
 
 class SchemaDiffResponse(BaseModel):
@@ -901,6 +960,9 @@ class TraceStepResponse(BaseModel):
     calculation: dict[str, Any] | None = None
     node_detail: dict[str, Any] | None = None
     row_lineage_type: str | None = None
+    # Set when this step's row comes from a shared snapshot generation the
+    # trace was seeded with, rather than from computing the node.
+    snapshot_generation_id: str | None = None
 
 
 class TraceOmissionResponse(BaseModel):
@@ -926,6 +988,8 @@ class TraceCorrelationDiagnosticResponse(BaseModel):
     ignored_columns: list[str] = Field(default_factory=list)
     matched_row_count: int | None = None
     matched_row_indices: list[int] = Field(default_factory=list)
+    # For a ``snapshot_seed`` omission: the seeded nodes it was skipped through.
+    seed_node_ids: list[str] = Field(default_factory=list)
 
 
 class TraceWaterfallEntryResponse(BaseModel):
@@ -1181,56 +1245,254 @@ class ExploreOverviewSummary(BaseModel):
     categorical_summary: list[ExploreCategoricalColumnProfile] = Field(default_factory=list)
 
 
-class ExploreCacheReport(BaseModel):
-    """Result of materialising an Explore node's upstream dataset.
-
-    Lightweight by design: the full frame lives in DataFrameExecutionCache
-    (parquet on disk). This payload tells the UI what was cached and how to
-    identify the cache entry.
-    """
-
-    status: Literal["ok"] = "ok"
-    node_id: str
-    upstream_node_id: str
-    source: str = "live"
-    dataframe_cache_key: str
-    row_count: int = 0
-    column_count: int = 0
-    columns: list[ExploreColumnStat] = Field(default_factory=list)
-    overview_summary: ExploreOverviewSummary = Field(default_factory=ExploreOverviewSummary)
-    generated_at: float = 0.0
-    execution_metrics: ExecutionMetricsPayload | None = None
+NodeDataPointKind = Literal["data_input", "api_input_table", "node_output"]
+NodeDataPointState = Literal["current", "stale", "partial", "missing", "building", "corrupt"]
+NodeDataColumns = list[str] | Literal["all"]
 
 
-class ExploreRunRequest(BaseModel):
+class NodeDataRequest(BaseModel):
+    """Name a consumer node; the service resolves the data point it reads."""
+
     graph: Graph
     node_id: str
     source: str = "live"
-    streaming_chunk_size: StreamingChunkSize = None
+
+
+class NodeDataRunRequest(NodeDataRequest):
     refresh: bool = False
+    streaming_chunk_size: StreamingChunkSize = None
 
 
-class ExploreRunResponse(BaseModel):
-    status: Literal["started", "running", "completed"]
+class NodeDataPointRef(BaseModel):
+    producer_node_id: str
+    port_label: str | None = None
+
+
+class NodeDataGeneration(BaseModel):
+    """The node-output generation a slot currently holds for the consumer's signature."""
+
+    generation_id: str
+    columns: NodeDataColumns
+    row_count: int
+    column_count: int
+    size_bytes: int
+    retention: Literal["pinned", "automatic"]
+    fresh: bool
+    created_at: float
+
+
+class NodeDataJob(BaseModel):
+    job_id: str
+    progress: float = 0.0
+    message: str = ""
+
+
+class NodeDataPointResponse(BaseModel):
+    consumer_node_id: str
+    point: NodeDataPointRef
+    slot_key: str
+    kind: NodeDataPointKind
+    state: NodeDataPointState
+    demand: NodeDataColumns
+    data_version: str | None = None
+    row_count: int | None = None
+    size_bytes: int | None = None
+    retention: Literal["pinned", "automatic"] | None = None
+    generation: NodeDataGeneration | None = None
+    job: NodeDataJob | None = None
+    reads_directly: bool = False
+    build_endpoint: str | None = None
+    clear_endpoint: str | None = None
+
+
+class NodeDataRunResponse(BaseModel):
+    status: Literal["started", "joined", "completed", "delegated"]
     job_id: str | None = None
     cached: bool = False
     message: str = ""
-    result: ExploreCacheReport | None = None
+    point: NodeDataPointResponse
 
 
-class ExploreStatusResponse(BaseModel):
+class NodeDataProfile(BaseModel):
+    """Per-column statistics and overview summary of one data version of a point."""
+
+    row_count: int
+    column_count: int
+    columns: list[ExploreColumnStat] = Field(default_factory=list)
+    overview_summary: ExploreOverviewSummary = Field(default_factory=ExploreOverviewSummary)
+    data_version: str
+    generated_at: float
+
+
+class NodeDataProfileResponse(BaseModel):
+    status: Literal["completed", "started", "joined", "cache_required"]
+    job_id: str | None = None
+    message: str = ""
+    result: NodeDataProfile | None = None
+    point: NodeDataPointResponse
+
+
+class NodeDataStatusResponse(BaseModel):
     status: JobStatus
     progress: float = 0.0
     message: str = ""
-    result: ExploreCacheReport | None = None
     terminal_reason: str | None = None
+    error: str | None = None
+    error_code: str | None = None
+    error_detail: ExecutionMemoryLimitErrorPayload | dict[str, Any] | str | None = None
     execution_metrics: ExecutionMetricsPayload | None = None
+    generation_id: str | None = None
+    outcome: Literal["published", "superseded"] | None = None
+    profile: NodeDataProfile | None = None
 
 
-class ExploreCacheSnapshotResponse(BaseModel):
-    state: Literal["missing", "current", "stale"]
-    message: str
-    result: ExploreCacheReport | None = None
+class NodeDataClearResponse(BaseModel):
+    status: Literal["cleared", "delegated"]
+    point: NodeDataPointResponse
+
+
+# ---------------------------------------------------------------------------
+# /api/cache
+# ---------------------------------------------------------------------------
+
+
+class CacheBudgetUsagePayload(BaseModel):
+    """One budget's usage against its limits, naming the variable behind each.
+
+    The variable names are reported rather than known by the client because
+    the server is what reads them: a user told to raise a limit is told the
+    name the store actually read.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    generations_used: int = Field(ge=0)
+    generations_limit: int = Field(gt=0)
+    generations_limit_variable: str
+    bytes_used: int = Field(ge=0)
+    bytes_limit: int = Field(gt=0)
+    bytes_limit_variable: str
+
+
+class CacheUsageResponse(BaseModel):
+    """Both budgets in one response, because both are walked in one request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    node_outputs: CacheBudgetUsagePayload
+    input_snapshots: CacheBudgetUsagePayload
+
+
+class CacheNodesRequest(BaseModel):
+    """The graph whose nodes to report on, and the source they are read for."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    graph: Graph
+    source: str = "live"
+
+
+class CacheNodeEntry(BaseModel):
+    """One node of the graph: what it reads now, and what it holds on disk.
+
+    ``state`` and ``row_count`` describe the generation the node would read
+    for its own column demand; ``generations`` and ``size_bytes`` are what the
+    store holds for that node and source across every signature, which is what
+    the node actually costs the budget.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    kind: NodeDataPointKind | None = None
+    state: NodeDataPointState | None = None
+    reads_directly: bool = False
+    # The node this one reads from, when that is another node. Its cache is
+    # reported on *its* row, so this node's size stays empty rather than
+    # repeating a figure that would then sum to more than the store holds.
+    reads_from: str | None = None
+    # Other nodes resolving to the same input snapshot — two Data Inputs with
+    # one configuration, or one submodel instantiated twice. Every sharer names
+    # the others, and exactly one of them carries the bytes: the one with a
+    # size. One identity, one set of bytes, whichever row you read first.
+    shares_snapshot_with: list[str] = Field(default_factory=list)
+    row_count: int | None = None
+    generations: int = Field(default=0, ge=0)
+    size_bytes: int = Field(default=0, ge=0)
+    newest_created_at: float | None = None
+    #: How long the newest generation took to cache; absent when the store
+    #: holds a generation published before that was recorded.
+    build_seconds: float | None = None
+    #: The store identities this row is responsible for, and therefore what
+    #: clearing this row clears. Empty when the row carries nothing.
+    identity_digests: list[str] = Field(default_factory=list)
+    retention: Literal["pinned", "automatic"] | None = None
+    # Why this node has no point at all — unwired Banding, say. Never an
+    # internal error: an unreportable node is a row, not a failed request.
+    unavailable_reason: str | None = None
+
+
+class CacheOwnerEntry(BaseModel):
+    """Cached data not attributed to any node of the graph as it stands.
+
+    A node that was deleted or renamed, a node's data for another source, or
+    an input snapshot whose Data Input no longer reads it. Each still occupies
+    the budget, so each is named.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    bucket: Literal["node_output", "input"]
+    label: str
+    node_id: str | None = None
+    source: str | None = None
+    generations: int = Field(ge=0)
+    row_count: int | None = None
+    size_bytes: int = Field(ge=0)
+    newest_created_at: float | None = None
+    build_seconds: float | None = None
+    identity_digests: list[str] = Field(default_factory=list)
+
+
+class CacheClearRequest(BaseModel):
+    """The identities to clear, as a report's row reported them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    digests: list[str] = Field(min_length=1)
+
+
+class CacheClearResponse(BaseModel):
+    """What the clear actually removed, which is never assumed from the request.
+
+    A digest the store does not hold is reported as not cleared rather than
+    failing the request: a row acted on from a report a moment out of date is
+    an ordinary race, not an error.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    cleared: list[str]
+    freed_bytes: int = Field(ge=0)
+
+
+class CacheNodesResponse(BaseModel):
+    """Every node of the graph, and everything else the store holds."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    source: str
+    nodes: list[CacheNodeEntry]
+    other: list[CacheOwnerEntry]
+    unattributed_generations: int = Field(ge=0)
+    unattributed_bytes: int = Field(ge=0)
+    # Identities whose provider marker does not classify. Admission charges
+    # each to BOTH budgets, so this is what explains a usage report that
+    # exceeds the sum of the entries above.
+    unmarked_identities: int = Field(ge=0)
 
 
 ExplorePivotMemberKind = Literal[
@@ -1291,7 +1553,7 @@ class ExplorePivotResult(BaseModel):
     node_id: str
     pivot_id: str
     source: str = "live"
-    dataframe_cache_key: str
+    data_version: str
     calculation_key: str
     row_fields: list[str] = Field(default_factory=list)
     column_fields: list[str] = Field(default_factory=list)
@@ -1329,6 +1591,116 @@ class ExplorePivotStatusResponse(BaseModel):
     failure: ExplorePivotFailure | None = None
     terminal_reason: str | None = None
     execution_metrics: ExecutionMetricsPayload | None = None
+
+
+# ---------------------------------------------------------------------------
+# /api/banding
+# ---------------------------------------------------------------------------
+
+
+class BandingStatsRequest(BaseModel):
+    """Statistics for one banding factor over the whole dataset its node reads.
+
+    The factor is the one in the editor rather than the one in the saved graph,
+    so counts follow what the user is editing; the node only says which data
+    point to read.
+    """
+
+    graph: Graph
+    node_id: str
+    factor: dict[str, Any]
+    source: str = "live"
+    histogram_bins: int = Field(default=40, ge=1, le=200)
+    value_limit: int = Field(default=500, ge=1, le=10_000)
+
+
+class BandingHistogramBin(BaseModel):
+    """One `[lower, upper)` interval of a numeric distribution, the last closed."""
+
+    lower: float
+    upper: float
+    count: int = Field(ge=0)
+
+
+class BandingValueCount(BaseModel):
+    """One categorical value, as the text execution matches it by."""
+
+    value: str
+    count: int = Field(ge=0)
+
+
+class BandingStatsResponse(BaseModel):
+    """Whole-dataset statistics for one factor, or why there are none."""
+
+    status: Literal["ok", "cache_required"]
+    point: NodeDataPointResponse
+    data_version: str | None = None
+    total_rows: int = 0
+    null_count: int = 0
+    # Numeric modes only: values no bin can hold, and the extent of those it can.
+    non_finite_count: int | None = None
+    minimum: float | None = None
+    maximum: float | None = None
+    bins: list[BandingHistogramBin] = Field(default_factory=list)
+    # Categorical mode only.
+    values: list[BandingValueCount] = Field(default_factory=list)
+    distinct_count: int | None = None
+    other_count: int | None = None
+    # Both modes, when the factor has rules: counts aligned to the user's rules.
+    rule_counts: list[int] = Field(default_factory=list)
+    unmatched_count: int | None = None
+
+
+# ---------------------------------------------------------------------------
+# /api/rating
+# ---------------------------------------------------------------------------
+
+
+class RatingLevelsRequest(BaseModel):
+    """The levels of raw rating factor columns over the whole dataset.
+
+    The node says which data point to read; the columns are the ones the editor
+    needs levels for, which is the factors its tables actually rate on rather
+    than every column that could be one.
+    """
+
+    graph: Graph
+    node_id: str
+    # Each column is one pass over the data, so the request is bounded; the
+    # editor asks for the factors in use, which is far fewer than this.
+    columns: list[str] = Field(min_length=1, max_length=100)
+    source: str = "live"
+    value_limit: int = Field(default=1000, ge=1, le=10_000)
+
+
+class RatingLevelValue(BaseModel):
+    """One level, keyed the way the rating lookup keys it."""
+
+    value: str
+    count: int = Field(ge=0)
+
+
+class RatingLevelColumn(BaseModel):
+    """What one column offers as rating levels.
+
+    `distinct_count` counts the levels that could be chosen — neither missing
+    nor blank — so it is the number `values` would hold without the cap.
+    """
+
+    column: str
+    values: list[RatingLevelValue] = Field(default_factory=list)
+    distinct_count: int = 0
+    null_count: int = 0
+
+
+class RatingLevelsResponse(BaseModel):
+    """Whole-dataset levels for the columns asked about, or why there are none."""
+
+    status: Literal["ok", "cache_required"]
+    point: NodeDataPointResponse
+    data_version: str | None = None
+    total_rows: int = 0
+    columns: list[RatingLevelColumn] = Field(default_factory=list)
 
 
 class ExplorePivotMembersRequest(BaseModel):

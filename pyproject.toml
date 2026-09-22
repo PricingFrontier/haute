@@ -453,18 +453,34 @@ min_branch_coverage = 90.0
 rationale = "Job storage drives async training and optimiser state."
 
 [[tool.haute.critical_coverage.files]]
-path = "src/haute/_explore_cache.py"
+path = "src/haute/_source_cache.py"
 min_statement_coverage = 84.0
 min_branch_coverage = 70.0
-rationale = "Explore cache generations are the durable handoff between materialisation, preview reloads, and Pivot execution; metadata, lease, restore, and publication safety must remain exercised."
-# Seeded from the focused Explore/Pivot suite measurement (84.67% stmt / 70.59% branch).
+rationale = "Shared input generations own metadata, integrity, cross-process leases and publication; retains the former Explore-cache floor."
 
 [[tool.haute.critical_coverage.files]]
-path = "src/haute/routes/_explore_service.py"
+path = "src/haute/_node_snapshots.py"
+min_statement_coverage = 84.0
+min_branch_coverage = 70.0
+rationale = "Shared node generations replace the retired Explore cache's durable publication, retention and lease boundary; retains its floor."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_analysis_results.py"
+min_statement_coverage = 84.0
+min_branch_coverage = 70.0
+rationale = "Analysis results retain the exact data-generation identity through profile and Pivot reuse; retains the former Explore-cache floor."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/routes/_node_data_service.py"
 min_statement_coverage = 94.0
 min_branch_coverage = 86.0
-rationale = "Explore orchestration owns cache identity, named-source isolation, worker lifecycle, and the report schema consumed by downstream analysis."
-# Seeded from the focused Explore/Pivot suite measurement (94.19% stmt / 86.96% branch).
+rationale = "Node-data orchestration replaces Explore-only builds and owns source identity, worker lifecycle and profile publication; retains the former Explore-service floor."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_frame_profile.py"
+min_statement_coverage = 94.0
+min_branch_coverage = 86.0
+rationale = "Frame profiling now owns the exact statistics formerly calculated by the Explore service; retains its floor."
 
 [[tool.haute.critical_coverage.files]]
 path = "src/haute/routes/_pivot_service.py"

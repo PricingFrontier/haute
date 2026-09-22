@@ -452,6 +452,71 @@ class InputPreparationError(ExecutionError):
         )
 
 
+class SnapshotPlanInputsChangedError(ExecutionError):
+    """Raised when a run's inputs changed after its seed plan was resolved.
+
+    A seed plan names snapshot identities whose signatures sign the inputs as
+    they were when the plan was resolved. Reading seeds computed from those
+    inputs beside branches recomputed from newer ones would join two versions
+    of the data, so the run stops and asks to be run again.
+    """
+
+    error_code = "snapshot_plan_inputs_changed"
+    public_fields = ("target_node_id",)
+
+    def __init__(self, *, target_node_id: str) -> None:
+        self.target_node_id = target_node_id
+        super().__init__(
+            "This run's input data changed while it was starting; run it again.",
+            target_node_id=target_node_id,
+        )
+
+
+class SnapshotCorruptError(ExecutionError):
+    """Raised when a node's cached data is unreadable and names the node.
+
+    A corrupt generation is reported, never silently repaired: an automatic
+    capture surfaces it so the user decides. Without the node, every preview
+    and run through that lineage failed with the store's own text and nothing
+    said which node's cache to clear or rebuild, so the message named a problem
+    the user could not act on.
+    """
+
+    error_code = "snapshot_corrupt"
+    public_fields = ("node_id", "node_label")
+
+    def __init__(self, *, node_id: str, node_label: str | None = None) -> None:
+        self.node_id = node_id
+        self.node_label = node_label
+        super().__init__(
+            f"The cached data for '{node_label or node_id}' is unreadable. "
+            "Refresh that node to rebuild it, or clear it to run without a cache.",
+            node_id=node_id,
+            node_label=node_label,
+        )
+
+
+class SeedPlanExpiredError(ExecutionError):
+    """Raised when a trace's seed plan names data that is no longer there.
+
+    A trace reads exactly the snapshot generations its preview read. When one
+    has been retired, or its point no longer has the identity the trace's graph
+    produces there, the preview it explains is out of date and must be run
+    again before its rows can be traced.
+    """
+
+    error_code = "preview_seed_plan_expired"
+    public_fields = ("node_id",)
+
+    def __init__(self, *, node_id: str) -> None:
+        self.node_id = node_id
+        super().__init__(
+            "The cached data this preview was computed from has changed; "
+            "refresh the preview and trace the row again.",
+            node_id=node_id,
+        )
+
+
 class ContractMismatchError(HauteError):
     """Raised when a declared column contract does not match observed columns.
 

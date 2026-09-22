@@ -121,6 +121,34 @@
 
 ### `execute_trace()` (`trace.py`)
 
+**The preview's seed plan.** `execute_trace(..., seed_plan)` takes the `ListedSeed`
+entries of the preview it explains. Empty or `None`, the trace runs exactly as below with
+no plan. Otherwise `_open_trace_seed_plan` opens `open_listed_seed_plan` for the target —
+every listed generation checked against the signature the graph produces at its point and
+leased (`SeedPlanExpiredError` otherwise) — prepares only the snapshot-backed inputs the
+plan executes, and opens it again when that preparation changed anything. A plan that
+seeds nothing (every listed generation lacking columns the trace reads, or dropped with
+one) is closed and the trace runs with no plan; otherwise `_execute_trace_core` runs under
+it for the whole trace. Under a plan: input preparation is the plan's; strategy
+planning admits and estimates only what the plan builds, estimating from its seeds'
+generations (`_planned_strategy_scope`), so cached work that could not be admitted if
+recomputed never is; the cache key carries the seeded generations
+(`_seeded_fingerprint`); `_materialize_eager_outputs` and `_build_trace_plans` execute
+under the plan, so nodes above a seed are never built and a seeded point's frame and
+uncapped plan are its generation; a seeded point has no parents for the rest of the
+trace and is a source (`_trace_source_ids`), so correlation, steps, and relevance stop
+there and an ancestor shared with an executed branch is correlated through that branch;
+each seeded step carries `snapshot_generation_id` and stays in the step list as the end
+of downstream provenance, but it has no input row, so enrichment never reconstructs its
+expression or calculation from its own output, an input source traced to it reports the
+value it held there with its `snapshot_generation_id` and nothing above it, and a
+pass-through target whose value is followed back to it borrows no formula; steps and
+omissions are ranked by position in the whole lineage; and every lineage node skipped because of a seed
+(`_snapshot_seed_skips`) is an omission with reason `snapshot_seed`, linked to a
+correlation diagnostic (`code`/`reason` `snapshot_seed`, severity `info`) whose
+`seed_node_ids` names the seeds below it. It never ran, so no schema says whether it
+bears on a traced column: it is always reported, never pruned for column relevance.
+
 1. Validate `nodes` non-empty; resolve `target_node_id` (defaults to the last
    node in topological order, computed from the node list in *declared* order —
    not a set — so the tie-break is deterministic across process invocations,
@@ -458,9 +486,17 @@ its public facade.
    creator's expression, so all three enrichment paths follow the identical
    `instanceOf`/`.with_columns(` rule.
 2. Parses/evaluates the expression for `column` when the column is
-   added/modified at this step, or (for the *target* step only) walks upstream
-   to find the step that created a pass-through column and borrows its
-   expression/calculation. **Self-referential guard**: if `column` is both
+   added/modified at this step, or (for the *target* step only) borrows the
+   expression/calculation of the step a pass-through value came from.
+   `_pass_through_origin` follows the target's value back one step at a time
+   through the single parent that holds `column` with that same value, to the
+   step that added or last modified it. When no parent or more than one does —
+   a join whose sides both hold the column — or a parent missing from the steps
+   might (its materialised frame, when there is one, has the column), or the
+   value reached a seeded step, the origin is unproven and nothing is borrowed:
+   another branch's formula would explain a value the target never had.
+   **Self-referential guard** (`_assignment_values`, for both the step's own
+   assignment and a borrowed one): if `column` is both
    `columns_modified` (per the step's `SchemaDiff`) and one of the parsed
    expression's own `referenced_columns` (e.g. `premium = premium * factor`),
    evaluating against `{**input_values, **output_values}` unmodified would seed
@@ -710,6 +746,25 @@ snapshot deterministically.
 
 Tests live in `tests/`, one focused file per concern plus several broad
 integration/regression suites:
+
+- **`tests/test_trace_snapshot_seeding.py`** — traces over the generations their preview
+  read: a trace of a seeded preview stopping at the join step read from the snapshot and
+  reporting both sources as `snapshot_seed` omissions naming it; a first preview's
+  capture traced back to the identical row over a shuffled source, building nothing
+  above it; a diamond with one cached branch keeping the shared ancestor traceable
+  through the other; a snapshot published after an unseeded preview leaving its trace
+  unseeded; a refresh while another job leases the preview's generation still tracing
+  it; a clear with and without another lease; a graph edit answering 409
+  `preview_seed_plan_expired`; a column-projected capture recomputed; a trace reusing
+  the preview entry stored under its plan; a worker's expired plan mapped to 409; a
+  column trace never calculating a seeded step from its own output; downstream provenance
+  ending at the seeded step with the value it held there; a pass-through target explained
+  from the seed on its path rather than an executed creator on another, and never from
+  the other side of a join whose sides both hold its column — explained, without seeds,
+  by the join side that supplied it and by the last assignment rather than the first,
+  and given no formula when both join sides hold its value; an ancestor
+  correlated through the uncached branch when the cached one is ambiguous; and cached
+  work that could not be admitted if recomputed traced from its snapshot.
 
 - **`tests/test_trace.py`** — core unit coverage of `execute_trace`,
   `SchemaDiff`/`TraceResult`/`TraceStep`, and `_find_matching_row` directly

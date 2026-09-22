@@ -20,6 +20,12 @@
 | `frontend/src/types/trainGuards.ts` | Dynamically imported runtime parsers for modelling train/status/estimate responses. Training parsing strictly retains authoritative live-history/truncation and validates complete evaluation/tuning reports, weighted fit evidence, deterministic winner/count links, and bounded evaluation previews while remaining outside the initial JavaScript graph. |
 | `frontend/src/types/pipelineRepair.ts` | Exact-key minimal repair dry-run/apply wire types and parsers. Apply delegates its nested document to `parsePipelineEditorDocument`; no response or request type contains replacement source bytes or migration operations. |
 | `frontend/src/stores/useNodeResultsStore.ts` | Zustand store: preview/solve/train/explore/pivot result and job caches (`startTrainJob` records the `trainingLineage` of the submitted training payload that the editor passes in; a fence-current completion remembers the job in the browser handles of `utils/trainedJobHandles` and an error or failure forgets it; `restoreTrainResult` puts back a completed training result restored after a reload, never replacing an existing result or running job), authoritative training history plus bounded ETA samples, column cache, derived-getter memoization, LRU eviction, and the atomic per-pivot start claim (one current claim per Explore node + pivot id holding the owning node id, the requested dataframe cache key, calculation identity, and a unique generation token; taking a claim before submission serialises concurrent consumers, an identical automatic target no-ops, every manual Retry and every newer automatic target atomically replaces the generation, only the current token may promote it to a job or release it — superseded outcomes are discarded — and clearing a node's results drops exactly the claims whose stored node id matches). |
+| `frontend/src/stores/useNodeDataStore.ts` | Zustand store of the data every consumer of one point shares, keyed by slot (`producerNodeId|portLabel|source`): the point's kind, the generation its producer's current signature has (id, column set, rows, bytes, retention, freshness), the running build — a node-data job with its progress, or a delegated build with its message, its canceller, and the token that owns it — the profile of the data version it holds and why the last profile failed — attributed to the version that profile was computed for, so a generation published while it ran is still profiled — how the point is built or cleared, and a monotonic node-data epoch. It also records, per consumer node, the slot it was last told it reads together with the identity that answer was given for, so a read for another identity returns nothing. A consumer's own availability is derived from the entry and its column demand, never stored. |
+| `frontend/src/hooks/useNodeDataCache.ts` | One consumer node's view of the data it reads: the point, its availability for that consumer's demand, and `run`, `refresh`, `cancel`, and `clear`. |
+| `frontend/src/hooks/useNodeDataProfile.ts` | The shared `profile` analysis of the data one consumer reads: asked for once per slot and data version while the point is `current`, fenced against a document that has moved on, stored per slot so every pane showing that data gets it, with `cancel` for the running job, and `error` plus `refresh` so a failed attempt is retried rather than left as an empty pane. Each request names the version it asks about, which the job it starts carries. |
+| `frontend/src/utils/operationToken.ts` | `nextOperationToken`: a process-unique token that tells one asynchronous operation apart from the operation that replaced it. |
+| `frontend/src/panels/dataPointIdentity.ts` | `buildNodeDataCacheIdentity`: the identity that gates a consumer's `point` request — its upstream subgraph plus the original of every instance in it, each node's data-affecting configuration, every edge with its handles, the submodels, and the preamble. |
+| `frontend/src/components/DataCacheStatus.tsx`, `frontend/src/components/dataCacheLabels.ts` | The shared data-cache state and its status and detail text: state label and colour, progress and cancel while a build runs, the snapshot's rows, size, and retention, and the statement that replaces the state for a point read straight from its file. Starting a build is not among them: the node's Refresh button does that. |
 | `frontend/src/stores/useSettingsStore.ts` | Zustand store: row limit, streaming chunk size, section open/closed state, the MLflow destinations inventory cache (fetched once with probing, re-fetched by `invalidateMlflow()`), data sources, file-listing cache. The pure destination helpers live in `frontend/src/utils/mlflowDestinations.ts`, and the shared per-node control is the destination selector component described under the MLflow destination surface below. |
 | `frontend/src/stores/useToastStore.ts` | Zustand store: toast queue with dedup, capped at 10 entries. |
 | `frontend/src/stores/useUIStore.ts` | Zustand store: modal/panel open flags (git/utility/imports/assistant, mutually exclusive by construction — each setter clears the others), sync banner, node panel width, per-node Explore/modelling selection memory (editor pane, preview pane, and the configured chart/pivot Configure-subview ids), hover highlight, node search open flag. |
@@ -38,8 +44,9 @@
 | `frontend/src/components/Tooltip.tsx` | Zero-delay hover and focus tooltip. The bubble renders into the document body with fixed positioning, so scrolling or overflow-clipped panels never cut it off; it is placed from the anchor's viewport rectangle, clamped inside the viewport horizontally, flipped between top and bottom when the preferred side would clip, closed on scroll or resize, wraps long unbroken text such as URLs, and describes the control that takes focus: a single element child receives the tooltip in its described-by reference (unless its accessible label already is the tooltip text), a function child receives the id to place on a nested control such as a native radio inside its label, and only text or fragment children leave the reference on the hover wrapper. |
 | `frontend/src/components/ContextMenu.tsx` | Node right-click menu: rename/duplicate/create-instance/dissolve-submodel/delete, arrow-key roving focus. |
 | `frontend/src/components/KeyboardShortcuts.tsx` | `?`-triggered modal listing keyboard shortcuts, built on `ModalShell`. |
-| `frontend/src/components/Toolbar.tsx` | App top chrome: 56px 2-tier stacked column layout with package-derived browser version, source selector, row-limit/chunk-size inputs with synchronized dynamic character width, undo/redo with visible text labels, integer-ms timing and memory breakdowns, Submodel/Instance selection actions, utility/imports buttons, assistant and external Documentation link, zoom in/out, centre/layout, and Save + Commit nested under `BranchIndicator`. Actions share the `.toolbar-btn` surface; selection actions carry `aria-disabled` rather than `disabled` so unavailable actions stay focusable with informative tooltips. Numeric fields suppress native spinners without clipping either configured values or maximums. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). |
+| `frontend/src/components/Toolbar.tsx` | App top chrome: 56px 2-tier stacked column layout with package-derived browser version, source selector, row-limit/chunk-size inputs with synchronized dynamic character width, undo/redo with visible text labels, integer-ms timing and memory breakdowns, Submodel/Instance selection actions, utility/imports buttons, assistant and external Documentation link, zoom in/out, centre/layout, and Save + Commit nested under `BranchIndicator`. Actions share the `.toolbar-btn` surface; selection actions carry `aria-disabled` rather than `disabled` so unavailable actions stay focusable with informative tooltips. Numeric fields suppress native spinners without clipping either configured values or maximums. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). The Source selector and a Cache button share a two-row grid column, so the Cache button is exactly as wide as the selector above it whatever the active source is named; the Cache button opens `CacheSettingsModal` from the toolbar's own local state, unlike the MLflow modal's UI-store flag. |
 | `frontend/src/components/MlflowSettingsModal.tsx` | `ModalShell`-based MLflow destinations inventory editor: an MLflow server URL field, a Local folder field showing the resolved folder, a read-only Databricks block (selected profile, the dedicated MLflow host, or the missing configuration), one Test action per remote with its inline categorised result, and Save through `PUT /api/mlflow/settings` (`tracking_uri` and `folder` only) followed by `invalidateMlflow()`. Rendered by the toolbar while the UI store's MLflow-settings-open flag is set; opened from each node's MLflow gear or greyed light. |
+| `frontend/src/components/CacheSettingsModal.tsx` | `ModalShell`-based cache usage pane: both snapshot-store budgets (node outputs, input snapshots) as generations and bytes against their limits, each meter naming the environment variable the server reported for that limit, plus an explicit Refresh; beneath them every node of the open pipeline with its state and what it holds, a group for cached data belonging to no node of it, and footnotes for what could not be attributed. Reads `GET /api/cache/usage` and `POST /api/cache/nodes` on open and on Refresh only. Rendered by the toolbar from its own local open state and opened by the toolbar's Cache button. |
 | `frontend/src/components/BreakdownDropdown.tsx` | Sorted, accessible timing/memory breakdown disclosure used by the shared toolbar. |
 | `frontend/src/panels/ImportsPanel.tsx` | Active pipeline-imports right panel: `PanelShell` plus `CodeEditor`, explanatory always-included imports, and callback-only preamble mutation/close handling. `App.tsx` supplies the graph-store-backed preamble and selects it through `importsOpen`. |
 | `frontend/src/components/BackgroundJobPolling.tsx` | Zero-render mount point (`memo`) that only invokes `useBackgroundJobs()`. |
@@ -49,7 +56,7 @@
 | `frontend/src/hooks/useDragResize.ts` | Bottom-panel drag-to-resize: DOM-direct mutation while dragging, commits to React state on mouseup. |
 | `frontend/src/hooks/useJobPolling.ts` | Thin React adapter that keeps one `JobPollingController` configured, reconciles the current job record after commit, and disposes it on unmount. |
 | `frontend/src/hooks/jobPollingController.ts` | The single state authority for generic background polling: active poller identities, timers, abort controllers, interval ramp, progress throttling, replacement, terminal completion/error, and disposal. |
-| `frontend/src/hooks/useBackgroundJobs.ts` | Wires `useJobPolling` to the optimiser/train/explore endpoints and `useNodeResultsStore` actions; mounted once in `App.tsx`. |
+| `frontend/src/hooks/useBackgroundJobs.ts` | Wires `useJobPolling` to the optimiser/train/explore/node-data endpoints and the `useNodeResultsStore` and `useNodeDataStore` actions; mounted once in `App.tsx`. |
 | `frontend/src/hooks/useMlflowBrowser.ts` | Lazy-loads MLflow experiments/runs/models/versions for dropdown UIs from one destination (`destination` option: the node's stored value, `""` = the local folder, passed to every discovery request); shared by `ModelScoreEditor`, `OptimiserApplyEditor` (node-editors), and the modelling Export pane's experiment suggestions. |
 | `frontend/src/hooks/useSchemaFetch.ts` | Fetch-schema-on-mount-and-on-path-change pattern used by `frontend/src/panels/editors/ApiInputEditor.tsx` and `frontend/src/panels/editors/DataInputEditor.tsx` (node-editors). |
 | `frontend/src/hooks/useStaleConfigEstimate.ts` | Generic "estimate endpoint keyed by config hash + source + structural version, refetch when any of the three changes" pattern, built on `hashConfig`. Takes a required `context: {source, structuralVersion}` argument alongside the cached result. |
@@ -392,6 +399,56 @@ viewport cannot contain them on one row. Its height adapts, all actions remain
 reachable, and it never causes document-level horizontal overflow or scrolling
 that displaces the pipeline canvas. Menus and settings dialogs remain unclipped.
 
+**Cache usage pane (`CacheSettingsModal`).** The pane answers how close the
+cache is to refusing the next capture, and which limit to raise when it does.
+It reads `GET /api/cache/usage` when it opens and renders one block per budget
+— "Node outputs" and "Input snapshots" — each with a Generations meter and a
+Size meter showing the used value against the limit, a bar that turns
+`--warning-strong` at three quarters of the limit and `--danger` at nine
+tenths, and the name of the environment variable behind that limit as the
+server reported it. The names are never hardcoded in the browser: the server
+reads those variables, so it is what reports them, and a rename therefore
+reaches the pane without a frontend change. The two budgets are independent —
+neither consumes nor evicts the other — so the pane shows no combined total.
+
+Refreshing is explicit. The server answers the endpoint by walking every
+identity, generation and staging entry, which is what an admission pays, so
+the pane never polls and nothing subscribes it to store changes; a surface
+that wants to poll needs an incremental count in the store first. A failed
+read renders `apiErrorMessage` beside the last good numbers rather than
+replacing them, because stale usage with a stated error is more use than an
+empty pane. Closing the pane abandons whichever read is in flight — the
+latest, which after a Refresh is not the one the opening effect started.
+
+The two budgets sit side by side as compact cards, each a generations bar and a size bar over
+the variable that sets its limit. Beneath them the pane **tabulates every node of the open
+pipeline** for the active source under one column header — node, status, size, when it was
+cached, and how long that took — with numeric columns right-aligned and tabular so they
+compare down the column, from `POST /api/cache/nodes`, which it reads in the same pair of requests as the
+usage and on the same explicit Refresh. It builds the graph payload itself from
+`usePanelGraphContext` and the graph store rather than taking it as a prop, since the
+toolbar has no graph of its own to pass. Each row shows the node's label (its id when the
+canvas has none, which is how a node the store holds but the graph has lost still reads),
+its state, its size, and — from the generation's own metadata — when it was cached and the
+seconds it took. An unrecorded duration renders as an em-dash, never as zero: a store
+predating the recording must not claim instant builds. A row that carries bytes also
+carries a red clear control, shown on hover or focus, which clears exactly the identities that
+row reported and then re-reads both endpoints — clearing frees a generation the budgets count,
+so the bars above it are stale too. A row carrying nothing has no control, because it would
+have nothing to act on and a row whose bytes belong to another row must not appear to own
+them. A failed clear renders `apiErrorMessage` and leaves the table as it stands. What a row does *not* show is as deliberate: a node reading an
+upstream point says "reads <that node>", because the point's bytes belong to that node's
+row — it still shows a size of its own when the store holds its captured output, which a
+node in the middle of a lineage often has; a node sharing an input snapshot with an earlier
+row says "same source as <that node>" and shows no size, because that identity is reported
+once; a direct file read says "Read directly" rather than "Cached", because a
+Parquet scan holds no cache whatever its point's state says. A second group names cached
+data belonging to no node of this pipeline — a deleted node, another source, an unread
+input snapshot — and a footnote states any bytes that could not be attributed and any
+identities counted against both budgets, which is what stops the bars above reading as
+wrong when they exceed the rows below. The whole body scrolls beneath a fixed title and
+Refresh, because a large pipeline's list is longer than any viewport.
+
 **MLflow settings modal (`MlflowSettingsModal`).** The modal is the
 inventory editor. It fetches `GET /api/mlflow/settings` on mount, reads the
 inventory from the store (triggering the first fetch if pending), and
@@ -457,6 +514,65 @@ is already in flight still results in exactly one follow-up fetch.
   `"Toast"` — see `App.tsx`'s per-region wrapping) is included in the log
   prefix so a crash's origin is identifiable from the console alone.
 
+### The shared data cache
+
+Every consumer node — an Explore preview, a Banding editor, a Rating Step editor — reads the
+data of one *point*, and the backend's `/api/node-data/point` response is the only authority on
+it (specified in the [server API](../server-api/low-level.md#node-data-builds)).
+
+1. `panels/dataPointIdentity.ts` builds the identity that gates the request: the consumer's
+   upstream subgraph and the original of every instance in it (execution runs an instance with
+   its original's configuration, and that original can sit outside the consumer's own edges),
+   each node's data-affecting configuration (Explore's overview, pivot, chart, and formula
+   settings excluded), every edge with its source and target handles, the submodels, and the
+   preamble. Covering more than the backend's signature costs an extra request, never a wrong
+   answer.
+2. `hooks/useNodeDataCache.ts` asks for the point on mount, whenever that identity changes, and
+   whenever the store's node-data epoch changes; a rerender that keeps the identity (a canvas
+   drag) does not re-ask. Every request, build, cancel, and clear captures the document
+   execution fence, and no answer — from an inspection or from an action — is published unless
+   that fence is still current *and* the identity it answers for is still the one the consumer is
+   asking about, so neither another document's answer nor an action started before an edit can
+   reach the shared store or strand the consumer without an answer. An answer is kept with the
+   identity and the fence it answered for, so a consumer stops showing it the moment either
+   moves on, and inspections also abort in flight.
+3. `stores/useNodeDataStore.ts` keeps one entry per slot, so consumers of the same point share
+   the generation and the running build. `run` and `refresh` post `/api/node-data/run`; a
+   `started` or `joined` response registers the build under the slot, and `useBackgroundJobs`
+   polls it once for the whole application. Every terminal outcome — completed, failed, or
+   cancelled — clears the build and raises the epoch, so consumers ask what is there now instead
+   of showing a cancel control for a build that has stopped. A `delegated` response hands a
+   snapshot-backed Data Input or an API-input table to the existing input-snapshot and
+   JSON-cache orchestration (`hooks/ensureInputSnapshots.ts`), recorded under the slot as a
+   delegated build with its progress message, its canceller, and a token that owns it, so every
+   consumer of the point sees and can stop it while a callback from an abandoned pass can neither
+   report progress for nor clear the build that replaced it. That orchestration leaves data it
+   considers ready alone, which is what a preview wants, so a refresh — or a point the backend
+   already reports `stale` — passes its `force` option, which replaces the data rather than
+   serving it. Cancelling aborts the pass, and the pass cancels the build it is waiting for and
+   waits for it to stop, so the point no longer reports itself as building when the delegated
+   build ends; a cancellation is reported as the outcome the user asked for rather than a
+   failure. A cancellation the server refused, or a build that has not stopped, is reported as
+   exactly that and keeps the delegated build in the slot with a control that cancels that same
+   build again, because work the user asked to stop may still be running and a control that
+   vanished would leave the point building with nothing watching it. That recovery only updates
+   the build it still owns, so a pass whose cancellation fails after another build has claimed
+   the slot changes nothing.
+   `clear` removes the point's analyses through `/api/node-data/clear` and then clears delegated
+   data through the route the point names. A document fence change drops every slot, because slots belong to one
+   document and source, and the epoch keeps counting through that reset so a consumer whose
+   graph did not change still asks again. The node-data epoch is raised for a `captured`
+   generation the store has not seen before. The store records the generation ids it has
+   announced, bounded so a long session cannot grow it without limit, oldest dropped first,
+   and cleared by the store's reset while the epoch keeps counting. When the epoch rises,
+   every consumer asks again; a stored preview records the epoch its request was sent under
+   (`useNodeResultsStore.setPreview`), and `advancePreviewEpoch` re-stamps only the entry still
+   holding the same response.
+4. Availability is per consumer: a fresh generation covering the consumer's demand is `current`,
+   a fresh one that does not is `partial`, a superseded one is `stale`, and a point with no
+   answer yet is `checking` rather than `missing`. `DataCacheStatus` renders exactly that state,
+   with cancel and progress while any consumer's build runs, and no action to start one.
+
 ## Testing
 
 - `tests/test_frontend_backend_contract.py` verifies frontend/backend node-type and allowed-column-type sets remain identical.
@@ -467,6 +583,36 @@ file and a parallel `frontend/src/__tests__/`
 tree that adds gap-coverage and adversarial cases; both trees run under the
 same Vitest config.
 
+- **Shared data cache** (`frontend/src/stores/__tests__/useNodeDataStore.test.ts`,
+  `frontend/src/hooks/__tests__/useNodeDataCache.test.tsx`,
+  `frontend/src/panels/__tests__/dataPointIdentity.test.ts`,
+  `frontend/src/__tests__/hooks/useBackgroundJobs.nodeData.test.ts`): one slot entry shared by
+  two consumers, the epoch rising only when the data changes or a preview's own capture is
+  announced — a duplicate announcement leaving the epoch untouched while a new generation
+  raises it once, and a reset making the next announcement count again — a build adopted from
+  another client, two consumers deriving `current` and `partial` from one narrow generation,
+  progress
+  from a build either of them started, delegation handing over exactly the producer node, a
+  forced or stale delegated build replacing data the ensure pass would skip, a delegated build
+  shown to another consumer and cancelled through the slot, delegated clears, a point read
+  directly offering no build, a clear that leaves nothing claimed as cached and a refused clear
+  that changes nothing, an answer for a superseded identity never landing, a document that has
+  moved on never being written — including a clear that lands after it — the shared poller
+  completing or failing a build, and the fence dropping every slot. The identity suite covers
+  the instance original of an upstream instance and a moved port handle.
+  `frontend/src/stores/__tests__/useNodeDataStore.test.ts` covers the store's record of
+  announced captures.
+- **Delegated data-point builds** (`frontend/src/hooks/__tests__/useNodeDataCache.delegation.test.tsx`):
+  two consumers of one delegated point drive the real `ensureInputSnapshots` helper against the
+  API seam — a stale snapshot is rebuilt with `refresh` instead of being served as it is, a
+  forced table rebuild removes the working cache the build endpoint would answer with no work, a
+  cancellation from the second consumer cancels the input-snapshot job on the server and only
+  ends the delegated build once that job is terminal (both consumers then showing the point as it
+  is, with no error toast), a cancellation the server refuses is reported to the user and leaves
+  a control that cancels the same build again and succeeds, a build still running after every
+  cancellation poll is reported with its control kept, an accepted cancellation whose outcome
+  cannot be read is reported the same way, and a cancellation that fails after another build has
+  claimed the slot leaves that replacement untouched.
 - **API client** (`frontend/src/api/__tests__/client.test.ts`,
   `frontend/src/api/__tests__/client.retry.test.ts`, `frontend/src/api/__tests__/client.contract.test.ts`): unit tests cover
   retry/backoff/abort semantics directly; the contract suite covers concrete
@@ -502,7 +648,8 @@ same Vitest config.
   `frontend/src/__tests__/stores/useNodeResultsStore.renderPurity.test.tsx`
   pins render-safe derived getters;
   `frontend/src/__tests__/stores/previewCache.test.ts` covers preview cache
-  identity. The colocated `frontend/src/hooks/__tests__/useJobPolling.dedup.test.ts` and
+  identity, the node-data epoch a preview records, and a re-stamp that leaves a replaced
+  response's successor alone. The colocated `frontend/src/hooks/__tests__/useJobPolling.dedup.test.ts` and
   `frontend/src/hooks/__tests__/useJobPolling.progressThrottle.test.ts` cover the polling flow that writes
   those stores.
   `frontend/src/hooks/__tests__/useStaleConfigEstimate.sourceKey.test.ts` additionally
@@ -553,6 +700,18 @@ same Vitest config.
   empty-name and duplicate-name error text, `aria-invalid`/
   `aria-describedby` wiring, the error clearing on next keystroke and on
   successful submission),
+  `frontend/src/components/__tests__/CacheSettingsModal.test.tsx` (both budgets'
+  generations and bytes against their limits, all four variable names, a
+  renamed variable proving the names come from the response rather than the
+  browser, one read on open and one per Refresh with ten minutes of fake time
+  advanced on either side of the click so a poll would fail the test, the
+  opening read and a Refresh's read each abandoned when the pane closes, a
+  failed read reported beside the last good numbers, and no combined total;
+  and for the node list: every node listed including one with nothing cached,
+  the canvas's label with the id as fallback, a direct read never called
+  "cached", a node that reads elsewhere carrying no size and naming that node,
+  cached data belonging to no node of the pipeline, the unattributed and
+  unmarked footnotes, and one node request per read for the active source),
   `frontend/src/panels/__tests__/ImportsPanel.test.tsx`,
   `frontend/src/__tests__/components/BreadcrumbBar.test.tsx` (root-level),
   `frontend/src/__tests__/components/KeyboardShortcuts.test.tsx` (root-level),
@@ -849,3 +1008,21 @@ and dirty fingerprints continue to strip these server-owned identities.
 The repair dialog loads only when a recovery action is opened. Its local
 Suspense boundary leaves the mounted canvas intact; recovery does not increase
 the initial JavaScript budget.
+### Cache usage loading
+
+The toolbar loads the cache-usage modal on demand when Usage is opened. Its code
+is excluded from the initial JavaScript bundle; its existing loading, error,
+refresh and close behavior is unchanged once mounted. This follows the app's
+existing local Suspense convention for user-opened dialogs.
+
+### Profile recovery after document/store invalidation
+
+The shared profile hook deduplicates only an outstanding request for the current
+slot, data version and node-data store epoch. Resetting the shared store must let
+a still-mounted consumer obtain that profile again, even when the persisted data
+version is unchanged. A discarded response from an older document fence or epoch
+cannot leave the consumer permanently marked as already requested, publish an old
+job, or report an obsolete failure. Completed profiles and active jobs in the
+shared store still suppress duplicate work; a recorded current failure still
+requires the existing explicit retry. This preserves automatic pivot calculation
+after saving presentation/configuration edits and returning to cached data.

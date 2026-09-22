@@ -1,7 +1,7 @@
-import { authoredPolarsConfig } from "../../utils/polarsStepInputs"
-import type { SimpleEdge, SimpleNode } from "../editors"
+import { authoredPolarsConfig } from "../utils/polarsStepInputs"
+import type { SimpleEdge, SimpleNode } from "./editors"
 
-type ExploreCacheIdentityInput = {
+type NodeDataCacheIdentityInput = {
   node: SimpleNode
   allNodes: SimpleNode[]
   edges: SimpleEdge[]
@@ -35,7 +35,22 @@ function dataAffectingConfig(node: SimpleNode): Record<string, unknown> {
   return dataConfig
 }
 
-function upstreamNodeIds(nodeId: string, edges: SimpleEdge[]): Set<string> {
+function instanceOriginalId(node: SimpleNode | undefined): string | null {
+  const reference = node?.data.config?.instanceOf
+  return typeof reference === "string" && reference ? reference : null
+}
+
+/**
+ * Every node whose configuration can change the data the consumer reads: its
+ * upstream subgraph, plus the original of any instance in it, because execution
+ * runs an instance with its original's configuration and the original may sit
+ * outside the consumer's own edges.
+ */
+function dataAffectingNodeIds(
+  nodeId: string,
+  edges: SimpleEdge[],
+  nodesById: Map<string, SimpleNode>,
+): Set<string> {
   const ids = new Set([nodeId])
   let changed = true
 
@@ -47,21 +62,38 @@ function upstreamNodeIds(nodeId: string, edges: SimpleEdge[]): Set<string> {
         changed = true
       }
     }
+    for (const id of Array.from(ids)) {
+      const original = instanceOriginalId(nodesById.get(id))
+      if (original && !ids.has(original)) {
+        ids.add(original)
+        changed = true
+      }
+    }
   }
 
   return ids
 }
 
-export function buildExploreCacheIdentity({
+/**
+ * The identity that decides when a consumer must re-ask the backend about the
+ * data it reads: its upstream subgraph, its own data-affecting configuration
+ * (which sets its column demand), the submodels, and the preamble.
+ *
+ * Presentation-only Explore configuration is excluded, so choosing a pivot or
+ * chart never re-asks. The backend's `point` response stays authoritative: this
+ * identity only gates the request, so covering more than the backend's
+ * signature costs an extra request rather than a wrong answer.
+ */
+export function buildNodeDataCacheIdentity({
   node,
   allNodes,
   edges,
   submodels,
   preamble,
-}: ExploreCacheIdentityInput): Record<string, unknown> {
-  const nodeIds = upstreamNodeIds(node.id, edges)
+}: NodeDataCacheIdentityInput): Record<string, unknown> {
   const nodesById = new Map(allNodes.map((graphNode) => [graphNode.id, graphNode]))
   nodesById.set(node.id, node)
+  const nodeIds = dataAffectingNodeIds(node.id, edges, nodesById)
 
   const nodes = Array.from(nodeIds)
     .map((nodeId) => nodesById.get(nodeId))
@@ -81,6 +113,10 @@ export function buildExploreCacheIdentity({
       id: edge.id,
       source: edge.source,
       target: edge.target,
+      // A handle change re-wires which frame a consumer reads, so it belongs to
+      // the identity even though the endpoints are unchanged.
+      sourceHandle: edge.sourceHandle ?? null,
+      targetHandle: edge.targetHandle ?? null,
     }))
     .sort((a, b) => a.id.localeCompare(b.id))
 

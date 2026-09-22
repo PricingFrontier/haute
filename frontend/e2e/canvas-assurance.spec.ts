@@ -64,7 +64,9 @@ async function expectCanvasScreenshot(
   locator: Locator,
   name: string,
 ): Promise<void> {
-  await expect(locator).toHaveScreenshot(name, {
+  // Keep the journey running so CI captures every viewport mismatch. Each
+  // mismatch still fails the test; functional assertions remain immediate.
+  await expect.soft(locator).toHaveScreenshot(name, {
     animations: "disabled",
     caret: "hide",
     maxDiffPixelRatio: 0.02,
@@ -169,12 +171,11 @@ test.describe("frontend canvas assurance", () => {
     ).toBeChecked()
     await vehicleTab.click()
     await expect(
-      bandingPanel.getByRole("radio", { name: "Breakpoints", exact: true }),
+      bandingPanel.getByRole("radio", { name: "Numeric", exact: true }),
     ).toBeChecked()
     await expect(bandingPanel.getByLabel("Output Column")).toHaveValue(
       "vehicle_age_band",
     )
-    await expect(bandingPanel.getByTestId("banding-summary")).toBeVisible()
     await expect(page.getByTitle("Unsaved changes", { exact: true })).toHaveCount(0)
     await expect(bandingPanel.getByRole("img", { name: "Distribution histogram" })).toBeVisible()
     await expect(bandingPanel.getByRole("combobox", { name: "Input Column", exact: true })).toHaveValue("vehicle_age")

@@ -15,6 +15,7 @@ from haute.errors import (
     RatingExtremaUndefinedError,
     RatingFactorDtypeContractError,
     RatingFactorMissingError,
+    SeedPlanExpiredError,
     TraceCorrelationUnsupportedError,
 )
 from haute.routes._contract_errors import (
@@ -250,6 +251,26 @@ def test_a_memory_limited_preparation_records_the_memory_limited_terminal_state(
     assert fields["error_code"] == "memory_limit"
     assert fields["http_status_code"] == 507
     assert fields["error_detail"] == contract_error_payload(exc)
+
+
+def test_an_expired_seed_plan_is_a_conflict() -> None:
+    # The preview a trace explains moved underneath it: refresh, not correct.
+    exc = SeedPlanExpiredError(node_id="join")
+    assert isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES)
+    payload = contract_error_payload(exc)
+    assert payload == {
+        "error_code": "preview_seed_plan_expired",
+        "message": (
+            "The cached data this preview was computed from has changed; "
+            "refresh the preview and trace the row again."
+        ),
+        "node_id": "join",
+    }
+    http_exc = contract_error_http_exception(exc)
+    assert http_exc.status_code == 409
+    assert http_exc.detail == payload
+    assert contract_error_terminal_reason(exc) == CONTRACT_ERROR_TERMINAL_REASON
+    assert contract_error_job_fields(exc)["http_status_code"] == 409
 
 
 def test_input_preparation_error_rejects_an_unknown_reason_code() -> None:

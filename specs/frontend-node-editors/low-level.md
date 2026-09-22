@@ -35,7 +35,7 @@
 | `frontend/src/panels/editors/ColumnsTab.tsx` | Generic column selection and rename configuration. |
 | `frontend/src/panels/editors/ExploreCodeEditor.tsx`, `frontend/src/panels/editors/ExploreOverviewConfig.tsx`, `frontend/src/panels/editors/ExplorePivotsConfig.tsx`, `frontend/src/panels/editors/ExploreChartsConfig.tsx` | Explore-code, overview-card, pivot-card, and chart-card configuration. The Pivots and Charts editors own their list/configure navigation; chart parsing and identity allocation are also shared with the visualisation pane. |
 | `frontend/src/panels/editors/explorePivots/placements.ts` | Pure pivot placement domain helpers shared by the pivot editor and its subviews: zone types and labels, placement add/remove/append transforms, sort-ordering normalisation, duplicate-field checks, and typed member identity. |
-| `frontend/src/panels/editors/explorePivots/FilterMemberPicker.tsx` | Filter-member picker subview: immediate initial load, debounced non-empty search, request aborting, and Explore-cache-identity gating of displayed members. |
+| `frontend/src/panels/editors/explorePivots/FilterMemberPicker.tsx` | Filter-member picker subview: immediate initial load, debounced non-empty search, request aborting, and data-identity gating of displayed members. |
 | `frontend/src/panels/editors/explorePivots/ZoneSection.tsx` | One drag-and-drop area-grid zone: placement chips, keyboard repositioning, aggregation selection, remove actions, and the nested filter-member picker. |
 | `frontend/src/panels/editors/explorePivots/PivotFieldWell.tsx`, `frontend/src/panels/editors/explorePivots/PivotFormulaSection.tsx`, `frontend/src/panels/editors/explorePivots/PivotFormattingSection.tsx` | Pivot field-authoring surface composed by the Pivots editor: field search, dtype-labelled available-fields list with per-zone Add actions, the four-zone `ZoneSection` grid, pointer/keyboard placement state, formula authoring, and the presentation-only decimal-place controls for displayed placements. Props include the pivot, `persistPivot`, upstream columns, filter-member loading, and the current config hash. |
 | `frontend/src/panels/editors/ExploreToggleCard.tsx` | Shared full-body Explore checkbox card used by Overview, Pivot, and Chart configuration, including enabled/disabled presentation and accessible label/description wiring. |
@@ -43,13 +43,16 @@
 | `frontend/src/panels/explore/chartConfig.ts` | [frontend-preview-explore](../frontend-preview-explore/low-level.md)-owned chart version-1 validation and identity helpers consumed by the chart editor. |
 | `frontend/src/panels/explore/pivotConfig.ts` | [frontend-preview-explore](../frontend-preview-explore/low-level.md)-owned pivot validation and identity helpers consumed by the pivot editor, including allocation of the first unused pivot id. |
 | `frontend/src/panels/editors/MlflowModelPicker.tsx`, `frontend/src/panels/editors/ModelScoreEditor.tsx`, `frontend/src/panels/editors/OptimiserApplyEditor.tsx`, `frontend/src/panels/editors/SubmodelEditor.tsx` | MLflow/model-score, optimiser-apply and submodel editors. |
-| `frontend/src/panels/editors/BandingEditor.tsx` | Composes banding mode, rules, histogram and generation controls. |
+| `frontend/src/panels/editors/BandingEditor.tsx` | Composes banding mode, rules, histogram and generation controls, and shows whose rows its numbers describe: the whole dataset when the node's shared data point is cached, the preview sample otherwise. |
+| `frontend/src/panels/editors/banding/useBandingStats.ts` | Asks `/api/banding/stats` about the factor being edited — 250 ms after the last edit, aborting the request it supersedes, fenced against a document that has moved on — and reports the shared cache beside it. |
+| `frontend/src/panels/editors/banding/bandingBins.ts` | The preview fallback's bins, in the server's shape and with its edges (`binEdges`, shared derivation; values placed by comparison against those edges, never by recomputing an index), so the browser and the server cannot disagree about where a value falls. |
 | `frontend/src/stores/useNodeResultsStore.ts`, `frontend/src/stores/useUIStore.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned active-job state and per-node pane memory consumed by node-panel modelling chrome. |
 | `frontend/src/utils/trainingObjective.ts` | Click-time training issue aggregation owned and consumed by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md). |
 | `frontend/src/panels/editors/banding/index.ts`, `frontend/src/panels/editors/banding/bandingUtils.ts` | Banding public barrel and rule/level utility functions. |
 | `frontend/src/panels/editors/banding/BreakpointGrid.tsx`, `frontend/src/panels/editors/banding/BandingRulesGrid.tsx`, `frontend/src/panels/editors/banding/CategoricalValuePicker.tsx` | Numeric breakpoints, editable rules and categorical selection. |
 | `frontend/src/panels/editors/banding/BandingHistogram.tsx`, `frontend/src/panels/editors/banding/GenerateBandsDialog.tsx` | Histogram context and generated-band dialog. |
-| `frontend/src/panels/editors/RatingStepEditor.tsx` | Rating-table and combined-output orchestration. |
+| `frontend/src/panels/editors/RatingStepEditor.tsx` | Rating-table and combined-output orchestration, and whose levels its tables offer: the whole dataset when the node's shared data point is cached, the preview sample otherwise. Dataset levels are appended to what is already shown, the three-factor slice is held by level, and a table past `MAX_EDITABLE_TABLE_CELLS` is neither drawn nor rebuilt. |
+| `frontend/src/panels/editors/rating/useRatingLevels.ts` | Asks `/api/rating/levels` about the raw factor columns the tables rate on — 250 ms after the last change, aborting the request it supersedes, fenced against a document that has moved on — and reports the shared cache beside it. |
 | `frontend/src/panels/editors/rating/index.ts`, `frontend/src/panels/editors/rating/ratingTableUtils.ts`, `frontend/src/panels/editors/rating/cellStyles.ts` | Rating barrel, normalisation/levels/statistics/colours and cell styles. |
 | `frontend/src/panels/editors/rating/OneWayEditor.tsx`, `frontend/src/panels/editors/rating/TwoWayGrid.tsx`, `frontend/src/panels/editors/rating/ControlledNumberCell.tsx`, `frontend/src/panels/editors/rating/StatsFooter.tsx` | One-/two-way editing, commit-on-blur number input and table statistics. |
 | `frontend/src/panels/editors/shared/tableClipboard.ts` | Clipboard parsing/writing and TSV/CSV download helpers shared by editable grids. |
@@ -486,10 +489,11 @@ full names, short aliases, and Decimal. Numeric Values expose all seven operatio
 non-numeric Values (including Binary and Duration) expose count, distinct count, min, and max;
 nested List/Array/Struct and Object Values expose count only. The filter-member picker loads its
 initial list immediately, debounces non-empty searches by 250 ms, and aborts obsolete requests.
-A displayed member list is keyed to the node's current Explore cache identity hash (the same
-graph/source gate the Explore preview applies) as well as the field/search pair, so when the
-graph or source changes the previous dataset's members stop being rendered (and selectable)
-immediately rather than lingering until the replacement response lands. Display-only pivot and
+A displayed member list is keyed to the node's current data-identity hash
+(`buildNodeDataCacheIdentity` over the node's upstream lineage and data-affecting config, plus
+the active source) as well as the field/search pair, so when the graph or source changes the
+previous dataset's members stop being rendered (and selectable) immediately rather than lingering
+until the replacement response lands. Display-only pivot and
 chart edits do not change that identity, so selecting a member neither hides the remaining
 choices nor triggers a redundant member reload.
 Column and Row placements persist `number_format: "general" | "number" | "percent" |
@@ -860,3 +864,14 @@ Component tests pin unavailable-only visibility, capability gating, dry-run
 before apply, touched-file/diff presentation, default config retention,
 replanning for explicit config deletion, stale-plan errors, duplicate-submit
 suppression, and successful document adoption. There is no migration UI.
+# Analysis request identity (PR #227 corrective contract)
+
+Banding statistics and Rating Step levels belong to the complete analysis request:
+node id, active source, current input data version, and canonical factor/rules/bins
+or requested columns. A changed question immediately stops presenting its previous
+answer, error or loading state as current, even during the debounce interval and
+when the input data version is unchanged. Superseded requests are aborted when
+their effect is cleaned up, not when the next debounce expires. Success, failure
+and completion callbacks may update only their own request's state, and continue
+to respect the document execution fence. Equivalent canonical column sets or
+changes to a factor's output name alone do not require a new statistics request.

@@ -14,10 +14,12 @@ import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
+import useNodeDataStore from "../../stores/useNodeDataStore"
 import type { BackendNodeStatus } from "../../types/node"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
+  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),
@@ -312,7 +314,13 @@ describe("usePipelineAPI — gap tests", () => {
       const structuralVersion = useGraphStore.getState().structuralVersion
       useNodeResultsStore.setState({
         previews: {
-          n1: { data: cachedData, structuralVersion, source: "live", rowLimit: 1000 },
+          n1: {
+            data: cachedData,
+            structuralVersion,
+            source: "live",
+            rowLimit: 1000,
+            nodeDataEpoch: useNodeDataStore.getState().epoch,
+          },
         },
         columnCache: {},
       })
@@ -393,7 +401,15 @@ describe("usePipelineAPI — gap tests", () => {
       }
 
       useNodeResultsStore.setState({
-        previews: { n1: { data: cachedData, structuralVersion: 3, source: "live", rowLimit: 1000 } },
+        previews: {
+          n1: {
+            data: cachedData,
+            structuralVersion: 3,
+            source: "live",
+            rowLimit: 1000,
+            nodeDataEpoch: useNodeDataStore.getState().epoch,
+          },
+        },
         columnCache: {},
       })
       useGraphStore.setState({ structuralVersion: 4 })
@@ -453,7 +469,15 @@ describe("usePipelineAPI — gap tests", () => {
 
       // Cache at version 0, but graph store is at version 5 (stale)
       useNodeResultsStore.setState({
-        previews: { n1: { data: cachedData, structuralVersion: 0, source: "live", rowLimit: 1000 } },
+        previews: {
+          n1: {
+            data: cachedData,
+            structuralVersion: 0,
+            source: "live",
+            rowLimit: 1000,
+            nodeDataEpoch: useNodeDataStore.getState().epoch,
+          },
+        },
         columnCache: {},
       })
       useGraphStore.setState({ structuralVersion: 5 })
@@ -502,7 +526,15 @@ describe("usePipelineAPI — gap tests", () => {
       }
 
       useNodeResultsStore.setState({
-        previews: { n1: { data: cachedData, structuralVersion: 0, source: "backtest", rowLimit: 1000 } },
+        previews: {
+          n1: {
+            data: cachedData,
+            structuralVersion: 0,
+            source: "backtest",
+            rowLimit: 1000,
+            nodeDataEpoch: useNodeDataStore.getState().epoch,
+          },
+        },
         columnCache: {},
       })
 
@@ -547,7 +579,15 @@ describe("usePipelineAPI — gap tests", () => {
 
       useSettingsStore.setState({ rowLimit: 250 })
       useNodeResultsStore.setState({
-        previews: { n1: { data: cachedData, structuralVersion: 0, source: "live", rowLimit: 1000 } },
+        previews: {
+          n1: {
+            data: cachedData,
+            structuralVersion: 0,
+            source: "live",
+            rowLimit: 1000,
+            nodeDataEpoch: useNodeDataStore.getState().epoch,
+          },
+        },
         columnCache: {},
       })
 

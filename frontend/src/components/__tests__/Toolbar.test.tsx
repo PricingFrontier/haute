@@ -5,6 +5,12 @@ vi.mock("../MlflowSettingsModal", () => ({
   default: () => <div data-testid="mlflow-modal-stub" />,
 }))
 
+// Stubbed like the MLflow modal: what the toolbar owns is opening it. What the
+// pane shows has its own test in CacheSettingsModal.test.tsx.
+vi.mock("../CacheSettingsModal", () => ({
+  default: () => <div data-testid="cache-modal-stub" />,
+}))
+
 import Toolbar from "../Toolbar"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useUIStore from "../../stores/useUIStore"
@@ -681,11 +687,44 @@ describe("Toolbar", () => {
     const brand = screen.getByTestId("toolbar-brand")
     expect(brand).toHaveClass("w-[165px]")
 
-    const sourceLabel = screen.getByText("Source")
+    const sourceLabel = screen.getByText("Source:")
     const sourceContainer = sourceLabel.parentElement
     expect(sourceContainer).not.toHaveClass("ml-12")
     // Brand container immediately precedes sourceContainer in document order
     expect(brand.nextElementSibling).toBe(sourceContainer)
+  })
+
+  it("stacks the Source selector over a Cache control in one grid column", () => {
+    render(<Toolbar {...makeProps()} />)
+    const column = screen.getByTestId("toolbar-source-cache")
+    const source = screen.getByTestId("source-selector")
+    const cache = screen.getByTestId("toolbar-cache")
+
+    expect(column).toContainElement(source)
+    expect(column).toContainElement(cache)
+    expect(screen.getByText("Cache:")).toBeInTheDocument()
+
+    // Source on the top row, Cache underneath it.
+    expect(source.compareDocumentPosition(cache) & 4).toBeTruthy()
+
+    // Both controls stretch to fill the same grid column, which is what makes
+    // the Cache button exactly as wide as the Source selector above it.
+    expect(column.className).toContain("grid-cols-[auto_auto]")
+    expect(source).toHaveClass("w-full")
+    expect(cache).toHaveClass("w-full")
+
+    // The cache control opens the usage pane.
+    expect(cache).toHaveAttribute("aria-haspopup", "dialog")
+    expect(cache).not.toHaveAttribute("aria-disabled")
+  })
+
+  it("the Cache button opens the cache usage pane", async () => {
+    render(<Toolbar {...makeProps()} />)
+    expect(screen.queryByTestId("cache-modal-stub")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("toolbar-cache"))
+
+    expect(await screen.findByTestId("cache-modal-stub")).toBeInTheDocument()
   })
 
   it("source selector shows all sources when opened", () => {

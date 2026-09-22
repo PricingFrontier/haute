@@ -216,8 +216,6 @@ function resetStores(): void {
     solveJobs: {},
     trainResults: {},
     trainJobs: {},
-    exploreResults: {},
-    exploreJobs: {},
   })
   useSettingsStore.setState({
     mlflow: {

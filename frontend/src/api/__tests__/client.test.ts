@@ -450,6 +450,20 @@ describe("request() core via loadPipeline", () => {
     expect(mockFetch).toHaveBeenCalledTimes(3)
   })
 
+  it("does not ask again once a session is established", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ ok: true }))
+
+    await bootstrapHauteSession(true)
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+
+    // The cookie is already held. Callers guard themselves with a bootstrap,
+    // so asking again would put a round trip in front of every one of them.
+    await bootstrapHauteSession()
+    await bootstrapHauteSession()
+
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+  })
+
   it("returns parsed JSON on success", async () => {
     const data = {
       nodes: [{ id: "1" }],
@@ -786,13 +800,20 @@ describe("endpoint contracts", () => {
   })
 
   it("traceCell posts to /api/pipeline/trace with correct body", async () => {
-    await traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1" })
+    const seedPlan = [{
+      node_id: "join",
+      port_label: null,
+      identity_digest: "a".repeat(64),
+      generation_id: "generation-1",
+    }]
+    await traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1", seed_plan: seedPlan })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/pipeline/trace")
     expect(opts.method).toBe("POST")
     const body = JSON.parse(opts.body)
     expect(body.row_index).toBe(0)
     expect(body.target_node_id).toBe("n1")
+    expect(body.seed_plan).toEqual(seedPlan)
   })
 
   it("resolveOutputDestination posts to the backend path authority", async () => {
@@ -1522,6 +1543,19 @@ describe("request() edge cases", () => {
     }
   })
 
+  it("says how long a timeout waited, in seconds when the wait is whole seconds", () => {
+    // This message reaches the user verbatim, so a two-minute wait must not
+    // read "120000 ms" and a one-second wait must not read "1 seconds".
+    const message = (timeoutMs: number) =>
+      new ApiTimeoutError("/api/pipeline/preview", timeoutMs).message
+
+    expect(message(120_000)).toBe("Request timed out after 120 seconds.")
+    expect(message(1000)).toBe("Request timed out after 1 second.")
+    // Not a whole number of seconds, and under a second: reported as given.
+    expect(message(1500)).toBe("Request timed out after 1500 ms.")
+    expect(message(500)).toBe("Request timed out after 500 ms.")
+  })
+
   it("surfaces client-side request timeouts as ApiTimeoutError, not AbortError", async () => {
     vi.useFakeTimers()
     try {
@@ -1660,6 +1694,7 @@ describe("streaming_chunk_size in request bodies", () => {
       graph: dummyGraph,
       row_index: 0,
       target_node_id: "n1",
+      seed_plan: [],
       streamingChunkSize: 42,
     })
     const [, opts] = mockFetch.mock.calls[0]
@@ -1667,7 +1702,7 @@ describe("streaming_chunk_size in request bodies", () => {
   })
 
   it("traceCell body omits streaming_chunk_size when not supplied", async () => {
-    await traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1" })
+    await traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1", seed_plan: [] })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })

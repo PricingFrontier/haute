@@ -318,7 +318,7 @@ _EXPECTED_DEBT_IDS = {
     # primitive assertions. Output and Explore publication also use real hard
     # links to prove the parent rejects aliased staging artifacts. See
     # test_json_shred_mut_validity.py, test_json_shred_runtime_snapshots.py,
-    # test_data_io_nodes.py, and test_explore_routes.py.
+    # and test_data_io_nodes.py.
     "0a5df3350d69e1f5",
     "0c7b2cb3effd87e0",
     "0ce7f0f48d149323",
@@ -337,7 +337,6 @@ _EXPECTED_DEBT_IDS = {
     "91878a6ff56e4c56",
     "bd96cc6f51a39c67",
     "bd9cf15e416714c0",
-    "be4b790157583701",
     "c424c3f1d2cfe91a",
     "cc655b332f19c3a3",
     "fc936795d5ac2cdf",

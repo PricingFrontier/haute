@@ -322,9 +322,7 @@ class TestPermissionDenied:
 class TestTempFileCleanupOnCrash:
     """Verify temp parquet files are cleaned up even when the thread crashes."""
 
-    def test_temp_parquet_cleaned_on_execute_exception(
-        self, tmp_path: Path, haute_scratch: Path
-    ) -> None:
+    def test_temp_parquet_cleaned_on_execute_exception(self, haute_scratch: Path) -> None:
         """The try/finally pattern in _execute_and_sink cleans up temp files.
 
         Catches: temp file leak when _execute_lazy raises — disk fills up
@@ -333,14 +331,10 @@ class TestTempFileCleanupOnCrash:
         We replicate the exact cleanup pattern from _execute_and_sink to
         verify it works, rather than mocking deep internals.
         """
-        import shutil
-
         tmp_fd, tmp_parquet = tempfile.mkstemp(
             suffix=".parquet", prefix="haute_train_", dir=haute_scratch
         )
         os.close(tmp_fd)
-        checkpoint_dir = tmp_path / "haute_train_ckpt_test"
-        checkpoint_dir.mkdir()
 
         assert Path(tmp_parquet).exists()
 
@@ -350,35 +344,8 @@ class TestTempFileCleanupOnCrash:
         except Exception:
             if Path(tmp_parquet).exists():
                 os.unlink(tmp_parquet)
-        finally:
-            if checkpoint_dir and checkpoint_dir.exists():
-                shutil.rmtree(checkpoint_dir, ignore_errors=True)
 
         assert not Path(tmp_parquet).exists(), "Temp parquet leaked after exception"
-        assert not checkpoint_dir.exists(), "Checkpoint dir leaked after exception"
-
-    def test_checkpoint_dir_cleaned_on_exception(self, tmp_path: Path) -> None:
-        """Checkpoint directory is cleaned up even when pipeline crashes.
-
-        Catches: orphaned checkpoint directories accumulating in /tmp,
-        each containing large intermediate parquet files.
-        """
-        ckpt_dir = tmp_path / "haute_train_ckpt_test"
-        ckpt_dir.mkdir()
-        (ckpt_dir / "node_a.parquet").write_bytes(b"fake parquet data")
-
-        # Simulate the finally block from _execute_and_sink
-        import shutil
-
-        try:
-            raise RuntimeError("Simulated pipeline crash")
-        except RuntimeError:
-            pass
-        finally:
-            if ckpt_dir.exists():
-                shutil.rmtree(ckpt_dir, ignore_errors=True)
-
-        assert not ckpt_dir.exists(), "Checkpoint dir leaked after crash"
 
     def test_background_thread_cleans_parquet_on_training_failure(self, tmp_path: Path) -> None:
         """Background training thread cleans up temp parquet even when training fails.

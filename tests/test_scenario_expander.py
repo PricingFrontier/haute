@@ -139,3 +139,88 @@ class TestExecutor:
         result = fn(input_df).collect()
         assert result.shape[0] == 21
         assert "scenario_index" in result.columns
+
+
+class TestInteractiveExpansion:
+    """A preview row limit reaches the expander's input instead of expanding it all."""
+
+    CONFIG = {
+        "column_name": "price_adjustment",
+        "min_value": 0.5,
+        "max_value": 1.5,
+        "stepCount": 3,
+        "step_column": "price_strategy",
+    }
+
+    @staticmethod
+    def _expander(row_limit: int | None):
+        _, fn, _ = _build_node_fn(
+            _make_node(TestInteractiveExpansion.CONFIG),
+            source_names=["upstream"],
+            row_limit=row_limit,
+        )
+        return fn
+
+    @staticmethod
+    def _input() -> pl.LazyFrame:
+        return pl.LazyFrame({"quote_id": [f"q{i}" for i in range(6)], "premium": range(6)})
+
+    @pytest.mark.parametrize("limit", [1, 2, 3, 4, 10, 18, 50])
+    def test_a_limited_preview_returns_the_rows_a_full_expansion_returns(self, limit: int):
+        full = self._expander(None)(self._input()).head(limit).collect()
+        interactive = self._expander(100)(self._input()).head(limit).collect()
+
+        assert interactive.equals(full)
+        assert interactive.schema == full.schema
+
+    def test_an_unlimited_read_of_the_interactive_form_expands_everything(self):
+        full = self._expander(None)(self._input()).collect()
+        interactive = self._expander(100)(self._input()).collect()
+
+        assert interactive.equals(full)
+
+    def test_the_limit_reaches_the_node_feeding_the_expander(self):
+        """Polars pushes no slice below ``explode`` — the scan form carries it."""
+        from haute._polars_utils import row_local_python_scan
+
+        read: list[int] = []
+
+        def transform(batch: pl.DataFrame) -> pl.DataFrame:
+            read.append(batch.height)
+            return batch.with_columns((pl.col("premium") * 2).alias("doubled"))
+
+        upstream = pl.LazyFrame(
+            {"quote_id": [f"q{i}" for i in range(1_000)], "premium": range(1_000)}
+        )
+        source = row_local_python_scan(
+            upstream,
+            transform,
+            schema=pl.Schema({**upstream.collect_schema(), "doubled": pl.Int64()}),
+            generated_columns=("doubled",),
+            required_input_columns=("premium",),
+            input_predicates_allowed=True,
+            elide_transform_when_unused=False,
+        )
+
+        result = self._expander(100)(source).head(7).collect()
+
+        assert result.height == 7
+        assert result["quote_id"].to_list() == ["q0"] * 3 + ["q1"] * 3 + ["q2"]
+        # ceil(7 / stepCount) upstream rows, not all 1_000.
+        assert sum(read) == 3
+
+    def test_a_full_run_keeps_expanding_through_the_expression(self):
+        """No row limit is a batch run: the expression form, unchanged."""
+        plan = self._expander(None)(self._input()).explain(optimized=False)
+
+        assert "EXPLODE" in plan
+        assert "PYTHON SCAN" not in plan
+
+    def test_post_expansion_code_runs_on_the_interactive_expansion(self):
+        node = _make_node({**self.CONFIG, "code": "df = df.with_columns(flag=pl.lit(1))"})
+        _, fn, _ = _build_node_fn(node, source_names=["upstream"], row_limit=100)
+
+        result = fn(self._input()).head(4).collect()
+
+        assert result["flag"].to_list() == [1, 1, 1, 1]
+        assert result["price_strategy"].to_list() == [0, 1, 2, 0]

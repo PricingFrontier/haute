@@ -38,7 +38,29 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from haute._file_ops import Writer, atomic_copy_files, atomic_write_bytes, atomic_write_text
+from haute._file_ops import (
+    Writer,
+    atomic_copy_files,
+    atomic_write_bytes,
+    atomic_write_text,
+    ensure_disk_headroom,
+)
+
+
+def test_ensure_disk_headroom_accepts_exact_boundary_and_refuses_one_byte_less(
+    tmp_path, monkeypatch
+) -> None:
+    import shutil
+
+    actual = shutil.disk_usage(tmp_path)
+    required = 123 + 64 * 1024
+    monkeypatch.setattr(shutil, "disk_usage", lambda _path: actual._replace(free=required))
+    ensure_disk_headroom(tmp_path, 123)
+    monkeypatch.setattr(shutil, "disk_usage", lambda _path: actual._replace(free=required - 1))
+    with pytest.raises(OSError) as exc_info:
+        ensure_disk_headroom(tmp_path, 123)
+    assert exc_info.value.errno == 28
+
 
 # ---------------------------------------------------------------------------
 # F2: atomic_write_bytes
@@ -766,3 +788,81 @@ class TestAtomicCopyFiles:
         assert dst_a.read_bytes() == b"original-a"
         assert not dst_b.exists()
         assert not tuple(tmp_path.glob("*.tmp"))
+
+
+class TestRemoveTree:
+    """Best-effort tree removal that survives a transient Windows handle."""
+
+    def test_a_transient_sharing_violation_is_retried_until_the_tree_is_gone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import _file_ops
+
+        target = tmp_path / "staging"
+        (target / "nested").mkdir(parents=True)
+        (target / "nested" / "data.parquet").write_bytes(b"payload")
+        real_rmtree = _file_ops.shutil.rmtree
+        attempts: list[int] = []
+
+        def rmtree_locked_once(path, *args, **kwargs):
+            attempts.append(1)
+            if len(attempts) == 1:
+                error = OSError("The process cannot access the file")
+                error.winerror = 32
+                raise error
+            real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(_file_ops, "_IS_WINDOWS", True)
+        monkeypatch.setattr(_file_ops.shutil, "rmtree", rmtree_locked_once)
+
+        assert _file_ops.remove_tree(target) is True
+
+        assert attempts == [1, 1]
+        assert not target.exists()
+
+    def test_a_tree_that_cannot_be_removed_is_reported_rather_than_raised(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import _file_ops
+
+        target = tmp_path / "staging"
+        target.mkdir()
+
+        def rmtree_always_locked(_path, *_args, **_kwargs):
+            error = OSError("The process cannot access the file")
+            error.winerror = 32
+            raise error
+
+        monkeypatch.setattr(_file_ops, "_IS_WINDOWS", True)
+        monkeypatch.setattr(_file_ops.shutil, "rmtree", rmtree_always_locked)
+
+        assert _file_ops.remove_tree(target) is False
+        assert target.exists()
+
+    def test_an_absent_tree_counts_as_removed(self, tmp_path: Path) -> None:
+        from haute._file_ops import remove_tree
+
+        assert remove_tree(tmp_path / "never-existed") is True
+
+    def test_a_tree_whose_descendant_cannot_be_found_is_reported_not_assumed_gone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows reports a path it cannot open as a missing path.
+
+        A file past the 260-character limit raises ``FileNotFoundError`` from
+        inside the walk while the tree it belongs to is still there, so taking
+        that error as "already gone" would hide a survivor from the caller.
+        """
+        from haute import _file_ops
+
+        target = tmp_path / "staging"
+        target.mkdir()
+        (target / "data.parquet").write_bytes(b"payload")
+
+        def rmtree_descendant_missing(_path, *_args, **_kwargs):
+            raise FileNotFoundError(2, "The system cannot find the path specified")
+
+        monkeypatch.setattr(_file_ops.shutil, "rmtree", rmtree_descendant_missing)
+
+        assert _file_ops.remove_tree(target) is False
+        assert target.exists()
