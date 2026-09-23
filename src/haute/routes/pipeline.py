@@ -33,6 +33,7 @@ from haute._execution_context import (
     ExecutionProfile,
 )
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
+from haute._graph_utils import upstream_node_ids
 from haute._hashing import content_hash_bytes
 from haute._interactive_workers import (
     InteractiveWorkerCrashedError,
@@ -1668,23 +1669,14 @@ def _recovery_ancestor_ids(
     document: PipelineEditorDocument,
     target_id: str,
 ) -> set[str]:
-    # Deliberately not haute._topo.ancestors: that helper walks canonical
-    # GraphEdge models, and constructing canonical edges from unvalidated
-    # recovery elements would cross the strict/recovery boundary this
-    # closure exists to protect.
+    # Walked over recovery ids, not through haute._topo.ancestors: that helper
+    # takes canonical GraphEdge models, and constructing canonical edges from
+    # unvalidated recovery elements would cross the strict/recovery boundary
+    # this closure exists to protect.
     incoming: dict[str, list[str]] = {}
     for edge in document.edges:
         incoming.setdefault(edge.target_recovery_id, []).append(edge.source_recovery_id)
-    closure = {target_id}
-    pending = [target_id]
-    while pending:
-        current = pending.pop()
-        for source in incoming.get(current, []):
-            if source in closure:
-                continue
-            closure.add(source)
-            pending.append(source)
-    return closure
+    return {target_id, *upstream_node_ids(target_id, incoming)}
 
 
 def _canonical_snapshot_graph(

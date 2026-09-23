@@ -1255,17 +1255,10 @@ def _upstream_slice_contains_node_type(
     resolve_node: Callable[[GraphNode, dict[str, GraphNode]], GraphNode],
 ) -> bool:
     node_map = graph.node_map
-    stack = [node_id]
-    seen: set[str] = set()
-    while stack:
-        current_id = stack.pop()
-        if current_id in seen:
-            continue
-        seen.add(current_id)
+    for current_id in (node_id, *upstream_node_ids(node_id, graph.parents_of)):
         raw_node = node_map.get(current_id)
         if raw_node is not None and resolve_node(raw_node, node_map).data.nodeType == node_type:
             return True
-        stack.extend(graph.parents_of.get(current_id, []))
     return False
 
 

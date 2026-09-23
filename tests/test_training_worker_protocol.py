@@ -1360,6 +1360,39 @@ def test_dispersion_worker_maps_estimator_failures(
         assert result.fields["error"] == str(exception)
 
 
+@pytest.mark.parametrize("entrypoint", ["training", "dispersion"])
+@pytest.mark.parametrize("capped", [True, False])
+def test_a_thread_that_cannot_start_under_the_cap_is_a_memory_limit_failure(
+    tmp_path: Path, entrypoint: str, capped: bool
+) -> None:
+    """Under an active cap a thread-start failure is the memory outcome; without a
+    cap it is an ordinary error."""
+    from haute._native_memory_limit import native_memory_backend_scope
+
+    class ThreadStarvedJob:
+        def __init__(self, **_kwargs) -> None:
+            raise RuntimeError("can't start new thread")
+
+    run, request = (
+        (_run_training_process_job, _request(tmp_path))
+        if entrypoint == "training"
+        else (_run_dispersion_process_job, _dispersion_request(tmp_path))
+    )
+    with (
+        patch("haute.modelling.TrainingJob", ThreadStarvedJob),
+        native_memory_backend_scope("rlimit" if capped else None),
+    ):
+        result = run(WorkerRuntime(_ForwardingQueue(), str(tmp_path / "artifacts")), request)
+
+    assert isinstance(result, WorkerFailurePayload)
+    if capped:
+        assert result.terminal_reason == "memory_limited"
+        assert result.error_type == "MemoryError"
+    else:
+        assert result.terminal_reason == "error"
+        assert result.error_type == "RuntimeError"
+
+
 def test_completed_job_owns_its_artifact_directory_after_parent_cleanup(
     tmp_path: Path, training_root: Path
 ) -> None:

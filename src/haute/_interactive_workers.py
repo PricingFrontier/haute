@@ -24,6 +24,7 @@ from haute._logging import get_logger
 from haute._native_memory_limit import (
     NativeMemoryLease,
     cleanup_private_cgroups_for_pid,
+    memory_error_for_thread_start_failure,
     native_memory_backend_scope,
     native_memory_caps_supported,
 )
@@ -262,19 +263,24 @@ def _interactive_worker_entrypoint(
                     try:
                         value = function(*args, **kwargs)
                         envelope = ("result", job_id, "ok", value)
-                    except BaseException as exc:
+                    except BaseException as raised:
+                        failure = (
+                            memory_error_for_thread_start_failure(raised) if applied else raised
+                        )
                         envelope = (
                             "result",
                             job_id,
                             "error",
                             (
-                                type(exc).__name__,
-                                type(exc).__module__,
-                                str(exc),
+                                type(failure).__name__,
+                                type(failure).__module__,
+                                str(failure),
                                 "".join(
-                                    traceback.format_exception(type(exc), exc, exc.__traceback__)
+                                    traceback.format_exception(
+                                        type(failure), failure, failure.__traceback__
+                                    )
                                 ),
-                                _public_exception_payload(exc),
+                                _public_exception_payload(failure),
                             ),
                         )
                 # Serialise synchronously so an unpicklable return value becomes a

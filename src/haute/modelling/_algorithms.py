@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import gc
 import os
-import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -16,6 +15,7 @@ import polars as pl
 from haute._host_memory import available_ram_bytes
 from haute._logging import get_logger
 from haute._polars_utils import _malloc_trim
+from haute._process_memory import current_process_rss_bytes
 from haute.errors import HauteValidationError
 from haute.modelling._algorithm_base import BaseAlgorithm, FitResult, IterationCallback
 
@@ -43,68 +43,16 @@ def _mem_log_path() -> Path:
 
 
 def _get_rss_mb() -> float:
-    """Return current-process RSS in MB.  Returns 0.0 if unavailable.
-
-    - **Linux**: reads ``/proc/self/status`` (current RSS, most accurate).
-    - **macOS**: ``resource.getrusage`` (reports max RSS in bytes).
-    - **Windows**: ``GetProcessMemoryInfo`` via ctypes (WorkingSetSize).
-    """
-    # Linux — /proc/self/status gives current (not peak) RSS
-    if sys.platform == "linux":
-        try:
-            with open("/proc/self/status", encoding="utf-8") as f:
-                for line in f:
-                    if line.startswith("VmRSS:"):
-                        return int(line.split()[1]) / 1024  # kB → MB
-        except OSError:
-            pass
-
-    # macOS — resource module reports max RSS in bytes
-    elif sys.platform == "darwin":
-        try:
-            import resource
-
-            return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024)
-        except (ImportError, AttributeError, ValueError):
-            pass
-
-    # Windows — kernel32 / psapi
-    elif sys.platform == "win32":
-        try:
-            import ctypes
-            import ctypes.wintypes
-
-            class ProcessMemoryCounters(ctypes.Structure):
-                _fields_ = [
-                    ("cb", ctypes.wintypes.DWORD),
-                    ("PageFaultCount", ctypes.wintypes.DWORD),
-                    ("PeakWorkingSetSize", ctypes.c_size_t),
-                    ("WorkingSetSize", ctypes.c_size_t),
-                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
-                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                    ("PagefileUsage", ctypes.c_size_t),
-                    ("PeakPagefileUsage", ctypes.c_size_t),
-                ]
-
-            pmc = ProcessMemoryCounters()
-            pmc.cb = ctypes.sizeof(ProcessMemoryCounters)
-            handle = ctypes.windll.kernel32.GetCurrentProcess()
-            if ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(pmc), pmc.cb):
-                return float(pmc.WorkingSetSize) / (1024 * 1024)  # bytes → MB
-        except (OSError, AttributeError, ImportError):
-            pass
-
-    return 0.0
+    """Return current-process RSS in MB.  Returns 0.0 if unavailable."""
+    rss = current_process_rss_bytes()
+    return rss / (1024 * 1024) if rss is not None else 0.0
 
 
 def _get_available_mb() -> float:
     """Return available system RAM in MB.  Returns 0.0 if unavailable.
 
-    Delegates to :func:`haute._host_memory.available_ram_bytes` for
-    cross-platform detection (Linux ``/proc``, macOS Mach VM counters,
-    Windows ``GlobalMemoryStatusEx``; no fabricated fallback).
+    Delegates to :func:`haute._host_memory.available_ram_bytes` (no fabricated
+    fallback).
     """
     available_bytes = available_ram_bytes()
     return 0.0 if available_bytes is None else available_bytes / (1024 * 1024)

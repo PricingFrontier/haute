@@ -23,19 +23,19 @@
 | `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion (`expand_scenarios_from_config`, and `expand_scenarios_bounded` for the interactive form a preview row limit reaches through), `optimiserApply` artifact dispatch, and output response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
 | `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`, declaring every type's recompute cost (`recompute_cost=`); owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component, and `pass_through_selected_edge` / `PASS_THROUGH_NODE_TYPES`, which state the incoming edge a pass-through node's built function returns. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
 | `src/haute/_node_builder.py` | `NodeBuildHooks` and `wrap_builder`, the interception seam used by deploy scoring while preserving the canonical runtime builders. |
-| `src/haute/_topo.py` | Strict `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), explicit `topo_sort_ids_filtered` (opt-in subset traversal returning both the order and every dropped edge/endpoint), and `ancestors` (BFS over reversed edges). The default sorter never silently ignores an unknown endpoint. |
+| `src/haute/_topo.py` | Strict `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), explicit `topo_sort_ids_filtered` (opt-in subset traversal returning both the order and every dropped edge/endpoint), `canonical_topological_order` (the same graphlib sorter driven lexically: the smallest ready node id always comes next, so it is independent of input order; projection diagnostics rank nodes by it), and `ancestors` (a node and its ancestors over reversed edges, walked by `upstream_node_ids`). The default sorter never silently ignores an unknown endpoint. It is the one topological sort; `_find_cycle_nodes` peels in-degrees only to report every node in a cycle. |
 | `src/haute/graph_utils.py` | Canonical outward re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. Low-level engine modules import canonical graph models from `_types.py` and pure helpers from `_graph_utils.py` directly; importing back through this heavyweight facade would re-enter `_execute_lazy.py` and create an execution/RAM-estimation cycle. |
-| `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids`, `_sanitize_func_name`, `edge_input_name` (the single edge->input-name derivation: apiInput-frame edge -> its frame label verbatim, submodel-output edge -> its sanitised public output port name, else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `build_instance_mapping`, `resolve_orig_source_names`, and edge-id construction. |
+| `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids` (the one ancestor walk, over any parents mapping, in depth-first preorder from the node's parents; `ancestors`, the trace waterfall's lineage check, the recovery route's ancestor closure and the optimiser's upstream node-type search all use it), `_sanitize_func_name`, `edge_input_name` (the single edge->input-name derivation: apiInput-frame edge -> its frame label verbatim, submodel-output edge -> its sanitised public output port name, else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `build_instance_mapping`, `resolve_orig_source_names`, and edge-id construction. |
 | `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional address-space resource cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state; the shared supervisor helpers `isolated_worker_failure_is_memory()` (RSS breach, unsupported cap, memory-looking crash exit code, or a memory-typed remote exception) and `isolated_worker_memory_detail()` (the closed memory-limit payload whose reason is one of worker_rss_limit_exceeded, native_memory_cap_unavailable, worker_may_have_exceeded_memory_limit, or worker_memory_limit) that the Data Output writer, training preparation, and the deployed batch path all map their 507 outcomes through. |
 | `src/haute/_native_memory_limit.py` | Required/best-effort native memory enforcement for isolated workers: aggregate Linux cgroup and Windows Job Object leases, single-process RLIMIT compatibility, fork-safe ownership, and the context-local active-backend proof used to prevent unaccounted descendant parallelism. |
 | `src/haute/routes/_isolated_worker_async.py` | Async route bridge for cancellable isolated-worker transactions: runs the blocking supervisor off-loop, propagates route cancellation/timeout without thread-compute fallback, drains the supervisor to termination, preserves the primary failure when cleanup also fails, and provides the shared linearizable cancellation/publication gate. |
 | `src/haute/chunking.py` | `ChunkPlanRequest`/`chunk_plan()` (proves a graph suffix is chunk-safe, sizes chunks from projected target width, and rejects an over-budget single target row), `iter_chunked_frames()`/`run_chunked_reduce()`/`collect_chunked()` (the serial runner), the per-`NodeType` `ChunkCapability` registry, and the receiver-aware AST row-local user-code classifier (`classify_chunk_local_polars_code()` returning a `ChunkLocalDecision`; `is_chunk_local_polars_code()` is its boolean view) with its frame-method, expression-method, namespace-method, and Polars-function allowlists. |
-| `src/haute/_host_memory.py` | Host memory observation: `available_ram_bytes()` (per-platform probes behind one shared result contract, including Linux cgroup v2/v1 headroom clamping resolved at the process's own cgroup with ancestor-min semantics — each probe reports a real measurement or a recorded failure reason, never fabricated capacity) and `available_vram_bytes()` (the training GPU's free VRAM via nvidia-smi — the first visible CUDA device entry when set, else the first listed GPU; the CatBoost and XGBoost single-device sizing basis — or nothing when no GPU is present; detection failures other than an absent binary are logged with a reason), and `nvidia_gpu_name()` (the first GPU `nvidia-smi` lists, for `haute gpu-setup`). Owns the nvidia-smi subprocess chokepoint. |
+| `src/haute/_host_memory.py` | Host memory observation: `available_ram_bytes()` (psutil's available memory, clamped to Linux cgroup v2/v1 headroom resolved at the process's own cgroup with ancestor-min semantics — a real measurement, or no value with the reason logged, never fabricated capacity), `available_vram_bytes()` (the training GPU's free VRAM via nvidia-smi — the first visible CUDA device entry when set, else the first listed GPU; the CatBoost and XGBoost single-device sizing basis — or nothing when no GPU is present; detection failures other than an absent binary are logged with a reason), and `nvidia_gpu_name()` (the first GPU `nvidia-smi` lists, for `haute gpu-setup`). Owns the nvidia-smi subprocess chokepoint. |
 | `src/haute/_ram_estimate.py` | Workload-side estimation: `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision), `estimate_gpu_vram_bytes()`, and the `MaterialisationEstimate` contract consumed by strategy planning. Its per-estimate graph index canonicalises the submitted graph with the executor's own runtime path resolver (`canonical_dataframe_execution_graph()`) before indexing nodes, so every estimate describes the files execution actually opens rather than a copy a differently anchored relative locator would name. It imports graph models directly from `_types.py` so admission and route cold imports do not re-enter the execution facade. |
 | `src/haute/_cardinality.py` | Pure, overflow-safe join row-bound formulas for every supported join strategy. It validates finite non-negative input bounds and the closed Polars uniqueness contract (`m:m`, `1:1`, `1:m`, `m:1`) and returns both the upper bound and auditable evidence. |
 | `src/haute/_estimate_calibration.py` | Process-local, upward-only per-`ExecutionProfile` calibration of materialisation estimates: conservatively rounds calibrated bytes, ratchets observed underestimates with a capped safety margin, exposes immutable diagnostic state, and clears inherited state after fork. |
 | `src/haute/_interactive_workers.py` | Warm, killable spawn-worker pool for interactive preview and trace execution: validates process/thread mode, resolves the per-worker Polars thread cap (`resolve_interactive_polars_threads()`), runs affinity-bound serialisable jobs, supervises readiness, timeout, cancellation and RSS limits, and replaces failed workers without leaking stale results. |
-| `src/haute/_process_memory.py` | Cross-platform process liveness and resident-memory observation: Linux `/proc`, macOS `libproc`, and Windows process-handle probes return an RSS measurement or an explicit unobservable result for supervised-worker enforcement. |
+| `src/haute/_process_memory.py` | The one process-memory probe, read through psutil on every platform: this process's resident, private (Windows commit) and virtual bytes and thread count, another process's resident bytes, and liveness. A figure the operating system will not give is unobservable (no value), never zero. The execution context, worker supervision, the native caps' baselines and the modelling memory log all read it. |
 
 ## Key types and data structures
 
@@ -192,12 +192,10 @@
   expression keep the constructor's `row_expansion_unbounded` verdict. Cardinality analysis
   shares the lineage parser but never an input schema,
   so it cannot resolve an omitted `on` list from upstream columns.
-- **Available RAM** (`_host_memory.available_ram_bytes`) — tries the platform
-  sources in a fixed order (Linux `/proc/meminfo` `MemAvailable`, POSIX
-  `sysconf` pages, macOS Mach VM counters, Windows `GlobalMemoryStatusEx`);
-  every source reports through one shared probe contract (a measurement, an
-  attempted-but-failed reason, or not-applicable-on-this-platform). The first
-  observation wins and is clamped once to any finite Linux cgroup headroom:
+- **Available RAM** (`_host_memory.available_ram_bytes`) — reads
+  `psutil.virtual_memory().available` (Linux `MemAvailable`, macOS free plus
+  inactive pages, Windows available physical memory). The observation is
+  clamped once to any finite Linux cgroup headroom:
   cgroup v2 `memory.max - memory.current`, else the v1
   `memory.limit_in_bytes - memory.usage_in_bytes` pair. The controller files
   are read at the process's **own** cgroup, resolved from `/proc/self/cgroup`
@@ -278,26 +276,25 @@
     failure is an operator condition and logs server-side warnings only; the
     VRAM pre-check's unknown state is a user decision point and surfaces in
     the job warning and the `/estimate` response (`gpu_warning`).
-- **macOS available RAM** — darwin has neither `/proc/meminfo` nor
-  `SC_AVPHYS_PAGES` (absent from `os.sysconf_names` entirely), so its source is
-  the Mach `host_statistics64(HOST_VM_INFO64)` VM page counters: available is
-  `free_count + inactive_count` pages times the host VM page size (from Mach
-  `host_page_size`, not the POSIX page size — the two diverge for translated
-  processes). Speculative read-ahead pages are already inside `free_count` and
-  contribute no separate term. `purgeable_count` is deliberately **excluded**:
+- **macOS available RAM** — psutil's darwin figure comes from the Mach VM page
+  counters: available is free plus inactive pages. Speculative read-ahead pages
+  are already inside the free count and contribute no separate term. Purgeable
+  pages are **excluded**:
   purgeable is an attribute of pages that remain on the active/inactive queues
   rather than a disjoint pool, so adding it would double-count pages already
   inside `inactive_count` and over-admit work. The value is an optimistic
   bound — `inactive_count` includes dirty pages reclaimable only through
   compression or swap, and compressor-held memory is not subtracted; the
   admission OS reserve and safety factor absorb that gap. Total installed RAM
-  is never substituted for availability.
-- **Unobservable availability** — a probe that fails records its reason, and
-  the single `available_ram_unavailable` warning reports every attempted
-  source's reason (a source is attempted exactly when it reports a reason), so
-  the diagnostic stays honest when all of them fail. When every applicable
-  probe has failed the result is `None`, never a fabricated capacity; an
-  earlier source's failure never blocks a later source's real observation.
+  is never substituted for availability. psutil multiplies the page counts by
+  the POSIX page size, but they count host VM pages, and the two differ for a
+  translated (Rosetta) process (4 KiB against 16 KiB). `_darwin_page_scale()`
+  therefore scales the figure by Mach `host_page_size` over the POSIX page
+  size, releasing the host port it took; when the host page size cannot be read
+  it logs `darwin_host_page_size_unavailable` and leaves the figure unscaled.
+- **Unobservable availability** — when psutil cannot read availability the
+  single `available_ram_unavailable` warning records why and the result is
+  `None`, never a fabricated capacity.
 - **`ExecutionFaultPoint` / `ExecutionTelemetryEvent`** (`_execution_context.py`) —
   immutable sequenced request-local fault boundaries and schema-versioned,
   identifier-free terminal telemetry with a bounded scalar attribute allow-list.
@@ -910,7 +907,23 @@ delegated cgroup-v2 child with a finite `memory.max` and otherwise applies
 `RLIMIT_AS`; Windows assigns the child to a Job Object with a finite aggregate
 job-memory commit limit, so descendants cannot each consume the complete admitted
 budget. Limits are growth budgets: the native baseline is measured before the
-hard ceiling is installed. `NativeMemoryLease.apply()` clears its recorded backend
+hard ceiling is installed. The `RLIMIT_AS` fallback first runs
+`_start_polars_thread_pools()` once per process — one small query on each Polars engine,
+so every pool thread and its allocator arena exist — and only then reads the address-space
+baseline; its ceiling is that baseline plus the growth budget plus the lease's
+`address_space_allowance_bytes` (zero except for the training fit's protocol worker, which
+passes `model_thread_address_space_allowance()`, 192 MiB per CPU, for the model library's
+pool). The allowance applies to `RLIMIT_AS` only; a cgroup or Job Object counts charged or
+committed memory, not reservations. `_protocol_entrypoint` installs its cap through the
+same `NativeMemoryLease` as the other entrypoints, with the caller's `require_memory_limit`;
+a required cap the host cannot install is its `contract_error`, as it is for a one-shot worker,
+and `run_worker_protocol` removes the joined child's private cgroup as `run_isolated_worker` does.
+Every entrypoint starts its result queue's feeder thread (and the protocol worker its progress
+queue's) with `start_worker_queue_feeder()` before installing the cap, so reporting never needs
+a new thread under it. When a cap is active, `memory_error_for_thread_start_failure()` turns an
+exception that reports a thread could not start (`can't start new thread`, Polars' `could not
+spawn threads`) into a `MemoryError`, which every entrypoint, and the training fits' own
+failure mapping, reports as the memory-limit outcome. `NativeMemoryLease.apply()` clears its recorded backend
 before attempting an installation and `restore()` clears it after releasing the
 cap, so `lease.backend` is non-`None` only while a cap installed by the current
 request is active; `_isolated_worker_entrypoint` and the warm interactive worker
@@ -2380,7 +2393,7 @@ present a structural or schema result as execution evidence.
   rejection, Linux/Windows aggregate enforcement, active-backend scoping, lease
   cleanup, and fork-safe ownership contracts.
 - `tests/test_materialisation_calibration.py` — upward-only materialisation-estimate calibration, conservative rounding, profile isolation, and planner/admission integration.
-- `tests/test_process_memory.py` — platform-dispatched RSS and liveness probes, including malformed, inaccessible, and Windows-handle cases.
+- `tests/test_process_memory.py` — the psutil probe's real readings for this process and a child, the unobservable results for a gone or inaccessible process, pid validation, and liveness.
 - `tests/test_projection_aware_admission.py` — materialisation-boundary admission estimates use exact projected edge demand and preserve conservative fallback behaviour.
 - `tests/test_projection_recompute_facts.py` — classification of code-bearing and builder nodes into recompute cost, slice transparency, and full-input work: receiver-aware registered calls, pass-through and scalar builtins, unresolved calls and callbacks, reduction forms, and builder cost declarations combined with code facts.
 - `tests/test_projection_lineage_integration.py` — edge-identity and API-port
@@ -2502,9 +2515,9 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
 - **`test_graph_utils.py`** — `_execute_lazy` re-export surface,
   `_sanitize_func_name`, `ancestors`/`topo_sort_ids`
   via the `graph_utils` facade.
-- **`test_host_memory.py`** — RAM/VRAM probing across platforms: mocked
-  probes for every source and failure path (driving the real ctypes
-  structures), plus one darwin-gated unmocked real-kernel assertion.
+- **`test_host_memory.py`** — RAM/VRAM probing: a real availability reading,
+  psutil failures reported as `None`, the cgroup clamp and its degraded states,
+  and nvidia-smi detection.
 - **`test_ram_estimate.py`** —
   source-metadata resolution (including edge-join key coalescing), the
   downsample decision, and the availability of a group-by estimate behind the

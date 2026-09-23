@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -203,7 +204,7 @@ def test_windows_lease_programs_an_aggregate_job_memory_limit(
         return True
 
     kernel32 = SimpleNamespace(SetInformationJobObject=set_information)
-    monkeypatch.setattr(native, "_windows_apis", lambda: (kernel32, SimpleNamespace()))
+    monkeypatch.setattr(native, "_windows_apis", lambda: kernel32)
     lease = native.NativeMemoryLease(_job=123)
 
     lease._set_windows_limit(456)
@@ -263,6 +264,145 @@ def test_rlimit_never_widens_finite_soft_limit_and_restores_exact_pair(
     lease.restore()
 
     assert calls == [(9, (50, 80)), (9, (50, 80)), (9, (50, 80)), (9, (50, 80))]
+
+
+def test_rlimit_starts_polars_pools_before_measuring_the_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RLIMIT_AS counts reservations: the pools' stacks and arenas must already
+    exist when the baseline is read, or the job's budget pays for them."""
+    events: list[object] = []
+    current = [-1, -1]
+
+    def setrlimit(limit: int, values: tuple[int, int]) -> None:
+        events.append(("setrlimit", values))
+        current[:] = values
+
+    def baseline() -> int:
+        events.append("baseline")
+        return 100
+
+    fake_resource = SimpleNamespace(
+        RLIMIT_AS=9,
+        RLIM_INFINITY=-1,
+        getrlimit=lambda _limit: tuple(current),
+        setrlimit=setrlimit,
+    )
+    monkeypatch.setattr(native, "_rlimit_as_supported", lambda: True)
+    monkeypatch.setattr(native, "_start_polars_thread_pools", lambda: events.append("pools"))
+    monkeypatch.setattr(native, "_native_baseline_bytes", baseline)
+    monkeypatch.setitem(sys.modules, "resource", fake_resource)
+
+    native.NativeMemoryLease()._apply_rlimit(25, address_space_allowance_bytes=7)
+
+    assert events == ["pools", "baseline", ("setrlimit", (132, -1))]
+
+
+def test_polars_pools_start_once_per_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    runs: list[int] = []
+    monkeypatch.setattr(native, "_polars_thread_pools_started", False)
+    monkeypatch.setattr(native, "_run_polars_pool_queries", lambda: runs.append(1))
+
+    native._start_polars_thread_pools()
+    native._start_polars_thread_pools()
+
+    assert runs == [1]
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="RLIMIT_AS address space is read from /proc on Linux",
+)
+def test_starting_the_polars_pools_leaves_no_later_address_space_growth() -> None:
+    """In a fresh process, after the warm-up a job on either engine reserves almost no
+    new address space, so an RLIMIT_AS cap counts only what the job allocates. A cold
+    job reserves hundreds of MiB here even with eight Polars threads."""
+    import subprocess
+    import textwrap
+
+    probe = textwrap.dedent(
+        """
+        import os, sys
+        import polars as pl
+        from haute._native_memory_limit import _run_polars_pool_queries
+
+        def reserved():
+            pages = int(open("/proc/self/statm").read().split()[0])
+            return pages * os.sysconf("SC_PAGE_SIZE")
+
+        if sys.argv[1] == "warm":
+            _run_polars_pool_queries()
+        before = reserved()
+        for engine in ("streaming", "in-memory"):
+            (
+                pl.DataFrame({"a": range(100_000)})
+                .lazy()
+                .with_columns(b=pl.col("a") * 2)
+                .group_by(pl.col("a") % 13)
+                .agg(pl.col("b").sum())
+                .sort("a")
+                .collect(engine=engine)
+            )
+        print(reserved() - before)
+        """
+    )
+
+    def growth(mode: str) -> int:
+        completed = subprocess.run(
+            [sys.executable, "-c", probe, mode],
+            capture_output=True,
+            text=True,
+            check=True,
+            env={**os.environ, "POLARS_MAX_THREADS": "8"},
+        )
+        return int(completed.stdout.strip())
+
+    assert growth("cold") > 256 * 2**20
+    assert growth("warm") < 64 * 2**20
+
+
+def test_model_thread_allowance_scales_with_cpus(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(native.os, "cpu_count", lambda: 32)
+    assert native.model_thread_address_space_allowance() == 32 * 192 * 1024 * 1024
+    monkeypatch.setattr(native.os, "cpu_count", lambda: None)
+    assert native.model_thread_address_space_allowance() == 192 * 1024 * 1024
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RuntimeError("can't start new thread"),
+        RuntimeError("could not spawn threads: Resource temporarily unavailable (os error 11)"),
+    ],
+)
+def test_a_thread_start_failure_under_a_cap_becomes_a_memory_error(
+    failure: BaseException,
+) -> None:
+    converted = native.memory_error_for_thread_start_failure(failure)
+
+    assert isinstance(converted, MemoryError)
+    assert converted.__cause__ is failure
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RuntimeError("boom"),
+        MemoryError("can't start new thread"),
+        KeyboardInterrupt("can't start new thread"),
+    ],
+)
+def test_other_failures_pass_through_unchanged(failure: BaseException) -> None:
+    """Only a thread-start failure is converted: a memory error is already one, and
+    a cancellation stays a cancellation whatever its message says."""
+    assert native.memory_error_for_thread_start_failure(failure) is failure
+
+
+def test_a_negative_address_space_allowance_is_rejected() -> None:
+    with pytest.raises(ValueError, match="allowance must not be negative"):
+        native.NativeMemoryLease().apply(
+            64 * 1024 * 1024, required=False, address_space_allowance_bytes=-1
+        )
 
 
 def test_rlimit_infinity_restores_exact_pair(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -353,7 +493,7 @@ def test_linux_programming_failure_unwinds_then_falls_back_to_rlimit(
     monkeypatch.setattr(
         native.NativeMemoryLease,
         "_apply_rlimit",
-        lambda _lease, growth: calls.append(("rlimit", growth)),
+        lambda _lease, growth, _allowance=0: calls.append(("rlimit", growth)),
     )
 
     assert lease.apply(77, required=True)
@@ -416,7 +556,7 @@ def test_native_linux_path_and_measurement_failures(
     monkeypatch.setattr(native.Path, "read_text", lambda *_args, **_kwargs: "missing")
     with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="cannot locate"):
         native._current_cgroup_path()
-    monkeypatch.setattr(native.Path, "read_text", lambda *_args, **_kwargs: "not-a-number")
+    monkeypatch.setattr(native, "current_process_virtual_bytes", lambda: None)
     with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="cannot measure"):
         native._linux_virtual_bytes()
 
@@ -438,7 +578,7 @@ def test_native_lease_errors_restore_close_and_windows_helpers(
     closed: list[object] = []
     kernel = SimpleNamespace(CloseHandle=lambda handle: closed.append(handle) or True)
     lease = native.NativeMemoryLease(_job=99)
-    monkeypatch.setattr(native, "_windows_apis", lambda: (kernel, None))
+    monkeypatch.setattr(native, "_windows_apis", lambda: kernel)
     lease.close()
     assert closed == [99]
     create_windows_job = native._create_windows_job
@@ -455,7 +595,7 @@ def test_native_lease_errors_restore_close_and_windows_helpers(
     assert lease.backend == "windows_job" and limits == [13]
     monkeypatch.setattr(native, "_create_windows_job", create_windows_job)
     monkeypatch.setattr(
-        native, "_windows_apis", lambda: (SimpleNamespace(CreateJobObjectW=lambda *_: 0), None)
+        native, "_windows_apis", lambda: SimpleNamespace(CreateJobObjectW=lambda *_: 0)
     )
     with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="CreateJobObject"):
         native._create_windows_job()
@@ -503,7 +643,7 @@ def test_native_platform_adapter_error_paths(
         native._current_cgroup_path()
 
     kernel = SimpleNamespace(CloseHandle=lambda _handle: False)
-    monkeypatch.setattr(native, "_windows_apis", lambda: (kernel, None))
+    monkeypatch.setattr(native, "_windows_apis", lambda: kernel)
     monkeypatch.setattr(native, "_windows_error", lambda: OSError("close"))
     with pytest.raises(OSError, match="close"):
         native.NativeMemoryLease(_job=1).close()
@@ -540,16 +680,12 @@ def test_native_cgroup_creation_and_adapter_failure_paths(
         parent, parent / "not-private", pid=native.os.getpid()
     )
 
-    monkeypatch.setattr(native.os, "sysconf", None, raising=False)
-    monkeypatch.setattr(native.Path, "read_text", lambda *_args, **_kwargs: "1 0")
+    monkeypatch.setattr(native, "current_process_virtual_bytes", lambda: None)
     with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="cannot measure"):
         native._linux_virtual_bytes()
 
-    kernel = SimpleNamespace(GetCurrentProcess=lambda: 1)
-    psapi = SimpleNamespace(GetProcessMemoryInfo=lambda *_args: False)
-    monkeypatch.setattr(native, "_windows_apis", lambda: (kernel, psapi))
-    monkeypatch.setattr(native, "_windows_error", lambda: OSError("memory"))
-    with pytest.raises(OSError, match="memory"):
+    monkeypatch.setattr(native, "current_process_private_bytes", lambda: None)
+    with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="cannot measure"):
         native._windows_private_usage()
 
 
@@ -568,15 +704,7 @@ def test_native_linux_measurement_and_cleanup_defensive_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original_read_text = Path.read_text
-
-    def read_statm(path: Path, **kwargs: object) -> str:
-        if path == Path("/proc/self/statm"):
-            return "2 0"
-        return original_read_text(path, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", read_statm)
-    monkeypatch.setattr(native.os, "sysconf", lambda _name: 4096, raising=False)
+    monkeypatch.setattr(native, "current_process_virtual_bytes", lambda: 8192)
     assert native._linux_virtual_bytes() == 8192
 
     group = tmp_path / "group"
@@ -612,7 +740,7 @@ def test_native_apply_preserves_required_and_cleanup_failures(
     monkeypatch.setattr(
         native.NativeMemoryLease,
         "_apply_rlimit",
-        lambda _lease, _growth: (_ for _ in ()).throw(OSError("rlimit failed")),
+        lambda _lease, _growth, _allowance=0: (_ for _ in ()).throw(OSError("rlimit failed")),
     )
     with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="setup failed"):
         native.NativeMemoryLease().apply(1, required=True)
@@ -651,7 +779,7 @@ def test_linux_existing_cgroup_and_double_fallback_fail_closed(
     monkeypatch.setattr(
         native.NativeMemoryLease,
         "_apply_rlimit",
-        lambda _lease, _growth: (_ for _ in ()).throw(
+        lambda _lease, _growth, _allowance=0: (_ for _ in ()).throw(
             native.NativeMemoryLimitUnsupportedError("no rlimit")
         ),
     )
@@ -692,23 +820,13 @@ def test_windows_limit_programming_and_usage_error_helpers(
     monkeypatch.setattr(
         native,
         "_windows_apis",
-        lambda: (SimpleNamespace(SetInformationJobObject=lambda *_args: False), None),
+        lambda: SimpleNamespace(SetInformationJobObject=lambda *_args: False),
     )
     monkeypatch.setattr(native, "_windows_error", lambda: OSError("set failed"))
     with pytest.raises(OSError, match="set failed"):
         lease._set_windows_limit(10)
 
-    def get_process_memory_info(_process: object, pointer: object, _size: int) -> bool:
-        counters = native.ctypes.cast(
-            pointer,
-            native.ctypes.POINTER(native._PROCESS_MEMORY_COUNTERS_EX),
-        ).contents
-        counters.PrivateUsage = 321
-        return True
-
-    kernel = SimpleNamespace(GetCurrentProcess=lambda: 1)
-    psapi = SimpleNamespace(GetProcessMemoryInfo=get_process_memory_info)
-    monkeypatch.setattr(native, "_windows_apis", lambda: (kernel, psapi))
+    monkeypatch.setattr(native, "current_process_private_bytes", lambda: 321)
     assert native._windows_private_usage() == 321
 
     monkeypatch.setattr(native, "_windows_error", windows_error)
@@ -818,7 +936,7 @@ def test_failed_best_effort_apply_after_a_successful_request_leaves_no_evidence(
     """A later failed RLIMIT attempt must not inherit the earlier request's backend."""
     attempts: list[int] = []
 
-    def apply_rlimit(self: native.NativeMemoryLease, growth: int) -> None:
+    def apply_rlimit(self: native.NativeMemoryLease, growth: int, _allowance: int = 0) -> None:
         attempts.append(growth)
         if len(attempts) == 1:
             self._backend = "rlimit"

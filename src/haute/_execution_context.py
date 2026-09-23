@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
-import ctypes
 import math
 import os
 import sys
@@ -14,10 +13,10 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import cache
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from haute._logging import get_logger
+from haute._process_memory import current_process_rss_bytes
 
 if TYPE_CHECKING:
     from haute._chunked_writes import ChunkedWrite
@@ -711,134 +710,7 @@ class ExecutionCancellationToken:
 
 def current_rss_bytes() -> int | None:
     """Return current process resident memory in bytes where the OS exposes it."""
-    linux_value = _linux_current_rss_bytes()
-    if linux_value is not None:
-        return linux_value
-    windows_value = _windows_current_rss_bytes()
-    if windows_value is not None:
-        return windows_value
-    return _resource_current_rss_bytes()
-
-
-def _linux_current_rss_bytes() -> int | None:
-    status_path = "/proc/self/status"
-    if not Path(status_path).exists():
-        return None
-    try:
-        with open(status_path, encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith("VmRSS:"):
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        return int(parts[1]) * 1024
-    except OSError:
-        return None
-    return None
-
-
-class _WindowsProcessMemoryCountersEx(ctypes.Structure):
-    _fields_ = [
-        ("cb", ctypes.c_ulong),
-        ("PageFaultCount", ctypes.c_ulong),
-        ("PeakWorkingSetSize", ctypes.c_size_t),
-        ("WorkingSetSize", ctypes.c_size_t),
-        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
-        ("QuotaPagedPoolUsage", ctypes.c_size_t),
-        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-        ("PagefileUsage", ctypes.c_size_t),
-        ("PeakPagefileUsage", ctypes.c_size_t),
-        ("PrivateUsage", ctypes.c_size_t),
-    ]
-
-
-@dataclass(frozen=True, slots=True)
-class _WindowsRssBindings:
-    get_current_process: Callable[[], Any]
-    get_process_memory_info: Callable[[Any, Any, int], int]
-
-
-_WINDOWS_RSS_BINDINGS_LOCK = threading.RLock()
-_WINDOWS_RSS_BINDINGS_BY_FACTORY: dict[int, tuple[object, _WindowsRssBindings | None]] = {}
-
-
-def _reset_windows_rss_sampler_for_tests() -> None:
-    """Clear cached Windows RSS API bindings for isolated tests."""
-    with _WINDOWS_RSS_BINDINGS_LOCK:
-        _WINDOWS_RSS_BINDINGS_BY_FACTORY.clear()
-
-
-def _windows_rss_bindings(
-    windll_factory: Callable[..., Any],
-) -> _WindowsRssBindings | None:
-    """Return bindings initialised once for this exact WinDLL factory."""
-    factory_id = id(windll_factory)
-    with _WINDOWS_RSS_BINDINGS_LOCK:
-        cached = _WINDOWS_RSS_BINDINGS_BY_FACTORY.get(factory_id)
-        if cached is not None and cached[0] is windll_factory:
-            return cached[1]
-        try:
-            kernel32 = windll_factory("kernel32.dll", use_last_error=True)
-            psapi = windll_factory("psapi.dll", use_last_error=True)
-            get_current_process = kernel32.GetCurrentProcess
-            get_process_memory_info = psapi.GetProcessMemoryInfo
-            get_process_memory_info.argtypes = [
-                ctypes.c_void_p,
-                ctypes.POINTER(_WindowsProcessMemoryCountersEx),
-                ctypes.c_ulong,
-            ]
-            get_process_memory_info.restype = ctypes.c_int
-        except (AttributeError, OSError):
-            bindings = None
-        else:
-            bindings = _WindowsRssBindings(
-                get_current_process=get_current_process,
-                get_process_memory_info=get_process_memory_info,
-            )
-        _WINDOWS_RSS_BINDINGS_BY_FACTORY[factory_id] = (windll_factory, bindings)
-        return bindings
-
-
-def _windows_current_rss_bytes() -> int | None:
-    if os.name != "nt":
-        return None
-    windll_factory = getattr(ctypes, "WinDLL", None)
-    if windll_factory is None:
-        return None
-    bindings = _windows_rss_bindings(windll_factory)
-    if bindings is None:
-        return None
-    counters = _WindowsProcessMemoryCountersEx()
-    counters.cb = ctypes.sizeof(counters)
-    try:
-        handle = bindings.get_current_process()
-        ok = bindings.get_process_memory_info(
-            handle,
-            ctypes.byref(counters),
-            counters.cb,
-        )
-    except (AttributeError, OSError):
-        return None
-    return int(counters.WorkingSetSize) if ok else None
-
-
-def _resource_current_rss_bytes() -> int | None:
-    try:
-        import resource
-    except ImportError:
-        return None
-    getrusage = getattr(resource, "getrusage", None)
-    rus_self = getattr(resource, "RUSAGE_SELF", None)
-    if getrusage is None or rus_self is None:
-        return None
-    try:
-        rss = int(getrusage(rus_self).ru_maxrss)
-    except (OSError, ValueError):
-        return None
-    if rss <= 0:
-        return None
-    # Linux reports KiB; macOS reports bytes. ``/proc`` covers Linux first.
-    return rss if rss > 10_000_000 else rss * 1024
+    return current_process_rss_bytes()
 
 
 @dataclass(frozen=True, slots=True)

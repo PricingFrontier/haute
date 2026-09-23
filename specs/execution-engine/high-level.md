@@ -52,9 +52,9 @@ running heavy work in a child process the parent can kill on timeout or memory l
   process with an optional address-space cap, timeout, and cooperative-stop support.
 - Metadata-based RAM pre-estimation for training (`_ram_estimate.py`) so a training run
   can downsample before it starts rather than OOM mid-fit.
-- Host memory observation (`_host_memory.py`): available-RAM discovery on
-  Linux (`/proc/meminfo`), macOS (Mach VM counters), and Windows
-  (`GlobalMemoryStatusEx`), plus GPU VRAM detection. On Linux the host's
+- Host memory observation (`_host_memory.py`): available RAM read through
+  psutil on every platform, plus GPU VRAM detection; process memory and
+  liveness are read through psutil by `_process_memory.py`. On Linux the host's
   reported availability is clamped to observable container headroom: cgroup
   v2 `memory.max - memory.current`, falling back to the v1 limit/usage pair
   when v2 is absent. An unlimited cgroup leaves the host value unchanged;
@@ -497,6 +497,17 @@ keep reporting the failing line so the editor can name the failing step.
 
 ## Design rationale
 
+- **Hard-capped workers are the memory-safety mechanism; the static estimate admits
+  only what no cap bounds.** Wherever a native cap exists — a Windows Job Object, a
+  delegated Linux cgroup, or the `RLIMIT_AS` fallback — the cap bounds the run, and an
+  unavailable static estimate is only `warned`. The static stack (column lineage,
+  projection planning, cardinality bounds, the RAM estimator, the operator memory
+  registry and estimate calibration) stays load-bearing only for surfaces that run
+  without a native cap: the in-process optimiser, Databricks serving, and macOS hosts,
+  which have no dependable per-process cap. A hard cap cannot serve them because they
+  do not run in a capped worker, or the host offers no cap. The stack is not extended
+  for capped surfaces, and once the optimiser runs in capped workers whether the
+  remaining uncapped surfaces still justify it is decided again.
 - **Two execution strategies, one shared node-building step.** Eager execution
   (`_execute_eager_core`) and lazy execution (`_execute_lazy`) both call
   `_build_funcs`, which asks each node's `NODE_REGISTRY` builder for the same
@@ -717,6 +728,15 @@ keep reporting the failing line so the editor can name the failing step.
   only for the request that installed it. macOS has no dependable
   per-process hard-memory primitive for this contract, so workloads there must select
   `best_effort` explicitly; Haute never silently relabels RSS sampling as a hard cap.
+  The training fit's protocol worker installs the same native cap as every other
+  worker. `RLIMIT_AS` caps address space, which counts reservations a job never touches:
+  a Polars worker reserves gigabytes for its thread pools and their allocator arenas
+  while its resident memory stays small. So before a worker measures that cap's
+  baseline it starts both Polars engines' thread pools, and the cap then counts only
+  what the job allocates. A model library starts its own pool during the fit, so the
+  training fit's address-space cap also allows 192 MiB per CPU for it; the parent RSS
+  watchdog still enforces that worker's budget. A thread that cannot start under an
+  active cap is the typed memory-limit failure.
   Hard-cap evidence is request-scoped: a worker's lease reports its backend only
   between a successful cap installation and the following release, a failed
   best-effort attempt after an earlier successful request leaves no evidence, and

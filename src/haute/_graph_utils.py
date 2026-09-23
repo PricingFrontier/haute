@@ -32,7 +32,7 @@ def upstream_node_ids(
     node_id: str,
     parents_of: Mapping[str, list[str]],
 ) -> list[str]:
-    """Return all upstream node ids for *node_id*, nearest parents first."""
+    """Return all upstream node ids for *node_id*, in depth-first preorder from its parents."""
     result: list[str] = []
     seen: set[str] = set()
     stack = list(parents_of.get(node_id, []))

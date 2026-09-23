@@ -928,6 +928,11 @@ def test_canonical_topological_ranks_use_lexical_tie_breaks() -> None:
     assert dict(_canonical_topological_ranks(["out", "a", "z"], children)) == expected
 
 
+def test_canonical_topological_ranks_reject_a_cyclic_prepared_graph() -> None:
+    with pytest.raises(RuntimeError, match="cyclic prepared graph"):
+        _canonical_topological_ranks(["a", "b"], {"a": ["b"], "b": ["a"]})
+
+
 def test_opaque_fan_out_reports_that_the_seed_cannot_apply() -> None:
     result = plan_execution_strategy(
         ProjectionRequest(

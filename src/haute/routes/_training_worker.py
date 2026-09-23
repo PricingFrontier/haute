@@ -23,6 +23,10 @@ from haute._execution_context import (
     current_rss_bytes,
 )
 from haute._logging import get_logger
+from haute._native_memory_limit import (
+    current_native_memory_backend,
+    memory_error_for_thread_start_failure,
+)
 from haute._worker_protocol import (
     WORKER_MAX_MESSAGE_LENGTH,
     WORKER_MAX_TRACEBACK_LENGTH,
@@ -307,6 +311,10 @@ def _known_training_worker_failure(
     bounded_memory_prefix: str,
     operation_noun: str = "Training",
 ) -> WorkerFailurePayload | None:
+    if current_native_memory_backend() is not None:
+        converted = memory_error_for_thread_start_failure(exc)
+        if isinstance(converted, MemoryError):
+            exc = converted
     if isinstance(exc, ExecutionCancelledError):
         # Match the preparation path's terminal message: the internal
         # operation/job-id wording of str(exc) is diagnostics, not a

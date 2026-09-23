@@ -57,6 +57,7 @@ from haute._polars_utils import (
     streaming_collect,
 )
 from haute._source_cache import SourceCacheCorruptError, SourceCacheError
+from haute._topo import ancestors
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -1108,6 +1109,29 @@ def _runtime_projectable_source_ids(
         ):
             projectable.add(parent_id)
     return frozenset(projectable)
+
+
+def lineage_preparation_order(
+    graph: PipelineGraph,
+    target_node_id: str | None,
+    source: str,
+) -> list[str]:
+    """Node ids of a preview's or trace's executed lineage, for input preparation.
+
+    The lineage is walked over the same live-switch-pruned edges the execution
+    itself uses, so an inactive branch's inputs are never prepared. Without a known
+    target every node is in the lineage.
+    """
+    if target_node_id is None or target_node_id not in graph.node_map:
+        return [node.id for node in graph.nodes]
+    all_ids = {node.id for node in graph.nodes}
+    edges = _prune_live_switch_edges(
+        graph.edges,
+        graph.node_map,
+        source,
+        submodels=graph.submodels,
+    )
+    return sorted(ancestors(target_node_id, edges, all_ids))
 
 
 def _prune_live_switch_edges(

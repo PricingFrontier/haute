@@ -1055,30 +1055,38 @@ def test_isolated_entrypoint_leaves_native_lease_active_until_process_teardown(
     assert (results.closed, results.joined) == (1, 1)
 
 
-@pytest.mark.parametrize(
-    ("current_limits", "expected"),
-    [((-1, -1), (100, 100)), ((50, 80), (50, 80))],
-)
-def test_apply_address_space_limit_respects_existing_finite_caps(
+def test_isolated_worker_starts_its_result_feeder_before_the_cap(
     monkeypatch: pytest.MonkeyPatch,
-    current_limits: tuple[int, int],
-    expected: tuple[int, int],
 ) -> None:
+    """A feeder started after the cap could fail to start when the result is put."""
     import haute._worker_isolation as isolation_mod
+    from haute._native_memory_limit import NativeMemoryLease
 
-    applied: list[tuple[int, tuple[int, int]]] = []
-    fake_resource = SimpleNamespace(
-        RLIMIT_AS=1,
-        RLIM_INFINITY=-1,
-        getrlimit=lambda _limit: current_limits,
-        setrlimit=lambda limit, values: applied.append((limit, values)),
+    events: list[str] = []
+
+    class RecordingQueue:
+        _thread: object | None = None
+
+        def _start_thread(self) -> None:
+            events.append("feeder")
+            self._thread = object()
+
+        def put(self, _payload: bytes) -> None:
+            events.append("put")
+
+        def close(self) -> None:
+            pass
+
+        def join_thread(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        NativeMemoryLease, "apply", lambda self, *_a, **_k: events.append("cap") or False
     )
-    monkeypatch.setattr(isolation_mod.sys, "platform", "linux")
-    monkeypatch.setitem(sys.modules, "resource", fake_resource)
 
-    isolation_mod._apply_address_space_limit(100)
+    isolation_mod._isolated_worker_entrypoint(RecordingQueue(), int, ("7",), {}, 128, False)
 
-    assert applied == [(1, expected)]
+    assert events == ["feeder", "cap", "put"]
 
 
 def test_memory_limited_exitcode_classification_is_platform_independent() -> None:
@@ -1153,6 +1161,11 @@ def test_required_worker_memory_enforcement_requires_a_limit(
 def test_direct_required_worker_config_requires_a_limit() -> None:
     with pytest.raises(ValueError, match="needs a configured memory limit"):
         IsolatedWorkerConfig(require_memory_limit=True)
+
+
+def test_worker_config_rejects_a_negative_address_space_allowance() -> None:
+    with pytest.raises(ValueError, match="address_space_allowance_bytes must not be negative"):
+        IsolatedWorkerConfig(address_space_allowance_bytes=-1)
 
 
 def test_unknown_worker_memory_enforcement_fails_loudly(

@@ -13,8 +13,10 @@ from haute._worker_isolation import (
     IsolatedWorkerConfig,
     IsolatedWorkerCrashedError,
     IsolatedWorkerRemoteError,
+    IsolatedWorkerStartError,
     IsolatedWorkerStoppedError,
     IsolatedWorkerTimeoutError,
+    process_memory_caps_supported,
 )
 from haute._worker_protocol import (
     WORKER_MAX_EVENTS,
@@ -39,6 +41,21 @@ def _worker_with_progress(runtime, request):
     )
     runtime.emit_progress(progress=1.0, message="Done", kind="phase")
     return WorkerResultManifest(metadata={"ok": True})
+
+
+def _thread_starved_worker(runtime, request):
+    del runtime, request
+    raise RuntimeError("can't start new thread")
+
+
+def _worker_recording_pid(runtime, request):
+    del runtime, request
+    return WorkerResultManifest(metadata={"pid": os.getpid()})
+
+
+def _failing_worker_recording_pid(runtime, request):
+    del runtime, request
+    raise ValueError(f"child {os.getpid()} failed")
 
 
 def _failing_worker(runtime, request):
@@ -85,28 +102,46 @@ def _crash_worker(runtime, request):
     os._exit(23)
 
 
+def _worker_reporting_native_cap(runtime, request):
+    del runtime, request
+    from haute._native_memory_limit import current_native_memory_backend
+
+    return WorkerResultManifest(metadata={"backend": current_native_memory_backend()})
+
+
 def _request() -> WorkerRequest:
     return WorkerRequest("request-1", "training", {"items": [1, True, None]})
 
 
 @pytest.mark.parametrize(
-    ("memory_limit", "caps_supported", "expected_limits"),
-    [(None, True, []), (128, False, []), (128, True, [128])],
+    ("memory_limit", "required", "allowance", "expected"),
+    [(None, True, 0, []), (128, False, 0, [(128, False, 0)]), (128, True, 64, [(128, True, 64)])],
 )
-def test_protocol_entrypoint_applies_only_supported_configured_address_space_caps(
+def test_protocol_entrypoint_installs_the_shared_native_lease(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     memory_limit: int | None,
-    caps_supported: bool,
-    expected_limits: list[int],
+    required: bool,
+    allowance: int,
+    expected: list[tuple[int, bool, int]],
 ) -> None:
-    import haute._worker_protocol as protocol_mod
+    from haute._native_memory_limit import NativeMemoryLease
 
     results: queue.Queue[object] = queue.Queue()
     progress: queue.Queue[object] = queue.Queue()
-    applied: list[int] = []
-    monkeypatch.setattr(protocol_mod, "address_space_caps_supported", lambda: caps_supported)
-    monkeypatch.setattr(protocol_mod, "_apply_address_space_limit", applied.append)
+    applied: list[tuple[int, bool, int]] = []
+
+    def apply(
+        self: NativeMemoryLease,
+        growth_bytes: int,
+        *,
+        required: bool,
+        address_space_allowance_bytes: int = 0,
+    ) -> bool:
+        applied.append((growth_bytes, required, address_space_allowance_bytes))
+        return False
+
+    monkeypatch.setattr(NativeMemoryLease, "apply", apply)
 
     _protocol_entrypoint(
         results,
@@ -115,12 +150,107 @@ def test_protocol_entrypoint_applies_only_supported_configured_address_space_cap
         _request(),
         str(tmp_path),
         memory_limit,
+        required,
+        allowance,
     )
 
     status, result = results.get_nowait()  # type: ignore[misc]
     assert status == "ok"
     assert isinstance(result, WorkerResultManifest)
-    assert applied == expected_limits
+    assert applied == expected
+
+
+class _RecordingFeederQueue:
+    """An in-process result/progress queue that records when its feeder starts."""
+
+    def __init__(self, events: list[str], name: str) -> None:
+        self._events = events
+        self._name = name
+        self._thread: object | None = None
+        self.items: list[object] = []
+
+    def _start_thread(self) -> None:
+        self._events.append(f"{self._name} feeder")
+        self._thread = object()
+
+    def put(self, item: object, *_args: object, **_kwargs: object) -> None:
+        self.items.append(item)
+
+    def put_nowait(self, item: object) -> None:
+        self.items.append(item)
+
+
+def test_protocol_worker_starts_its_queue_feeders_before_the_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A feeder started after the cap could fail to start at the first put."""
+    from haute._native_memory_limit import NativeMemoryLease
+
+    events: list[str] = []
+    results = _RecordingFeederQueue(events, "result")
+    progress = _RecordingFeederQueue(events, "progress")
+    monkeypatch.setattr(
+        NativeMemoryLease, "apply", lambda self, *_a, **_k: events.append("cap") or False
+    )
+
+    _protocol_entrypoint(
+        results, progress, _worker_with_progress, _request(), str(tmp_path), 128, True, 0
+    )
+
+    assert events == ["result feeder", "progress feeder", "cap"]
+
+
+def test_a_required_cap_the_host_cannot_install_is_a_contract_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._native_memory_limit import (
+        NativeMemoryLease,
+        NativeMemoryLimitUnsupportedError,
+    )
+
+    def refuse(self: NativeMemoryLease, *_args: object, **_kwargs: object) -> bool:
+        raise NativeMemoryLimitUnsupportedError("no native cap on this host")
+
+    results: queue.Queue[object] = queue.Queue()
+    monkeypatch.setattr(NativeMemoryLease, "apply", refuse)
+
+    _protocol_entrypoint(
+        results, queue.Queue(), _worker_with_progress, _request(), str(tmp_path), 128, True, 0
+    )
+
+    status, failure = results.get_nowait()  # type: ignore[misc]
+    assert status == "error"
+    assert failure.terminal_reason == "contract_error"
+    assert failure.error_type == "NativeMemoryLimitUnsupportedError"
+
+
+def test_a_thread_that_cannot_start_under_the_cap_is_a_memory_limit_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._native_memory_limit import NativeMemoryLease
+
+    results: queue.Queue[object] = queue.Queue()
+    progress: queue.Queue[object] = queue.Queue()
+    monkeypatch.setattr(NativeMemoryLease, "apply", lambda self, *_a, **_k: True)
+
+    _protocol_entrypoint(
+        results,
+        progress,
+        _thread_starved_worker,
+        _request(),
+        str(tmp_path),
+        128,
+        True,
+        0,
+    )
+
+    status, failure = results.get_nowait()  # type: ignore[misc]
+    assert status == "error"
+    assert failure.terminal_reason == "memory_limited"
+    assert failure.error_type == "MemoryError"
 
 
 def test_dtos_reject_non_plain_data_and_bounds() -> None:
@@ -513,6 +643,134 @@ def test_build_artifact_manifest_requires_containment_and_is_valid(tmp_path: Pat
             kind="model",
             lifetime="staged",
         )
+
+
+@pytest.mark.skipif(
+    not process_memory_caps_supported(), reason="this host has no native memory cap"
+)
+def test_real_spawn_training_worker_runs_under_a_native_cap(tmp_path: Path) -> None:
+    """A required-limit protocol worker installs the same native cap as every other
+    worker: a Job Object on Windows, a cgroup or RLIMIT_AS on Linux."""
+    result = run_worker_protocol(
+        _worker_reporting_native_cap,
+        _request(),
+        artifact_root=tmp_path / "artifacts",
+        artifact_kinds=frozenset({"model"}),
+        max_artifact_size_bytes=100,
+        config=IsolatedWorkerConfig(
+            memory_limit_bytes=1024 * 1024 * 1024,
+            require_memory_limit=True,
+            timeout_seconds=60,
+        ),
+    )
+
+    assert result.metadata["backend"] in {"windows_job", "cgroup", "rlimit"}
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_real_spawn_removes_the_workers_private_cgroup_after_it_exits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fails: bool,
+) -> None:
+    """Cleanup is for the spawned child itself, once that child has exited, on success
+    and on failure: the parent's pid, or a still-running child, would leave the
+    worker's cgroup behind."""
+    import haute._worker_protocol as protocol_mod
+    from haute._process_memory import process_is_alive
+
+    cleaned: list[tuple[int, bool]] = []
+    monkeypatch.setattr(
+        protocol_mod,
+        "cleanup_private_cgroups_for_pid",
+        lambda pid: cleaned.append((pid, process_is_alive(pid))),
+    )
+
+    def run() -> WorkerResultManifest:
+        return run_worker_protocol(
+            _failing_worker_recording_pid if fails else _worker_recording_pid,
+            _request(),
+            artifact_root=tmp_path / "artifacts",
+            artifact_kinds=frozenset({"model"}),
+            max_artifact_size_bytes=100,
+        )
+
+    if fails:
+        with pytest.raises(WorkerRemoteFailureError) as failure:
+            run()
+        child_pid = int(failure.value.remote_message.split()[1])
+    else:
+        child_pid = int(run().metadata["pid"])
+
+    assert child_pid != os.getpid()
+    assert cleaned == [(child_pid, False)]
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_a_failed_cgroup_cleanup_is_reported_not_swallowed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fails: bool,
+) -> None:
+    """A worker cgroup left behind is the failure when the job succeeded, and a note
+    on the job's own failure when it did not."""
+    import haute._worker_protocol as protocol_mod
+
+    def refuse_cleanup(pid: int) -> None:
+        raise OSError(f"cgroup for {pid} is busy")
+
+    monkeypatch.setattr(protocol_mod, "cleanup_private_cgroups_for_pid", refuse_cleanup)
+
+    if fails:
+        with pytest.raises(WorkerRemoteFailureError) as failure:
+            run_worker_protocol(
+                _failing_worker_recording_pid,
+                _request(),
+                artifact_root=tmp_path / "artifacts",
+                artifact_kinds=frozenset({"model"}),
+                max_artifact_size_bytes=100,
+            )
+        notes = getattr(failure.value, "__notes__", [])
+        assert any(
+            note.startswith("native memory resource cleanup failed: cgroup for") for note in notes
+        )
+    else:
+        with pytest.raises(OSError, match="is busy"):
+            run_worker_protocol(
+                _worker_recording_pid,
+                _request(),
+                artifact_root=tmp_path / "artifacts",
+                artifact_kinds=frozenset({"model"}),
+                max_artifact_size_bytes=100,
+            )
+
+
+def test_a_worker_that_never_started_has_no_cgroup_to_remove(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import multiprocessing.context
+
+    import haute._worker_protocol as protocol_mod
+
+    cleaned: list[int] = []
+    monkeypatch.setattr(protocol_mod, "cleanup_private_cgroups_for_pid", cleaned.append)
+
+    def refuse_start(self: object) -> None:
+        raise OSError("spawn refused")
+
+    monkeypatch.setattr(multiprocessing.context.SpawnProcess, "start", refuse_start)
+
+    with pytest.raises(IsolatedWorkerStartError, match="spawn refused"):
+        run_worker_protocol(
+            _worker_recording_pid,
+            _request(),
+            artifact_root=tmp_path / "artifacts",
+            artifact_kinds=frozenset({"model"}),
+            max_artifact_size_bytes=100,
+        )
+
+    assert cleaned == []
 
 
 def test_real_spawn_forwards_validated_progress_and_result(tmp_path: Path) -> None:
