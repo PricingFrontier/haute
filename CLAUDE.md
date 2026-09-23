@@ -30,6 +30,10 @@ Every review uses a Codex model — cross-family review catches the failure mode
 
 Do not delegate review to Claude subagents and do not run Claude-vs-Claude review workflows; when orchestrated work surfaces findings, the review pass over those findings goes to Codex. The root still inspects every worker diff itself before accepting it (that is verification, not review) and owns the completion decision after Codex findings are resolved or rebutted.
 
+# Test suite and CI
+
+Do not run the full backend or frontend test suite locally before committing or pushing, unless the user asks for it; this applies to subagents too. Run the affected tests and checks from AGENTS.md's "Targeted verification", commit, push, and let CI run the full suite. Watch the PR's checks until they finish (a `Monitor` on `gh pr checks`, not a sleep loop). On red, read the failing job's log with `gh`, reproduce only that test locally if the cause is unclear, fix it, and push again until CI is green. Several worktrees share this machine, so a local full run slows the other lanes and produces load flakes.
+
 # Workflows
 
 Dynamic workflows are opt-in ("use a workflow" / `ultracode`). When writing one, route every stage explicitly — no stage may default to the session model: `{model: "haiku", effort: "low"}` for mechanical fan-out, `{model: "sonnet", effort: "low"}` for bounded implementation, `{model: "opus", effort: "medium"}` only for a stage that demonstrably needs it. Keep the medium size guideline (under 15 agents) unless the task genuinely calls for more.

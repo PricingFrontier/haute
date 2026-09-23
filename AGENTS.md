@@ -100,6 +100,13 @@ Run only the lowest sufficient level while iterating:
 CI remains the final full compatibility, mutation, performance, coverage, build,
 and browser gate.
 
+Never run the full backend (`uv run pytest tests`) or frontend (`npm --prefix frontend test`)
+suite locally before committing or pushing, unless the user asks for it. Run the affected tests
+and checks above, commit, push, and let CI run the full suite. Watch the PR checks with `gh` until
+they finish. On a failure, read the failing job's log, reproduce only that test locally if the
+cause is unclear, fix it, and push again. Repeat until CI is green. Several worktrees share this
+machine, so a local full run also slows the other lanes and produces load flakes.
+
 Useful commands:
 
 - Targeted backend test: `uv run pytest tests/test_relevant.py::test_name -q`
