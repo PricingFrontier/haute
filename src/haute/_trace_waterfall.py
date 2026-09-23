@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from haute._edge_join import EDGE_JOIN_DEFAULT_SUFFIX
+from haute._graph_utils import upstream_node_ids
 from haute._json_safe import MAX_SAFE_INTEGER
 from haute._logging import get_logger
 
@@ -147,19 +148,9 @@ def _has_lineage_path(
     descendant_id: str,
 ) -> bool:
     """Return whether *ancestor_id* is upstream of *descendant_id*."""
-    if ancestor_id == descendant_id:
-        return True
-    seen: set[str] = set()
-    stack = list(parents_of.get(descendant_id, []))
-    while stack:
-        current = stack.pop()
-        if current in seen:
-            continue
-        if current == ancestor_id:
-            return True
-        seen.add(current)
-        stack.extend(parents_of.get(current, []))
-    return False
+    return ancestor_id == descendant_id or ancestor_id in upstream_node_ids(
+        descendant_id, parents_of
+    )
 
 
 def _reject_renamed_join_branch_origins(

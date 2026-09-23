@@ -24,7 +24,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Codegen](codegen.md) | Config-backed decorators emitted directly | `CODEGEN-R01` |
 | [Deploy](deploy.md) | A slim scoring runtime, offered targets | `DEP-R02` |
 | [Engineering quality](engineering-quality.md) | Dead code, tracked artifacts, specification drift, coverage gates, test organisation | `ENGQ-R01` |
-| [Execution engine](execution-engine.md) | Chunked runner, one execution walker, execution context, graph traversal | `EXEC-R08` |
+| [Execution engine](execution-engine.md) | Chunked runner, one execution walker, execution context | `EXEC-R05` |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | `EDA-E09` |
 | [Expression parsing](expression-parsing.md) | Traced formulas evaluated by Polars | `EXPR-R01` |
 | [Frontend modelling and optimiser UI](frontend-modelling-optimiser-ui.md) | Shared result tabs, target configuration and charts; why a training estimate is unavailable | `FMO-R01` |

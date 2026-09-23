@@ -45,6 +45,7 @@ from haute._cache import (
 )
 from haute._data_points import DataPointResolver
 from haute._env import int_env
+from haute._execute_lazy import lineage_preparation_order
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
@@ -974,28 +975,6 @@ def _preview_entry_is_current(
     return True
 
 
-def _preview_preparation_order(
-    graph: PipelineGraph,
-    target_node_id: str | None,  # pragma: no mutate
-    source: str,
-) -> list[str]:
-    """Node ids of the preview's executed lineage, for input preparation.
-
-    The lineage is walked over the same live-switch-pruned edges the execution
-    itself uses, so an inactive branch's inputs are never prepared.
-    """
-    if target_node_id is None or target_node_id not in graph.node_map:
-        return [node.id for node in graph.nodes]
-    all_ids = {node.id for node in graph.nodes}
-    edges = _prune_live_switch_edges(
-        graph.edges,
-        graph.node_map,
-        source,
-        submodels=graph.submodels,
-    )
-    return sorted(ancestors(target_node_id, edges, all_ids))
-
-
 def execute_graph(
     graph: PipelineGraph,
     target_node_id: str | None = None,  # pragma: no mutate
@@ -1210,7 +1189,7 @@ def _execute_graph_core(
     if snapshot_plan is None:
         with runtime_project_root_scope(graph.source_file):
             prepare_input_snapshots(
-                _preview_preparation_order(graph, target_node_id, source),
+                lineage_preparation_order(graph, target_node_id, source),
                 graph.node_map,
                 profile=execution_context.profile,
                 execution_context=execution_context,

@@ -8,7 +8,6 @@ than reaching into executor internals.
 from __future__ import annotations
 
 import ast
-import heapq
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -43,7 +42,7 @@ from haute._polars_operations import (
 )
 from haute._polars_selectors import preamble_selector_aliases
 from haute._registry import NODE_REGISTRY, ensure_registry_ready
-from haute._topo import ancestors, topo_sort_ids
+from haute._topo import CycleError, ancestors, canonical_topological_order, topo_sort_ids
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.errors import ContractMismatchError
 
@@ -1067,32 +1066,13 @@ def _canonical_topological_ranks(
     order: Iterable[str],
     children_of: Mapping[str, Iterable[str]],
 ) -> Mapping[str, int]:
-    """Return canonical Kahn ranks with lexical node-id tie breaks."""
-    node_ids = set(order)
-    in_degree = dict.fromkeys(node_ids, 0)
-    canonical_children: dict[str, tuple[str, ...]] = {}
-    for parent_id in node_ids:
-        children = tuple(
-            sorted(
-                {child_id for child_id in children_of.get(parent_id, ()) if child_id in node_ids}
-            )
-        )
-        canonical_children[parent_id] = children
-        for child_id in children:
-            in_degree[child_id] += 1
-
-    ready = [node_id for node_id, degree in in_degree.items() if degree == 0]
-    heapq.heapify(ready)
-    canonical_order: list[str] = []
-    while ready:
-        node_id = heapq.heappop(ready)
-        canonical_order.append(node_id)
-        for child_id in canonical_children[node_id]:
-            in_degree[child_id] -= 1
-            if in_degree[child_id] == 0:
-                heapq.heappush(ready, child_id)
-    if len(canonical_order) != len(node_ids):
-        raise RuntimeError("execution strategy diagnostics received a cyclic prepared graph")
+    """Return canonical topological ranks with lexical node-id tie breaks."""
+    try:
+        canonical_order = canonical_topological_order(order, children_of)
+    except CycleError as exc:
+        raise RuntimeError(
+            "execution strategy diagnostics received a cyclic prepared graph"
+        ) from exc
     return MappingProxyType({node_id: rank for rank, node_id in enumerate(canonical_order)})
 
 

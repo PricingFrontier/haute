@@ -22,15 +22,13 @@ the static estimate admits only what no cap bounds.
 | EXEC-R03 | Planned | P3 | The chunked map-reduce planner and runner are removed with their only consumer. |
 | EXEC-R05 | Planned | P2 | One graph walker builds every execution; eager, preview, trace and scoring differ only in their collect policy. |
 | EXEC-R07 | Planned | P3 | `ExecutionContext` is split into cancellation, admission, and evidence parts. |
-| EXEC-R08 | Planned | P3 | Graph traversal has one implementation. |
 
 ## Planned improvements
 
 `EXEC-R03` follows the optimiser's `OPT-P15` if that package removes the
 runner's only consumer. The walker in `EXEC-R05` keeps projection planning, which
 the memory-safety decision retains for uncapped surfaces.
-`EXEC-R07` and `EXEC-R08` are independent and can be taken whenever their files
-are next open.
+`EXEC-R07` is independent and can be taken whenever its file is next open.
 
 ### EXEC-R03 — Retire the chunked map-reduce runner
 **Why:** `chunking.py` is a 2,251-line planner and runner, with per-node-type
@@ -124,30 +122,3 @@ estimate evidence for the uncapped surfaces.
 **Evidence:** `src/haute/_execution_context.py::ExecutionContext`;
 `src/haute/_execution_context.py::ExecutionFaultPoint`;
 `tests/test_execution_context.py`.
-
-### EXEC-R08 — One graph-traversal module
-**Why:** Ancestor walks are implemented five times: the topology module's
-`ancestors`, `upstream_node_ids`, the waterfall's lineage check, the recovery
-route's ancestor closure and the optimiser's upstream node-type search.
-Projection hand-rolls Kahn's algorithm with a heap while the topology module
-uses `graphlib`. Preview and trace each define a preparation-order function
-with an identical body. The commit standards ask for one topological sort.
-
-**Plan:** Put ancestors, descendants, topological order and canonical ranks
-in the topology module and route every caller through it. Merge the two
-preparation-order functions into one.
-
-**Acceptance:** One ancestor implementation and one topological sort remain;
-the duplicated preparation-order functions are one function; the existing
-topology, projection, trace and recovery suites pass.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_topo.py::ancestors`;
-`src/haute/_graph_utils.py::upstream_node_ids`;
-`src/haute/_trace_waterfall.py::_has_lineage_path`;
-`src/haute/routes/pipeline.py::_recovery_ancestor_ids`;
-`src/haute/routes/_optimiser_service.py::_upstream_slice_contains_node_type`;
-`src/haute/projection.py::_canonical_topological_ranks`;
-`src/haute/executor.py::_preview_preparation_order`;
-`src/haute/trace.py::_trace_preparation_order`.

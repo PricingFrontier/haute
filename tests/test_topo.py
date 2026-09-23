@@ -8,6 +8,7 @@ from haute._topo import (
     CycleError,
     UnknownEdgeEndpointError,
     ancestors,
+    canonical_topological_order,
     topo_sort_ids,
     topo_sort_ids_filtered,
 )
@@ -218,3 +219,28 @@ class TestAncestors:
         result = ancestors("d", edges, {"a", "b", "c", "d"})
         assert len(result) == 4
         assert result == {"a", "b", "c", "d"}
+
+
+class TestCanonicalTopologicalOrder:
+    """The graphlib sorter driven lexically: the smallest ready node always comes next."""
+
+    def test_ties_break_lexically_whatever_the_input_order(self) -> None:
+        children = {"z": ["out"], "a": ["out"], "m": ["a"]}
+
+        for order in (["z", "a", "m", "out"], ["out", "m", "a", "z"]):
+            assert canonical_topological_order(order, children) == ["m", "a", "z", "out"]
+
+    def test_the_smallest_ready_node_is_taken_across_levels(self) -> None:
+        """A later-ready but smaller node overtakes an earlier-ready larger one."""
+        children = {"b": ["a2"], "c": []}
+
+        assert canonical_topological_order(["c", "b", "a2"], children) == ["b", "a2", "c"]
+
+    def test_children_outside_the_nodes_are_ignored(self) -> None:
+        assert canonical_topological_order(["a", "b"], {"a": ["b", "elsewhere"]}) == ["a", "b"]
+
+    def test_a_cycle_is_a_cycle_error_naming_its_nodes(self) -> None:
+        with pytest.raises(CycleError) as exc:
+            canonical_topological_order(["a", "b", "c"], {"a": ["b"], "b": ["a"], "c": []})
+
+        assert set(exc.value.cycle_nodes) == {"a", "b"}

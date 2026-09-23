@@ -48,7 +48,7 @@ import haute.execution as execution_facade
 from haute._builders import resolve_instance_nodes
 from haute._cache import GraphFingerprintMemo
 from haute._env import int_env
-from haute._execute_lazy import _prune_live_switch_edges
+from haute._execute_lazy import lineage_preparation_order
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._expression_parser import (
@@ -64,7 +64,6 @@ from haute._lru_cache import LRUCache
 from haute._path_resolution import runtime_project_root_scope
 from haute._polars_selectors import preamble_selector_aliases
 from haute._seed_plans import ListedSeed, SeedPlan, SeedPlanRequest, open_listed_seed_plan
-from haute._topo import ancestors
 from haute._trace_correlation import (
     CorrelationWork,
     RowScopeResolver,
@@ -364,26 +363,6 @@ def _integer_output_node_ids(
     }
 
 
-def _trace_preparation_order(
-    graph: PipelineGraph,
-    target_node_id: str,
-    source: str,
-) -> list[str]:
-    """Node ids of the trace's executed lineage, for input preparation.
-
-    Walked over the same live-switch-pruned edges the execution uses, so an
-    inactive branch's inputs are never prepared.
-    """
-    all_ids = {node.id for node in graph.nodes}
-    edges = _prune_live_switch_edges(
-        graph.edges,
-        graph.node_map,
-        source,
-        submodels=graph.submodels,
-    )
-    return sorted(ancestors(target_node_id, edges, all_ids))
-
-
 def execute_trace(
     graph: PipelineGraph,
     row_index: int = 0,
@@ -611,7 +590,7 @@ def _execute_trace_core(
     if snapshot_plan is None and execution_context.admission is not None:
         with runtime_project_root_scope(graph.source_file):
             prepare_input_snapshots(
-                _trace_preparation_order(graph, target_node_id, source),
+                lineage_preparation_order(graph, target_node_id, source),
                 graph.node_map,
                 profile=execution_context.profile,
                 execution_context=execution_context,
