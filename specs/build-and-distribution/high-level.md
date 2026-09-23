@@ -149,3 +149,21 @@ Out of scope:
 - A strict MkDocs build failure prevents the documentation artifact from being
   uploaded or deployed. GitHub Pages deployment only runs after that build job
   succeeds.
+
+## Approved change contract — engine dependencies
+
+- **Current limitation.** Haute's core dependencies include CatBoost and RustyStats only.
+- **Unresolved target.** Core dependencies gain `xgboost-cpu>=3.2,<3.3` on non-macOS platforms and
+  `xgboost>=3.2,<3.3` on macOS through environment markers, locked exactly. The cap keeps
+  Python 3.11: XGBoost 3.3 and later require Python 3.12. The [MOD-F00 engine probes](../roadmap/mod-f00-engine-probes.md) show this set resolving
+  with Haute's dependencies on Python 3.11 to 3.13 and running on Windows and Linux; the macOS
+  CI matrix job provides `libomp` and runs the engine checks. LightGBM and `interpret-core` are
+  added by their own slices under the same rules.
+- **Non-goals.** No GPU distribution is installed; the full `xgboost` wheel with its NVIDIA
+  dependency is not used on Linux or Windows.
+- **Failure and compatibility semantics.** An environment holding both `xgboost` and `xgboost-cpu`
+  is unsupported, because both install the same import package; the package smoke check fails if
+  both are present.
+- **Acceptance evidence.** Lock and resolution checks on Python 3.11 to 3.13, the package smoke
+  check importing the engine, and the macOS CI job passing with `libomp`.
+- **Roadmap package.** [MOD-F02](../roadmap/modelling.md#mod-f02--deliver-the-complete-xgboost-slice).

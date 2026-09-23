@@ -20,7 +20,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | — |
 | [Caching](caching.md) | Automatic API-input table snapshots, planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache usage | `CACHE-S08` |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | `EDA-E09` |
-| [Modelling](modelling.md) | RustyStats 0.9.0 upgrade, GLM terms and interactions; proposed XGBoost, LightGBM, and EBM lifecycle support | `MOD-F00` |
+| [Modelling](modelling.md) | RustyStats 0.9.0 upgrade, GLM terms and interactions; proposed XGBoost, LightGBM, and EBM lifecycle support | `MOD-F01` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P11` |
 | [Pipeline config](pipeline-config.md) | Repair, save validation, and the error a rejected config reports | `PCFG-R01` |
 
@@ -51,6 +51,14 @@ The supporting inventories record [cache lifecycle evidence](pr-227-cache-eviden
 [CI implementation evidence](pr-227-ci-implementation-evidence.md). The
 [Fable review request](pr-227-fable-review-request.md) preserves the scope and
 instructions supplied for that independent review.
+
+## MOD-F00 engine probes — 23 September 2026
+
+The [engine probe record](mod-f00-engine-probes.md) holds the dependency,
+packaging and native-behaviour evidence that settled the pre-implementation
+gates of the model-family expansion in the [modelling roadmap](modelling.md).
+It is a dated evidence artifact; component specifications remain the behavior
+authority.
 
 ## Working protocol
 

@@ -746,3 +746,161 @@ Cancellation, crash, malformed result, or validation failure removes the directo
 - Preflight enforces hard bounds on tuning fit counts: `trial_fit_count = trial_count * validation_fit_count <= 200`
   (with `total_fit_count = trial_fit_count + 1`). A candidate-fit error aborts with the trial index,
   sampled parameters and original actionable exception; it is never skipped.
+
+## Approved change contract — algorithm descriptors and the shared loss vocabulary
+
+- **Current limitation.** `ALGORITHM_REGISTRY` in `src/haute/modelling/_algorithms.py` holds
+  CatBoost and the GLM only, and training treats every non-GLM as CatBoost: it injects a CatBoost
+  `loss_function` and builds CatBoost pools. `resolve_loss_function` validates the Haute loss names
+  (`RMSE`, `MAE`, `Poisson`, `Tweedie`, `Logloss`, `CrossEntropy`) and translates them for
+  CatBoost only. A model type with no known suffix is saved as `.model`. Tuning refuses every
+  algorithm except CatBoost, and its refit writes the round budget into CatBoost's `iterations`
+  key. No setting bounds native thread use.
+- **Unresolved target.** Each registry entry carries a typed descriptor: supported tasks and
+  Haute losses, allowed feature controls, a raw-`params` allowlist with reserved keys, the native
+  round key, the refit policy, diagnostics, and the artifact suffix. Training dispatches native
+  data preparation through the descriptor's adapter, not a CatBoost default. The Haute loss
+  vocabulary gains `Gamma`, and each adapter translates a Haute loss to its native objective
+  privately; the loss setting stays `loss_function` plus `variance_power` for every tree and EBM
+  family. For XGBoost, LightGBM and EBM, raw `params` outside the family's allowlist, reserved
+  keys and conflicting aliases fail before any native call; CatBoost and GLM parameters keep
+  their existing validation, apart from CatBoost's `thread_count`, which the thread allotment
+  owns. Tuning keeps its user-authored search spaces and validates every
+  searched name against the family's allowlist. Tree refits keep `validation_weighted_tree_count`,
+  fed zero-based best iterations, and write the count to the descriptor's round key. One worker
+  thread allotment, resolved per job and recorded in the evidence, reaches every engine,
+  CatBoost included. Candidate evidence records the configured round ceiling, the fitted rounds
+  read from the native model, and a stopping reason of `none`, `validation`, or
+  `native_exhaustion`. Prediction parity uses the existing prediction tolerance, with one named
+  bound of `1e-5` relative for XGBoost contribution sums.
+- **Non-goals.** GLM `family`/`link` configuration and CatBoost's current losses are unchanged,
+  except that CatBoost's descriptor rejects `Gamma` (CatBoost 1.2.10 has no Gamma loss).
+  Multiclass, ranking, custom objectives, GPU training, and automatic cross-family model
+  selection are out of scope.
+- **Failure and compatibility semantics.** An unknown algorithm, an unsupported loss for the
+  family, a searched or raw parameter outside the allowlist, or a descriptor without a suffix
+  fails with the family and key named, before data is materialised. Saved configurations holding
+  CatBoost-only keys under another family fail validation; nothing is migrated.
+- **Acceptance evidence.** Descriptor and loss-translation contract tests for every family and
+  loss, including `Gamma` rejected for CatBoost; allowlist and alias rejection tests; tuning
+  validation of searched names; a refit fixture per tree family in which validation selects
+  exactly three rounds and the refit uses exactly three; a thread-allotment test per engine; a
+  test that a descriptor without a suffix raises instead of saving `.model`.
+- **Roadmap package.** [MOD-F01](../roadmap/modelling.md#mod-f01--extend-common-algorithm-prediction-and-artifact-seams).
+
+## Approved change contract — one binary-classification contract for every family
+
+- **Current limitation.** Haute has no positive-class setting. CatBoost classification returns
+  its native class prediction, and the probability column comes from the native probability
+  matrix, so the label and probability rules depend on the engine.
+- **Unresolved target.** Every family, CatBoost included, trains a binary task only on exactly two
+  classes and persists a typed class mapping and positive class. Boolean and 0/1 targets use
+  `true`/`1` as positive; any other two-label target requires an explicit `positive_class`. Model
+  Score emits the original-label prediction and the positive-class probability, and the label is
+  derived from the probability: positive exactly when the probability is greater than `0.5`, so a
+  probability of exactly `0.5` yields the negative class.
+- **Non-goals.** Multiclass and multi-output classification stay rejected; log-odds offsets for
+  classification are not added, so a classification offset fails for the new families.
+- **Failure and compatibility semantics.** A missing `positive_class` on a two-label non-Boolean
+  target, a single-class or multi-class training target, or an unknown label at scoring fails
+  before fitting or scoring, naming the target and labels. Saved CatBoost classifiers without a
+  class mapping are not supported; they must be retrained.
+- **Acceptance evidence.** For every family: Boolean, 0/1 and two-string targets; a missing
+  `positive_class` failure; single-class and three-class failures before fitting; a fixture whose
+  probability is exactly `0.5` scores the negative class; labels always equal the thresholded
+  probability.
+- **Roadmap package.** [MOD-F01](../roadmap/modelling.md#mod-f01--extend-common-algorithm-prediction-and-artifact-seams).
+
+## Approved change contract — prediction metadata in the feature contract
+
+- **Current limitation.** The per-model feature contract in
+  `src/haute/modelling/_feature_contract.py` records features, feature types, categorical levels,
+  target, task and offset column, but not the algorithm, loss, class mapping, native feature-name
+  mapping, or engine versions. The scorer reads the offset link from the loaded CatBoost or
+  RustyStats model.
+- **Unresolved target.** The feature contract gains the algorithm (which fixes the artifact
+  format), the Haute loss and its link, the typed class mapping and positive class, the
+  original-to-native feature-name mapping where a library restricts names, and producer and
+  engine versions, all inside the hashed payload, for every family including CatBoost and the
+  GLM. The model file and its contract remain the whole model set through publication, Save
+  Model, MLflow logging, download and deployment. Offset link and scoring budget are read from
+  the native model, and loading fails when the model's objective disagrees with the contract's
+  loss. Categorical codes derive from the contract's stored level order.
+- **Non-goals.** No separate metadata artifact kind is added, and parent-side publication in
+  `src/haute/routes/_training_artifacts.py` keeps its current artifact set.
+- **Failure and compatibility semantics.** A missing contract, one naming a different algorithm or
+  loss than its model, or a contract in the previous shape fails to load with an actionable
+  error; there is no historical-shape reader. Any changed field changes the contract hash and
+  invalidates every cache keyed on it.
+- **Acceptance evidence.** Contract round-trip and hash-coverage tests for every new field;
+  mismatched algorithm and loss load failures; the extended contract surviving publication, Save
+  Model, MLflow and a restored run.
+- **Roadmap package.** [MOD-F01](../roadmap/modelling.md#mod-f01--extend-common-algorithm-prediction-and-artifact-seams).
+
+## Approved change contract — XGBoost family
+
+- **Current limitation.** XGBoost cannot be selected for training; the sandbox allowlist names its
+  scikit-learn wrapper classes only for externally supplied pickles.
+- **Unresolved target.** An `xgboost` algorithm trains a native CPU `hist` booster from a
+  `DMatrix` built with contract-derived categorical codes, sample weights and, for regression
+  offsets, a `base_margin` of the transformed offset at both fit and predict. Early stopping on
+  Haute's validation partition selects `best_iteration` (zero-based) and the saved `.ubj` model is
+  trimmed to `best_iteration + 1` rounds. Contributions come from native `pred_contribs`, whose
+  bias column carries the offset. The [MOD-F00 engine probes](../roadmap/mod-f00-engine-probes.md) record the native behaviour this relies on: a model
+  trained with `base_margin` ignores its fitted `base_score`, category codes are positional, and
+  unseen categories and unknown parameters do not fail natively.
+- **Non-goals.** GPU training, DART, custom objectives, and the scikit-learn wrapper are out of
+  scope.
+- **Failure and compatibility semantics.** A model trained with an offset and scored without one,
+  an unseen category, or an unknown or reserved parameter fails in Haute before the native call.
+- **Acceptance evidence.** Real tiny weighted Poisson, Gamma, Tweedie, squared-error,
+  absolute-error and binary fits; scoring parity across evaluation, save/reload (bit-identical),
+  Model Score, script, MLflow and deployment; contribution sums reproducing the margin within the
+  named bound; a reordered-category scoring frame giving identical predictions through the
+  contract.
+- **Roadmap package.** [MOD-F02](../roadmap/modelling.md#mod-f02--deliver-the-complete-xgboost-slice).
+
+## Approved change contract — LightGBM family
+
+- **Current limitation.** LightGBM cannot be selected for training.
+- **Unresolved target.** A `lightgbm` algorithm trains a native CPU booster from a `Dataset` with
+  contract-derived categories, weights and an `init_score` of the transformed offset. Early
+  stopping selects `best_iteration` (a one-based count) and the saved `.lgbm` model text holds
+  exactly that many trees. Because native prediction ignores `init_score`, the scoring adapter
+  adds the offset to the raw score before the inverse link, exactly once. Contributions come from
+  native `pred_contrib`, which excludes the offset. A fit that stops because no split satisfies
+  its constraints records `native_exhaustion`. The `lightgbm` dependency is added with this slice.
+- **Non-goals.** GPU backends, native leaf refitting, and model continuation are out of scope.
+- **Failure and compatibility semantics.** Conflicting parameter aliases, which LightGBM accepts
+  silently, fail in Haute; unseen categories, which LightGBM scores silently, fail in Haute.
+- **Acceptance evidence.** Real tiny fits for every supported loss; offset included exactly once
+  through a reloaded model; a constant-feature fixture recording `native_exhaustion`; an alias
+  conflict failure; scoring parity across every path.
+- **Roadmap package.** [MOD-F03](../roadmap/modelling.md#mod-f03--decide-on-and-deliver-the-complete-lightgbm-slice).
+
+## Approved change contract — EBM family
+
+- **Current limitation.** InterpretML Explainable Boosting Machines cannot be selected for
+  training, and the restricted loader blocks their classes.
+- **Unresolved target.** An `ebm` algorithm trains an InterpretML regressor or classifier, with
+  selection fits on Haute's training partition only and the final development refit on the
+  development rows (never final-test rows), with explicit nominal/continuous feature types, sample weights,
+  a regression `init_score` of the transformed offset at fit and predict, `outer_bags=1`,
+  `n_jobs=1`, early stopping disabled, and an explicit `max_rounds` that tuning may search and the
+  refit reuses. Native `best_iteration_` is recorded as term-update steps and never converted into
+  a budget. Explanations are the native term scores plus intercept, with pairwise interactions
+  kept as one term. The model is saved as a `.ebm` joblib file. The `interpret-core` dependency is
+  added with this slice.
+- **Non-goals.** EBM early stopping is not offered: the [MOD-F00 engine probes](../roadmap/mod-f00-engine-probes.md) show that passing validation rows
+  through `bags` changes the intercept and every prediction for all five objectives even with
+  stopping disabled, so validation targets would leak into the model. EBM editing, differential
+  privacy, and bag-to-bag variation displays are out of scope.
+- **Failure and compatibility semantics.** A configuration without an explicit `max_rounds`, or
+  requesting EBM early stopping, internal validation or more than one outer bag, fails before
+  fitting.
+- **Acceptance evidence.** Numeric/mixed regression and binary fits round-tripping through the
+  restricted loader; an `interpret-core` version mismatch failing at load; intercept, terms and
+  offset reconstructing served predictions; selection fits receiving only training-partition
+  rows; the final development refit receiving development rows, reusing the winning
+  `max_rounds`, and never receiving final-test rows.
+- **Roadmap package.** [MOD-F04](../roadmap/modelling.md#mod-f04--deliver-the-complete-ebm-slice-and-its-term-representation).

@@ -1733,3 +1733,194 @@ Both direct scans and owned adapter-file scoring choose batch rows from decoded
 input width and the current execution allowance, retaining the scoring row
 ceiling. Dictionary compression must not bypass this rule on the Arrow reader
 used for staged input.
+
+## Approved change contract — algorithm descriptors, adapters, and contract fields
+
+- **Current limitation.** `BaseAlgorithm` in `src/haute/modelling/_algorithms.py` exposes `fit`,
+  `predict`, `feature_importance` and `save` with CatBoost-shaped keyword arguments;
+  `ALGORITHM_REGISTRY` maps names to classes with no capability data; `FeatureContract` in
+  `src/haute/modelling/_feature_contract.py` has no algorithm, loss, link, class or engine fields;
+  `MODEL_FILE_SUFFIXES` in `src/haute/modelling/_model_export.py` is a two-entry literal; the
+  GLM MLflow wrapper lives in `src/haute/modelling/_glm_pyfunc.py`.
+- **Unresolved target.**
+  - *Descriptor.* A frozen `AlgorithmDescriptor` per registry key (`catboost`, `glm`, `xgboost`,
+    `lightgbm`, `ebm`) with: `key`; `tasks: frozenset[Task]`; `losses: Mapping[Task,
+    Mapping[str, NativeLoss]]`, where `NativeLoss` holds the native objective string and the link
+    (`"identity"`, `"log"` or `"logit"`); `allowed_params: frozenset[str] | None`;
+    `reserved_params: frozenset[str]`; `param_aliases: Mapping[str, str]` (every native alias of
+    an allowed or reserved key, mapped to its canonical name); `round_key: str | None`;
+    `refit_policy: Literal["validation_weighted_rounds", "fixed_budget", "none"]`;
+    `feature_controls: frozenset[Literal["monotone_constraints", "feature_weights",
+    "interactions"]]`; `suffix: str`; `engine_distribution: str`. Registry entries hold
+    descriptors plus a lazily imported adapter class, so importing the registry never imports an
+    engine. `MODEL_FILE_SUFFIXES` is derived from the descriptors.
+  - *Adapter interface.* Each adapter implements, in addition to today's `BaseAlgorithm`
+    methods: `prepare(train, valid, contract, params) -> Prepared` (owns native dataset
+    construction and releases the raw frame when the engine allows); `fit(prepared, params,
+    threads, on_iteration) -> FitResult`, where `FitResult` gains `rounds_configured: int | None`,
+    `rounds_fitted: int | None` and `stopping_reason: Literal["none", "validation",
+    "native_exhaustion"] | None`; `predict_margin(model, frame, contract) -> np.ndarray` (raw
+    score including any offset); `predict(model, frame, contract) -> np.ndarray` (inverse link of
+    the margin); `contributions(model, frame, contract) -> Contributions` with `bias:
+    np.ndarray`, `values: np.ndarray` and `terms: list[tuple[str, ...]]` (a pairwise EBM term is
+    one tuple of two names); and `load(path, contract) -> model`.
+  - *Parameter validation.* For XGBoost, LightGBM and EBM a raw `params` key is accepted only
+    when it is in `allowed_params`; a key in `reserved_params`, a key that `param_aliases` maps to
+    another canonical name, or two keys naming the same canonical parameter fail with
+    `TrainingConfigError`, naming the key and its canonical form, and tuning search-space names
+    follow the same rule. CatBoost and the GLM keep their existing parameter contracts:
+    `allowed_params` is `None` for both. CatBoost raw `params` are still forwarded unchanged, its
+    tuning search spaces still exclude `_ORCHESTRATION_OWNED_KEYS`, and its `reserved_params` is
+    exactly `thread_count`, which the thread allotment now owns. The GLM keeps its
+    `GLM_CONFIG_KEYS`, `glm_params_issue` and `validate_glm_params` validation with empty
+    `reserved_params` and `param_aliases`.
+  - *Feature contract.* `FeatureContract` gains `contract_version: Literal[2]`,
+    `algorithm: str`, `loss: str | None` (the Haute loss; `None` for the GLM, which records its
+    family instead), `glm_family: str | None`, `link: Literal["identity", "log", "logit"]`,
+    `variance_power: float | None`, `class_labels: tuple[bool | int | str, bool | int | str] |
+    None` ordered `[negative, positive]`, `native_feature_names: dict[str, str] | None`,
+    `engine: dict[str, str]` holding `name` and exact `version`, and `haute_version: str`. Every
+    field enters the canonical payload that `contract_hash` covers, and `load_contract` rejects a
+    payload without `contract_version` 2.
+  - *Categorical encoding.* Adapters build categorical columns from the contract's stored
+    levels with `None` removed: the non-null levels, in stored order, are the pandas categories,
+    and a null value becomes the engine's native missing value (a missing category code), never
+    a category. A literal string such as `"__missing__"` is an ordinary level and never collides
+    with null. EBM receives the same nulls as missing values.
+  - *Threads.* `TrainingJob` resolves one `threads: int` per job from the
+    `HAUTE_TRAINING_THREADS` environment variable, defaulting to the physical core count, and
+    passes it to every adapter (`thread_count`, `nthread`, `num_threads`; EBM uses `n_jobs=1`).
+    Candidate evidence records it.
+  - *Shared pyfunc.* The GLM wrapper module is replaced by a native-model pyfunc module that
+    loads a model file and its contract and dispatches on `contract.algorithm`; its loader is the
+    MLflow `loader_module` for every family.
+  - *Module ownership.* New modules under src/haute/modelling: _descriptors.py (descriptor type,
+    registry metadata, capability-fixture serialisation), _xgboost.py, _lightgbm.py, _ebm.py (one
+    adapter each) and _native_pyfunc.py (the shared wrapper, replacing _glm_pyfunc.py). The
+    generated frontend capability fixture is frontend/src/panels/modelling/algorithmCapabilities.json.
+    Each is added to the Module map and ownership ledger when it lands.
+- **Non-goals.** CatBoost's pool construction, GPU fit thread, and allocation order are unchanged;
+  the GLM keeps its terms contract.
+- **Failure and compatibility semantics.** A contract without `contract_version` 2 fails to load
+  with a message to retrain; no version-1 reader is kept. An adapter whose descriptor has no
+  suffix fails at registration.
+- **Acceptance evidence.** New tests: a descriptor-completeness test over every registry key; an
+  allowlist test per new family covering an allowed key, a reserved key, an alias of an allowed
+  key and two keys for one canonical parameter; a CatBoost test that arbitrary raw params are
+  still forwarded, `thread_count` is rejected, and tuning still excludes the orchestration-owned
+  keys; a GLM test that its existing parameter validation is unchanged; a contract round-trip and hash-coverage test that
+  changes each new field in turn; a version-1 contract rejection test; a threads test asserting
+  each engine receives the allotment; a capability-fixture drift test; a suffix-registration
+  test.
+- **Roadmap package.** [MOD-F01](../roadmap/modelling.md#mod-f01--extend-common-algorithm-prediction-and-artifact-seams).
+
+## Approved change contract — XGBoost adapter parameters and behaviour
+
+- **Current limitation.** No XGBoost adapter exists.
+- **Unresolved target.** Descriptor: tasks regression and classification; losses `RMSE` →
+  `reg:squarederror` (identity), `MAE` → `reg:absoluteerror` (identity), `Poisson` →
+  `count:poisson` (log), `Gamma` → `reg:gamma` (log), `Tweedie` → `reg:tweedie` with
+  `tweedie_variance_power` from `variance_power` (log), `Logloss` → `binary:logistic` (logit);
+  `round_key` `num_boost_round`; `refit_policy` `validation_weighted_rounds`; feature controls
+  `monotone_constraints`; suffix `.ubj`; distribution `xgboost-cpu` (`xgboost` on macOS).
+  `allowed_params`: `num_boost_round`, `early_stopping_rounds`, `eta`, `max_depth`, `max_leaves`,
+  `grow_policy`, `min_child_weight`, `gamma`, `max_delta_step`, `subsample`,
+  `colsample_bytree`, `colsample_bylevel`, `colsample_bynode`, `lambda`, `alpha`, `max_bin`,
+  `max_cat_to_onehot`, `max_cat_threshold`. `reserved_params`: `objective`,
+  `tweedie_variance_power`, `eval_metric`, `base_score`, `tree_method`, `booster`, `device`,
+  `nthread`, `n_jobs`, `seed`, `random_state`, `enable_categorical`, `feature_names`,
+  `feature_types`, `monotone_constraints`, `interaction_constraints`, `callbacks`,
+  `base_margin`. `param_aliases`: `learning_rate` → `eta`, `min_split_loss` → `gamma`,
+  `reg_lambda` → `lambda`, `reg_alpha` → `alpha`, `n_estimators` → `num_boost_round`. Data:
+  categorical columns follow the shared categorical encoding (non-null stored levels in order,
+  nulls as native missing values); offsets become `base_margin` at fit and predict; `hist` trees, `seed`
+  from the job seed, and `nthread` from the allotment. Stopping: `best_iteration + 1` rounds are
+  kept by slicing the booster before saving; `rounds_fitted` is the saved booster's
+  `num_boosted_rounds()`. Contributions: `pred_contribs`, whose last column is the bias
+  including the offset.
+- **Non-goals.** The scikit-learn wrapper, `dart`/`gblinear` boosters and GPU devices.
+- **Failure and compatibility semantics.** A contract whose `loss` disagrees with the saved
+  config's objective fails at load; an offset model scored without its offset column fails.
+- **Acceptance evidence.** New tests: one weighted fit per loss with objective check after
+  reload; a categorical feature holding both nulls and the literal `"__missing__"` that fits,
+  reloads and scores with nulls as missing values and `"__missing__"` as its own level; bit-identical save/reload; a reordered-category scoring frame matching the original;
+  unseen-category rejection before native prediction; contribution sums within `1e-5`
+  relative of the margin; a three-round early-stopping refit fixture; offset present at fit and
+  required at scoring.
+- **Roadmap package.** [MOD-F02](../roadmap/modelling.md#mod-f02--deliver-the-complete-xgboost-slice).
+
+## Approved change contract — LightGBM adapter parameters and behaviour
+
+- **Current limitation.** No LightGBM adapter exists.
+- **Unresolved target.** Descriptor: losses `RMSE` → `regression`, `MAE` → `regression_l1`,
+  `Poisson` → `poisson`, `Gamma` → `gamma`, `Tweedie` → `tweedie` with
+  `tweedie_variance_power`, `Logloss` → `binary`, links as for XGBoost; `round_key`
+  `num_iterations`; `refit_policy` `validation_weighted_rounds`; feature controls
+  `monotone_constraints`; suffix `.lgbm`; distribution `lightgbm`. `allowed_params`:
+  `num_iterations`, `early_stopping_round`, `learning_rate`, `num_leaves`, `max_depth`,
+  `min_data_in_leaf`, `min_sum_hessian_in_leaf`, `feature_fraction`, `bagging_fraction`,
+  `bagging_freq`, `lambda_l1`, `lambda_l2`, `min_gain_to_split`, `max_bin`,
+  `max_cat_to_onehot`, `max_cat_threshold`, `cat_smooth`, `cat_l2`, `min_data_per_group`.
+  `reserved_params`: `objective`, `tweedie_variance_power`, `boosting`, `metric`,
+  `num_threads`, `device_type`, `seed`, `bagging_seed`, `feature_fraction_seed`,
+  `data_random_seed`, `categorical_feature`, `monotone_constraints`, `linear_tree`,
+  `init_score`, `verbosity`. `param_aliases`: the pinned release's complete alias table for
+  every allowed and reserved key (for example `num_leaf`, `max_leaves` → `num_leaves`; `eta`,
+  `shrinkage_rate` → `learning_rate`; `num_boost_round`, `n_estimators` → `num_iterations`;
+  `subsample` → `bagging_fraction`), snapshotted into the descriptor and checked against the
+  installed release by a test. Data: a `Dataset` whose categoricals follow the shared
+  categorical encoding, weights, and `init_score` of the transformed offset for train and validation.
+  Stopping: `best_iteration` is a one-based count and the model is saved with
+  `num_iteration=best_iteration`; `rounds_fitted` is the reloaded model's
+  `current_iteration()`, and `stopping_reason` is `native_exhaustion` when that is below the
+  configured ceiling without validation stopping. Prediction adds the transformed offset to
+  `raw_score=True` output before the inverse link. Contributions: `pred_contrib`, with the
+  offset added to the bias column by the adapter.
+- **Non-goals.** GPU devices, `linear_tree`, native `refit` and model continuation.
+- **Failure and compatibility semantics.** A contract whose `loss` disagrees with the model
+  text's `objective=` line fails at load.
+- **Acceptance evidence.** New tests: one fit per loss; the null and `"__missing__"`
+  categorical fixture fitting, reloading and scoring as for XGBoost; offset added exactly once
+  through a reloaded model; alias-table drift test against the installed release; a constant-feature fit
+  recording `native_exhaustion`; alias and duplicate-key rejection; contribution reconciliation
+  including the offset.
+- **Roadmap package.** [MOD-F03](../roadmap/modelling.md#mod-f03--decide-on-and-deliver-the-complete-lightgbm-slice).
+
+## Approved change contract — EBM adapter parameters and behaviour
+
+- **Current limitation.** No EBM adapter exists.
+- **Unresolved target.** Descriptor: losses `RMSE` → `rmse` (identity), `Poisson` →
+  `poisson_deviance` (log), `Gamma` → `gamma_deviance` (log), `Tweedie` →
+  `tweedie_deviance:variance_power=<p>` (log), `Logloss` → `log_loss` (logit); `MAE` is not
+  supported; `round_key` `max_rounds`; `refit_policy` `fixed_budget`; feature controls
+  `monotone_constraints` and `interactions`; suffix `.ebm`; distribution `interpret-core`.
+  `allowed_params`: `max_rounds` (required, positive), `learning_rate`, `max_bins`,
+  `max_interaction_bins`, `interactions` (a non-negative count or a list of feature-name
+  pairs), `min_samples_leaf`, `min_hessian`, `max_leaves`, `smoothing_rounds`,
+  `interaction_smoothing_rounds`, `greedy_ratio`, `cyclic_progress`, `reg_alpha`,
+  `reg_lambda`, `max_delta_step`, `gain_scale`, `min_cat_samples`, `cat_smooth`, `missing`.
+  `reserved_params`: `objective`, `outer_bags` (fixed 1), `inner_bags` (fixed 0),
+  `validation_size`, `early_stopping_rounds` (fixed 0), `early_stopping_tolerance`, `n_jobs`
+  (fixed 1), `random_state`, `feature_names`, `feature_types`, `monotone_constraints`,
+  `exclude`, `callback`. Data: every passed row is a training-partition row with bag `1`;
+  `feature_types` is `nominal` for contract categoricals and `continuous` otherwise;
+  interaction pairs resolve to indices after feature order is fixed; offsets go to `init_score`
+  at fit and predict. Evidence records native `best_iteration_` as term-update steps and
+  `rounds_configured` as `max_rounds`; `rounds_fitted` is `None`. Contributions: `eval_terms`
+  values per term plus `intercept_` and the transformed offset as bias. Persistence: `joblib`
+  to `.ebm`, loaded only through `safe_joblib_load`, then validated: exact class, `objective`
+  matching the contract's loss, `n_features_in_`, `feature_names_in_` and `feature_types_in_`
+  matching the contract,
+  finite `term_scores_` and `intercept_`. Version: the contract's `engine.version` must equal the
+  installed `interpret-core` version exactly, or loading fails with `ArtifactVersionMismatchError`,
+  because scikit-learn's state hook checks versions only for its own classes.
+- **Non-goals.** Early stopping, outer or inner bagging, `exclude`, and EBM editing.
+- **Failure and compatibility semantics.** A missing `max_rounds`, a reserved key, an unknown
+  interaction feature name, or an interaction involving a monotone-constrained feature fails in
+  configuration validation; an interpret-core version mismatch fails at load.
+- **Acceptance evidence.** New tests: one fit per supported loss; restricted-loader round trip for
+  regressor and classifier; an exact-version match loads and a mismatched `engine.version`
+  fails; a crafted payload in an `.ebm` file is blocked; term contributions plus bias equal the
+  log/logit margin; selection fits receive only training-partition rows and the final
+  development refit receives development rows but never final-test rows.
+- **Roadmap package.** [MOD-F04](../roadmap/modelling.md#mod-f04--deliver-the-complete-ebm-slice-and-its-term-representation).

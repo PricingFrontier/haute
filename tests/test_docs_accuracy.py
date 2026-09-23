@@ -147,6 +147,7 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "pipeline-config",
 )
 _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
+    "mod-f00-engine-probes.md",
     "pipeline-cache-memory-design.md",
     "pr-227-cache-evidence.md",
     "pr-227-ci-implementation-evidence.md",

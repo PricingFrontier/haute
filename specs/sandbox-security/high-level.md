@@ -337,3 +337,27 @@ Out of scope (owned elsewhere, linked where relevant):
   `safe_joblib_load` instantiates a private `NumpyUnpickler` subclass whose
   `find_class` applies the shared allowlist, so unrelated `joblib.load()` calls
   cannot observe a temporary class mutation.
+
+## Approved change contract — EBM classes in the restricted loader
+
+- **Current limitation.** `src/haute/_sandbox.py` blocks InterpretML classes, so a `.ebm` joblib
+  file cannot be loaded.
+- **Unresolved target.** Exactly two classes are added to the restricted loader's class allowlist:
+  `interpret.glassbox._ebm._ebm.ExplainableBoostingRegressor` and
+  `interpret.glassbox._ebm._ebm.ExplainableBoostingClassifier`. The [MOD-F00 engine probes](../roadmap/mod-f00-engine-probes.md) show a pinned 0.7.8
+  model references only these classes plus joblib and NumPy scaffolding already allowed, restores
+  state through scikit-learn's `BaseEstimator` hooks, and holds only builtins, NumPy scalars and
+  arrays. The loaded object's type, task, term indices and finite scores are validated before
+  inference. scikit-learn's `BaseEstimator.__setstate__` checks versions only for classes whose
+  module starts with `sklearn.`, so it gives InterpretML classes no protection; instead, loading
+  a `.ebm` file requires the model's feature contract to record exactly the installed
+  `interpret-core` version, and otherwise fails with `ArtifactVersionMismatchError`.
+- **Non-goals.** No `interpret.*` prefix or other InterpretML symbol is trusted, and unrestricted
+  `pickle.load` or `joblib.load` is never used.
+- **Failure and compatibility semantics.** Any other global in a `.ebm` file, including a crafted
+  callable, is blocked with the existing allowlist error; a `.ebm` file whose contract records a
+  different `interpret-core` version, or none, fails before unpickling.
+- **Acceptance evidence.** Regressor and classifier load bit-identically through the restricted
+  loader; a crafted payload in a `.ebm` file is blocked; a matching recorded version loads and a
+  mismatched or missing one fails before unpickling.
+- **Roadmap package.** [MOD-F04](../roadmap/modelling.md#mod-f04--deliver-the-complete-ebm-slice-and-its-term-representation).

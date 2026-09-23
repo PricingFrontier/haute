@@ -345,3 +345,38 @@ new-job samples. `frontend/src/panels/__tests__/NodePanel.test.tsx`,
 `frontend/src/panels/__tests__/PreviewPanelTabs.test.tsx` prove strip gating, per-node memory,
 active-indicator accessibility, and unchanged roving-keyboard behaviour. Runtime/store suites prove
 strict live-history parsing, latest-status retention, and per-job estimator reset.
+
+## Approved change contract — model-family selection and binary classes
+
+- **Current limitation.** The modelling gateway, pane lists, loss gates, suffix maps and
+  parameter panes assume exactly two algorithms, CatBoost and the GLM, and there is no
+  positive-class control.
+- **Unresolved target.** Frontend algorithm unions and capabilities come from a checked-in fixture
+  generated from the backend descriptors, and a backend test fails when they differ. The shared
+  loss control offers only the losses the selected family supports. Switching family keeps
+  applicable column roles, evaluation settings and a still-supported loss, isolates parameter
+  drafts per family, and marks the last successful result as stale with its original model
+  identity so exports cannot pair new configuration with an older model. Classification targets
+  whose labels are not Boolean or 0/1 show a positive-class selector for every family. A family's
+  gateway card appears only once its slice is complete.
+- **Non-goals.** The GLM terms pane and CatBoost feature cards are unchanged.
+- **Failure and compatibility semantics.** A saved configuration whose loss or parameters the
+  selected family does not support stays visible and repairable, and training is refused until it
+  is repaired; nothing is silently dropped.
+- **Acceptance evidence.** Capability-fixture agreement test; family-switch state tests; stale
+  result and export-guard tests; positive-class selector tests.
+- **Roadmap package.** [MOD-F01](../roadmap/modelling.md#mod-f01--extend-common-algorithm-prediction-and-artifact-seams).
+
+## Approved change contract — EBM term and interaction views
+
+- **Current limitation.** Results panes show tree importances and GLM coefficients only.
+- **Unresolved target.** EBM results show main-effect shape functions with category labels and
+  missing-value bins, term importances, and pairwise interaction surfaces, labelled as additive
+  term scores rather than SHAP values. Trace explanations for EBM show intercept plus term
+  contributions reconciling to the served prediction.
+- **Non-goals.** GLM inference statistics are never shown for EBM, and there is no GPU control.
+- **Failure and compatibility semantics.** A missing optional diagnostic is shown as an explicit
+  error or as unsupported, never as an empty success.
+- **Acceptance evidence.** Component tests for shape, importance and interaction views and for
+  trace reconciliation; one browser lifecycle scenario for EBM interactions.
+- **Roadmap package.** [MOD-F04](../roadmap/modelling.md#mod-f04--deliver-the-complete-ebm-slice-and-its-term-representation).

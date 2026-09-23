@@ -409,3 +409,19 @@ execution time on a mis-wired pipeline). Concretely:
   `RuntimeError` from `_gen_submodel_placeholder_unreachable`; this
   indicates `graph_to_code_multi`'s root/child-node filtering has a bug,
   since the occurrence should never be dispatched on.
+
+## Approved change contract — training scripts and Model Score code for new families
+
+- **Current limitation.** Generated training scripts and Model Score code handle CatBoost and
+  RustyStats artifacts only.
+- **Unresolved target.** Generated training scripts for every new family still go through the
+  shared training configuration and training job, so script and GUI runs share configuration,
+  training identity and effective parameters. Generated Model Score code selects the same native
+  artifact and prediction adapter as the GUI, for `.ubj`, `.lgbm` and `.ebm` models. Each family's
+  slice extends this for its artifact.
+- **Non-goals.** No engine-specific training code is generated outside the training job.
+- **Failure and compatibility semantics.** Generated code for a family whose engine is not
+  installed fails at import with the missing package named.
+- **Acceptance evidence.** Codegen round-trip tests for each new family's Model Score node and
+  training script, and scoring parity between generated and GUI code.
+- **Roadmap package.** [MOD-F02](../roadmap/modelling.md#mod-f02--deliver-the-complete-xgboost-slice).
