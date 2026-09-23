@@ -910,7 +910,23 @@ delegated cgroup-v2 child with a finite `memory.max` and otherwise applies
 `RLIMIT_AS`; Windows assigns the child to a Job Object with a finite aggregate
 job-memory commit limit, so descendants cannot each consume the complete admitted
 budget. Limits are growth budgets: the native baseline is measured before the
-hard ceiling is installed. `NativeMemoryLease.apply()` clears its recorded backend
+hard ceiling is installed. The `RLIMIT_AS` fallback first runs
+`_start_polars_thread_pools()` once per process — one small query on each Polars engine,
+so every pool thread and its allocator arena exist — and only then reads the address-space
+baseline; its ceiling is that baseline plus the growth budget plus the lease's
+`address_space_allowance_bytes` (zero except for the training fit's protocol worker, which
+passes `model_thread_address_space_allowance()`, 192 MiB per CPU, for the model library's
+pool). The allowance applies to `RLIMIT_AS` only; a cgroup or Job Object counts charged or
+committed memory, not reservations. `_protocol_entrypoint` installs its cap through the
+same `NativeMemoryLease` as the other entrypoints, with the caller's `require_memory_limit`;
+a required cap the host cannot install is its `contract_error`, as it is for a one-shot worker,
+and `run_worker_protocol` removes the joined child's private cgroup as `run_isolated_worker` does.
+Every entrypoint starts its result queue's feeder thread (and the protocol worker its progress
+queue's) with `start_worker_queue_feeder()` before installing the cap, so reporting never needs
+a new thread under it. When a cap is active, `memory_error_for_thread_start_failure()` turns an
+exception that reports a thread could not start (`can't start new thread`, Polars' `could not
+spawn threads`) into a `MemoryError`, which every entrypoint, and the training fits' own
+failure mapping, reports as the memory-limit outcome. `NativeMemoryLease.apply()` clears its recorded backend
 before attempting an installation and `restore()` clears it after releasing the
 cap, so `lease.backend` is non-`None` only while a cap installed by the current
 request is active; `_isolated_worker_entrypoint` and the warm interactive worker

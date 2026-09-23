@@ -283,6 +283,16 @@ _EXPECTED_DEBT_IDS = {
     # the exit-code classification itself is covered on every platform.
     # See tests/test_worker_isolation.py.
     "28de4bc1e189b1c6",
+    # The RLIMIT_AS fallback counts reserved address space, which only Linux exposes
+    # through /proc; the warm-up that keeps it honest is measured in a fresh process
+    # there. The ordering and allowance logic is covered on every platform with a fake
+    # resource API. See tests/test_native_memory_limit.py.
+    "0658216fd4d47ec9",
+    # A training fit's protocol worker runs under a real native cap (a Job Object on
+    # Windows, a cgroup or RLIMIT_AS on Linux); macOS has no dependable per-process
+    # cap, so the real-spawn check needs a host that has one. The entrypoint's lease
+    # wiring is covered on every platform. See tests/test_worker_protocol.py.
+    "809667c1ff73f5be",
     # macOS available-RAM probe — the Mach ``host_statistics64`` counters exist
     # only on darwin, so the unmocked-kernel assertion is darwin-gated. This is
     # the test that would have caught the original defect (darwin had no

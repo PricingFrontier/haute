@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -265,6 +266,129 @@ def test_rlimit_never_widens_finite_soft_limit_and_restores_exact_pair(
     assert calls == [(9, (50, 80)), (9, (50, 80)), (9, (50, 80)), (9, (50, 80))]
 
 
+def test_rlimit_starts_polars_pools_before_measuring_the_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RLIMIT_AS counts reservations: the pools' stacks and arenas must already
+    exist when the baseline is read, or the job's budget pays for them."""
+    events: list[object] = []
+    current = [-1, -1]
+
+    def setrlimit(limit: int, values: tuple[int, int]) -> None:
+        events.append(("setrlimit", values))
+        current[:] = values
+
+    def baseline() -> int:
+        events.append("baseline")
+        return 100
+
+    fake_resource = SimpleNamespace(
+        RLIMIT_AS=9,
+        RLIM_INFINITY=-1,
+        getrlimit=lambda _limit: tuple(current),
+        setrlimit=setrlimit,
+    )
+    monkeypatch.setattr(native, "_rlimit_as_supported", lambda: True)
+    monkeypatch.setattr(native, "_start_polars_thread_pools", lambda: events.append("pools"))
+    monkeypatch.setattr(native, "_native_baseline_bytes", baseline)
+    monkeypatch.setitem(sys.modules, "resource", fake_resource)
+
+    native.NativeMemoryLease()._apply_rlimit(25, address_space_allowance_bytes=7)
+
+    assert events == ["pools", "baseline", ("setrlimit", (132, -1))]
+
+
+def test_polars_pools_start_once_per_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    runs: list[int] = []
+    monkeypatch.setattr(native, "_polars_thread_pools_started", False)
+    monkeypatch.setattr(native, "_run_polars_pool_queries", lambda: runs.append(1))
+
+    native._start_polars_thread_pools()
+    native._start_polars_thread_pools()
+
+    assert runs == [1]
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="RLIMIT_AS address space is read from /proc on Linux",
+)
+def test_starting_the_polars_pools_leaves_no_later_address_space_growth() -> None:
+    """In a fresh process, after the warm-up a job on either engine reserves almost no
+    new address space, so an RLIMIT_AS cap counts only what the job allocates. A cold
+    job reserves hundreds of MiB here even with eight Polars threads."""
+    import subprocess
+    import textwrap
+
+    probe = textwrap.dedent(
+        """
+        import os, sys
+        import polars as pl
+        from haute._native_memory_limit import _run_polars_pool_queries
+
+        def reserved():
+            pages = int(open("/proc/self/statm").read().split()[0])
+            return pages * os.sysconf("SC_PAGE_SIZE")
+
+        if sys.argv[1] == "warm":
+            _run_polars_pool_queries()
+        before = reserved()
+        for engine in ("streaming", "in-memory"):
+            (
+                pl.DataFrame({"a": range(100_000)})
+                .lazy()
+                .with_columns(b=pl.col("a") * 2)
+                .group_by(pl.col("a") % 13)
+                .agg(pl.col("b").sum())
+                .sort("a")
+                .collect(engine=engine)
+            )
+        print(reserved() - before)
+        """
+    )
+
+    def growth(mode: str) -> int:
+        completed = subprocess.run(
+            [sys.executable, "-c", probe, mode],
+            capture_output=True,
+            text=True,
+            check=True,
+            env={**os.environ, "POLARS_MAX_THREADS": "8"},
+        )
+        return int(completed.stdout.strip())
+
+    assert growth("cold") > 256 * 2**20
+    assert growth("warm") < 64 * 2**20
+
+
+def test_model_thread_allowance_scales_with_cpus(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(native.os, "cpu_count", lambda: 32)
+    assert native.model_thread_address_space_allowance() == 32 * 192 * 1024 * 1024
+    monkeypatch.setattr(native.os, "cpu_count", lambda: None)
+    assert native.model_thread_address_space_allowance() == 192 * 1024 * 1024
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RuntimeError("can't start new thread"),
+        RuntimeError("could not spawn threads: Resource temporarily unavailable (os error 11)"),
+    ],
+)
+def test_a_thread_start_failure_under_a_cap_becomes_a_memory_error(
+    failure: BaseException,
+) -> None:
+    converted = native.memory_error_for_thread_start_failure(failure)
+
+    assert isinstance(converted, MemoryError)
+    assert converted.__cause__ is failure
+
+
+def test_other_failures_pass_through_unchanged() -> None:
+    failure = RuntimeError("boom")
+    assert native.memory_error_for_thread_start_failure(failure) is failure
+
+
 def test_rlimit_infinity_restores_exact_pair(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[int, tuple[int, int]]] = []
     current = [-1, -1]
@@ -353,7 +477,7 @@ def test_linux_programming_failure_unwinds_then_falls_back_to_rlimit(
     monkeypatch.setattr(
         native.NativeMemoryLease,
         "_apply_rlimit",
-        lambda _lease, growth: calls.append(("rlimit", growth)),
+        lambda _lease, growth, _allowance=0: calls.append(("rlimit", growth)),
     )
 
     assert lease.apply(77, required=True)
@@ -612,7 +736,7 @@ def test_native_apply_preserves_required_and_cleanup_failures(
     monkeypatch.setattr(
         native.NativeMemoryLease,
         "_apply_rlimit",
-        lambda _lease, _growth: (_ for _ in ()).throw(OSError("rlimit failed")),
+        lambda _lease, _growth, _allowance=0: (_ for _ in ()).throw(OSError("rlimit failed")),
     )
     with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="setup failed"):
         native.NativeMemoryLease().apply(1, required=True)
@@ -651,7 +775,7 @@ def test_linux_existing_cgroup_and_double_fallback_fail_closed(
     monkeypatch.setattr(
         native.NativeMemoryLease,
         "_apply_rlimit",
-        lambda _lease, _growth: (_ for _ in ()).throw(
+        lambda _lease, _growth, _allowance=0: (_ for _ in ()).throw(
             native.NativeMemoryLimitUnsupportedError("no rlimit")
         ),
     )
@@ -818,7 +942,7 @@ def test_failed_best_effort_apply_after_a_successful_request_leaves_no_evidence(
     """A later failed RLIMIT attempt must not inherit the earlier request's backend."""
     attempts: list[int] = []
 
-    def apply_rlimit(self: native.NativeMemoryLease, growth: int) -> None:
+    def apply_rlimit(self: native.NativeMemoryLease, growth: int, _allowance: int = 0) -> None:
         attempts.append(growth)
         if len(attempts) == 1:
             self._backend = "rlimit"

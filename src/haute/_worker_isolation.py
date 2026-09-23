@@ -20,6 +20,7 @@ from haute._logging import get_logger
 from haute._native_memory_limit import (
     NativeMemoryLease,
     cleanup_private_cgroups_for_pid,
+    memory_error_for_thread_start_failure,
     native_memory_backend_scope,
     native_memory_caps_supported,
 )
@@ -53,6 +54,8 @@ class IsolatedWorkerConfig:
     stop_reason: Callable[[], WorkerTerminalReason | None] | None = None
     stop_poll_interval_seconds: float = 0.1
     process_name: str = "haute-isolated-worker"
+    # Widens only an RLIMIT_AS cap, for a model library's thread reservations.
+    address_space_allowance_bytes: int = 0
 
     def __post_init__(self) -> None:
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
@@ -63,6 +66,8 @@ class IsolatedWorkerConfig:
             raise ValueError("required memory enforcement needs a configured memory limit")
         if self.stop_poll_interval_seconds <= 0:
             raise ValueError("stop_poll_interval_seconds must be positive")
+        if self.address_space_allowance_bytes < 0:
+            raise ValueError("address_space_allowance_bytes must not be negative")
 
 
 def resolve_worker_memory_enforcement() -> WorkerMemoryEnforcement:
@@ -82,6 +87,7 @@ def worker_config_for_memory_policy(
     stop_reason: Callable[[], WorkerTerminalReason | None] | None = None,
     stop_poll_interval_seconds: float = 0.1,
     process_name: str = "haute-isolated-worker",
+    address_space_allowance_bytes: int = 0,
 ) -> IsolatedWorkerConfig:
     """Build worker controls without implying a hard cap on unsupported hosts."""
     enforcement = resolve_worker_memory_enforcement()
@@ -97,6 +103,7 @@ def worker_config_for_memory_policy(
         stop_reason=stop_reason,
         stop_poll_interval_seconds=stop_poll_interval_seconds,
         process_name=process_name,
+        address_space_allowance_bytes=address_space_allowance_bytes,
     )
 
 
@@ -576,6 +583,18 @@ def _reset_resource_tracker() -> None:
         tracker._pid = None
 
 
+def start_worker_queue_feeder(worker_queue: Any) -> None:
+    """Start a multiprocessing queue's feeder thread now.
+
+    ``Queue.put`` starts it on first use. Under a native cap that first use can come
+    after the cap has left no room for a thread, so a worker starts its reporting
+    threads before installing the cap. An in-process queue has no feeder.
+    """
+    start = getattr(worker_queue, "_start_thread", None)
+    if callable(start) and getattr(worker_queue, "_thread", None) is None:
+        start()
+
+
 def create_worker_queue(ctx: Any, maxsize: int) -> Any:
     """Create a worker queue, surviving one dead host resource tracker.
 
@@ -815,6 +834,7 @@ def _isolated_worker_entrypoint(
     applied = False
     try:
         configure_process_high_qos()
+        start_worker_queue_feeder(result_queue)
         if memory_limit_bytes is not None:
             applied = lease.apply(memory_limit_bytes, required=require_memory_limit)
     except BaseException as exc:
@@ -828,7 +848,9 @@ def _isolated_worker_entrypoint(
         try:
             envelope = ("ok", function(*args, **kwargs))
         except BaseException as exc:
-            envelope = _worker_error_envelope(exc)
+            envelope = _worker_error_envelope(
+                memory_error_for_thread_start_failure(exc) if applied else exc
+            )
         # The native limit deliberately remains active until the queue feeder has
         # flushed this possibly-large payload.  Do not restore or close the lease:
         # process teardown releases it, and the joined parent removes any private
@@ -859,25 +881,6 @@ def _serialise_worker_payload(envelope: tuple[str, Any]) -> bytes:
             _worker_error_envelope(RuntimeError(f"worker result was not serialisable: {exc}")),
             protocol=pickle.HIGHEST_PROTOCOL,
         )
-
-
-def _apply_address_space_limit(memory_limit_bytes: int) -> None:
-    # ``resource`` only exists on POSIX. Callers gate this via
-    # ``address_space_caps_supported`` so reaching the Windows branch here
-    # means we hit a contract bug — fail loudly rather than silently no-op.
-    if sys.platform == "win32":  # pragma: no cover - guarded by caller's support check
-        raise IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=memory_limit_bytes)
-    import resource
-
-    resource_module = cast(Any, resource)
-    current_soft, current_hard = resource_module.getrlimit(resource_module.RLIMIT_AS)
-    hard = memory_limit_bytes
-    if current_hard != resource_module.RLIM_INFINITY:
-        hard = min(hard, int(current_hard))
-    soft = min(memory_limit_bytes, hard)
-    if current_soft != resource_module.RLIM_INFINITY:
-        soft = min(soft, int(current_soft))
-    resource_module.setrlimit(resource_module.RLIMIT_AS, (soft, hard))
 
 
 def _read_worker_payload(

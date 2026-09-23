@@ -32,6 +32,7 @@ from haute._execution_context import (
     ExecutionProfile,
 )
 from haute._logging import get_logger
+from haute._native_memory_limit import model_thread_address_space_allowance
 from haute._sandbox import _get_project_root
 from haute._seed_plans import open_seed_plan
 from haute._types import PipelineGraph
@@ -988,6 +989,7 @@ class TrainService:
                 timeout_seconds=remaining,
                 stop_reason=lambda: self._training_jobs.cancellation_reason(job_id),
                 process_name=f"haute-dispersion-{job_id}",
+                address_space_allowance_bytes=model_thread_address_space_allowance(),
             )
             return self._supervisor.launch_protocol(
                 job_id,
@@ -2083,6 +2085,7 @@ class TrainService:
                 timeout_seconds=remaining,
                 stop_reason=lambda: self._training_jobs.cancellation_reason(job_id),
                 process_name=f"haute-training-{job_id}",
+                address_space_allowance_bytes=model_thread_address_space_allowance(),
             )
             return self._supervisor.launch_protocol(
                 job_id,

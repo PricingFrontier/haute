@@ -12,6 +12,7 @@ import importlib
 import os
 import re
 import sys
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -25,6 +26,65 @@ _CURRENT_NATIVE_MEMORY_BACKEND: ContextVar[NativeMemoryBackend | None] = Context
     "haute_current_native_memory_backend",
     default=None,
 )
+
+
+# A model library starts its own thread pool during a fit. Measured on a 32-CPU
+# Linux host, a small CatBoost fit reserves 5.3 GB and a RustyStats fit 2.1 GB of
+# address space while their resident growth stays under 20 MB.
+_MODEL_THREAD_ADDRESS_SPACE_PER_CPU = 192 * 1024 * 1024
+_THREAD_START_FAILURE_MARKERS = ("can't start new thread", "could not spawn threads")
+_polars_thread_pools_started = False
+_polars_thread_pools_lock = threading.Lock()
+
+
+def model_thread_address_space_allowance() -> int:
+    """Address space a training fit's cap allows for its model library's threads."""
+    return (os.cpu_count() or 1) * _MODEL_THREAD_ADDRESS_SPACE_PER_CPU
+
+
+def memory_error_for_thread_start_failure(exc: BaseException) -> BaseException:
+    """A thread that could not start under an active cap, as the memory failure it is."""
+    if isinstance(exc, KeyboardInterrupt | SystemExit | MemoryError):
+        return exc
+    message = str(exc)
+    if not any(marker in message for marker in _THREAD_START_FAILURE_MARKERS):
+        return exc
+    converted = MemoryError(
+        f"A thread could not start within the worker's memory limit ({message})."
+    )
+    converted.__cause__ = exc
+    return converted
+
+
+def _run_polars_pool_queries() -> None:
+    import polars as pl
+
+    # One query per engine: the streaming engine runs its own threads beside the
+    # in-memory pool, and a thread's allocator arena appears on its first allocation.
+    for engine in ("streaming", "in-memory"):
+        (
+            pl.DataFrame({"a": range(200_000)})
+            .lazy()
+            .group_by(pl.col("a") % 97)
+            .agg(pl.len())
+            .sort("a")
+            .collect(engine=engine)
+        )
+
+
+def _start_polars_thread_pools() -> None:
+    """Start every Polars pool thread, and its allocator arena, once per process.
+
+    ``RLIMIT_AS`` counts reserved address space. Started after the cap, the pools'
+    stacks and arenas (gigabytes on a many-core host) would spend the job's budget
+    on memory it never touches.
+    """
+    global _polars_thread_pools_started
+    with _polars_thread_pools_lock:
+        if _polars_thread_pools_started:
+            return
+        _run_polars_pool_queries()
+        _polars_thread_pools_started = True
 
 
 def current_native_memory_backend() -> NativeMemoryBackend | None:
@@ -211,9 +271,22 @@ class NativeMemoryLease:
         """The installed hard-cap mechanism, if this lease has one."""
         return self._backend
 
-    def apply(self, growth_bytes: int, *, required: bool) -> bool:
+    def apply(
+        self,
+        growth_bytes: int,
+        *,
+        required: bool,
+        address_space_allowance_bytes: int = 0,
+    ) -> bool:
+        """Install a cap of ``growth_bytes`` above the current usage.
+
+        ``address_space_allowance_bytes`` widens only an ``RLIMIT_AS`` ceiling, for
+        reservations a job's libraries make but do not touch.
+        """
         if growth_bytes <= 0:
             raise ValueError("memory growth limit must be positive")
+        if address_space_allowance_bytes < 0:
+            raise ValueError("address-space allowance must not be negative")
         # Evidence from an earlier request must never survive into this one:
         # a failed best-effort attempt after a successful request would
         # otherwise advertise a cap that is not installed.
@@ -222,9 +295,9 @@ class NativeMemoryLease:
             if sys.platform == "win32":
                 self._apply_windows(growth_bytes)
             elif sys.platform.startswith("linux"):
-                self._apply_linux(growth_bytes)
+                self._apply_linux(growth_bytes, address_space_allowance_bytes)
             else:
-                self._apply_rlimit(growth_bytes)
+                self._apply_rlimit(growth_bytes, address_space_allowance_bytes)
             return True
         except NativeMemoryLimitCleanupError:
             raise
@@ -273,14 +346,14 @@ class NativeMemoryLease:
             if not kernel32.CloseHandle(handle):
                 raise _windows_error()
 
-    def _apply_linux(self, growth_bytes: int) -> None:
+    def _apply_linux(self, growth_bytes: int, address_space_allowance_bytes: int = 0) -> None:
         if self._cgroup is None:
             try:
                 self._cgroup, self._cgroup_parent = _create_private_cgroup()
             except NativeMemoryLimitCleanupError:
                 raise
             except NativeMemoryLimitUnsupportedError:
-                self._apply_rlimit(growth_bytes)
+                self._apply_rlimit(growth_bytes, address_space_allowance_bytes)
                 return
         try:
             self._backend = "cgroup"
@@ -297,13 +370,13 @@ class NativeMemoryLease:
             self._cgroup_parent = None
             self._backend = None
             try:
-                self._apply_rlimit(growth_bytes)
+                self._apply_rlimit(growth_bytes, address_space_allowance_bytes)
             except NativeMemoryLimitUnsupportedError as fallback_error:
                 raise NativeMemoryLimitUnsupportedError(
                     "cgroup memory limit programming failed and RLIMIT_AS is unavailable"
                 ) from fallback_error
 
-    def _apply_rlimit(self, growth_bytes: int) -> None:
+    def _apply_rlimit(self, growth_bytes: int, address_space_allowance_bytes: int = 0) -> None:
         resource_api = _resource_api()
         if resource_api is None or sys.platform == "darwin":
             raise NativeMemoryLimitUnsupportedError("native address-space limits are unavailable")
@@ -311,7 +384,8 @@ class NativeMemoryLease:
         if self._rlimit_original is None:
             self._rlimit_original = (soft, hard)
         infinity = resource_api.RLIM_INFINITY
-        ceiling = _native_baseline_bytes() + growth_bytes
+        _start_polars_thread_pools()
+        ceiling = _native_baseline_bytes() + growth_bytes + address_space_allowance_bytes
         if hard != infinity:
             ceiling = min(ceiling, int(hard))
         if soft != infinity:
