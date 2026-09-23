@@ -13,6 +13,7 @@ import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStor
 import useSettingsStore from "../../stores/useSettingsStore"
 import useToastStore from "../../stores/useToastStore"
 import type { ModellingPane } from "../../stores/useUIStore"
+import useUIStore from "../../stores/useUIStore"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import type { SimpleNode, SimpleEdge } from "../editors"
 import type { MlflowDestinationEntry, MlflowDestinationKey } from "../../api/types"
@@ -259,27 +260,112 @@ afterEach(() => {
 // Config rendering
 // ═════════════════════════════════════════════════════════════════
 
+describe("Training configuration readiness", () => {
+  afterEach(cleanup)
+  it("reports an invalid local draft as a Parameters pane issue", () => {
+    const onPaneIssuesChange = vi.fn()
+    renderConfig({ activePane: "params", onPaneIssuesChange })
+    expect(onPaneIssuesChange).toHaveBeenLastCalledWith("node_1", [])
+    fireEvent.change(screen.getByLabelText("CatBoost hyperparameters JSON"), { target: { value: "{" } })
+    expect(onPaneIssuesChange).toHaveBeenLastCalledWith("node_1", ["params"])
+    fireEvent.change(screen.getByLabelText("CatBoost hyperparameters JSON"), { target: { value: "{}" } })
+    expect(onPaneIssuesChange).toHaveBeenLastCalledWith("node_1", [])
+  })
+  it("reports saved-config issues against the pane that fixes them", () => {
+    const onPaneIssuesChange = vi.fn()
+    renderConfig({
+      activePane: "train",
+      onPaneIssuesChange,
+      config: { _nodeId: "incomplete", algorithm: "catboost", target: "loss_ratio" },
+    })
+    expect(onPaneIssuesChange).toHaveBeenLastCalledWith("incomplete", ["target"])
+  })
+  it.each([
+    [{ algorithm: "catboost" }, ["target"]],
+    [{ algorithm: "glm", family: "poisson", target: "loss_ratio" }, ["features"]],
+    [
+      {
+        algorithm: "glm",
+        family: "poisson",
+        target: "loss_ratio",
+        terms: { age: { type: "linear" } },
+        regularization: "elastic_net",
+      },
+      ["params"],
+    ],
+  ])("flags the pane that completes %j", (config, panes) => {
+    const onPaneIssuesChange = vi.fn()
+    renderConfig({ activePane: "train", onPaneIssuesChange, config: { _nodeId: "setup", ...config } })
+    expect(onPaneIssuesChange).toHaveBeenLastCalledWith("setup", panes)
+  })
+  it("does not let a hidden fixed-parameter draft block a tuned run", () => {
+    const onPaneIssuesChange = vi.fn()
+    const { rerender, props } = renderConfig({ activePane: "params", onPaneIssuesChange })
+    fireEvent.change(screen.getByLabelText("CatBoost hyperparameters JSON"), { target: { value: "{" } })
+    expect(onPaneIssuesChange).toHaveBeenLastCalledWith("node_1", ["params"])
+
+    fireEvent.click(screen.getByRole("radio", { name: "Tune parameters" }))
+    const tuned = (props.onUpdate as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as Record<string, unknown>
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <ModellingConfig {...props} config={{ ...props.config, ...tuned }} />
+      </GraphProvider>,
+    )
+
+    expect(screen.queryByText(/Parameters JSON/)).toBeNull()
+    expect(onPaneIssuesChange).toHaveBeenLastCalledWith("node_1", [])
+  })
+  it("shows issues before Train and links to the affected pane", () => {
+    renderConfig({ activePane: "train", config: { _nodeId: "readiness", algorithm: "catboost", target: "loss_ratio" } })
+    expect(screen.getByRole("alert")).toHaveTextContent("Choose a training loss")
+    fireEvent.click(screen.getByRole("button", { name: /Go to Target/ }))
+    expect(useUIStore.getState().modellingPanes.readiness).toBe("target")
+  })
+  it("puts GLM regularization in Parameters", () => {
+    renderConfig({ activePane: "params", config: { _nodeId: "glm_params", algorithm: "glm", family: "poisson", target: "loss_ratio", terms: { age: { type: "linear" } } } })
+    expect(screen.getByText("Regularization")).toBeInTheDocument()
+    expect(screen.queryByText("Target column")).toBeNull()
+  })
+  it("keeps the missing L1 ratio issue out of Parameters for older Elastic Net configs", () => {
+    renderConfig({ activePane: "params", config: { _nodeId: "glm_params", algorithm: "glm", family: "poisson", target: "loss_ratio", terms: { age: { type: "linear" } }, regularization: "elastic_net" } })
+    expect(screen.getByRole("slider", { name: "L1 ratio" })).toBeInTheDocument()
+    expect(screen.queryByText("Choose an L1 ratio.")).toBeNull()
+  })
+  it("labels fixed-parameter validation and final fits distinctly", () => {
+    renderConfig({ activePane: "train" })
+    expect(screen.getByLabelText("Training run summary")).toHaveTextContent("2 total fits: 1 validation fit + 1 final fit")
+    expect(screen.getByLabelText("Training run summary")).toHaveTextContent("3 features")
+  })
+  it("shows only the final fit when validation is disabled", () => {
+    renderConfig({ activePane: "train", config: {
+      _nodeId: "no_validation", target: "loss_ratio", algorithm: "catboost", loss_function: "RMSE",
+      evaluation: { schema_version: 1, strategy: "random", seed: 42, validation: { method: "none" }, test: null },
+    } })
+    expect(screen.getByLabelText("Training run summary")).toHaveTextContent("1 final fit")
+  })
+  it("labels parameter-search runs as tuning fits", () => {
+    renderConfig({ activePane: "train", config: {
+      _nodeId: "tuning", target: "loss_ratio", algorithm: "catboost", loss_function: "RMSE",
+      tuning: { trial_count: 3 },
+    } })
+    expect(screen.getByLabelText("Training run summary")).toHaveTextContent("4 total fits: 3 tuning fits + 1 final fit")
+  })
+})
+
 describe("ModellingConfig", () => {
   describe("Config rendering", () => {
     it("renders target column dropdown with upstream columns", () => {
       renderConfig()
-      // Target select: the label says "Target column", find the select within that section
-      const targetLabel = screen.getByText("Target column")
-      const targetSection = targetLabel.closest("div")!
-      const targetSelect = targetSection.querySelector("select")!
-      expect(targetSelect.value).toBe("loss_ratio")
-      const options = within(targetSelect).getAllByRole("option")
-      // 1 placeholder + 4 columns
-      expect(options).toHaveLength(5)
-      expect(options.map((o) => o.textContent)).toContain("loss_ratio (Float64)")
-      expect(options.map((o) => o.textContent)).toContain("age (Int64)")
+      const targetPicker = screen.getByRole("button", { name: "Target column" })
+      expect(targetPicker).toHaveTextContent("loss_ratio")
+      fireEvent.click(targetPicker)
+      expect(screen.getByRole("listbox")).toHaveTextContent("loss_ratioFloat64")
+      expect(screen.getByRole("listbox")).toHaveTextContent("ageInt64")
     })
 
     it("renders weight column dropdown with 'None' default", () => {
       renderConfig()
-      // Weight defaults to "" which is the "None" option
-      const weightSelect = screen.getAllByDisplayValue("None")[0]
-      expect(weightSelect).toBeTruthy()
+      expect(screen.getByRole("button", { name: "Weight column" })).toHaveTextContent("None")
     })
 
     it("does not render a separate task selector", () => {
@@ -294,11 +380,9 @@ describe("ModellingConfig", () => {
       // 4 columns total. Target=loss_ratio excluded, weight="" so not excluded.
       // Feature columns: age, region, exposure = 3 of 4
       expect(
-        screen.getAllByRole("button", {
-          name: /is included; click to exclude$/,
-        }),
+        screen.getAllByRole("checkbox", { name: /^Include / }),
       ).toHaveLength(3)
-      expect(screen.getByText("3 of 3 included")).toBeInTheDocument()
+      expect(screen.getByText("3 included · 0 excluded")).toBeInTheDocument()
     })
 
     it("feature count adjusts when weight is set", () => {
@@ -308,11 +392,9 @@ describe("ModellingConfig", () => {
       })
       // Target=loss_ratio, weight=exposure both excluded. Features: age, region = 2 of 4
       expect(
-        screen.getAllByRole("button", {
-          name: /is included; click to exclude$/,
-        }),
+        screen.getAllByRole("checkbox", { name: /^Include / }),
       ).toHaveLength(2)
-      expect(screen.getByText("2 of 2 included")).toBeInTheDocument()
+      expect(screen.getByText("2 included · 0 excluded")).toBeInTheDocument()
     })
 
     it("exclude column toggles work", () => {
@@ -320,8 +402,8 @@ describe("ModellingConfig", () => {
       const { props } = renderConfig({ activePane: "features" })
       fireEvent.click(
         within(screen.getByRole("group", { name: "age feature" })).getByRole(
-          "button",
-          { name: "age is included; click to exclude" },
+          "checkbox",
+          { name: "Include age" },
         ),
       )
       expect(props.onUpdate).toHaveBeenCalledWith({ exclude: ["age"] })
@@ -334,8 +416,8 @@ describe("ModellingConfig", () => {
       })
       fireEvent.click(
         within(screen.getByRole("group", { name: "age feature" })).getByRole(
-          "button",
-          { name: "age is excluded; click to include" },
+          "checkbox",
+          { name: "Include age" },
         ),
       )
       // Should remove "age" from exclusion list
@@ -344,7 +426,7 @@ describe("ModellingConfig", () => {
 
     it("shows algorithm picker when algorithm is not set", () => {
       renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio", task: "regression" } })
-      expect(screen.getByText("Select Algorithm")).toBeTruthy()
+      expect(screen.getByText("Select algorithm")).toBeTruthy()
       expect(screen.getByText("CatBoost")).toBeTruthy()
     })
 
@@ -368,6 +450,7 @@ describe("ModellingConfig", () => {
       fireEvent.click(screen.getByText("CatBoost"))
       expect(props.onUpdate).toHaveBeenCalledWith({
         algorithm: "catboost",
+        params: { iterations: 1000, learning_rate: 0.05, depth: 6, l2_leaf_reg: 3, early_stopping_rounds: 50 },
         evaluation: expect.objectContaining({
           schema_version: 1,
           strategy: "random",
@@ -390,7 +473,7 @@ describe("ModellingConfig", () => {
           <ModellingConfig {...defaultProps()} />
         </GraphProvider>,
       )
-      expect(screen.queryByText(/Variance power/)).toBeNull()
+      expect(screen.queryByLabelText("Variance power")).toBeNull()
       unmount()
 
       // With Tweedie: slider visible
@@ -404,8 +487,8 @@ describe("ModellingConfig", () => {
         </GraphProvider>,
       )
       expect(screen.getByText(/Variance power/)).toBeTruthy()
-      expect(screen.getByRole("slider")).toHaveValue("1.5")
-      expect(screen.queryByRole("button", { name: /Set variance power/ })).toBeNull()
+      expect(screen.getByRole("spinbutton", { name: "Variance power" })).toHaveValue(null)
+      expect(screen.getByRole("alert")).toHaveTextContent("Tweedie variance power")
     })
   })
 
@@ -415,26 +498,19 @@ describe("ModellingConfig", () => {
 
   describe("Hyperparameter JSON editor", () => {
     beforeEach(() => { defaultPane = "params" })
-    it("renders one Hyperparameters JSON editor without dedicated parameter fields", () => {
+    it("renders one visible JSON editor without individual parameter fields", () => {
       renderConfig()
-      expect(screen.getByText("Hyperparameters")).toBeTruthy()
-      expect(screen.getByLabelText("CatBoost hyperparameters JSON")).toBeTruthy()
+      expect(screen.getByLabelText("CatBoost hyperparameters JSON")).toBeVisible()
       expect(document.querySelectorAll("textarea")).toHaveLength(1)
-      expect(screen.queryAllByRole("spinbutton")).toHaveLength(0)
+      expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument()
     })
 
-    it("textarea shows default params when config.params is empty", () => {
+    it("textarea shows an empty object when config.params is empty", () => {
       renderConfig()
       const editor = screen.getByLabelText(
         "CatBoost hyperparameters JSON",
       ) as HTMLTextAreaElement
-      expect(JSON.parse(editor.value)).toEqual({
-        iterations: 1000,
-        learning_rate: 0.05,
-        depth: 6,
-        l2_leaf_reg: 3,
-        early_stopping_rounds: 50,
-      })
+      expect(editor.value).toBe("{}")
     })
 
     it("textarea shows custom params from config", () => {
@@ -461,11 +537,11 @@ describe("ModellingConfig", () => {
       })
     })
 
-    it("invalid JSON stays local without an inline error or commit", () => {
+    it("invalid JSON shows an immediate inline error without a config commit", () => {
       const { props } = renderConfig()
       const textarea = screen.getByLabelText("CatBoost hyperparameters JSON")
       fireEvent.change(textarea, { target: { value: "{bad json" } })
-      expect(screen.queryByRole("alert")).toBeNull()
+      expect(screen.getByRole("alert")).toHaveTextContent("Parameters JSON")
       expect(props.onUpdate).not.toHaveBeenCalledWith("params", expect.anything())
     })
 
@@ -488,25 +564,45 @@ describe("ModellingConfig", () => {
     beforeEach(() => { defaultPane = "split" })
     it("renders the three data-structure choices", () => {
       renderConfig()
-      expect(screen.getByRole("button", { name: "Random rows" })).toBeTruthy()
-      expect(screen.getByRole("button", { name: "Respect time order" })).toBeTruthy()
-      expect(screen.getByRole("button", { name: "Keep entities together" })).toBeTruthy()
+      expect(screen.getByRole("button", { name: "Random split" })).toBeTruthy()
+      expect(screen.getByRole("button", { name: "Time-based split" })).toBeTruthy()
+      expect(screen.getByRole("button", { name: "Group split" })).toBeTruthy()
     })
 
-    it("random evaluation shows validation, final-test, and seed inputs", () => {
+    it("random evaluation shows validation and final-test inputs with the seed kept internal", () => {
       renderConfig()
-      expect(screen.getByLabelText("Validation fraction")).toHaveValue(0.2)
-      expect(screen.getByLabelText("Final test fraction")).toHaveValue(0.2)
-      expect(screen.getByLabelText("Evaluation seed")).toHaveValue(42)
+      expect(screen.getByLabelText("Validation set (%)")).toHaveValue(20)
+      expect(screen.getByLabelText("Test set (%)")).toHaveValue(20)
+      expect(screen.queryByLabelText("Evaluation seed")).not.toBeInTheDocument()
     })
 
     it("changing the data structure commits canonical temporal evaluation", () => {
       const { props } = renderConfig()
-      fireEvent.click(screen.getByRole("button", { name: "Respect time order" }))
+      fireEvent.click(screen.getByRole("button", { name: "Time-based split" }))
       expect(props.onUpdate).toHaveBeenCalledWith(
         "evaluation",
         expect.objectContaining({ strategy: "temporal" }),
       )
+    })
+
+    it("restores the required refit when leaving holdout validation", () => {
+      const { props } = renderConfig({
+        config: {
+          _nodeId: "node_1",
+          target: "loss_ratio",
+          task: "regression",
+          algorithm: "catboost",
+          loss_function: "RMSE",
+          refit_on_development: false,
+        },
+      })
+      fireEvent.click(screen.getByRole("button", { name: "Cross-validation" }))
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        evaluation: expect.objectContaining({
+          validation: expect.objectContaining({ method: "cross_validation" }),
+        }),
+        refit_on_development: true,
+      })
     })
 
     it("temporal evaluation shows date and boundary controls", () => {
@@ -527,7 +623,7 @@ describe("ModellingConfig", () => {
       })
       expect(screen.getByText("Date column")).toBeTruthy()
       expect(screen.getByText("Validation starts")).toBeTruthy()
-      expect(screen.getByText("Final test starts")).toBeTruthy()
+      expect(screen.getByText("Test starts")).toBeTruthy()
     })
 
     it("group evaluation shows the entity column", () => {
@@ -547,7 +643,7 @@ describe("ModellingConfig", () => {
           },
         },
       })
-      expect(screen.getByText("Entity column")).toBeTruthy()
+      expect(screen.getByText("Group column")).toBeTruthy()
     })
 
     it("shows all metrics and disables classification metrics for a regression loss", () => {
@@ -651,7 +747,7 @@ describe("ModellingConfig", () => {
       })
       const trainBtn = screen.getByRole("button", { name: /Train Model/ })
       expect(trainBtn).toBeEnabled()
-      expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+      expect(screen.getByRole("alert")).toBeInTheDocument()
     })
 
     it("shows all missing items beneath Train only after the press and sends no request", () => {
@@ -700,7 +796,7 @@ describe("ModellingConfig", () => {
       expect(screen.queryByRole("alert")).not.toBeInTheDocument()
 
       view.rerender(renderWithConfig(incompleteConfig))
-      expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+      expect(screen.getByRole("alert")).toHaveTextContent("Choose a training loss")
     })
 
     it("surfaces a missing loss function only after Train is pressed (catboost)", () => {
@@ -712,7 +808,7 @@ describe("ModellingConfig", () => {
       })
       const trainBtn = screen.getByRole("button", { name: /Train Model/ })
       expect(trainBtn).toBeEnabled()
-      expect(screen.queryByText(/Choose a training loss/)).not.toBeInTheDocument()
+      expect(screen.getByText(/Choose a training loss/)).toBeInTheDocument()
       fireEvent.click(trainBtn)
       expect(screen.getByRole("alert")).toHaveTextContent("Choose a training loss")
       expect(mockTrainModel).not.toHaveBeenCalled()
@@ -724,7 +820,7 @@ describe("ModellingConfig", () => {
       })
       const trainBtn = screen.getByRole("button", { name: /Train Model/ })
       expect(trainBtn).toBeEnabled()
-      expect(screen.queryByText(/Choose a GLM distribution family/)).not.toBeInTheDocument()
+      expect(screen.getByText(/Choose a GLM distribution family/)).toBeInTheDocument()
       fireEvent.click(trainBtn)
       expect(screen.getByRole("alert")).toHaveTextContent("Choose a GLM distribution family")
     })
@@ -741,7 +837,7 @@ describe("ModellingConfig", () => {
       })
       const trainBtn = screen.getByRole("button", { name: /Train Model/ })
       expect(trainBtn).toBeEnabled()
-      expect(screen.queryByText(/Add a term to at least one feature/)).not.toBeInTheDocument()
+      expect(screen.getByText(/Add a term to at least one feature/)).toBeInTheDocument()
       fireEvent.click(trainBtn)
       expect(screen.getByRole("alert")).toHaveTextContent("Add a term to at least one feature")
     })
@@ -759,7 +855,7 @@ describe("ModellingConfig", () => {
       })
       const trainBtn = screen.getByRole("button", { name: /Train Model/ })
       expect(trainBtn).toBeEnabled()
-      expect(screen.queryByText(/Set the Tweedie variance power/)).not.toBeInTheDocument()
+      expect(screen.getByText(/Set the Tweedie variance power/)).toBeInTheDocument()
       fireEvent.click(trainBtn)
       expect(screen.getByRole("alert")).toHaveTextContent("Set the Tweedie variance power")
     })
@@ -779,7 +875,7 @@ describe("ModellingConfig", () => {
       })
       const trainBtn = screen.getByRole("button", { name: /Train Model/ })
       expect(trainBtn).toBeEnabled()
-      expect(screen.queryByText(/Set the Negative Binomial dispersion/)).not.toBeInTheDocument()
+      expect(screen.getByText(/Set the Negative Binomial dispersion/)).toBeInTheDocument()
       fireEvent.click(trainBtn)
       expect(screen.getByRole("alert")).toHaveTextContent("Set the Negative Binomial dispersion")
     })
@@ -814,9 +910,9 @@ describe("ModellingConfig", () => {
       })
       const trainBtn = screen.getByRole("button", { name: /Train Model/ })
       expect(trainBtn).toBeEnabled()
-      expect(screen.queryByText(/Set the elastic-net L1 ratio/)).not.toBeInTheDocument()
+      expect(screen.getByText("Choose an L1 ratio.")).toBeInTheDocument()
       fireEvent.click(trainBtn)
-      expect(screen.getByRole("alert")).toHaveTextContent("Set the elastic-net L1 ratio")
+      expect(screen.getByRole("alert")).toHaveTextContent("Choose an L1 ratio.")
     })
 
     it("train button enables once the objective is explicit", () => {
@@ -1245,13 +1341,13 @@ describe("ModellingConfig", () => {
       await waitFor(() => {
         // The toast store should have received the warning
         const toasts = useToastStore.getState().toasts
-        expect(toasts.some((t) => t.text.includes("RAM estimate failed"))).toBe(true)
+        expect(toasts.some((t) => t.text.includes("Training estimate failed"))).toBe(true)
       })
       // Inline warning is shown
-      expect(screen.getByText(/RAM estimate unavailable/)).toBeTruthy()
+      expect(screen.getByText(/Memory estimate unavailable/)).toBeTruthy()
       // Verify toast content
       const toasts = useToastStore.getState().toasts
-      const ramToast = toasts.find((t) => t.text.includes("RAM estimate failed"))!
+      const ramToast = toasts.find((t) => t.text.includes("Training estimate failed"))!
       expect(ramToast.type).toBe("warning")
       expect(ramToast.text).toContain("Network error")
     })
@@ -1274,7 +1370,7 @@ describe("ModellingConfig", () => {
       await waitFor(() => {
         expect(screen.getByText("Dataset fits in memory")).toBeTruthy()
       })
-      expect(screen.queryByText(/RAM estimate unavailable/)).toBeNull()
+      expect(screen.queryByText(/Memory estimate unavailable/)).toBeNull()
     })
   })
 
@@ -1443,10 +1539,11 @@ describe("ModellingConfig", () => {
   // ═════════════════════════════════════════════════════════════════
 
   describe("Row limit input", () => {
-    beforeEach(() => { defaultPane = "train" })
-    it("renders row limit input with placeholder", () => {
-      renderConfig()
-      expect(screen.getByLabelText("Row limit")).toBeTruthy()
+    beforeEach(() => { defaultPane = "split" })
+    it.each(["catboost", "glm"])("renders row limit first in Split for %s", (algorithm) => {
+      renderConfig({ config: { _nodeId: "node_1", algorithm } })
+      expect(screen.getByLabelText("Row limit")).toHaveAttribute("placeholder", "All rows")
+      expect(screen.getAllByRole("heading")[0]).toHaveTextContent("Row limit")
     })
 
     it("changing row limit calls onUpdate with parsed integer", () => {
@@ -1485,8 +1582,8 @@ describe("ModellingConfig", () => {
       })
       fireEvent.click(
         within(screen.getByRole("group", { name: "region feature" })).getByRole(
-          "button",
-          { name: "region is included; click to exclude" },
+          "checkbox",
+          { name: "Include region" },
         ),
       )
       expect(props.onUpdate).toHaveBeenCalledWith({ exclude: ["age", "region"] })
@@ -1498,8 +1595,8 @@ describe("ModellingConfig", () => {
       })
       fireEvent.click(
         within(screen.getByRole("group", { name: "region feature" })).getByRole(
-          "button",
-          { name: "region is excluded; click to include" },
+          "checkbox",
+          { name: "Include region" },
         ),
       )
       expect(props.onUpdate).toHaveBeenCalledWith({ exclude: ["age"] })
@@ -1514,7 +1611,7 @@ describe("ModellingConfig", () => {
     beforeEach(() => { defaultPane = "split" })
     it("clicking grouped evaluation calls onUpdate with group strategy", () => {
       const { props } = renderConfig()
-      fireEvent.click(screen.getByRole("button", { name: "Keep entities together" }))
+      fireEvent.click(screen.getByRole("button", { name: "Group split" }))
       expect(props.onUpdate).toHaveBeenCalledWith(
         "evaluation",
         expect.objectContaining({ strategy: "group" }),
@@ -1536,7 +1633,7 @@ describe("ModellingConfig", () => {
           },
         },
       })
-      fireEvent.click(screen.getByRole("button", { name: "Random rows" }))
+      fireEvent.click(screen.getByRole("button", { name: "Random split" }))
       expect(props.onUpdate).toHaveBeenCalledWith(
         "evaluation",
         expect.objectContaining({ strategy: "random" }),
@@ -1547,7 +1644,7 @@ describe("ModellingConfig", () => {
   describe("MOD-M10 exclusive-pane contract", () => {
     it("shows only the algorithm gateway for an unset algorithm and rejects unsupported algorithms", () => {
       renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio" } })
-      expect(screen.getByText("Select Algorithm")).toBeTruthy()
+      expect(screen.getByText("Select algorithm")).toBeTruthy()
       expect(screen.queryByRole("tabpanel")).toBeNull()
       cleanup()
 
@@ -1572,7 +1669,7 @@ describe("ModellingConfig", () => {
       const { rerender, props } = renderConfig({ activePane: "params" })
       const json = screen.getByLabelText("CatBoost hyperparameters JSON")
       fireEvent.change(json, { target: { value: "{invalid" } })
-      expect(screen.queryByRole("alert")).toBeNull()
+      expect(screen.getByRole("alert")).toHaveTextContent("Parameters JSON")
       rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="train" /></GraphProvider>)
       rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="params" /></GraphProvider>)
       expect(screen.getByLabelText("CatBoost hyperparameters JSON")).toHaveValue("{invalid")
@@ -1586,7 +1683,7 @@ describe("ModellingConfig", () => {
       fireEvent.change(screen.getByLabelText("CatBoost hyperparameters JSON"), {
         target: { value: "{invalid" },
       })
-      expect(screen.queryByRole("alert")).toBeNull()
+      expect(screen.getByRole("alert")).toHaveTextContent("Parameters JSON")
 
       rerender(
         <GraphProvider allNodes={[]} edges={[]}>
@@ -1594,7 +1691,7 @@ describe("ModellingConfig", () => {
         </GraphProvider>,
       )
       const trainButton = screen.getByRole("button", { name: "Train Model" })
-      expect(screen.queryByRole("alert")).toBeNull()
+      expect(screen.getByRole("alert")).toHaveTextContent("Parameters JSON")
 
       fireEvent.click(trainButton)
 
@@ -1628,7 +1725,7 @@ describe("ModellingConfig", () => {
       fireEvent.change(screen.getByLabelText("CatBoost search space JSON"), {
         target: { value: "{invalid" },
       })
-      expect(screen.queryByRole("alert")).toBeNull()
+      expect(screen.getByRole("alert")).toHaveTextContent("Search space JSON")
 
       rerender(
         <GraphProvider allNodes={[]} edges={[]}>
@@ -1636,7 +1733,7 @@ describe("ModellingConfig", () => {
         </GraphProvider>,
       )
       const trainButton = screen.getByRole("button", { name: "Tune & Train" })
-      expect(screen.queryByRole("alert")).toBeNull()
+      expect(screen.getByRole("alert")).toHaveTextContent("Search space JSON")
 
       fireEvent.click(trainButton)
 
@@ -1646,7 +1743,7 @@ describe("ModellingConfig", () => {
       expect(mockTrainModel).not.toHaveBeenCalled()
     })
 
-    it("autosaves fixed params exactly while Train owns GPU and row limit and Export owns MLflow", () => {
+    it("autosaves fixed params exactly while Train owns GPU, Split owns row limit and Export owns MLflow", () => {
       const { rerender, props } = renderConfig({ activePane: "params", config: { _nodeId: "node_1", algorithm: "catboost", params: { depth: 6, task_type: "GPU" } } })
       fireEvent.change(screen.getByLabelText("CatBoost hyperparameters JSON"), { target: { value: '{"iterations":200,"custom":true}' } })
       expect(props.onUpdate).toHaveBeenCalledWith("params", {
@@ -1658,9 +1755,12 @@ describe("ModellingConfig", () => {
       expect(screen.queryByRole("button", { name: "Revert" })).toBeNull()
       rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="train" /></GraphProvider>)
       expect(screen.getByRole("checkbox", { name: /GPU training/ })).toBeTruthy()
-      expect(screen.getByLabelText("Row limit")).toBeTruthy()
+      expect(screen.queryByLabelText("Row limit")).toBeNull()
       expect(screen.queryByLabelText("MLflow experiment path")).toBeNull()
       expect(screen.queryByRole("radiogroup", { name: "MLflow destination" })).toBeNull()
+      rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="split" /></GraphProvider>)
+      expect(screen.getByLabelText("Row limit")).toBeTruthy()
+      expect(screen.queryByRole("checkbox", { name: /GPU training/ })).toBeNull()
       rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="export" /></GraphProvider>)
       expect(screen.queryByLabelText("Row limit")).toBeNull()
       expect(screen.getByLabelText("MLflow experiment path")).toBeTruthy()
@@ -1762,6 +1862,7 @@ describe("ModellingConfig", () => {
         renderConfig({ activePane: "export", config: trainConfig })
         expect(screen.getByRole("radio", { name: /Local folder/ })).toBeChecked()
         expect(screen.getByRole("radio", { name: /Databricks/ })).not.toBeChecked()
+        expect(screen.queryByText(/C:\/proj\/mlruns/)).toBeNull()
         expect(screen.queryByRole("button", { name: /auto/i })).toBeNull()
       })
 
@@ -1898,14 +1999,15 @@ describe("ModellingConfig", () => {
       })
     })
 
-    it("uses the standard themed form styling throughout the Train and Export panes", () => {
+    it("uses the standard themed form styling throughout the Split, Train and Export panes", () => {
       const { rerender, props } = renderConfig({ activePane: "train" })
 
       const gpu = screen.getByRole("checkbox", { name: /GPU training/ })
-      const rowLimit = screen.getByLabelText("Row limit")
       expect(gpu).toHaveClass("accent-purple-500")
+      rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="split" /></GraphProvider>)
+      const rowLimit = screen.getByLabelText("Row limit")
       expect(rowLimit).toHaveAttribute("placeholder", "All rows")
-      expect(rowLimit).toHaveClass("w-32", "font-mono")
+      expect(rowLimit).toHaveClass("w-full", "font-mono")
       expectThemedField(rowLimit)
 
       rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="export" /></GraphProvider>)
@@ -1952,9 +2054,9 @@ describe("ModellingConfig", () => {
         }
       }
 
-      it("keeps both actions visible but disabled beneath a train-first note without a trained model", () => {
+      it("keeps both actions disabled without a train-first note when no model is available", () => {
         renderConfig({ activePane: "export" })
-        expect(screen.getByText(EXPORT_BLOCKED_NO_MODEL)).toBeTruthy()
+        expect(screen.queryByText(EXPORT_BLOCKED_NO_MODEL)).toBeNull()
         const { log, save } = actionButtons()
         expect(log).toBeDisabled()
         expect(save).toBeDisabled()
@@ -1967,7 +2069,7 @@ describe("ModellingConfig", () => {
           result: makeTrainResult({ status: "error", error: "OOM" }),
         })
         renderConfig({ activePane: "export" })
-        expect(screen.getByText(EXPORT_BLOCKED_NO_MODEL)).toBeTruthy()
+        expect(screen.queryByText(EXPORT_BLOCKED_NO_MODEL)).toBeNull()
         expect(actionButtons().save).toBeDisabled()
       })
 
@@ -2084,15 +2186,13 @@ describe("ModellingConfig", () => {
           return Object.assign(error, { status, detail: text, rawDetail: detail })
         }
 
-        it("requires a filename or path, described like a Data Output file in models/", () => {
+        it("requires a filename or path and retains the folder browser without instructions", async () => {
           seedTrainedResult(defaultProps().config)
           renderConfig({ activePane: "export" })
 
-          expect(
-            screen.getByText(
-              "Filenames save in the project's models/ folder. Paths are relative to the project root. The model's .cbm extension is added if omitted.",
-            ),
-          ).toBeTruthy()
+          expect(screen.getByLabelText("Filename or path *")).toHaveValue("")
+          expect(screen.queryByText(/Filenames save in the project's models/)).toBeNull()
+          expect(await screen.findByText("No matching files")).toBeTruthy()
           expect(actionButtons().save).toBeDisabled()
           expect(mockResolveModelSaveDestination).not.toHaveBeenCalled()
         })
@@ -2106,7 +2206,7 @@ describe("ModellingConfig", () => {
           expect(props.onUpdate).toHaveBeenCalledWith("model_export_path", "severity")
         })
 
-        it("shows the server-resolved destination for the stored path and algorithm", async () => {
+        it("shows a resolved destination when it adds the folder and model extension", async () => {
           const glmConfig = {
             _nodeId: "node_1",
             algorithm: "glm",
@@ -2117,14 +2217,29 @@ describe("ModellingConfig", () => {
             path: "models/severity.rsglm",
             suffix_mismatch: false,
           })
-          renderConfig({ activePane: "export", config: glmConfig })
+          await act(async () => {
+            renderConfig({ activePane: "export", config: glmConfig })
+          })
 
-          expect(await screen.findByText("Destination: models/severity.rsglm")).toBeTruthy()
+          expect(screen.getByText("severity")).toBeTruthy()
+          expect(screen.getByText("Destination: models/severity.rsglm")).toBeTruthy()
+          fireEvent.click(screen.getByTestId("file-change-btn"))
+          expect(screen.getByLabelText("Filename or path *")).toHaveValue("severity")
           expect(mockResolveModelSaveDestination).toHaveBeenCalledWith(
             { output_path: "severity", algorithm: "glm" },
             expect.objectContaining({ signal: expect.any(AbortSignal) }),
           )
-          expect(screen.getByText(/The model's \.rsglm extension is added if omitted\./)).toBeTruthy()
+          expect(screen.queryByText(/The model's \.rsglm extension is added if omitted\./)).toBeNull()
+        })
+
+        it.each(["models/frequency.cbm", "models\\frequency.cbm"])("shows selected filepath %s once without repeating its destination", async (path) => {
+          mockResolveModelSaveDestination.mockResolvedValue({ path: "models/frequency.cbm", suffix_mismatch: false })
+          await act(async () => {
+            renderConfig({ activePane: "export", config: { ...defaultProps().config, model_export_path: path } })
+          })
+
+          expect(screen.getAllByText(path)).toHaveLength(1)
+          expect(screen.queryByText("Destination: models/frequency.cbm")).toBeNull()
         })
 
         it("blocks saving when the destination extension does not match the model format", async () => {

@@ -89,6 +89,7 @@ def _validate_evaluation_artifact_contents(
     artifact_paths: Mapping[str, Path],
     *,
     response_fit_count: int,
+    response_refit_on_development: bool = True,
 ) -> dict[str, Any]:
     """Validate and reconstruct the digest-linked evaluation response."""
     from haute.modelling._evaluation import (
@@ -112,6 +113,7 @@ def _validate_evaluation_artifact_contents(
             results,
             tuple(report.metrics),
             results_sha256=results_sha256,
+            refit_on_development=response_refit_on_development,
         )
         if expected_report.to_plain_data() != report.to_plain_data():
             raise ValueError("evaluation report does not match the persisted plan and results")
@@ -121,6 +123,7 @@ def _validate_evaluation_artifact_contents(
             "validation_method": plan.config.validation["method"],
             "validation_fit_count": len(plan.validation_fits),
             "fit_count": response_fit_count,
+            "refit_on_development": response_refit_on_development,
             "development_rows": len(plan.development_positions),
             "final_test_rows": len(plan.test_positions),
             "selection_fits": [fit.to_plain_data() for fit in results.fits],
@@ -275,6 +278,7 @@ def _validate_training_artifacts(
     artifact_evaluation_response = _validate_evaluation_artifact_contents(
         artifact_paths,
         response_fit_count=expected_evaluation_response["fit_count"],
+        response_refit_on_development=expected_evaluation_response["refit_on_development"],
     )
     if expected_evaluation_response != artifact_evaluation_response:
         raise WorkerProtocolError(

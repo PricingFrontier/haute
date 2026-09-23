@@ -396,7 +396,9 @@ def _training_response_payload(
     loss_history, loss_history_truncated = _bounded_loss_history(
         train_result.loss_history,
     )
-    diagnostics_set: Literal["development", "final_test"] = train_result.diagnostics_set
+    diagnostics_set: Literal["development", "validation", "final_test"] = (
+        train_result.diagnostics_set
+    )
     diagnostic_metrics = (
         train_result.final_test_metrics if diagnostics_set == "final_test" else train_result.metrics
     )
@@ -415,6 +417,7 @@ def _training_response_payload(
         features=train_result.features,
         cat_features=train_result.cat_features,
         best_iteration=train_result.best_iteration,
+        final_tree_count=train_result.final_tree_count,
         loss_history=loss_history,
         loss_history_truncated=loss_history_truncated,
         double_lift=train_result.double_lift,

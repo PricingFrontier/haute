@@ -84,6 +84,8 @@ export default function useKeyboardShortcuts({
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName
       const el = e.target as HTMLElement
+      // Focused dialogs own their keyboard interactions, including Escape.
+      if (e.defaultPrevented || el.closest?.('[role="dialog"][aria-modal="true"]')) return
       const isTyping = tag === "INPUT" || tag === "TEXTAREA" || el.closest?.(".cm-editor") != null
       const mod = e.ctrlKey || e.metaKey
 

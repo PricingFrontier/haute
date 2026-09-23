@@ -68,6 +68,14 @@ _ORCHESTRATION_OWNED_KEYS = frozenset(
 )
 
 _MAXIMIZE_METRICS = frozenset({"gini", "auc", "r2"})
+CATBOOST_ITERATION_PARAM_KEYS = ("iterations", "n_estimators", "num_boost_round", "num_trees")
+VALIDATION_ONLY_CATBOOST_PARAMS = (
+    "early_stopping_rounds",
+    "od_pval",
+    "od_type",
+    "od_wait",
+    "use_best_model",
+)
 _MINIMIZE_METRICS = frozenset(
     {
         "rmse",
@@ -900,14 +908,7 @@ class TuningReportArtifact:
         ):
             raise HauteValidationError("tuning report counts are inconsistent")
         if self.final_params.get("iterations") != final_tree_count or any(
-            key in self.final_params
-            for key in (
-                "early_stopping_rounds",
-                "od_pval",
-                "od_type",
-                "od_wait",
-                "use_best_model",
-            )
+            key in self.final_params for key in VALIDATION_ONLY_CATBOOST_PARAMS
         ):
             raise HauteValidationError("tuning report final parameter projection is inconsistent")
         if bool(winner_index) != bool(self.best_sampled_params):
@@ -1078,13 +1079,7 @@ def build_tuning_report(
         iteration_ceiling=iteration_ceiling,
     )
     expected_final_params = copy.deepcopy(dict(winner.resolved_params))
-    for key in (
-        "early_stopping_rounds",
-        "od_pval",
-        "od_type",
-        "od_wait",
-        "use_best_model",
-    ):
+    for key in VALIDATION_ONLY_CATBOOST_PARAMS:
         expected_final_params.pop(key, None)
     expected_final_params["iterations"] = expected_tree_count
     if _exact_int(

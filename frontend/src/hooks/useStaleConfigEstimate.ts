@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useReducer, useRef } from "react"
 import useToastStore from "../stores/useToastStore"
 import { hashConfig } from "../stores/useNodeResultsStore"
+import { executionErrorDetailMessage } from "../utils/executionDiagnostics"
 
 export interface UseStaleConfigEstimateResult<TEstimate> {
   configHash: string
@@ -114,7 +115,7 @@ export function useStaleConfigEstimate<TEstimate>(
         ) {
           return
         }
-        const msg = err instanceof Error ? err.message : String(err)
+        const msg = executionErrorDetailMessage(err) ?? (err instanceof Error ? err.message : String(err))
         dispatch({ type: "reject", message: msg })
         useToastStore
           .getState()

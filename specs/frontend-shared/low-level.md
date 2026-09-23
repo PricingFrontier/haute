@@ -389,8 +389,11 @@ loads. Local has no light — it always works. Under the row sits the
 resolved destination line (`<Label> — <destination>`, or the entry's
 reason when unconfigured, or the store's package reason), a re-check icon
 (`invalidateMlflow()`, disabled while loading) and a gear icon that opens
-`MlflowSettingsModal` (`useUIStore.setMlflowSettingsOpen`). Connection lights
-are informational only: they never select, block or redirect logging, and
+`MlflowSettingsModal` (`useUIStore.setMlflowSettingsOpen`). Setting
+`showDestinationDetails={false}` hides
+the successful resolved-location line, but keeps unavailable-state feedback,
+re-check and settings controls. The option defaults to true for existing callers.
+Connection lights are informational only: they never select, block or redirect logging, and
 nothing is written until the user clicks.
 Colours come from the theme tokens (`--success`, `--warning-strong`,
 `--text-muted`).

@@ -829,7 +829,15 @@ batch-shaped profiles), `_reserve_in_flight_budget()` adds this run's
 `memory_limit_bytes` to a process-global running total under `_IN_FLIGHT_LOCK` and
 refuses if the total would exceed `available - os_reserve`; the returned
 `admission_release` callable (also wired to `weakref.finalize` on the context) removes
-the reservation exactly once.
+the reservation exactly once and notifies `_IN_FLIGHT_RELEASED`. A caller may name
+short-lived holders in `wait_out_holders` (`"profile:operation"`): while every holder
+blocking its reservation is one of them, admission waits on `_IN_FLIGHT_RELEASED` up to
+`wait_seconds`, re-checking its cancellation token at least every
+`_IN_FLIGHT_WAIT_SLICE_SECONDS`; any other holder refuses at once. Waiting and
+reserving are separate steps, so a refusal while only waitable holders remain returns
+to waiting until the same deadline. Training, dispersion
+and GLM-schema admissions wait out `training_prep:training_evaluation_preview`, because
+the server finishes an estimate preview the browser has already superseded.
 
 **Chunked map-reduce (`chunking.chunk_plan` → `iter_chunked_frames`).** `chunk_plan()`
 prepares the graph the same way as the other two paths, identifies the chunk-start

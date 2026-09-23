@@ -883,6 +883,7 @@ _EXPORT_DEFAULTED_KWARGS: dict[str, object] = {
     "fold_column": None,
     "id_columns": None,
     "tuning": None,
+    "refit_on_development": True,
     "loss_function": None,
     "variance_power": None,
     "offset": None,

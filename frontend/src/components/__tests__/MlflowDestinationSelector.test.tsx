@@ -243,9 +243,17 @@ describe("MlflowDestinationSelector", () => {
       )
     })
 
-    it("names the entry's own detail when the effective destination is unconfigured", () => {
+    it("can hide destination details while keeping selection and settings controls", () => {
+      renderSelector({ value: "", showDestinationDetails: false })
+      expect(radio("Local folder")).toBeChecked()
+      expect(screen.queryByTestId("mlflow-destination-resolved")).toBeNull()
+      expect(screen.getByRole("button", { name: "MLflow settings" })).toBeEnabled()
+      expect(screen.getByRole("button", { name: "Re-check MLflow connections" })).toBeEnabled()
+    })
+
+    it.each([true, false])("keeps unavailable feedback with destination details set to %s", (showDestinationDetails) => {
       setInventory({ destinations: [DATABRICKS_GREY, SERVER_GREY, LOCAL] })
-      renderSelector({ value: "server" })
+      renderSelector({ value: "server", showDestinationDetails })
 
       expect(screen.getByTestId("mlflow-destination-resolved")).toHaveTextContent(
         "Set [mlflow] tracking_uri in haute.toml.",

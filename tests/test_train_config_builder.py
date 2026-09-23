@@ -114,6 +114,23 @@ class TestBuildTrainParams:
         params = build_train_params(config)
         assert params == {"family": "tweedie"}
 
+    @pytest.mark.parametrize("seed, expected", [(None, 42), (7, 7)])
+    def test_glm_cross_validation_uses_hidden_seed_default(self, seed, expected):
+        config = {
+            "algorithm": "glm",
+            "target": "y",
+            "family": "poisson",
+            "terms": {"age": {"type": "linear"}},
+            "regularization": "ridge",
+            "cv_folds": 5,
+            "cv_selection": "min",
+            "evaluation": MINIMAL_EVALUATION,
+        }
+        if seed is not None:
+            config["cv_seed"] = seed
+        assert build_train_params(config)["cv_seed"] == expected
+        assert build_training_job_kwargs(config, data="d.parquet")["params"]["cv_seed"] == expected
+
     def test_none_params_treated_as_empty(self):
         assert build_train_params({"algorithm": "catboost", "params": None}) == {}
 
@@ -147,6 +164,23 @@ class TestBuildTrainParams:
 
 
 class TestBuildTrainingJobKwargs:
+    def test_holdout_can_skip_final_refit_but_cv_and_tuning_cannot(self):
+        config = {
+            "target": "y",
+            "algorithm": "catboost",
+            "loss_function": "RMSE",
+            "evaluation": MINIMAL_EVALUATION,
+            "refit_on_development": False,
+        }
+        kwargs = build_training_job_kwargs(config, data="d.parquet")
+        assert kwargs["refit_on_development"] is False
+
+        cv = {**MINIMAL_EVALUATION, "validation": {"method": "cross_validation", "fold_count": 3}}
+        with pytest.raises(TrainingConfigError, match="holdout validation"):
+            build_training_job_kwargs({**config, "evaluation": cv}, data="d.parquet")
+        with pytest.raises(TrainingConfigError, match="must be a boolean"):
+            build_training_job_kwargs({**config, "refit_on_development": 0}, data="d.parquet")
+
     def test_minimal_config_defaults(self):
         kwargs = build_training_job_kwargs(
             {"target": "y", "loss_function": "RMSE", "evaluation": MINIMAL_EVALUATION},
@@ -251,10 +285,11 @@ class TestBuildTrainingJobKwargs:
         )
         with (
             patch("haute.modelling._candidate_run.capture_provenance"),
-            patch("haute.modelling._candidate_run.build_candidate_run"),
+            patch("haute.modelling._candidate_run.build_candidate_run") as mock_candidate,
             patch("haute.modelling._mlflow_log.log_experiment") as mock_log,
         ):
-            job._log_to_mlflow(result)
+            job._log_to_mlflow(result, final_params={"iterations": 7})
+        assert mock_candidate.call_args.kwargs["final_params"] == {"iterations": 7}
         mock_log.assert_called_once()
         assert mock_log.call_args.kwargs.get("destination") == "local"
 
@@ -903,6 +938,14 @@ class TestFailoverGates:
 
     # -- Shared helper is the single source for the route's fast 400 ------
 
+    @pytest.mark.parametrize("power", [1, 2, 0, float("nan"), float("inf"), "1.5", True])
+    def test_catboost_tweedie_power_must_be_inside_bounds(self, power):
+        from haute.modelling._train_config import training_objective_issue
+
+        issue = training_objective_issue({"loss_function": "Tweedie", "variance_power": power})
+        assert issue is not None
+        assert "greater than 1 and less than 2" in issue
+
     def test_training_objective_issue_returns_none_for_complete_configs(self):
         from haute.modelling._train_config import training_objective_issue
 
@@ -958,13 +1001,13 @@ class TestGlmValueContract:
         assert kwargs["feature_weights"] is None
 
     def test_cross_validation_settings_are_required_only_without_a_fixed_alpha(self):
-        with pytest.raises(TrainingConfigError, match="needs its folds, selection rule, seed"):
+        with pytest.raises(TrainingConfigError, match="needs its folds, selection rule"):
             build_training_job_kwargs(_glm_config(regularization="lasso"), data="d")
-        with pytest.raises(TrainingConfigError, match="needs its seed"):
-            build_training_job_kwargs(
-                _glm_config(regularization="lasso", alpha=0, cv_folds=5, cv_selection="1se"),
-                data="d",
-            )
+        kwargs = build_training_job_kwargs(
+            _glm_config(regularization="lasso", alpha=0, cv_folds=5, cv_selection="1se"),
+            data="d",
+        )
+        assert kwargs["params"]["cv_seed"] == 42
         build_training_job_kwargs(_glm_config(regularization="lasso", alpha=0.25), data="d")
 
     @pytest.mark.parametrize(

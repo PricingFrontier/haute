@@ -12,16 +12,23 @@ describe("FeaturesTab", () => {
     expect(screen.getByText("No feature importance data available")).toBeInTheDocument()
   })
 
-  it("renders all features (no cap)", () => {
-    const features = Array.from({ length: 20 }, (_, i) => ({
+  it("shows the top 20 by default and exposes all rows and hidden rows through search", () => {
+    const features = Array.from({ length: 25 }, (_, i) => ({
       feature: `feat_${i}`,
-      importance: 20 - i,
+      importance: 25 - i,
     }))
     const result = makeTrainResult({ feature_importance: features })
     render(<FeaturesTab result={result} />)
     expect(screen.getByText("feat_0")).toBeInTheDocument()
     expect(screen.getByText("feat_19")).toBeInTheDocument()
-    expect(screen.getByText("20 features")).toBeInTheDocument()
+    expect(screen.queryByText("feat_24")).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText("Search importance features"), {
+      target: { value: "feat_24" },
+    })
+    expect(screen.getByText("feat_24")).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText("Features shown"), { target: { value: "all" } })
+    fireEvent.change(screen.getByLabelText("Search importance features"), { target: { value: "" } })
+    expect(screen.getByText("feat_24")).toBeInTheDocument()
   })
 
   it("shows feature count summary", () => {
@@ -32,7 +39,7 @@ describe("FeaturesTab", () => {
       ],
     })
     render(<FeaturesTab result={result} />)
-    expect(screen.getByText("2 features")).toBeInTheDocument()
+    expect(screen.getByText("2 matching features")).toBeInTheDocument()
   })
 
   it("shows singular 'feature' for single feature", () => {
@@ -40,7 +47,7 @@ describe("FeaturesTab", () => {
       feature_importance: [{ feature: "only_one", importance: 10 }],
     })
     render(<FeaturesTab result={result} />)
-    expect(screen.getByText("1 feature")).toBeInTheDocument()
+    expect(screen.getByText("1 matching feature")).toBeInTheDocument()
   })
 
   it("shows type switcher when loss importance is available", () => {
@@ -74,6 +81,40 @@ describe("FeaturesTab", () => {
     expect(screen.getByText("loss_feat")).toBeInTheDocument()
   })
 
+  it("keeps signed loss values and puts negative values opposite positive values", () => {
+    const result = makeTrainResult({
+      feature_importance: [{ feature: "prediction", importance: 1 }],
+      feature_importance_loss: [
+        { feature: "harmful", importance: -2 },
+        { feature: "helpful", importance: 3 },
+      ],
+    })
+    render(<FeaturesTab result={result} />)
+    fireEvent.click(screen.getByRole("button", { name: "Loss" }))
+    expect(screen.getByText("-2.0")).toBeInTheDocument()
+    expect(screen.getByText("+3.0")).toBeInTheDocument()
+    expect(screen.getByLabelText("harmful: -2.0")).toBeInTheDocument()
+    expect(screen.getByLabelText("helpful: +3.0")).toBeInTheDocument()
+  })
+
+  it("keeps the magnitude reference stable while searching", () => {
+    const result = makeTrainResult({
+      feature_importance: [
+        { feature: "largest", importance: 100 },
+        { feature: "small", importance: 10 },
+      ],
+    })
+    render(<FeaturesTab result={result} />)
+    const before = screen.getByLabelText("small: 10.0").querySelector("div")
+    expect(before).toHaveStyle({ width: "10%" })
+
+    fireEvent.change(screen.getByLabelText("Search importance features"), {
+      target: { value: "small" },
+    })
+    const after = screen.getByLabelText("small: 10.0").querySelector("div")
+    expect(after).toHaveStyle({ width: "10%" })
+  })
+
   it("shows SHAP tab when shap_summary is available", () => {
     const result = makeTrainResult({
       feature_importance: [{ feature: "x", importance: 10 }],
@@ -92,6 +133,18 @@ describe("FeaturesTab", () => {
     })
     render(<FeaturesTab result={result} />)
     expect(screen.getByText("25.3")).toBeInTheDocument()
+  })
+
+  it("preserves small signed importances instead of rounding them to zero", () => {
+    render(
+      <FeaturesTab
+        result={makeTrainResult({
+          feature_importance: [{ feature: "small", importance: -0.0031 }],
+        })}
+      />,
+    )
+    expect(screen.getByText("-0.0031")).toBeInTheDocument()
+    expect(screen.getByLabelText("small: -0.0031")).toBeInTheDocument()
   })
 
   it("displays rank numbers", () => {

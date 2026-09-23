@@ -14,12 +14,6 @@ import {
   formatTuningSearchSpace,
 } from "../hyperparameters"
 
-const DEFAULTS = {
-  iterations: 1000,
-  learning_rate: 0.05,
-  depth: 6,
-}
-
 const STARTER_SEARCH_SPACE = {
   depth: [4, 6, 8, 10],
   learning_rate: [0.01, 0.03, 0.05, 0.1, 0.2],
@@ -50,7 +44,7 @@ function Harness({
   onUpdate?: OnUpdateConfig
 }) {
   const [draft, setDraft] = useState(
-    formatHyperparameters(params, DEFAULTS, ["task_type"]),
+    formatHyperparameters(params, ["task_type"]),
   )
   const [searchSpaceDraft, setSearchSpaceDraft] = useState(
     formatTuningSearchSpace(
@@ -61,7 +55,6 @@ function Harness({
     <HyperparametersConfig
       algorithmLabel="CatBoost"
       params={params}
-      defaultParams={DEFAULTS}
       reservedKeys={["task_type"]}
       reservedKeysHelp="GPU training is configured in the Train pane."
       onUpdate={onUpdate}
@@ -99,10 +92,9 @@ describe("HyperparametersConfig", () => {
     ].join("\n"))
   })
 
-  it("puts the strategy first and shows only the fixed JSON editor by default", () => {
+  it("puts the strategy first and shows a single visible fixed-parameter JSON editor", () => {
     render(<Harness />)
 
-    expect(screen.getByText("Hyperparameters")).toBeInTheDocument()
     const strategy = screen.getByRole("radiogroup", {
       name: "Parameter strategy",
     })
@@ -112,13 +104,26 @@ describe("HyperparametersConfig", () => {
       & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     expect(editor).toHaveValue(
-      JSON.stringify(DEFAULTS, null, 2),
+      "{}",
     )
-    expect(screen.queryAllByRole("spinbutton")).toHaveLength(0)
+    expect(editor).toBeVisible()
+    expect(screen.getAllByRole("textbox")).toHaveLength(1)
+    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument()
+    expect(screen.queryByText("Advanced parameters")).not.toBeInTheDocument()
     expect(editor).toHaveClass("font-mono")
     expect(screen.queryByLabelText("CatBoost search space JSON")).toBeNull()
     expect(screen.queryByRole("button", { name: "Apply" })).toBeNull()
     expect(screen.queryByRole("button", { name: "Revert" })).toBeNull()
+  })
+
+  it("formats fixed JSON on blur while preserving parameters and GPU", () => {
+    const onUpdate = vi.fn<OnUpdateConfig>(() => ({ ok: true }))
+    render(<Harness params={{ task_type: "GPU", grow_policy: "Lossguide", depth: 6 }} onUpdate={onUpdate} />)
+    const editor = screen.getByLabelText("CatBoost hyperparameters JSON")
+    fireEvent.change(editor, { target: { value: '{"grow_policy":"Lossguide","depth":8}' } })
+    fireEvent.blur(editor)
+    expect(onUpdate).toHaveBeenCalledWith("params", { task_type: "GPU", grow_policy: "Lossguide", depth: 8 })
+    expect(editor).toHaveValue(formatHyperparameters({ grow_policy: "Lossguide", depth: 8 }))
   })
 
   it("autosaves arbitrary current and future fixed-parameter shapes", () => {
@@ -160,7 +165,7 @@ describe("HyperparametersConfig", () => {
       expect(screen.getByLabelText("CatBoost hyperparameters JSON")).toHaveValue(
         draft,
       )
-      expect(screen.queryByRole("alert")).toBeNull()
+      expect(screen.getByRole("alert")).toBeInTheDocument()
       expect(onUpdate).not.toHaveBeenCalled()
     },
   )
@@ -172,11 +177,11 @@ describe("HyperparametersConfig", () => {
     fireEvent.change(screen.getByLabelText("CatBoost hyperparameters JSON"), {
       target: { value: '{"task_type":"CPU"}' },
     })
-    expect(screen.queryByRole("alert")).toBeNull()
+    expect(screen.getByRole("alert")).toBeInTheDocument()
     expect(onUpdate).not.toHaveBeenCalled()
   })
 
-  it("uses a radio group and selecting Tune parameters seeds tuning plus a final test", () => {
+  it("uses a radio group and selecting Tune parameters seeds tuning without changing the evaluation split", () => {
     const onUpdate = vi.fn<OnUpdateConfig>(() => ({ ok: true }))
     render(<Harness onUpdate={onUpdate} />)
 
@@ -187,19 +192,13 @@ describe("HyperparametersConfig", () => {
     fireEvent.click(screen.getByRole("radio", { name: "Tune parameters" }))
 
     expect(onUpdate).toHaveBeenCalledWith({
+      refit_on_development: true,
       tuning: {
         schema_version: 1,
         trial_count: 20,
         seed: 42,
         metric: "gini",
         search_space: STARTER_SEARCH_SPACE,
-      },
-      evaluation: {
-        schema_version: 1,
-        strategy: "random",
-        seed: 42,
-        validation: { method: "cross_validation", fold_count: 5 },
-        test: { size: 0.2 },
       },
     })
   })
@@ -248,7 +247,7 @@ describe("HyperparametersConfig", () => {
       FORMATTED_STARTER_SEARCH_SPACE,
     )
     expect(screen.queryByLabelText("Search space format help")).toBeNull()
-    expect(screen.queryByText(/total fits/)).toBeNull()
+    expect(screen.getByText(/101 total fits/)).toBeInTheDocument()
     expect(screen.queryByText(/One key per CatBoost parameter/)).toBeNull()
     expect(screen.queryByRole("button", { name: "Apply" })).toBeNull()
     expect(screen.queryByRole("button", { name: "Revert" })).toBeNull()
@@ -311,7 +310,7 @@ describe("HyperparametersConfig", () => {
 
       expect(screen.getByLabelText("CatBoost search space JSON")).toHaveValue(draft)
       expect(onUpdate).not.toHaveBeenCalled()
-      expect(screen.queryByRole("alert")).toBeNull()
+      expect(screen.getByRole("alert")).toBeInTheDocument()
     },
   )
 
@@ -333,6 +332,7 @@ describe("HyperparametersConfig", () => {
     fireEvent.change(screen.getByLabelText("Tuning seed"), {
       target: { value: "0" },
     })
+    fireEvent.blur(screen.getByLabelText("Tuning seed"))
 
     expect(onUpdate).toHaveBeenCalledWith("tuning", {
       schema_version: 1,
@@ -343,7 +343,7 @@ describe("HyperparametersConfig", () => {
     })
   })
 
-  it("clamps an out-of-range tuning trial count to the nearest bound", () => {
+  it("keeps an invalid trial count local with an error", () => {
     const onUpdate = vi.fn<OnUpdateConfig>(() => ({ ok: true }))
     render(
       <Harness
@@ -362,12 +362,8 @@ describe("HyperparametersConfig", () => {
       target: { value: "0" },
     })
 
-    expect(onUpdate).toHaveBeenCalledWith("tuning", {
-      schema_version: 1,
-      trial_count: 5,
-      seed: 42,
-      metric: "gini",
-      search_space: {},
-    })
+    fireEvent.blur(screen.getByLabelText("Tuning trial count"))
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(screen.getByRole("alert")).toBeInTheDocument()
   })
 })

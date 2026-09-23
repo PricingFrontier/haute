@@ -86,6 +86,10 @@ def generate_training_script(config: dict[str, Any], data_path: str) -> str:
     parts.append(f"    metrics={kwargs['metrics']!r},")
     if kwargs["tuning"] is not None:
         parts.append(f"    tuning={kwargs['tuning']!r},")
+    # Keeping the validation-fit model is a different saved model than the
+    # default development refit, so the script must carry it.
+    if not kwargs["refit_on_development"]:
+        parts.append("    refit_on_development=False,")
 
     if kwargs["loss_function"]:
         parts.append(f"    loss_function={kwargs['loss_function']!r},")

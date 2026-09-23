@@ -34,6 +34,11 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/modelling/HyperparametersConfig.tsx`, `frontend/src/panels/modelling/hyperparameters.ts`, `frontend/src/panels/modelling/featureSelection.ts` | Algorithm-neutral fixed-parameter JSON editing, optional bounded CatBoost tuning/search-space editing, and pure parameter/feature transitions. |
 | `frontend/src/panels/modelling/GLMTargetConfig.tsx`, `frontend/src/panels/modelling/GLMTermsConfig.tsx`, `frontend/src/panels/modelling/GLMInteractionsConfig.tsx`, `frontend/src/panels/modelling/TermCard.tsx`, `frontend/src/panels/modelling/glmTerms.ts`, `frontend/src/panels/modelling/glmFamilies.ts`, `frontend/src/panels/modelling/GLMRegularizationConfig.tsx` | GLM family/link/dispersion, feature rows with indented inline term cards, labelled interaction/slot controls, pure editor transitions mirroring the backend term contract, the family/link and solver constants shared with the backend, and regularisation, cross-validation, and solver controls. |
 | `frontend/src/panels/modelling/TrainingActionsAndResults.tsx`, `frontend/src/panels/modelling/TrainingProgress.tsx` | Train action/result summary and progress. |
+| `frontend/src/panels/modelling/TrainingRunSummary.tsx`, `frontend/src/panels/modelling/trainingFitBudget.ts` | The Train pane's read-only run summary (model, target, feature count, evaluation method and allocation, fit budget, compute) and the pure fit count behind it and the tuning note: selection fits (validation fits × tuning trials) plus the final development refit unless `refit_on_development` is `false`. |
+| `frontend/src/panels/modelling/EvaluationAllocation.tsx`, `frontend/src/panels/modelling/evaluationPreview.ts` | The Split pane's training/validation/test allocation bar and per-fit row ranges, showing exact rows only from an evaluation preview whose strategy and validation method match the current editor (`compatibleEvaluationPreview`), and target fractions otherwise. |
+| `frontend/src/panels/modelling/trainingEstimate.ts` | `estimateAfterSupersededPreviews`: the modelling estimate request retried with bounded, abortable backoff only while a 507 names nothing but other evaluation previews as the in-flight holders (`refusedByEvaluationPreviews`); every other failure, including a running training job, is returned at once. |
+| `frontend/src/panels/modelling/ColumnSelector.tsx` | Searchable column-only combobox for target, weight, offset and similar role fields; a saved column that is no longer upstream stays visible but is never offered as a new choice. |
+| `frontend/src/panels/modelling/chartGeometry.ts`, `frontend/src/panels/modelling/useDiagnosticFeature.ts`, `frontend/src/panels/modelling/validation.css` | Validation-workspace chart helpers (compact axis numbers, padded finite domains, ticks, label thinning, axis-label truncation), the feature selection a diagnostic pane owns standalone or shares with the result workspace, and the workspace's container-query layout styles, imported by `frontend/src/panels/ModellingPreview.tsx`. |
 | `frontend/src/panels/modelling/ExportPane.tsx`, `frontend/src/panels/modelling/MlflowExportSection.tsx`, `frontend/src/panels/modelling/ModelFileExportSection.tsx` | The Export pane: the MLflow logging fields, the manual MLflow log action (names the node's destination, disabled with the reason when that destination is unconfigured or no trained model is exportable, always sends `destination`), and the save-model-to-file action. |
 | `frontend/src/panels/modelling/exportReceipts.ts`, `frontend/src/panels/modelling/useTrainedJobRestore.ts` | `useExportReceipts(jobId)` (reads a completed job's export receipts from the status endpoint on mount and on `refresh`), `newOperationId()`, and `useTrainedJobRestore` (after a reload, reads a remembered job's status once to restore its result — current only when the editor's current payload has the same `trainingLineage` — or report it expired). |
 | `frontend/src/utils/trainedJobHandles.ts`, `frontend/src/utils/modellingExportConfig.ts` | Per-document browser handles to a node's last completed training job (`read`/`write`/`clearTrainedJobHandle`, each holding job ID, config hash, source and lineage) and `trainingLineage` (a digest of the graph payload a training request submitted, submodel graphs included); the modelling export-field keys (`MODELLING_EXPORT_CONFIG_KEYS`) and `trainingIdentityConfig`, which omits them. |
@@ -361,8 +366,14 @@ The behavioural contract is defined in
   `GLMTargetConfig.tsx` labels the selected algorithm **Algorithm Rustystats**, keeping `glm`
   as its stored ID. `GLMRegularizationConfig.tsx` is a Target-pane section with a static heading.
   Choosing a type writes `cv_folds: 5`, `cv_selection: "min"`, and `cv_seed: 42` when absent.
-  Penalty mode is Cross-validated (alpha absent or 0, with folds, selection rule, and seed) or
-  Fixed (a positive alpha); Elastic Net keeps its explicit L1-ratio gate. Inline alerts explain
+  The selected type is shown by its button only, and the seed field is hidden while its stored
+  value is preserved. Older configurations without a seed use 42 when training. Penalty mode is
+  Cross-validated (alpha absent or 0, with folds and selection rule) or
+  Fixed (a positive alpha). Choosing Elastic Net also writes `l1_ratio: 0.5` when absent and
+  always shows the L1-ratio slider, with no endpoint shortcuts, tooltip, setup button, or
+  penalty-selection explanation. A saved Elastic Net configuration with no ratio remains
+  invalid until the slider is changed; its concise issue appears in the Train preflight rather
+  than the Parameters pane. Inline alerts explain
   the smooth-spline and robust-standard-error conflicts, and a Solver disclosure holds maximum
   iterations, tolerance, and robust standard errors. `glmFamilies.ts` holds `GLM_FAMILY_LINKS`,
   pinned to the backend table by a contract test: `GLMTargetConfig` lists Quasi-Binomial, offers
@@ -395,10 +406,10 @@ The behavioural contract is defined in
   canonicalise random/group/temporal keys; validation changes canonicalise none/single/CV shapes;
   final-test controls use source-relative fractions for random/group and explicit starts for
   temporal. The neutral exact-plan card renders guarded backend counts/ranges only when present.
-  The Train pane owns GPU, row limit, actions, progress and results. `ExportPane.tsx` owns the
+  Split starts with the row limit; Train owns GPU, actions, progress and results. `ExportPane.tsx` owns the
   "MLflow logging" and "Model file" sections. It derives one export block from the node's train
   state — an active train job ("Training is running — export is available when it completes."),
-  else no cached result or an error result ("Train this model to export it.") — and, when not
+  else no cached result or an error result (no instructional note) — and, when not
   blocked, a stale warning from the parent's training-identity staleness ("Training settings
   changed since this model was trained. Exports use the last trained model."). A blocked pane
   passes no job id to either section, which renders its action disabled; each section is keyed
@@ -407,7 +418,8 @@ The behavioural contract is defined in
   tooltip carries the manual-only note ("used only when you press Log run to MLflow after
   training completes; nothing is logged automatically"), mounts the shared
   `MlflowDestinationSelector` bound to `mlflow_destination` (absent = the local folder; choosing
-  Local folder removes the key), and gives the
+  Local folder removes the key), with `showDestinationDetails={false}` to omit the successful
+  resolved-location line while retaining unavailable-state feedback, and gives the
   Experiment path label an Info icon in the offset-field pattern whose tooltip explains the
   field. The experiment tooltip says an MLflow experiment is the named group
   a logged run is filed under so related runs can be compared, that on Databricks it is a
@@ -418,8 +430,9 @@ The behavioural contract is defined in
   line. The experiment datalist loads through `useMlflowBrowser({destination})` from the node's
   destination on focus, only when that destination can accept a log. The optimiser config's
   collapsible MLflow section receives the same selector and the same explanatory experiment
-  tooltip, worded for an optimisation result. The Export pane's `MlflowExportSection` and the optimiser `ExportMlflowSection` show one
-  line naming the node's destination under the button (`mlflowLogAvailability`), render the button
+  tooltip, worded for an optimisation result. The Export pane's `MlflowExportSection` omits
+  the successful destination line under its button; the optimiser `ExportMlflowSection`
+  retains its destination line. Both use `mlflowLogAvailability` and render the button
   disabled with the reason and a "Configure MLflow" link (opens the settings modal) only when the
   node's *own* destination is unconfigured or the package is unavailable — never because some
   other remote is — (the modelling button is additionally disabled, without that link, while the
@@ -469,12 +482,13 @@ The behavioural contract is defined in
   Export pane reports "The last training result for this node is no longer available (the server
   restarted or it expired). Train this model again to export it." Storage failures are tolerated.
   `ModelFileExportSection` is headed "Model file" with an Info icon tooltip describing the
-  action and mirrors `DataOutputEditor`'s file flow. It mounts the shared `PathPickerField`
-  (label "Filename or path *", manual entry, browser filtered to `modelFileExtension(algorithm)`)
-  bound to `model_export_path`, described as "Filenames save in the project's models/ folder.
-  Paths are relative to the project root. The model's {ext} extension is added if omitted."
+  action. It mounts the shared `PathPickerField` labelled "Filename or path *", bound to
+  `model_export_path`, with manual entry and a browser filtered to the model extension.
+  There is no path-instruction paragraph. The picker displays the selected path once.
   While the stored path is non-empty it resolves `resolveModelSaveDestination({output_path,
-  algorithm})` (aborting the previous request on change) and shows "Destination: {path}", a
+  algorithm})` (aborting the previous request on change). The resolved "Destination: {path}"
+  line appears only when the resolved path differs from the selected path (after normalizing
+  backslashes to forward slashes). It shows a
   "The destination extension does not match the model format ({ext})." alert for
   `suffix_mismatch`, or "Could not resolve destination: {detail}"; a result is shown only for the
   path it was resolved for. **Save model to file** is disabled without an exportable job id, with

@@ -842,6 +842,55 @@ class TestCatBoostAlgorithmPredictCoverage:
         np.testing.assert_array_almost_equal(preds, [1.0, 2.0, 3.0])
 
 
+class TestCatBoostImportanceOfAConstantModel:
+    """A refit at a small validation-selected tree count can predict a constant."""
+
+    @staticmethod
+    def _constant_model() -> Any:
+        from catboost import CatBoostRegressor
+
+        rows = 120
+        x = pl.DataFrame(
+            {
+                "a": [float(i % 7) for i in range(rows)],
+                "b": [float(i % 5) for i in range(rows)],
+            }
+        ).to_pandas()
+        y = [float(i % 3) for i in range(rows)]
+        model = CatBoostRegressor(iterations=1, depth=2, learning_rate=0.3, verbose=0)
+        model.fit(x, y)
+        assert len(np.unique(model.predict(x))) == 1
+        # CatBoost normalises by a zero total prediction change: 0/0.
+        assert np.isnan(model.get_feature_importance()).all()
+        return model, x, y
+
+    def test_split_features_score_zero_instead_of_nan(self):
+        from catboost import Pool
+
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        model, x, y = self._constant_model()
+        algo = CatBoostAlgorithm()
+
+        assert algo.feature_importance(model) == [
+            {"feature": "a", "importance": 0.0},
+            {"feature": "b", "importance": 0.0},
+        ]
+        typed = algo.feature_importance_typed(model, Pool(x, y), "PredictionValuesChange")
+        assert {row["importance"] for row in typed} == {0.0}
+
+    def test_infinite_importance_is_not_masked(self):
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        model = MagicMock()
+        model.feature_names_ = ["a", "b"]
+        model.get_feature_importance.return_value = np.array([np.inf, 1.0])
+
+        rows = CatBoostAlgorithm().feature_importance(model)
+
+        assert rows[0] == {"feature": "a", "importance": float("inf")}
+
+
 # ---------------------------------------------------------------------------
 # CatBoostAlgorithm.shap_summary — subsampling and 1D edge case
 # ---------------------------------------------------------------------------

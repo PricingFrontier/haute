@@ -35,6 +35,7 @@
     "cat_features": [],
     "error": null,
     "best_iteration": 7,
+    "final_tree_count": 8,
     "loss_history": [
       {
         "iteration": 1,
@@ -180,6 +181,7 @@
       "validation_method": "none",
       "validation_fit_count": 0,
       "fit_count": 1,
+      "refit_on_development": true,
       "development_rows": 100,
       "final_test_rows": 10,
       "selection_fits": [],

@@ -63,14 +63,33 @@ describe("SummaryTab", () => {
 
     render(<SummaryTab result={result} />)
 
-    expect(screen.getAllByText("Development rows").length).toBeGreaterThan(0)
+    expect(screen.getAllByText("Training rows").length).toBeGreaterThan(0)
     expect(screen.getByText("8,000")).toBeInTheDocument()
-    expect(screen.getByText("Final test rows")).toBeInTheDocument()
+    expect(screen.getByText("Test rows")).toBeInTheDocument()
     expect(screen.getAllByText("2,000").length).toBeGreaterThan(0)
-    expect(screen.getAllByText("Single validation").length).toBeGreaterThan(0)
+    expect(screen.getAllByText("Holdout validation").length).toBeGreaterThan(0)
   })
 
-  it("shows final-test metrics before development diagnostics", () => {
+  it("labels a saved holdout fit as validation diagnostics", () => {
+    const base = makeTrainResult()
+    const result = makeTrainResult({
+      diagnostics_set: "validation",
+      diagnostic_metrics: { rmse: 0.12 },
+      final_test_rows: 0,
+      final_test_metrics: {},
+      evaluation: {
+        ...base.evaluation!,
+        fit_count: 1,
+        final_test_rows: 0,
+        refit_on_development: false,
+      },
+    })
+    render(<SummaryTab result={result} />)
+    expect(screen.getByRole("region", { name: "Validation diagnostics" })).toBeInTheDocument()
+    expect(screen.getAllByText("6,000").length).toBeGreaterThan(0)
+  })
+
+  it("shows test metrics before training diagnostics", () => {
     const result = makeTrainResult({
       final_test_metrics: { gini: 0.4567 },
       diagnostic_metrics: { rmse: 0.1234 },
@@ -79,22 +98,22 @@ describe("SummaryTab", () => {
 
     render(<SummaryTab result={result} />)
 
-    const finalMetrics = screen.getByRole("region", { name: "Final-test metrics" })
-    const diagnostics = screen.getByRole("region", { name: "Development diagnostics" })
-    const finalLabel = within(finalMetrics).getByText("Final-test metrics")
-    const diagnosticLabel = within(diagnostics).getByText("Development diagnostics")
+    const finalMetrics = screen.getByRole("region", { name: "Test metrics" })
+    const diagnostics = screen.getByRole("region", { name: "Training diagnostics" })
+    const finalLabel = within(finalMetrics).getByText("Test metrics")
+    const diagnosticLabel = within(diagnostics).getByText("Training diagnostics")
     expect(finalLabel.compareDocumentPosition(diagnosticLabel)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     )
     expect(within(finalMetrics).getByText("0.4567")).toBeInTheDocument()
-    expect(within(finalMetrics).getByText("Performance on the untouched final test.")).toBeInTheDocument()
+    expect(within(finalMetrics).getByText("Performance on the untouched test set.")).toBeInTheDocument()
     expect(within(finalMetrics).queryByText("0.1234")).not.toBeInTheDocument()
     expect(within(diagnostics).getByText("0.1234")).toBeInTheDocument()
-    expect(within(diagnostics).getByText("Diagnostics on development data, not held-out performance.")).toBeInTheDocument()
+    expect(within(diagnostics).getByText("Diagnostics on the fitted training data; these are in-sample metrics.")).toBeInTheDocument()
     expect(within(diagnostics).queryByText("0.4567")).not.toBeInTheDocument()
   })
 
-  it("does not imply final-test performance when none was reserved", () => {
+  it("does not imply test performance when none was reserved", () => {
     const result = makeTrainResult({
       final_test_metrics: {},
       final_test_rows: 0,
@@ -104,9 +123,9 @@ describe("SummaryTab", () => {
 
     render(<SummaryTab result={result} />)
 
-    expect(screen.queryByText("Final-test metrics")).not.toBeInTheDocument()
-    expect(screen.getByText("Development diagnostics")).toBeInTheDocument()
-    expect(screen.getByText("No final test was reserved for this run.")).toBeInTheDocument()
+    expect(screen.queryByText("Test metrics")).not.toBeInTheDocument()
+    expect(screen.getByText("Training diagnostics")).toBeInTheDocument()
+    expect(screen.getByText("No test set was reserved for this run.")).toBeInTheDocument()
   })
 
   it("keeps a zero-valued cross-validated penalty and its fold settings available", () => {

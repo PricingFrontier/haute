@@ -2,9 +2,8 @@
  * "Model file" section of the modelling Export pane: writes a copy of the
  * last trained model and its feature contract to a file in the project.
  *
- * It follows a file Data Output's flow with a `models/` folder in place of
- * `outputs/`: a required filename or path, the server-resolved destination
- * before saving, and an explicit confirmation before replacing a file.
+ * The filename/path picker is validated by the server before saving. A
+ * distinct resolved path is shown once, with confirmation before replacing a file.
  */
 import { useEffect, useState } from "react"
 import { HardDriveDownload, Loader2 } from "lucide-react"
@@ -115,18 +114,13 @@ export function ModelFileExportSection({
       </div>
       <PathPickerField
         label="Filename or path *"
-        description={
-          "Filenames save in the project's models/ folder. Paths are relative to the project root. " +
-          `The model's ${extension} extension is added if omitted.`
-        }
         value={path}
         onSelect={(next) => onUpdate("model_export_path", next)}
         extensions={extension}
         manualEntry
         testIdPrefix="model-file-path"
       />
-
-      {destination?.response && (
+      {destination?.response && destination.response.path !== path.replaceAll("\\", "/") && (
         <p className="text-xs" style={{ color: "var(--text-muted)" }}>
           Destination: {destination.response.path}
         </p>

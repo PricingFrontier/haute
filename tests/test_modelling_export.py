@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from haute.modelling import TrainingJob
 from haute.modelling._export import generate_training_script
 from haute.modelling._train_config import TrainingConfigError
 
@@ -295,6 +297,46 @@ class TestMLflow:
         script = generate_training_script(config, "d.parquet")
         assert "mlflow_experiment" not in script
         assert "model_name" not in script
+
+
+class TestRefitOnDevelopment:
+    @staticmethod
+    def _constructed_kwargs(script: str) -> dict[str, Any]:
+        """Execute the script against a recording ``TrainingJob`` stub."""
+        from unittest.mock import patch
+
+        captured: dict[str, Any] = {}
+
+        class _RecordingTrainingJob:
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+        with patch("haute.modelling.TrainingJob", _RecordingTrainingJob):
+            exec(compile(script, "<export>", "exec"), {"__name__": "export_harness"})
+        return captured
+
+    def test_default_refit_is_left_to_the_training_job_default(self):
+        script = generate_training_script(MINIMAL_CONFIG, "d.parquet")
+        assert "refit_on_development" not in self._constructed_kwargs(script)
+        default = inspect.signature(TrainingJob).parameters["refit_on_development"].default
+        assert default is True
+
+    def test_skipped_refit_reaches_the_exported_training_job(self):
+        config = {**MINIMAL_CONFIG, "refit_on_development": False}
+        script = generate_training_script(config, "d.parquet")
+        assert self._constructed_kwargs(script)["refit_on_development"] is False
+
+    def test_skipped_refit_without_holdout_validation_fails_loud(self):
+        config = {
+            **MINIMAL_CONFIG,
+            "refit_on_development": False,
+            "evaluation": {
+                **STRICT_RANDOM_EVALUATION,
+                "validation": {"method": "cross_validation", "fold_count": 3},
+            },
+        }
+        with pytest.raises(TrainingConfigError, match="holdout validation"):
+            generate_training_script(config, "d.parquet")
 
 
 class TestMonotoneConstraints:

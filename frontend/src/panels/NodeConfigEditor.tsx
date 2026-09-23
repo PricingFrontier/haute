@@ -50,6 +50,7 @@ export type NodeConfigEditorProps = {
   pivotColumns: Column[]
   activeExplorePane: ExplorePane
   activeModellingPane: ModellingPane
+  onModellingPaneIssuesChange?: (nodeId: string, panes: readonly ModellingPane[]) => void
   onDeleteEdge?: (edgeId: string) => void
   onDeleteSubmodelInputPort?: (portName: string) => void
   onSwapEdgeJoinInputs?: (nodeId: string) => void
@@ -77,6 +78,7 @@ export function NodeConfigEditor({
   pivotColumns,
   activeExplorePane,
   activeModellingPane,
+  onModellingPaneIssuesChange,
   onDeleteEdge,
   onDeleteSubmodelInputPort,
   onSwapEdgeJoinInputs,
@@ -150,7 +152,7 @@ export function NodeConfigEditor({
       return <ModelScoreEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} accentColor={accentColor} />
 
     case NODE_TYPES.MODELLING:
-      return <ModellingConfig config={configWithNodeId} onUpdate={onUpdateConfig} upstreamColumns={effectiveColumns} activePane={activeModellingPane} />
+      return <ModellingConfig config={configWithNodeId} onUpdate={onUpdateConfig} upstreamColumns={effectiveColumns} activePane={activeModellingPane} onPaneIssuesChange={onModellingPaneIssuesChange} />
 
     case NODE_TYPES.OPTIMISER:
       return <OptimiserConfig config={configWithNodeId} onUpdate={onUpdateConfig} upstreamColumns={effectiveColumns} accentColor={accentColor} deferColumnFetch={selectedPreviewLoading} />

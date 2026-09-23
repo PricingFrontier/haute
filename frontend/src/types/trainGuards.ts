@@ -487,6 +487,7 @@ function parseEvaluationReport(value: unknown): NonNullable<TrainResponse["evalu
       "validation_method",
       "validation_fit_count",
       "fit_count",
+      ...(obj.refit_on_development === undefined ? [] : ["refit_on_development"]),
       "development_rows",
       "final_test_rows",
       "selection_fits",
@@ -511,6 +512,12 @@ function parseEvaluationReport(value: unknown): NonNullable<TrainResponse["evalu
     "evaluation.validation_method",
     ["none", "single", "cross_validation"] as const,
   )
+  const refitOnDevelopment = obj.refit_on_development === undefined
+    ? true
+    : expectBoolean("parseTrainResponse", obj.refit_on_development, "evaluation.refit_on_development")
+  if (!refitOnDevelopment && validationMethod !== "single") {
+    throw new Error("parseTrainResponse: skipping the final refit requires holdout validation")
+  }
   if (
     (validationMethod === "none" && validationFitCount !== 0)
     || (validationMethod === "single" && validationFitCount !== 1)
@@ -738,6 +745,7 @@ function parseEvaluationReport(value: unknown): NonNullable<TrainResponse["evalu
     validation_method: validationMethod,
     validation_fit_count: validationFitCount,
     fit_count: expectTrainInteger(obj.fit_count, "evaluation.fit_count", 1, 201),
+    refit_on_development: refitOnDevelopment,
     development_rows: developmentRows,
     final_test_rows: finalTestRows,
     selection_fits: selectionFits,
@@ -1167,7 +1175,7 @@ export function parseTrainResponse(value: unknown): TrainResponse {
     "parseTrainResponse",
     obj.diagnostics_set,
     "diagnostics_set",
-    ["development", "final_test"] as const,
+    ["development", "validation", "final_test"] as const,
   )
   if (status === "completed" && evaluation === undefined) throw new Error("parseTrainResponse: completed training requires evaluation")
   if (status !== "completed" && (evaluation !== undefined || tuning !== undefined)) throw new Error("parseTrainResponse: evaluation and tuning are present only for completed training")
@@ -1197,7 +1205,7 @@ export function parseTrainResponse(value: unknown): TrainResponse {
         )
       }
     } else if (
-      diagnosticsSet !== "development"
+      diagnosticsSet !== (evaluation!.refit_on_development === false ? "validation" : "development")
       || Object.keys(finalTestMetrics).length !== 0
     ) {
       throw new Error(
@@ -1205,10 +1213,12 @@ export function parseTrainResponse(value: unknown): TrainResponse {
       )
     }
     if (tuning === undefined) {
-      if (evaluation!.fit_count !== evaluation!.validation_fit_count + 1) {
+      if (evaluation!.fit_count !== evaluation!.validation_fit_count + Number(evaluation!.refit_on_development !== false)) {
         throw new Error("parseTrainResponse: evaluation fit_count is inconsistent")
       }
     } else if (
+      evaluation!.refit_on_development === false
+      ||
       evaluation!.fit_count !== tuning.total_fit_count
       || evaluation!.plan_sha256 !== tuning.evaluation_plan_sha256
     ) {
@@ -1232,6 +1242,9 @@ export function parseTrainResponse(value: unknown): TrainResponse {
     cat_features: parseArray("parseTrainResponse", obj.cat_features, "cat_features", (item, field) => expectString("parseTrainResponse", item, field)),
     error: obj.error === null ? null : expectString("parseTrainResponse", obj.error, "error"),
     best_iteration: obj.best_iteration === null ? null : expectNonNegativeInteger(obj.best_iteration, "best_iteration"),
+    final_tree_count: obj.final_tree_count == null
+      ? null
+      : expectTrainInteger(obj.final_tree_count, "final_tree_count", 1),
     loss_history: parseArray("parseTrainResponse", obj.loss_history, "loss_history", parseLossHistoryEntry),
     loss_history_truncated: expectBoolean("parseTrainResponse", obj.loss_history_truncated, "loss_history_truncated"),
     double_lift: parseArray("parseTrainResponse", obj.double_lift, "double_lift", parseDoubleLiftRow),
