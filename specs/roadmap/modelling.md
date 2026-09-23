@@ -32,6 +32,8 @@ the new families are implemented or their change contracts approved.
 | MOD-T06 | Planned | P1 | One offset meaning for GLM and CatBoost (a positive exposure multiplier under a log link), carried through training, saved models, and every scoring path. |
 | MOD-T07 | Planned | P1 | A strict, dtype-aware GLM term contract and order-independent interaction resolution that never builds a design different from the configuration. |
 | MOD-T08 | Planned | P2 | The GLM pane mirrors the backend contract, keeps every saved term and interaction visible and repairable, supports reference levels, and loses its duplicated code. |
+| MOD-T09 | Planned | P2 | A training estimate that fails says so instead of returning an empty estimate. |
+| MOD-T10 | Planned | P3 | Evaluation and tuning result invariants are checked once, where the artifacts are produced. |
 | MOD-M00 | Proposed | P2 | Resolve dependency, EBM persistence, and engine capability probes; define the spec-first delivery contracts. |
 | MOD-M01 | Proposed | P2 | Extend the existing algorithm and scoring abstractions with explicit capabilities and shared prediction contracts. |
 | MOD-M02 | Proposed | P2 | Train, reload, and score XGBoost with categorical, weight, offset, and stopping consistency. |
@@ -856,7 +858,9 @@ named target encoding.
 
 Delivery order is `MOD-T00` → `MOD-T01` → `MOD-T02` → `MOD-T03`. The four
 packages ship on one pull request; one Codex review and one Playwright run
-happen after the fourth package, not per package.
+happen after the fourth package, not per package. `MOD-T09` and `MOD-T10`
+come from the [23 September 2026 codebase review](codebase-review-2026-09-23.md)
+and are independent of that order.
 
 ### MOD-T00 — RustyStats 0.9.0 upgrade
 **Why:** 0.9.0 honours interaction-local splines, which the terms design
@@ -1254,6 +1258,51 @@ trains a GLM with an automatic spline and sees its coefficients.
 `frontend/src/panels/modelling/GLMTermsConfig.tsx`;
 `frontend/src/panels/modelling/GLMInteractionsConfig.tsx`;
 `frontend/src/panels/NodePanel.tsx`; `frontend/e2e/core-flows.spec.ts`.
+
+### MOD-T09 — A failed training estimate is reported as a failure
+**Why:** `estimate_training` catches any exception from the RAM estimator,
+logs a warning and returns an empty `TrainEstimateResponse` with HTTP 200. The
+specification makes an unavailable estimate a legitimate outcome, but this
+handler turns an estimator bug into the same "unknown" the UI shows for a
+source whose size cannot be proven.
+
+**Plan:** Let the estimator return its specified unavailable result with a
+reason, and let any other exception reach the ordinary error path so the user
+sees a failure and the server logs it as one.
+
+**Acceptance:** A test that injects an unexpected error into the estimator
+receives an error response, not an empty estimate; the specified unavailable
+cases still return an estimate that names the reason.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/routes/modelling.py::estimate_training`;
+`src/haute/_ram_estimate.py::estimate_safe_training_rows`.
+
+### MOD-T10 — Evaluation and tuning invariants are checked once
+**Why:** The same semantic invariants on evaluation and tuning results are
+checked in three places: modelling writes and strictly reloads the plan and
+report artifacts; the response models re-validate them
+(`TuningReportPayload._validate_report` is 138 lines with cyclomatic
+complexity 53, `EvaluationReportPayload._validate_report` complexity 36); and
+the browser checks them again ("selection fits must be contiguous", "tuning
+trials must be contiguous", "start with one empty baseline"). Each invariant
+change has to be made in Python twice and in TypeScript once.
+
+**Plan:** Keep the semantic checks where the artifacts are produced and
+reloaded. Reduce the response models to structural validation, generated for
+the browser by `API-R03`, and delete the browser's semantic re-checks.
+
+**Acceptance:** Each evaluation and tuning invariant has one implementation
+and one test; the response models and the browser parser validate structure
+only; the existing modelling suites pass.
+
+**Dependencies:** `API-R03` (server API) for the generated browser parser.
+
+**Evidence:** `src/haute/schemas.py::TuningReportPayload`;
+`src/haute/schemas.py::EvaluationReportPayload`;
+`src/haute/modelling/_evaluation.py`; `src/haute/modelling/_tuning.py`;
+`frontend/src/types/trainGuards.ts::parseTrainResponse`.
 
 ## Model-family expansion (proposed 22 September 2026)
 
