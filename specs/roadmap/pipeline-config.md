@@ -20,14 +20,12 @@ knows enough to prevent it and none of them acts.
 | PCFG-R02 | Planned | P2 | A config defect reads as a node error, not an internal server error. |
 | PCFG-R03 | Planned | P3 | Save refuses a config the executor cannot build. |
 | PCFG-R04 | Planned | P2 | One project context, resolved once, replaces a dozen project-root and pipeline-directory resolvers. |
-| PCFG-R05 | Planned | P1 | A save never silently drops a config key. |
 | PCFG-R06 | Decision | P2 | One stated rule for non-canonical input, and code that follows it. |
 | PCFG-R07 | Planned | P2 | Every node type has a typed config model that is the single validation boundary. |
 | PCFG-R08 | Planned | P3 | Editor-only state travels beside the node config, not inside it. |
 | PCFG-R09 | Planned | P3 | A node type is declared in one place. |
 
-`PCFG-R05` goes first: it is P1 because a save can lose user settings, and it
-is small. Then the delivery order is `PCFG-R01` → `PCFG-R02` → `PCFG-R03`.
+The delivery order is `PCFG-R01` → `PCFG-R02` → `PCFG-R03`.
 `R01` stops new unrunnable configs being written; `R02` makes the ones
 already on disk legible; `R03` closes the remaining write path. `R02` is
 independently useful and may be taken first if the error contract is the
@@ -35,7 +33,7 @@ more pressing need.
 
 `PCFG-R04` to `PCFG-R09` come from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md).
-`PCFG-R07` builds on `PCFG-R03` and `PCFG-R05`; `PCFG-R08` should precede it
+`PCFG-R07` builds on `PCFG-R03`; `PCFG-R08` should precede it
 so the models do not have to carry editor state.
 
 ## Worked example
@@ -198,38 +196,6 @@ are gone.
 `src/haute/assistant/_config.py::_normalise_project_root`;
 `src/haute/executor.py::_pipeline_dir`; `src/haute/_cache.py::_pipeline_dir`.
 
-### PCFG-R05 — A save never silently drops a config key
-**Why:** When a sidecar is written, every key that is not in the node type's
-`TypedDict` is removed and recorded only as a server log warning
-(`config_keys_dropped_at_write`); parsing likewise only warns about
-unrecognised keys. A field the editor sends but the backend does not yet
-declare disappears on save with no feedback to the user. This is a silent
-fallback that loses persisted work.
-
-**Plan:** First find the keys that are dropped today, so that switching to
-rejection does not turn working saves into failures: run the frontend save
-flows and the browser suite with `config_keys_dropped_at_write` and
-`unrecognized_config_keys` treated as failures, and scan the sidecars in the
-repository's example projects and test fixtures. Declare each key the editor
-legitimately persists, and stop the editor sending the rest. Then reject an
-unknown key at save with a `400` naming the node and the key, and at parse
-with a `ConfigError`, in line with the canonical-only policy. Keep the
-allowlist only as the definition of what is valid.
-
-**Acceptance:** The inventory of keys dropped today is recorded in the change
-and each one is either declared or no longer sent; saving a node whose config
-carries an undeclared key fails with a message naming it and writes nothing;
-parsing a sidecar with an undeclared key fails the same way; the config
-round-trip property in `tests/test_property.py` no longer assumes keys are
-dropped at write and covers the rejection; no code path removes a user key
-and continues.
-
-**Dependencies:** None. `PCFG-R06` states the general rule this applies.
-
-**Evidence:** `src/haute/_config_io.py::_prepare_config_for_sidecar`;
-`src/haute/_config_validation.py::warn_unrecognized_config_keys`;
-`src/haute/_config_validation.py::VALID_KEYS`.
-
 ### PCFG-R06 — One rule for non-canonical input
 **Why:** The specification README says the implementation "has no branches or
 diagnostics that recognise historical Haute input". The code recognises
@@ -239,8 +205,8 @@ in validation, and legacy modelling `split`/`cross_validation` objects in two
 places. Projection synthesises identity "for legacy callers". The assistant
 keeps a legacy catalogue and examples (removed by `ASSIST-R01`, which applies
 this rule). Explore display validators preserve
-unknown keys so "a newer UI can round-trip through an older parser". Sidecar
-writes drop unknown keys (`PCFG-R05`). The parse-time contract check falls
+unknown keys so "a newer UI can round-trip through an older parser". The
+parse-time contract check falls
 back to an opaque contract on `ConfigError`, `OSError`, `ImportError`,
 `RuntimeError` or `MlflowException`, which this component's own specification
 calls broader than infrastructure-only failure.
@@ -255,7 +221,7 @@ and give the modelling legacy check one home.
 assistant's either follows it or is removed; one test per site pins the
 behaviour; the legacy modelling check exists once.
 
-**Dependencies:** `PCFG-R05`. `ASSIST-R01` (assistant) and `SUB-R01`
+**Dependencies:** None. `ASSIST-R01` (assistant) and `SUB-R01`
 (submodels) depend on the rule this package decides.
 
 **Evidence:** `src/haute/_node_config_recovery.py::reconcile_config`;
@@ -285,7 +251,7 @@ validators are either deleted or called only from the model's validators; an
 invalid config for any node type fails at save with the model's message; the
 frontend node-config types are generated.
 
-**Dependencies:** `PCFG-R03`, `PCFG-R05`, `PCFG-R08`; `API-R03` (server API)
+**Dependencies:** `PCFG-R03`, `PCFG-R08`; `API-R03` (server API)
 for generated browser types.
 
 **Evidence:** `src/haute/_types.py::NodeData`;

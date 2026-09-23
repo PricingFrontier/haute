@@ -111,8 +111,10 @@ documents and nodes inside read-only submodel copies are never eligible.
 `POST /api/pipeline/node/save` accepts the document source file and revision, the target
 source file and recovery id, and the proposed node configuration (including declared
 code slots). The server resolves spans and affected files itself, revalidates
-eligibility under the shared save lock, requires the candidate to remain loadable
-(completeness gaps allowed), rewrites only that node's settings and code through the
+eligibility under the shared save lock, refuses a configuration key the node type does
+not declare with HTTP 400 (`node_config_undeclared_keys`, naming the node and listing the
+keys in `unrecognized_config_keys`) before any other check or write, requires the
+candidate to remain loadable (completeness gaps allowed), rewrites only that node's settings and code through the
 existing LibCST and staged-write boundaries, verifies conservation of every other node,
 edge, and artifact byte, rejects stale revisions with HTTP 409, and returns the
 authoritative document. Shared or ambiguous artifacts, and edits that would change

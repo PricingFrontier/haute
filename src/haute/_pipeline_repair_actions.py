@@ -11,6 +11,7 @@ from tempfile import TemporaryDirectory
 from typing import Any, Literal
 
 from haute._config_io import _prepare_config_for_sidecar, config_path_for_node, node_emits_sidecar
+from haute._config_validation import reject_unrecognized_config_keys
 from haute._pipeline_recovery import _recovery_artifacts, load_pipeline_editor_document
 from haute._pipeline_repair import (
     PipelineRepairError,
@@ -36,7 +37,7 @@ from haute._python_syntax import (
 from haute._submodel_paths import resolve_submodel_reference
 from haute._submodel_recovery import submodel_registration_evidence
 from haute._types import GraphNode, NodeData, NodeType
-from haute.errors import HauteError
+from haute.errors import ConfigError, HauteError
 from haute.schemas import (
     PipelineEditorDocument,
     PipelineNodeCompleteness,
@@ -495,7 +496,11 @@ def _reset_node(
                 f"_HAUTE_CONFIG_BASE = {base_expression}\n",
             )
         after = (
-            json.dumps(_prepare_config_for_sidecar(node_type, config), indent=2, ensure_ascii=False)
+            json.dumps(
+                _prepare_config_for_sidecar(node_type, config, node_label=target.label),
+                indent=2,
+                ensure_ascii=False,
+            )
             + "\n"
         ).encode("utf-8")
         edits.append(
@@ -824,6 +829,20 @@ def apply_scoped_node_save(
     )
     if not target.scoped_editable or target.node_type is None:
         raise _unsupported("This node cannot be saved in isolation; recover or repair it first.")
+    # Code generation keeps only declared keys and a sidecar write refuses the
+    # rest, so an undeclared key is refused first, for every node type, before
+    # anything is written. The per-type validators then check the declared keys.
+    try:
+        reject_unrecognized_config_keys(
+            NodeType(target.node_type), request.config, node_label=target.label
+        )
+    except ConfigError as exc:
+        raise PipelineRepairError(
+            "node_config_undeclared_keys",
+            f"{exc.message} Nothing was saved.",
+            status_code=400,
+            unrecognized_config_keys=exc.context["unrecognized_config_keys"],
+        ) from exc
     try:
         config = validate_node_config(
             target.node_type, deepcopy(request.config), require_complete=False

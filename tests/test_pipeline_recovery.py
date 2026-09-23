@@ -544,6 +544,58 @@ def test_legacy_explore_failure_is_localised_without_writing_project_bytes(
     assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
+def test_undeclared_sidecar_key_fails_the_parse_and_localises_to_its_node(
+    tmp_path: Path,
+) -> None:
+    """A key the node type does not declare is never silently ignored on load:
+    the strict parse names it, and the editor opens only that node for repair."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    sidecar = tmp_path / "config" / "constant" / "rates.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(
+        '{"values": [{"name": "base_rate", "value": "1.0"}], "legacyScale": 2}',
+        encoding="utf-8",
+    )
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+
+        pipeline = haute.Pipeline("stale_key")
+
+        @pipeline.constant(config="config/constant/rates.json")
+        def rates():
+            return None
+
+        @pipeline.polars
+        def priced(rates):
+            return rates
+
+        @pipeline.polars
+        def unrelated():
+            return None
+        """,
+    )
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ConfigError, match=r"'rates'.*'legacyScale'"):
+        parse_pipeline_file(pipeline_file)
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "degraded"
+    availability = {node.authored_id: node.availability for node in document.nodes}
+    assert availability == {"rates": "unavailable", "priced": "blocked", "unrelated": "ready"}
+    rates = next(node for node in document.nodes if node.authored_id == "rates")
+    diagnostic = next(
+        item for item in document.diagnostics if item.diagnostic_id in rates.diagnostic_ids
+    )
+    assert diagnostic.code == "node_config_invalid"
+    assert "legacyScale" in diagnostic.message
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
 def test_corrupt_position_sidecar_degrades_and_does_not_trust_source_selection(
     tmp_path: Path,
 ) -> None:

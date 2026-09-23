@@ -1122,22 +1122,21 @@ class TestResolveNodeConfig:
         """Config-backed node types must reference their JSON sidecar."""
         from haute.errors import ConfigError
 
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            with pytest.raises(ConfigError):
-                _resolve_node_config(
-                    {
-                        "inputType": "file",
-                        "format": "parquet",
-                        "mode": "scan",
-                        "path": "data.parquet",
-                        "arguments": {},
-                    },
-                    "",
-                    [],
-                    0,
-                    None,
-                    explicit_node_type=NodeType.DATA_INPUT,
-                )
+        with pytest.raises(ConfigError):
+            _resolve_node_config(
+                {
+                    "inputType": "file",
+                    "format": "parquet",
+                    "mode": "scan",
+                    "path": "data.parquet",
+                    "arguments": {},
+                },
+                "",
+                [],
+                0,
+                None,
+                explicit_node_type=NodeType.DATA_INPUT,
+            )
 
     def test_sidecar_required_error_names_folder_and_remediation(self):
         """The sidecar-required error must name the concrete folder and how to fix it.
@@ -1147,22 +1146,21 @@ class TestResolveNodeConfig:
         """
         from haute.errors import ConfigError
 
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            with pytest.raises(ConfigError) as excinfo:
-                _resolve_node_config(
-                    {
-                        "inputType": "file",
-                        "format": "parquet",
-                        "mode": "scan",
-                        "path": "data.parquet",
-                        "arguments": {},
-                    },
-                    "",
-                    [],
-                    0,
-                    None,
-                    explicit_node_type=NodeType.DATA_INPUT,
-                )
+        with pytest.raises(ConfigError) as excinfo:
+            _resolve_node_config(
+                {
+                    "inputType": "file",
+                    "format": "parquet",
+                    "mode": "scan",
+                    "path": "data.parquet",
+                    "arguments": {},
+                },
+                "",
+                [],
+                0,
+                None,
+                explicit_node_type=NodeType.DATA_INPUT,
+            )
         message = str(excinfo.value)
         # Concrete folder resolved from NODE_TYPE_TO_FOLDER, not a placeholder.
         assert "config/data_input/" in message
@@ -1189,16 +1187,15 @@ class TestResolveNodeConfig:
         # raises ``ValueError("Node config JSON must contain an object")``.
         cfg_file.write_text("[1, 2, 3]")
 
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            with pytest.raises(ConfigError) as excinfo:
-                _resolve_node_config(
-                    {"config": "config/data_input/my_source.json"},
-                    "",
-                    [],
-                    0,
-                    tmp_path,
-                    explicit_node_type=NodeType.DATA_INPUT,
-                )
+        with pytest.raises(ConfigError) as excinfo:
+            _resolve_node_config(
+                {"config": "config/data_input/my_source.json"},
+                "",
+                [],
+                0,
+                tmp_path,
+                explicit_node_type=NodeType.DATA_INPUT,
+            )
         message = str(excinfo.value)
         # Leads with the precise underlying validation message, not the generic
         # "check that the path exists / valid JSON" headline.
@@ -1211,31 +1208,29 @@ class TestResolveNodeConfig:
         """A missing/unreadable file keeps the path-focused headline (F526 split)."""
         from haute.errors import ConfigError
 
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            with pytest.raises(ConfigError) as excinfo:
-                _resolve_node_config(
-                    {"config": "config/data_input/missing.json"},
-                    "",
-                    [],
-                    0,
-                    tmp_path,
-                    explicit_node_type=NodeType.DATA_INPUT,
-                )
+        with pytest.raises(ConfigError) as excinfo:
+            _resolve_node_config(
+                {"config": "config/data_input/missing.json"},
+                "",
+                [],
+                0,
+                tmp_path,
+                explicit_node_type=NodeType.DATA_INPUT,
+            )
         message = str(excinfo.value)
         assert "check that the path exists" in message
         assert "config/data_input/missing.json" in message
 
     def test_polars_without_config_reference_builds_from_body(self):
         """Polars nodes keep code in the function body and need no sidecar."""
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            node_type, config = _resolve_node_config(
-                {},
-                "    return df",
-                ["df"],
-                1,
-                None,
-                explicit_node_type=NodeType.POLARS,
-            )
+        node_type, config = _resolve_node_config(
+            {},
+            "    return df",
+            ["df"],
+            1,
+            None,
+            explicit_node_type=NodeType.POLARS,
+        )
         assert node_type == NodeType.POLARS
         assert isinstance(config["code"], str)
 
@@ -1253,15 +1248,14 @@ class TestResolveNodeConfig:
         cfg_file = cfg_dir / "my_source.json"
         cfg_file.write_text(json.dumps(cfg))
 
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            node_type, loaded = _resolve_node_config(
-                {"config": "config/data_input/my_source.json"},
-                "",
-                [],
-                0,
-                tmp_path,
-                explicit_node_type=NodeType.DATA_INPUT,
-            )
+        node_type, loaded = _resolve_node_config(
+            {"config": "config/data_input/my_source.json"},
+            "",
+            [],
+            0,
+            tmp_path,
+            explicit_node_type=NodeType.DATA_INPUT,
+        )
         assert node_type == NodeType.DATA_INPUT
         assert loaded["path"] == "data.csv"
 
@@ -1286,15 +1280,14 @@ class TestResolveNodeConfig:
             "    df = df.filter(pl.col('x') > 0)\n"
             "    return df"
         )
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            node_type, loaded = _resolve_node_config(
-                {"config": "config/data_input/my_source.json"},
-                body,
-                [],
-                0,
-                tmp_path,
-                explicit_node_type=NodeType.DATA_INPUT,
-            )
+        node_type, loaded = _resolve_node_config(
+            {"config": "config/data_input/my_source.json"},
+            body,
+            [],
+            0,
+            tmp_path,
+            explicit_node_type=NodeType.DATA_INPUT,
+        )
         assert node_type == NodeType.DATA_INPUT
         assert "filter" in loaded.get("code", "")
 
@@ -1318,15 +1311,14 @@ class TestResolveNodeConfig:
             '    df = resolve_data_input_from_config("config/data_input/my_source.json")\n'
             "    return df"
         )
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            node_type, loaded = _resolve_node_config(
-                {"config": "config/data_input/my_source.json"},
-                body,
-                [],
-                0,
-                tmp_path,
-                explicit_node_type=NodeType.DATA_INPUT,
-            )
+        node_type, loaded = _resolve_node_config(
+            {"config": "config/data_input/my_source.json"},
+            body,
+            [],
+            0,
+            tmp_path,
+            explicit_node_type=NodeType.DATA_INPUT,
+        )
         assert node_type == NodeType.DATA_INPUT
         assert loaded.get("code", "") == ""
 
@@ -1338,16 +1330,15 @@ class TestResolveNodeConfig:
         """
         from haute.errors import ConfigError
 
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            with pytest.raises(ConfigError):
-                _resolve_node_config(
-                    {"config": "config/data_input/missing.json"},
-                    "",
-                    [],
-                    0,
-                    tmp_path,
-                    explicit_node_type=NodeType.DATA_INPUT,
-                )
+        with pytest.raises(ConfigError):
+            _resolve_node_config(
+                {"config": "config/data_input/missing.json"},
+                "",
+                [],
+                0,
+                tmp_path,
+                explicit_node_type=NodeType.DATA_INPUT,
+            )
 
     def test_banding_type_from_explicit_decorator(self, tmp_path):
         """Explicit decorator type is used directly for config resolution."""
@@ -1358,24 +1349,22 @@ class TestResolveNodeConfig:
 
         body = '    """doc"""\n    df = df.filter(pl.col("x") > 0)\n    return df'
 
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            node_type, config = _resolve_node_config(
-                {"config": "config/banding/my_transform.json"},
-                body,
-                ["source"],
-                1,
-                tmp_path,
-                explicit_node_type=NodeType.BANDING,
-            )
+        node_type, config = _resolve_node_config(
+            {"config": "config/banding/my_transform.json"},
+            body,
+            ["source"],
+            1,
+            tmp_path,
+            explicit_node_type=NodeType.BANDING,
+        )
         assert node_type == NodeType.BANDING
 
     def test_does_not_mutate_decorator_kwargs(self):
         """_resolve_node_config must not modify the caller's dict (B21)."""
         kwargs: dict[str, Any] = {"config": "config/data_input/x.json", "extra": True}
         original = dict(kwargs)
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            with patch("haute._config_builder.load_node_config", return_value={}):
-                _resolve_node_config(kwargs, "", [], 0, None)
+        with patch("haute._config_builder.load_node_config", return_value={}):
+            _resolve_node_config(kwargs, "", [], 0, None)
         # The original dict must be untouched — "config" key stays.
         assert kwargs == original
 
@@ -1389,8 +1378,7 @@ class TestResolveNodeConfig:
             "arguments": {},
         }
         original = dict(kwargs)
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            _resolve_node_config(kwargs, "", [], 0, None)
+        _resolve_node_config(kwargs, "", [], 0, None)
         assert kwargs == original
 
     def test_no_mutation_with_multiple_keys(self):
@@ -1401,9 +1389,8 @@ class TestResolveNodeConfig:
             "format": "parquet",
         }
         original = dict(kwargs)
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            with patch("haute._config_builder.load_node_config", return_value={}):
-                _resolve_node_config(kwargs, "", [], 0, None)
+        with patch("haute._config_builder.load_node_config", return_value={}):
+            _resolve_node_config(kwargs, "", [], 0, None)
         assert kwargs == original
 
     def test_mangled_config_path_raises_config_error(self, tmp_path):
@@ -1422,17 +1409,16 @@ class TestResolveNodeConfig:
         cfg_file.write_text(json.dumps(cfg))
 
         mangled_path = "config/\x08anding/age_band.json"
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            with pytest.raises(ConfigError):
-                _resolve_node_config(
-                    {"config": mangled_path},
-                    "",
-                    ["df"],
-                    1,
-                    tmp_path,
-                    func_name="age_band",
-                    explicit_node_type=NodeType.BANDING,
-                )
+        with pytest.raises(ConfigError):
+            _resolve_node_config(
+                {"config": mangled_path},
+                "",
+                ["df"],
+                1,
+                tmp_path,
+                func_name="age_band",
+                explicit_node_type=NodeType.BANDING,
+            )
 
 
 # ===========================================================================
@@ -1598,13 +1584,12 @@ class TestExtractDecoratedNodes:
             "    return source\n"
         )
         tree, bodies = self._parse_source(source)
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            nodes = _extract_decorated_nodes(
-                tree,
-                _is_pipeline_node_decorator,
-                bodies,
-                tmp_path,
-            )
+        nodes = _extract_decorated_nodes(
+            tree,
+            _is_pipeline_node_decorator,
+            bodies,
+            tmp_path,
+        )
         assert len(nodes) == 2
         assert nodes[0]["func_name"] == "source"
         assert nodes[0]["node_type"] == NodeType.DATA_INPUT
@@ -1621,13 +1606,12 @@ class TestExtractDecoratedNodes:
             "    return data\n"
         )
         tree, bodies = self._parse_source(source)
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            nodes = _extract_decorated_nodes(
-                tree,
-                _is_submodel_node_decorator,
-                bodies,
-                None,
-            )
+        nodes = _extract_decorated_nodes(
+            tree,
+            _is_submodel_node_decorator,
+            bodies,
+            None,
+        )
         assert len(nodes) == 1
         assert nodes[0]["func_name"] == "calc"
 
@@ -1642,84 +1626,78 @@ class TestExtractDecoratedNodes:
             "    return 1\n"
         )
         tree, bodies = self._parse_source(source)
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            nodes = _extract_decorated_nodes(
-                tree,
-                _is_pipeline_node_decorator,
-                bodies,
-                None,
-            )
+        nodes = _extract_decorated_nodes(
+            tree,
+            _is_pipeline_node_decorator,
+            bodies,
+            None,
+        )
         assert len(nodes) == 1
         assert nodes[0]["func_name"] == "matched"
 
     def test_ignores_non_function_stmts(self):
         source = "x = 1\ny = 2\n@pipeline.polars\ndef only_func():\n    return 1\n"
         tree, bodies = self._parse_source(source)
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            nodes = _extract_decorated_nodes(
-                tree,
-                _is_pipeline_node_decorator,
-                bodies,
-                None,
-            )
+        nodes = _extract_decorated_nodes(
+            tree,
+            _is_pipeline_node_decorator,
+            bodies,
+            None,
+        )
         assert len(nodes) == 1
 
     def test_empty_tree_returns_empty(self):
         tree, bodies = self._parse_source("x = 1\n")
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            nodes = _extract_decorated_nodes(
-                tree,
-                _is_pipeline_node_decorator,
-                bodies,
-                None,
-            )
+        nodes = _extract_decorated_nodes(
+            tree,
+            _is_pipeline_node_decorator,
+            bodies,
+            None,
+        )
         assert nodes == []
 
     def test_extracts_param_names(self):
         source = "@pipeline.polars\ndef transform(a, b, c):\n    return a\n"
         tree, bodies = self._parse_source(source)
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            nodes = _extract_decorated_nodes(
-                tree,
-                _is_pipeline_node_decorator,
-                bodies,
-                None,
-            )
+        nodes = _extract_decorated_nodes(
+            tree,
+            _is_pipeline_node_decorator,
+            bodies,
+            None,
+        )
         assert nodes[0]["param_names"] == ["a", "b", "c"]
 
     def test_extracts_docstring(self):
         source = '@pipeline.polars\ndef transform(a):\n    """My transform doc."""\n    return a\n'
         tree, bodies = self._parse_source(source)
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            nodes = _extract_decorated_nodes(
-                tree,
-                _is_pipeline_node_decorator,
-                bodies,
-                None,
-            )
+        nodes = _extract_decorated_nodes(
+            tree,
+            _is_pipeline_node_decorator,
+            bodies,
+            None,
+        )
         assert nodes[0]["description"] == "My transform doc."
 
     def test_pipeline_checker_does_not_match_submodel(self):
         source = "@submodel.polars\ndef calc(x):\n    return x\n"
         tree, bodies = self._parse_source(source)
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            # submodel checker matches @submodel.polars
-            nodes = _extract_decorated_nodes(
-                tree,
-                _is_submodel_node_decorator,
-                bodies,
-                None,
-            )
-            assert len(nodes) == 1
-            # pipeline checker must NOT match @submodel.polars —
-            # it checks decorator.value.id == "pipeline"
-            nodes2 = _extract_decorated_nodes(
-                tree,
-                _is_pipeline_node_decorator,
-                bodies,
-                None,
-            )
-            assert len(nodes2) == 0
+        # submodel checker matches @submodel.polars
+        nodes = _extract_decorated_nodes(
+            tree,
+            _is_submodel_node_decorator,
+            bodies,
+            None,
+        )
+        assert len(nodes) == 1
+        # pipeline checker must NOT match @submodel.polars —
+        # it checks decorator.value.id == "pipeline"
+        nodes2 = _extract_decorated_nodes(
+            tree,
+            _is_pipeline_node_decorator,
+            bodies,
+            None,
+        )
+        assert len(nodes2) == 0
 
 
 # ===========================================================================

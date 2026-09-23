@@ -281,8 +281,6 @@ _BROWSER_RATING_CONFIG = """{
       "entries": []
     }
   ],
-  "operation": "multiply",
-  "combinedColumn": "",
   "combinedOutputs": [],
   "code": ""
 }

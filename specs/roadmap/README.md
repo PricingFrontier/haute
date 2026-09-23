@@ -35,7 +35,7 @@ or maintenance issue; `P3` opportunistic work.
 | [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients | `MLF-R02` |
 | [Modelling](modelling.md) | RustyStats 0.9.0 upgrade, GLM terms and interactions; proposed XGBoost, LightGBM, and EBM lifecycle support; invariant checks | `MOD-T00` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers, auto-range, input isolation, frontier selection | `OPT-P11` |
-| [Pipeline config](pipeline-config.md) | Silent key drops, repair, save validation, the error a rejected config reports, project context, typed configs, node specification | `PCFG-R05` |
+| [Pipeline config](pipeline-config.md) | Repair, save validation, the error a rejected config reports, project context, typed configs, node specification | `PCFG-R01` |
 | [Sandbox security](sandbox-security.md) | One path-containment check, the node-code guard | `SBX-R01` |
 | [Server API](server-api.md) | Error translation, generated browser contract, recovery scope | `API-R01` |
 | [Submodels](submodels.md) | One reuse mechanism | `SUB-R01` |

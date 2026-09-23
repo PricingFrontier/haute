@@ -7,7 +7,7 @@
 | `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). |
 | `src/haute/_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). For Live Switch nodes, `config["inputs"]` records only positional edge parameters (frame labels for apiInput edges, sanitised source labels otherwise), the same strings referenced by the input-to-scenario mapping; keyword-only configuration parameters are excluded. It consumes the per-type user-code extractors from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
 | `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs, and the Windows-reserved-filename guard. |
-| `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's TypedDict definition, and `warn_unrecognized_config_keys`. |
+| `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's TypedDict definition, `unrecognized_config_keys`, and `reject_unrecognized_config_keys`. |
 | `src/haute/_polars_steps.py` | Low-code Polars step schema: `validate_polars_steps`, `render_polars_steps` (one statement per step, optional input-name validation, a required `start` mode of `input` or `frame`, `PolarsStepError` with the step index), `STEPPED_NODE_TYPES` (each stepped node type's `SteppedSurface`: start mode plus input eligibility `edges`/`none`), `stepped_surface_for`, `step_input_names`, `is_stepped_config`, `stepped_surface_allows_input_references` (the gate for rewriting step references on a rename), `referenced_step_inputs`, and `rename_step_inputs` for boundary renames. Consumed by the node data model, the parser, the executor builder, codegen, the save service, the deploy interceptors, submodel flattening, and the render endpoint. |
 | `src/haute/_builders.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration consumes its `NODE_REGISTRY` registration contracts. |
 | `src/haute/_node_builder.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration documents its builder-interception seam. |
@@ -210,8 +210,9 @@ without node-id remapping. Before allowlist filtering, known removed identity fi
 Edge Join's `baseInput`/`joinInput` and Optimiser's `scored_input`/`factors_input` never become a
 silent write-time migration. Each accepted config is then filtered through
 `_prepare_config_for_sidecar` (strips `code` and `_`-prefixed properties of the top-level
-config record, applies the `VALID_KEYS` allowlist — logging any dropped keys at
-WARNING — then per-type canonicalisation for `BANDING`/`RATING_STEP`), and serialises the result
+config record, refuses any other key outside `VALID_KEYS` with `ConfigError` through
+`reject_unrecognized_config_keys` — a backstop, because save validation has already refused
+such a graph — then per-type canonicalisation for `BANDING`/`RATING_STEP`), and serialises the result
 to `{relative_path: json_string}`. Rating-step canonicalisation always emits ordered entry rows.
 Banding canonicalisation removes transient properties from factor records and expanded rule
 records, including `_prevRules` and `_id`. Compact category maps are data and retain those
@@ -352,9 +353,16 @@ forwards projection/profile fields; external-file resolution validates
   required check raises first. The branches are kept as explicit no-ops (not removed) so a
   stray inline decorator usage can't silently fall through to the generic "transform" branch
   and pick up a `code` config it shouldn't have.
-- `warn_unrecognized_config_keys` treats an unrecognised `NodeType` string (e.g. from a
-  hand-edited or forward-incompatible sidecar) as "nothing to validate against" and returns an
-  empty list rather than raising.
+- `unrecognized_config_keys(node_type, config)` returns, sorted, every top-level key that is
+  not `_`-prefixed, not `code`, and not declared for the node type.
+  `reject_unrecognized_config_keys(node_type, config, node_label=...)` raises `ConfigError`
+  naming the node, its type and those keys (context `unrecognized_config_keys`). Both run
+  after the config builder assembles a parsed node's config and at the sidecar write
+  boundary. Before the per-type validators, they also run for every node of the root graph
+  and every embedded submodel graph through `SavePipelineService.validate_graph`, before a
+  save stages any file (HTTP 400). The node-scoped save (`apply_scoped_node_save`, HTTP 400
+  `node_config_undeclared_keys`) runs them too, because code generation would otherwise
+  keep only the declared keys of a code-only node.
 - Windows-reserved device filenames (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`)
   are matched on the stem before the first dot, casefolded, with trailing dots/spaces
   stripped — and rejected on every OS, not gated behind a platform check, so a project saved
@@ -368,10 +376,9 @@ forwards projection/profile fields; external-file resolution validates
   text, not an AST/import check, so the string appearing in a comment or docstring would
   false-positive; an `OSError` reading one candidate file is silently skipped rather than
   failing discovery for the whole directory.
-- `_prepare_config_for_sidecar`'s `VALID_KEYS` allowlist step is skipped entirely for any
-  `NodeType` absent from `VALID_KEYS` (e.g. `SUBMODEL_PORT`, which has no `TypedDict` to
-  anchor an allowlist on) — such configs fall through to the pre-existing code/internal-key
-  stripping only, with no key-level filtering.
+- The undeclared-key check does not apply to a `NodeType` absent from `VALID_KEYS` (e.g.
+  `SUBMODEL_PORT`, which has no `TypedDict` to anchor it on); such configs get only the
+  code/internal-key stripping, with no key-level check.
 - Config read/write accepts only each node type's current schema. It neither
   classifies nor upgrades earlier emitted fields; where a canonical normaliser
   exists, both paths call it directly rather than a migration-named wrapper.
@@ -393,7 +400,9 @@ forwards projection/profile fields; external-file resolution validates
 ## Error handling
 
 - **`ConfigError`** (`haute.errors`) — missing/unreadable/invalid-JSON sidecar; sidecar
-  content failing schema validation; a folder-backed node type used without `config=`;
+  content failing schema validation; a config key the node type does not declare
+  (`reject_unrecognized_config_keys`, at parse and at the sidecar write boundary); a
+  folder-backed node type used without `config=`;
   `optimiserApply` misconfiguration (`artifact_path` set without `sourceType`); `modelScore`
   misconfiguration (a non-string or unsupported `sourceType`, or a blank
   `run_id`/`registered_model` for the declared source); project
@@ -429,10 +438,6 @@ forwards projection/profile fields; external-file resolution validates
   the exec-builder dispatcher.
 - **`TypeError`** — an invalid (non-`str`, non-`None`) `source_port`/`target_port` passed to
   `connect()`, raised from `_validate_port`.
-- **Never raises** — `warn_unrecognized_config_keys` logs at WARNING and returns the offending
-  key list instead; this is the one deliberate departure from the component's fail-loud
-  default, applied both when a config is first built and again when it is written to its
-  sidecar.
 
 ## Testing
 
@@ -468,7 +473,8 @@ API and real JSON round-trips rather than mocks:
   and filename sanitisation of the node label without node-id remapping), banding compaction, rating canonical-row validation/emission,
   and preservation of the prior sidecar when validation fails.
 - **`test_config_validation.py`** — `VALID_KEYS` registry completeness
-  (`TestValidKeysRegistry`), `warn_unrecognized_config_keys` behaviour, and alignment between
+  (`TestValidKeysRegistry`), `unrecognized_config_keys` / `reject_unrecognized_config_keys`
+  behaviour, and alignment between
   each type's decorator kwargs and the config keys `_build_node_config` actually produces
   (`TestBuildNodeConfigProducesValidKeys`, `TestConfigKeyTupleAlignment`).
 - **`test_parser_helpers.py`** — AST extraction (`TestExtractDecoratedNodes`),

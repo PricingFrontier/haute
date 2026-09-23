@@ -66,7 +66,6 @@ def _make_scenario_expander_node(label: str) -> GraphNode:
             label=label,
             nodeType=NodeType.SCENARIO_EXPANDER,
             config={
-                "scenario_expander": True,
                 "quote_id": "policy_id",
                 "column_name": "scenario_value",
                 "min_value": 0.8,

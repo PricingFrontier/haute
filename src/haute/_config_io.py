@@ -63,7 +63,6 @@ _OPTIONAL_SIDECAR_TYPES: frozenset[NodeType] = frozenset({NodeType.POLARS})
 FOLDER_TO_NODE_TYPE: dict[str, NodeType] = {v: k for k, v in NODE_TYPE_TO_FOLDER.items()}
 
 # Keys that live in the .py function body, NOT in the JSON config file.
-_CODE_KEYS: frozenset[str] = frozenset({"code"})
 
 
 def reject_duplicate_keys_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -112,33 +111,31 @@ def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None)
     return config
 
 
-def _prepare_config_for_sidecar(node_type: NodeType, config: dict[str, Any]) -> dict[str, Any]:
-    from haute._config_validation import reject_removed_config_keys
+def _prepare_config_for_sidecar(
+    node_type: NodeType,
+    config: dict[str, Any],
+    *,
+    node_label: str,
+) -> dict[str, Any]:
+    from haute._config_validation import (
+        CODE_CONFIG_KEYS,
+        reject_removed_config_keys,
+        reject_unrecognized_config_keys,
+    )
 
     reject_removed_config_keys(node_type, config)
+    # Save validation has already refused an undeclared key; the write
+    # boundary refuses it too, so no path drops a user key and continues.
+    reject_unrecognized_config_keys(node_type, config, node_label=node_label)
 
     # Only the config record's own underscore properties are editor state.
     # Nested mappings may contain arbitrary column names or user records.
     # Type-specific serializers own cleanup of their nested editor records.
     filtered = {
-        k: deepcopy(v) for k, v in config.items() if k not in _CODE_KEYS and not k.startswith("_")
+        k: deepcopy(v)
+        for k, v in config.items()
+        if k not in CODE_CONFIG_KEYS and not k.startswith("_")
     }
-
-    # Persist only fields declared by the current node config TypedDict.
-    # Unknown fields are logged and omitted so UI save failures are visible
-    # without corrupting the sidecar.
-    from haute._config_validation import VALID_KEYS
-
-    allowed = VALID_KEYS.get(node_type)
-    if allowed is not None:
-        dropped = sorted(k for k in filtered if k not in allowed)
-        if dropped:
-            logger.warning(
-                "config_keys_dropped_at_write",
-                node_type=node_type.value,
-                keys=dropped,
-            )
-            filtered = {k: v for k, v in filtered.items() if k in allowed}
 
     if node_type == NodeType.BANDING:
         return compact_banding_config_for_sidecar(filtered)
@@ -346,7 +343,7 @@ def collect_node_configs(graph: PipelineGraph) -> dict[str, str]:
             continue
         func_name = _sanitize_func_name(node.data.label)
         rel_path = config_path_for_node(nt, func_name).as_posix()
-        filtered = _prepare_config_for_sidecar(nt, node.data.config)
+        filtered = _prepare_config_for_sidecar(nt, node.data.config, node_label=node.data.label)
         configs[rel_path] = json.dumps(filtered, indent=2, ensure_ascii=False) + "\n"
     return configs
 

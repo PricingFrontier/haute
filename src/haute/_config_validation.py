@@ -1,8 +1,8 @@
-"""Lightweight config validation for pipeline node types.
+"""Config validation for pipeline node types.
 
-Warns on unrecognized config keys so typos and stale keys surface early
-instead of being silently ignored.  Returns the unexpected keys so callers
-can choose whether to warn, fail, or report them in tests.
+Each node type declares its config keys through its ``TypedDict``. A key it
+does not declare is refused wherever a config is parsed, saved or written, so
+a typo or stale key fails loudly instead of being silently dropped.
 """
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal, overload
 
-from haute._logging import get_logger
 from haute._types import (
     COLUMN_CONFIG_KEYS,
     DATA_INPUT_CONFIG_TYPES,
@@ -34,8 +33,6 @@ from haute._types import (
     TransformConfig,
 )
 from haute.errors import ConfigError
-
-logger = get_logger(component="config_validation")
 
 # ---------------------------------------------------------------------------
 # Valid-key registry
@@ -298,37 +295,48 @@ def validate_optimiser_input_selectors(
 # ---------------------------------------------------------------------------
 
 
-def warn_unrecognized_config_keys(
-    node_type: NodeType | str,
-    config: dict[str, Any],
-    *,
-    node_label: str = "",
-) -> list[str]:
-    """Log warnings for config keys not recognised by *node_type*.
+CODE_CONFIG_KEYS: frozenset[str] = frozenset({"code"})
+"""Config keys whose value lives in the node's ``.py`` body, never in its sidecar."""
 
-    Returns the list of unrecognised key names (handy for testing).
-    Never raises.
+
+def unrecognized_config_keys(node_type: NodeType, config: Mapping[str, Any]) -> list[str]:
+    """Return, sorted, the top-level config keys *node_type* does not declare.
+
+    ``_``-prefixed editor state and the body code are not config keys. A node
+    type without a ``TypedDict`` (``SUBMODEL_PORT``) declares nothing to check.
     """
-    try:
-        nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
-    except ValueError:
-        # Unknown node type string -- nothing to validate against.
-        return []
-
-    valid = VALID_KEYS.get(nt)
+    valid = VALID_KEYS.get(node_type)
     if valid is None:
         return []
+    return sorted(
+        key
+        for key in config
+        if not key.startswith("_") and key not in CODE_CONFIG_KEYS and key not in valid
+    )
 
-    bad = sorted(k for k in config if k not in valid and not k.startswith("_"))
-    if bad:
-        label = node_label or nt.value
-        logger.warning(
-            "unrecognized_config_keys",
-            node_type=nt.value,
-            node_label=label,
-            keys=bad,
+
+def reject_unrecognized_config_keys(
+    node_type: NodeType,
+    config: Mapping[str, Any],
+    *,
+    node_label: str,
+) -> None:
+    """Refuse a config that carries keys its node type does not declare.
+
+    Dropping such a key would lose persisted work without the user seeing it.
+
+    Raises:
+        ConfigError: naming the node, its type and every undeclared key.
+    """
+    unrecognized = unrecognized_config_keys(node_type, config)
+    if unrecognized:
+        keys = ", ".join(repr(key) for key in unrecognized)
+        raise ConfigError(
+            f"Node {node_label!r} has {node_type.value} config keys the node type does "
+            f"not declare: {keys}. Remove them from its config, or declare them in the "
+            "node type's config.",
+            unrecognized_config_keys=unrecognized,
         )
-    return bad
 
 
 _MLFLOW_DESTINATION_NODE_TYPES = frozenset(

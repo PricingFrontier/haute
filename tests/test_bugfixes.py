@@ -880,7 +880,11 @@ class TestParserConfigLoadWarning:
         config_dir.mkdir(parents=True)
         # Write a JSON file with a Windows-1252 en-dash (0x96) — invalid UTF-8
         # With errors="replace", the 0x96 becomes U+FFFD and JSON stays valid
-        (config_dir / "bands.json").write_bytes(b'{"bands": [{"label": "20\x9627"}]}')
+        (config_dir / "bands.json").write_bytes((
+            b'{"factors": [{"banding": "categorical", "column": "age", '
+            b'"outputColumn": "age_band", "rules": [{"value": "young", '
+            b'"assignment": "20\x9627"}], "default": "other"}]}'
+        ))
         (pipeline_dir / "main.py").write_text(
             "import haute\nimport polars as pl\n\n"
             'pipeline = haute.Pipeline("test")\n\n'
@@ -897,7 +901,7 @@ class TestParserConfigLoadWarning:
         config = graph.nodes[0].data.config
         assert "_load_error" not in config
         # The label contains the replacement character instead of the raw byte
-        assert "\ufffd" in config["bands"][0]["label"]
+        assert "\ufffd" in config["factors"][0]["rules"][0]["assignment"]
 
     def test_format_load_error_warning_empty(self):
         """No labels should produce None."""

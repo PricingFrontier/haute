@@ -251,8 +251,8 @@ def test_scoped_save_route_rejects_malformed_discriminant_shapes(client, monkeyp
     target = next(node for node in document.nodes if node.authored_id == "source_b")
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     for config in (
-        {**BROKEN_INPUT, "inputType": ["file"]},
-        {**BROKEN_INPUT, "inputType": {"kind": "file"}},
+        {**target.config, "inputType": ["file"]},
+        {**target.config, "inputType": {"kind": "file"}},
     ):
         response = client.post(
             "/api/pipeline/node/save",
@@ -268,3 +268,52 @@ def test_scoped_save_route_rejects_malformed_discriminant_shapes(client, monkeyp
         assert response.json()["detail"]["code"] == "repair_action_unsupported"
         assert "Unknown inputType" in response.json()["detail"]["message"]
     assert {p: p.read_bytes() for p in before} == before
+
+
+def _inputs_and_transform(root: Path) -> None:
+    _two_inputs(root)
+    main = root / "main.py"
+    main.write_text(
+        main.read_text(encoding="utf-8")
+        + "@pipeline.polars\ndef priced(source_b):\n    return source_b\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize(
+    "authored_id",
+    [
+        pytest.param("priced", id="code-only-node"),
+        pytest.param("source_b", id="sidecar-node"),
+    ],
+)
+def test_scoped_save_refuses_an_undeclared_key_without_writing(
+    client, monkeypatch, tmp_path, authored_id
+):
+    """Code generation keeps only declared keys, so a scoped save of an
+    undeclared one is refused, naming it, rather than silently dropping it."""
+    _inputs_and_transform(tmp_path)
+    _recover(tmp_path, "source_b")
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    target = next(node for node in document.nodes if node.authored_id == authored_id)
+    assert target.scoped_editable is True
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+
+    response = client.post(
+        "/api/pipeline/node/save",
+        json={
+            "source_file": document.source_file,
+            "source_revision": document.source_revision,
+            "target_source_file": target.source_file,
+            "target_recovery_id": target.recovery_id,
+            "config": {**target.config, "legacyFlag": True},
+        },
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["code"] == "node_config_undeclared_keys"
+    assert detail["unrecognized_config_keys"] == ["legacyFlag"]
+    assert authored_id in detail["message"]
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
