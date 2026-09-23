@@ -118,7 +118,7 @@ class TestFeatureOrderMismatchAtScore:
             cat_features=cat_features,
         )
 
-        scoring_model: ScoringModel = _wrap_catboost(model)
+        scoring_model: ScoringModel = _wrap_catboost(model, source="test model")
         assert list(scoring_model.feature_names) == train_features, (
             "Pre-check: CatBoost must remember training feature order"
         )
@@ -159,7 +159,7 @@ class TestFeatureOrderMismatchAtScore:
             features=train_features,
             cat_features=["region"],
         )
-        scoring_model = _wrap_catboost(model)
+        scoring_model = _wrap_catboost(model, source="test model")
 
         # Build scoring data with all the right columns but wrong order.
         bad_order = mixed_train_df.select(["vehicle_value", "age", "region"]).head(4)

@@ -32,7 +32,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Frontend shared](frontend-shared.md) | Job polling, repeated helpers, results store | `FSH-R01` |
 | [IO layer](io-layer.md) | One dtype vocabulary, one atomic write and file lock | `IO-R01` |
 | [JSON shredding](json-shredding.md) | One non-finite float encoding, explicit output nesting | `JSON-R01` |
-| [MLflow model registry](mlflow-model-registry.md) | Offset metadata failures, explicit MLflow clients | `MLF-R01` |
+| [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients | `MLF-R02` |
 | [Modelling](modelling.md) | RustyStats 0.9.0 upgrade, GLM terms and interactions; proposed XGBoost, LightGBM, and EBM lifecycle support; estimate failures, invariant checks | `MOD-T00` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers, auto-range, input isolation, frontier selection | `OPT-P11` |
 | [Pipeline config](pipeline-config.md) | Silent key drops, repair, save validation, the error a rejected config reports, project context, typed configs, node specification | `PCFG-R05` |
