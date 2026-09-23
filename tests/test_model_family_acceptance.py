@@ -343,6 +343,9 @@ def test_a_native_fit_stops_at_the_first_progress_report_after_cancellation(
     assert not list(tmp_path.glob(f"{family}.*"))
 
 
+# Four real trainings through the service; under CI coverage one CatBoost run
+# (fit, diagnostics, SHAP) takes about 18 s, beyond the 60 s default.
+@pytest.mark.timeout(240)
 @pytest.mark.parametrize("family", FAMILIES)
 def test_native_training_lifecycle_keeps_the_last_good_model(
     tmp_path: Path,

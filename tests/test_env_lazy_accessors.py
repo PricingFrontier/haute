@@ -419,6 +419,14 @@ other = os.environ.get(key)
 # in haute._env; these exceptions are strings, booleans, credentials, mappings,
 # or custom non-negative/readiness policies with deliberately different semantics.
 _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
+    # The CUDA runtime's own device-visibility variable: the VRAM admission
+    # check sizes the GPU CUDA will train on (MOD-F06).
+    (
+        "src/haute/_host_memory.py",
+        "<module>.available_vram_bytes",
+        "CUDA_VISIBLE_DEVICES",
+        "os.environ.get",
+    ),
     # Credentials and external integration endpoints.
     (
         "src/haute/assistant/_config.py",
