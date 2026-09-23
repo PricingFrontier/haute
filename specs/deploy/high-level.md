@@ -123,6 +123,17 @@ schema and stores only the selected columns, in configured order, in the resolve
 Test-quote scoring applies the same projection. The deploy manifest, MLflow signature,
 golden validation, and served response therefore describe one output contract.
 
+**Project modules.** A preamble may import the project's `utility` package: the module
+or package that `utility` resolves to from the pipeline directory or the working
+directory, the same resolution the executor uses. Deploy ships that package with the
+bundle. The container copies it beside `app.py`, and the Databricks model logs it as an
+MLflow code path, so the served preamble imports the files that were validated. Any
+other static absolute import, in the preamble or in a bundled `utility` file, that
+resolves from the pipeline directory or the working directory is project code the bundle
+does not carry. `validate_deploy` refuses it, naming the module and the file that imports
+it. Imports that resolve from installed packages are for the serving environment to
+provide.
+
 **Packaging and shipping.** Two backends are implemented:
 - **Databricks**: logs the pipeline as an `mlflow.pyfunc.PythonModel` (models-from-code),
   registers it in Unity Catalog, and creates/updates a Databricks Model Serving endpoint.
@@ -199,8 +210,8 @@ approving it.
   (`_model_code.py`) reconstructs the graph via `PipelineGraph.model_validate(manifest["pruned_graph"])`
   rather than re-parsing any source file. The graph JSON is inspectable without the
   original source and cannot drift from what was validated. Its embedded preamble still
-  executes at runtime, however: project-local modules imported by that preamble are not
-  collected by the bundler and must be installed/provided separately.
+  executes at runtime, so the bundle carries the project's `utility` package with it
+  (see **Project modules**).
 - **Reproducible container builds.** `container.base_image` must be pinned to an explicit
   patch version or a digest (`src/haute/deploy/_config.py::_validate_base_image_pinning`) — floating tags
   like `python:3.11-slim` are rejected outright, because the image bytes tested today
@@ -311,8 +322,9 @@ most: a silent wrong answer here mis-prices real policies.
   artefact validates the contract, then raises `RuntimeError` naming the node: the
   contract check happens first so drift is reported precisely even though scoring is
   impossible either way.
-- **Pre-deploy validation failures** (structural checks and test-quote scoring/expected-
-  output mismatches) are all collected and raised together as a single `DeployError`
+- **Pre-deploy validation failures** (structural checks, project-local imports the bundle
+  does not carry, and test-quote scoring/expected-output mismatches) are all collected
+  and raised together as a single `DeployError`
   listing every failure, rather than surfaced one at a time across repeated deploy
   attempts.
 - **Expected backend operational failures** (missing credentials, unavailable Docker,
@@ -339,8 +351,8 @@ most: a silent wrong answer here mis-prices real policies.
   always raises `NotImplementedError` after a successful build and optional configured
   registry push, naming the image tag so the operator can update the service manually.
 - **Known unsupported deploy inputs** fail rather than being made self-contained: plain
-  JSON static sources are not batch-deployable; project-local preamble imports are not
-  bundled; bundled local `modelScore` serving supports CatBoost `.cbm` and RustyStats
+  JSON static sources are not batch-deployable; a project-local import other than the
+  `utility` package is refused at validation; bundled local `modelScore` serving supports CatBoost `.cbm` and RustyStats
   `.rsglm`, while a discovered MLflow pyfunc directory cannot currently be bundled and
   served by this path.
 - **Impact-analysis arithmetic** raises `ValueError` rather than producing a misleading

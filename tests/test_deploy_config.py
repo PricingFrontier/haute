@@ -24,6 +24,7 @@ from haute.deploy._config import (
     _apply_env_overrides,
     _validate_toml_keys,
 )
+from haute.deploy._project_modules import ProjectModules
 from haute.deploy._validators import validate_deploy
 
 
@@ -436,6 +437,7 @@ def _make_resolved(
         artifacts=artifacts or {},
         input_schema=input_schema or {"col": "float"},
         output_schema=output_schema or {"result": "float"},
+        project_modules=ProjectModules(utility=None, unbundled_imports=()),
     )
 
 

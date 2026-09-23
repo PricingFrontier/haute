@@ -22,7 +22,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Build and distribution](build-and-distribution.md) | A node reference that documents the node types that exist | `BUILD-R01` |
 | [Caching](caching.md) | Automatic API-input table snapshots, planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache usage, dead cache removal, freshness and retention | `CACHE-S08` |
 | [Codegen](codegen.md) | Config-backed decorators emitted directly | `CODEGEN-R01` |
-| [Deploy](deploy.md) | Project modules in the bundle, a slim scoring runtime, offered targets | `DEP-R01` |
+| [Deploy](deploy.md) | A slim scoring runtime, offered targets | `DEP-R02` |
 | [Engineering quality](engineering-quality.md) | Dead code, tracked artifacts, specification drift, coverage gates, test organisation | `ENGQ-R01` |
 | [Execution engine](execution-engine.md) | Process-global configuration lock, chunked runner, memory-safety mechanism, one execution walker | `EXEC-R01` |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | `EDA-E09` |
