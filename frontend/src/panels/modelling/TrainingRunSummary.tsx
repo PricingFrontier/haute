@@ -1,6 +1,6 @@
 import type { EvaluationPreview } from "../../api/types"
 import { configField } from "../../utils/configField"
-import { algorithmCapability } from "./algorithmCapabilities"
+import { algorithmCapability, trainsOnGpu } from "./algorithmCapabilities"
 import { roleColumnReasons, type ModellingColumn } from "./featureSelection"
 import {
   columnContext,
@@ -151,7 +151,7 @@ export function TrainingRunSummary({
           )}
         </dd>
         <dt style={{ color: "var(--text-muted)" }}>Compute</dt>
-        <dd>{config.algorithm === "catboost" && params.task_type === "GPU" ? "GPU (CUDA)" : "CPU"}</dd>
+        <dd>{trainsOnGpu(config, params) ? "GPU (CUDA)" : "CPU"}</dd>
       </dl>
     </section>
   )

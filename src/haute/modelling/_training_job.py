@@ -469,6 +469,7 @@ class TrainingJob:
         fit_index: int | None = None,
         plan_source_sha256: str | None = None,
         positive_class: bool | int | str | None = None,
+        device: str = "cpu",
     ) -> None:
         self.name = name
         self._data: str | pl.DataFrame | pl.LazyFrame | None = data
@@ -498,6 +499,14 @@ class TrainingJob:
                 "positive_class must be a Boolean, an integer or a string label."
             )
         self.positive_class = positive_class
+        if device not in ("cpu", "gpu"):
+            raise HauteValidationError(f'device must be "cpu" or "gpu", got {device!r}')
+        if device == "gpu" and not algorithm_descriptor(algorithm).gpu_device:
+            raise HauteValidationError(
+                f"{algorithm_descriptor(algorithm).label} trains on CPU only in Haute."
+            )
+        #: ``gpu`` asks a GPU-capable family to train on its device (XGBoost CUDA).
+        self.device = device
         #: ``(negative, positive)`` once a classification split resolves them.
         self._class_labels: tuple[bool | int | str, bool | int | str] | None = None
         self.offset = offset
@@ -783,6 +792,9 @@ class TrainingJob:
                 "rounds_fitted": fit_result.rounds_fitted,
                 "stopping_reason": fit_result.stopping_reason,
             }
+            trained_device = getattr(fit_result, "device", None)
+            if trained_device is not None:
+                result.fit_evidence["device"] = trained_device
             term_update_steps = getattr(fit_result, "term_update_steps", None)
             if term_update_steps is not None:
                 result.fit_evidence["term_update_steps"] = list(term_update_steps)
@@ -911,6 +923,7 @@ class TrainingJob:
             fit_index=fit_index,
             plan_source_sha256=source_sha256,
             positive_class=self.positive_class,
+            device=self.device,
         )
 
     def _prepare_fit_features(
@@ -2190,6 +2203,7 @@ class TrainingJob:
                     "categorical_levels": self._declared_categorical_levels or None,
                     "class_labels": self._class_labels,
                     "seed": self.evaluation.seed if self.evaluation is not None else 0,
+                    "device": self.device,
                 }
             with _training_stage(execution_context, "training_algorithm_fit"):
                 fit_result = algo.fit(
@@ -2970,6 +2984,7 @@ class TrainingJob:
                 "feature_weights": self.feature_weights,
                 "categorical_levels": self._declared_categorical_levels or None,
                 "positive_class": self.positive_class,
+                "device": self.device,
             }
         )
 

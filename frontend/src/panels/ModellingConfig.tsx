@@ -44,6 +44,7 @@ import {
 import { CommonFeatureConfig } from "./modelling/CommonFeatureConfig"
 import { EBMInteractionsConfig } from "./modelling/EBMInteractionsConfig"
 import { ExportPane } from "./modelling/ExportPane"
+import { XGBoostGpuToggle } from "./modelling/GpuTrainingToggle"
 import { GLMInteractionsConfig } from "./modelling/GLMInteractionsConfig"
 import { GLMRegularizationConfig } from "./modelling/GLMRegularizationConfig"
 import { GLMTargetConfig } from "./modelling/GLMTargetConfig"
@@ -288,6 +289,12 @@ function TrainPane({
             (CUDA)
           </span>
         </label>
+      )}
+      {algorithmCapability(algorithm)?.gpu_device === true && (
+        <XGBoostGpuToggle
+          checked={config.device === "gpu"}
+          onToggle={(enabled) => onUpdate("device", enabled ? "gpu" : undefined)}
+        />
       )}
       <TrainingActionsAndResults
         validationMessages={validationMessages}

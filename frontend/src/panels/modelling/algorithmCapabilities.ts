@@ -22,6 +22,8 @@ export type AlgorithmCapability = {
   supports_tuning: boolean
   /** Losses whose native objective refuses monotone constraints. */
   monotone_unsupported_losses: string[]
+  /** The family can train on a CUDA GPU (``device: "gpu"``, XGBoost). */
+  gpu_device: boolean
 }
 
 export const ALGORITHM_CAPABILITIES = capabilities as Record<string, AlgorithmCapability>
@@ -72,6 +74,16 @@ export function fixedBudgetCapability(finalParams: Record<string, unknown>): Alg
  */
 export function usesSharedPanes(algorithm: string): boolean {
   return algorithmCapability(algorithm) !== null && algorithm.toLowerCase() !== "glm"
+}
+
+/**
+ * Whether the node trains on a GPU: CatBoost through its ``task_type`` param,
+ * a GPU-capable family (XGBoost) through the node's ``device``.
+ */
+export function trainsOnGpu(config: Record<string, unknown>, params: Record<string, unknown>): boolean {
+  const algorithm = String(config.algorithm ?? "").toLowerCase()
+  if (algorithm === "catboost") return String(params.task_type ?? "").toUpperCase() === "GPU"
+  return algorithmCapability(algorithm)?.gpu_device === true && config.device === "gpu"
 }
 
 /** Every Haute loss the family supports, across its tasks. */

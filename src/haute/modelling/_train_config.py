@@ -511,6 +511,24 @@ def build_train_params(config: Mapping[str, Any]) -> dict[str, Any]:
     return {**(config.get("params") or {})}
 
 
+def validate_training_device(config: Mapping[str, Any]) -> str:
+    """The node's training device, ``"cpu"`` or ``"gpu"``, checked against its family.
+
+    Every family (the GLM included) goes through this check, so an unknown value or
+    a GPU request on a CPU-only family fails instead of silently training on the CPU.
+    """
+    algorithm = str(config.get("algorithm", "catboost")).lower()
+    descriptor = algorithm_descriptor(algorithm)
+    device = config.get("device")
+    if device not in (None, "cpu", "gpu"):
+        raise TrainingConfigError(f'device must be "cpu" or "gpu", got {device!r}.')
+    if device == "gpu" and not descriptor.gpu_device:
+        raise TrainingConfigError(
+            f"{descriptor.label} trains on CPU only in Haute; remove the GPU device setting."
+        )
+    return "gpu" if device == "gpu" else "cpu"
+
+
 def build_training_job_kwargs(
     config: Mapping[str, Any],
     *,
@@ -557,6 +575,7 @@ def build_training_job_kwargs(
             f"{descriptor.label} does not support the {task} task. "
             f"Supported: {', '.join(sorted(descriptor.tasks))}."
         )
+    device = validate_training_device(config)
     # A wrong value beats an incomplete one, matching the train route.
     if glm:
         validate_glm_params(params)
@@ -649,4 +668,5 @@ def build_training_job_kwargs(
         "categorical_levels": config.get("categorical_levels") or None,
         "mlflow_destination": destination,
         "positive_class": positive_class,
+        "device": device,
     }

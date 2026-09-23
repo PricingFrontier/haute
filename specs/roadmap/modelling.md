@@ -14,10 +14,10 @@ CatBoost's Features pane keeps the current include/exclude cards and
 monotonicity arrows unchanged.
 
 The [model-family expansion plan](#model-family-expansion-proposed-22-september-2026-revised-23-september-2026)
-also covers adding XGBoost, LightGBM, and InterpretML EBM throughout training,
-evaluation, scoring, explanation, persistence, MLflow, and deployment. That
-proposal is separate from the GLM design below; it does not claim the new
-families are implemented or their change contracts approved.
+covers adding XGBoost, LightGBM, and InterpretML EBM throughout training,
+evaluation, scoring, explanation, persistence, MLflow, and deployment, plus
+XGBoost GPU training. All of it is delivered; the section stays as the design
+record. It is separate from the GLM design below.
 
 ## Priorities
 
@@ -32,7 +32,6 @@ families are implemented or their change contracts approved.
 | MOD-T06 | Planned | P1 | One offset meaning for GLM and CatBoost (a positive exposure multiplier under a log link), carried through training, saved models, and every scoring path. |
 | MOD-T07 | Planned | P1 | A strict, dtype-aware GLM term contract and order-independent interaction resolution that never builds a design different from the configuration. |
 | MOD-T08 | Planned | P2 | The GLM pane mirrors the backend contract, keeps every saved term and interaction visible and repairable, supports reference levels, and loses its duplicated code. |
-| MOD-F06 | Deferred | P3 | Add verified XGBoost and LightGBM GPU configurations after the CPU release. |
 
 ## Design (approved 16 September 2026; revised after Codex plan review and for RustyStats 0.9.0)
 
@@ -1366,7 +1365,7 @@ complete lifecycle is covered.
 | Early stopping on Haute's validation partition | Yes | Yes | No; explicit `max_rounds` on training rows only (decision 1) |
 | Local explanations | Native tree contributions | Native tree contributions | Exact additive term contributions |
 | Distinctive results | Gain importance and contribution summary | Gain/split importance and contribution summary | Shape functions, term importance, pairwise interaction surfaces |
-| GPU in initial release | No | No | No GPU option |
+| GPU training | CUDA, via `haute gpu-setup` | Not offered: no CUDA wheel; OpenCL only on Linux | No GPU option |
 
 Multiclass/multioutput, ranking, survival, custom Python objectives/callbacks,
 distributed training, warm starts, DART/alternative boosters, arbitrary imported
@@ -1387,7 +1386,8 @@ hold both. The macOS XGBoost and LightGBM wheels bundle no OpenMP runtime and
 load `@rpath/libomp.dylib`, so macOS installs, the macOS CI job and any macOS
 image need Homebrew `libomp`. InterpretML documents `interpret-core` as
 sufficient for EBM fitting, prediction, serialization, and explanations.
-MOD-F06 decides how GPU builds are obtained alongside the CPU distribution.
+GPU users swap in the full CUDA `xgboost` build with `haute gpu-setup`; the
+[GPU probes](mod-f06-gpu-probes.md) record why LightGBM and EBM stay CPU-only.
 [InterpretML deployment guide](https://interpret.ml/docs/deployment-guide.html),
 [XGBoost installation](https://xgboost.readthedocs.io/en/stable/install.html)
 
@@ -1883,32 +1883,7 @@ The [engine probes](mod-f00-engine-probes.md) settled the four pre-implementatio
 distributions pass with the XGBoost cap; EBM persistence passes; EBM
 `bags`-driven stopping fails for every objective, so EBM uses the training-only
 policy; and native baseline, category and stopping behavior passes with the
-adapter rules above. GPU, richer classification, EBM early stopping and EBM
-outer bagging are subsequent features requiring their own contracts; they are
-not hidden prerequisites for the CPU release.
-
-## Model-family expansion work packages
-
-### MOD-F06 — Add separately verified GPU capabilities
-
-**Why:** GPU availability and training behavior depend on engine, package,
-platform, build and hardware; the current CatBoost toggle is not portable.
-
-**Plan:** After CPU delivery, define a separate capability matrix and probes
-for XGBoost CUDA (including how the GPU build is installed alongside the
-`xgboost-cpu` distribution) and LightGBM's supported GPU backends. Add
-actual device checks, engine-specific memory estimates, supported
-objective/constraint combinations, progress/cancellation evidence, numerical
-tolerances, and CPU serving parity. Fail an explicit unavailable GPU request
-without retrying on CPU. Keep EBM CPU unless a separately verified
-implementation provides another capability.
-
-**Acceptance:** Only combinations backed by a real GPU CI or recorded hardware
-probe become selectable; artifacts score correctly on CPU deployments; no
-memory, device, objective or stopping mismatch is concealed by a fallback.
-
-**Dependencies:** Access to the advertised GPU environments.
-
-**Evidence:** `src/haute/routes/_training_preparation.py`;
-`src/haute/_host_memory.py`; `src/haute/_ram_estimate.py`;
-`tests/test_training_memory_safety.py`.
+adapter rules above. Richer classification, EBM early stopping and EBM outer
+bagging are subsequent features requiring their own contracts; they are not
+hidden prerequisites for the CPU release. XGBoost CUDA training followed the
+CPU release (see the [GPU probes](mod-f06-gpu-probes.md)).

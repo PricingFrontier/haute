@@ -4,6 +4,7 @@ import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import { makeTrainResult } from "../../test-utils/factories"
 import {
   parseApplyOptimiserResponse,
+  parseModellingGpuStatusResponse,
   parsePreviewInputsResponse,
   parseDissolveSubmodelResponse,
   parseExplorePivotMembersResponse,
@@ -1701,6 +1702,7 @@ describe("API response guards", () => {
       rounds_fitted: 120,
       term_update_steps: null,
       stopping_reason: "validation",
+      device: null,
     })
     expect(() =>
       parseTrainResponse({
@@ -1708,6 +1710,25 @@ describe("API response guards", () => {
         fit_evidence: { ...fixture.fit_evidence, stopping_reason: "bored" },
       }),
     ).toThrow(/stopping_reason/)
+  })
+
+  it("parses the XGBoost GPU status (MOD-F06)", () => {
+    expect(parseModellingGpuStatusResponse({
+      xgboost: { available: false, detail: "Run `haute gpu-setup`.", device: null },
+    })).toEqual({ xgboost: { available: false, detail: "Run `haute gpu-setup`.", device: null } })
+    expect(() => parseModellingGpuStatusResponse({ xgboost: { available: "yes", detail: "", device: null } }))
+      .toThrow(/xgboost.available/)
+  })
+
+  it("keeps the device an XGBoost GPU fit trained on (MOD-F06)", () => {
+    const gpu = parseTrainResponse({
+      ...tunedTrainResponseFixture(),
+      fit_evidence: { threads: 4, rounds_configured: 100, rounds_fitted: 100, stopping_reason: "none", device: "cuda:0" },
+    })
+    expect(gpu.fit_evidence?.device).toBe("cuda:0")
+    expect(() =>
+      parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: { threads: 4, device: "" } }),
+    ).toThrow(/fit_evidence.device/)
   })
 
   it("accepts fit evidence whose null fields the backend dropped (MOD-F04)", () => {
@@ -1719,6 +1740,7 @@ describe("API response guards", () => {
       rounds_fitted: null,
       term_update_steps: null,
       stopping_reason: null,
+      device: null,
     })
     const ebm = parseTrainResponse({
       ...tunedTrainResponseFixture(),

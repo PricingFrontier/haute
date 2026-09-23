@@ -52,13 +52,13 @@ them to `output_dir`.
 | Early stopping | `early_stopping_rounds` | `early_stopping_rounds` | `early_stopping_round` | Never | — |
 | Final refit | Validation-weighted round count | Validation-weighted round count | Validation-weighted round count | Winning `max_rounds`, unchanged | Same settings |
 | Tuning | Yes | Yes | Yes | Yes (`max_rounds` searchable) | No |
-| Monotone constraints | Yes | Yes | Yes, except with MAE | Yes, not on an interaction | Per term |
+| Monotone constraints | Yes | Yes, except with MAE | Yes, except with MAE | Yes, not on an interaction | Per term |
 | Feature weights | Yes | No | No | No | No |
 | Interactions | Learned by trees | Learned by trees | Learned by trees | Chosen count or explicit pairs | Explicit cards |
 | Offset | Baseline | `base_margin` | `init_score` (added at prediction) | `init_score` | Offset term |
 | Trace explanation | SHAP values | Native contributions | Native contributions | Term scores (an interaction is one term) | Term contributions |
 | Model file | `.cbm` | `.ubj` | `.lgbm` | `.ebm` | `.rsglm` |
-| Compute | CPU, optional GPU | CPU | CPU | CPU, one thread | CPU |
+| Compute | CPU, optional GPU | CPU, optional CUDA GPU | CPU | CPU, one thread | CPU |
 
 Binary classification needs exactly two target classes. A Boolean or 0/1 target is
 positive at `True`/`1`; any other pair needs `positive_class`. Every family labels a
@@ -66,6 +66,33 @@ prediction positive when its positive-class probability is above 0.5.
 
 Tree families train with `HAUTE_TRAINING_THREADS` threads (default: every logical CPU).
 On macOS, XGBoost and LightGBM need Homebrew's `libomp` (`brew install libomp`).
+
+XGBoost with the MAE loss refuses monotone constraints: its absolute-error objective
+re-fits each leaf after the tree is built, which breaks the constraint.
+
+### GPU training
+
+CatBoost trains on a GPU when its **GPU training** box is ticked (`task_type: "GPU"`).
+XGBoost trains on an NVIDIA GPU when its **GPU training** box is ticked, which sets the
+node's `device` to `"gpu"`. LightGBM and EBM train on the CPU only.
+
+Haute installs XGBoost's CPU-only build. To train XGBoost on a GPU, run
+`haute gpu-setup` once in the project (see
+[Installing Haute](../../getting-started/installing-haute.md#xgboost-gpu-training)) and
+restart `haute serve`. The XGBoost box is disabled, with the reason, until the server can
+train on a CUDA GPU.
+
+XGBoost never falls back to the CPU silently. A GPU training request fails before the fit
+when no GPU can be used, and fails afterwards if XGBoost trained somewhere else; nothing is
+saved in either case. The run summary shows **GPU (CUDA)** and the result's fit evidence records the device used
+(for example `cuda:0`). Before launch, Haute estimates the GPU memory the data needs and
+refuses a job that does not fit.
+
+A GPU model is saved for CPU scoring, so it scores the same in every deployment,
+including ones with only the CPU build. A GPU fit is a different model from a CPU fit with
+the same settings: XGBoost's device algorithm finds different splits, so the predictions
+differ. The training identity includes the device, so switching it marks the
+last result stale.
 
 ## Feature selection and validation
 

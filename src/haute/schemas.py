@@ -2493,6 +2493,24 @@ class TuningReportPayload(_StrictPublicTrainingPayload):
         return self
 
 
+class GpuFamilyStatus(BaseModel):
+    """Whether one family can train on a GPU in this server process."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    available: bool
+    detail: str
+    device: str | None = None
+
+
+class ModellingGpuStatusResponse(BaseModel):
+    """GPU training capability per GPU-capable family (XGBoost CUDA)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    xgboost: GpuFamilyStatus
+
+
 class FitEvidencePayload(BaseModel):
     """The final fit's thread allotment, round ceiling, fitted rounds, and stop reason."""
 
@@ -2504,6 +2522,8 @@ class FitEvidencePayload(BaseModel):
     stopping_reason: Literal["none", "validation", "native_exhaustion"] | None = None
     #: EBM's native best_iteration_: term updates per boosting stage, never rounds.
     term_update_steps: list[int] | None = None
+    #: The device a GPU fit actually trained on (``cuda:0``).
+    device: str | None = None
 
 
 class TrainResponse(BaseModel):

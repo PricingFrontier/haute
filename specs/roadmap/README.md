@@ -67,6 +67,13 @@ model-family expansion to its test evidence and records the release benchmarks,
 EBM format limits and platform requirements. It is a dated evidence artifact;
 component specifications remain the behavior authority.
 
+## MOD-F06 GPU probes — 23 September 2026
+
+The [GPU probes](mod-f06-gpu-probes.md) record the XGBoost CUDA and LightGBM
+GPU backend evidence behind XGBoost GPU training, `haute gpu-setup`, and the
+decision to keep LightGBM and EBM on the CPU. It is a dated evidence artifact;
+component specifications remain the behavior authority.
+
 ## Working protocol
 
 1. Pick one package from its owning component.

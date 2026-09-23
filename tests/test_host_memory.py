@@ -1168,6 +1168,24 @@ class TestAvailableVramParsing:
         # First GPU's VRAM
         assert result == 16384 * 1024 * 1024
 
+    def test_queries_free_memory_on_the_visible_training_gpu(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Admission compares with free VRAM on the GPU CUDA will train on."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "2048\n"
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        with patch("subprocess.run", return_value=mock_result) as run:
+            assert available_vram_bytes() == 2048 * 1024 * 1024
+        command = run.call_args.args[0]
+        assert "--query-gpu=memory.free" in command
+        assert not any(arg.startswith("--id=") for arg in command)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,0")
+        with patch("subprocess.run", return_value=mock_result) as run:
+            available_vram_bytes()
+        assert "--id=1" in run.call_args.args[0]
+
     def test_nvidia_smi_nonzero_returncode(self) -> None:
         """Non-zero returncode means no GPU detected."""
         mock_result = MagicMock()

@@ -58,11 +58,13 @@ from haute.schemas import (
     EvaluationPreviewPayload,
     ExportScriptRequest,
     ExportScriptResponse,
+    GpuFamilyStatus,
     LogExperimentRequest,
     LogExperimentResponse,
     MlflowExportReceipt,
     ModelCacheClearResponse,
     ModelFileExportReceipt,
+    ModellingGpuStatusResponse,
     ModelSaveDestinationRequest,
     ModelSaveDestinationResponse,
     SaveModelRequest,
@@ -95,6 +97,15 @@ def train_model(body: TrainRequest) -> TrainResponse:
     """
     graph = _prepare_runtime_graph(body.graph)
     return _train_service.start(body.model_copy(update={"graph": graph}))
+
+
+@router.get("/gpu", response_model=ModellingGpuStatusResponse)
+async def gpu_status() -> ModellingGpuStatusResponse:
+    """Whether XGBoost can train on a GPU here (probed once per process)."""
+    from haute.modelling._gpu import xgboost_gpu_status
+
+    status = await run_in_threadpool(xgboost_gpu_status)
+    return ModellingGpuStatusResponse(xgboost=GpuFamilyStatus(**status.to_plain_data()))
 
 
 @router.get("/train/status/{job_id}", response_model=TrainStatusResponse)
@@ -283,11 +294,13 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
         warning = None
         was_downsampled = False
 
-    # GPU VRAM estimation — use feature count (not total columns),
-    # since CatBoost only loads features to GPU.
+    # GPU VRAM estimation — use feature count (not total columns), since
+    # CatBoost and XGBoost only load features to the GPU.
     vram_check = _VramCheck()
     node_params = node.data.config.get("params", {})
-    if str(node_params.get("task_type", "")).upper() == "GPU":
+    algorithm = str(node.data.config.get("algorithm", "catboost")).lower()
+    xgboost_gpu = algorithm == "xgboost" and node.data.config.get("device") == "gpu"
+    if xgboost_gpu or str(node_params.get("task_type", "")).upper() == "GPU":
         effective_rows = ram_est.total_rows or 0
         # Feature count = total cols - excluded - target - weight
         n_excluded = len(node.data.config.get("exclude", []))
@@ -295,10 +308,15 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
         if node.data.config.get("weight"):
             n_non_feature += 1
         n_features = max(ram_est.probe_columns - n_non_feature, 1)
-        vram_check = _check_gpu_vram(effective_rows, n_features, node_params)
+        vram_check = _check_gpu_vram(
+            effective_rows,
+            n_features,
+            node_params,
+            algorithm="xgboost" if xgboost_gpu else "catboost",
+        )
         if vram_check.insufficient and vram_check.warning:
             vram_check.warning += (
-                " Switch task_type to CPU or reduce rows/features before starting GPU training."
+                " Train on CPU or reduce rows/features before starting GPU training."
             )
 
     evaluation_preview = _train_service.evaluation_preview(

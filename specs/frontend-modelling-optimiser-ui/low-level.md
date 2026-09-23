@@ -34,6 +34,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/modelling/TargetAndTaskConfig.tsx`, `frontend/src/panels/modelling/CommonFeatureConfig.tsx`, `frontend/src/panels/modelling/SplitAndMetricsConfig.tsx` | Tree-family target/loss/metric controls with loss-derived task compatibility and the positive-class field, the common feature/monotonicity browser, and the canonical evaluation editor with exact-plan preview. |
 | `frontend/src/panels/modelling/HyperparametersConfig.tsx`, `frontend/src/panels/modelling/hyperparameters.ts`, `frontend/src/panels/modelling/featureSelection.ts` | Algorithm-neutral fixed-parameter JSON editing, optional bounded tuning/search-space editing from each family's starter space, and pure parameter/feature transitions. |
 | `frontend/src/panels/modelling/EBMInteractionsConfig.tsx`, `frontend/src/panels/modelling/EBMTermsTab.tsx` | The EBM Features-pane pairwise-interaction control (a count EBM chooses from, or explicit feature pairs written to `params.interactions`), and the EBM Terms result tab: importance-ranked terms, main-effect shapes with the missing bin, and interaction score tables, labelled as additive link-scale term scores. |
+| `frontend/src/panels/modelling/GpuTrainingToggle.tsx` | `XGBoostGpuToggle`, the Train-pane GPU checkbox for a GPU-capable family (XGBoost): fetches `GET /api/modelling/gpu` once per mount, enables the box only when the server can train on a CUDA GPU (otherwise shows the server's reason), and always allows switching an existing GPU node back to CPU. |
 | `frontend/src/panels/modelling/GLMTargetConfig.tsx`, `frontend/src/panels/modelling/GLMTermsConfig.tsx`, `frontend/src/panels/modelling/GLMInteractionsConfig.tsx`, `frontend/src/panels/modelling/TermCard.tsx`, `frontend/src/panels/modelling/glmTerms.ts`, `frontend/src/panels/modelling/glmFamilies.ts`, `frontend/src/panels/modelling/GLMRegularizationConfig.tsx` | GLM family/link/dispersion, feature rows with indented inline term cards, labelled interaction/slot controls, pure editor transitions mirroring the backend term contract, the family/link and solver constants shared with the backend, and regularisation, cross-validation, and solver controls. |
 | `frontend/src/panels/modelling/TrainingActionsAndResults.tsx`, `frontend/src/panels/modelling/TrainingProgress.tsx` | Train action/result summary and progress. |
 | `frontend/src/panels/modelling/TrainingRunSummary.tsx`, `frontend/src/panels/modelling/trainingFitBudget.ts` | The Train pane's read-only run summary (model, target, feature count, evaluation method and allocation, fit budget, compute) and the pure fit count behind it and the tuning note: selection fits (validation fits × tuning trials) plus the final development refit unless `refit_on_development` is `false`. |
@@ -394,7 +395,10 @@ The behavioural contract is defined in
   Apply/Revert controls; invalid syntax, a non-object top level, or a reserved fixed key stays in
   the corresponding per-node draft and contributes a click-time issue to the Train banner only
   while that strategy is selected.
-  The Train-pane GPU toggle merges only the latest stored `task_type`. The search-space formatter
+  The Train-pane GPU toggle merges only the latest stored `task_type`. For a family whose
+  capability has `gpu_device`, `XGBoostGpuToggle` (`frontend/src/panels/modelling/GpuTrainingToggle.tsx`) fetches
+  `fetchModellingGpuStatus` once per mount and writes `device` (`"gpu"` or `undefined`);
+  `trainsOnGpu` in `algorithmCapabilities.ts` drives the run summary's Compute line. The search-space formatter
   keeps scalar candidate arrays on one line and recursively indents nested conditional objects;
   the pane renders neither a derived fit-count sentence nor search-space explanatory copy.
   Selecting Tune parameters seeds fresh editable candidate lists for `depth`, `learning_rate`,

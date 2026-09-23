@@ -31,6 +31,7 @@ const mockLogToMlflow = vi.fn()
 const mockSaveTrainedModel = vi.fn()
 const mockResolveModelSaveDestination = vi.fn()
 const mockGetTrainStatus = vi.fn()
+const mockFetchModellingGpuStatus = vi.fn()
 let defaultPane: ModellingPane = "target"
 
 vi.mock("../../api/client", () => ({
@@ -47,6 +48,8 @@ vi.mock("../../api/client", () => ({
   // The Export pane reads the job's export receipts, and a reload restores a
   // remembered result through the same status endpoint.
   getTrainStatus: (...args: unknown[]) => mockGetTrainStatus(...args),
+  // The XGBoost Train pane asks the server whether a CUDA fit works there.
+  fetchModellingGpuStatus: (...args: unknown[]) => mockFetchModellingGpuStatus(...args),
   // The Export pane's path picker browses project files when no path is set.
   listFiles: vi.fn(() => Promise.resolve({ items: [] })),
   // GLMTargetConfig narrows errors with `instanceof ApiError`, so the mock
@@ -223,6 +226,7 @@ beforeEach(() => {
     trainResults: {},
   })
   mockGetTrainStatus.mockReset().mockReturnValue(new Promise(() => {}))
+  mockFetchModellingGpuStatus.mockReset().mockReturnValue(new Promise(() => {}))
   vi.mocked(buildGraph).mockImplementation(() => ({ nodes: [], edges: [], preamble: "" }) as unknown as ReturnType<typeof buildGraph>)
   useGraphStore.setState(useGraphStore.getInitialState())
   useDocumentStatusStore.setState(useDocumentStatusStore.getInitialState())
@@ -1541,6 +1545,59 @@ describe("ModellingConfig", () => {
       fireEvent.click(gpuCheckbox)
       // Should commit params without task_type
       expect(props.onUpdate).toHaveBeenCalledWith("params", { iterations: 500 })
+    })
+
+    const xgboostConfig = (extra: Record<string, unknown> = {}) => ({
+      _nodeId: "node_1",
+      target: "loss_ratio",
+      task: "regression",
+      algorithm: "xgboost",
+      params: { num_boost_round: 100 },
+      ...extra,
+    })
+
+    it("XGBoost GPU toggle writes the node device when the server has a CUDA GPU", async () => {
+      mockFetchModellingGpuStatus.mockResolvedValue({
+        xgboost: { available: true, detail: "XGBoost trains on cuda:0.", device: "cuda:0" },
+      })
+      const { props } = renderConfig({ activePane: "train", config: xgboostConfig() })
+      const gpuCheckbox = screen.getByRole("checkbox", { name: /GPU training/ }) as HTMLInputElement
+      await waitFor(() => expect(gpuCheckbox.disabled).toBe(false))
+      expect(screen.getByText("(CUDA, cuda:0)")).toBeTruthy()
+      fireEvent.click(gpuCheckbox)
+      expect(props.onUpdate).toHaveBeenCalledWith("device", "gpu")
+    })
+
+    it("XGBoost GPU toggle is disabled with the server's reason when no GPU build is installed", async () => {
+      mockFetchModellingGpuStatus.mockResolvedValue({
+        xgboost: { available: false, detail: "Run `haute gpu-setup` to install XGBoost's CUDA build.", device: null },
+      })
+      renderConfig({ activePane: "train", config: xgboostConfig() })
+      expect(await screen.findByText(/haute gpu-setup/)).toBeTruthy()
+      const gpuCheckbox = screen.getByRole("checkbox", { name: /GPU training/ }) as HTMLInputElement
+      expect(gpuCheckbox.disabled).toBe(true)
+    })
+
+    it("an XGBoost node already on GPU can switch back to CPU when the GPU is gone", async () => {
+      mockFetchModellingGpuStatus.mockResolvedValue({
+        xgboost: { available: false, detail: "No CUDA GPU is visible to XGBoost.", device: null },
+      })
+      const { props } = renderConfig({ activePane: "train", config: xgboostConfig({ device: "gpu" }) })
+      expect(await screen.findByText(/No CUDA GPU is visible/)).toBeTruthy()
+      expect(screen.getAllByText("GPU (CUDA)").length).toBeGreaterThan(0)
+      const gpuCheckbox = screen.getByRole("checkbox", { name: /GPU training/ }) as HTMLInputElement
+      expect(gpuCheckbox.disabled).toBe(false)
+      fireEvent.click(gpuCheckbox)
+      expect(props.onUpdate).toHaveBeenCalledWith("device", undefined)
+    })
+
+    it("families without a GPU build show no GPU toggle", () => {
+      renderConfig({
+        activePane: "train",
+        config: { ...xgboostConfig(), algorithm: "lightgbm", params: { num_iterations: 100 } },
+      })
+      expect(screen.queryByRole("checkbox", { name: /GPU training/ })).toBeNull()
+      expect(mockFetchModellingGpuStatus).not.toHaveBeenCalled()
     })
   })
 

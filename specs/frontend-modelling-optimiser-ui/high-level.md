@@ -232,7 +232,10 @@ strip; it never falls through to CatBoost. Pane ownership:
   estimate preview shows development/final-test counts, validation fit count and row
   bounds, plus group counts or date ranges. The pane uses only **development data**,
   **validation**, and **final test** terminology.
-- **Train** — the GPU toggle (CatBoost only, still stored as the GPU task-type parameter), row
+- **Train** — the GPU toggle (CatBoost: stored as the GPU task-type parameter; XGBoost:
+  stored as the node's `device: "gpu"`, enabled only when `GET /api/modelling/gpu` reports
+  the server can train on a CUDA GPU, otherwise disabled beside the server's reason, and
+  always switchable back to CPU), row
   limit beside the RAM/VRAM estimate it modulates,
   staleness banner, Train/Cancel actions, click-time validation banner, live progress, completion
   badge and error card. Its checkbox and text/number controls use the same visible themed borders,

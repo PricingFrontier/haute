@@ -68,8 +68,12 @@ class AlgorithmDescriptor:
     feature_controls: frozenset[FeatureControl]
     suffix: str
     engine_module: str
-    #: Losses whose native objective refuses monotone constraints.
+    #: Losses whose native objective refuses, or silently breaks, monotone
+    #: constraints.
     monotone_unsupported_losses: frozenset[str] = frozenset()
+    #: Whether the top-level ``device: "gpu"`` setting is offered (hardware-probed;
+    #: CatBoost keeps its own ``task_type`` parameter).
+    gpu_device: bool = False
     #: Family-specific value rules over (params, effective monotone constraints),
     #: returning an actionable message; key-level policy stays in validate_params.
     value_check: Callable[[Mapping[str, Any], Mapping[str, int] | None], str | None] | None = None
@@ -336,6 +340,12 @@ XGBOOST = AlgorithmDescriptor(
     feature_controls=frozenset({"monotone_constraints"}),
     suffix=".ubj",
     engine_module="xgboost",
+    # reg:absoluteerror re-fits each leaf to a residual quantile after the
+    # tree is built, which ignores the constraint: a constrained MAE model
+    # scores non-monotone on CPU and GPU alike (MOD-F06 probe).
+    monotone_unsupported_losses=frozenset({"MAE"}),
+    # MOD-F06: CUDA verified on hardware; needs the full xgboost build.
+    gpu_device=True,
 )
 
 LIGHTGBM = AlgorithmDescriptor(
@@ -715,6 +725,7 @@ def capability_fixture() -> dict[str, Any]:
             "suffix": descriptor.suffix,
             "supports_tuning": descriptor.supports_tuning,
             "monotone_unsupported_losses": sorted(descriptor.monotone_unsupported_losses),
+            "gpu_device": descriptor.gpu_device,
         }
         for key, descriptor in DESCRIPTORS.items()
     }

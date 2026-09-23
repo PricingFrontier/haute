@@ -513,6 +513,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/TrainStatusResponse"},
         },
     },
+    "/api/modelling/gpu": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/ModellingGpuStatusResponse"},
+        },
+    },
     "/api/modelling/train/status/{job_id}": {
         "GET": {
             "request_ref": None,

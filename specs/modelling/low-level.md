@@ -49,6 +49,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/_algorithm_base.py` | `BaseAlgorithm`, `FitResult` and `IterationCallback`, shared by every adapter without importing the registry. |
 | `src/haute/modelling/_native_encoding.py` | Shared categorical encoding for the native-dataset families: `fit_categorical_levels` and `encode_frame`. |
 | `src/haute/modelling/_xgboost.py` | The XGBoost adapter: `XGBoostModel` (self-describing booster wrapper) and `XGBoostAlgorithm`. |
+| `src/haute/modelling/_gpu.py` | XGBoost GPU capability: `GpuStatus`, `xgboost_cuda_build`, `booster_device`, the once-per-process `xgboost_gpu_status` probe, `require_xgboost_gpu` and `verify_trained_on_gpu`. |
 | `src/haute/modelling/_lightgbm.py` | The LightGBM adapter: `LightGBMModel` (self-describing model-text wrapper) and `LightGBMAlgorithm`. |
 | `src/haute/modelling/_ebm.py` | The EBM adapter: `EBMModel` (the estimator plus its contract facts, and the term report) and `EBMAlgorithm`. |
 | `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC (re-exported from the base module), `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
@@ -1770,7 +1771,8 @@ used for staged input.
   both raise it.
 - `FitResult` carries `rounds_configured`, `rounds_fitted` and `stopping_reason`, plus EBM's
   `term_update_steps` and the `threads` an engine actually used when it does not take the
-  job's allotment; `TrainResult.fit_evidence` records those threads, else the job's; the response validates it as
+  job's allotment, and `device` (the `cuda:N` an XGBoost GPU fit trained on, else `None`);
+  `TrainResult.fit_evidence` records those threads, else the job's, and the device when set; the response validates it as
   `FitEvidencePayload`, and `build_candidate_run` logs it as `fit_*` parameters.
 - `FeatureContract` has `contract_version` 2 and `model: ModelIdentity | None`. `ModelIdentity`
   holds `algorithm`, `link`, `engine_name`, `engine_version`, `haute_version`, `loss`,
@@ -1809,7 +1811,19 @@ used for staged input.
 - `XGBoostAlgorithm.fit` resolves the loss through the `xgboost` descriptor, rejects feature
   weights and classification offsets, supplies `hist`, the job seed, the thread allotment and
   `tweedie_variance_power`, trains with the validation partition as the early-stopping set, and
-  slices the booster to `best_iteration + 1`. The `xgboost` scoring flavor passes Polars frames
+  slices the booster to `best_iteration + 1`. With `device="gpu"` it calls
+  `require_xgboost_gpu()` before building the booster, trains with `device="cuda"`, and
+  `verify_trained_on_gpu` checks the booster's `save_config()` `generic_param.device` afterwards;
+  every booster is then set to `device="cpu"` before it is saved, and `XGBoostModel.load` sets
+  the same. `TrainingJob(device=...)` validates the value against the descriptor's `gpu_device`,
+  passes it to every adapter fit, carries it into each evaluation and final sub-job
+  (`_new_evaluation_job`, which also builds every tuning trial fit), and hashes it into `training_identity_sha256` (`_TRAINING_IDENTITY_KEYS`
+  in `_candidate_run.py`); `generate_training_script` writes `device='gpu'` only when set.
+  `_check_gpu_vram(..., algorithm="xgboost")` and the pre-launch check use
+  `estimate_xgboost_gpu_vram_bytes(rows, features)`: five bytes per value (float32 input and
+  compressed bins) plus twenty per row, times the VRAM safety multiplier, plus 256 MiB of CUDA
+  context and workspace (88–132 MiB measured for 200,000 training plus 50,000 validation rows × 21
+  features). The `xgboost` scoring flavor passes Polars frames
   (with the offset column) to the wrapper; `explain_native_prediction` checks that bias plus
   contributions equals the margin (within `FLOAT32_CONTRIBUTION_TOLERANCE` for XGBoost's float32
   sums, `prediction_tolerance` otherwise) and that the inverse link reproduces the response.

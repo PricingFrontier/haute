@@ -43,6 +43,7 @@ _TRAINING_IDENTITY_KEYS = (
     "feature_weights",
     "categorical_levels",
     "positive_class",
+    "device",
 )
 _SELECTION_STATISTICS = ("mean", "stddev", "min", "max")
 _TUNING_METRICS = (

@@ -38,6 +38,9 @@ class FitResult:
     #: The level list each categorical feature was encoded against, for the
     #: contract (new-family adapters; ``None`` keeps the declared levels).
     categorical_levels: dict[str, list[str | None]] | None = None
+    #: The device a GPU-capable fit actually trained on (``cuda:0``);
+    #: ``None`` for a CPU fit.
+    device: str | None = None
     #: EBM's native ``best_iteration_``: executed term updates per boosting
     #: stage. Neither a tree count nor a round budget, and never converted.
     term_update_steps: list[int] | None = None

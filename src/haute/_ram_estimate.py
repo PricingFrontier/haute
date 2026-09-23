@@ -195,6 +195,23 @@ def estimate_gpu_vram_bytes(
     return int(raw * _VRAM_SAFETY_MULTIPLIER)
 
 
+# CUDA context, allocator pools and XGBoost's device workspace, measured at
+# 88-132 MiB for 200,000 training + 50,000 validation rows x 21 features on
+# an RTX 4070 (MOD-F06 probes); rounded up.
+_XGBOOST_GPU_BASE_BYTES = 256 * 1024**2
+
+
+def estimate_xgboost_gpu_vram_bytes(n_rows: int, n_features: int) -> int:
+    """Estimate XGBoost ``hist`` GPU VRAM for *n_rows* x *n_features*.
+
+    The device holds the float32 input while sketching plus its compressed
+    ELLPACK bins (about five bytes a value), and per-row labels, weights,
+    margins and gradient pairs (about twenty bytes a row).
+    """
+    raw = n_rows * n_features * 5 + n_rows * 20
+    return int(raw * _VRAM_SAFETY_MULTIPLIER) + _XGBOOST_GPU_BASE_BYTES
+
+
 # ---------------------------------------------------------------------------
 # Source metadata — source-aware
 # ---------------------------------------------------------------------------

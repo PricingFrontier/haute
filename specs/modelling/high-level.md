@@ -159,7 +159,10 @@ compatibility facade and route own no duplicate state or worker implementation.
   response. Polling also enforces the configured/default training timeout: an overdue
   running job requests preparation/child termination and atomically transitions to
   `timed_out`.
-- `POST /api/modelling/estimate` returns a RAM/row-limit and (for GPU CatBoost) VRAM
+- `GET /api/modelling/gpu` reports whether XGBoost can train on a GPU in this server
+  process (`available`, an actionable `detail`, the `device`), probed once per process.
+- `POST /api/modelling/estimate` returns a RAM/row-limit and (for GPU CatBoost or GPU
+  XGBoost) VRAM
   estimate without starting a job. Both this estimate and the pre-training RAM check
   use fresh shared node snapshots that cover the training column demand: cached
   outputs supply measured row counts and schema even when their original computation
@@ -630,7 +633,7 @@ browser without a server or JS bundle.
   pollable job to `memory_limited` and preserves the equivalent structured 507 detail
   on its status response. A GPU job that would not fit is refused outright: the message
   asks the user to select CPU (or reduce the workload) and retry, and the server never
-  silently changes `task_type` or retries on CPU.
+  silently changes `task_type` or `device`, or retries on CPU.
 - Pipeline-execution failures while materialising training data preserve the equivalent
   HTTP classification (`http_status_code` 422 for missing required columns or
   bounded-streaming unsupported; 500 for a generic failure) on the terminal status,
@@ -774,7 +777,8 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   `thread_count`. RustyStats exposes no thread setting.
 - **Fit evidence.** The training response and the MLflow candidate record the final fit's
   thread allotment, round ceiling, fitted rounds read from the model, and stopping reason
-  (`none`, `validation`, or `native_exhaustion`).
+  (`none`, `validation`, or `native_exhaustion`), plus the device an XGBoost GPU fit trained
+  on (`cuda:0`).
 - **Binary classification.** A classification job trains only on exactly two target classes.
   Boolean and 0/1 targets make `True`/`1` positive; any other pair of labels needs an explicit
   `positive_class`. The job trains on the target encoded as positive = 1, records the
@@ -792,7 +796,8 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   partition keeps `best_iteration + 1` rounds, and the refit reuses the weighted count through
   `num_boost_round`. Losses are `RMSE`, `MAE`, `Poisson`, `Gamma`, `Tweedie` and `Logloss`;
   raw parameters follow an allowlist with Haute-owned keys and aliases rejected; monotone
-  constraints are supported and feature weights are not. The `.ubj` model is self-describing,
+  constraints are supported except under `MAE` (`reg:absoluteerror` re-fits each leaf after the
+  tree is built and breaks the constraint on CPU and GPU alike), and feature weights are not. The `.ubj` model is self-describing,
   scores through its own flavor, serves through the shared MLflow pyfunc, and explains a traced
   prediction with native contributions whose bias carries the offset. `Gamma` losses report
   weighted Gamma deviance, which needs strictly positive targets and predictions.
@@ -828,6 +833,22 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   offset and one contribution per term, an interaction staying one term. The `.ebm` file is
   the joblib-dumped estimator, loaded only through the restricted unpickler and only under its
   feature contract, which must record the installed `interpret-core` version exactly.
+- **GPU training.** CatBoost keeps its own `task_type: "GPU"` parameter. A family whose
+  descriptor sets `gpu_device` (XGBoost only) takes the node's top-level `device`, `"cpu"`
+  (default) or `"gpu"`; any other value, or `"gpu"` on another family, fails before data is
+  materialised. Haute depends on `xgboost-cpu`; GPU training needs XGBoost's full CUDA build,
+  which `haute gpu-setup` installs. XGBoost itself never refuses a CUDA request: with no visible
+  GPU it trains on the CPU with only a warning (MOD-F06 probes). So a GPU fit first requires
+  `xgboost_gpu_status()` (the CUDA build, then a one-round device fit whose trained device is
+  `cuda:*`), trains with `device="cuda"`, and then verifies the booster's own recorded device;
+  either failure raises `HauteValidationError` and saves nothing, and Haute never retries on the
+  CPU. Every evaluation, tuning and final fit of the job uses the same device. The saved booster
+  is set to `device="cpu"`, so it scores identically on the CPU build in every deployment. The
+  device is part of the training identity: a GPU fit differs materially from a CPU fit of the
+  same settings (12–44% maximum relative prediction difference in the probes). Before launch,
+  an XGBoost GPU job is refused when `estimate_xgboost_gpu_vram_bytes` exceeds free VRAM.
+  LightGBM's wheels have no GPU or CUDA learner on Windows and only OpenCL on Linux (no OpenCL
+  device under WSL), so LightGBM, like EBM, trains on the CPU only.
 - **Model identity.** A version-2 feature contract carries an optional model identity:
   algorithm, Haute loss or GLM family, link, variance power, class labels, native feature names,
   and exact engine and Haute versions, all inside the hashed payload. Training always writes

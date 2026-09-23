@@ -1242,7 +1242,7 @@ function parseFitEvidence(value: unknown): NonNullable<TrainResponse["fit_eviden
     obj,
     "fit_evidence",
     ["threads"],
-    ["rounds_configured", "rounds_fitted", "stopping_reason", "term_update_steps"],
+    ["rounds_configured", "rounds_fitted", "stopping_reason", "term_update_steps", "device"],
   )
   return {
     threads: expectTrainInteger(obj.threads, "fit_evidence.threads", 1),
@@ -1268,6 +1268,7 @@ function parseFitEvidence(value: unknown): NonNullable<TrainResponse["fit_eviden
           "fit_evidence.stopping_reason",
           ["none", "validation", "native_exhaustion"] as const,
         ),
+    device: obj.device == null ? null : expectNonEmptyTrainString(obj.device, "fit_evidence.device"),
   }
 }
 

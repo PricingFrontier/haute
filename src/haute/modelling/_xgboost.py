@@ -145,6 +145,8 @@ class XGBoostModel:
 
         booster = xgb.Booster()
         booster.load_model(str(path))
+        # Serving is CPU scoring, whatever device trained the model.
+        booster.set_param({"device": "cpu"})
         raw = booster.attr(_META_ATTRIBUTE)
         if not raw:
             raise HauteValidationError(
@@ -282,6 +284,12 @@ class XGBoostAlgorithm(BaseAlgorithm):
             if eval_df is not None
             else None
         )
+        gpu = kwargs.get("device") == "gpu"
+        if gpu:
+            from haute.modelling._gpu import require_xgboost_gpu
+
+            require_xgboost_gpu()
+            booster_params["device"] = "cuda"
         progress = _XGBoostProgress(on_iteration, configured)
         booster = xgb.train(
             booster_params,
@@ -292,6 +300,16 @@ class XGBoostAlgorithm(BaseAlgorithm):
             callbacks=[progress.callback],
             verbose_eval=False,
         )
+        trained_device: str | None = None
+        if gpu:
+            from haute.modelling._gpu import verify_trained_on_gpu
+
+            # XGBoost moves a CUDA request to the CPU with only a warning when no
+            # GPU is visible, so the trained booster's own device is checked.
+            trained_device = verify_trained_on_gpu(booster)
+        # Scoring, diagnostics and the saved model all run on the CPU, exactly as
+        # a CPU-only deployment scores it.
+        booster.set_param({"device": "cpu"})
         best_iteration: int | None = None
         if eval_df is not None and early_stopping:
             # best_iteration is zero-based; the booster keeps the rounds after
@@ -312,6 +330,7 @@ class XGBoostAlgorithm(BaseAlgorithm):
             rounds_fitted=rounds_fitted,
             stopping_reason="validation" if rounds_fitted < configured else "none",
             categorical_levels=dict(model.categorical_levels),
+            device=trained_device,
         )
 
     def predict(

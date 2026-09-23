@@ -4,8 +4,8 @@ This module answers one question per resource: what does the machine have?
 It never fabricates capacity — each RAM probe returns a real measurement or
 ``None`` with a recorded failure reason, so callers that require a
 physical-memory limit must fail admission or use an explicit configured
-budget.  ``available_vram_bytes`` reports the first GPU's total VRAM (the
-CatBoost single-device sizing basis) or ``None`` when no GPU is detected;
+budget.  ``available_vram_bytes`` reports the training GPU's free VRAM (the
+single-device sizing basis for CatBoost and XGBoost) or ``None`` when no GPU is detected;
 detection failures are logged with a reason.  Workload-side estimation (how
 much a job *needs*) lives in :mod:`haute._ram_estimate`.
 
@@ -705,25 +705,48 @@ def available_ram_bytes() -> int | None:
 # ---------------------------------------------------------------------------
 
 
-def available_vram_bytes() -> int | None:
-    """Return the first GPU's total VRAM in bytes, or ``None`` without one.
+def nvidia_gpu_name() -> str | None:
+    """The first NVIDIA GPU ``nvidia-smi`` lists, or ``None`` without one."""
+    import subprocess
 
-    An absent ``nvidia-smi`` binary is the expected no-GPU state and is not
+    try:
+        completed = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    lines = completed.stdout.strip().splitlines()
+    return lines[0].strip() if completed.returncode == 0 and lines else None
+
+
+def available_vram_bytes() -> int | None:
+    """Return the training GPU's free VRAM in bytes, or ``None`` without one.
+
+    Free memory, not capacity: another process holding VRAM leaves less for the
+    job. The training GPU is the first entry of ``CUDA_VISIBLE_DEVICES`` when it
+    is set (an index or UUID, as ``nvidia-smi --id`` accepts), else the first GPU
+    ``nvidia-smi`` lists. An absent ``nvidia-smi`` binary is the expected no-GPU state and is not
     logged.  Any other failure (broken driver, timeout, unparseable output)
     is logged with its reason so a detection outage is distinguishable from
     genuine GPU absence — the return value stays ``None`` either way, so the
     VRAM pre-check degrades to a user-visible advisory warning rather than
     refusing work.
     """
+    import os
     import subprocess
 
+    command = ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"]
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")[0].strip()
+    if visible:
+        command.append(f"--id={visible}")
     try:
         result = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=memory.total",
-                "--format=csv,noheader,nounits",
-            ],
+            command,
             capture_output=True,
             text=True,
             encoding="utf-8",

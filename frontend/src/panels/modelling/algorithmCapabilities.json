@@ -5,6 +5,7 @@
       "feature_weights",
       "monotone_constraints"
     ],
+    "gpu_device": false,
     "label": "CatBoost",
     "losses": {
       "classification": [
@@ -71,6 +72,7 @@
       "interactions",
       "monotone_constraints"
     ],
+    "gpu_device": false,
     "label": "EBM",
     "losses": {
       "classification": [
@@ -115,6 +117,7 @@
   "glm": {
     "allowed_params": null,
     "feature_controls": [],
+    "gpu_device": false,
     "label": "GLM",
     "losses": {},
     "monotone_unsupported_losses": [],
@@ -154,6 +157,7 @@
     "feature_controls": [
       "monotone_constraints"
     ],
+    "gpu_device": false,
     "label": "LightGBM",
     "losses": {
       "classification": [
@@ -226,6 +230,7 @@
     "feature_controls": [
       "monotone_constraints"
     ],
+    "gpu_device": true,
     "label": "XGBoost",
     "losses": {
       "classification": [
@@ -239,7 +244,9 @@
         "Tweedie"
       ]
     },
-    "monotone_unsupported_losses": [],
+    "monotone_unsupported_losses": [
+      "MAE"
+    ],
     "refit_policy": "validation_weighted_rounds",
     "reserved_params": [
       "base_margin",

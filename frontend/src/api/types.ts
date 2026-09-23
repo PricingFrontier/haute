@@ -508,6 +508,17 @@ export interface IoCapabilitiesResponse {
   groups: IoCapabilityGroup[]
 }
 
+/** Whether one family can train on a GPU in the running server. */
+export interface GpuFamilyStatus {
+  available: boolean
+  detail: string
+  device: string | null
+}
+
+export interface ModellingGpuStatusResponse {
+  xgboost: GpuFamilyStatus
+}
+
 // ---------------------------------------------------------------------------
 // Cache-inventory contracts (/api/cache)
 // ---------------------------------------------------------------------------
@@ -1045,6 +1056,8 @@ export interface TrainResponse {
     /** EBM's native best_iteration_: term updates per stage, never rounds. */
     term_update_steps: number[] | null
     stopping_reason: "none" | "validation" | "native_exhaustion" | null
+    /** The device XGBoost actually trained on (``cuda:0``) for a GPU fit. */
+    device?: string | null
   } | null
   loss_history: Array<{ iteration: number; [key: string]: number }>
   loss_history_truncated: boolean

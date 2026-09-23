@@ -43,6 +43,23 @@ Depending on your deploy target, you may need additional packages:
 uv add "haute[databricks]"         # Adds SQL support and pins Databricks clients
 ```
 
+### XGBoost GPU training
+
+Haute installs XGBoost's CPU-only build (`xgboost-cpu`). To train XGBoost models on an
+NVIDIA GPU on Windows or Linux, swap in the full CUDA build once, then restart
+`haute serve`:
+
+```powershell
+haute gpu-setup            # installs xgboost (CUDA) at the same version
+haute gpu-setup --check    # reports the build, the GPU and whether GPU training works
+haute gpu-setup --cpu      # switches back to xgboost-cpu
+```
+
+The command needs the NVIDIA driver (`nvidia-smi` must list the GPU) and checks the
+result in a fresh Python process. The CUDA build is a larger download (about 140 MB on
+Windows). Re-syncing the project (`uv sync`) restores `xgboost-cpu`; run
+`haute gpu-setup` again afterwards. macOS has no CUDA build.
+
 ---
 
 ## Troubleshooting

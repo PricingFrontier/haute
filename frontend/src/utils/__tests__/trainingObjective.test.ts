@@ -49,7 +49,14 @@ describe("trainingConfigurationIssues", () => {
       ...base, monotone_constraints: { age: 1 }, exclude: ["age"], feature_columns: ["age"],
     }).map((issue) => issue.code)).toEqual(["monotone-loss"])
     expect(trainingConfigurationIssues({ ...base, loss_function: "RMSE", monotone_constraints: { age: 1 } })).toEqual([])
-    expect(trainingConfigurationIssues({ ...base, algorithm: "xgboost", monotone_constraints: { age: 1 } })).toEqual([])
+    expect(trainingConfigurationIssues({ ...base, algorithm: "catboost", monotone_constraints: { age: 1 } })).toEqual([])
+    // XGBoost's absolute-error objective re-fits leaves and breaks the constraint (MOD-F06).
+    expect(trainingConfigurationIssues({ ...base, algorithm: "xgboost", monotone_constraints: { age: 1 } })).toEqual([
+      expect.objectContaining({
+        code: "monotone-loss",
+        message: expect.stringMatching(/XGBoost cannot apply monotonicity constraints with the MAE loss/),
+      }),
+    ])
   })
 
   it("mirrors the backend's EBM budget and interaction rules (MOD-F04)", () => {
