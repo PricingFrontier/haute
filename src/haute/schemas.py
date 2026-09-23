@@ -2966,7 +2966,7 @@ class LogExperimentRequest(BaseModel):
 
 class ModelSaveDestinationRequest(BaseModel):
     output_path: str = Field(min_length=1)
-    algorithm: Literal["catboost", "glm"]
+    algorithm: Literal["catboost", "glm", "xgboost"]
 
 
 class ModelSaveDestinationResponse(BaseModel):

@@ -1,4 +1,5 @@
 import type { ModellingPane } from "../../stores/useUIStore"
+import { algorithmCapability } from "./algorithmCapabilities"
 
 export type ModellingPaneEntry = { key: ModellingPane; label: string }
 
@@ -14,9 +15,8 @@ const CATBOOST_PANES: readonly ModellingPaneEntry[] = [
 /** The panes a modelling node shows, in tab order; empty until an algorithm is chosen. */
 export function modellingPanesFor(algorithm: string): readonly ModellingPaneEntry[] {
   const normalized = algorithm.toLowerCase()
-  if (normalized === "catboost") return CATBOOST_PANES
-  if (normalized === "glm") return CATBOOST_PANES
-  return []
+  // Every family shares one tab set; the pane bodies differ per family.
+  return algorithmCapability(normalized) === null ? [] : CATBOOST_PANES
 }
 
 /** The pane to show: the remembered one when this algorithm has it, else Target. */

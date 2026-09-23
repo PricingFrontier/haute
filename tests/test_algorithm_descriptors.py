@@ -76,7 +76,7 @@ def test_descriptor_without_a_suffix_fails_at_registration() -> None:
             refit_policy="none",
             feature_controls=frozenset(),
             suffix="",
-            engine_distribution="none",
+            engine_module="none",
         )
 
 
@@ -131,7 +131,7 @@ def test_direct_training_job_applies_the_same_parameter_rules() -> None:
     with pytest.raises(TrainingConfigError, match="cannot set 'thread_count'"):
         TrainingJob(name="t", data=frame, target="y", params={"thread_count": 2})
     with pytest.raises(TrainingConfigError, match="Unknown algorithm"):
-        TrainingJob(name="t", data=frame, target="y", algorithm="xgboost")
+        TrainingJob(name="t", data=frame, target="y", algorithm="lightgbm")
 
 
 def test_allowlisted_family_rejects_reserved_alias_duplicate_and_unknown_keys() -> None:
@@ -150,7 +150,7 @@ def test_allowlisted_family_rejects_reserved_alias_duplicate_and_unknown_keys() 
         refit_policy="none",
         feature_controls=frozenset(),
         suffix=".demo",
-        engine_distribution="demo",
+        engine_module="demo",
     )
     family.validate_params({"eta": 0.1, "depth": 3})
     with pytest.raises(TrainingConfigError, match="cannot set 'seed'"):

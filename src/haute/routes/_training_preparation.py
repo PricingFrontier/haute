@@ -415,7 +415,7 @@ def _training_required_columns_by_node(
 
     if term_columns is None:
         algorithm = str(config.get("algorithm", "catboost")).lower()
-        if algorithm != "catboost":
+        if algorithm == "glm":
             return None
         keep_columns = _training_required_metadata_columns(config)
         feature_columns = _string_list_config(config, "feature_columns")

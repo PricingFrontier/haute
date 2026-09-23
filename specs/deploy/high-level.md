@@ -349,19 +349,12 @@ most: a silent wrong answer here mis-prices real policies.
   non-zero staging value (`src/haute/deploy/_impact.py::_raise_for_non_finite_predictions`,
   `_zero_baseline_change_count`, `_total_percent_change`).
 
-## Approved change contract — deploying new model families
+## Model families in deployment
 
-- **Current limitation.** Deployment bundles and generated requirements cover CatBoost and
-  RustyStats artifacts only. Databricks Model Serving builds a Python 3.11.11 conda environment.
-- **Unresolved target.** Bundling carries each new model file with its feature contract, and
-  generated requirements name the exact engine distribution per platform: `xgboost-cpu` on Linux
-  and Windows and `xgboost` on macOS, both capped below 3.3 so Python 3.11 serving keeps
-  XGBoost; `lightgbm`; and `interpret-core`. Container and Databricks deployments of XGBoost and
-  LightGBM models score on CPU with no training-process state, and a macOS image provides
-  `libomp`. Each family's slice extends this for its engine.
-- **Non-goals.** No new deployment platform is added, and the serving Python version is unchanged.
-- **Failure and compatibility semantics.** A bundle missing a model's contract, or whose engine
-  distribution is absent from the requirements, fails at bundle time.
-- **Acceptance evidence.** A clean-environment CPU scoring test per new family, bundle tests for
-  model-plus-contract sets, and requirement-generation tests per platform marker.
-- **Roadmap package.** [MOD-F02](../roadmap/modelling.md#mod-f02--deliver-the-complete-xgboost-slice).
+A deployment installs `haute` at the deploying version, whose core dependencies bring each
+model family's engine with the platform marker: `xgboost-cpu` (capped below 3.3) on Linux and
+Windows and `xgboost` on macOS, so container and Databricks Model Serving images (Linux, Python
+3.11.11) score XGBoost on CPU with no extra requirement. Bundling discovers `.ubj` artifacts
+with the other native suffixes and carries each model's feature contract. A macOS image must
+provide `libomp`.
+

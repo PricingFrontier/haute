@@ -96,6 +96,8 @@ def _flavor_from_artifact(artifact_path: str) -> ModelFlavor:
         return "catboost"
     if artifact_path.endswith(".rsglm"):
         return "rustystats"
+    if artifact_path.endswith(".ubj"):
+        return "xgboost"
     return "pyfunc"
 
 
@@ -590,7 +592,7 @@ def native_predictions(model: Any, x_data: Any, flavor: str) -> np.ndarray:
 
 
 #: The ScoringModel flavor each Haute-trained algorithm loads as.
-_ALGORITHM_FLAVORS = {"catboost": "catboost", "glm": "rustystats"}
+_ALGORITHM_FLAVORS = {"catboost": "catboost", "glm": "rustystats", "xgboost": "xgboost"}
 
 
 def verify_contract_identity(identity: Any, scoring_model: ScoringModel) -> None:
@@ -605,6 +607,19 @@ def verify_contract_identity(identity: Any, scoring_model: ScoringModel) -> None
             algorithm=identity.algorithm,
             flavor=scoring_model.flavor,
         )
+    if scoring_model.flavor == "xgboost" and identity.loss:
+        from haute.modelling._descriptors import XGBOOST
+
+        objective = scoring_model.raw_model.objective()
+        task = "classification" if identity.link == "logit" else "regression"
+        expected = XGBOOST.native_loss(task, identity.loss).objective
+        if objective != expected:
+            raise ConfigError(
+                f"The feature contract describes a {identity.loss} model, but this XGBoost "
+                f"model was trained with {objective}. Use the contract saved with this model.",
+                contract_loss=identity.loss,
+                model_objective=objective,
+            )
     if scoring_model.flavor == "catboost" and identity.loss:
         params = scoring_model.raw_model.get_all_params()
         recorded = params.get("loss_function") if isinstance(params, dict) else None
@@ -748,9 +763,34 @@ def load_local_model(path: str, task: str = "regression") -> ScoringModel:
         return _wrap_catboost(raw)
     if path.endswith(".rsglm"):
         return _load_rustystats_model(path)
+    if path.endswith(".ubj"):
+        return _load_xgboost_model(path, task)
     raise NotImplementedError(
         f"Local model loading not yet supported for: {path!r}. "
-        "Supported formats: .cbm (CatBoost), .rsglm (RustyStats GLM)."
+        "Supported formats: .cbm (CatBoost), .rsglm (RustyStats GLM), .ubj (XGBoost)."
+    )
+
+
+def _load_xgboost_model(path: str, task: str) -> ScoringModel:
+    """Load a Haute-trained XGBoost ``.ubj`` as the *task* it will score."""
+    from haute.errors import ConfigError
+    from haute.modelling._xgboost import XGBoostModel
+
+    model = XGBoostModel.load(path)
+    if model.task != task:
+        raise ConfigError(
+            f"This XGBoost model was trained for {model.task} but the node scores it as "
+            f"{task}. Set the node's task to {model.task}.",
+            trained_task=model.task,
+            task=task,
+        )
+    return ScoringModel(
+        model=model,
+        feature_names=list(model.features),
+        cat_feature_names=model.cat_feature_names,
+        flavor="xgboost",
+        offset_column=model.offset_column,
+        offset_link=model.offset_link,
     )
 
 
@@ -881,6 +921,11 @@ def _find_model_artifact(client: MlflowClient, run_id: str) -> tuple[str, str]:
 
     try:
         return _find_rsglm_artifact(client, run_id), "rustystats"
+    except _ArtifactNotFoundError:
+        pass
+
+    try:
+        return _find_artifact_by_extension(client, run_id, ".ubj", "XGBoost"), "xgboost"
     except _ArtifactNotFoundError:
         pass
 
@@ -1198,6 +1243,8 @@ def _load_with_bounded_retry(
             if flavor == "catboost":
                 raw = _load_catboost_model(local_path, task)
                 return _wrap_catboost(raw)
+            if flavor == "xgboost":
+                return _load_xgboost_model(local_path, task)
             return _load_rustystats_model(local_path)
         except (AttributeError, TypeError, KeyError, ConfigError):
             # Programmer error — a missing attribute, wrong type, or
@@ -1428,7 +1475,7 @@ def load_mlflow_model(
     # keyed without byte identity (documented residual in _model_cache_key).
     local_artifact_path: str | None = None
     artifact_fp = ""
-    if flavor in ("catboost", "rustystats"):
+    if flavor in ("catboost", "rustystats", "xgboost"):
         with _disk_cache_run_in_use(resolved_run_id):
             local_artifact_path = _resolve_artifact_local(
                 mlflow_mod,
@@ -1487,7 +1534,7 @@ def load_mlflow_model(
         # small exponential backoff with jitter so transient upstream hiccups
         # (tracking-server flaps) get a moment to recover — but the total
         # retry budget is bounded so persistent corruption surfaces loudly.
-        if flavor in ("catboost", "rustystats"):
+        if flavor in ("catboost", "rustystats", "xgboost"):
             with _disk_cache_run_in_use(resolved_run_id):
                 scoring_model = _load_with_bounded_retry(
                     mlflow_mod=mlflow_mod,
@@ -1573,8 +1620,9 @@ def _prepare_predict_frame(
     Unknown flavors raise ``ValueError`` — silently routing them through
     the catboost-shaped branch would score with the wrong input contract.
     """
-    # RustyStats handles its own preprocessing — pass Polars directly
-    if flavor == "rustystats":
+    # RustyStats and the XGBoost wrapper encode their own inputs (the
+    # wrapper from its stored category levels) — pass Polars directly.
+    if flavor in ("rustystats", "xgboost"):
         return df_eager.select(features) if features else df_eager
 
     # ``catboost`` and ``pyfunc`` share the tabular (pandas/numpy) prep below;

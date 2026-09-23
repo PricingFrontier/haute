@@ -727,7 +727,11 @@ class TrainingJob:
                     train_result,
                     features=prepared.features,
                     cat_features=prepared.cat_features,
-                    categorical_levels=prepared.categorical_levels,
+                    categorical_levels=(
+                        train_result.fit_result.categorical_levels
+                        if getattr(train_result.fit_result, "categorical_levels", None) is not None
+                        else prepared.categorical_levels
+                    ),
                 )
 
             result = TrainResult(
@@ -1041,7 +1045,7 @@ class TrainingJob:
 
     def _model_identity(self) -> ModelIdentity:
         """The feature contract's record of which model this job trains."""
-        from importlib.metadata import version
+        from importlib import import_module
 
         from haute import __version__ as haute_version
 
@@ -1056,8 +1060,7 @@ class TrainingJob:
             if glm_family == "tweedie" and self.params.get("var_power") is not None:
                 variance_power = float(self.params["var_power"])
         else:
-            resolved = self._catboost_loss_function()
-            loss = resolved.partition(":")[0] if resolved else None
+            loss = self._haute_loss()
             if loss is not None:
                 link = descriptor.native_loss(task, loss).link
             else:
@@ -1067,8 +1070,8 @@ class TrainingJob:
         return ModelIdentity(
             algorithm=descriptor.key,
             link=link,
-            engine_name=descriptor.engine_distribution,
-            engine_version=version(descriptor.engine_distribution),
+            engine_name=descriptor.engine_module,
+            engine_version=str(import_module(descriptor.engine_module).__version__),
             haute_version=haute_version,
             loss=loss,
             glm_family=glm_family,
@@ -1076,13 +1079,27 @@ class TrainingJob:
             class_labels=self._class_labels if task == "classification" else None,
         )
 
+    def _haute_loss(self) -> str | None:
+        """The Haute loss name this job trains (``None`` for the GLM)."""
+        if self.algorithm == "glm":
+            return None
+        if self.algorithm == "catboost":
+            resolved = self._catboost_loss_function()
+            return resolved.partition(":")[0] if resolved else None
+        return self.loss_function
+
     def _offset_link(self) -> str:
         """How the offset enters the model: ``log`` multiplies, ``identity`` adds."""
         if self.algorithm == "glm":
             return glm_effective_link(self.params)
-        from haute.modelling._algorithms import catboost_offset_link
+        if self.algorithm == "catboost":
+            from haute.modelling._algorithms import catboost_offset_link
 
-        return catboost_offset_link(self._catboost_loss_function())
+            return catboost_offset_link(self._catboost_loss_function())
+        loss = self._haute_loss()
+        task = "classification" if self.task == "classification" else "regression"
+        link = algorithm_descriptor(self.algorithm).native_loss(task, str(loss)).link
+        return "log" if link == "log" else "identity"
 
     def _require_positive_log_link_offset(
         self,
@@ -2125,7 +2142,8 @@ class TrainingJob:
 
         # GLM: pack all GLM-specific config into fit_params for the algorithm
         is_glm = self.algorithm == "glm"
-        if not is_glm:
+        frame_based = self.algorithm != "catboost"
+        if self.algorithm == "catboost":
             loss_function = self._catboost_loss_function()
             if loss_function:
                 fit_params["loss_function"] = loss_function
@@ -2153,10 +2171,21 @@ class TrainingJob:
             _mem_checkpoint(f"read validation partition ({len(validation):,} rows)")
             return validation
 
-        if is_glm:
-            # GLM: pass DataFrames directly (no Pool conversion needed)
+        if frame_based:
+            # GLM and the new-family adapters take DataFrames and build their
+            # own native data (no CatBoost Pool).
             eval_df = load_validation() if has_validation else None
-            _report("Fitting GLM", 0.3)
+            _report(f"Fitting {algorithm_descriptor(self.algorithm).label}", 0.3)
+            adapter_kwargs: dict[str, Any] = {}
+            if not is_glm:
+                adapter_kwargs = {
+                    "loss": self._haute_loss(),
+                    "variance_power": self.variance_power,
+                    "threads": self.threads,
+                    "categorical_levels": self._declared_categorical_levels or None,
+                    "class_labels": self._class_labels,
+                    "seed": self.evaluation.seed if self.evaluation is not None else 0,
+                }
             with _training_stage(execution_context, "training_algorithm_fit"):
                 fit_result = algo.fit(
                     train_df,
@@ -2171,8 +2200,9 @@ class TrainingJob:
                     offset=self.offset,
                     monotone_constraints=self.monotone_constraints,
                     feature_weights=self.feature_weights,
+                    **adapter_kwargs,
                 )
-            _mem_checkpoint("glm algo.fit() returned")
+            _mem_checkpoint("frame-based algo.fit() returned")
             del train_df, eval_df
             gc.collect()
             _malloc_trim()
@@ -2305,7 +2335,7 @@ class TrainingJob:
         weight, and offset columns required to extract labels/aux arrays.
         Returning ``None`` means "read all columns" for non-CatBoost paths.
         """
-        if self.algorithm != "catboost":
+        if self.algorithm == "glm":
             return None
         needed: list[str] = []
         for column in [*features, self.target, self.weight, self.offset]:

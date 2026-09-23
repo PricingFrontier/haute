@@ -1236,7 +1236,7 @@ class TestSaveArtifactsCoverage:
             algorithm="catboost",  # will override
             output_dir=str(tmp_path),
         )
-        job.algorithm = "xgboost"  # unknown algo
+        job.algorithm = "lightgbm"  # an algorithm with no registered suffix
         train_result = _TrainModelResult(
             model=mock_model, algo=mock_algo, fit_result=mock_fit_result, fit_params={}
         )

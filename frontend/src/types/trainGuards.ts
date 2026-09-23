@@ -971,6 +971,7 @@ function parseTuningReport(value: unknown): NonNullable<TrainResponse["tuning"]>
           "logloss",
           "poisson_deviance",
           "tweedie_deviance",
+          "gamma_deviance",
         ].includes(canonicalMetric)
         ? "minimize"
         : null

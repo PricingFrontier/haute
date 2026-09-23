@@ -158,7 +158,7 @@ describe("TargetAndTaskConfig", () => {
   it("disables all metrics until a loss is selected", () => {
     render(<TargetAndTaskConfig {...makeProps({ config: {} })} />)
     const metricButtons = within(screen.getByRole("group", { name: "Metrics" })).getAllByRole("button")
-    expect(metricButtons).toHaveLength(9)
+    expect(metricButtons).toHaveLength(10)
     metricButtons.forEach(button => expect(button).toBeDisabled())
   })
 

@@ -27,17 +27,18 @@ type Props = {
   searchSpaceDraft: string
   setSearchSpaceDraft: (draft: string) => void
   onReviewSplit?: () => void
+  /** The search space "Tune parameters" starts from; it must use the family's own keys. */
+  starterSearchSpace?: Record<string, unknown>
 }
 
-function starterTuningSearchSpace(): Record<string, unknown> {
-  return {
-    depth: [4, 6, 8, 10],
-    learning_rate: [0.01, 0.03, 0.05, 0.1, 0.2],
-    l2_leaf_reg: [1, 3, 5, 10],
-  }
+const CATBOOST_STARTER_SEARCH_SPACE: Record<string, unknown> = {
+  depth: [4, 6, 8, 10],
+  learning_rate: [0.01, 0.03, 0.05, 0.1, 0.2],
+  l2_leaf_reg: [1, 3, 5, 10],
 }
 
 export function HyperparametersConfig({
+  starterSearchSpace = CATBOOST_STARTER_SEARCH_SPACE,
   algorithmLabel,
   params,
   reservedKeys = [],
@@ -104,7 +105,7 @@ export function HyperparametersConfig({
       onUpdate("tuning", null)
       return
     }
-    const searchSpace = starterTuningSearchSpace()
+    const searchSpace = { ...starterSearchSpace }
     // Tuning hides the fixed-parameter editor: drop an unsaved draft rather
     // than keep text the user can no longer see or correct.
     setDraft(stored)

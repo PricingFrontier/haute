@@ -531,12 +531,131 @@ def explain_rustystats_glm_prediction(
     }
 
 
+def _inverse_link(link: str, margin: float) -> float:
+    if link == "log":
+        return float(np.exp(margin))
+    if link == "logit":
+        return float(1.0 / (1.0 + np.exp(-margin)))
+    return margin
+
+
+def explain_xgboost_prediction(
+    scoring_model: Any,
+    input_row: dict[str, Any],
+    *,
+    task: str = "regression",
+    prediction_value: Any = None,
+    max_contributions: int | None = None,
+) -> dict[str, Any]:
+    """Native XGBoost contributions for one traced prediction.
+
+    The bias carries the row's offset (``base_margin``), so bias plus
+    contributions is the raw margin; its inverse link must reproduce the
+    served response, or the positive-class probability for a classifier.
+    """
+    import polars as pl
+
+    if getattr(scoring_model, "flavor", "") != "xgboost":
+        raise ModelExplanationError("XGBoost explanation requires an XGBoost model.")
+    model = scoring_model.raw_model
+    features = list(model.features)
+    columns = [*features, *([model.offset_column] if model.offset_column else [])]
+    missing = [column for column in columns if column not in input_row]
+    if missing:
+        raise ModelExplanationError(
+            f"XGBoost explanation input is missing columns: {', '.join(missing)}"
+        )
+    row = pl.DataFrame(
+        {column: [input_row[column]] for column in columns},
+        strict=False,
+    )
+    contributions = model.contributions(row)
+    values = np.asarray(contributions.values[0], dtype=np.float64)
+    bias = float(contributions.bias[0])
+    if not np.isfinite(values).all() or not np.isfinite(bias):
+        raise ModelExplanationError("XGBoost contributions are not finite.")
+    margin = float(model.predict_margin(row)[0])
+    reconstructed = float(bias + values.sum())
+    tolerance = prediction_tolerance(margin, relative=FLOAT32_CONTRIBUTION_TOLERANCE)
+    if abs(reconstructed - margin) > tolerance:
+        raise ModelExplanationError(
+            "XGBoost explanation does not match the model margin: "
+            f"contributions reconstruct {reconstructed}, model margin is {margin}."
+        )
+    response = float(model.predict_response(row)[0])
+    linked = _inverse_link(model.link, margin)
+    if abs(linked - response) > prediction_tolerance(response):
+        raise ModelExplanationError(
+            "XGBoost explanation's inverse link does not reproduce the model response: "
+            f"{linked} versus {response}."
+        )
+    traced = _as_float(
+        prediction_value if task == "regression" else None,
+        field_name="prediction_value",
+        strict=task == "regression" and prediction_value is not None,
+    )
+    output_difference = None if traced is None else float(traced - response)
+    if output_difference is not None and abs(output_difference) > prediction_tolerance(response):
+        raise ModelExplanationError(
+            "XGBoost explanation does not match the traced prediction: "
+            f"model predicts {response}, traced output is {traced}."
+        )
+
+    categorical = frozenset(model.categorical_levels)
+    ranked = [
+        {
+            "feature": feature,
+            "feature_index": index,
+            "feature_value": input_row.get(feature),
+            "shap_value": float(value),
+            "abs_shap_value": float(abs(value)),
+            "is_categorical": feature in categorical,
+            "_feature_index": index,
+        }
+        for index, (feature, value) in enumerate(zip(features, values, strict=True))
+    ]
+    ranked.sort(key=lambda item: (-float(item["abs_shap_value"]), int(item["_feature_index"])))
+    truncated = max_contributions is not None and len(ranked) > max_contributions
+    omitted_count = len(ranked) - max_contributions if truncated and max_contributions else 0
+    if truncated and max_contributions is not None:
+        ranked = ranked[:max_contributions]
+    shown = []
+    for rank, item in enumerate(ranked, start=1):
+        item = dict(item)
+        item.pop("_feature_index", None)
+        item["rank"] = rank
+        shown.append(item)
+
+    output_space = {"identity": "response", "log": "log", "logit": "log_odds"}[model.link]
+    return {
+        "type": "xgboost_contributions",
+        "method": "xgboost_contributions",
+        "status": "ok",
+        "link": model.link,
+        "output_space": output_space,
+        "prediction_space": "probability" if task == "classification" else "response",
+        "base_value": bias,
+        "sum_contributions": float(values.sum()),
+        "contribution_sum": float(values.sum()),
+        "prediction_from_contributions": reconstructed,
+        "model_output_value": margin,
+        "model_prediction_value": response,
+        "prediction_value": prediction_value if prediction_value is not None else response,
+        "output_difference": output_difference,
+        "feature_count": len(features),
+        "feature_values": {feature: input_row.get(feature) for feature in features},
+        "contributions": shown,
+        "truncated": truncated,
+        "omitted_count": omitted_count,
+    }
+
+
 def _config_requests_supported_explanation(config: dict[str, Any]) -> bool:
     source_type = config.get("sourceType")
     if source_type not in {"run", "registered"}:
         return False
     artifact_path = str(config.get("artifact_path", ""))
-    return artifact_path.endswith((".cbm", ".rsglm"))
+    return artifact_path.endswith((".cbm", ".rsglm", ".ubj"))
 
 
 def explanation_error_metadata_for_config(config: dict[str, Any]) -> dict[str, str]:
@@ -561,6 +680,8 @@ def explanation_error_metadata_for_config(config: dict[str, Any]) -> dict[str, s
         method = "rustystats_glm_contributions"
     elif artifact_path.endswith(".cbm"):
         method = "catboost_shap"
+    elif artifact_path.endswith(".ubj"):
+        method = "xgboost_contributions"
     else:
         logger.warning(
             "explanation_error_metadata_unsupported_artifact",
@@ -599,6 +720,13 @@ def explain_model_score_from_config(
     )
     if getattr(scoring_model, "flavor", "") == "catboost":
         return explain_catboost_prediction(
+            scoring_model,
+            input_row,
+            task=config.get("task", "regression"),
+            prediction_value=effective_prediction,
+        )
+    if getattr(scoring_model, "flavor", "") == "xgboost":
+        return explain_xgboost_prediction(
             scoring_model,
             input_row,
             task=config.get("task", "regression"),

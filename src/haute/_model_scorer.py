@@ -553,6 +553,8 @@ def _model_offset_column(model: Any, flavor: _ModelFlavor) -> str | None:
         from haute._mlflow_io import rustystats_offset_column
 
         return rustystats_offset_column(model)
+    if flavor == "xgboost":
+        return model.offset_column  # type: ignore[no-any-return]
     return None
 
 
@@ -566,6 +568,8 @@ def _model_offset_link(model: Any, flavor: _ModelFlavor) -> str | None:
         from haute._mlflow_io import rustystats_offset_link
 
         return rustystats_offset_link(model)
+    if flavor == "xgboost":
+        return model.offset_link  # type: ignore[no-any-return]
     return None
 
 
@@ -646,7 +650,9 @@ def _catboost_baseline_pool(
 # signature input and the wrapped model applies it (there is no baseline haute
 # can re-inject into an opaque pyfunc).  CatBoost is the exception — its offset
 # is a numeric ``Pool`` baseline, never a design-matrix column.
-_OFFSET_PASSTHROUGH_FLAVORS: frozenset[_ModelFlavor] = frozenset({"rustystats", "pyfunc"})
+_OFFSET_PASSTHROUGH_FLAVORS: frozenset[_ModelFlavor] = frozenset(
+    {"rustystats", "pyfunc", "xgboost"}
+)
 
 
 def _offset_predict_features(
@@ -1829,6 +1835,11 @@ def _declared_score_dtypes(
     proba_dtype = pl.Float64 if include_proba else None
     if task != "classification":
         return pl.Float64, proba_dtype
+    if flavor == "xgboost":
+        raw = getattr(scoring_model, "raw_model", scoring_model)
+        if raw.class_labels is None:
+            raise ValueError("XGBoost classification model has no recorded class labels")
+        return pl.Series("prediction", list(raw.class_labels)).dtype, proba_dtype
     if flavor != "catboost":
         return None
     from haute._mlflow_io import catboost_class_labels

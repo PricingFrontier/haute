@@ -12,6 +12,9 @@ export type AlgorithmCapability = {
   losses: Partial<Record<ModellingTask, string[]>>
   feature_controls: string[]
   refit_policy: "validation_weighted_rounds" | "fixed_budget" | "none"
+  /** ``null`` keeps the family's own parameter contract (CatBoost, the GLM). */
+  allowed_params: string[] | null
+  reserved_params: string[]
   round_key: string | null
   round_key_aliases: string[]
   validation_only_params: string[]
@@ -44,6 +47,12 @@ export function refitCapability(finalParams: Record<string, unknown>): Algorithm
       && capability.round_key in finalParams,
   )
   return matches.length === 1 ? matches[0] : null
+}
+
+/** Tree families share the Target / Features / Parameters panes and the JSON params editor. */
+export function isTreeFamily(algorithm: string): boolean {
+  const capability = algorithmCapability(algorithm)
+  return capability !== null && capability.refit_policy === "validation_weighted_rounds"
 }
 
 /** Every Haute loss the family supports, across its tasks. */

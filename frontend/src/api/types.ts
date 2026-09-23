@@ -1435,7 +1435,7 @@ export interface MlflowLogResponse {
 export interface ModelSaveDestinationRequest {
   /** A bare filename saves under models/; paths are project-root-relative. */
   output_path: string
-  algorithm: "catboost" | "glm"
+  algorithm: "catboost" | "glm" | "xgboost"
 }
 
 export interface ModelSaveDestinationResponse {

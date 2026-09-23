@@ -46,7 +46,10 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 |---|---|
 | `src/haute/modelling/__init__.py` | Public API surface: `FitResult`, `MLflowLogResult`, `TrainingJob`, `TrainResult`, `generate_training_script`, `log_experiment`. |
 | `src/haute/modelling/_descriptors.py` | `AlgorithmDescriptor` and `NativeLoss` per family, `DESCRIPTORS`, the Haute loss vocabulary `HAUTE_LOSSES`, `algorithm_descriptor()`, parameter validation, refit projection (`project_refit_params`, `refit_descriptor`, `round_ceiling`), the `training_threads()` allotment, and `capability_fixture()`. Imports no engine. |
-| `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC, `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
+| `src/haute/modelling/_algorithm_base.py` | `BaseAlgorithm`, `FitResult` and `IterationCallback`, shared by every adapter without importing the registry. |
+| `src/haute/modelling/_native_encoding.py` | Shared categorical encoding for the native-dataset families: `fit_categorical_levels` and `encode_frame`. |
+| `src/haute/modelling/_xgboost.py` | The XGBoost adapter: `XGBoostModel` (self-describing booster wrapper) and `XGBoostAlgorithm`. |
+| `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC (re-exported from the base module), `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
 | `src/haute/modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats; `prepare_glm_design()` (frame-dtype validation, reference-level translation, interaction resolution); `glm_fit_kwargs()` (fixed or cross-validated penalty, solver controls, robust standard errors); `GLMAlgorithm.glm_result()` over `glm_inference`, `glm_coefficient_rows`, `glm_relativity_rows`, `glm_fit_statistics`, `glm_smooth_term_rows`, and `glm_regularization_summary`; `estimate_glm_dispersion()` profile-likelihood estimation. |
 | `src/haute/modelling/_training_job.py` | `TrainingJob` orchestrator — prepare one eligible source, persist/reload its evaluation plan, run selection or tuning fits, perform one deployable final fit, compute diagnostics, stage artifacts, and optionally log once to MLflow; also defines `TrainResult` and intermediate stage types. |
 | `src/haute/modelling/_evaluation.py` | Strict version-1 evaluation config, exact development/final-test and validation-fit plan generation, plan/result/report codecs, digest linkage, strategy summaries, and validation-row-weighted aggregation. |
@@ -1739,7 +1742,7 @@ used for staged input.
   `NativeLoss(objective, link)`), `allowed_params` (`None` keeps the family's own contract),
   `reserved_params`, `tuning_reserved_params`, `param_aliases`, `round_key`,
   `round_key_aliases`, `validation_only_params`, `refit_policy`, `feature_controls`, `suffix`,
-  and `engine_distribution`. `DESCRIPTORS` holds CatBoost and the GLM under the same keys as
+  and `engine_module`. `DESCRIPTORS` holds CatBoost and the GLM under the same keys as
   `ALGORITHM_REGISTRY`; `MODEL_FILE_SUFFIXES` derives from them, and saving a model whose
   algorithm has no suffix raises. `capability_fixture()` serialises the frontend's
   `algorithmCapabilities.json` (including each family's round-key aliases and validation-only
@@ -1772,71 +1775,41 @@ used for staged input.
 - `prediction_tolerance` in `src/haute/_model_explainability.py` is the shared parity tolerance;
   `FLOAT32_CONTRIBUTION_TOLERANCE` is the named bound for float32 contribution sums.
 
-## Approved change contract — native adapter interface and categorical encoding
+## Native model-family adapters
 
-- **Current limitation.** `BaseAlgorithm` exposes `fit`, `predict`, `feature_importance` and
-  `save` with CatBoost-shaped keyword arguments; no adapter builds native datasets, returns raw
-  margins or contributions, or loads its own artifact, and `ALGORITHM_REGISTRY` holds classes,
-  not lazily imported adapters.
-- **Unresolved target.**
-  - *Adapter interface.* Each new-family adapter implements, beside the `BaseAlgorithm`
-    methods: `prepare(train, valid, contract, params) -> Prepared` (owns native dataset
-    construction and releases the raw frame when the engine allows); `fit(prepared, params,
-    threads, on_iteration) -> FitResult`; `predict_margin(model, frame, contract) -> np.ndarray`
-    (raw score including any offset); `predict(model, frame, contract) -> np.ndarray` (inverse
-    link of the margin); `contributions(model, frame, contract) -> Contributions` with `bias`,
-    `values` and `terms` (a pairwise EBM term is one tuple of two names); and
-    `load(path, contract) -> model`. Registry entries import adapters lazily. CatBoost and the
-    GLM keep their current `BaseAlgorithm` implementations.
-  - *Categorical encoding.* Adapters build categorical columns from the contract's stored
-    levels with `None` removed: the non-null levels, in stored order, are the pandas
-    categories, and a null value becomes the engine's native missing value (a missing category
-    code), never a category. A literal string such as `"__missing__"` is an ordinary level and
-    never collides with null. EBM receives the same nulls as missing values.
-- **Non-goals.** CatBoost's pool construction, GPU fit thread and allocation order are
-  unchanged.
-- **Failure and compatibility semantics.** An adapter that cannot build its native dataset from
-  the contract fails before fitting, naming the column.
-- **Acceptance evidence.** New tests: an adapter-interface conformance test run against every
-  new-family adapter; a categorical feature holding both nulls and the literal `"__missing__"`
-  that fits, reloads and scores with nulls as missing values and `"__missing__"` as its own
-  level.
-- **Roadmap package.** [MOD-F02](../roadmap/modelling.md#mod-f02--deliver-the-complete-xgboost-slice).
-
-## Approved change contract — XGBoost adapter parameters and behaviour
-
-- **Current limitation.** No XGBoost adapter exists.
-- **Unresolved target.** Descriptor: tasks regression and classification; losses `RMSE` →
-  `reg:squarederror` (identity), `MAE` → `reg:absoluteerror` (identity), `Poisson` →
-  `count:poisson` (log), `Gamma` → `reg:gamma` (log), `Tweedie` → `reg:tweedie` with
-  `tweedie_variance_power` from `variance_power` (log), `Logloss` → `binary:logistic` (logit);
-  `round_key` `num_boost_round`; `refit_policy` `validation_weighted_rounds`; feature controls
-  `monotone_constraints`; suffix `.ubj`; distribution `xgboost-cpu` (`xgboost` on macOS).
-  `allowed_params`: `num_boost_round`, `early_stopping_rounds`, `eta`, `max_depth`, `max_leaves`,
-  `grow_policy`, `min_child_weight`, `gamma`, `max_delta_step`, `subsample`,
-  `colsample_bytree`, `colsample_bylevel`, `colsample_bynode`, `lambda`, `alpha`, `max_bin`,
-  `max_cat_to_onehot`, `max_cat_threshold`. `reserved_params`: `objective`,
+- A new-family adapter pairs a `BaseAlgorithm` subclass (`fit`, `predict`, `feature_importance`,
+  `shap_summary`, `save`) with a self-describing model wrapper. `BaseAlgorithm`, `FitResult` and
+  `IterationCallback` live in `src/haute/modelling/_algorithm_base.py`, so an adapter module can
+  subclass them without importing `_algorithms` (which registers every adapter).
+- `src/haute/modelling/_native_encoding.py` is the shared categorical encoding:
+  `fit_categorical_levels` takes declared levels, else the training frame's sorted distinct
+  non-null values with `None` appended when nulls occur; `encode_frame` builds pandas categoricals
+  whose categories are the non-null levels in stored order, so a null is the native missing code
+  and a literal `"__missing__"` is an ordinary level, and it raises `HauteValidationError`
+  naming the feature and values for anything outside the levels. `FitResult.categorical_levels`
+  carries the fitted levels into the feature contract.
+- `XGBoostModel` in `src/haute/modelling/_xgboost.py` wraps the booster with its feature order,
+  categorical levels, task, link, offset column and link, and class labels, persisted as the
+  `haute` booster attribute of the `.ubj`. It exposes `matrix`, `predict_margin`,
+  `predict_response`, `predict` (original labels for classifiers, by the `> 0.5` rule),
+  `predict_proba`, `contributions` (native `pred_contribs`, bias carrying the offset), `save`,
+  `load` (which refuses a booster without the `haute` record) and `objective`.
+- `XGBoostAlgorithm.fit` resolves the loss through the `xgboost` descriptor, rejects feature
+  weights and classification offsets, supplies `hist`, the job seed, the thread allotment and
+  `tweedie_variance_power`, trains with the validation partition as the early-stopping set, and
+  slices the booster to `best_iteration + 1`. The `xgboost` scoring flavor passes Polars frames
+  (with the offset column) to the wrapper; `explain_xgboost_prediction` checks that bias plus
+  contributions equals the margin within `FLOAT32_CONTRIBUTION_TOLERANCE` and that the inverse
+  link reproduces the response.
+- The `xgboost` descriptor's allowlist is `num_boost_round`, `early_stopping_rounds`, `eta`,
+  `max_depth`, `max_leaves`, `grow_policy`, `min_child_weight`, `gamma`, `max_delta_step`,
+  `subsample`, `colsample_bytree`, `colsample_bylevel`, `colsample_bynode`, `lambda`, `alpha`,
+  `max_bin`, `max_cat_to_onehot`, `max_cat_threshold`; Haute owns `objective`,
   `tweedie_variance_power`, `eval_metric`, `base_score`, `tree_method`, `booster`, `device`,
   `nthread`, `n_jobs`, `seed`, `random_state`, `enable_categorical`, `feature_names`,
-  `feature_types`, `monotone_constraints`, `interaction_constraints`, `callbacks`,
-  `base_margin`. `param_aliases`: `learning_rate` → `eta`, `min_split_loss` → `gamma`,
-  `reg_lambda` → `lambda`, `reg_alpha` → `alpha`, `n_estimators` → `num_boost_round`. Data:
-  categorical columns follow the shared categorical encoding (non-null stored levels in order,
-  nulls as native missing values); offsets become `base_margin` at fit and predict; `hist` trees, `seed`
-  from the job seed, and `nthread` from the allotment. Stopping: `best_iteration + 1` rounds are
-  kept by slicing the booster before saving; `rounds_fitted` is the saved booster's
-  `num_boosted_rounds()`. Contributions: `pred_contribs`, whose last column is the bias
-  including the offset.
-- **Non-goals.** The scikit-learn wrapper, `dart`/`gblinear` boosters and GPU devices.
-- **Failure and compatibility semantics.** A contract whose `loss` disagrees with the saved
-  config's objective fails at load; an offset model scored without its offset column fails.
-- **Acceptance evidence.** New tests: one weighted fit per loss with objective check after
-  reload; a categorical feature holding both nulls and the literal `"__missing__"` that fits,
-  reloads and scores with nulls as missing values and `"__missing__"` as its own level; bit-identical save/reload; a reordered-category scoring frame matching the original;
-  unseen-category rejection before native prediction; contribution sums within `1e-5`
-  relative of the margin; a three-round early-stopping refit fixture; offset present at fit and
-  required at scoring.
-- **Roadmap package.** [MOD-F02](../roadmap/modelling.md#mod-f02--deliver-the-complete-xgboost-slice).
+  `feature_types`, `monotone_constraints`, `interaction_constraints`, `callbacks` and
+  `base_margin`; `learning_rate`, `min_split_loss`, `reg_lambda`, `reg_alpha` and
+  `n_estimators` are rejected aliases.
 
 ## Approved change contract — LightGBM adapter parameters and behaviour
 

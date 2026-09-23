@@ -25,6 +25,11 @@ const LOSSES: ReadonlyArray<{
     defaultMetrics: ["gini", "poisson_deviance"],
   },
   {
+    value: "Gamma",
+    task: "regression",
+    defaultMetrics: ["gini", "gamma_deviance"],
+  },
+  {
     value: "Tweedie",
     task: "regression",
     defaultMetrics: ["gini", "tweedie_deviance"],
@@ -48,6 +53,7 @@ const REGRESSION_METRICS = [
   "r2",
   "poisson_deviance",
   "tweedie_deviance",
+  "gamma_deviance",
 ]
 const CLASSIFICATION_METRICS = ["auc", "logloss"]
 const METRICS = [...REGRESSION_METRICS, ...CLASSIFICATION_METRICS]
@@ -59,6 +65,7 @@ const METRIC_LABELS: Record<string, string> = {
   r2: "R²",
   poisson_deviance: "Poisson Deviance",
   tweedie_deviance: "Tweedie Deviance",
+  gamma_deviance: "Gamma Deviance",
   auc: "AUC",
   logloss: "Logloss",
 }

@@ -315,6 +315,17 @@ describe("Training configuration readiness", () => {
     expect(screen.queryByText(/Parameters JSON/)).toBeNull()
     expect(onPaneIssuesChange).toHaveBeenLastCalledWith("node_1", [])
   })
+  it("starts an XGBoost study from XGBoost's own parameter keys (MOD-F02)", () => {
+    const { props } = renderConfig({
+      activePane: "params",
+      config: { _nodeId: "xgb", algorithm: "xgboost", target: "loss_ratio", loss_function: "RMSE", params: {} },
+    })
+    fireEvent.click(screen.getByRole("radio", { name: "Tune parameters" }))
+    const tuned = (props.onUpdate as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as {
+      tuning: { search_space: Record<string, unknown> }
+    }
+    expect(Object.keys(tuned.tuning.search_space).sort()).toEqual(["eta", "lambda", "max_depth"])
+  })
   it("shows issues before Train and links to the affected pane", () => {
     renderConfig({ activePane: "train", config: { _nodeId: "readiness", algorithm: "catboost", target: "loss_ratio" } })
     expect(screen.getByRole("alert")).toHaveTextContent("Choose a training loss")
@@ -458,6 +469,26 @@ describe("ModellingConfig", () => {
       })
     })
 
+    it("clicking XGBoost in the picker seeds XGBoost's own parameters (MOD-F02)", () => {
+      const { props } = renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio", task: "regression" } })
+      fireEvent.click(screen.getByText("XGBoost"))
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        algorithm: "xgboost",
+        params: { num_boost_round: 1000, eta: 0.1, max_depth: 6, early_stopping_rounds: 50 },
+        evaluation: expect.objectContaining({ schema_version: 1 }),
+      })
+    })
+
+    it("offers XGBoost the Gamma loss but not CrossEntropy (MOD-F02)", () => {
+      renderConfig({
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "xgboost", params: {} },
+      })
+      const losses = within(screen.getByRole("group", { name: "Loss functions" }))
+      expect(losses.getByRole("button", { name: "Gamma" })).toBeTruthy()
+      expect(losses.queryByRole("button", { name: "CrossEntropy" })).toBeNull()
+      expect(screen.getByLabelText("Selected algorithm")).toHaveTextContent("XGBoost")
+    })
+
     it("shows every supported loss in one picker", () => {
       renderConfig()
       const losses = within(screen.getByRole("group", { name: "Loss functions" }))
@@ -520,6 +551,15 @@ describe("ModellingConfig", () => {
       const textarea = screen.getByLabelText("CatBoost hyperparameters JSON") as HTMLTextAreaElement
       const parsed = JSON.parse(textarea.value)
       expect(parsed).toEqual({ iterations: 500, depth: 8 })
+    })
+
+    it("XGBoost's editor refuses a Haute-owned key (MOD-F02)", () => {
+      renderConfig({
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "xgboost", params: {} },
+      })
+      const textarea = screen.getByLabelText("XGBoost hyperparameters JSON")
+      fireEvent.change(textarea, { target: { value: '{"objective":"reg:squarederror"}' } })
+      expect(screen.getAllByText(/objective is managed elsewhere/).length).toBeGreaterThan(0)
     })
 
     it("autosaves arbitrary algorithm parameters", () => {
@@ -1648,8 +1688,8 @@ describe("ModellingConfig", () => {
       expect(screen.queryByRole("tabpanel")).toBeNull()
       cleanup()
 
-      renderConfig({ config: { _nodeId: "node_1", algorithm: "xgboost" } })
-      expect(screen.getByRole("alert")).toHaveTextContent("Unsupported modelling algorithm: xgboost.")
+      renderConfig({ config: { _nodeId: "node_1", algorithm: "lightgbm" } })
+      expect(screen.getByRole("alert")).toHaveTextContent("Unsupported modelling algorithm: lightgbm.")
     })
 
     it("keeps the selected algorithm immutable and renders exactly one owning pane for both algorithms", () => {

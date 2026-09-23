@@ -783,6 +783,19 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   when it is greater than 0.5, so 0.5 is the negative class. A CatBoost classifier trained
   outside Haute uses its own class order. Single-class, multiclass, and non-integer numeric
   targets fail before fitting.
+- **XGBoost.** The `xgboost` family trains a native CPU `hist` booster. Categorical codes come
+  from the level list the model was fitted against (declared levels, else the training
+  partition's distinct values), stored in the model and the contract, because XGBoost 3.2 reads
+  a booster sliced to its best round positionally; an unseen category fails instead of scoring
+  as missing. A regression offset enters as `base_margin` at fit and predict, because a model
+  trained with a margin ignores its fitted `base_score`. Early stopping on Haute's validation
+  partition keeps `best_iteration + 1` rounds, and the refit reuses the weighted count through
+  `num_boost_round`. Losses are `RMSE`, `MAE`, `Poisson`, `Gamma`, `Tweedie` and `Logloss`;
+  raw parameters follow an allowlist with Haute-owned keys and aliases rejected; monotone
+  constraints are supported and feature weights are not. The `.ubj` model is self-describing,
+  scores through its own flavor, serves through the shared MLflow pyfunc, and explains a traced
+  prediction with native contributions whose bias carries the offset. `Gamma` losses report
+  weighted Gamma deviance, which needs strictly positive targets and predictions.
 - **Model identity.** A version-2 feature contract carries an optional model identity:
   algorithm, Haute loss or GLM family, link, variance power, class labels, native feature names,
   and exact engine and Haute versions, all inside the hashed payload. Training always writes
@@ -790,29 +803,6 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   load with a retrain message. The shared MLflow pyfunc and Model Score check a loaded model
   against the identity (its model type, and CatBoost's recorded loss) and fail on a mismatch.
   Only the schema fields are compared against live data.
-
-## Approved change contract — XGBoost family
-
-- **Current limitation.** XGBoost cannot be selected for training; the sandbox allowlist names its
-  scikit-learn wrapper classes only for externally supplied pickles.
-- **Unresolved target.** An `xgboost` algorithm trains a native CPU `hist` booster from a
-  `DMatrix` built with contract-derived categorical codes, sample weights and, for regression
-  offsets, a `base_margin` of the transformed offset at both fit and predict. Early stopping on
-  Haute's validation partition selects `best_iteration` (zero-based) and the saved `.ubj` model is
-  trimmed to `best_iteration + 1` rounds. Contributions come from native `pred_contribs`, whose
-  bias column carries the offset. The [MOD-F00 engine probes](../roadmap/mod-f00-engine-probes.md) record the native behaviour this relies on: a model
-  trained with `base_margin` ignores its fitted `base_score`, category codes are positional, and
-  unseen categories and unknown parameters do not fail natively.
-- **Non-goals.** GPU training, DART, custom objectives, and the scikit-learn wrapper are out of
-  scope.
-- **Failure and compatibility semantics.** A model trained with an offset and scored without one,
-  an unseen category, or an unknown or reserved parameter fails in Haute before the native call.
-- **Acceptance evidence.** Real tiny weighted Poisson, Gamma, Tweedie, squared-error,
-  absolute-error and binary fits; scoring parity across evaluation, save/reload (bit-identical),
-  Model Score, script, MLflow and deployment; contribution sums reproducing the margin within the
-  named bound; a reordered-category scoring frame giving identical predictions through the
-  contract.
-- **Roadmap package.** [MOD-F02](../roadmap/modelling.md#mod-f02--deliver-the-complete-xgboost-slice).
 
 ## Approved change contract — LightGBM family
 

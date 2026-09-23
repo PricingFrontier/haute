@@ -56,6 +56,7 @@ export function effectiveMetrics(config: Record<string, unknown>): string[] {
   }
   if (["poisson", "quasipoisson", "negbinomial"].includes(objective)) return ["gini", "poisson_deviance"]
   if (objective === "tweedie") return ["gini", "tweedie_deviance"]
+  if (objective === "gamma") return ["gini", "gamma_deviance"]
   return ["gini", "rmse"]
 }
 

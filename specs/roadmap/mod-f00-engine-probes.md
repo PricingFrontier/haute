@@ -65,7 +65,7 @@ probe once the dependency change lands.
 | Offset (`base_margin`) | With `base_margin`, XGBoost does not add its fitted `base_score`: margin(with) − margin(without) − log(exposure) is the constant −log(`base_score`). A model trained with an offset must always be scored with one. The response is exp(margin). |
 | Contributions | `pred_contribs` sums to the margin including `base_margin` (the bias column carries it) within 3.4e−7 relative: float32 accumulation, consistent with the plan's 1e−5 bound. |
 | Objective in the artifact | The saved config holds `count:poisson`, so the adapter can check a model's objective against its contract. |
-| Category order | Scoring a frame whose categorical dtype lists the same levels in another order gives different predictions. XGBoost does not re-code by name, so codes must come from the contract's stored level order. |
+| Category order | Scoring a frame whose categorical dtype lists the same levels in another order gives different predictions *for the probe's booster, which is sliced to its best round*. A follow-up check during MOD-F02 found that XGBoost 3.2 re-maps pandas categories by name for an unsliced booster (in memory or reloaded), but `booster[:k]` drops that stored mapping and reads codes positionally. Haute saves early-stopped fits sliced, so codes must come from the contract's stored level order. |
 | Unseen category | No error; a prediction is returned. Haute's domain check must run first. |
 | Unknown parameter | Only a native `WARNING … Parameters: { "not_a_param" } are not used.`; training succeeds. Haute's allowlist must reject it first. |
 | No validation | 17 configured rounds give 17 rounds. |

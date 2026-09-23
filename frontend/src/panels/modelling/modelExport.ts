@@ -7,6 +7,7 @@
 const MODEL_FILE_EXTENSIONS = {
   catboost: ".cbm",
   glm: ".rsglm",
+  xgboost: ".ubj",
 } as const
 
 export type ExportableAlgorithm = keyof typeof MODEL_FILE_EXTENSIONS

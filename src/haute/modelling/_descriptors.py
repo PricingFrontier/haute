@@ -67,7 +67,7 @@ class AlgorithmDescriptor:
     refit_policy: RefitPolicy
     feature_controls: frozenset[FeatureControl]
     suffix: str
-    engine_distribution: str
+    engine_module: str
 
     def __post_init__(self) -> None:
         if not self.suffix.startswith(".") or len(self.suffix) < 2:
@@ -208,7 +208,7 @@ CATBOOST = AlgorithmDescriptor(
     refit_policy="validation_weighted_rounds",
     feature_controls=frozenset({"monotone_constraints", "feature_weights"}),
     suffix=".cbm",
-    engine_distribution="catboost",
+    engine_module="catboost",
 )
 
 GLM = AlgorithmDescriptor(
@@ -227,11 +227,88 @@ GLM = AlgorithmDescriptor(
     refit_policy="none",
     feature_controls=frozenset(),
     suffix=".rsglm",
-    engine_distribution="rustystats",
+    engine_module="rustystats",
+)
+
+XGBOOST = AlgorithmDescriptor(
+    key="xgboost",
+    label="XGBoost",
+    tasks=frozenset({"regression", "classification"}),
+    losses=_losses(
+        regression={
+            "RMSE": NativeLoss("reg:squarederror", "identity"),
+            "MAE": NativeLoss("reg:absoluteerror", "identity"),
+            "Poisson": NativeLoss("count:poisson", "log"),
+            "Gamma": NativeLoss("reg:gamma", "log"),
+            "Tweedie": NativeLoss("reg:tweedie", "log"),
+        },
+        classification={"Logloss": NativeLoss("binary:logistic", "logit")},
+    ),
+    allowed_params=frozenset(
+        {
+            "num_boost_round",
+            "early_stopping_rounds",
+            "eta",
+            "max_depth",
+            "max_leaves",
+            "grow_policy",
+            "min_child_weight",
+            "gamma",
+            "max_delta_step",
+            "subsample",
+            "colsample_bytree",
+            "colsample_bylevel",
+            "colsample_bynode",
+            "lambda",
+            "alpha",
+            "max_bin",
+            "max_cat_to_onehot",
+            "max_cat_threshold",
+        }
+    ),
+    reserved_params=frozenset(
+        {
+            "objective",
+            "tweedie_variance_power",
+            "eval_metric",
+            "base_score",
+            "tree_method",
+            "booster",
+            "device",
+            "nthread",
+            "n_jobs",
+            "seed",
+            "random_state",
+            "enable_categorical",
+            "feature_names",
+            "feature_types",
+            "monotone_constraints",
+            "interaction_constraints",
+            "callbacks",
+            "base_margin",
+        }
+    ),
+    tuning_reserved_params=frozenset({"num_boost_round"}),
+    param_aliases=MappingProxyType(
+        {
+            "learning_rate": "eta",
+            "min_split_loss": "gamma",
+            "reg_lambda": "lambda",
+            "reg_alpha": "alpha",
+            "n_estimators": "num_boost_round",
+        }
+    ),
+    round_key="num_boost_round",
+    round_key_aliases=("num_boost_round",),
+    validation_only_params=("early_stopping_rounds",),
+    refit_policy="validation_weighted_rounds",
+    feature_controls=frozenset({"monotone_constraints"}),
+    suffix=".ubj",
+    engine_module="xgboost",
 )
 
 DESCRIPTORS: Mapping[str, AlgorithmDescriptor] = MappingProxyType(
-    {descriptor.key: descriptor for descriptor in (CATBOOST, GLM)}
+    {descriptor.key: descriptor for descriptor in (CATBOOST, GLM, XGBOOST)}
 )
 
 
@@ -323,6 +400,10 @@ def capability_fixture() -> dict[str, Any]:
             },
             "feature_controls": sorted(descriptor.feature_controls),
             "refit_policy": descriptor.refit_policy,
+            "allowed_params": (
+                sorted(descriptor.allowed_params) if descriptor.allowed_params is not None else None
+            ),
+            "reserved_params": sorted(descriptor.reserved_params),
             "round_key": descriptor.round_key,
             "round_key_aliases": list(descriptor.round_key_aliases),
             "validation_only_params": list(descriptor.validation_only_params),

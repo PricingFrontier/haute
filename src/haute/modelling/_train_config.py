@@ -394,6 +394,8 @@ def default_metrics(
         return ["gini", "poisson_deviance"]
     if objective == "tweedie":
         return ["gini", "tweedie_deviance"]
+    if objective == "gamma":
+        return ["gini", "gamma_deviance"]
     return ["gini", "rmse"]
 
 
@@ -560,6 +562,12 @@ def build_training_job_kwargs(
         validate_glm_params(params)
     else:
         descriptor.validate_params(params)
+        for control in ("monotone_constraints", "feature_weights"):
+            if config.get(control) and control not in descriptor.feature_controls:
+                raise TrainingConfigError(
+                    f"{descriptor.label} does not support {control.replace('_', ' ')}; "
+                    "remove them from the Features pane."
+                )
         loss_function = config.get("loss_function")
         if loss_function:
             try:

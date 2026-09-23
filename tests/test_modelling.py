@@ -1086,7 +1086,7 @@ class TestTrainingJob:
                 name="bad_algo",
                 data=synth_data,
                 target="ClaimCount",
-                algorithm="xgboost",
+                algorithm="lightgbm",
                 output_dir=str(tmp_path),
             )
 

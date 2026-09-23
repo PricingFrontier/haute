@@ -46,6 +46,7 @@ from haute._types import (
     RatingTable,
 )
 from haute.errors import ConfigError
+from haute.modelling._descriptors import DESCRIPTORS
 from haute.modelling._train_config import (
     TrainingConfigError,
     parse_evaluation_config,
@@ -74,7 +75,7 @@ _DISCRIMINANTS = {
     NodeType.DATA_INPUT: ("inputType", {"file", "database", "lakehouse", "databricks", "inline"}),
     NodeType.DATA_OUTPUT: ("outputType", {"file", "database", "lakehouse"}),
     NodeType.MODEL_SCORE: ("sourceType", {"run", "registered"}),
-    NodeType.MODELLING: ("algorithm", {"catboost", "glm"}),
+    NodeType.MODELLING: ("algorithm", set(DESCRIPTORS)),
     NodeType.OPTIMISER: ("mode", {"online", "ratebook"}),
     NodeType.OPTIMISER_APPLY: ("sourceType", {"file", "run", "registered"}),
 }
@@ -562,7 +563,7 @@ def _validator_issues(
         for field in ("target", "algorithm"):
             if not isinstance(config.get(field), str) or not config[field]:
                 issues.append(_issue(field, "required", f"{field} is required."))
-        if config.get("algorithm") in {"catboost", "glm"}:
+        if config.get("algorithm") in DESCRIPTORS:
             objective_problem = training_objective_issue(config)
             if objective_problem:
                 issues.append(_issue("", "incomplete_objective", objective_problem))

@@ -52,6 +52,7 @@ _MINIMIZE_METRICS = frozenset(
         "logloss",
         "poisson_deviance",
         "tweedie_deviance",
+        "gamma_deviance",
     }
 )
 
