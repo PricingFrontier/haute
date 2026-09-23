@@ -531,7 +531,6 @@ def _execute_fast_bundle(bundle: Traversable, manifest: dict[str, object]) -> No
     from haute._input_providers import build_input_snapshot
     from haute._sandbox import _get_project_root, set_project_root
     from haute._source_cache import SourceCacheStore
-    from haute.execution import invalidate_dataframe_execution_cache
     from haute.executor import _preview_cache, execute_graph
     from haute.graph_utils import flatten_graph
     from haute.routes._helpers import parse_pipeline_to_graph
@@ -544,11 +543,10 @@ def _execute_fast_bundle(bundle: Traversable, manifest: dict[str, object]) -> No
         graph = flatten_graph(parse_pipeline_to_graph(destination / str(manifest["source"])))
         original_root = _get_project_root()
         try:
-            # Bundles are independent installed projects. Process-wide preview
-            # and dataframe caches must not carry a same-shaped prior bundle's
+            # Bundles are independent installed projects. The process-wide
+            # preview cache must not carry a same-shaped prior bundle's
             # materialized frames across that project boundary.
             _preview_cache.clear()
-            invalidate_dataframe_execution_cache()
             set_project_root(destination)
             store = SourceCacheStore(destination)
             for node in graph.nodes:
@@ -626,7 +624,6 @@ def _execute_fast_bundle(bundle: Traversable, manifest: dict[str, object]) -> No
                 _verify_fast_dry_run(bundle, destination)
         finally:
             _preview_cache.clear()
-            invalidate_dataframe_execution_cache()
             set_project_root(original_root)
 
 

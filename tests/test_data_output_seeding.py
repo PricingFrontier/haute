@@ -311,8 +311,6 @@ def test_data_output_leaves_no_checkpoint_directory(
 ) -> None:
     import tempfile
 
-    from haute._dataframe_execution_cache import DataFrameExecutionCache
-
     created: list[str] = []
     mkdtemp = tempfile.mkdtemp
 
@@ -321,20 +319,13 @@ def test_data_output_leaves_no_checkpoint_directory(
         created.append(Path(path).name)
         return path
 
-    stored: list[Any] = []
     monkeypatch.setattr(tempfile, "mkdtemp", recording_mkdtemp)
-    monkeypatch.setattr(
-        DataFrameExecutionCache,
-        "store_artifact",
-        lambda self, *args, **kwargs: stored.append(args),
-    )
     _inline_worker(monkeypatch)
 
     write = _write(monkeypatch, _graph(project))
 
     assert write.status_code == 200, write.body
     assert not [name for name in created if name.startswith("haute_sink_")]
-    assert stored == []
 
 
 @pytest.mark.parametrize(

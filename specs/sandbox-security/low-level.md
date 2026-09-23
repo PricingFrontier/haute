@@ -9,7 +9,7 @@
 | `src/haute/_local_security.py` | Local-session protection for the FastAPI/WebSocket server: session-token generation/comparison, exact authority parsing, loopback/forwarded-header middleware, HttpOnly-cookie bootstrap policy, HTTP middleware, and WebSocket pre-accept rejection helper. |
 | `src/haute/_path_resolution.py` | Cross-platform runtime path normalization, project/pipeline candidate resolution, symlink-aware containment, and the context-local execution root shared by eager/lazy builders. |
 | `src/haute/_gitignore_guard.py` | The shared `.gitignore` guard-entry tuple and the idempotent append-if-missing writer (`ensure_gitignore_guards`) used by both `haute init` and the unborn-repo commit seed. |
-| `src/haute/_env.py` | Fail-fast positive numeric environment-variable parsing helpers (`float_env`, `int_env`, `optional_int_env`) used by request-timeout, concurrency, source/dataframe-cache limits, optimiser chunk/partition, solver-timeout, training-history, assistant-loop, execution-admission, and preview/trace cache-budget accessors. Callers choose lazy call-time or deliberate process-wide import-time resolution. Component-owned parsers remain only where positive-numeric semantics do not apply. |
+| `src/haute/_env.py` | Fail-fast positive numeric environment-variable parsing helpers (`float_env`, `int_env`, `optional_int_env`) used by request-timeout, concurrency, source-cache limits, optimiser chunk/partition, solver-timeout, training-history, assistant-loop, execution-admission, and preview/trace cache-budget accessors. Callers choose lazy call-time or deliberate process-wide import-time resolution. Component-owned parsers remain only where positive-numeric semantics do not apply. |
 
 ## Key types and data structures
 

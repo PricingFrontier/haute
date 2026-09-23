@@ -105,10 +105,10 @@ def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return haute_scratch
 
 
-def test_signature_contract_is_the_ninth_checked_consumer() -> None:
+def test_signature_contract_is_the_eighth_checked_consumer() -> None:
     contract = CACHE_CONSUMER_CONTRACTS[CacheConsumer.NODE_SNAPSHOT_SIGNATURE]
 
-    assert len(CacheConsumer) == 9
+    assert len(CacheConsumer) == 8
     assert contract.fields == _SIGNATURE_FIELDS
     assert contract.input_classes[CacheInputClass.ROW_LIMIT].fields == ()
     assert contract.input_classes[CacheInputClass.REQUEST_SHAPE].fields == ()

@@ -46,6 +46,28 @@ def upstream_node_ids(
     return result
 
 
+def upstream_subgraph(graph: PipelineGraph, node_id: str) -> PipelineGraph:
+    """Return *node_id* and everything upstream of it, with the graph's metadata."""
+    from haute._types import PipelineGraph
+
+    if node_id not in graph.node_map:
+        raise ValueError(f"Cannot take the upstream subgraph of unknown node {node_id!r}")
+    included = set(upstream_node_ids(node_id, graph.parents_of)) | {node_id}
+    return PipelineGraph(
+        nodes=[node for node in graph.nodes if node.id in included],
+        edges=[edge for edge in graph.edges if edge.source in included and edge.target in included],
+        pipeline_name=graph.pipeline_name,
+        pipeline_description=graph.pipeline_description,
+        preamble=graph.preamble,
+        preserved_blocks=list(graph.preserved_blocks),
+        source_file=graph.source_file,
+        submodels=graph.submodels,
+        warning=graph.warning,
+        sources=list(graph.sources),
+        active_source=graph.active_source,
+    )
+
+
 def _edge_id(
     source: str,
     target: str,

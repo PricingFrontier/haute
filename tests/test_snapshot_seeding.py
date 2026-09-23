@@ -1473,7 +1473,9 @@ def test_metrics_report_seeds_captures_and_warnings(
     ]
 
 
-def test_plan_is_exclusive_with_a_cache_request(project: Path, store: NodeSnapshotStore) -> None:
+def test_plan_runs_only_the_execution_it_was_resolved_for(
+    project: Path, store: NodeSnapshotStore
+) -> None:
     from haute.executor import _build_node_fn
 
     graph = _join_graph(project)
@@ -1486,8 +1488,6 @@ def test_plan_is_exclusive_with_a_cache_request(project: Path, store: NodeSnapsh
             "prepare_inputs": False,
             "snapshot_plan": plan,
         }
-        with pytest.raises(ValueError, match="replaces the dataframe cache"):
-            execute_lazy_graph(graph, _build_node_fn, dataframe_cache_request=object(), **common)  # type: ignore[arg-type]
         with pytest.raises(ValueError, match="different execution"):
             execute_lazy_graph(graph, _build_node_fn, source="batch", **common)
         with pytest.raises(ValueError, match="different execution"):

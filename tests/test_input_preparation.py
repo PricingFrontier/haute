@@ -1254,7 +1254,7 @@ def test_each_preparation_reason_code_has_its_own_remediation(
     assert "memory" in remediations["memory_limited"]
 
 
-# ------------------------------------- (8) lazy engine and dataframe cache scenarios
+# ------------------------------------------------------ (8) lazy engine scenarios
 
 
 def _sorted_graph(config: dict[str, object]) -> Any:
@@ -1338,67 +1338,6 @@ def test_a_schema_only_lazy_run_never_builds_and_reports_the_missing_snapshot(
         context.release_admission()
 
     assert payload.get("input_preparation") in (None, [])
-
-
-def test_a_warmed_dataframe_cache_returns_the_new_rows_after_a_refresh(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from haute import execution as execution_facade
-    from haute._builders import _build_node_fn
-
-    _project(tmp_path, monkeypatch)
-    path = tmp_path / "rows.csv"
-    pl.DataFrame({"id": [1, 2]}).write_csv(path)
-    graph = _sorted_graph(_csv_config(path))
-    cache = execution_facade.DataFrameExecutionCache(
-        root=tmp_path / "df-cache",
-        max_entries=8,
-        max_bytes=10_000_000,
-    )
-    actions: list[list[str]] = []
-
-    def run() -> pl.DataFrame:
-        context = _context()
-        try:
-            with native_memory_backend_scope("rlimit"):
-                request = execution_facade.build_dataframe_execution_cache_request(
-                    graph,
-                    node_ids={"sorted"},
-                    namespace="input-preparation-test",
-                    source="live",
-                    target_node_id="sorted",
-                    profile=ExecutionProfile.LAZY_SINK,
-                    input_fingerprint=execution_facade.dataframe_graph_input_fingerprint(
-                        graph, target_node_id="sorted", source="live"
-                    ),
-                    cache=cache,
-                )
-                outputs, *_ = execution_facade.execute_lazy_graph(
-                    graph,
-                    _build_node_fn,
-                    target_node_id="sorted",
-                    execution_context=context,
-                    dataframe_cache_request=request,
-                )
-                collected = _collect(outputs["sorted"])
-            actions.append(
-                [entry["action"] for entry in context.metrics_payload()["input_preparation"]]
-            )
-            return collected
-        finally:
-            context.release_admission()
-
-    first = run()
-    assert first["id"].to_list() == [2, 1]
-    pl.DataFrame({"id": [1, 2, 3, 4]}).write_csv(path)
-    second = run()
-
-    assert second["id"].to_list() == [4, 3, 2, 1]
-    assert actions == [["built"], ["refreshed"]]
-
-
-# ------------------------------- (2) preview never prepares an inactive branch
 
 
 def _live_switch_graph(live_config: dict[str, object], batch_config: dict[str, object]) -> Any:

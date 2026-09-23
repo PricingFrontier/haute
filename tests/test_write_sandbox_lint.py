@@ -511,7 +511,6 @@ EXPECTED_VIOLATIONS: dict[str, int] = {
     # runtime census (layer 3 observe mode) is the ground truth for which of
     # these actually escape the sandbox at run time.
     "tests/test_algorithms_coverage.py": 3,
-    "tests/test_dataframe_execution_cache.py": 1,
     "tests/test_deploy.py": 1,
     # The temp directory is created by the code under test
     # (``_batch_scoring.py``'s ``tempfile.mkdtemp``, which takes no ``dir=``),

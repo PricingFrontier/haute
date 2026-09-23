@@ -24,8 +24,6 @@ from haute._cache import (
     validate_cache_config_field_classifications,
 )
 from haute._config_validation import VALID_KEYS
-from haute._dataframe_execution_cache import dataframe_execution_cache_key
-from haute._execution_context import ExecutionProfile
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.execution import dataframe_graph_input_fingerprint
 
@@ -225,7 +223,6 @@ def test_runtime_graph_input_declares_structural_identity_as_a_required_companio
 
     for consumer, structural_field in (
         (CacheConsumer.PREVIEW_TRACE, "nodes"),
-        (CacheConsumer.DATAFRAME_EXECUTION, "lineage_fingerprint"),
         (CacheConsumer.DEPLOY_SCHEMA, "graph_fingerprint"),
     ):
         disposition = CACHE_CONSUMER_CONTRACTS[consumer].input_classes[CacheInputClass.NODE_CONFIG]
@@ -371,25 +368,6 @@ def test_graph_identity_changes_for_execution_label_and_source_location() -> Non
 def test_graph_identity_is_stable_for_presentation_only_changes(changed) -> None:
     graph = _graph()
     assert graph_fingerprint(changed(graph)) == graph_fingerprint(graph)
-
-
-def test_dataframe_identity_consumes_label_and_source_location() -> None:
-    graph = _graph()
-
-    def key(candidate: PipelineGraph):
-        return dataframe_execution_cache_key(
-            candidate,
-            node_id="target",
-            namespace="test",
-            source="live",
-            profile=ExecutionProfile.LAZY_SINK,
-            input_fingerprint="runtime:v1",
-            execution_policy={"target_node_id": "target"},
-        )
-
-    baseline = key(graph)
-    assert key(_replace_node(graph, "target", label="Other target")) != baseline
-    assert key(graph.model_copy(update={"source_file": "other/main.py"})) != baseline
 
 
 @pytest.mark.parametrize(

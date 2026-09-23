@@ -252,9 +252,8 @@ def _disk_cache_root() -> Path:
 # result, and distinct artifacts (including the same run on a different
 # backend) proceed concurrently.
 #
-# ``WeakValueDictionary`` + guard mirrors the per-key materialization
-# lock in ``_dataframe_execution_cache``: entries evaporate once no
-# caller holds the lock, so the table never grows unboundedly.
+# ``WeakValueDictionary`` + guard: entries evaporate once no caller
+# holds the lock, so the table never grows unboundedly.
 _artifact_io_locks: WeakValueDictionary[tuple[str, str, str], threading.RLock] = (
     WeakValueDictionary()
 )

@@ -13714,7 +13714,6 @@ class TestExecutePipelineExtended:
         tmp_path,
         monkeypatch,
     ):
-        import haute.execution as execution
         from haute._sandbox import set_project_root
         from haute.executor import _compile_preamble, execute_graph
         from haute.routes._job_store import JobStore
@@ -13810,7 +13809,6 @@ class TestExecutePipelineExtended:
                 )
                 assert outputs_2["t"].collect()["v"][0] == 200
         finally:
-            execution.invalidate_dataframe_execution_cache()
             _compile_preamble.cache_clear()
 
     def test_execute_pipeline_reuses_namespace_when_helper_is_unchanged(
@@ -13818,7 +13816,6 @@ class TestExecutePipelineExtended:
         tmp_path,
         monkeypatch,
     ):
-        import haute.execution as execution
         from haute._sandbox import set_project_root
         from haute.executor import _compile_preamble
         from haute.routes._job_store import JobStore
@@ -13911,7 +13908,6 @@ class TestExecutePipelineExtended:
             assert val_1 == val_2 == 10
             assert _compile_preamble.cache_info().hits > initial_hits
         finally:
-            execution.invalidate_dataframe_execution_cache()
             _compile_preamble.cache_clear()
 
 

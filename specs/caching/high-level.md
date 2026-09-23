@@ -2,20 +2,20 @@
 
 ## Purpose
 
-Caching avoids repeated graph hashing, artifact loading, dataframe execution, and JSON
+Caching avoids repeated graph hashing, artifact loading, upstream execution, and JSON
 shredding while preserving correctness when configuration or backing files change.
 Cache identities are explicit, versioned contracts rather than ad-hoc object hashes.
 
 ## Scope
 
 In scope are canonical JSON and checked cache-input contracts, graph and lineage keys,
-bounded in-process LRU/stat-gated caches, Parquet-backed dataframe execution artifacts,
+bounded in-process LRU/stat-gated caches, the shared node-output snapshot layer and its seed plans,
 JSON-to-Parquet cache routes, and data points: the mapping from a consumer node to the
 data it reads and leased reads of that data.
 
 The [IO layer](../io-layer/high-level.md) primarily owns shared source-cache storage;
 caching consumes its identity/generation contract. Execution owns runtime-path
-fingerprint call sites and the temporary dataframe-cache root lifecycle. JSON shredding
+fingerprint call sites. JSON shredding
 owns the per-port transformation and metadata format.
 
 ## Behaviour
@@ -26,9 +26,9 @@ defined by their checked consumer contract. Presentation-only fields are explici
 classified and excluded. `lineage_cache_key()` is the common preview/trace factory; callers
 do not key directly from `graph_fingerprint()` alone.
 
-Nine maintained consumers — graph structure, graph execution, preview/trace,
-dataframe execution, runtime graph input, deploy schema, model contract, input
-snapshot, and node-snapshot signature — each declare one complete versioned field set.
+Eight maintained consumers — graph structure, graph execution, preview/trace,
+runtime graph input, deploy schema, model contract, input snapshot, and
+node-snapshot signature — each declare one complete versioned field set.
 The node-snapshot signature identifies the data at a pipeline point independently of
 any consumer: upstream lineage, runtime inputs, source, execution semantics class,
 contract enforcement, preamble presence, and execution semantics version. Every logical
@@ -64,16 +64,6 @@ final collection, and a spawned child reads exactly the generation its parent le
 oversized value leaves an existing same-key entry intact. `StatGatedCache` is bounded by an
 entry count, uses `(mtime_ns, size)` gates, provides per-key single flight, and evicts least
 recently used entries.
-
-The dataframe execution cache stores validated Parquet artifacts. Independent hits validate
-the artifact before returning a scan. The writer's first consume uses
-`scan_stored_entry()` for the exact entry just validated and stored, deliberately avoiding a
-second corruption validation. Live scans pin artifacts; replacement or eviction unlinks
-only after the final scan releases them.
-
-An oversized dataframe artifact is rejected without evicting or unlinking an existing
-same-key entry. The newly produced oversized path is the caller's responsibility and is
-cleaned by the materialization wrapper.
 
 Structured API-input cache build (implemented by the `json_cache` route module) accepts
 JSON, JSONL, NDJSON, and XML sources. It selects and validates schema before checking data-file existence, so an
@@ -131,14 +121,12 @@ bounded execution (training preparation and its evaluation preview, optimiser se
 auto-range, Data Output runs), every explicit node-data build, and every admitted preview reads
 the node-output snapshots that already cover what it needs and writes the full-data
 materialisations it performs — for a preview, its joins and materialising operations — instead
-of recomputing upstream work or writing temporary checkpoints and private dataframe-cache
-entries. A preview therefore starts from what a run or build materialised, and a run from what
+of recomputing upstream work or writing temporary checkpoints. A preview therefore starts from what a run or build materialised, and a run from what
 a preview did. A trace reads exactly the generations the preview it explains read and writes
 none. A preview whose lineage is not admitted — an API Input in it reads a flat file that a
 schema-only bounded read refuses — neither reads nor writes the layer. The preview/trace
 runtime input fingerprint carries the generations a preview or trace seeds from; the preview
-response cache's field set, stat-gated caches, and deploy scoring's process-local dataframe
-cache are otherwise independent of the layer. The execution engine specifies the seed plan
+response cache's field set and stat-gated caches are otherwise independent of the layer. The execution engine specifies the seed plan
 that governs this.
 Analysis results are stored by point identity and data version, so a refreshed or widened
 generation never serves a previous generation's results.
@@ -150,14 +138,10 @@ allow intentional invalidation. LRU and byte bounds prevent process caches becom
 unbounded. Stat gates avoid hashing/loading unchanged artifacts while accepting the
 documented limitation that same-size, same-mtime rewrites are below the gate.
 
-Parquet artifacts move large dataframe values out of Python memory. Separate ordinary-hit
-and first-consume paths preserve both corruption detection and the atomic store-to-first-scan
-window.
-
 ## Interactions
 
 - [Execution engine](../execution-engine/high-level.md), tracing, and executor construct
-  lineage requests and own temporary execution-cache roots.
+  lineage requests.
 - [IO layer](../io-layer/high-level.md) consumes canonical identity helpers and owns
   `_source_cache.py`.
 - Deploy scoring and modelling feature contracts instantiate `StatGatedCache`; `src/haute/_cache.py`
@@ -170,11 +154,9 @@ window.
 
 Unknown/missing checked inputs and unclassified config fields fail key construction.
 Stat/loader errors propagate and failed values are not cached; a gate that moves twice
-during load raises. Missing/corrupt dataframe artifacts are evicted on ordinary lookup and
-reported as misses, while unexpected filesystem unlink failures propagate.
+during load raises.
 
-Oversized dataframe artifacts raise `CacheArtifactTooLargeError` without disturbing a
-previous same-key entry. JSON schema and parse failures return structured 4xx responses;
+JSON schema and parse failures return structured 4xx responses;
 source modification during build or stopped workers return 409; memory-limit exhaustion,
 unsupported caps, and admission rejections return 507; timeouts return 504; unexpected
 failures are logged and return a generic 500.

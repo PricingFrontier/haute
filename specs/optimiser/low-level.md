@@ -184,7 +184,7 @@ input, or the streaming path's base below the scenario expander — carries what
 there, and the following solve (and the input estimate, which reads the data input with the
 solve's columns) seeds instead of recomputing. A node the solve reads whole carries no demand
 and is not widened. Auto-range uses that same `_execute_pipeline` boundary and request context;
-there is no second planning policy or private dataframe-cache namespace.
+there is no second planning policy.
 
 Every failure mode in this thread (cancellation, `HTTPException`, memory-admission error,
 bounded-streaming-unsupported error, or a bare exception) is mapped to a terminal job-store
@@ -839,7 +839,7 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   does the same at its pre-expansion base, so the solve seeds the base and builds nothing above
   it; the input estimate seeds
   setup's capture; and a real solve, auto-range, and estimate through the routes create no
-  checkpoint directory and no dataframe-cache entry.
+  checkpoint directory.
 - **`tests/test_optimiser_service_validation.py`** — focused unit tests for
   `_validate_and_project`'s non-finite/overflow/null-quote-id detection (including float64→
   float32 overflow rejection) and end-to-end single-/multi-quote real-solver lifecycle tests
