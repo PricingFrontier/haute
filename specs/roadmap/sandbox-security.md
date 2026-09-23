@@ -18,29 +18,37 @@ These packages come from the
 ## Planned improvements
 
 ### SBX-R01 — One path-containment check
-**Why:** Containment is implemented five times. The two general checks are
-equivalent in practice: the route helper `validate_safe_path` resolves both
-paths and uses `Path.is_relative_to`, and `validate_project_path` resolves and
-compares `normcase`-folded paths with `commonpath`. Both resolve first, so
-`..` segments and symlinks are collapsed before the comparison and neither
+**Why:** Containment is implemented five times. The two general checks make
+the same containment comparison: the route helper `validate_safe_path`
+resolves both paths and uses `Path.is_relative_to`, and `validate_project_path`
+resolves and compares `normcase`-folded paths with `commonpath`. Both compare
+resolved paths, so `..` segments and symlinks are collapsed first and neither
 lets an escape through, and `normcase` folds case only on Windows, where
 `Path` comparison is already case-insensitive. `validate_project_path`'s
 docstring nevertheless justifies its comparison with a case-variant bypass
-that cannot happen for resolved paths. `validate_safe_path` raises an
+that cannot happen for resolved paths. They differ in one guard:
+`validate_safe_path` first refuses an absolute input that is lexically
+outside the project, before resolving it, so an absolute path that only
+resolves back inside (`<outside>/../<project>/file`) is refused there and
+accepted by `validate_project_path`. `validate_safe_path` also raises an
 `HTTPException` from a helper. `safe_path` and the JSON-cache publication code
 check symlinks and Windows junctions themselves, and the save service splits
 path parts to reject traversal on its own. No escape is known; the cost is
 five places to keep a security check right.
 
 **Plan:** Keep one containment function that resolves and then compares
-common paths, with its case and symlink or reparse-point policy stated. It
-raises a domain error that the route layer maps to 400 or 403. Route every
-caller through it and correct the docstring's rationale.
+common paths, with its case and symlink or reparse-point policy stated.
+Decide whether the unresolved absolute-path guard stays, and state the
+decision, so no former caller changes behaviour silently. The function raises
+a domain error that the route layer maps to 400 or 403. Route every caller
+through it and correct the docstring's rationale.
 
 **Acceptance:** One containment implementation remains; under test, on every
 former caller's route, a `..` escape and a symlink escape are rejected and an
-in-project path is accepted; the sandbox-security specification states the
-case and link policy; the path-traversal suites pass.
+in-project path is accepted; an absolute input that only resolves back inside
+the project is treated as the specification states; the sandbox-security
+specification states the case, link and absolute-input policy; the
+path-traversal suites pass.
 
 **Dependencies:** `API-R01` (server API) maps the domain error.
 

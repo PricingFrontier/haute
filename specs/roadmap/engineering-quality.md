@@ -52,8 +52,10 @@ exports stay visible.
 unreferenced production code beyond a reviewed allowlist; the training facade
 is gone; tests import the owning modules.
 
-**Dependencies:** `CACHE-S23` (caching) and `EXEC-R03` (execution engine)
-remove the larger dead blocks.
+**Dependencies:** None. `CACHE-S23` (caching) removes the dead dataframe
+cache, and `EXEC-R03` (execution engine) removes the chunked runner if
+`OPT-P15` retires its consumer; this package does not wait for either, and
+the reviewed allowlist covers the runner while it remains live.
 
 **Evidence:** `src/haute/_execution_context.py::ensure_execution_context`;
 `src/haute/_rating.py::_rating_table_materialises`;
