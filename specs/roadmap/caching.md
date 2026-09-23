@@ -370,9 +370,11 @@ store on every store construction, and a preview builds several. The store-walk
 half this package once planned is obsolete. It kept byte and generation totals
 in a store-level summary, with intent records for crash recovery, so that
 publication could admit against the cache budgets without walking every
-generation. The budgets are removed, publication no longer admits against
-totals or looks for eviction candidates, and only the on-demand cache
-inventory walks the store.
+generation. The budgets are removed, and publication no longer walks the
+store to admit against totals or look for eviction candidates. Two walks
+remain: the on-demand cache inventory, and the stale-staging cleanup, which
+globs every identity's staging directories and walks each one it finds on
+every store construction.
 
 **Plan:** Keep one prepared graph and its structural facts (order, effective
 edges, pass-through edges, materialising operators, projection inputs) across
@@ -381,8 +383,11 @@ identity is recomputed after any preparation, because a signature signs the
 input generations preparation may have moved; derive per-node lineage
 fingerprints from one canonical-graph pass memoised by node id within a
 single resolution. Have the verified-generation memo cover the footer and
-schema checks, so a lease validates each part once per process. At the
-once-per-process cleanup, sweep token files whose process is dead and
+schema checks, so a lease validates each part once per process. Count the
+stale-staging cleanup in the per-preview store operations, and if it shows,
+run it at most once per interval per process, as the retired-directory sweep
+already runs once per process. At the once-per-process cleanup, sweep token
+files whose process is dead and
 publication lock files whose identity no longer exists. Remove a lock file
 only under a protocol that cannot leave two processes holding different files
 for one identity, and state that protocol in the IO-layer specification.
@@ -408,7 +413,7 @@ none of this changes what is read or written.
 `open_resolved_seed_plan`, `_open_preview_seed_plan`);
 `src/haute/_node_snapshots.py` (`__init__`, `_cleanup_retired`,
 `_publication_lock`); `src/haute/_source_cache.py` (`_own_token`,
-`_metadata_from_path`); `tests/test_seed_plans.py` (prepared-signature
+`_metadata_from_path`, `_cleanup_stale_staging`); `tests/test_seed_plans.py` (prepared-signature
 regression).
 
 ### CACHE-S18 — Bounded scans in full and cross joins
