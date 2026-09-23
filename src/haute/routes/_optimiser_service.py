@@ -61,12 +61,10 @@ from haute._graph_utils import (
 )
 from haute._logging import get_logger
 from haute._polars_utils import (
-    DEFAULT_STREAMING_CHUNK_SIZE,
     bounded_collect_batches,
     bounded_sink,
     read_parquet_metadata,
     streaming_collect,
-    temporary_streaming_chunk_size,
 )
 from haute._rating import (
     normalise_rating_key,
@@ -1611,8 +1609,6 @@ def _persist_ratebook_factors_artifact(factors_df: Any) -> dict[str, Any] | None
 
 def _persist_ratebook_factors_lazy_artifact(
     factors_lf: Any,
-    *,
-    streaming_chunk_size: int | None = None,
 ) -> dict[str, Any]:
     """Persist projected ratebook factors without collecting them into memory."""
     artifact_dir = create_owned_artifact_directory(
@@ -1625,7 +1621,6 @@ def _persist_ratebook_factors_lazy_artifact(
         bounded_sink(
             factors_lf,
             artifact_path,
-            streaming_chunk_size=streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE,
         )
         metadata = read_parquet_metadata(artifact_path)
         row_count = int(metadata["row_count"])
@@ -2007,7 +2002,6 @@ class _ScenarioFrontierRangeAccumulator:
         *,
         check_cancelled: Callable[[], None] | None = None,
         execution_context: ExecutionContext | None = None,
-        streaming_chunk_size: int | None = None,
     ) -> dict[str, dict[str, float]]:
         import polars as pl
 
@@ -2038,12 +2032,10 @@ class _ScenarioFrontierRangeAccumulator:
                     .agg(self.combine_exprs)
                     .select(self.bucket_total_exprs)
                 )
-                chunk_size = streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
-                with temporary_streaming_chunk_size(chunk_size):
-                    bucket_totals = streaming_collect(
-                        bucket_totals_lf,
-                        execution_context=execution_context,
-                    )
+                bucket_totals = streaming_collect(
+                    bucket_totals_lf,
+                    execution_context=execution_context,
+                )
             if execution_context is not None:
                 execution_context.checkpoint(label="frontier_range_bucket_done")
             if bucket_totals.height != 1:
@@ -2087,7 +2079,6 @@ class FrontierAutoRangeContext:
     chunk_size: int = dataclasses.field(default_factory=_default_auto_range_chunk_size)
     partition_count: int = dataclasses.field(default_factory=_default_auto_range_partitions)
     execution_context: ExecutionContext | None = None
-    streaming_chunk_size: int | None = None
 
 
 def _estimate_scenario_frontier_ranges(
@@ -2116,7 +2107,6 @@ def _estimate_scenario_frontier_ranges(
     chunk_size = _positive_int(ctx.chunk_size, field="chunk_size")
     partition_count = _positive_int(ctx.partition_count, field="partition_count")
     execution_context = ctx.execution_context
-    streaming_chunk_size = ctx.streaming_chunk_size
     selected_lf = scored_lf.select(
         [
             pl.col(quote_id_col).cast(pl.String).alias(quote_id_col),
@@ -2132,30 +2122,27 @@ def _estimate_scenario_frontier_ranges(
             parts_root=Path(raw_dir),
         )
         # ``chunk_size`` is the per-batch row count for the auto-range reducer;
-        # ``streaming_chunk_size`` is the ambient Polars streaming chunk size
-        # that drives the underlying batched scan/collect pipeline.
-        with temporary_streaming_chunk_size(streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE):
-            for batch_index, batch in enumerate(
-                bounded_collect_batches(
-                    selected_lf,
-                    chunk_size=chunk_size,
-                    maintain_order=False,
-                    execution_context=execution_context,
-                    stage_name="frontier_range_collect_batch",
-                )
-            ):
-                if check_cancelled is not None:
-                    check_cancelled()
-                _add_frontier_range_batch(
-                    accumulator,
-                    batch,
-                    batch_index=batch_index,
-                    execution_context=execution_context,
-                )
+        # the underlying scan and collect stream at the process chunk size.
+        for batch_index, batch in enumerate(
+            bounded_collect_batches(
+                selected_lf,
+                chunk_size=chunk_size,
+                maintain_order=False,
+                execution_context=execution_context,
+                stage_name="frontier_range_collect_batch",
+            )
+        ):
+            if check_cancelled is not None:
+                check_cancelled()
+            _add_frontier_range_batch(
+                accumulator,
+                batch,
+                batch_index=batch_index,
+                execution_context=execution_context,
+            )
         return accumulator.finish(
             check_cancelled=check_cancelled,
             execution_context=execution_context,
-            streaming_chunk_size=streaming_chunk_size,
         )
 
 
@@ -2337,8 +2324,6 @@ def _ratebook_factor_table_sort_key(
 def _ratebook_factor_level_counts(
     factors_df: Any | None,
     factor_columns: list[list[str]] | None,
-    *,
-    streaming_chunk_size: int | None = None,
 ) -> dict[str, dict[str, int]]:
     """Count quote exposure for each ratebook factor level.
 
@@ -2371,9 +2356,7 @@ def _ratebook_factor_level_counts(
         table_name = _ratebook_factor_table_name(columns)
         grouped = factors_df.group_by(columns).agg(pl.len().alias("quote_count"))
         if is_lazy:
-            chunk_size = streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
-            with temporary_streaming_chunk_size(chunk_size):
-                count_rows = streaming_collect(grouped).to_dicts()
+            count_rows = streaming_collect(grouped).to_dicts()
         else:
             count_rows = grouped.to_dicts()
         table_counts: dict[str, int] = {}
@@ -2430,14 +2413,11 @@ def _ratebook_factor_dtypes(
 def _ratebook_factor_level_counts_from_artifact(
     handle: dict[str, Any],
     factor_columns: list[list[str]] | None,
-    *,
-    streaming_chunk_size: int | None = None,
 ) -> dict[str, dict[str, int]]:
     """Count ratebook factor levels from the persisted factor artifact lazily."""
     return _ratebook_factor_level_counts(
         _scan_ratebook_factors_artifact(handle),
         factor_columns,
-        streaming_chunk_size=streaming_chunk_size,
     )
 
 
@@ -2954,7 +2934,6 @@ class SolveContext:
     mode: str
     store: JobStore | None = None
     execution_context: ExecutionContext | None = None
-    streaming_chunk_size: int | None = None
     setup_singleflight_key: tuple[str, str, str] | None = None
     registration_already_active: bool = False
     start_time: float | None = None
@@ -2977,7 +2956,6 @@ def _solve_ratebook(
         raise RuntimeError("_solve_ratebook requires SolveContext.store to be set.")
     store = ctx.store
     job_id = ctx.job_id
-    streaming_chunk_size = ctx.streaming_chunk_size
     check_cancelled = ctx.check_cancelled
     if ctx.start_time is None:
         raise RuntimeError("_solve_ratebook requires SolveContext.start_time to be set.")
@@ -3047,7 +3025,6 @@ def _solve_ratebook(
     factor_level_counts = _ratebook_factor_level_counts_from_artifact(
         ratebook_factors_handle,
         factor_columns_valid,
-        streaming_chunk_size=streaming_chunk_size,
     )
     factor_dtypes = _ratebook_factor_dtypes_from_artifact(
         ratebook_factors_handle,
@@ -3295,7 +3272,6 @@ class OptimiserSolveService:
                     config,
                     job_id,
                     execution_context=execution_context,
-                    streaming_chunk_size=body.streaming_chunk_size,
                 )
                 self._raise_if_solve_stopped(job_id, execution_context=execution_context)
                 ratebook_factors_handle = self._extract_factors(
@@ -3305,7 +3281,6 @@ class OptimiserSolveService:
                     config,
                     mode,
                     execution_context=execution_context,
-                    streaming_chunk_size=body.streaming_chunk_size,
                 )
                 self._raise_if_solve_stopped(job_id, execution_context=execution_context)
                 del lazy_outputs
@@ -3318,7 +3293,6 @@ class OptimiserSolveService:
                     body.node_id,
                     job_id,
                     execution_context=execution_context,
-                    streaming_chunk_size=body.streaming_chunk_size,
                 )
                 self._raise_if_solve_stopped(job_id, execution_context=execution_context)
                 self._record_execution_metrics(job_id, execution_context)
@@ -3328,7 +3302,6 @@ class OptimiserSolveService:
                         node_id=body.node_id,
                         mode=mode,
                         execution_context=execution_context,
-                        streaming_chunk_size=body.streaming_chunk_size,
                         setup_singleflight_key=setup_job_key,
                         registration_already_active=True,
                     ),
@@ -4092,7 +4065,6 @@ class OptimiserSolveService:
                         chunk_size=chunk_size,
                         partition_count=partition_count,
                         execution_context=execution_context,
-                        streaming_chunk_size=body.streaming_chunk_size,
                     ),
                     scored_lf=scored_lf,
                     quote_id_col=str(config.get("quote_id", "quote_id")),
@@ -4351,7 +4323,6 @@ class OptimiserSolveService:
                         start_frame=(
                             base_lf if isinstance(base_lf, pl.LazyFrame) else base_lf.lazy()
                         ),
-                        streaming_chunk_size=body.streaming_chunk_size,
                     )
                 )
                 for chunk in chunk_batches:
@@ -4369,18 +4340,15 @@ class OptimiserSolveService:
                         "frontier_stream_score_collect",
                         node_id=streaming_plan.scenario_node_id,
                     ):
-                        with temporary_streaming_chunk_size(
-                            body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
-                        ):
-                            batch = streaming_collect(
-                                scored_lf.select(
-                                    [
-                                        pl.col(qid_col).cast(pl.String).alias(qid_col),
-                                        *[pl.col(cname) for cname in constraint_cols],
-                                    ]
-                                ),
-                                execution_context=execution_context,
-                            )
+                        batch = streaming_collect(
+                            scored_lf.select(
+                                [
+                                    pl.col(qid_col).cast(pl.String).alias(qid_col),
+                                    *[pl.col(cname) for cname in constraint_cols],
+                                ]
+                            ),
+                            execution_context=execution_context,
+                        )
                     self._raise_if_frontier_auto_range_stopped(job_id)
                     _add_frontier_range_batch(
                         accumulator,
@@ -4413,7 +4381,6 @@ class OptimiserSolveService:
                 ranges = accumulator.finish(
                     check_cancelled=lambda: self._raise_if_frontier_auto_range_stopped(job_id),
                     execution_context=execution_context,
-                    streaming_chunk_size=body.streaming_chunk_size,
                 )
                 self._raise_if_frontier_auto_range_stopped(job_id)
                 response_ranges = {
@@ -4725,75 +4692,73 @@ class OptimiserSolveService:
                 or None
             )
 
-            chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
-            with temporary_streaming_chunk_size(chunk_size):
-                execution_target_node_id = target_node_id or _setup_execution_target_node_id(
-                    body.graph, body.node_id
+            execution_target_node_id = target_node_id or _setup_execution_target_node_id(
+                body.graph, body.node_id
+            )
+            preserved_node_ids = _optimiser_side_input_ids(body.graph, body.node_id)
+            # Every node setup reads afterwards: an explicit target alone;
+            # otherwise the resolved execution target (an Optimiser resolves
+            # to its data input) and each banding side input from its own
+            # edges that the run executes, API inputs included. The plan
+            # decides separately which of them it can capture.
+            consumed_node_ids: tuple[str, ...] = (execution_target_node_id,)
+            if target_node_id is None:
+                target_lineage = set(
+                    upstream_node_ids(execution_target_node_id, body.graph.parents_of)
                 )
-                preserved_node_ids = _optimiser_side_input_ids(body.graph, body.node_id)
-                # Every node setup reads afterwards: an explicit target alone;
-                # otherwise the resolved execution target (an Optimiser resolves
-                # to its data input) and each banding side input from its own
-                # edges that the run executes, API inputs included. The plan
-                # decides separately which of them it can capture.
-                consumed_node_ids: tuple[str, ...] = (execution_target_node_id,)
-                if target_node_id is None:
-                    target_lineage = set(
-                        upstream_node_ids(execution_target_node_id, body.graph.parents_of)
+                consumed_node_ids += tuple(sorted(preserved_node_ids & target_lineage))
+            # Auto-range captures, at whichever nodes it captures, the
+            # columns the following solve reads there — the data input, or
+            # the streaming base below the scenario expander — so the solve
+            # seeds instead of recomputing. A column a node does not produce
+            # is simply not captured.
+            capture_columns_by_node: Mapping[str, frozenset[str]] = {}
+            if (
+                execution_context is not None
+                and execution_context.profile == ExecutionProfile.AUTO_RANGE
+            ):
+                optimiser_node = _find_optimiser_node(body.graph, body.node_id)
+                if str(optimiser_node.data.config.get("mode", "online")) in {
+                    "online",
+                    "ratebook",
+                }:
+                    capture_columns_by_node = _solve_columns_by_node(
+                        body.graph,
+                        body.node_id,
+                        optimiser_node.data.config,
+                        source=scenario,
                     )
-                    consumed_node_ids += tuple(sorted(preserved_node_ids & target_lineage))
-                # Auto-range captures, at whichever nodes it captures, the
-                # columns the following solve reads there — the data input, or
-                # the streaming base below the scenario expander — so the solve
-                # seeds instead of recomputing. A column a node does not produce
-                # is simply not captured.
-                capture_columns_by_node: Mapping[str, frozenset[str]] = {}
-                if (
-                    execution_context is not None
-                    and execution_context.profile == ExecutionProfile.AUTO_RANGE
-                ):
-                    optimiser_node = _find_optimiser_node(body.graph, body.node_id)
-                    if str(optimiser_node.data.config.get("mode", "online")) in {
-                        "online",
-                        "ratebook",
-                    }:
-                        capture_columns_by_node = _solve_columns_by_node(
-                            body.graph,
-                            body.node_id,
-                            optimiser_node.data.config,
-                            source=scenario,
-                        )
-                plan = resources.enter_context(
-                    open_seed_plan(
-                        SeedPlanRequest(
-                            graph=body.graph,
-                            target_node_id=execution_target_node_id,
-                            source=scenario,
-                            profile=(
-                                execution_context.profile
-                                if execution_context is not None
-                                else ExecutionProfile.LAZY_SINK
-                            ),
-                            consumed_node_ids=consumed_node_ids,
-                            required_columns_by_node=required_columns_by_node,
-                            capture_columns_by_node=capture_columns_by_node,
+            plan = resources.enter_context(
+                open_seed_plan(
+                    SeedPlanRequest(
+                        graph=body.graph,
+                        target_node_id=execution_target_node_id,
+                        source=scenario,
+                        profile=(
+                            execution_context.profile
+                            if execution_context is not None
+                            else ExecutionProfile.LAZY_SINK
                         ),
-                        execution_context=execution_context,
-                    )
-                )
-                lazy_outputs, *_ = execute_lazy_graph(
-                    body.graph,
-                    _build_node_fn,
-                    target_node_id=execution_target_node_id,
-                    preamble_ns=preamble_ns,
-                    source=scenario,
-                    enforce_contracts=True,
-                    preserve_node_ids=preserved_node_ids,
-                    required_columns_by_node=required_columns_by_node,
+                        consumed_node_ids=consumed_node_ids,
+                        required_columns_by_node=required_columns_by_node,
+                        capture_columns_by_node=capture_columns_by_node,
+                    ),
                     execution_context=execution_context,
-                    prepare_inputs=False,
-                    snapshot_plan=plan,
                 )
+            )
+            lazy_outputs, *_ = execute_lazy_graph(
+                body.graph,
+                _build_node_fn,
+                target_node_id=execution_target_node_id,
+                preamble_ns=preamble_ns,
+                source=scenario,
+                enforce_contracts=True,
+                preserve_node_ids=preserved_node_ids,
+                required_columns_by_node=required_columns_by_node,
+                execution_context=execution_context,
+                prepare_inputs=False,
+                snapshot_plan=plan,
+            )
             return lazy_outputs
         except HTTPException:
             raise
@@ -4927,7 +4892,6 @@ class OptimiserSolveService:
         *,
         validate_quote_id_nulls: bool = True,
         execution_context: ExecutionContext | None = None,
-        streaming_chunk_size: int | None = None,
     ) -> tuple[list[str], Any]:
         """Validate columns and build the projection for the solver.
 
@@ -4992,7 +4956,6 @@ class OptimiserSolveService:
                 finite_columns=[objective, mult_col, step_col, *constraint_cols],
                 cast_to_float32_columns={objective, mult_col, *constraint_cols},
                 execution_context=execution_context,
-                streaming_chunk_size=streaming_chunk_size,
                 profile=ExecutionProfile.OPTIMISER_SETUP,
             )
 
@@ -5024,7 +4987,6 @@ class OptimiserSolveService:
         finite_columns: Iterable[str],
         cast_to_float32_columns: Iterable[str],
         execution_context: ExecutionContext | None,
-        streaming_chunk_size: int | None,
         profile: ExecutionProfile,
     ) -> None:
         finite_columns = list(finite_columns)
@@ -5040,12 +5002,10 @@ class OptimiserSolveService:
         if not validation_exprs:
             return
 
-        chunk_size = streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
-        with temporary_streaming_chunk_size(chunk_size):
-            validation_counts = streaming_collect(
-                source_lf.select(validation_exprs),
-                execution_context=execution_context,
-            )
+        validation_counts = streaming_collect(
+            source_lf.select(validation_exprs),
+            execution_context=execution_context,
+        )
         if validate_quote_id_nulls:
             null_count = int(validation_counts.get_column(_QUOTE_ID_NULL_COUNT_ALIAS).item())
             if null_count > 0:
@@ -5143,7 +5103,6 @@ class OptimiserSolveService:
             finite_columns=value_check_cols,
             cast_to_float32_columns=value_check_cols,
             execution_context=execution_context,
-            streaming_chunk_size=None,
             profile=ExecutionProfile.AUTO_RANGE,
         )
 
@@ -5163,7 +5122,6 @@ class OptimiserSolveService:
         mode: str,
         *,
         execution_context: ExecutionContext | None = None,
-        streaming_chunk_size: int | None = None,
     ) -> Any:
         """Extract ratebook factors DataFrame (None for online mode)."""
         import polars as pl
@@ -5239,7 +5197,6 @@ class OptimiserSolveService:
 
             handle = _persist_ratebook_factors_lazy_artifact(
                 projected,
-                streaming_chunk_size=streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE,
             )
             if int(handle["row_count"]) == 0:
                 _cleanup_orphan_apply_result_artifact(
@@ -5277,7 +5234,6 @@ class OptimiserSolveService:
         job_id: str,
         *,
         execution_context: ExecutionContext | None = None,
-        streaming_chunk_size: int | None = None,
     ) -> QuoteGrid:
         """Sink scored data to parquet and build the QuoteGrid."""
         from price_contour import build_grid_from_parquet_chunked
@@ -5305,7 +5261,6 @@ class OptimiserSolveService:
                     bounded_sink(
                         scored_lf,
                         tmp_path,
-                        streaming_chunk_size=streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE,
                     )
                 del scored_lf
 
@@ -5431,7 +5386,6 @@ class OptimiserSolveService:
         job_id = ctx.job_id
         node_id = ctx.node_id
         mode = ctx.mode
-        streaming_chunk_size = ctx.streaming_chunk_size
         setup_singleflight_key = ctx.setup_singleflight_key
         execution_context = ctx.execution_context
 
@@ -5485,43 +5439,40 @@ class OptimiserSolveService:
                 if progress_job is None:
                     logger.info("solve_start_skipped", job_id=job_id, expected_status="running")
                     return
-                with temporary_streaming_chunk_size(
-                    streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
-                ):
-                    if mode == "ratebook":
-                        with execution_context.stage("optimiser_solver_solve", node_id=node_id):
-                            solve_ctx = dataclasses.replace(
-                                ctx,
-                                store=self._store,
-                                start_time=start_time,
-                                check_cancelled=lambda: self._raise_if_solve_stopped(
-                                    job_id,
-                                    execution_context=execution_context,
-                                ),
-                            )
-                            _solve_ratebook(
-                                solve_ctx,
-                                quote_grid=quote_grid,
-                                config=config,
-                                ratebook_factors_handle=ratebook_factors_handle,
-                                factor_level_order=factor_level_order,
-                            )
-                    else:
-                        with execution_context.stage("optimiser_solver_solve", node_id=node_id):
-                            solve_ctx = dataclasses.replace(
-                                ctx,
-                                store=self._store,
-                                start_time=start_time,
-                                check_cancelled=lambda: self._raise_if_solve_stopped(
-                                    job_id,
-                                    execution_context=execution_context,
-                                ),
-                            )
-                            _solve_online(
-                                solve_ctx,
-                                quote_grid=quote_grid,
-                                config=config,
-                            )
+                if mode == "ratebook":
+                    with execution_context.stage("optimiser_solver_solve", node_id=node_id):
+                        solve_ctx = dataclasses.replace(
+                            ctx,
+                            store=self._store,
+                            start_time=start_time,
+                            check_cancelled=lambda: self._raise_if_solve_stopped(
+                                job_id,
+                                execution_context=execution_context,
+                            ),
+                        )
+                        _solve_ratebook(
+                            solve_ctx,
+                            quote_grid=quote_grid,
+                            config=config,
+                            ratebook_factors_handle=ratebook_factors_handle,
+                            factor_level_order=factor_level_order,
+                        )
+                else:
+                    with execution_context.stage("optimiser_solver_solve", node_id=node_id):
+                        solve_ctx = dataclasses.replace(
+                            ctx,
+                            store=self._store,
+                            start_time=start_time,
+                            check_cancelled=lambda: self._raise_if_solve_stopped(
+                                job_id,
+                                execution_context=execution_context,
+                            ),
+                        )
+                        _solve_online(
+                            solve_ctx,
+                            quote_grid=quote_grid,
+                            config=config,
+                        )
             except BackgroundJobStoppedError:
                 logger.info("solve_worker_stopped", job_id=job_id)
             except ExecutionCancelledError as exc:

@@ -21,8 +21,9 @@ These packages come from the
 process-global, so `mlflow_fluent_operation` serialises every logging
 operation under a global lock and restores the URIs and three environment
 variables afterwards. `runtime_environment_inference` flips two more
-environment variables around each `log_model`. This repeats a pattern the
-execution engine also has with Polars configuration (`EXEC-R01`).
+environment variables around each `log_model`. The execution engine avoids
+the same pattern for Polars configuration by holding its streaming chunk size
+as one process setting instead of scoping it per request.
 
 **Plan:** Use `MlflowClient` instances bound to the resolved tracking and
 registry URIs for logging, as discovery and downloads already do, and pass

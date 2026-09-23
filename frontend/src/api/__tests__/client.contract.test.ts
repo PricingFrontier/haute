@@ -383,22 +383,20 @@ describe("client runtime contracts", () => {
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).not.toHaveProperty("port_label")
   })
 
-  it("previewNode sends streaming_chunk_size and honours a custom timeout", async () => {
-    // Exercises the `streamingChunkSize !== undefined` present branch and the
-    // non-default path of the `timeout = 120_000` default argument.
+  it("previewNode honours a custom timeout and sends no streaming_chunk_size", async () => {
+    // Exercises the non-default path of the `timeout = 120_000` default argument.
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
 
     await previewNode({
       graph: dummyGraph,
       nodeId: "n1",
       rowLimit: 10,
-      streamingChunkSize: 4096,
       timeout: 5_000,
     })
 
-    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({
-      streaming_chunk_size: 4096,
-    })
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).not.toHaveProperty(
+      "streaming_chunk_size",
+    )
   })
 
   it("previewNode omits streaming_chunk_size and uses the default timeout", async () => {
@@ -600,16 +598,16 @@ describe("client runtime contracts", () => {
     ).rejects.toThrow(/columns\[0\]\.values\[0\]\.count/)
   })
 
-  it("runNodeData sends refresh and the streaming chunk size, and parses the started job", async () => {
+  it("runNodeData sends refresh with no streaming chunk size, and parses the started job", async () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("node_data_run_response")))
 
     const result = await runNodeData({
-      graph: dummyGraph, node_id: "banding", refresh: true, streamingChunkSize: 2048,
+      graph: dummyGraph, node_id: "banding", refresh: true,
     })
 
     expect(mockFetch.mock.calls[0][0]).toBe("/api/node-data/run")
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
-      graph: dummyGraph, node_id: "banding", source: "live", refresh: true, streaming_chunk_size: 2048,
+      graph: dummyGraph, node_id: "banding", source: "live", refresh: true,
     })
     expect(result.status).toBe("started")
     expect(result.job_id).toBe("node-data-7f2c")
@@ -1140,7 +1138,6 @@ describe("pivot client contracts", () => {
         node_id: "explore",
         pivot: { rows: ["region"] },
         source: "pricing",
-        streamingChunkSize: 500,
       }),
     ).resolves.toMatchObject({ status: "completed" })
     await expect(getExplorePivotStatus("job / 1")).resolves.toMatchObject({
@@ -1155,7 +1152,6 @@ describe("pivot client contracts", () => {
         node_id: "explore",
         field: "region",
         search: "Nor",
-        streamingChunkSize: 50,
       }),
     ).resolves.toMatchObject({ status: "ok" })
 
@@ -1170,7 +1166,6 @@ describe("pivot client contracts", () => {
       node_id: "explore",
       pivot: { rows: ["region"] },
       source: "pricing",
-      streaming_chunk_size: 500,
     })
     expect(JSON.parse(String(mockFetch.mock.calls[2]?.[1]?.body))).toEqual({})
     expect(JSON.parse(String(mockFetch.mock.calls[3]?.[1]?.body))).toMatchObject({
@@ -1179,7 +1174,6 @@ describe("pivot client contracts", () => {
       field: "region",
       search: "Nor",
       source: "live",
-      streaming_chunk_size: 50,
     })
   })
 

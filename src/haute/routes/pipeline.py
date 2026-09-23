@@ -72,7 +72,7 @@ from haute._polars_io_registry import (
     validate_data_output_config,
 )
 from haute._polars_steps import PolarsStepError, render_polars_steps
-from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, temporary_streaming_chunk_size
+from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
 from haute._sandbox import _get_project_root
 from haute._seed_plans import (
     ListedSeed,
@@ -164,6 +164,7 @@ from haute.schemas import (
     EditorIdentitiesResponse,
     EditorIdentityResponseNode,
     ExecutionMetricsPayload,
+    ExecutionSettings,
     NodeMemoryInfo,
     NodeTimingInfo,
     OutputDestinationRequest,
@@ -1156,22 +1157,20 @@ def _execute_preview_worker(
 ) -> PreviewNodeResponse:
     context = create_isolated_execution_context(budget)
     try:
-        chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
         try:
-            with temporary_streaming_chunk_size(chunk_size):
-                results = execute_graph(
-                    graph,
-                    target_node_id=body.node_id,
-                    row_limit=body.row_limit,
-                    source=body.source,
-                    target_preview_only=True,
-                    requested_preview_columns=body.requested_preview_columns,
-                    include_schema_metadata=True,
-                    port_label=body.port_label,
-                    execution_context=context,
-                    shared_snapshots=True,
-                    staging_token=staging_token,
-                )
+            results = execute_graph(
+                graph,
+                target_node_id=body.node_id,
+                row_limit=body.row_limit,
+                source=body.source,
+                target_preview_only=True,
+                requested_preview_columns=body.requested_preview_columns,
+                include_schema_metadata=True,
+                port_label=body.port_label,
+                execution_context=context,
+                shared_snapshots=True,
+                staging_token=staging_token,
+            )
             return _preview_response_from_results(graph, body, results, context)
         except (ContractMismatchError, SchemaMismatchError, ParseError, ConfigError) as exc:
             return PreviewNodeResponse(node_id=body.node_id, status="error", error=str(exc))
@@ -1193,24 +1192,22 @@ def _execute_trace_worker(
 ) -> dict[str, Any]:
     context = create_isolated_execution_context(budget)
     try:
-        chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
-        with temporary_streaming_chunk_size(chunk_size):
-            result = execute_trace(
-                graph,
-                row_index=body.row_index,
-                target_node_id=body.target_node_id,
-                column=body.column,
-                row_limit=body.row_limit,
-                source=body.source,
-                row_values=body.row_values,
-                preview=_preview_cache,
-                fingerprint_memo=GraphFingerprintMemo(),
-                execution_context=context,
-                seed_plan=_listed_seeds(body),
-            )
-            trace_payload = trace_result_to_dict(result)
-            TraceResponse.model_validate({"status": "ok", "trace": trace_payload})
-            return trace_payload
+        result = execute_trace(
+            graph,
+            row_index=body.row_index,
+            target_node_id=body.target_node_id,
+            column=body.column,
+            row_limit=body.row_limit,
+            source=body.source,
+            row_values=body.row_values,
+            preview=_preview_cache,
+            fingerprint_memo=GraphFingerprintMemo(),
+            execution_context=context,
+            seed_plan=_listed_seeds(body),
+        )
+        trace_payload = trace_result_to_dict(result)
+        TraceResponse.model_validate({"status": "ok", "trace": trace_payload})
+        return trace_payload
     finally:
         context.release_admission(preserve_primary_error=True)
 
@@ -1275,40 +1272,38 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
                     memory_growth_limit_bytes=budget.memory_limit_bytes,
                     require_memory_limit=resolve_worker_memory_enforcement() == "required",
                 )
-            chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
 
-            def _execute_trace_with_chunk_size() -> dict[str, Any]:
-                with temporary_streaming_chunk_size(chunk_size):
-                    result = execute_trace(
-                        graph,
-                        row_index=body.row_index,
-                        target_node_id=body.target_node_id,
-                        column=body.column,
-                        row_limit=body.row_limit,
-                        source=body.source,
-                        row_values=body.row_values,
-                        # Inject the executor's preview cache explicitly so the
-                        # trace module is not coupled to a private singleton on
-                        # another module.
-                        preview=_preview_cache,
-                        fingerprint_memo=fingerprint_memo,
-                        execution_context=trace_context,
-                        seed_plan=_listed_seeds(body),
-                    )
-                    # Serialise to a JSON-safe dict here, still in the
-                    # worker thread, so the event loop never walks the
-                    # full trace payload.
-                    trace_payload = trace_result_to_dict(result)
-                    # JSONResponse bypasses FastAPI's response-model
-                    # validation. Validate explicitly in this worker so the
-                    # typed omission, waterfall and provenance contract is a
-                    # real HTTP boundary without moving payload work back onto
-                    # the event loop.
-                    TraceResponse.model_validate({"status": "ok", "trace": trace_payload})
-                    return trace_payload
+            def _execute_trace_in_thread() -> dict[str, Any]:
+                result = execute_trace(
+                    graph,
+                    row_index=body.row_index,
+                    target_node_id=body.target_node_id,
+                    column=body.column,
+                    row_limit=body.row_limit,
+                    source=body.source,
+                    row_values=body.row_values,
+                    # Inject the executor's preview cache explicitly so the
+                    # trace module is not coupled to a private singleton on
+                    # another module.
+                    preview=_preview_cache,
+                    fingerprint_memo=fingerprint_memo,
+                    execution_context=trace_context,
+                    seed_plan=_listed_seeds(body),
+                )
+                # Serialise to a JSON-safe dict here, still in the
+                # worker thread, so the event loop never walks the
+                # full trace payload.
+                trace_payload = trace_result_to_dict(result)
+                # JSONResponse bypasses FastAPI's response-model
+                # validation. Validate explicitly in this worker so the
+                # typed omission, waterfall and provenance contract is a
+                # real HTTP boundary without moving payload work back onto
+                # the event loop.
+                TraceResponse.model_validate({"status": "ok", "trace": trace_payload})
+                return trace_payload
 
             return await run_blocking_with_response_timeout(
-                _execute_trace_with_chunk_size,
+                _execute_trace_in_thread,
                 timeout=_trace_timeout(),
                 operation="pipeline_trace",
             )
@@ -1457,25 +1452,23 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
                     )
                 finally:
                     _discard_preview_staging(staging_token)
-            chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
 
-            def _execute_graph_with_chunk_size() -> dict[str, Any]:
-                with temporary_streaming_chunk_size(chunk_size):
-                    return execute_graph(
-                        graph,
-                        target_node_id=body.node_id,
-                        row_limit=body.row_limit,
-                        source=body.source,
-                        target_preview_only=True,
-                        requested_preview_columns=body.requested_preview_columns,
-                        include_schema_metadata=True,
-                        port_label=body.port_label,
-                        execution_context=preview_context,
-                        shared_snapshots=True,
-                    )
+            def _execute_graph_in_thread() -> dict[str, Any]:
+                return execute_graph(
+                    graph,
+                    target_node_id=body.node_id,
+                    row_limit=body.row_limit,
+                    source=body.source,
+                    target_preview_only=True,
+                    requested_preview_columns=body.requested_preview_columns,
+                    include_schema_metadata=True,
+                    port_label=body.port_label,
+                    execution_context=preview_context,
+                    shared_snapshots=True,
+                )
 
             results = await run_blocking_with_response_timeout(
-                _execute_graph_with_chunk_size,
+                _execute_graph_in_thread,
                 timeout=_preview_timeout(),
                 operation="pipeline_preview",
             )
@@ -1880,11 +1873,6 @@ def _plan_recovery_preview(
         source=body.source,
         requested_preview_columns=body.requested_preview_columns,
         port_label=body.port_label,
-        **(
-            {"streaming_chunk_size": body.streaming_chunk_size}
-            if body.streaming_chunk_size is not None
-            else {}
-        ),
     )
 
 
@@ -1920,6 +1908,23 @@ async def recovery_preview_node(
         return await _preview_canonical_graph(request)
     except _RecoveryPreviewRequestError as exc:
         return _pipeline_recovery_error_response(exc.status_code, exc.detail)
+
+
+@router.get("/execution-settings", response_model=ExecutionSettings)
+async def get_execution_settings() -> ExecutionSettings:
+    """The editor's current execution settings."""
+    return ExecutionSettings(streaming_chunk_size=current_streaming_chunk_size())
+
+
+@router.put("/execution-settings", response_model=ExecutionSettings)
+async def put_execution_settings(body: ExecutionSettings) -> ExecutionSettings:
+    """Apply new execution settings to the server process at once.
+
+    Server-thread executions and workers started afterwards, and the next task
+    on each warm interactive worker, run with the new streaming chunk size.
+    """
+    set_streaming_chunk_size(body.streaming_chunk_size)
+    return ExecutionSettings(streaming_chunk_size=current_streaming_chunk_size())
 
 
 @router.post(
@@ -1974,7 +1979,6 @@ def _prepare_data_output_worker(
     graph: PipelineGraph,
     output_node_id: str,
     source: str,
-    streaming_chunk_size: int | None,
     project_root: str,
     overwrite: bool,
     staging_path: str | None,
@@ -1990,7 +1994,6 @@ def _prepare_data_output_worker(
             output_node_id,
             source,
             execution_context=context,
-            streaming_chunk_size=streaming_chunk_size,
             project_root=project_root,
             overwrite=overwrite,
             staging_path=staging_path,
@@ -2039,7 +2042,6 @@ def _output_write_transaction(
     graph: PipelineGraph,
     output_node_id: str,
     source: str,
-    streaming_chunk_size: int | None,
     project_root: Path,
     overwrite: bool,
     final_path: Path | None,
@@ -2101,7 +2103,6 @@ def _output_write_transaction(
                 graph,
                 output_node_id,
                 source,
-                streaming_chunk_size,
                 str(project_root),
                 overwrite,
                 None if staging_path is None else str(staging_path),
@@ -2213,7 +2214,6 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
                 graph,
                 body.node_id,
                 body.source,
-                body.streaming_chunk_size,
                 project_root,
                 body.overwrite,
                 resolved_output if staging_path is not None else None,

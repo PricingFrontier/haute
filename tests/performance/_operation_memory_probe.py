@@ -199,7 +199,11 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, bounded_sink
+    from haute._polars_utils import (
+        DEFAULT_STREAMING_CHUNK_SIZE,
+        bounded_sink,
+        set_streaming_chunk_size,
+    )
 
     args = _parse_args()
     sampler = StdlibMemorySampler()
@@ -209,8 +213,9 @@ def main() -> int:
     plan = build_plan(args.operation, args.fact, args.dim, args.multi)
     explain_streaming = plan.explain(engine="streaming")
     sink_path = args.output.with_suffix(".sink.parquet")
+    set_streaming_chunk_size(DEFAULT_STREAMING_CHUNK_SIZE)
     started = time.perf_counter()
-    bounded_sink(plan, sink_path, streaming_chunk_size=DEFAULT_STREAMING_CHUNK_SIZE)
+    bounded_sink(plan, sink_path)
     elapsed_seconds = time.perf_counter() - started
     rows_out = pl.scan_parquet(sink_path).select(pl.len()).collect().item()
     rss_after = sampler.process_rss_bytes(os.getpid())

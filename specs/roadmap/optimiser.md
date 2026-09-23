@@ -188,8 +188,8 @@ Parquet file.
 **Plan:** Run setup and auto-range materialisation in the existing
 hard-capped worker, as training preparation does, writing the projected,
 validated solver input to a parent-owned Parquet artifact. The solve thread
-builds the quote grid from that file as it does now. This also removes the
-in-process pipeline execution that holds the chunk-size lock (`EXEC-R01`).
+builds the quote grid from that file as it does now. This also takes the
+pipeline's execution off the server's threads.
 
 **Acceptance:** No optimiser code path collects or sinks a pipeline frame in
 the server process; a memory-limited setup ends as a typed `memory_limited`

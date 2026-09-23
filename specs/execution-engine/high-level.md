@@ -136,6 +136,18 @@ running heavy work in a child process the parent can kill on timeout or memory l
   database output, instead uses `streaming_collect` and therefore materialises the
   result DataFrame before writing; it still refuses Polars' non-streaming broad-collect
   fallback for bounded profiles.
+- **The streaming chunk size is one editor setting.** Polars keeps its streaming chunk
+  size as process-wide configuration (`POLARS_STREAMING_CHUNK_SIZE`). The editor server
+  holds one value, 500,000 rows unless the environment already sets one, applies it at
+  start-up, and applies a new value at once when the pipeline settings change it
+  (`PUT /api/execution-settings`). Server-thread executions read the process value,
+  spawned workers inherit it at spawn, and every task handed to a warm interactive
+  worker carries the server's current value, which the worker applies before running
+  the task. No execution scopes, locks or restores the value, so no request waits on
+  another to apply it. The value never changes results, only memory use and speed, so
+  a change reaches executions started afterwards and may reach one in flight at its
+  next collect. Requests carry no chunk size, and deployed scoring runs with the
+  default.
 - **`dataInput` and `dataOutput` are the sole tabular I/O node types.** A file-backed
   Parquet Data Input is scanned directly. Every other data input executes from a
   validated leased snapshot generation. Graph execution may schedule a missing or stale

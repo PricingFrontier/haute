@@ -1631,10 +1631,11 @@ def test_training_ram_estimates_use_only_usable_snapshots(
 
 
 def test_lazy_run_join_capture_is_chunked_into_parts(
-    project: Path, store: NodeSnapshotStore
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from haute._polars_utils import temporary_streaming_chunk_size
+    from haute._polars_utils import set_streaming_chunk_size
 
+    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
     graph = _graph(
         project,
         [
@@ -1662,8 +1663,8 @@ def test_lazy_run_join_capture_is_chunked_into_parts(
     )
 
     # _ROWS rows in chunks of 80: three parts.
-    with temporary_streaming_chunk_size(80):
-        run = _run(graph, store, required={"T": ["id", "alpha", "d"]})
+    set_streaming_chunk_size(80)
+    run = _run(graph, store, required={"T": ["id", "alpha", "d"]})
 
     capture = run.captures["J"]
     assert capture["write_strategy"] == "chunked_join"
@@ -1776,10 +1777,11 @@ def test_bounded_run_over_cheap_consumed_segment_reads_it_directly_and_next_run_
 
 
 def test_captured_chunk_local_node_reports_input_sliced_across_slices(
-    project: Path, store: NodeSnapshotStore
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from haute._polars_utils import temporary_streaming_chunk_size
+    from haute._polars_utils import set_streaming_chunk_size
 
+    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
     graph = _graph(
         project,
         [
@@ -1806,8 +1808,8 @@ def test_captured_chunk_local_node_reports_input_sliced_across_slices(
             GraphEdge(id="e3", source="B", target="T"),
         ],
     )
-    with temporary_streaming_chunk_size(80):
-        run = _run(graph, store, required={"T": ["id", "a", "d"], "A": ["a", "id"]})
+    set_streaming_chunk_size(80)
+    run = _run(graph, store, required={"T": ["id", "a", "d"], "A": ["a", "id"]})
     capture = run.captures["A"]
     assert capture["write_strategy"] == "input_sliced"
     assert capture["write_input_slices"] == 3
@@ -1817,16 +1819,17 @@ def test_captured_chunk_local_node_reports_input_sliced_across_slices(
 
 
 def test_captured_rejected_node_reports_native_with_reason_and_blocking_operator(
-    project: Path, store: NodeSnapshotStore
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from haute._polars_utils import temporary_streaming_chunk_size
+    from haute._polars_utils import set_streaming_chunk_size
 
+    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
     graph = _join_graph(
         project,
         a_code="df = src.filter(pl.col('a') >= 0).head(50)",
     )
-    with temporary_streaming_chunk_size(80):
-        run = _run(graph, store, required={"T": ["a"]})
+    set_streaming_chunk_size(80)
+    run = _run(graph, store, required={"T": ["a"]})
     capture = run.captures["A"]
     assert capture["write_strategy"] == "native"
     assert capture["write_native_reason"] == "unsupported_frame_method"
@@ -1897,10 +1900,11 @@ def test_captured_chunk_local_node_empty_input_publishes_and_metrics_validate(
 
 
 def test_captured_instance_node_referencing_original_source_names_is_input_sliced(
-    project: Path, store: NodeSnapshotStore
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from haute._polars_utils import temporary_streaming_chunk_size
+    from haute._polars_utils import set_streaming_chunk_size
 
+    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
     graph = _graph(
         project,
         [
@@ -1931,8 +1935,8 @@ def test_captured_instance_node_referencing_original_source_names_is_input_slice
             GraphEdge(id="e_t", source="J", target="T"),
         ],
     )
-    with temporary_streaming_chunk_size(80):
-        run = _run(graph, store, required={"T": ["id", "a", "b"], "inst": ["a", "id"]})
+    set_streaming_chunk_size(80)
+    run = _run(graph, store, required={"T": ["id", "a", "b"], "inst": ["a", "id"]})
     capture = run.captures["inst"]
     assert capture["write_strategy"] == "input_sliced"
     assert capture["write_native_reason"] is None

@@ -41,7 +41,8 @@ In scope:
   WebSocket client registry and broadcast fan-out, and the on-disk sidecar (`.haute.json`)
   format.
 - The pipeline routes (`haute.routes.pipeline`): list/get/save/preview/trace/output-write
-  and output-destination preview, their
+  and output-destination preview, the editor's execution settings (the streaming chunk
+  size, `GET`/`PUT /api/execution-settings`), their
   request-supersession and concurrency-limiting behaviour, and the transactional save
   service (`haute.routes._save_pipeline`).
 - The file-browsing and schema-inspection routes (`haute.routes.files`), the utility-script

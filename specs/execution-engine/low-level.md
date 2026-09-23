@@ -752,7 +752,7 @@ the change stays published, under the identities it was computed for, and nothin
 published.
 
 Every capture point is written by `write_parts` (`fast_checkpoint=True`, in chunks of the
-request's streaming chunk size, `current_streaming_chunk_size()`) into a staging directory
+process streaming chunk size, `current_streaming_chunk_size()`) into a staging directory
 under the plan's token, and its capture record (`shared_snapshot_captures` evidence) carries
 the write's `write_strategy`, `write_parts`, `write_chunk_rows` (the rows-per-part bound the
 capture's write applied, null for a native write, a cross join, and a prewritten scored file),
@@ -798,9 +798,9 @@ once the plan is open, so neither does a preparation that completed after the re
 away. The worker's response metrics
 carry the parent's input preparation ahead of its own evidence
 (`ExecutionContext.metrics_with_worker_evidence`). An in-process write (`write_data_output`)
-prepares inputs and opens its own plan. Either way the plan is held, and the request's
-`streaming_chunk_size` (or the default) is in effect, until the output is written; no
-checkpoint directory and no dataframe-cache entry is written.
+prepares inputs and opens its own plan. Either way the plan is held until the output is
+written, under the process streaming chunk size; no checkpoint directory and no
+dataframe-cache entry is written.
 
 `executor.write_data_output()` then writes the terminal lazy frame. A sink-capable `dataOutput`
 format uses a bounded Polars sink. Writer-only formats and
@@ -905,6 +905,19 @@ limits. Each spawned process configures itself; inheritance is not relied upon.
 The cross-platform CI smoke job includes CPU-policy unit/startup coverage and
 Windows-only native spawn tests, which first reset the child's execution-speed
 policy to automatic and verify HighQoS from within the actual worker workload.
+
+**Streaming chunk size (`_polars_utils.py`).** `current_streaming_chunk_size()` reads
+Polars' process value (`POLARS_STREAMING_CHUNK_SIZE`), falling back to
+`DEFAULT_STREAMING_CHUNK_SIZE` (500,000). `set_streaming_chunk_size(n)` validates `n`
+(an integer from 1 to 10,000,000; a bool is refused) and sets it with
+`pl.Config.set_streaming_chunk_size`, which writes the environment variable a spawned
+child inherits. The server lifespan applies `current_streaming_chunk_size()` once,
+before the interactive worker pool starts, so a value already in the environment is
+kept. `InteractiveWorkerPool.run` captures the current value with each task, and the
+warm worker applies it before running that task. `bounded_sink` and
+`bounded_hashed_sink` take no chunk size: native sinks run under the process value, and
+a chunked write slices at it unless its caller names `chunk_rows`. No production code
+saves, scopes or restores Polars configuration around an execution.
 
 **Worker isolation (`run_isolated_worker`).** Starts a `spawn`-context child process
 running `_isolated_worker_entrypoint`. Before user work begins, Linux prefers a
@@ -2498,8 +2511,10 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   `replace` shape; the inventory test fails when an allowlist entry has no proof or
   a proof cites a retired entry. Selector forms carry their own chunked-equals-full cases (`selector_*`, including
   `polars.selectors` under a preamble alias) and rejection pins.
-- **`test_streaming_chunk_size_threading.py`** — thread-local streaming chunk-size
-  propagation used by the chunk runner and bounded-collect helpers.
+- **`test_streaming_chunk_size_setting.py`** — the editor setting's reach: a changed
+  value is observed by the server process, by a newly spawned isolated worker and by the
+  next task on an already warm interactive worker; the settings route validates it; and
+  an optimiser estimate completes while a solve blocks on another thread.
 - **`test_topo.py`**, **`test_topo_contracts.py`** — strict topological sort ordering,
   unknown-endpoint failure, explicit filtered-traversal evidence, cycle
   detection/reporting, and ancestor traversal.
@@ -2581,7 +2596,7 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   match raises a RuntimeError naming both the expected and written counts.
   `test_a_write_reports_the_rows_per_part_it_chunked_at` verifies that `ChunkedWrite.chunk_rows`
   reports the rows-per-part bound applied by a sliced write or keyed chunked join, None for
-  native writes and cross joins, and the ambient streaming chunk size when none was requested.
+  native writes and cross joins, and the process streaming chunk size when the caller names none.
   `test_input_sliced_filter_and_derived_columns_equal_native_strict_order` verifies that an
   input-sliced write of filtered and derived columns preserves strict row order and matches
   native output.

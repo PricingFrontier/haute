@@ -595,7 +595,7 @@ reconciliation rather than dropping them or committing a second mutation.
     skipped. Otherwise it paints cached data (or a `"loading"` placeholder)
     immediately, then debounces (`options.debounceMs ?? 200`) before calling
     `fetchPreviewImmediate`. That function snapshots `rowLimit`/
-    `activeSource`/`streamingChunkSize` and the node-data epoch
+    `activeSource` and the node-data epoch
     (`useNodeDataStore`) once, checks the node-results cache for a hit
     matching source+rowLimit; if the cached entry also matches the current
     `structuralVersion` and was requested at that epoch it short-circuits with

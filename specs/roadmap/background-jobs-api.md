@@ -37,7 +37,7 @@ runtime contract.
 
 **Dependencies:** Canonical execution boundary, lifecycle ownership, and versioned solver-specific persistence contracts.
 
-**Evidence:** `src/haute/routes/_optimiser_service.py`; `src/haute/routes/optimiser.py`; `tests/test_optimiser_routes.py`; `tests/test_optimiser_contracts.py`; `tests/test_streaming_chunk_size_threading.py`.
+**Evidence:** `src/haute/routes/_optimiser_service.py`; `src/haute/routes/optimiser.py`; `tests/test_optimiser_routes.py`; `tests/test_optimiser_contracts.py`; `tests/test_streaming_chunk_size_setting.py`.
 
 ### ROAD-WORKER-05 — One worker primitive and one failure taxonomy
 **Why:** Three subprocess mechanisms carry parallel error hierarchies. The

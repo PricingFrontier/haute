@@ -38,7 +38,7 @@ in `optimiser.py`). Instance state:
 ### `SolveContext` (`src/haute/routes/_optimiser_service.py`, frozen dataclass)
 
 Per-solve context threaded through `_solve_online`/`_solve_ratebook`: job id, node id, mode,
-store, execution context, streaming chunk size, single-flight key, required worker `start_time`,
+store, execution context, single-flight key, required worker `start_time`,
 and a `check_cancelled` callable — the single object both solver code paths use to check for
 cooperative cancellation. The orchestration context may omit `start_time` before
 `_launch_background` resolves it, but both solver entry points fail loudly if they receive a
@@ -55,8 +55,8 @@ context without the resolved value rather than silently resetting elapsed-time a
   `(chunk_size, provenance)`, recording whether a chunk
   size came from explicit config or a byte-budget policy.
 - `FrontierAutoRangeContext` (`src/haute/routes/_optimiser_service.py`, frozen) — per-job bundle
-  of chunk size, partition count,
-  execution context, and streaming chunk size for one auto-range run.
+  of chunk size, partition count, and
+  execution context for one auto-range run.
 - `_ScenarioFrontierRangeAccumulator` (`src/haute/routes/_optimiser_service.py`) — a
   disk-bucketed accumulator that combines
   per-quote scenario min/max across many batches by hash-partitioning into parquet parts and
@@ -193,7 +193,7 @@ caller except through the status-polling endpoint.
 ### Solver execution (`_launch_background` → `_solve_online` / `_solve_ratebook`)
 
 The spawned solver thread updates progress to "Solving", then — inside
-`temporary_streaming_chunk_size(...)` and an execution-context stage — calls:
+an execution-context stage — calls:
 
 - **Online** (`_solve_online`): constructs `price_contour.OnlineOptimiser(objective,
   constraints, max_iter, tolerance, record_history)` and solves directly against the passed
@@ -252,7 +252,7 @@ HTTP 422; the 422 mapping remains for bounded streaming-collect failures.
 
 - `start_frontier_auto_range` — **background**: under `_start_lock`, idempotently
   returns the existing job id if an auto-range job with the same graph fingerprint and node id is
-  already running (request-only `streaming_chunk_size` is not part of this key; unlike
+  already running (unlike
   `start()`'s stricter conflict behaviour), otherwise creates a cancellable job, registers it,
   and spawns a worker thread.
 - `_run_frontier_auto_range_job` dispatches to `_run_streaming_frontier_auto_range_job`
@@ -613,7 +613,9 @@ returned as a generic `status: "error"` payload.
 - **One blocking solve process-wide, plus graph/node setup single-flight.**
   `_check_no_concurrent_jobs` scans the shared optimiser store and blocks a second solve for any
   graph/node. `estimate`, `frontier_auto_range`, and `frontier_recompute` are explicitly excluded
-  (`_NON_BLOCKING_RUNNING_JOB_TYPES`), so they do not reserve that global solve slot. Independently,
+  (`_NON_BLOCKING_RUNNING_JOB_TYPES`), so they do not reserve that global solve slot, and none of them
+  waits on a running solve: no optimiser path holds a lock across its work to apply the streaming
+  chunk size. Independently,
   the graph/node coordinator prevents a solve setup and a background auto-range setup from
   overlapping on the same graph/node; synchronous estimate does not use that coordinator.
 - **`_ESTIMATE_JOB_TYPE` is assigned by `/estimate`, not by frontier auto-range.**

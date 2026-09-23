@@ -35,7 +35,7 @@
 ## Control flow
 
 1. `frontend/src/hooks/useTracing.ts` captures graph `structuralVersion`, active
-   source, row limit, streaming chunk size, target, the explained preview's
+   source, row limit, target, the explained preview's
    `seed_plan` (node, identity digest, and generation of each entry), the
    node-data epoch, row, column, and clicked values with each request, and
    sends that `seed_plan` so the trace reads the generations the preview did.
@@ -46,7 +46,7 @@
    changed. That notice belongs to the context without the seed plan and the
    epoch, so it outlives the refresh it started — which replaces the seed plan
    and may raise the epoch — and is hidden only by a change of node, graph,
-   source, row limit, or chunk size. On the canvas a node the trace skipped because a
+   source, or row limit. On the canvas a node the trace skipped because a
    shared snapshot below it was read (a `snapshot_seed` omission) stays on the
    trace path — not dimmed, its connecting edges highlighted — without the
    active styling or value of a traced step; other omissions are dimmed like

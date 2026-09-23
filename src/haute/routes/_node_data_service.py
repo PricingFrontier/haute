@@ -140,7 +140,6 @@ class _NodeSnapshotWorkerRequest:
     slot_digest: str
     refresh: bool
     project_root: str
-    streaming_chunk_size: int | None
     # Parent-chosen, so the parent can discard the staging directory of a
     # worker killed by cancellation, timeout, or the memory cap. The seed
     # plan's captures stage under the same token.
@@ -275,7 +274,6 @@ def _build_node_snapshot(
     import polars as pl
 
     from haute._chunked_writes import JoinRecipe, WriteRecipe, write_parts
-    from haute._polars_utils import temporary_streaming_chunk_size
     from haute.execution import execute_lazy_graph
     from haute.executor import _build_node_fn, _compile_preamble, _pipeline_dir
 
@@ -289,13 +287,10 @@ def _build_node_snapshot(
     graph = DataPointResolver(request.graph, source=request.source, store=store).graph
     preamble_ns = _compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
     with (
-        temporary_streaming_chunk_size(request.streaming_chunk_size),
-        (
-            SeedPlan.adopt(request.seed_plan, store)
-            if request.seed_plan is not None
-            else contextlib.nullcontext()
-        ) as plan,
-    ):
+        SeedPlan.adopt(request.seed_plan, store)
+        if request.seed_plan is not None
+        else contextlib.nullcontext()
+    ) as plan:
         join_recipes: dict[str, JoinRecipe] = {}
         write_recipes: dict[str, WriteRecipe] = {}
         unshaped_frames: dict[str, pl.LazyFrame] = {}
@@ -927,7 +922,6 @@ class NodeDataService:
             slot_digest=slot.digest,
             refresh=body.refresh,
             project_root=str(node_data_project_root()),
-            streaming_chunk_size=body.streaming_chunk_size,
             staging_token=new_staging_token(),
         )
         with self._lock:

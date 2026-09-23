@@ -11,10 +11,12 @@
  * directly control layout or chrome visibility.
  */
 import { create } from "zustand"
-import { getMlflowDestinations } from "../api/client"
+import { getExecutionSettings, getMlflowDestinations, putExecutionSettings } from "../api/client"
+import { apiErrorMessage } from "../api/errors"
 import type { FileListItem, MlflowDestinationEntry } from "../api/types"
 import type { MlflowInventoryState } from "../utils/mlflowDestinations"
 import { portableKey } from "../utils/portableKey"
+import useToastStore from "./useToastStore"
 
 export const MIN_STREAMING_CHUNK_SIZE = 1000
 export const MAX_STREAMING_CHUNK_SIZE = 10_000_000
@@ -34,6 +36,16 @@ export type AddSourceResult =
   | { ok: true; key: string }
   | { ok: false; reason: "empty" }
   | { ok: false; reason: "duplicate"; key: string }
+
+// Settings requests can overlap (a load still in flight when the user commits,
+// the modal reopened during a save, or Enter followed by blur). A load never
+// overrides a pending save or a value a save confirmed after the load began,
+// only the latest save decides what is displayed, and saves reach the server
+// in order.
+let _chunkSizeLoadSeq = 0
+let _chunkSizeSaveSeq = 0
+let _chunkSizeConfirmations = 0
+let _chunkSizeSaves: Promise<void> = Promise.resolve()
 
 let _mlflowFetchingGuard = false
 let _mlflowRefetchQueued = false
@@ -61,7 +73,16 @@ interface SettingsState {
   setRowLimit: (limit: number) => void
 
   streamingChunkSize: number
-  setStreamingChunkSize: (size: number) => void
+  /** Loads the server's current chunk size — call when the settings pane opens.
+   *  On failure it keeps the current value and toasts the error. */
+  loadStreamingChunkSize: () => Promise<void>
+  /** Clamps/rounds, sets optimistically, then commits to the server. On
+   *  failure it restores the previous value and toasts the error. */
+  commitStreamingChunkSize: (size: number) => Promise<void>
+  /** The last chunk size the server confirmed; a failed save restores it. */
+  _confirmedStreamingChunkSize: number
+  /** The chunk size a queued save will send, so a repeat is not sent twice. */
+  _pendingStreamingChunkSize: number | null
 
   // Open/closed section states (keyed by section ID, e.g. "optimiser.advanced")
   openSections: Record<string, boolean>
@@ -108,9 +129,72 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
   setRowLimit: (limit) => set({ rowLimit: limit }),
 
   streamingChunkSize: 500_000,
-  setStreamingChunkSize: (size) => set({
-    streamingChunkSize: Math.min(MAX_STREAMING_CHUNK_SIZE, Math.max(MIN_STREAMING_CHUNK_SIZE, Math.round(size))),
-  }),
+  _confirmedStreamingChunkSize: 500_000,
+  _pendingStreamingChunkSize: null,
+  loadStreamingChunkSize: async () => {
+    if (get()._pendingStreamingChunkSize !== null) {
+      // The pending save's outcome is the value to show; loading would race it.
+      await _chunkSizeSaves
+      return
+    }
+    const request = ++_chunkSizeLoadSeq
+    const confirmations = _chunkSizeConfirmations
+    try {
+      const settings = await getExecutionSettings()
+      // A save confirmed since this load began holds the newer value.
+      if (confirmations !== _chunkSizeConfirmations) return
+      set({ _confirmedStreamingChunkSize: settings.streaming_chunk_size })
+      // A pending save shows its own value; its failure restores this one.
+      if (request !== _chunkSizeLoadSeq || get()._pendingStreamingChunkSize !== null) return
+      set({ streamingChunkSize: settings.streaming_chunk_size })
+    } catch (e) {
+      if (request !== _chunkSizeLoadSeq || get()._pendingStreamingChunkSize !== null) return
+      useToastStore.getState().addToast(
+        "error",
+        apiErrorMessage(e, "Could not load the chunk size."),
+      )
+    }
+  },
+  commitStreamingChunkSize: async (size) => {
+    const clamped = Math.min(MAX_STREAMING_CHUNK_SIZE, Math.max(MIN_STREAMING_CHUNK_SIZE, Math.round(size)))
+    const state = get()
+    const alreadySaving = state._pendingStreamingChunkSize === clamped
+    const alreadySaved = state._pendingStreamingChunkSize === null
+      && state._confirmedStreamingChunkSize === clamped
+    if (alreadySaving || alreadySaved) {
+      await _chunkSizeSaves
+      return
+    }
+    const request = ++_chunkSizeSaveSeq
+    set({ streamingChunkSize: clamped, _pendingStreamingChunkSize: clamped })
+    const save = async () => {
+      try {
+        const settings = await putExecutionSettings(clamped)
+        _chunkSizeConfirmations += 1
+        set({ _confirmedStreamingChunkSize: settings.streaming_chunk_size })
+        if (request === _chunkSizeSaveSeq) {
+          set({
+            streamingChunkSize: settings.streaming_chunk_size,
+            _pendingStreamingChunkSize: null,
+          })
+        }
+      } catch (e) {
+        // Only the latest save's outcome is the user's; an older failure is
+        // superseded by the save that followed it.
+        if (request !== _chunkSizeSaveSeq) return
+        set({
+          streamingChunkSize: get()._confirmedStreamingChunkSize,
+          _pendingStreamingChunkSize: null,
+        })
+        useToastStore.getState().addToast(
+          "error",
+          apiErrorMessage(e, "Could not save the chunk size."),
+        )
+      }
+    }
+    _chunkSizeSaves = _chunkSizeSaves.then(save)
+    await _chunkSizeSaves
+  },
 
   // Open/closed sections
   openSections: {},

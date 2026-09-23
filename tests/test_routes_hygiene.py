@@ -1009,7 +1009,7 @@ class TestExecutionBoundaryGuardrails:
 
         assert offenders == [], (
             "Polars streaming chunk size is process-global. Production code must "
-            "mutate it only through haute._polars_utils.temporary_streaming_chunk_size. "
+            "mutate it only through haute._polars_utils.set_streaming_chunk_size. "
             f"Offenders: {offenders}"
         )
 

@@ -28,7 +28,6 @@ from haute._hashing import HashingWriter
 from haute._logging import get_logger
 
 logger = get_logger(component="polars_utils")
-_STREAMING_CHUNK_SIZE_LOCK = threading.RLock()
 
 DEFAULT_STREAMING_CHUNK_SIZE: int = 500_000
 BOUNDED_MEMORY_EXEMPT_PROFILES = frozenset(
@@ -671,39 +670,36 @@ def _write_atomically_if_possible(path: Path, writer: Callable[[Path], _T]) -> _
     return writer(path)
 
 
-def current_streaming_chunk_size() -> int:
-    """The chunk size the current request runs under, else the default.
+MAX_STREAMING_CHUNK_SIZE: int = 10_000_000
 
-    A request's ``streaming_chunk_size`` is applied through
-    :func:`temporary_streaming_chunk_size`; chunked writes follow it.
+
+def set_streaming_chunk_size(chunk_size: int) -> None:
+    """Set the editor's streaming chunk size for this process.
+
+    Polars keeps the value as process-wide configuration: it writes the
+    ``POLARS_STREAMING_CHUNK_SIZE`` environment variable, which a worker
+    spawned afterwards inherits. The value changes memory use and speed, never
+    results, so it is applied without a lock or a restore.
     """
+    if (
+        not isinstance(chunk_size, int)
+        or isinstance(chunk_size, bool)
+        or not 1 <= chunk_size <= MAX_STREAMING_CHUNK_SIZE
+    ):
+        raise ValueError(
+            f"streaming_chunk_size must be an integer from 1 to {MAX_STREAMING_CHUNK_SIZE:,}"
+        )
+    pl.Config.set_streaming_chunk_size(chunk_size)
+
+
+def current_streaming_chunk_size() -> int:
+    """The process streaming chunk size, else the default."""
     raw = pl.Config.state(if_set=True).get("POLARS_STREAMING_CHUNK_SIZE")
     try:
         value = int(raw) if raw else 0
     except (TypeError, ValueError):
         value = 0
     return value if value > 0 else DEFAULT_STREAMING_CHUNK_SIZE
-
-
-@contextmanager
-def temporary_streaming_chunk_size(chunk_size: int | None) -> Iterator[None]:
-    """Temporarily set Polars' process-global streaming chunk size.
-
-    Polars exposes this as process-global configuration, so production callers
-    must use this locked scope rather than mutating ``pl.Config`` directly.
-    """
-    if chunk_size is None:
-        yield
-        return
-    if not isinstance(chunk_size, int) or isinstance(chunk_size, bool) or chunk_size <= 0:
-        raise ValueError("streaming_chunk_size must be a positive integer")
-    with _STREAMING_CHUNK_SIZE_LOCK:
-        saved_config = pl.Config.save()
-        try:
-            pl.Config.set_streaming_chunk_size(chunk_size)
-            yield
-        finally:
-            pl.Config.load(saved_config)
 
 
 def streaming_sink(
@@ -733,11 +729,7 @@ def streaming_sink(
         _do_sink(path)
 
 
-def _bounded_sink_execute(
-    path: Path,
-    streaming_chunk_size: int | None,
-    writer: Callable[[], _T],
-) -> _T:
+def _bounded_sink_execute(path: Path, writer: Callable[[], _T]) -> _T:
     directory = path.parent
     while not directory.exists():
         parent = directory.parent
@@ -748,8 +740,7 @@ def _bounded_sink_execute(
     metrics_context = current_execution_context()
     if metrics_context is not None:
         metrics_context.fault_point("sink_before_native")
-    with temporary_streaming_chunk_size(streaming_chunk_size):
-        result = writer()
+    result = writer()
     if metrics_context is not None:
         metrics_context.fault_point("sink_after_native")
         metrics_context.record_bytes_written(path.stat().st_size)
@@ -762,14 +753,12 @@ def bounded_sink(
     *,
     fmt: str = "parquet",
     fast_checkpoint: bool = False,
-    streaming_chunk_size: int | None = None,
     atomic: bool = True,
 ) -> None:
-    """Sink a LazyFrame through the native streaming API."""
+    """Sink a LazyFrame through the native streaming API at the process chunk size."""
     path = Path(path)
     _bounded_sink_execute(
         path,
-        streaming_chunk_size,
         lambda: streaming_sink(lf, path, fmt=fmt, fast_checkpoint=fast_checkpoint, atomic=atomic),
     )
 
@@ -807,13 +796,11 @@ def bounded_hashed_sink(
     path: str | Path,
     *,
     fast_checkpoint: bool = False,
-    streaming_chunk_size: int | None = None,
 ) -> str:
     """Sink a LazyFrame through the native streaming API, hashing during write."""
     path = Path(path)
     return _bounded_sink_execute(
         path,
-        streaming_chunk_size,
         lambda: hashed_streaming_sink(lf, path, fast_checkpoint=fast_checkpoint),
     )
 

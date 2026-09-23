@@ -598,12 +598,13 @@ class TestSnapshotGenerationLease:
                 "edges": [{"id": "e1", "source": "drivers", "target": "out"}],
             }
         )
-        from haute._polars_utils import temporary_streaming_chunk_size
+        from haute._polars_utils import set_streaming_chunk_size
 
+        monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
         store = SourceCacheStore(tmp_path)
-        # One row per part: the snapshot is built in the request's chunk size.
-        with temporary_streaming_chunk_size(1):
-            generation = build_input_snapshot(input_config, store=store, base_dir=tmp_path)
+        # One row per part: the snapshot is built at the process chunk size.
+        set_streaming_chunk_size(1)
+        generation = build_input_snapshot(input_config, store=store, base_dir=tmp_path)
         assert len(generation.data_paths) == 2
         assert generation.data_paths[0].name == "part-00000.parquet"
         assert generation.data_paths[1].name == "part-00001.parquet"

@@ -1,8 +1,6 @@
-"""Tests for bugfixes: streaming chunk restore, source_file propagation, and config loading.
+"""Tests for bugfixes: source_file propagation and config loading.
 
 Covers:
-  - Streaming chunk size restore in executor.write_data_output (ValueError on 0)
-  - Streaming chunk size restore in optimiser service (ValueError on 0)
   - _ensure_source_file fills source_file from haute.toml for preview/trace/sink
   - _compile_preamble uses pipeline_dir to resolve utility imports
   - Data source configs with empty path produce empty LazyFrames
@@ -11,10 +9,6 @@ Covers:
 
 from __future__ import annotations
 
-import contextlib
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-
 import polars as pl
 import pytest
 
@@ -22,7 +16,6 @@ from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import PreambleError, _compile_preamble
 from tests.conftest import (
     make_file_input_config,
-    make_file_output_config,
     make_ready_file_input_config,
 )
 
@@ -48,32 +41,10 @@ def _source_node(
     )
 
 
-def _sink_node(nid: str, path: str = "", fmt: str = "parquet") -> GraphNode:
-    return GraphNode(
-        id=nid,
-        data=NodeData(
-            label=nid,
-            nodeType=NodeType.DATA_OUTPUT,
-            config=make_file_output_config(path, format_name=fmt),
-        ),
-    )
-
-
 def _transform_node(nid: str) -> GraphNode:
     return GraphNode(
         id=nid,
         data=NodeData(label=nid, nodeType=NodeType.POLARS),
-    )
-
-
-def _optimiser_node(nid: str, config: dict | None = None) -> GraphNode:
-    return GraphNode(
-        id=nid,
-        data=NodeData(
-            label=nid,
-            nodeType=NodeType.OPTIMISER,
-            config=config or {},
-        ),
     )
 
 
@@ -83,152 +54,6 @@ def _make_graph(
     source_file: str | None = None,
 ) -> PipelineGraph:
     return PipelineGraph(nodes=nodes, edges=edges, source_file=source_file)
-
-
-# ---------------------------------------------------------------------------
-# Streaming chunk size restore — executor.write_data_output
-# ---------------------------------------------------------------------------
-
-
-class TestStreamingChunkRestoreExecutor:
-    """Verify write_data_output doesn't crash when restoring streaming chunk size."""
-
-    def test_sink_succeeds_when_no_prior_chunk_size(self, tmp_path):
-        """When POLARS_STREAMING_CHUNK_SIZE was never set, the finally block
-        must not call set_streaming_chunk_size(0) — that raises ValueError."""
-        from haute.executor import write_data_output
-
-        out_path = str(tmp_path / "output.parquet")
-        graph = _make_graph(
-            nodes=[_source_node("s"), _sink_node("sink", path=out_path)],
-            edges=[_e("s", "sink")],
-        )
-
-        lf = pl.DataFrame({"x": [1, 2, 3]}).lazy()
-        mock_outputs = {"sink": lf}
-
-        # Ensure no prior chunk size is set
-        prev = pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE")
-
-        with patch(
-            "haute.executor._execute_lazy",
-            return_value=(mock_outputs, ["s", "sink"], {}, {}),
-        ):
-            result = write_data_output(graph, "sink", project_root=tmp_path)
-
-        assert result.status == "ok"
-        assert result.row_count == 3
-        assert Path(out_path).exists()
-
-        # The chunk size should not have been reset to an invalid value
-        current = pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE")
-        # Should either be the original value or 50_000 (left from the sink)
-        if prev is None:
-            # The chunk size was either left at 50_000 or still unset
-            assert current is None or int(current) > 0
-        else:
-            assert int(current) > 0
-
-    def test_sink_succeeds_when_prior_chunk_size_exists(self, tmp_path):
-        """When a prior chunk size was explicitly set, it should be restored."""
-        from haute.executor import write_data_output
-
-        out_path = str(tmp_path / "output.parquet")
-        graph = _make_graph(
-            nodes=[_source_node("s"), _sink_node("sink", path=out_path)],
-            edges=[_e("s", "sink")],
-        )
-
-        lf = pl.DataFrame({"x": [10, 20]}).lazy()
-        mock_outputs = {"sink": lf}
-
-        # Set a known chunk size before the sink
-        pl.Config.set_streaming_chunk_size(75_000)
-
-        with patch(
-            "haute.executor._execute_lazy",
-            return_value=(mock_outputs, ["s", "sink"], {}, {}),
-        ):
-            result = write_data_output(graph, "sink", project_root=tmp_path)
-
-        assert result.status == "ok"
-
-        # The chunk size should be restored to 75_000
-        restored = pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE")
-        assert restored is not None
-        assert int(restored) == 75_000
-
-    def test_set_streaming_chunk_size_zero_raises(self):
-        """Confirm that Polars rejects chunk size of 0 — the bug we fixed."""
-        with pytest.raises(ValueError, match="number of rows per chunk must be >= 1"):
-            pl.Config.set_streaming_chunk_size(0)
-
-
-# ---------------------------------------------------------------------------
-# Streaming chunk size restore — optimiser service
-# ---------------------------------------------------------------------------
-
-
-class TestStreamingChunkRestoreOptimiser:
-    """Verify the optimiser pipeline execution doesn't crash on chunk restore."""
-
-    def test_execute_pipeline_no_prior_chunk_size(self):
-        """_execute_pipeline should not raise when POLARS_STREAMING_CHUNK_SIZE
-        was never set (the exact scenario that caused the production bug).
-
-        The imports inside _execute_pipeline are lazy (inside the method body),
-        so we patch at the source modules and call the method directly."""
-        from haute.routes._optimiser_service import JobStore, OptimiserSolveService
-
-        graph = _make_graph(
-            nodes=[_source_node("s"), _optimiser_node("opt")],
-            edges=[_e("s", "opt")],
-        )
-
-        lf = pl.DataFrame({"x": [1]}).lazy()
-        mock_lazy_outputs = {"opt": lf}
-
-        body = MagicMock()
-        body.graph = graph
-        body.node_id = "opt"
-        body.streaming_chunk_size = None
-
-        svc = OptimiserSolveService(store=JobStore())
-
-        # Ensure no prior chunk size is set
-        prev_chunk = pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE")
-
-        # Patch the optimiser-service facade used by _execute_pipeline.
-        with (
-            contextlib.ExitStack() as resources,
-            patch(
-                "haute.routes._optimiser_service.execute_lazy_graph",
-                return_value=(mock_lazy_outputs, ["s", "opt"], {}, {}),
-            ),
-            patch(
-                "haute.executor._compile_preamble",
-                return_value={},
-            ),
-            patch(
-                "haute.executor._pipeline_dir",
-                return_value=None,
-            ),
-            patch(
-                "haute.executor._resolve_batch_scenario",
-                return_value="batch",
-            ),
-        ):
-            result = svc._execute_pipeline(body, "test-job", resources)
-            assert "opt" in result
-
-        # Verify no ValueError was raised and chunk size is valid
-        current = pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE")
-        if current is not None:
-            assert int(current) > 0
-
-        # Restore previous state if needed
-        if prev_chunk is not None:
-            pl.Config.set_streaming_chunk_size(int(prev_chunk))
 
 
 # ---------------------------------------------------------------------------
@@ -777,45 +602,6 @@ class TestPreviewRouteSourceFile:
             {"x": 3, "scaled": 30},
             {"x": 4, "scaled": 40},
         ]
-
-
-# ---------------------------------------------------------------------------
-# Polars Config safety — general guard against invalid chunk sizes
-# ---------------------------------------------------------------------------
-
-
-class TestPolarsConfigSafety:
-    """Guard against regressions in Polars config handling."""
-
-    def test_chunk_size_zero_is_invalid(self):
-        """Polars rejects chunk_size=0 — this is the invariant our fix depends on."""
-        with pytest.raises(ValueError, match="number of rows per chunk must be >= 1"):
-            pl.Config.set_streaming_chunk_size(0)
-
-    def test_chunk_size_negative_is_invalid(self):
-        """Negative chunk sizes should also be rejected."""
-        with pytest.raises((ValueError, OverflowError)):
-            pl.Config.set_streaming_chunk_size(-1)
-
-    def test_chunk_size_one_is_valid(self):
-        """Minimum valid chunk size is 1."""
-        pl.Config.set_streaming_chunk_size(1)
-        val = pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE")
-        assert val is not None
-        assert int(val) == 1
-
-    def test_default_chunk_size_is_none(self):
-        """By default, POLARS_STREAMING_CHUNK_SIZE is not in Config.state."""
-        pl.Config.restore_defaults()
-        val = pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE")
-        assert val is None
-
-    def test_set_and_read_round_trips(self):
-        """Setting a chunk size should be readable back from state."""
-        pl.Config.set_streaming_chunk_size(99_999)
-        val = pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE")
-        assert val is not None
-        assert int(val) == 99_999
 
 
 # ---------------------------------------------------------------------------

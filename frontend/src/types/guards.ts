@@ -118,6 +118,7 @@ import type {
   JsonCacheStatusResponse,
   MlflowDestinationEntry,
   MlflowDestinationsResponse,
+  ExecutionSettings,
   MlflowSettingsResponse,
   MlflowTestConnectionResponse,
   MlflowExperiment,
@@ -2898,6 +2899,14 @@ export function parseMlflowDestinationsResponse(value: unknown): MlflowDestinati
       parseMlflowDestinationEntry,
     ),
     detail: expectString(p, obj.detail, "field `detail`"),
+  }
+}
+
+export function parseExecutionSettings(value: unknown): ExecutionSettings {
+  const p = "parseExecutionSettings"
+  const obj = expectPlainObject(p, value)
+  return {
+    streaming_chunk_size: expectPositiveInteger(p, obj.streaming_chunk_size, "field `streaming_chunk_size`"),
   }
 }
 

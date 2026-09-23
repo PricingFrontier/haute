@@ -228,9 +228,12 @@ def _train(
     run = _Run({}, pl.DataFrame(), calls)
     store = JobStore()
     service = TrainService(store)
-    body_payload: dict[str, Any] = {"graph": graph, "node_id": "train", "source": source}
     if streaming_chunk_size is not None:
-        body_payload["streaming_chunk_size"] = streaming_chunk_size
+        from haute._polars_utils import set_streaming_chunk_size
+
+        monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+        set_streaming_chunk_size(streaming_chunk_size)
+    body_payload: dict[str, Any] = {"graph": graph, "node_id": "train", "source": source}
     body = TrainRequest.model_validate(body_payload)
     config = dict(body.graph.node_map["train"].data.config)
     if row_limit is not None:
@@ -1026,7 +1029,6 @@ def test_concurrent_training_workers_publish_each_capture_once(
                     parquet_path=create_training_parquet_path(),
                     config=config,
                     project_root=str(project),
-                    streaming_chunk_size=None,
                     row_limit=None,
                     exclude=None,
                     keep_columns=None,

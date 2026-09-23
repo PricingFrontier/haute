@@ -40,8 +40,8 @@ from haute._polars_utils import (
     normalise_execution_profile,
     read_parquet_metadata,
     row_local_python_scan,
+    set_streaming_chunk_size,
     streaming_collect,
-    temporary_streaming_chunk_size,
 )
 
 # ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@ def test_bounded_sink_headroom_stops_at_filesystem_root_before_writer() -> None:
         ) as headroom,
         pytest.raises(OSError) as exc_info,
     ):
-        polars_utils._bounded_sink_execute(target, None, writer)
+        polars_utils._bounded_sink_execute(target, writer)
 
     assert exc_info.value.errno == errno.ENODEV
     headroom.assert_called_once_with(root)
@@ -130,19 +130,27 @@ def test_streaming_sink_requires_polars_to_return_a_lazy_plan(tmp_path: Path) ->
         )
 
 
-def test_temporary_streaming_chunk_size_restores_default_auto_state() -> None:
-    """A scoped chunk size must not leak when Polars started in auto mode."""
-    saved_config = pl.Config.save()
-    try:
-        pl.Config.restore_defaults()
-        assert pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE") is None
+def test_set_streaming_chunk_size_is_applied_and_read_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    set_streaming_chunk_size(12_345)
+    assert current_streaming_chunk_size() == 12_345
+    assert pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE") == "12345"
 
-        with temporary_streaming_chunk_size(12_345):
-            assert pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE") == "12345"
 
-        assert pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE") is None
-    finally:
-        pl.Config.load(saved_config)
+@pytest.mark.parametrize("invalid", [0, -1, 10_000_001, True, 1.5])
+def test_set_streaming_chunk_size_rejects_invalid_values(
+    invalid: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    with pytest.raises(ValueError):
+        set_streaming_chunk_size(invalid)  # type: ignore[arg-type]
+
+
+def test_current_streaming_chunk_size_falls_back_to_default_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    assert current_streaming_chunk_size() == DEFAULT_STREAMING_CHUNK_SIZE
 
 
 def test_streaming_collect_records_collect_metric_on_active_context_stage() -> None:

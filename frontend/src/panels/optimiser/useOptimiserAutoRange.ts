@@ -16,7 +16,6 @@ import useDocumentStatusStore, {
   type DocumentExecutionFence,
 } from "../../stores/useDocumentStatusStore"
 import useGraphStore from "../../stores/useGraphStore"
-import useSettingsStore from "../../stores/useSettingsStore"
 import {
   buildExecutionFailureMessage,
   executionErrorDetailMessage,
@@ -253,7 +252,6 @@ export function useOptimiserAutoRange({
 }: UseOptimiserAutoRangeOptions) {
   const [state, dispatch] = useReducer(reducer, initialState)
   const graphVersion = useGraphStore((current) => current.structuralVersion)
-  const streamingChunkSize = useSettingsStore((current) => current.streamingChunkSize)
   const currentDocumentKey = useDocumentStatusStore(documentScopeKey)
   const scopeKey = autoRangeScopeKey(
     nodeId,
@@ -307,7 +305,6 @@ export function useOptimiserAutoRange({
       const start = await startOptimiserFrontierAutoRange({
         graph: buildGraph(),
         node_id: nodeId,
-        streamingChunkSize,
         signal: active.controller.signal,
       })
       if (start.status === "started" && start.job_id) active.jobId = start.job_id
@@ -394,7 +391,7 @@ export function useOptimiserAutoRange({
     } finally {
       if (activeRef.current === active) activeRef.current = null
     }
-  }, [buildGraph, constraintNames, isCurrent, nodeId, onUpdate, retire, streamingChunkSize])
+  }, [buildGraph, constraintNames, isCurrent, nodeId, onUpdate, retire])
 
   const run = useCallback(() => {
     const documentFence = captureDocumentExecutionFence()

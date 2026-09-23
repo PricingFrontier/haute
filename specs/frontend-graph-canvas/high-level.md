@@ -636,7 +636,7 @@ candidate, with the error toast.
   cleanup can run before React commits the node-removal render and expose a
   torn node/cache view to another subscriber; deferral lets the graph commit
   first.
-- **A preview snapshots row limit, active source, and chunk size once at
+- **A preview snapshots row limit and active source once at
   fetch time**, then closes over those values for every request it makes —
   reading the live settings refs again partway through would let a user
   flipping the active data source mid-flight split one logical preview

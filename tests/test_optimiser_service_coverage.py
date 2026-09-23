@@ -359,7 +359,7 @@ def test_persist_ratebook_factors_lazy_cleans_up_dir_when_sink_fails() -> None:
 
     with patch("haute.routes._optimiser_service.bounded_sink", _capture_then_fail):
         with pytest.raises(OSError, match="sink exploded"):
-            _persist_ratebook_factors_lazy_artifact(lf, streaming_chunk_size=64)
+            _persist_ratebook_factors_lazy_artifact(lf)
 
     assert created_dirs, "bounded_sink should have been called"
     assert not created_dirs[0].exists(), "temp factors dir must be removed on sink failure"
@@ -368,7 +368,7 @@ def test_persist_ratebook_factors_lazy_cleans_up_dir_when_sink_fails() -> None:
 def test_persist_ratebook_factors_lazy_happy_path_roundtrips() -> None:
     """The lazy persist path writes a real handle that loads back equal."""
     lf = pl.DataFrame({"quote_id": ["q1", "q2"], "region": ["n", "s"]}).lazy()
-    handle = _persist_ratebook_factors_lazy_artifact(lf, streaming_chunk_size=64)
+    handle = _persist_ratebook_factors_lazy_artifact(lf)
     try:
         assert handle["kind"] == _RATEBOOK_FACTORS_HANDLE_KIND
         assert handle["row_count"] == 2

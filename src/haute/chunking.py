@@ -33,7 +33,7 @@ from haute._polars_operations import (
     chunk_admitted_names,
 )
 from haute._polars_selectors import literal_selector, preamble_selector_aliases
-from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, streaming_collect
+from haute._polars_utils import streaming_collect
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.errors import (
     ChunkMemoryRiskError,
@@ -162,7 +162,6 @@ class ChunkRunnerRequest:
     checkpoint_dir: Path | None = None
     start_frame: pl.LazyFrame | pl.DataFrame | None = None
     cleanup_checkpoints_on_error: bool = True
-    streaming_chunk_size: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1363,10 +1362,7 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
         _build_funcs,
         _resolve_graph_paths,
     )
-    from haute._polars_utils import (
-        bounded_collect_batches,
-        temporary_streaming_chunk_size,
-    )
+    from haute._polars_utils import bounded_collect_batches
 
     graph = _resolve_graph_paths(request.graph)
     prepared = prepare_graph(graph, plan.target_node_id, source=plan.source)
@@ -1464,10 +1460,6 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
     written_checkpoints: list[Path] = []
     completed = False
     yielded_chunks = 0
-    chunk_size_stack = contextlib.ExitStack()
-    chunk_size_stack.enter_context(
-        temporary_streaming_chunk_size(request.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE)
-    )
     logger.info(
         "chunk_runner_start",
         target_node_id=plan.target_node_id,
@@ -1607,7 +1599,6 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
     finally:
         if not completed and request.cleanup_checkpoints_on_error:
             _cleanup_written_checkpoints(written_checkpoints, checkpoint_dir=checkpoint_dir)
-        chunk_size_stack.close()
 
 
 def run_chunked_reduce(

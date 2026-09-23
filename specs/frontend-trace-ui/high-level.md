@@ -26,7 +26,7 @@ the validated response snapshot. The backend owns trace computation and response
 - All controls and alerts use labels/roles appropriate to their state. Numeric/null/non-finite
   values are formatted explicitly rather than being confused with missing text.
 - A trace request is bound to graph `structuralVersion`, source, row limit,
-  streaming chunk size, target, row, column, and clicked values. Any
+  target, row, column, and clicked values. Any
   semantic-context change aborts and clears it; position-only canvas movement
   does not. Fast requests transition directly to the result, while only
   requests still pending beyond a short measured threshold show compact

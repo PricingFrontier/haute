@@ -121,7 +121,6 @@ class DataFrameExecutionCacheRequest:
 
     cache: DataFrameExecutionCache
     keys_by_node: Mapping[str, DataFrameExecutionCacheKey]
-    streaming_chunk_size: int | None = None
     fast_checkpoint: bool = True
 
     def __post_init__(self) -> None:
@@ -147,9 +146,6 @@ class DataFrameExecutionCacheRequest:
                     "Dataframe cache request keys must include an execution_policy "
                     f"fingerprint (node_id={node_id!r})"
                 )
-        if self.streaming_chunk_size is not None and self.streaming_chunk_size < 1:
-            raise ValueError("streaming_chunk_size must be a positive integer")
-
         object.__setattr__(self, "keys_by_node", MappingProxyType(keys_by_node))
 
 
@@ -641,7 +637,6 @@ def materialize_lazy_frame_with_cache(
     cache: DataFrameExecutionCache,
     key: DataFrameExecutionCacheKey,
     profile: ExecutionProfile | str,
-    streaming_chunk_size: int | None = None,
     fast_checkpoint: bool = True,
 ) -> pl.LazyFrame:
     """Return a cache-backed scan for *lf*, materializing it on cache miss."""
@@ -660,12 +655,7 @@ def materialize_lazy_frame_with_cache(
 
         path = cache.path_for_key(key)
         try:
-            bounded_sink(
-                lf,
-                path,
-                fast_checkpoint=fast_checkpoint,
-                streaming_chunk_size=streaming_chunk_size,
-            )
+            bounded_sink(lf, path, fast_checkpoint=fast_checkpoint)
             metadata = read_parquet_metadata(path)
             stored = cache.store_artifact(key, path, metadata)
         except BaseException:

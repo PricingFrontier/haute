@@ -144,7 +144,6 @@ export default function useNodeDataCache({
   const nodeId = node?.id ?? null
   const nodeLabel = node ? String(node.data.label || node.id) : ""
   const activeSource = useSettingsStore((s) => s.activeSource)
-  const streamingChunkSize = useSettingsStore((s) => s.streamingChunkSize)
   const addToast = useToastStore((s) => s.addToast)
   const epoch = useNodeDataStore((s) => s.epoch)
   const observePoint = useNodeDataStore((s) => s.observePoint)
@@ -365,7 +364,6 @@ export default function useNodeDataCache({
           node_id: nodeId,
           source: activeSource,
           refresh,
-          streamingChunkSize,
         })
         if (!isDocumentExecutionFenceCurrent(fence)) return
         publish(response.point, configHash, fence)
@@ -415,7 +413,6 @@ export default function useNodeDataCache({
       nodeLabel,
       publish,
       startJob,
-      streamingChunkSize,
     ],
   )
 
