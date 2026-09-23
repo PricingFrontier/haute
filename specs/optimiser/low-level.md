@@ -625,6 +625,11 @@ returned as a generic `status: "error"` payload.
   structured HTTP 507 response with optimiser-estimate-specific user wording, never a generic
   HTTP 500. The job tag is what lets `_NON_BLOCKING_RUNNING_JOB_TYPES` exempt an in-flight
   `/estimate` call from `_check_no_concurrent_jobs`'s store-wide scan.
+- **`/estimate`'s `total_rows` is null only when the source size is unknown.**
+  `_detailed_ancestor_source_metadata` answers an unknown size itself, with no row count:
+  live data without Parquet backing, or a source whose metadata read raises `OSError`,
+  `TypeError` or `ValueError`. The route does not catch anything else it raises. An
+  unexpected failure is an error response, never an estimate with the total missing.
 - **std of a single-quote scenario-value distribution is hardcoded to `0.0`.**
   `_compute_scenario_value_stats` special-cases `n == 1` rather than calling Polars' sample
   standard deviation (`ddof=1`), which is undefined (`null`) for a single observation and would

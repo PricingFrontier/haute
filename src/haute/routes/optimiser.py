@@ -1329,16 +1329,13 @@ def estimate_solve(body: OptimiserEstimateRequest) -> OptimiserEstimateResponse:
     from haute._ram_estimate import _detailed_ancestor_source_metadata
 
     body = cast(OptimiserEstimateRequest, _prepare_optimiser_execution_request(body))
-    total_rows: int | None = None
-    try:
-        source_metadata = _detailed_ancestor_source_metadata(
-            body.graph,
-            body.node_id,
-            body.source,
-        )
-        total_rows = source_metadata.row_count
-    except Exception as exc:
-        logger.warning("optimiser_estimate_failed", error=str(exc), node_id=body.node_id)
+    # The resolver answers an unknown source size with no row count; anything
+    # it raises is a failure, not an unknown total.
+    total_rows = _detailed_ancestor_source_metadata(
+        body.graph,
+        body.node_id,
+        body.source,
+    ).row_count
 
     try:
         metrics = _optimiser_input_metrics(body)

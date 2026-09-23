@@ -17,7 +17,6 @@ Current behaviour is specified in [the optimiser specification](../optimiser/low
 | OPT-P14 | Planned | P2 | Complete solver/result publication extraction. |
 | OPT-P15 | Planned | P2 | One auto-range job remains; the chunked path and its disk-bucket reducer go only if one streaming group-by keeps within the specified memory bound. |
 | OPT-P16 | Planned | P2 | Optimiser inputs are materialised in a hard-capped worker, not on a server thread. |
-| OPT-P17 | Planned | P2 | A failed estimate reports the failure instead of an estimate with missing fields. |
 | OPT-P18 | Planned | P2 | Selecting a frontier point is computed once, by the server. |
 
 ## Planned improvements
@@ -204,23 +203,6 @@ background jobs; `ROAD-WORKER-04` remains the package for the solver itself.
 `src/haute/routes/_optimiser_service.py::_build_grid`;
 `src/haute/routes/_training_preparation.py`; `src/haute/_worker_protocol.py`;
 `tests/test_optimiser_golden.py`.
-
-### OPT-P17 — A failed estimate is reported as a failure
-**Why:** `estimate_solve` catches any exception while reading source metadata,
-logs a warning and continues with no row total, so an internal error looks
-the same as a source whose size is honestly unknown.
-
-**Plan:** Distinguish "unavailable" (a specified outcome with a reason) from an
-unexpected failure, which propagates through the ordinary error path.
-
-**Acceptance:** A test injects an unexpected error into metadata resolution
-and receives an error response; the specified unavailable cases still
-return an estimate that names why the total is missing.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/routes/optimiser.py::estimate_solve`;
-`src/haute/_ram_estimate.py::_detailed_ancestor_source_metadata`.
 
 ### OPT-P18 — Selecting a frontier point is server-authoritative
 **Why:** A frontier point is turned into a solve summary twice: by
