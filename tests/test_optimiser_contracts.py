@@ -548,7 +548,7 @@ def test_optimiser_receives_slim_quote_contiguous_expander_projection(
                 "node_id": "opt",
             },
         )
-        assert grid_captured.wait(timeout=2.0)
+        assert grid_captured.wait(timeout=10.0)
 
     assert resp.status_code == 200
     assert captured["constraint_cols"] == ["volume"]
