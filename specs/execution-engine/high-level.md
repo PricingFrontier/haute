@@ -73,10 +73,9 @@ running heavy work in a child process the parent can kill on timeout or memory l
   the `NodeBuildHooks` interception seam, then orchestrates when and how the resulting
   callables run. The node's public configuration contract remains pipeline-config's
   responsibility.
-- Whether a materialised DataFrame or lazy scan is reused across calls without
-  recomputation — the dataframe execution cache's storage/eviction/fingerprinting
-  policy belongs to [caching](../caching/high-level.md); this component only decides
-  *what* to cache and consumes the cache's `get`/`scan`/`materialize` API.
+- How a materialised node output is stored, identified and reused across calls — the
+  shared snapshot store and seed-plan resolution belong to
+  [caching](../caching/high-level.md); this component runs the seed plan it is given.
 - The accident guard for user-written Polars/Python snippets (`code` config fields);
   node code is trusted project code and the guard's restricted-`exec` mechanism and
   the trust boundary are [sandbox-security](../sandbox-security/high-level.md);
@@ -536,8 +535,7 @@ keep reporting the failing line so the editor can name the failing step.
   one parent or child along effective edges or that feeds a join, a materialising
   operation, a batch Model Score, and the producer a caller consumes — through the
   bounded sink into the shared snapshot store, and continues from what it wrote. A run
-  without a plan captures nothing — only a caller's dataframe-cache request (deploy
-  scoring) materialises there — and there is no checkpoint directory.
+  without a plan captures nothing, and there is no checkpoint directory.
   In-memory `.collect().lazy()` materialisation is not supported behaviour.
 - **Profile-scoped memory budgets, not one global limit.** A preview click and a
   10M-row training run have wildly different acceptable memory footprints and
@@ -630,9 +628,8 @@ keep reporting the failing line so the editor can name the failing step.
 - [pipeline-config](../pipeline-config/high-level.md): owns node schemas, sidecar
   validation, and registry/configuration contracts. Execution-engine owns the runtime
   builder implementations and interception seam registered behind those contracts.
-- [caching](../caching/high-level.md): the dataframe execution cache
-  (`DataFrameExecutionCache`) that `_execute_lazy` seeds from and materialises into on
-  a cache miss, plus `_cache.lineage_cache_key()`, which
+- [caching](../caching/high-level.md): the seed plans `_execute_lazy` runs, plus
+  `_cache.lineage_cache_key()`, which
   `execution.preview_lineage_cache_key()` uses with
   `PREVIEW_EXECUTION_SEMANTICS_VERSION` and the complete selected-lineage payload as
   the sole preview/trace cache identity.
@@ -766,8 +763,8 @@ it and never narrows an identity's columns; a capture not published under the pu
 rule continues from its own staged artifact as a request-owned file without recomputing
 the node and is reported as `snapshot_capture_superseded`, while any other
 store failure fails the execution. Worker processes capture directly through the store's
-cross-process locks. There is no temporary checkpoint directory and no private
-dataframe-cache namespace. Deploy scoring neither seeds nor captures; a refresh disables
+cross-process locks. There is no temporary checkpoint directory. Deploy scoring neither
+seeds nor captures; a refresh disables
 seeding but still captures; a profile whose outputs are not proven identical to the
 snapshot's semantics class neither seeds nor captures.
 

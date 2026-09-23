@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import OptimiserPreview from "../OptimiserPreview"
-import type { OptimiserSolveResult } from "../../api/types"
+import type { FrontierPointSummary, OptimiserSolveResult } from "../../api/types"
 import useNodeResultsStore, {
   resetNodeResultsDerivedCaches,
 } from "../../stores/useNodeResultsStore"
@@ -50,6 +50,25 @@ vi.mock("../../stores/useSettingsStore", () => ({
     selector({ mlflow: MLFLOW_INVENTORY }),
   useMlflowDestinations: () => MLFLOW_INVENTORY,
 }))
+
+function makePointSummary(overrides: Partial<FrontierPointSummary> = {}): FrontierPointSummary {
+  return {
+    total_objective: 0,
+    constraints: {},
+    lambdas: {},
+    converged: true,
+    iterations: null,
+    cd_iterations: null,
+    clamp_rate: null,
+    history: null,
+    scenario_value_stats: null,
+    scenario_value_histogram: null,
+    factor_tables: null,
+    warning: null,
+    frontier_error: null,
+    ...overrides,
+  }
+}
 
 function resetStore() {
   resetNodeResultsDerivedCaches()
@@ -103,6 +122,11 @@ describe("OptimiserPreview store integration", () => {
             loss_ratio: 0.55 + i * 0.02,
             lambda_loss_ratio: 0.01 + i * 0.01,
             converged: true,
+          })),
+          point_summaries: Array.from({ length: 5 }, (_, i) => makePointSummary({
+            total_objective: 120 + i,
+            constraints: { loss_ratio: 0.55 + i * 0.02 },
+            lambdas: { loss_ratio: 0.01 + i * 0.01 },
           })),
           n_points: 5,
           points_returned: 5,
@@ -161,6 +185,7 @@ describe("OptimiserPreview store integration", () => {
               converged: true,
             },
           ],
+          point_summaries: [makePointSummary({ total_objective: 120, constraints: { volume: 0.9 }, lambdas: { volume: 0.1 } })],
           n_points: 1,
           points_returned: 1,
           constraint_names: ["volume"],
@@ -225,6 +250,7 @@ describe("OptimiserPreview store integration", () => {
               converged: true,
             },
           ],
+          point_summaries: [makePointSummary({ total_objective: 120, constraints: { volume: 0.9 }, lambdas: { volume: 0.1 } })],
           n_points: 1,
           points_returned: 1,
           constraint_names: ["volume"],
@@ -301,6 +327,7 @@ describe("OptimiserPreview store integration", () => {
               converged: true,
             },
           ],
+          point_summaries: [makePointSummary({ total_objective: 120, constraints: { volume: 0.9 }, lambdas: { volume: 0.1 } })],
           n_points: 1,
           points_returned: 1,
           constraint_names: ["volume"],
@@ -358,6 +385,7 @@ describe("OptimiserPreview store integration", () => {
               converged: true,
             },
           ],
+          point_summaries: [makePointSummary({ total_objective: 120, constraints: { volume: 0.9 }, lambdas: { volume: 0.1 } })],
           n_points: 1,
           points_returned: 1,
           constraint_names: ["volume"],
@@ -399,6 +427,7 @@ describe("OptimiserPreview store integration", () => {
               converged: true,
             },
           ],
+          point_summaries: [makePointSummary({ total_objective: 120, constraints: { volume: 0.9 }, lambdas: { volume: 0.1 } })],
           n_points: 1,
           points_returned: 1,
           constraint_names: ["volume"],
@@ -490,6 +519,10 @@ describe("OptimiserPreview store integration", () => {
               converged: true,
             },
           ],
+          point_summaries: [
+            makePointSummary({ total_objective: 100, constraints: { volume: 0.9 }, lambdas: { volume: 0.05 } }),
+            makePointSummary({ total_objective: 130, constraints: { volume: 0.93 }, lambdas: { volume: 0.55 } }),
+          ],
           n_points: 2,
           points_returned: 2,
           constraint_names: ["volume"],
@@ -551,8 +584,8 @@ describe("OptimiserPreview store integration", () => {
     // The visible result reflects point 1's response, not the late point 0.
     expect(final.result.total_objective).toBe(130)
     expect(final.result.factor_tables).toEqual(point1Response.factor_tables)
-    // Point 1's per-point row was enriched on the way in.
-    expect(final.frontier!.points[1]).toEqual(
+    // Point 1's stored summary was enriched on the way in.
+    expect(final.frontier!.point_summaries[1]).toEqual(
       expect.objectContaining({ factor_tables: point1Response.factor_tables }),
     )
     // Point 0's late response is COMPLETELY discarded — the
@@ -561,6 +594,6 @@ describe("OptimiserPreview store integration", () => {
     // is ever touched.  Re-selecting point 0 will trigger a fresh
     // request, not stale leftovers.  This is the safer contract: no
     // partial enrichment from a request the user has already moved past.
-    expect(final.frontier!.points[0]).not.toHaveProperty("factor_tables")
+    expect(final.frontier!.point_summaries[0].factor_tables).toBeNull()
   })
 })

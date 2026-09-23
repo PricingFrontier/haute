@@ -292,7 +292,7 @@ Out of scope (owned elsewhere, linked where relevant):
   `_git_setup.py`'s unborn-repo commit seed for `ensure_gitignore_guards`.
 - Supplies numeric parsing helpers to callers across the codebase, including
   `executor.py`, `trace.py`, `_execution_admission.py`, `assistant/_loop.py`,
-  `_dataframe_execution_cache.py`, `_input_preparation.py`, `_interactive_workers.py`,
+  `_input_preparation.py`, `_interactive_workers.py`,
   `_source_cache.py`, `_json_shred/` (`_records.py`, `_runtime_storage.py`, `_writer.py`),
   `deploy/_batch_scoring.py`, and the route modules `routes/pipeline.py`,
   `routes/json_cache.py`, `routes/output_assemble.py`, `routes/input_cache.py`,

@@ -62,6 +62,7 @@ import type {
   FrontierAutoRangeStatusResponse,
   FrontierStatusResponse,
   FrontierPoint,
+  FrontierPointSummary,
   FrontierResponse,
   FrontierSelectResponse,
   GitArchiveResponse,
@@ -138,6 +139,8 @@ import type {
   NodeDataRunResponse,
   NodeDataStatusResponse,
   OptimiserHistoryEntry,
+  OptimiserScenarioValueHistogram,
+  OptimiserScenarioValueStats,
   OptimiserEstimate,
   OptimiserSolveResponse,
   OptimiserSolveResult,
@@ -3018,11 +3021,78 @@ export function parseOptimiserEstimateResponse(value: unknown): OptimiserEstimat
   }
 }
 
+function parseScenarioValueStats(parser: string, value: unknown, field: string): OptimiserScenarioValueStats {
+  const stats = expectPlainObject(parser, value, field)
+  const stat = (key: keyof OptimiserScenarioValueStats) => expectNumber(parser, stats[key], `${field}.${key}`)
+  return {
+    mean: stat("mean"),
+    std: stat("std"),
+    min: stat("min"),
+    max: stat("max"),
+    p5: stat("p5"),
+    p25: stat("p25"),
+    p50: stat("p50"),
+    p75: stat("p75"),
+    p95: stat("p95"),
+    pct_increase: stat("pct_increase"),
+    pct_decrease: stat("pct_decrease"),
+  }
+}
+
+function parseScenarioValueHistogram(parser: string, value: unknown, field: string): OptimiserScenarioValueHistogram {
+  const histogram = expectPlainObject(parser, value, field)
+  const numbers = (key: "counts" | "edges") =>
+    parseArray(parser, histogram[key], `${field}.${key}`, (item, itemField) => expectNumber(parser, item, itemField))
+  return { counts: numbers("counts"), edges: numbers("edges") }
+}
+
+function parseFrontierPointSummary(value: unknown, field: string): FrontierPointSummary {
+  const parser = "parseOptimiserStatusResponse"
+  const obj = expectPlainObject(parser, value, field)
+  // Every field is always sent; null means the point has none.
+  const nullable = <T>(key: keyof FrontierPointSummary, parse: (item: unknown, itemField: string) => T): T | null => {
+    if (!(key in obj)) throw new Error(`${parser}: expected ${field}.${key} to be present`)
+    return obj[key] === null ? null : parse(obj[key], `${field}.${key}`)
+  }
+  const number = (item: unknown, itemField: string) => expectNumber(parser, item, itemField)
+  const text = (item: unknown, itemField: string) => expectString(parser, item, itemField)
+  return {
+    total_objective: expectNumber(parser, obj.total_objective, `${field}.total_objective`),
+    constraints: parseNumberRecord(parser, obj.constraints, `${field}.constraints`),
+    lambdas: parseNumberRecord(parser, obj.lambdas, `${field}.lambdas`),
+    converged: expectBoolean(parser, obj.converged, `${field}.converged`),
+    iterations: nullable("iterations", number),
+    cd_iterations: nullable("cd_iterations", number),
+    clamp_rate: nullable("clamp_rate", number),
+    history: nullable("history", (item, itemField) => parseArray(parser, item, itemField, parseOptimiserHistoryEntry)),
+    scenario_value_stats: nullable("scenario_value_stats", (item, itemField) => parseScenarioValueStats(parser, item, itemField)),
+    scenario_value_histogram: nullable("scenario_value_histogram", (item, itemField) => parseScenarioValueHistogram(parser, item, itemField)),
+    factor_tables: nullable("factor_tables", (item, itemField) =>
+      Object.fromEntries(
+        Object.entries(expectPlainObject(parser, item, itemField)).map(([name, rows]) => [
+          name,
+          parsePlainObjectArray(parser, rows, `${itemField}.${name}`),
+        ]),
+      ),
+    ),
+    warning: nullable("warning", text),
+    frontier_error: nullable("frontier_error", text),
+  }
+}
+
 export function parseFrontierResponse(value: unknown, field = "object"): FrontierResponse {
   const obj = expectPlainObject("parseOptimiserStatusResponse", value, field)
+  const points = optionalArray("parseOptimiserStatusResponse", obj, "points", parseFrontierPoint)
+  const pointSummaries = optionalArray("parseOptimiserStatusResponse", obj, "point_summaries", parseFrontierPointSummary)
+  if (pointSummaries.length !== points.length) {
+    throw new Error(
+      `parseOptimiserStatusResponse: expected ${field}.point_summaries to hold one summary per point, got ${pointSummaries.length} for ${points.length} points`,
+    )
+  }
   return {
     status: expectString("parseOptimiserStatusResponse", obj.status, `${field}.status`),
-    points: optionalArray("parseOptimiserStatusResponse", obj, "points", parseFrontierPoint),
+    points,
+    point_summaries: pointSummaries,
     n_points: optionalNumber("parseOptimiserStatusResponse", obj, "n_points"),
     points_returned: optionalNumber("parseOptimiserStatusResponse", obj, "points_returned"),
     constraint_names: optionalStringArray("parseOptimiserStatusResponse", obj, "constraint_names"),

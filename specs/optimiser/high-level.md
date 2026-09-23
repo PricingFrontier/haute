@@ -85,7 +85,10 @@ ratebook) factor tables are available as a job summary. From there a user can:
 
 - Compute an efficient frontier — a grid of alternative constraint-threshold trade-off points —
   over explicit or auto-estimated absolute threshold ranges, and select one point as the active
-  result without re-running the full solve. Like the solve itself, the sweep runs as a background
+  result without re-running the full solve. The server derives each returned point's summary
+  once, when it builds the frontier, and sends it with the points; selecting a point shows
+  exactly that summary, and the browser never derives one from a frontier row. Like the solve
+  itself, the sweep runs as a background
   job: the request validates synchronously (runtime availability, range resolution, the
   compute-budget cap) and returns a pollable frontier job id, and the caller polls a separate
   frontier-status endpoint to a terminal state. Only one frontier sweep may be in flight per solve
@@ -194,7 +197,8 @@ multiplier semantics are ambiguous once constraints have different natural scale
 `price-contour` frontier API itself is threshold-based. For the same reason, a frontier point
 that is missing the numeric fields needed to reconstruct a full solve summary is treated as a
 hard failure rather than being patched over with a fallback value — a partial, guessed summary
-would misrepresent the actual solve.
+would misrepresent the actual solve. The failure surfaces once, where the server builds the
+summary: the frontier is reported unavailable instead of being published.
 
 Trace explainability deliberately does not reimplement `price-contour`'s scoring or
 ratio-constraint linearisation math in Haute. Instead `price-contour` exposes deterministic

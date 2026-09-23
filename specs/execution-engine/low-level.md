@@ -6,9 +6,9 @@
 |---|---|
 | `src/haute/_cpu_performance.py` | Process-local Windows HighQoS read/set/verify policy, invoked at CLI, server and worker startup; preserves unrelated power-policy bits and reports unsupported or rejected native operations. |
 | `src/haute/executor.py` | GUI-facing eager entry point: `execute_graph()` (preview, with the `_preview_cache` `LRUCache`), `write_data_output()` (batch/data-output writes), preamble compilation + single-flight cache (`_compile_preamble`), preview-column projection/schema-warning assembly, and output-destination containment. |
-| `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points (and `plan_projection`, the projection half of `plan_execution_strategy`, for a caller that needs another execution's per-node column demand without planning or admitting it), runtime-input fingerprints, `preview_lineage_cache_key`, `PREVIEW_EXECUTION_SEMANTICS_VERSION`, and the process-default dataframe execution-cache singleton. It is the stable application import boundary, but is not currently a thin re-export module. |
+| `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points (and `plan_projection`, the projection half of `plan_execution_strategy`, for a caller that needs another execution's per-node column demand without planning or admitting it), runtime-input fingerprints, `preview_lineage_cache_key`, and `PREVIEW_EXECUTION_SEMANTICS_VERSION`. It is the stable application import boundary, but is not currently a thin re-export module. |
 | `src/haute/_path_resolution.py` | Cross-component dependency owned by [sandbox-security](../sandbox-security/low-level.md); canonical local-runtime-path resolution: separator normalization, project/pipeline candidate choice, symlink-aware containment, selected-external-pipeline root inference, and the context-local root used by eager/lazy builders. |
-| `src/haute/_execute_lazy.py` | The shared execution core: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), `_execute_lazy` (lazy plan + seed-plan seeding and capture + dataframe-cache seeding), and `_execute_eager_core`/`EagerResult` (eager materialisation and preview error adaptation). |
+| `src/haute/_execute_lazy.py` | The shared execution core: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), `_execute_lazy` (lazy plan + seed-plan seeding and capture), and `_execute_eager_core`/`EagerResult` (eager materialisation and preview error adaptation). |
 | `src/haute/_contracts.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution consumes the shared column-contract model and registry lookup. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution reads the canonical node registry. |
 | `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, profile-independent projection decisions, fan-in edge demands, materialisation/opaque boundaries, derivation of each code node's recompute facts (`recompute_facts_by_node(...)`), demand-only source-scan projection (a node's configured column selection bounds what may be demanded but is never pushed into or validated against a physical read), and bounded strategy diagnostics. |
@@ -401,11 +401,7 @@ order (and `executor.execute_graph` calls it before its request planning), so a 
 stale snapshot generation is built or refreshed — under the current native cap in-process,
 or in a spawned hard-capped worker admitted from the execution's budget — before the RAM
 estimator reads generation metadata, and before the preview path computes its runtime
-identity, so a refreshed generation's pointer is the one keyed. A caller that still builds a
-dataframe-cache request before the engine prepares (deploy scoring's `deploy_score`
-namespace) is keyed by the superseded pointer after a refresh and misses once;
-the next execution keys the new pointer, and correctness never depends on it because the
-current source signature is part of every key. `schema_only` executions,
+identity, so a refreshed generation's pointer is the one keyed. `schema_only` executions,
 executions without an admitted context, and planned executions skip it (a seed plan
 is opened only after preparing exactly the inputs it reads). The IO-layer specification owns the
 lifecycle, the cap gate, the single-flight, and the `InputPreparationError` reason codes;
@@ -695,42 +691,32 @@ consumer and must never broaden to the whole source or collapse the row count.
 
 **Sink/lazy execution (`execution.execute_lazy_graph` → `_execute_lazy._execute_lazy`).**
 Consumes the same `PreparedExecution` and `NodeBoundaryRunner` as eager execution,
-plus: optional seeding from a
-`DataFrameExecutionCacheRequest` (skips rebuilding any node whose entire downstream
-lineage is already cache-covered, via a reverse topo pass computing
-`cache_covers_downstream`), a fuller backward projection analysis (a seed plan, a
+plus: a fuller backward projection analysis (a seed plan, a
 non-live source, or explicit required columns triggers it; the execution profile
 never does), then `_build_funcs()` for the nodes still needing construction. Each node's lazy
-frame is built by `_build_lazy_node()` (contract-checked the same way as eager),
-optionally materialised into the shared dataframe cache
-(`materialize_lazy_frame_with_cache`), and — under a seed plan — captured when it is one
-of the plan's capture points (below), after which `_release_consumed_parents()` drops
-parent frames with no remaining consumer (a source, a preserved output, or a captured or
-cache-backed node — a cheap scan of a held file — is kept). Without a plan nothing is
-captured into shared snapshots and nothing is checkpointed; the only materialisation left is a
-caller's own dataframe-cache request (deploy scoring's). `gc.collect()`/`_malloc_trim()` run every
+frame is built by `_build_lazy_node()` (contract-checked the same way as eager) and —
+under a seed plan — captured when it is one of the plan's capture points (below), after
+which `_release_consumed_parents()` drops parent frames with no remaining consumer (a
+source, a preserved output, or a captured or seeded node — a cheap scan of a held file — is
+kept). Without a plan nothing is captured into shared snapshots and nothing is
+checkpointed. `gc.collect()`/`_malloc_trim()` run every
 `_GC_BATCH_INTERVAL` (3) materialisations, not every one, since Polars/Arrow buffers are
 freed immediately on `del` and full GC only matters for cyclic Python garbage.
 
-When a dataframe-cache key names a broader concrete `required_columns` set than the
-immediate runtime request, backward projection is planned from their union. The cache
-key is therefore a physical materialisation demand, not only an identity check: source
-and intermediate projections must retain every passthrough dependency needed to write
-the declared artifact. A narrow runtime request may warm a broader cache entry, but it
-must never silently prune a cache-key column and then skip the cache write. If a column
-required only by that broader cache key is absent from the actual runtime schema, cache
-population is skipped and the cache-only demand is removed from the edge projections.
-A missing cache-only column must never fail otherwise-valid
-runtime execution; a missing runtime-required column still raises the typed contract
-mismatch at the first proven boundary.
+When a seed plan's negotiated demand names a broader concrete column set than the
+immediate runtime request, backward projection is planned from their union, so source
+and intermediate projections retain every passthrough column a capture needs. If a
+column required only by that broader demand is absent from the actual runtime schema, it
+is removed from the edge projections and the capture is written without it. A missing
+capture-only column never fails otherwise-valid runtime execution; a missing
+runtime-required column still raises the typed contract mismatch at the first proven
+boundary.
 
 **Planned executions (`snapshot_plan`).** `_execute_lazy` given a leased
 [seed plan](../caching/low-level.md#seed-plans) runs exactly that plan. The plan must have
-been resolved for this target, source, profile, and lineage fingerprint, and is exclusive
-with `dataframe_cache_request` (`ValueError` otherwise). Planning
-demand is the plan's negotiated demand, handled like a broader cache key above: a negotiated
-column the run itself does not need is best-effort. Each seed enters through the cached-seed
-path as its leased generation projected to its demand (carrier-preserving), and only the
+been resolved for this target, source, profile, and lineage fingerprint (`ValueError`
+otherwise). Planning demand is the plan's negotiated demand, handled as above: a negotiated
+column the run itself does not need is best-effort. Each seed enters as its leased generation projected to its demand (carrier-preserving), and only the
 plan's executed nodes and seeds are built. A pass-through node is not built: its output is
 its selected edge's frame (`select_edge_source_output`, then the edge projection,
 `selected_columns`, and renames). Admission and materialisation estimation see only the
@@ -799,8 +785,7 @@ away. The worker's response metrics
 carry the parent's input preparation ahead of its own evidence
 (`ExecutionContext.metrics_with_worker_evidence`). An in-process write (`write_data_output`)
 prepares inputs and opens its own plan. Either way the plan is held until the output is
-written, under the process streaming chunk size; no checkpoint directory and no
-dataframe-cache entry is written.
+written, under the process streaming chunk size; no checkpoint directory is written.
 
 `executor.write_data_output()` then writes the terminal lazy frame. A sink-capable `dataOutput`
 format uses a bounded Polars sink. Writer-only formats and
@@ -1464,8 +1449,7 @@ present a structural or schema result as execution evidence.
   chunk of that operation reuses one namespace without re-hashing helper files, while the
   next operation resolves a fresh fingerprint and therefore sees helper edits. There is no
   process-lifetime marker: a namespace is never reused across operations under a
-  dependency identity other than the one it was compiled for, and the dataframe cache key
-  of an operation is derived from the same pinned snapshot.
+  dependency identity other than the one it was compiled for.
 - **`resolve_orig_source_names`/`build_instance_mapping` reject ambiguity rather than
   guessing.** A substring-match pairing between an instance node's upstream sources
   and the original node's parameter names that is ambiguous in either direction
@@ -1787,10 +1771,9 @@ present a structural or schema result as execution evidence.
   continues from what this run wrote — its publication or its own staged artifact —
   never from a generation another run published meanwhile, and every capture is
   written by the bounded sink, never from collected batches.
-- **Materialisation is a capture or a cache entry, never in memory.** No execution
-  path performs an in-memory `.collect().lazy()` materialisation, and a run without a
-  seed plan captures nothing and writes no checkpoint; only a caller's dataframe-cache
-  request (deploy scoring) materialises there.
+- **Materialisation is a capture, never in memory.** No execution path performs an
+  in-memory `.collect().lazy()` materialisation, and a run without a seed plan captures
+  nothing and writes no checkpoint.
 - **A capture's path is never a node id.** Captures are stored under their slot's
   identity digest, so no node-id spelling can escape or alias the store.
 - **RAM estimation returns `None` rather than guessing** when parquet metadata, the
@@ -2253,8 +2236,8 @@ present a structural or schema result as execution evidence.
   the worker itself succeeded).
 - Other generic `ValueError`/`TypeError`/`RuntimeError` are used for internal-invariant
   violations that should never occur given the calling contract (e.g. a node
-  returning a non-Polars-frame type, a dataframe-cache key that doesn't match the
-  current graph/policy, a missing sink output path) — these are not part of the
+  returning a non-Polars-frame type, a seed plan resolved for a different execution, a
+  missing sink output path) — these are not part of the
   typed-error surface external callers are expected to catch by type.
 
 ## Testing
@@ -2424,8 +2407,6 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
 - **`test_execute_lazy_contracts.py`** / **`test_execute_lazy_contract_coverage.py`**
   — column-contract enforcement at node boundaries on both paths, including the
   contract-resolution-degradation behaviour.
-- **`test_execute_lazy_dataframe_cache.py`** — dataframe-execution-cache seeding/
-  skip-covered-node logic inside `_execute_lazy`.
 - **`test_execute_lazy_paths.py`**, **`test_capture_projection.py`**,
   **`test_projection_planner.py`** — backward column-projection analysis and its
   effect on capture/eager collection width. `test_capture_projection.py`'s
@@ -2566,7 +2547,7 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   executions never build (store build poisoned), the in-process path is taken under a
   declared native cap and the worker path otherwise (a fake spawn receiving the budget), a
   missing admitted context skips preparation (the node reports `input_snapshot_missing`),
-  a warmed preview cache and a warmed dataframe cache both return the new rows after the
+  a warmed preview cache returns the new rows after the
   source is rewritten, and the terminal payload's `input_preparation` records carry digests
   and counts only and validate through `ExecutionMetricsPayload`.
 - **`test_worker_isolation.py`** — the shared `isolated_worker_failure_is_memory` predicate over every worker outcome; picklable-result round-trip, remote-exception
@@ -2576,9 +2557,6 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   `IsolatedWorkerTerminationError` if the child remains alive, memory-cap enforcement
   (including the "unsupported on this platform" path), and the isolated-job-supervisor
   wrapper.
-- **`test_dataframe_execution_cache.py`** — shared with
-  [caching](../caching/low-level.md); covers the cache API this component's
-  `_execute_lazy` calls into, not owned here.
 - **`test_codegen_execution_equivalence.py`** — cross-checks that codegen-generated
   `.py` pipeline execution and the GUI executor produce identical results for the
   same graph, pinning the `_node_apply.py` shared-implementation guarantee.

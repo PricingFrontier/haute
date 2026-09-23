@@ -327,8 +327,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    preamble when supplied, adopts the parent's seed plan (or, called without one, prepares
    inputs and opens its own), runs the upstream pipeline lazily under it with
    `prepare_inputs=False` — seeds read, the modelling node's producer and every join, fan-out,
-   and materialisation captured into shared snapshots, no checkpoint directory and no private
-   dataframe-cache namespace — holding the plan until the sink completes, derives the version-1
+   and materialisation captured into shared snapshots, no checkpoint directory — holding the plan until the sink completes, derives the version-1
    feature-selection diagnostic from the materialised schema, rejects HTTP
    422/`contract_error` if target/metadata/exclusion rules leave no feature columns, validates
    the required columns actually arrived, projects away excluded columns while retaining
@@ -1388,7 +1387,7 @@ rows/features) and retry.
   its recorded ancestor, and recomputes both branches once that ancestor is cleared; a child
   whose seed is refreshed and cleared before it starts reads the leased rows; the evaluation
   preview seeds a training capture and a training run widens the preview's; no checkpoint
-  directory or dataframe-cache entry is written; a child stopped, timed out, or killed at
+  directory is written; a child stopped, timed out, or killed at
   its memory cap leaves no capture staging; preparation time comes out of the child's budget,
   and preparation that ends past the job deadline — or fails after it — is the job's
   `timed_out`; a plan-opening failure in the parent (cancellation, input-preparation contract

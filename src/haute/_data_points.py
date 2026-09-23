@@ -229,9 +229,9 @@ def _version(kind: PointKind, payload: object) -> str:
 
 
 def _lineage_fingerprint(graph: PipelineGraph, node_id: str, memo: GraphFingerprintMemo) -> str:
-    from haute._dataframe_execution_cache import _upstream_subgraph
+    from haute._graph_utils import upstream_subgraph
 
-    return graph_fingerprint(_upstream_subgraph(graph, node_id), memo=memo)
+    return graph_fingerprint(upstream_subgraph(graph, node_id), memo=memo)
 
 
 def _pipeline_base_dir(graph: PipelineGraph) -> Path | None:

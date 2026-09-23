@@ -141,8 +141,7 @@ deploy scoring pass their existing suites unchanged through the new walker;
 the two old cores are deleted; no function in the walker exceeds a
 cyclomatic complexity the team agrees in the specification.
 
-**Dependencies:** `CACHE-S23` (removes the dead cache-request branches first);
-`EXEC-R03`, or, if the chunked runner stays, re-expressing it as one more
+**Dependencies:** `EXEC-R03`, or, if the chunked runner stays, re-expressing it as one more
 policy over the walker; and the recorded `EXEC-R04` decision, not its
 implementation.
 

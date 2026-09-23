@@ -656,12 +656,10 @@ def test_training_widens_evaluation_preview_capture(
     assert widened is not None and widened.columns == ALL
 
 
-def test_training_leaves_no_checkpoint_directory_or_namespace_entry(
+def test_training_leaves_no_checkpoint_directory(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import tempfile
-
-    from haute._dataframe_execution_cache import DataFrameExecutionCache
 
     created: list[str] = []
     mkdtemp = tempfile.mkdtemp
@@ -671,19 +669,12 @@ def test_training_leaves_no_checkpoint_directory_or_namespace_entry(
         created.append(Path(path).name)
         return path
 
-    stored: list[Any] = []
     monkeypatch.setattr(tempfile, "mkdtemp", recording_mkdtemp)
-    monkeypatch.setattr(
-        DataFrameExecutionCache,
-        "store_artifact",
-        lambda self, *args, **kwargs: stored.append(args),
-    )
 
     run = _train(monkeypatch, _diamond(project))
 
     assert run.job["status"] == "running", run.job.get("message")
     assert not [name for name in created if name.startswith("haute_train_ckpt_")]
-    assert stored == []
 
 
 @pytest.mark.parametrize("stopped", ["cancelled", "timed_out", "memory_limited"])
@@ -1092,11 +1083,9 @@ def test_no_bounded_caller_creates_a_checkpoint_directory(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Training preparation, the evaluation preview, optimiser setup, and a Data
-    Output write — every bounded caller — write no checkpoint directory, and the
-    process dataframe cache stays empty."""
+    Output write — every bounded caller — write no checkpoint directory."""
     import tempfile
 
-    from haute._dataframe_execution_cache import DataFrameExecutionCache
     from haute.executor import write_data_output
     from haute.routes._job_store import JobStore
     from haute.routes._train_service import TrainService
@@ -1111,13 +1100,7 @@ def test_no_bounded_caller_creates_a_checkpoint_directory(
         created.append(Path(path).name)
         return path
 
-    stored: list[Any] = []
     monkeypatch.setattr(tempfile, "mkdtemp", recording_mkdtemp)
-    monkeypatch.setattr(
-        DataFrameExecutionCache,
-        "store_artifact",
-        lambda self, *args, **kwargs: stored.append(args),
-    )
     for profile in ("TRAINING", "OPTIMISER_SETUP", "AUTO_RANGE", "LAZY_SINK"):
         monkeypatch.setenv(f"HAUTE_{profile}_MEMORY_LIMIT_MB", "1024")
     # The optimiser reads its own scored quotes, beside the training data.
@@ -1175,7 +1158,6 @@ def test_no_bounded_caller_creates_a_checkpoint_directory(
         "haute_opt_",
         "haute_frontier_range_",
         "haute_sink_",
-        "haute_dfexec_cache_",
     )
     assert [
         name
@@ -1183,7 +1165,6 @@ def test_no_bounded_caller_creates_a_checkpoint_directory(
         if name.startswith(checkpoint_prefixes)
         and not name.startswith("haute_frontier_range_parts_")
     ] == []
-    assert stored == []
 
 
 def test_consumed_select_below_a_rating_step_is_captured_and_seeded(

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import OptimiserPreview from "../OptimiserPreview"
 import type { OptimiserPreviewData, FrontierData } from "../OptimiserPreview"
-import type { MlflowDestinationEntry, OptimiserSolveResult } from "../../api/types"
+import type { FrontierPointSummary, MlflowDestinationEntry, OptimiserSolveResult } from "../../api/types"
 import type { SimpleNode } from "../editors"
 import type { MlflowInventoryState } from "../../utils/mlflowDestinations"
 
@@ -114,6 +114,25 @@ function makeSolveResult(
   }
 }
 
+function makePointSummary(overrides: Partial<FrontierPointSummary> = {}): FrontierPointSummary {
+  return {
+    total_objective: 0,
+    constraints: {},
+    lambdas: {},
+    converged: true,
+    iterations: null,
+    cd_iterations: null,
+    clamp_rate: null,
+    history: null,
+    scenario_value_stats: null,
+    scenario_value_histogram: null,
+    factor_tables: null,
+    warning: null,
+    frontier_error: null,
+    ...overrides,
+  }
+}
+
 function makeFrontier(n = 5, overrides: Partial<FrontierData> = {}): FrontierData {
   const points = Array.from({ length: n }, (_, i) => ({
     total_objective: 1200000 + i * 10000,
@@ -123,6 +142,11 @@ function makeFrontier(n = 5, overrides: Partial<FrontierData> = {}): FrontierDat
   }))
   return {
     points,
+    point_summaries: points.map((point) => makePointSummary({
+      total_objective: point.total_objective,
+      constraints: { loss_ratio: point.total_loss_ratio },
+      lambdas: { loss_ratio: point.lambda_loss_ratio },
+    })),
     n_points: n,
     points_returned: n,
     constraint_names: ["loss_ratio"],
@@ -758,6 +782,7 @@ describe("OptimiserPreview", () => {
         data: makeData({
           frontier: {
             points: [],
+            point_summaries: [],
             n_points: 0,
             points_returned: 0,
             constraint_names: [],
@@ -1068,6 +1093,10 @@ describe("OptimiserPreview", () => {
           total_objective: 1200000 + i * 10000,
           total_loss_ratio: 0.55 + i * 0.02,
           total_volume: 100 + i * 10,
+        })),
+        point_summaries: Array.from({ length: 3 }, (_, i) => makePointSummary({
+          total_objective: 1200000 + i * 10000,
+          constraints: { loss_ratio: 0.55 + i * 0.02, volume: 100 + i * 10 },
         })),
         n_points: 3,
         points_returned: 3,

@@ -69,7 +69,6 @@ or where it will not hold at scale.
 | CACHE-S22 | Planned | P3 | The shapes that cannot carry a write recipe at all can. |
 | CACHE-S17 | Planned | P3 | Planning cost stays flat as graphs grow, a lease validates each part once per process, and the store's bookkeeping files are swept. |
 | CACHE-S18 | Planned | P3 | Full and cross joins are written with a bounded number of scans and a bounded part product. |
-| CACHE-S23 | Planned | P2 | The unused dataframe execution cache and its request path are removed. |
 | CACHE-S24 | Planned | P3 | One source-freshness proof and one bounded in-process cache primitive. |
 | CACHE-S25 | Planned | P3 | Cache identity hashes the whole canonical node config instead of classifying every field. |
 | CACHE-S26 | Decision | P3 | Stored snapshots and node outputs have a retention policy, or the absence of one is a stated product choice. |
@@ -85,9 +84,7 @@ whose refusals it would have shown are removed, and a failed build already
 reports its error through the shared job poller. `CACHE-S13` moved down on 20-Sep-2026 because measurement showed
 no preview near its timeout. The packages from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md)
-(`CACHE-S23` to `CACHE-S27`) sit outside that order: `CACHE-S23` is a
-deletion that can be taken at any time and simplifies every later change to
-lazy execution; `CACHE-S24` follows `CACHE-S08`; `CACHE-S25` follows the
+(`CACHE-S24` to `CACHE-S27`) sit outside that order: `CACHE-S24` follows `CACHE-S08`; `CACHE-S25` follows the
 pipeline-config package `PCFG-R08`. Every full-frame write is now bounded, so what
 is left is measured against cost rather than shape. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
@@ -601,43 +598,6 @@ and the cache inventory are delivered.
 `src/haute/routes/_save_pipeline.py`; `src/haute/routes/_node_data_service.py`;
 `frontend/src/panels/editors/ApiInputEditor.tsx`;
 `frontend/src/components/CacheFetchButton.tsx`.
-
-### CACHE-S23 — Remove the unused dataframe execution cache
-**Why:** `build_dataframe_execution_cache_request` has no production caller,
-so `default_dataframe_execution_cache` is unreachable in production and
-`_execute_lazy(dataframe_cache_request=...)` is exercised only by tests. The
-deploy tests assert that scoring passes no cache request, and the assistant
-invalidates a cache that nothing populates. Seed plans and node-output
-snapshots replaced it, but the module, about 150 lines of request handling
-and mutual-exclusion checks in lazy execution, the key and policy
-fingerprints, and about 3,000 lines of tests remain. The caching and
-execution-engine specifications still describe it as live ("only a caller's
-dataframe-cache request (deploy scoring) materialises").
-
-**Plan:** Delete `DataFrameExecutionCache`, its request and key types, the
-execution-facade helpers that build them, the `dataframe_cache_request`
-parameter and branches in `_execute_lazy`, and the assistant's invalidation
-calls. Move `_upstream_subgraph`, which the data-point resolver uses, next to
-its caller. Remove the dataframe-cache consumer from the cache-identity
-inventory and delete the two test modules that only test the removed code.
-
-**Acceptance:** No production or test module imports the removed names; the
-caching and execution-engine specifications no longer describe a dataframe
-execution cache; lazy execution, deploy scoring and data-point tests pass.
-
-**Dependencies:** None.
-
-**Owning specifications:** [caching](../caching/high-level.md);
-[execution engine](../execution-engine/high-level.md).
-
-**Evidence:** `src/haute/_dataframe_execution_cache.py::DataFrameExecutionCache`;
-`src/haute/_dataframe_execution_cache.py::_upstream_subgraph`;
-`src/haute/execution.py::build_dataframe_execution_cache_request`;
-`src/haute/execution.py::default_dataframe_execution_cache`;
-`src/haute/execution.py::invalidate_dataframe_execution_cache`;
-`src/haute/_execute_lazy.py::_execute_lazy`; `src/haute/assistant/_assets.py`;
-`src/haute/_data_points.py`; `tests/test_dataframe_execution_cache.py`;
-`tests/test_execute_lazy_dataframe_cache.py`; `tests/test_deploy_internals.py`.
 
 ### CACHE-S24 — One freshness proof and one bounded-cache primitive
 **Why:** Three freshness policies coexist for the same question, whether a

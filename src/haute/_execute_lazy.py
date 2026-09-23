@@ -189,27 +189,6 @@ def _schema_pairs(frame: pl.LazyFrame) -> list[tuple[str, str]]:
     return [(name, str(dtype)) for name, dtype in schema.items()]
 
 
-def _lazy_frame_for_cache(lf: Any, node_id: str) -> pl.LazyFrame:
-    """Coerce a node output to a LazyFrame for cache materialization.
-
-    A multi-frame source emits a ``dict[label, LazyFrame]``; caching the whole
-    bundle is undefined (the in-RAM cache is keyed per node, not per frame), so
-    fail loud with a clear message rather than ``AttributeError`` on
-    ``dict.lazy()``. A multi-frame source is never a capture point (an API
-    input is not a node-output point), but the cache path is gated only on the
-    cache request, so this guard makes the unsupported combination explicit
-    instead of crashing opaquely.
-    """
-    if isinstance(lf, dict):
-        raise RuntimeError(
-            "cannot cache-materialize a multi-frame source output "
-            f"(node_id={node_id!r}); a multi-frame apiInput emits one frame per "
-            "output — connect the specific frame downstream rather than caching "
-            "the whole bundle",
-        )
-    return lf if isinstance(lf, pl.LazyFrame) else lf.lazy()
-
-
 def _pick_source_frame(
     source_output: Any,
     edge: GraphEdge,
@@ -1166,7 +1145,6 @@ def _execute_lazy(
     | None = None,
     execution_context: ExecutionContext | None = None,
     source_by_node: Mapping[str, str] | None = None,
-    dataframe_cache_request: execution_facade.DataFrameExecutionCacheRequest | None = None,
     schema_only: bool = False,
     runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
     prepare_inputs: bool = True,
@@ -1200,11 +1178,6 @@ def _execute_lazy(
             builders.  Graph pruning still uses ``source`` so live-switch
             routing remains stable while selected nodes, such as deploy
             modelScore, can opt into batch execution.
-        dataframe_cache_request: Optional request describing node outputs that
-            may be materialized to and reused from the shared backend dataframe
-            cache.  Cached hits seed the lazy output map, letting execution skip
-            covered upstream lineage while still building any uncached downstream
-            target nodes.
         enforce_contracts: When ``True``, assert declared column contracts at each
             node boundary via ``.collect_schema()``.  Polars computes
             schemas without executing the query, so this stays cheap.
@@ -1231,8 +1204,7 @@ def _execute_lazy(
             from what was written — a join, fan-out, or join feeder is
             materialised this way, breaking chained-join memory accumulation
             and plan duplication across branches (pola-rs/polars#24206). Input
-            preparation already ran when the plan was opened. Exclusive with
-            ``dataframe_cache_request``.
+            preparation already ran when the plan was opened.
 
     Returns:
         (lazy_outputs, order, parents_of, id_to_name)
@@ -1260,7 +1232,6 @@ def _execute_lazy(
                 if execution_context is not None
                 else ExecutionProfile.LAZY_SINK
             ),
-            dataframe_cache_request=dataframe_cache_request,
         )
     preserved_outputs = frozenset(preserve_node_ids or ()) | frozenset(
         decision.consumed_node_ids if decision is not None else ()
@@ -1300,7 +1271,6 @@ def _execute_lazy(
             )
             for node_id, demand in decision.planning_required_columns.items()
         }
-    cache_request = dataframe_cache_request
 
     # Count downstream consumers per node so a parent's frame is released
     # once every consumer has been materialised. (A fan-out point is a capture
@@ -1309,157 +1279,17 @@ def _execute_lazy(
     children_count = dict(prepared_execution.children_count)
     children_of = prepared_execution.children_of
 
-    cached_seed_outputs: dict[str, _Frame] = {}
-    skip_cache_covered_nodes: set[str] = set()
-    cache_backed_node_ids: set[str] = set()
-    cache_hit_rejected_node_ids: set[str] = set()
-    if cache_request is not None:
-        unknown_cache_nodes = sorted(
-            node_id for node_id in cache_request.keys_by_node if node_id not in node_map
-        )
-        if unknown_cache_nodes:
-            raise ValueError(
-                "Dataframe cache request references node IDs that are not in the "
-                f"prepared execution graph: {unknown_cache_nodes}"
-            )
-
-        effective_profile = (
-            execution_context.profile
-            if execution_context is not None
-            else ExecutionProfile.LAZY_SINK
-        )
-        effective_cache_profile = execution_facade.dataframe_execution_cache_profile(
-            effective_profile
-        )
-
-        def _merge_cache_required_columns(
-            runtime_demand: set[str] | projection_planner.AllExceptColumns | None,
-            cache_key: execution_facade.DataFrameExecutionCacheKey,
-        ) -> set[str] | projection_planner.AllExceptColumns | None:
-            if isinstance(runtime_demand, projection_planner.AllExceptColumns):
-                return runtime_demand
-            merged = set(runtime_demand or ())
-            merged.update(cache_key.required_columns)
-            return merged if merged else runtime_demand
-
-        def _required_columns_for_cached_seed(
-            demand: set[str] | projection_planner.AllExceptColumns | None,
-        ) -> set[str]:
-            if demand is None:
-                return set()
-            if isinstance(demand, projection_planner.AllExceptColumns):
-                return set(demand.required_columns)
-            return set(demand)
-
-        cache_required_columns: dict[str, set[str] | projection_planner.AllExceptColumns] = dict(
-            normalised_required_columns
-        )
-        for node_id, cache_key in cache_request.keys_by_node.items():
-            merged_demand = _merge_cache_required_columns(
-                cache_required_columns.get(node_id),
-                cache_key,
-            )
-            if merged_demand is not None:
-                cache_required_columns[node_id] = merged_demand
-        # Cache materialisation is part of this physical execution, not merely
-        # an identity check.  Plan from the union so a narrower immediate
-        # request cannot prune passthrough dependencies needed by the artifact.
-        planning_required_columns = cache_required_columns
-        cache_policy = execution_facade.dataframe_lazy_execution_policy(
-            target_node_id=target_node_id,
-            source_by_node=node_source_overrides,
-            required_columns_by_node=cache_required_columns,
-            preserve_node_ids=preserved_outputs,
-            enforce_contracts=enforce_contracts,
-            preamble_ns_supplied=preamble_ns is not None,
-        )
-        cache_policy_fingerprint = execution_facade.dataframe_execution_policy_fingerprint(
-            cache_policy
-        )
-        cache_key_memo = execution_facade.GraphFingerprintMemo()
-        for node_id, cache_key in cache_request.keys_by_node.items():
-            effective_source = source or "live"
-            if cache_key.source != effective_source:
-                raise ValueError(
-                    "Dataframe cache key source does not match lazy execution source "
-                    f"(node_id={node_id!r}, key.source={cache_key.source!r}, "
-                    f"execution.source={effective_source!r})"
-                )
-            if cache_key.profile != effective_cache_profile:
-                raise ValueError(
-                    "Dataframe cache key profile does not match lazy execution profile "
-                    f"(node_id={node_id!r}, key.profile={cache_key.profile!r}, "
-                    f"execution.profile={effective_cache_profile!r})"
-                )
-            if cache_key.execution_policy_fingerprint != cache_policy_fingerprint:
-                raise ValueError(
-                    "Dataframe cache key execution policy does not match lazy execution "
-                    f"policy (node_id={node_id!r})"
-                )
-            demand = cache_required_columns.get(node_id)
-            required_columns = (
-                None if isinstance(demand, projection_planner.AllExceptColumns) else demand
-            )
-            expected_key = execution_facade.dataframe_execution_cache_key(
-                graph,
-                node_id=node_id,
-                namespace=cache_key.namespace,
-                source=effective_source,
-                profile=effective_cache_profile,
-                input_fingerprint=cache_key.input_fingerprint,
-                required_columns=required_columns,
-                extra_keys=cache_key.extra_keys,
-                execution_policy=cache_policy,
-                memo=cache_key_memo,
-            )
-            if cache_key != expected_key:
-                raise ValueError(
-                    "Dataframe cache key does not match the current lazy execution "
-                    f"graph and policy (node_id={node_id!r})"
-                )
-            # Broken/missing cache entries are auto-evicted by ``cache.get``
-            # which then returns None; no explicit error handling needed.
-            cached_entry = cache_request.cache.get(cache_key)
-            if cached_entry is not None:
-                required_for_seed = _required_columns_for_cached_seed(
-                    cache_required_columns.get(node_id)
-                )
-                missing_for_seed = sorted(required_for_seed - set(cached_entry.columns))
-                if missing_for_seed:
-                    logger.warning(
-                        "dataframe_execution_cache_hit_missing_required_columns",
-                        node_id=node_id,
-                        missing=missing_for_seed,
-                    )
-                    cache_hit_rejected_node_ids.add(node_id)
-                else:
-                    cached_lf = cache_request.cache.scan(cache_key)
-                    if cached_lf is not None:
-                        cached_seed_outputs[node_id] = cached_lf
-                        cache_backed_node_ids.add(node_id)
-
-        cache_covers_downstream: dict[str, bool] = {}
-        for nid in reversed(order):
-            if nid in cached_seed_outputs:
-                cache_covers_downstream[nid] = True
-            elif nid in preserved_outputs:
-                cache_covers_downstream[nid] = False
-            else:
-                children: Sequence[str] = children_of.get(nid, ())
-                cache_covers_downstream[nid] = bool(children) and all(
-                    cache_covers_downstream.get(child_id, False) for child_id in children
-                )
-        skip_cache_covered_nodes = {
-            node_id
-            for node_id, covered in cache_covers_downstream.items()
-            if covered and node_id not in cached_seed_outputs
-        }
+    seed_outputs: dict[str, _Frame] = {}
+    plan_skipped_nodes: set[str] = set()
+    # Nodes whose frame is a scan of a held file (a leased seed or a written
+    # capture) rather than the lazy plan that built it.
+    file_backed_node_ids: set[str] = set()
     if decision is not None and snapshot_plan is not None:
         from haute._seed_plans import SharedSnapshotCaptureSkipRecord, SharedSnapshotSeedRecord
 
         for node_id, seed in decision.seeds.items():
-            cached_seed_outputs[node_id] = snapshot_plan.seed_frame(node_id)
-            cache_backed_node_ids.add(node_id)
+            seed_outputs[node_id] = snapshot_plan.seed_frame(node_id)
+            file_backed_node_ids.add(node_id)
             if execution_context is not None:
                 execution_context.record_shared_snapshot_seed(
                     SharedSnapshotSeedRecord(
@@ -1480,11 +1310,11 @@ def _execute_lazy(
         # The plan decided what runs: seeds, and the nodes still built below
         # them along effective edges. Nothing else is built.
         needed_by_plan = set(decision.executed_node_ids) | set(decision.seeds)
-        skip_cache_covered_nodes = {node_id for node_id in order if node_id not in needed_by_plan}
+        plan_skipped_nodes = {node_id for node_id in order if node_id not in needed_by_plan}
 
     # Backward column analysis: compute the minimal set of columns
-    # needed at each node's output so materialisations (captures, cache
-    # entries) can project away unneeded columns before writing.  Batch
+    # needed at each node's output so captures can project away unneeded
+    # columns before writing.  Batch
     # MODEL_SCORE nodes also consume this demand locally so their scored
     # file carries no unused passthrough columns.
     strategy_profile = (
@@ -1541,7 +1371,8 @@ def _execute_lazy(
     projection_plan = public_projection_plan
     needed_cols = projection_plan.needed_by_node
     edge_demands = projection_plan.edge_demands
-    cache_broadens_projection = planning_required_columns != normalised_required_columns
+    # A seed plan's negotiated capture demand may be broader than the run's own.
+    planning_broadens_projection = planning_required_columns != normalised_required_columns
     runtime_projection_plan = (
         projection_planner.compute_prepared_plan(
             order,
@@ -1552,7 +1383,7 @@ def _execute_lazy(
             submodels=graph.submodels,
             selector_aliases=preamble_aliases,
         )
-        if cache_broadens_projection
+        if planning_broadens_projection
         else projection_plan
     )
     api_port_columns_by_node = projection_planner.api_input_port_columns_by_node(
@@ -1590,10 +1421,10 @@ def _execute_lazy(
             needed_cols,
             preserve_eager_model_score_inputs=False,
         )
-        if cache_broadens_projection:
-            # Source builders cannot validate a best-effort cache-only demand
+        if planning_broadens_projection:
+            # Source builders cannot validate a best-effort capture-only demand
             # before their lazy schema exists.  Keep their scans lazy and broad;
-            # the first edge projection below intersects cache-only columns with
+            # the first edge projection below intersects capture-only columns with
             # the actual schema, so Parquet/NDJSON pushdown still occurs.
             for node_id in order:
                 if not parents_of.get(node_id):
@@ -1601,8 +1432,8 @@ def _execute_lazy(
         build_order = [
             node_id
             for node_id in order
-            if node_id not in skip_cache_covered_nodes
-            and node_id not in cached_seed_outputs
+            if node_id not in plan_skipped_nodes
+            and node_id not in seed_outputs
             and (decision is None or node_id not in decision.pass_through_edges)
         ]
         funcs = _build_funcs(
@@ -1665,7 +1496,7 @@ def _execute_lazy(
                 and pid in lazy_outputs
                 and not pid_is_source
                 and pid not in preserved_outputs
-                and pid not in cache_backed_node_ids
+                and pid not in file_backed_node_ids
             ):
                 del lazy_outputs[pid]
 
@@ -1725,13 +1556,11 @@ def _execute_lazy(
                 parent_columns=sorted(schema_set),
             )
         if missing:
-            # A cache key may deliberately be broader than this call's runtime
-            # demand.  Cache population is an optimisation: an unavailable
-            # cache-only column makes that artifact ineligible, but must not
-            # fail an otherwise valid execution.  The materialisation gate will
-            # observe the same missing column and skip the cache write.
+            # A seed plan's negotiated demand may be broader than this run's
+            # own. A capture-only column the schema lacks is dropped from the
+            # capture and must not fail an otherwise valid execution.
             logger.warning(
-                "dataframe_execution_cache_projection_column_missing",
+                "planned_projection_column_missing",
                 node_id=child_id,
                 parent_id=parent_id,
                 missing=sorted(missing),
@@ -2005,12 +1834,12 @@ def _execute_lazy(
                 source_id, lazy_outputs[source_id], captures.record_closure(source_id)
             )
             lazy_outputs[source_id] = captured
-            cache_backed_node_ids.add(source_id)
+            file_backed_node_ids.add(source_id)
             column_cache[(source_id, None)] = _columns_of(captured)
         deferred_source_captures.clear()
 
     for nid in execution_order:
-        if nid in skip_cache_covered_nodes:
+        if nid in plan_skipped_nodes:
             continue
         if not inputs_verified and parents_of.get(nid):
             _verify_then_capture_sources()
@@ -2033,12 +1862,12 @@ def _execute_lazy(
                     # multi-frame guard: ``select_edge_source_output`` returns the parent's own
                     # object for a single-frame parent, and a different one for a sub-frame the
                     # parent's recipe does not describe. The second is the replacement test,
-                    # because ``lazy_outputs[parent]`` is written after a capture or a cache
-                    # materialisation has already replaced the frame — every replacement site
-                    # records the node in ``cache_backed_node_ids``.
+                    # because ``lazy_outputs[parent]`` is written after a capture or a seed
+                    # has already replaced the frame — every replacement site records the
+                    # node in ``file_backed_node_ids``.
                     link_proved = (
                         selected is lazy_outputs[edge.source]
-                        and edge.source not in cache_backed_node_ids
+                        and edge.source not in file_backed_node_ids
                     )
                     if not link_proved:
                         selected_lf = (
@@ -2077,13 +1906,13 @@ def _execute_lazy(
             captures.record_closure(nid)
             _release_consumed_parents(nid)
             continue
-        cached_seed = cached_seed_outputs.get(nid)
-        if cached_seed is not None:
-            lazy_outputs[nid] = cached_seed
-            column_cache[(nid, None)] = _columns_of(cached_seed)
-            logger.info("dataframe_execution_cache_seed_hit", node_id=nid)
+        seed_frame = seed_outputs.get(nid)
+        if seed_frame is not None:
+            lazy_outputs[nid] = seed_frame
+            column_cache[(nid, None)] = _columns_of(seed_frame)
+            logger.info("lazy_seed_hit", node_id=nid)
             if execution_context is not None:
-                execution_context.checkpoint(label="lazy_dataframe_cache_seed_hit", node_id=nid)
+                execution_context.checkpoint(label="lazy_seed_hit", node_id=nid)
             continue
         boundary = boundary_runner.open(nid)
         # A batch Model Score whose output is exactly its scored file writes
@@ -2118,69 +1947,6 @@ def _execute_lazy(
                     scored_capture.close()
                     raise
 
-        if cache_request is not None and nid not in cache_hit_rejected_node_ids:
-            materialize_cache_key = cache_request.keys_by_node.get(nid)
-            if materialize_cache_key is not None:
-                with (
-                    execution_context.stage("lazy_dataframe_cache_materialize", node_id=nid)
-                    if execution_context is not None
-                    else contextlib.nullcontext()
-                ):
-                    try:
-                        lazy_frame_for_cache = _lazy_frame_for_cache(lf, nid)
-                        required_for_cache = sorted(materialize_cache_key.required_columns)
-                        if required_for_cache:
-                            cache_columns = set(_schema_names_of(lazy_frame_for_cache))
-                            missing_for_cache = sorted(set(required_for_cache) - cache_columns)
-                        else:
-                            missing_for_cache = []
-                        if missing_for_cache:
-                            logger.warning(
-                                "dataframe_execution_cache_required_columns_missing_skip",
-                                node_id=nid,
-                                missing=missing_for_cache,
-                            )
-                            cached_lf = None
-                        else:
-                            if required_for_cache:
-                                lazy_frame_for_cache = lazy_frame_for_cache.select(
-                                    required_for_cache
-                                )
-                            cached_lf = execution_facade.materialize_lazy_frame_with_cache(
-                                lazy_frame_for_cache,
-                                cache=cache_request.cache,
-                                key=materialize_cache_key,
-                                profile=(
-                                    execution_context.profile
-                                    if execution_context is not None
-                                    else ExecutionProfile.LAZY_SINK
-                                ),
-                                fast_checkpoint=cache_request.fast_checkpoint,
-                            )
-                    except execution_facade.CacheArtifactTooLargeError as exc:
-                        logger.warning(
-                            "dataframe_execution_cache_artifact_too_large_skip",
-                            node_id=nid,
-                            error=str(exc),
-                        )
-                    else:
-                        if cached_lf is not None:
-                            lf = cached_lf
-                            cache_backed_node_ids.add(nid)
-                            column_cache[(nid, None)] = _columns_of(lf)
-                            _release_consumed_parents(nid)
-                            materialisations_since_gc += 1
-                            if materialisations_since_gc >= _GC_BATCH_INTERVAL:
-                                gc.collect()
-                                _malloc_trim()
-                                materialisations_since_gc = 0
-                            logger.info("dataframe_execution_cache_materialized", node_id=nid)
-                            if execution_context is not None:
-                                execution_context.checkpoint(
-                                    label="after_dataframe_cache_materialize",
-                                    node_id=nid,
-                                )
-
         if decision is not None and not inputs_verified and nid in decision.captures:
             deferred_source_captures.append(nid)
         elif decision is not None:
@@ -2201,7 +1967,7 @@ def _execute_lazy(
                         else None
                     ),
                 )
-                cache_backed_node_ids.add(nid)
+                file_backed_node_ids.add(nid)
                 column_cache[(nid, None)] = _columns_of(lf)
                 _release_consumed_parents(nid)
                 materialisations_since_gc += 1
@@ -2224,13 +1990,10 @@ def _check_snapshot_plan(
     target_node_id: str | None,
     source: str,
     profile: ExecutionProfile,
-    dataframe_cache_request: object | None,
 ) -> None:
-    """A plan runs only the execution it was resolved for, and only on its own."""
+    """A plan runs only the execution it was resolved for."""
     from haute._seed_plans import seed_plan_lineage_fingerprint
 
-    if dataframe_cache_request is not None:
-        raise ValueError("A seed plan replaces the dataframe cache; pass no cache request with it")
     if (
         target_node_id != decision.target_node_id
         or (source or "live") != decision.source
@@ -2831,7 +2594,6 @@ def _execute_eager_core(
                 if execution_context is not None
                 else ExecutionProfile.PREVIEW_EAGER
             ),
-            dataframe_cache_request=None,
         )
         seeded_ids = frozenset(decision.seeds)
         planned_ids = set(decision.executed_node_ids) | seeded_ids

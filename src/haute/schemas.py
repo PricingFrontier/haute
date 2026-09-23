@@ -3242,6 +3242,8 @@ class OptimiserFrontierRequest(BaseModel):
 class OptimiserFrontierResponse(BaseModel):
     status: str
     points: list[dict[str, Any]] = Field(default_factory=list)
+    point_summaries: list[OptimiserFrontierPointSummary] = Field(default_factory=list)
+    """The server's summary of each returned point, in point order."""
     n_points: int = 0
     points_returned: int = 0
     constraint_names: list[str] = Field(default_factory=list)
@@ -3290,6 +3292,28 @@ class OptimiserScenarioValueStats(BaseModel):
 class OptimiserScenarioValueHistogram(BaseModel):
     counts: list[int] = Field(default_factory=list)
     edges: list[float] = Field(default_factory=list)
+
+
+class OptimiserFrontierPointSummary(BaseModel):
+    """Every result field of one frontier point that differs from its solve.
+
+    ``None`` means the point has no such field: applying the summary to the
+    solve's result removes it.
+    """
+
+    total_objective: float
+    constraints: dict[str, float]
+    lambdas: dict[str, float]
+    converged: bool
+    iterations: int | None
+    cd_iterations: int | None
+    clamp_rate: float | None
+    history: list[OptimiserHistoryEntry] | None
+    scenario_value_stats: OptimiserScenarioValueStats | None
+    scenario_value_histogram: OptimiserScenarioValueHistogram | None
+    factor_tables: dict[str, list[dict[str, Any]]] | None
+    warning: str | None
+    frontier_error: str | None
 
 
 class OptimiserSolveResult(BaseModel):

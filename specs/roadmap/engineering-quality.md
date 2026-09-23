@@ -52,10 +52,9 @@ exports stay visible.
 unreferenced production code beyond a reviewed allowlist; the training facade
 is gone; tests import the owning modules.
 
-**Dependencies:** None. `CACHE-S23` (caching) removes the dead dataframe
-cache, and `EXEC-R03` (execution engine) removes the chunked runner if
-`OPT-P15` retires its consumer; this package does not wait for either, and
-the reviewed allowlist covers the runner while it remains live.
+**Dependencies:** None. `EXEC-R03` (execution engine) removes the chunked
+runner if `OPT-P15` retires its consumer; this package does not wait for it,
+and the reviewed allowlist covers the runner while it remains live.
 
 **Evidence:** `src/haute/_execution_context.py::ensure_execution_context`;
 `src/haute/_rating.py::_rating_table_materialises`;
@@ -114,9 +113,8 @@ generation uses `tokenize`-aware rewrites and not LibCST, while
 `_python_syntax.py` is built on LibCST. The deploy specification says the
 source-cache lease registry is process-local and uncoordinated across
 processes, while the source cache keeps cross-process lease markers. The
-dataframe execution cache (`CACHE-S23`), the codegen splice
-(`CODEGEN-R01`) and the route-helper fallback (`PCFG-R04`) are corrected by
-their own packages.
+codegen splice (`CODEGEN-R01`) and the route-helper fallback (`PCFG-R04`)
+are corrected by their own packages.
 
 **Plan:** Correct each statement against the code, and add a documentation
 check where one is cheap (for example, that a module named as "not LibCST" does

@@ -294,9 +294,9 @@ def seed_plan_lineage_fingerprint(
     memo: GraphFingerprintMemo | None = None,
 ) -> str:
     """The graph identity a plan was resolved for: the target's upstream subgraph."""
-    from haute._dataframe_execution_cache import _upstream_subgraph
+    from haute._graph_utils import upstream_subgraph
 
-    return graph_fingerprint(_upstream_subgraph(_canonical_graph(graph), target_node_id), memo=memo)
+    return graph_fingerprint(upstream_subgraph(_canonical_graph(graph), target_node_id), memo=memo)
 
 
 def seed_plan_input_fingerprint(
